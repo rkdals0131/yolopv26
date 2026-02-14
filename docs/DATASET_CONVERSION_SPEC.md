@@ -1,0 +1,449 @@
+# YOLO PV26 Dataset Conversion Specification
+
+- Spec version: `v1.2`
+- Date: `2026-02-14`
+- Related doc: `docs/PRD.md`
+- Status: `Implementation-ready`
+
+## 1. Purpose
+
+This document defines a decision-complete conversion standard for building the YOLO PV26 training dataset from heterogeneous sources.
+
+The conversion output must support:
+1. Multi-task training (`OD + Drivable Seg + Lane Seg`)
+2. ROS2/SPADE-compatible semantic ID generation (`mono8`, IDs `0/1/2`)
+3. Reproducible dataset builds with strict validation gates
+4. Partial-label-safe training through `ignore(255)` and `has_*` flags
+
+## 2. Scope
+
+### 2.1 In Scope
+
+1. Raw dataset ingestion and normalization
+2. Class mapping to PV26 canonical IDs
+3. Label export to YOLO-compatible detection and PNG masks
+4. Split generation (`train/val/test`) with leakage prevention
+5. Validation and conversion reporting
+
+### 2.2 Out of Scope
+
+1. Model training logic
+2. Online augmentation policy during training
+3. LiDAR projection/backprojection package internals
+
+### 2.3 Competition Domain Constraints (MVP)
+
+1. MVP target domain is simulator-like competition tracks, not public roads.
+2. Weather condition for MVP is fixed to `dry`.
+3. Time-of-day condition for MVP is fixed to `day`.
+4. `night` and `rain` samples are excluded from MVP train/val/test by default.
+5. `tunnel` scenes are explicitly in-scope and must be represented in validation data.
+
+## 3. Canonical Output Contract
+
+## 3.1 Output Root
+
+Default output root:
+`datasets/pv26_v1`
+
+## 3.2 Directory Layout
+
+```text
+datasets/pv26_v1/
+  images/
+    train/
+    val/
+    test/
+  labels_det/
+    train/
+    val/
+    test/
+  labels_seg_da/
+    train/
+    val/
+    test/
+  labels_seg_lane/
+    train/
+    val/
+    test/
+  labels_semantic_id/
+    train/
+    val/
+    test/
+  meta/
+    class_map.yaml
+    split_manifest.csv
+    conversion_report.json
+    source_stats.csv
+    checksums.sha256
+```
+
+## 3.3 Sample ID and File Naming
+
+`sample_id` format:
+`{source}__{sequence}__{frame}__{camera}`
+
+Examples:
+1. `bdd100k__day_city_001__000123__cam0`
+2. `cityscapes__frankfurt_000001__000294__cam0`
+
+For each sample:
+1. Image: `images/{split}/{sample_id}.jpg`
+2. Detection label: `labels_det/{split}/{sample_id}.txt`
+3. Drivable mask: `labels_seg_da/{split}/{sample_id}.png`
+4. Lane mask: `labels_seg_lane/{split}/{sample_id}.png`
+5. Semantic ID mask: `labels_semantic_id/{split}/{sample_id}.png` (required only when `has_semantic_id=1`)
+
+## 3.4 Image Requirements
+
+1. Encoding: `jpg`, 8-bit, 3-channel
+2. Color order on disk: standard RGB-encoded image files
+3. Resolution policy: keep source resolution in conversion output
+4. Runtime model input resize/letterbox is not part of this conversion step
+
+## 3.5 Detection Label Format
+
+YOLO text format per line:
+`<class_id> <cx> <cy> <w> <h>`
+
+Rules:
+1. `class_id`: integer in `[0, 10]`
+2. `cx, cy, w, h`: normalized float in `[0.0, 1.0]`
+3. Float precision: 6 decimal places
+4. Empty file is allowed when no objects exist
+5. `min_box_area_px` is a configurable conversion parameter
+6. MVP default is `min_box_area_px=0` (no box drop by size)
+7. Small-object-critical classes (`traffic_cone`, `bollard`, `road_obstacle`) must never be dropped by area threshold
+8. Boxes clipped to image bounds before normalization
+
+## 3.6 Segmentation Mask Format
+
+All mask files are `uint8 PNG`.
+
+1. `labels_seg_da`: binary + ignore mask (`0=background`, `1=drivable`, `255=ignore`)
+2. `labels_seg_lane`: binary + ignore mask (`0=background`, `1=lane`, `255=ignore`)
+3. `labels_semantic_id`: single-channel semantic mask:
+   - `0`: background
+   - `1`: drivable_area
+   - `2`: lane_marking
+
+Critical rule:
+1. Missing supervision must never be encoded as `0`.
+2. When a task label is unavailable, fill that task mask with `255` and set `has_*` flag to `0` in manifest.
+
+Semantic composition order:
+1. Initialize all pixels to `0`
+2. Set drivable pixels to `1`
+3. Overwrite lane pixels to `2` (lane priority over drivable)
+
+Notes:
+1. `labels_semantic_id` is required only when `has_semantic_id=1`.
+2. `labels_semantic_id` must not contain `255`.
+
+## 3.7 Split Manifest Schema
+
+`meta/split_manifest.csv` columns:
+1. `sample_id`
+2. `split` (`train|val|test`)
+3. `source`
+4. `sequence`
+5. `frame`
+6. `camera_id`
+7. `timestamp_ns`
+8. `has_det` (`0|1`)
+9. `has_da` (`0|1`)
+10. `has_lane` (`0|1`)
+11. `has_semantic_id` (`0|1`)
+12. `det_label_scope` (`full|subset|none`)
+13. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
+14. `image_relpath`
+15. `det_relpath`
+16. `da_relpath`
+17. `lane_relpath`
+18. `semantic_relpath` (nullable when `has_semantic_id=0`)
+19. `width`
+20. `height`
+21. `weather_tag` (`dry|rain|snow|unknown`)
+22. `time_tag` (`day|night|dawn_dusk|unknown`)
+23. `scene_tag` (`open|tunnel|shadow|unknown`)
+24. `source_group_key`
+
+## 3.8 Lane Rasterization Standard
+
+1. Lane labels from polyline or dual-boundary annotations must be converted to a centerline representation.
+2. Train mask thickness is fixed to `8px`.
+3. Eval mask thickness is fixed to `2px`.
+4. Rasterization uses nearest-neighbor drawing with no anti-aliasing.
+5. Pixels without lane supervision must remain `255(ignore)`, not `0`.
+
+## 4. Canonical Class IDs
+
+## 4.1 Detection Classes
+
+| det_id | class_name |
+|---|---|
+| 0 | car |
+| 1 | bus |
+| 2 | truck |
+| 3 | motorcycle |
+| 4 | bicycle |
+| 5 | pedestrian |
+| 6 | traffic_cone |
+| 7 | barrier |
+| 8 | bollard |
+| 9 | road_obstacle |
+| 10 | sign_pole |
+
+## 4.2 Segmentation Classes
+
+| seg_id | class_name |
+|---|---|
+| 0 | background |
+| 1 | drivable_area |
+| 2 | lane_marking |
+
+## 5. Source Dataset Adapter Rules
+
+Each source dataset must be converted using a dedicated adapter with deterministic mapping.
+
+## 5.1 BDD100K Adapter
+
+Inputs:
+1. Object detection annotations
+2. Drivable area annotations
+3. Lane marking annotations
+
+Mapping:
+1. `car -> car`
+2. `bus -> bus`
+3. `truck -> truck`
+4. `motorcycle -> motorcycle`
+5. `bicycle -> bicycle`
+6. `person -> pedestrian`
+7. `traffic sign|traffic light|pole-like roadside fixture -> sign_pole`
+8. Unmapped movable road hazards -> `road_obstacle`
+
+Segmentation:
+1. Drivable labels (`direct`, `alternative`) -> `drivable=1`
+2. Lane categories -> `lane=1`
+3. Lane mask generation must follow Section `3.8 Lane Rasterization Standard`.
+
+## 5.2 Cityscapes Adapter
+
+Inputs:
+1. Fine/coarse semantic labels
+2. Instance annotations (when available)
+
+Mapping:
+1. `person -> pedestrian`
+2. `rider -> pedestrian`
+3. `car -> car`
+4. `truck -> truck`
+5. `bus -> bus`
+6. `motorcycle -> motorcycle`
+7. `bicycle -> bicycle`
+8. `train -> road_obstacle`
+9. Set `det_label_scope=subset` and record actual annotated canonical det IDs in `det_annotated_class_ids`.
+
+Segmentation:
+1. `road` and `parking` -> `drivable=1`
+2. Lane supervision is unavailable by default in Cityscapes conversion.
+3. Default Cityscapes lane policy for MVP:
+   - `labels_seg_lane` is filled with `255`
+   - `has_lane=0`
+4. If an explicit external lane annotation source is provided, set `has_lane=1` and export valid lane mask.
+
+## 5.3 KITTI-360 Adapter
+
+Inputs:
+1. 2D/3D semantic and instance annotations
+
+Mapping policy:
+1. Apply Cityscapes-equivalent class mapping where labels overlap
+2. Vehicle/person/cycle classes map to PV26 detection IDs
+3. Static unknown obstacles map to `road_obstacle` only if confidently labeled
+4. Set `det_label_scope=subset` and fill `det_annotated_class_ids` based on available labels.
+
+Segmentation:
+1. `road` and `parking` -> `drivable=1`
+2. Lane/road-marking classes -> `lane=1` when explicitly available
+
+## 5.4 Waymo Adapter
+
+Inputs:
+1. Camera labels for detection
+2. Panoptic/semantic labels when available
+
+Detection mapping:
+1. `vehicle -> car` (default)
+2. `pedestrian -> pedestrian`
+3. `cyclist -> bicycle`
+4. `motorcyclist -> motorcycle` (if explicitly available)
+5. `sign -> sign_pole`
+6. Unknown movable hazards -> `road_obstacle`
+7. Set `det_label_scope=subset` unless all canonical classes are explicitly covered.
+
+Segmentation:
+1. Road surface classes -> `drivable=1`
+2. Lane marker classes -> `lane=1` when available
+3. Missing lane annotation -> lane mask is all `255` and `has_lane=0`
+4. Missing drivable annotation -> drivable mask is all `255` and `has_da=0`
+
+## 5.5 RLMD Adapter
+
+Inputs:
+1. Road marking segmentation labels
+
+MVP default policy:
+1. RLMD samples are excluded from `pv26_v1` training build by default.
+2. Reason: RLMD categories include many non-lane road markings; direct merge causes lane false positives.
+
+If RLMD is explicitly enabled (experimental):
+1. Only lane-boundary-equivalent categories may map to `lane=1`.
+2. Non-lane categories must be `255(ignore)`, not `0`.
+3. Drivable mask must be all `255` with `has_da=0` unless another trusted source provides drivable labels.
+4. Detection label file is empty with `has_det=0` for RLMD-only samples.
+5. `has_lane=1` is allowed only when lane-boundary mapping table is versioned and documented.
+
+## 5.6 Self-Collected Adapter
+
+Mandatory annotation targets:
+1. Detection classes `0..10`
+2. Drivable binary mask
+3. Lane binary mask
+
+Rules:
+1. Annotation guide must follow `class_map.yaml` exactly
+2. Any unlabeled hazardous object in ROI invalidates sample QA
+3. For MVP, `weather_tag=dry` and `time_tag=day` must be set.
+4. Tunnel frames must be tagged with `scene_tag=tunnel`.
+
+## 6. Conversion Pipeline
+
+```mermaid
+flowchart TD
+  A[Load_Raw_Datasets] --> B[Normalize_Sample_IDs]
+  B --> C[Map_Detection_Classes]
+  C --> D[Generate_Drivable_Mask]
+  D --> E[Generate_Lane_Mask]
+  E --> F[Compose_Semantic_ID]
+  F --> G[Run_QA_Validators]
+  G --> H[Build_Train_Val_Test_Splits]
+  H --> I[Write_Manifest_And_Reports]
+```
+
+Step definitions:
+1. Load raw files and metadata from source adapters
+2. Generate canonical `sample_id` and file names
+3. Convert and clamp detection boxes with `min_box_area_px` policy
+4. Populate detection coverage metadata (`det_label_scope`, `det_annotated_class_ids`)
+5. Convert drivable and lane masks with `ignore(255)` and `has_*` flags
+6. Generate lane masks using Section `3.8` rasterization settings
+7. Compose semantic ID mask (`0/1/2`) only for samples with valid semantic export (`has_semantic_id=1`)
+8. Run QA validators (hard fail + warnings)
+9. Build leakage-safe splits
+10. Write outputs and reports
+
+## 7. Split Policy
+
+1. Default ratio: `train=0.8`, `val=0.1`, `test=0.1`
+2. Split grouping key: `{source, sequence}` (camera_id excluded)
+3. Frames from the same grouped sequence must not appear in different splits
+4. Paired multi-camera frames from one sequence must always share the same split
+5. Source-specific sequence key rules:
+   - `BDD100K`: video id
+   - `Cityscapes`: city id
+   - `KITTI-360`: drive sequence id (non-overlap rule)
+   - `Waymo`: segment id
+   - `self-collected`: run/session id
+6. At least `5%` of each source must exist in `val` when source size permits
+7. Rare class retention:
+   - If a class has `< 200` samples, allocate at least `20` to `val+test` combined
+8. MVP domain filter:
+   - include only `weather_tag=dry`
+   - include only `time_tag=day`
+   - exclude `rain` and `night` samples by default
+9. Tunnel stratification:
+   - if `scene_tag=tunnel` samples exist, reserve at least `10%` of them for `val+test`
+   - both `val` and `test` should contain tunnel samples when available
+
+## 8. Validation Rules
+
+## 8.1 Hard Fail Rules
+
+1. Missing image file
+2. Missing required label file according to `has_*` flags
+3. Invalid class ID outside allowed range
+4. YOLO bbox values outside `[0,1]` after normalization
+5. Mask datatype not `uint8`
+6. `labels_seg_da` contains values outside `{0,1,255}`
+7. `labels_seg_lane` contains values outside `{0,1,255}`
+8. `has_da=0` but `labels_seg_da` contains value other than `255`
+9. `has_lane=0` but `labels_seg_lane` contains value other than `255`
+10. `has_semantic_id=1` and semantic mask contains values outside `{0,1,2}`
+11. Dimension mismatch among image/da/lane/semantic files
+12. Leakage detected: same `{source, sequence}` exists in multiple splits
+13. `det_label_scope=subset` but `det_annotated_class_ids` is empty
+14. `det_label_scope=none` with non-empty detection label file
+15. Detection class IDs outside `det_annotated_class_ids` for subset samples
+16. MVP dataset contains samples outside `weather_tag=dry` or `time_tag=day`
+
+## 8.2 Warning Rules
+
+1. Lane positive pixel ratio `> 0.35`
+2. Drivable positive pixel ratio `< 0.02` for daytime road scenes
+3. No detections in more than `95%` of a sequence
+4. Severe class imbalance (`max_class_count / min_nonzero_class_count > 100`)
+5. Tunnel samples exist but are missing in `val` or `test`
+
+## 8.3 QA Exit Criteria
+
+1. Hard fail count must be `0`
+2. Warning count must be reviewed and signed off in `conversion_report.json`
+
+## 9. Reproducibility and Versioning
+
+1. Every conversion run writes:
+   - converter version
+   - config hash
+   - git commit hash
+   - timestamp
+2. `checksums.sha256` includes all exported images and labels
+3. Any mapping change requires:
+   - class map version bump
+   - full dataset rebuild
+   - new output root name (example: `pv26_v2`)
+
+## 10. Converter CLI Contract
+
+Target CLI (to be implemented or aligned with existing scripts):
+
+```bash
+python tools/convert_dataset.py \
+  --raw-root datasets/raw \
+  --out-root datasets/pv26_v1 \
+  --config configs/dataset_conversion/pv26.yaml \
+  --num-workers 8 \
+  --run-id pv26_build_001
+```
+
+Subcommands:
+1. `audit`: source availability and schema checks only
+2. `convert`: full conversion and export
+3. `validate`: QA validation on an existing converted dataset
+
+Exit codes:
+1. `0`: success
+2. `2`: validation failure
+3. `3`: configuration or missing-source failure
+
+## 11. Acceptance Checklist
+
+1. Output tree matches Section 3.2 exactly
+2. All labels satisfy class and format constraints
+3. Split manifest is complete and leak-free
+4. Semantic ID mask contract (`0/1/2`) is fully respected for `has_semantic_id=1` samples
+5. Conversion report and checksums are generated
+6. `ignore(255)` and `has_*` contract is fully respected
+7. MVP dataset domain is constrained to `dry + day` and includes tunnel validation samples when available
+8. Dataset is ready for YOLO PV26 training without manual edits
