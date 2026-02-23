@@ -1,7 +1,7 @@
 # YOLO PV26 Dataset Conversion Specification
 
-- Spec version: `v1.2`
-- Date: `2026-02-14`
+- Spec version: `v1.4`
+- Date: `2026-02-19`
 - Related doc: `docs/PRD.md`
 - Status: `Implementation-ready`
 
@@ -10,8 +10,8 @@
 This document defines a decision-complete conversion standard for building the YOLO PV26 training dataset from heterogeneous sources.
 
 The conversion output must support:
-1. Multi-task training (`OD + Drivable Seg + Lane Seg`)
-2. ROS2/SPADE-compatible semantic ID generation (`mono8`, IDs `0/1/2`)
+1. Multi-task training (`OD + Drivable Seg + RoadMarking Seg`)
+2. Semantic ID generation (`mono8`, classmap-versioned IDs)
 3. Reproducible dataset builds with strict validation gates
 4. Partial-label-safe training through `ignore(255)` and `has_*` flags
 
@@ -62,7 +62,15 @@ datasets/pv26_v1/
     train/
     val/
     test/
-  labels_seg_lane/
+  labels_seg_rm_lane_marker/
+    train/
+    val/
+    test/
+  labels_seg_rm_road_marker_non_lane/
+    train/
+    val/
+    test/
+  labels_seg_rm_stop_line/
     train/
     val/
     test/
@@ -91,7 +99,10 @@ For each sample:
 1. Image: `images/{split}/{sample_id}.jpg`
 2. Detection label: `labels_det/{split}/{sample_id}.txt`
 3. Drivable mask: `labels_seg_da/{split}/{sample_id}.png`
-4. Lane mask: `labels_seg_lane/{split}/{sample_id}.png`
+4. Road-marking masks:
+   - `labels_seg_rm_lane_marker/{split}/{sample_id}.png`
+   - `labels_seg_rm_road_marker_non_lane/{split}/{sample_id}.png`
+   - `labels_seg_rm_stop_line/{split}/{sample_id}.png`
 5. Semantic ID mask: `labels_semantic_id/{split}/{sample_id}.png` (required only when `has_semantic_id=1`)
 
 ## 3.4 Image Requirements
@@ -100,6 +111,11 @@ For each sample:
 2. Color order on disk: standard RGB-encoded image files
 3. Resolution policy: keep source resolution in conversion output
 4. Runtime model input resize/letterbox is not part of this conversion step
+5. Source annotations in `json/polygon/polyline` must be converted offline before training.
+6. Canonical training labels are:
+   - Detection: `YOLO txt`
+   - Segmentation: `uint8 PNG mask`
+7. Training loaders must consume only normalized artifacts (`jpg + txt + png`), not raw annotation schemas.
 
 ## 3.5 Detection Label Format
 
@@ -121,11 +137,11 @@ Rules:
 All mask files are `uint8 PNG`.
 
 1. `labels_seg_da`: binary + ignore mask (`0=background`, `1=drivable`, `255=ignore`)
-2. `labels_seg_lane`: binary + ignore mask (`0=background`, `1=lane`, `255=ignore`)
-3. `labels_semantic_id`: single-channel semantic mask:
-   - `0`: background
-   - `1`: drivable_area
-   - `2`: lane_marking
+2. `labels_seg_rm_lane_marker`: binary + ignore mask (`0=background`, `1=lane_marker`, `255=ignore`)
+3. `labels_seg_rm_road_marker_non_lane`: binary + ignore mask (`0=background`, `1=road_marker_non_lane`, `255=ignore`)
+4. `labels_seg_rm_stop_line`: binary + ignore mask (`0=background`, `1=stop_line`, `255=ignore`)
+5. `labels_semantic_id`: single-channel semantic mask (`uint8`, `255` forbidden)
+   - class IDs are defined by `meta/class_map.yaml` and `classmap_version`
 
 Critical rule:
 1. Missing supervision must never be encoded as `0`.
@@ -134,7 +150,9 @@ Critical rule:
 Semantic composition order:
 1. Initialize all pixels to `0`
 2. Set drivable pixels to `1`
-3. Overwrite lane pixels to `2` (lane priority over drivable)
+3. Overwrite road-marking pixels by priority (example):
+   - `lane_marker` > `road_marker_non_lane` > `drivable_area` > `background`
+   - `stop_line` is a subset of `road_marker_non_lane` in multi-channel masks; semantic ID uses a single chosen class per pixel
 
 Notes:
 1. `labels_semantic_id` is required only when `has_semantic_id=1`.
@@ -152,29 +170,44 @@ Notes:
 7. `timestamp_ns`
 8. `has_det` (`0|1`)
 9. `has_da` (`0|1`)
-10. `has_lane` (`0|1`)
-11. `has_semantic_id` (`0|1`)
-12. `det_label_scope` (`full|subset|none`)
-13. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
-14. `image_relpath`
-15. `det_relpath`
-16. `da_relpath`
-17. `lane_relpath`
-18. `semantic_relpath` (nullable when `has_semantic_id=0`)
-19. `width`
-20. `height`
-21. `weather_tag` (`dry|rain|snow|unknown`)
-22. `time_tag` (`day|night|dawn_dusk|unknown`)
-23. `scene_tag` (`open|tunnel|shadow|unknown`)
-24. `source_group_key`
+10. `has_rm_lane_marker` (`0|1`)
+11. `has_rm_road_marker_non_lane` (`0|1`)
+12. `has_rm_stop_line` (`0|1`)
+13. `has_semantic_id` (`0|1`)
+14. `det_label_scope` (`full|subset|none`)
+15. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
+16. `image_relpath`
+17. `det_relpath`
+18. `da_relpath`
+19. `rm_lane_marker_relpath`
+20. `rm_road_marker_non_lane_relpath`
+21. `rm_stop_line_relpath`
+22. `semantic_relpath` (nullable when `has_semantic_id=0`)
+23. `width`
+24. `height`
+25. `weather_tag` (`dry|rain|snow|unknown`)
+26. `time_tag` (`day|night|dawn_dusk|unknown`)
+27. `scene_tag` (`open|tunnel|shadow|unknown`)
+28. `source_group_key`
 
-## 3.8 Lane Rasterization Standard
+## 3.8 RoadMarking Label Normalization Policy
 
-1. Lane labels from polyline or dual-boundary annotations must be converted to a centerline representation.
-2. Train mask thickness is fixed to `8px`.
-3. Eval mask thickness is fixed to `2px`.
-4. Rasterization uses nearest-neighbor drawing with no anti-aliasing.
-5. Pixels without lane supervision must remain `255(ignore)`, not `0`.
+1. Road-marking source format must be declared per dataset/sample as one of:
+   - `pixel_mask`
+   - `polyline`
+   - `dual_boundary`
+2. If road-marking source is `pixel_mask`:
+   - additional rasterization is forbidden
+   - keep original geometry
+   - apply only class remap and ignore mapping
+3. If road-marking source is `polyline` or `dual_boundary`:
+   - convert to centerline first
+   - rasterize with nearest-neighbor drawing (no anti-aliasing)
+   - use default thickness: train `8px`, eval `2px`
+4. Missing road-marking supervision must be encoded as all-`255` with `has_rm_*=0` per channel.
+5. Road-marking evaluation must use the same normalization route as GT generation:
+   - `pixel_mask` route for mask-native labels
+   - `2px` route for vector-native labels
 
 ## 4. Canonical Class IDs
 
@@ -196,6 +229,8 @@ Notes:
 
 ## 4.2 Segmentation Classes
 
+This table describes the default `classmap-v1` semantic ID contract. New semantic IDs must be introduced via a new `classmap-vX` and `meta/class_map.yaml`.
+
 | seg_id | class_name |
 |---|---|
 | 0 | background |
@@ -211,7 +246,7 @@ Each source dataset must be converted using a dedicated adapter with determinist
 Inputs:
 1. Object detection annotations
 2. Drivable area annotations
-3. Lane marking annotations
+3. Road marking annotations (lane markers and other road markers when available)
 
 Mapping:
 1. `car -> car`
@@ -225,8 +260,10 @@ Mapping:
 
 Segmentation:
 1. Drivable labels (`direct`, `alternative`) -> `drivable=1`
-2. Lane categories -> `lane=1`
-3. Lane mask generation must follow Section `3.8 Lane Rasterization Standard`.
+2. Lane-marker-equivalent categories -> `rm_lane_marker=1`
+3. Non-lane road-marking categories -> `rm_road_marker_non_lane=1`
+4. Stop line (if explicitly available) -> `rm_stop_line=1` and also `rm_road_marker_non_lane=1`
+5. Road-marking mask generation must follow Section `3.8 RoadMarking Label Normalization Policy` (mask pass-through for mask-native sources, rasterization only for vector-native sources).
 
 ## 5.2 Cityscapes Adapter
 
@@ -247,11 +284,11 @@ Mapping:
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
-2. Lane supervision is unavailable by default in Cityscapes conversion.
-3. Default Cityscapes lane policy for MVP:
-   - `labels_seg_lane` is filled with `255`
-   - `has_lane=0`
-4. If an explicit external lane annotation source is provided, set `has_lane=1` and export valid lane mask.
+2. Road-marking supervision is unavailable by default in Cityscapes conversion.
+3. Default Cityscapes road-marking policy for MVP:
+   - `labels_seg_rm_*` are filled with `255`
+   - `has_rm_*=0`
+4. If an explicit external road-marking annotation source is provided, set `has_rm_*=1` per available channel and export valid masks.
 
 ## 5.3 KITTI-360 Adapter
 
@@ -266,7 +303,7 @@ Mapping policy:
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
-2. Lane/road-marking classes -> `lane=1` when explicitly available
+2. Lane/road-marking classes -> `rm_lane_marker=1` or `rm_road_marker_non_lane=1` when explicitly available (dataset profile decides mapping)
 
 ## 5.4 Waymo Adapter
 
@@ -285,9 +322,11 @@ Detection mapping:
 
 Segmentation:
 1. Road surface classes -> `drivable=1`
-2. Lane marker classes -> `lane=1` when available
-3. Missing lane annotation -> lane mask is all `255` and `has_lane=0`
-4. Missing drivable annotation -> drivable mask is all `255` and `has_da=0`
+2. Lane marker classes -> `rm_lane_marker=1` when available
+3. Road marker classes -> `rm_road_marker_non_lane=1` when available
+4. Stop line is not a dedicated Waymo camera segmentation class; default policy is `rm_stop_line` all `255` with `has_rm_stop_line=0`
+5. Missing road-marking annotation -> road-marking masks are all `255` with `has_rm_*=0`
+6. Missing drivable annotation -> drivable mask is all `255` and `has_da=0`
 
 ## 5.5 RLMD Adapter
 
@@ -299,18 +338,19 @@ MVP default policy:
 2. Reason: RLMD categories include many non-lane road markings; direct merge causes lane false positives.
 
 If RLMD is explicitly enabled (experimental):
-1. Only lane-boundary-equivalent categories may map to `lane=1`.
-2. Non-lane categories must be `255(ignore)`, not `0`.
-3. Drivable mask must be all `255` with `has_da=0` unless another trusted source provides drivable labels.
-4. Detection label file is empty with `has_det=0` for RLMD-only samples.
-5. `has_lane=1` is allowed only when lane-boundary mapping table is versioned and documented.
+1. Only lane-boundary-equivalent categories may map to `rm_lane_marker=1`.
+2. Non-lane categories should map to `rm_road_marker_non_lane=1` (not dropped).
+3. Stop line category maps to `rm_stop_line=1` and also `rm_road_marker_non_lane=1`.
+4. Drivable mask must be all `255` with `has_da=0` unless another trusted source provides drivable labels.
+5. Detection label file is empty with `has_det=0` for RLMD-only samples.
+6. `has_rm_lane_marker=1` is allowed only when lane-boundary mapping table is versioned and documented.
 
 ## 5.6 Self-Collected Adapter
 
 Mandatory annotation targets:
 1. Detection classes `0..10`
 2. Drivable binary mask
-3. Lane binary mask
+3. Road-marking multi-channel masks (`rm_lane_marker`, `rm_road_marker_non_lane`, `rm_stop_line`)
 
 Rules:
 1. Annotation guide must follow `class_map.yaml` exactly
@@ -325,7 +365,7 @@ flowchart TD
   A[Load_Raw_Datasets] --> B[Normalize_Sample_IDs]
   B --> C[Map_Detection_Classes]
   C --> D[Generate_Drivable_Mask]
-  D --> E[Generate_Lane_Mask]
+  D --> E[Generate_RoadMarking_Masks]
   E --> F[Compose_Semantic_ID]
   F --> G[Run_QA_Validators]
   G --> H[Build_Train_Val_Test_Splits]
@@ -334,15 +374,16 @@ flowchart TD
 
 Step definitions:
 1. Load raw files and metadata from source adapters
-2. Generate canonical `sample_id` and file names
-3. Convert and clamp detection boxes with `min_box_area_px` policy
-4. Populate detection coverage metadata (`det_label_scope`, `det_annotated_class_ids`)
-5. Convert drivable and lane masks with `ignore(255)` and `has_*` flags
-6. Generate lane masks using Section `3.8` rasterization settings
-7. Compose semantic ID mask (`0/1/2`) only for samples with valid semantic export (`has_semantic_id=1`)
-8. Run QA validators (hard fail + warnings)
-9. Build leakage-safe splits
-10. Write outputs and reports
+2. Convert raw annotation schemas (`json/polygon/polyline`) into canonical label artifacts (`YOLO txt`, `PNG masks`)
+3. Generate canonical `sample_id` and file names
+4. Convert and clamp detection boxes with `min_box_area_px` policy
+5. Populate detection coverage metadata (`det_label_scope`, `det_annotated_class_ids`)
+6. Convert drivable and road-marking masks with `ignore(255)` and `has_*` flags
+7. Normalize road-marking labels using Section `3.8` policy (mask pass-through or vector rasterization)
+8. Compose semantic ID mask (classmap-defined IDs) only for samples with valid semantic export (`has_semantic_id=1`)
+9. Run QA validators (hard fail + warnings)
+10. Build leakage-safe splits
+11. Write outputs and reports
 
 ## 7. Split Policy
 
@@ -377,11 +418,11 @@ Step definitions:
 4. YOLO bbox values outside `[0,1]` after normalization
 5. Mask datatype not `uint8`
 6. `labels_seg_da` contains values outside `{0,1,255}`
-7. `labels_seg_lane` contains values outside `{0,1,255}`
+7. Any `labels_seg_rm_*` contains values outside `{0,1,255}`
 8. `has_da=0` but `labels_seg_da` contains value other than `255`
-9. `has_lane=0` but `labels_seg_lane` contains value other than `255`
-10. `has_semantic_id=1` and semantic mask contains values outside `{0,1,2}`
-11. Dimension mismatch among image/da/lane/semantic files
+9. Any `has_rm_*=0` but the corresponding `labels_seg_rm_*` contains value other than `255`
+10. `has_semantic_id=1` and semantic mask contains values outside `class_map.yaml` IDs
+11. Dimension mismatch among image/da/road-marking/semantic files
 12. Leakage detected: same `{source, sequence}` exists in multiple splits
 13. `det_label_scope=subset` but `det_annotated_class_ids` is empty
 14. `det_label_scope=none` with non-empty detection label file
@@ -390,7 +431,7 @@ Step definitions:
 
 ## 8.2 Warning Rules
 
-1. Lane positive pixel ratio `> 0.35`
+1. Road-marking positive pixel ratio `> 0.35`
 2. Drivable positive pixel ratio `< 0.02` for daytime road scenes
 3. No detections in more than `95%` of a sequence
 4. Severe class imbalance (`max_class_count / min_nonzero_class_count > 100`)
@@ -442,7 +483,7 @@ Exit codes:
 1. Output tree matches Section 3.2 exactly
 2. All labels satisfy class and format constraints
 3. Split manifest is complete and leak-free
-4. Semantic ID mask contract (`0/1/2`) is fully respected for `has_semantic_id=1` samples
+4. Semantic ID mask contract (`meta/class_map.yaml` IDs, `255` forbidden) is fully respected for `has_semantic_id=1` samples
 5. Conversion report and checksums are generated
 6. `ignore(255)` and `has_*` contract is fully respected
 7. MVP dataset domain is constrained to `dry + day` and includes tunnel validation samples when available

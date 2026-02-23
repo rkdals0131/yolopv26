@@ -60,9 +60,13 @@ rosbags/
 *.db3
 
 # Paper PDFs (keep Markdown docs trackable)
-docs/*.pdf
+*.pdf
 
 # Common local clone roots for external repos
 external/
 third_party/
 repos/
+
+AGENTS.md
+
+.omx/
