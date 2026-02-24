@@ -18,13 +18,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from pv26.constants import DET_CLASSES_CANONICAL
 from pv26.criterion import PV26Criterion
-from pv26.multitask_model import PV26MultiHead
+from pv26.multitask_model import PV26MultiHead, PV26MultiHeadYOLO26
 from pv26.torch_dataset import Pv26ManifestDataset, Pv26Sample
 
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="PV26 minimal train/val smoke loop")
     p.add_argument("--dataset-root", type=Path, required=True, help="PV26 dataset root with meta/split_manifest.csv")
+    p.add_argument("--arch", type=str, default="yolo26n", choices=["yolo26n", "stub"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch-size", type=int, default=8)
@@ -334,25 +335,50 @@ def validate(
                     gt = sample.det_yolo
                     if gt.numel():
                         gt_cls = gt[:, 0].to(dtype=torch.long)
-                        gt_boxes = _cxcywh_to_xyxy(gt[:, 1:5].to(dtype=torch.float32)).clamp(0.0, 1.0)
+                        gt_boxes_norm = _cxcywh_to_xyxy(gt[:, 1:5].to(dtype=torch.float32)).clamp(0.0, 1.0)
+                        if isinstance(preds.det, tuple):
+                            # Ultralytics returns pixel-space xyxy boxes.
+                            _, h, w = tuple(sample.image.shape)
+                            gt_boxes = gt_boxes_norm.clone()
+                            gt_boxes[:, 0::2] *= float(w)
+                            gt_boxes[:, 1::2] *= float(h)
+                        else:
+                            gt_boxes = gt_boxes_norm
                         for c in range(num_det_classes):
                             m = gt_cls == c
                             if bool(m.any()):
                                 gt_by_img_class[(sample.sample_id, c)] = gt_boxes[m].detach().cpu()
 
-                    det_boxes, det_scores, det_cls = _decode_det_predictions(
-                        preds.det[i].detach(),
-                        conf_thres=det_conf_thres,
-                        nms_iou=det_nms_iou,
-                        max_det=det_max_per_image,
-                    )
-                    det_boxes = det_boxes.detach().cpu()
-                    det_scores = det_scores.detach().cpu()
-                    det_cls = det_cls.detach().cpu()
-                    for j in range(int(det_scores.shape[0])):
-                        c = int(det_cls[j].item())
-                        if 0 <= c < num_det_classes:
-                            det_preds_by_class[c].append((float(det_scores[j].item()), sample.sample_id, det_boxes[j]))
+                    if isinstance(preds.det, tuple):
+                        y = preds.det[0]  # [B, K, 6] = xyxy + score + cls
+                        det_i = y[i]
+                        # Filter low-confidence predictions.
+                        keep = det_i[:, 4] > float(det_conf_thres)
+                        det_i = det_i[keep]
+                        if det_i.numel():
+                            det_boxes = det_i[:, 0:4].detach().cpu()
+                            det_scores = det_i[:, 4].detach().cpu()
+                            det_cls = det_i[:, 5].to(dtype=torch.long).detach().cpu()
+                            for j in range(int(det_scores.shape[0])):
+                                c = int(det_cls[j].item())
+                                if 0 <= c < num_det_classes:
+                                    det_preds_by_class[c].append(
+                                        (float(det_scores[j].item()), sample.sample_id, det_boxes[j])
+                                    )
+                    else:
+                        det_boxes, det_scores, det_cls = _decode_det_predictions(
+                            preds.det[i].detach(),
+                            conf_thres=det_conf_thres,
+                            nms_iou=det_nms_iou,
+                            max_det=det_max_per_image,
+                        )
+                        det_boxes = det_boxes.detach().cpu()
+                        det_scores = det_scores.detach().cpu()
+                        det_cls = det_cls.detach().cpu()
+                        for j in range(int(det_scores.shape[0])):
+                            c = int(det_cls[j].item())
+                            if 0 <= c < num_det_classes:
+                                det_preds_by_class[c].append((float(det_scores[j].item()), sample.sample_id, det_boxes[j]))
 
     mean_losses = _mean_losses(losses_sum, steps)
     iou_metrics: Dict[str, Optional[float]] = {}
@@ -410,8 +436,16 @@ def main() -> int:
         collate_fn=lambda x: x,
     )
 
-    model = PV26MultiHead(num_det_classes=len(DET_CLASSES_CANONICAL)).to(device)
-    criterion = PV26Criterion(num_det_classes=len(DET_CLASSES_CANONICAL)).to(device)
+    if args.arch == "stub":
+        model = PV26MultiHead(num_det_classes=len(DET_CLASSES_CANONICAL)).to(device)
+        criterion = PV26Criterion(num_det_classes=len(DET_CLASSES_CANONICAL)).to(device)
+    else:
+        model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device)
+        criterion = PV26Criterion(
+            num_det_classes=len(DET_CLASSES_CANONICAL),
+            od_loss_impl="ultralytics_e2e",
+            ultra_det_model=model.det_model,
+        ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     print(f"[pv26] device={device} seed={int(args.seed)}")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -34,6 +34,8 @@ class PV26Criterion(nn.Module):
         self,
         *,
         num_det_classes: int,
+        od_loss_impl: str = "dense",
+        ultra_det_model: Optional[nn.Module] = None,
         w_od: float = 1.0,
         w_da: float = 1.0,
         w_rm: float = 2.0,
@@ -42,21 +44,48 @@ class PV26Criterion(nn.Module):
     ):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
+        self.od_loss_impl = str(od_loss_impl).strip().lower()
         self.w_od = float(w_od)
         self.w_da = float(w_da)
         self.w_rm = float(w_rm)
         self.focal_gamma = float(focal_gamma)
         self.dice_eps = float(dice_eps)
 
-    def forward(self, preds: PV26MultiHeadOutput, batch: Any) -> Dict[str, Tensor]:
-        t = self._normalize_batch(batch=batch, device=preds.det.device)
+        self._ultra_det_loss = None
+        if self.od_loss_impl not in {"dense", "ultralytics_e2e"}:
+            raise ValueError(f"invalid od_loss_impl: {self.od_loss_impl}")
+        if self.od_loss_impl == "ultralytics_e2e":
+            if ultra_det_model is None:
+                raise ValueError("ultra_det_model must be provided when od_loss_impl='ultralytics_e2e'")
+            # Lazy import to avoid ultralytics side-effects unless requested.
+            import os
 
-        od = self._od_loss(
-            det_logits=preds.det,
-            det_yolo=t["det_yolo"],
-            has_det=t["has_det"],
-            det_label_scope=t["det_label_scope"],
-        )
+            os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
+            from ultralytics.utils.loss import E2ELoss  # type: ignore
+            from ultralytics.utils import DEFAULT_CFG  # type: ignore
+
+            # Ultralytics loss expects model.args to exist and provide hyp (box/cls/dfl/epochs...).
+            if not hasattr(ultra_det_model, "args"):
+                ultra_det_model.args = DEFAULT_CFG  # type: ignore[attr-defined]
+            self._ultra_det_loss = E2ELoss(ultra_det_model)
+
+    def forward(self, preds: PV26MultiHeadOutput, batch: Any) -> Dict[str, Tensor]:
+        t = self._normalize_batch(batch=batch, device=preds.da.device)
+
+        if self.od_loss_impl == "dense":
+            od = self._od_loss(
+                det_logits=preds.det,
+                det_yolo=t["det_yolo"],
+                has_det=t["has_det"],
+                det_label_scope=t["det_label_scope"],
+            )
+        else:
+            od = self._od_loss_ultralytics(
+                det_out=preds.det,
+                det_yolo=t["det_yolo"],
+                has_det=t["has_det"],
+                det_label_scope=t["det_label_scope"],
+            )
         da = self._da_loss(da_logits=preds.da, da_mask=t["da_mask"], has_da=t["has_da"])
         rm = self._rm_loss(
             rm_logits=preds.rm,
@@ -66,6 +95,91 @@ class PV26Criterion(nn.Module):
 
         total = self.w_od * od + self.w_da * da + self.w_rm * rm
         return {"total": total, "od": od, "da": da, "rm": rm}
+
+    def _od_loss_ultralytics(
+        self,
+        *,
+        det_out: Any,
+        det_yolo: Sequence[Tensor],
+        has_det: Tensor,
+        det_label_scope: Sequence[str],
+    ) -> Tensor:
+        """
+        Ultralytics YOLO26 detection loss (E2E loss wrapper over v8DetectionLoss).
+
+        Notes:
+        - This path currently supports only per-sample gating for `has_det` and `det_label_scope=none` by filtering the
+          batch. `det_label_scope=subset` is treated as `full` for now (current BDD build is full-only).
+        """
+        if self._ultra_det_loss is None:
+            raise RuntimeError("ultralytics det loss is not initialized")
+
+        # Parse predictions dict (E2ELoss can parse tuple internally, but we need filtering).
+        preds = det_out[1] if isinstance(det_out, tuple) else det_out
+        if not isinstance(preds, Mapping) or "one2many" not in preds or "one2one" not in preds:
+            raise TypeError("det_out must be an ultralytics Detect output (dict or (y, preds))")
+
+        bsz = int(len(det_yolo))
+        keep: List[int] = []
+        for i in range(bsz):
+            scope = str(det_label_scope[i]).strip().lower()
+            if scope not in {"full", "subset", "none"}:
+                raise ValueError(f"invalid det_label_scope: {scope}")
+            if int(has_det[i].item()) == 0 or scope == "none":
+                continue
+            if scope == "subset":
+                # TODO(PRD): mask negative loss for unannotated classes.
+                # For now, treat as full (current PV26 BDD build uses full only).
+                pass
+            keep.append(i)
+
+        if not keep:
+            # No supervised detection samples in this batch.
+            return torch.zeros((), dtype=torch.float32, device=has_det.device)
+
+        device = preds["one2many"]["boxes"].device
+        idx = torch.as_tensor(keep, dtype=torch.long, device=device)
+
+        def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
+            return {
+                "boxes": h["boxes"].index_select(0, idx),
+                "scores": h["scores"].index_select(0, idx),
+                "feats": [f.index_select(0, idx) for f in h["feats"]],
+            }
+
+        preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
+
+        # Build flat targets with re-indexed batch indices.
+        batch_idx_list: List[Tensor] = []
+        cls_list: List[Tensor] = []
+        box_list: List[Tensor] = []
+        for new_i, old_i in enumerate(keep):
+            gt = det_yolo[old_i]
+            if gt.numel() == 0:
+                continue
+            # expected gt: [N,5] (cls,cx,cy,w,h) normalized.
+            batch_idx_list.append(torch.full((gt.shape[0],), float(new_i), device=device, dtype=torch.float32))
+            cls_list.append(gt[:, 0].to(device=device, dtype=torch.float32))
+            box_list.append(gt[:, 1:5].to(device=device, dtype=torch.float32))
+
+        if batch_idx_list:
+            batch_idx_t = torch.cat(batch_idx_list, dim=0)
+            cls_t = torch.cat(cls_list, dim=0)
+            bboxes_t = torch.cat(box_list, dim=0)
+        else:
+            batch_idx_t = torch.zeros((0,), device=device, dtype=torch.float32)
+            cls_t = torch.zeros((0,), device=device, dtype=torch.float32)
+            bboxes_t = torch.zeros((0, 4), device=device, dtype=torch.float32)
+
+        det_batch = {"batch_idx": batch_idx_t, "cls": cls_t, "bboxes": bboxes_t}
+
+        loss_total, _loss_items = self._ultra_det_loss(preds_sel, det_batch)
+        # Ultralytics losses are returned as a vector (box/cls/dfl) scaled by batch size.
+        # Convert to mean-per-image scalar for PV26 weighting.
+        loss_mean = loss_total / float(len(keep))
+        if loss_mean.ndim != 0:
+            loss_mean = loss_mean.sum()
+        return loss_mean.to(dtype=torch.float32)
 
     def _normalize_batch(self, batch: Any, device: torch.device) -> Dict[str, Any]:
         if isinstance(batch, Sequence) and batch and isinstance(batch[0], Pv26Sample):
