@@ -17,3 +17,5 @@ from .constants import (  # noqa: F401
     SEG_ID_STOP_LINE,
 )
 from .multitask_model import PV26MultiHead, PV26MultiHeadOutput  # noqa: F401
+
+from .criterion import PV26Criterion, PV26LossBreakdown  # noqa: F401
