@@ -73,3 +73,50 @@ python tools/render_pv26_debug_masks.py \
 - 변환 리포트: `meta/conversion_report.json`
 - QC 리포트: `meta/qc_report.json`
 - 디버그 시각화(선택): `<out-root>/meta/debug_vis` 또는 `--out-root` 지정 경로
+
+## PV26 Type-A 학습 파이프라인 (실전용)
+
+`tools/train_pv26.py`는 smoke 루프를 확장한 실전 학습 스크립트입니다.
+
+지원 항목:
+- `yolo26n`(기본) + `stub` 아키텍처 선택
+- Train/Val 루프 진행률 바(`tqdm`)
+- TensorBoard 로깅(train/val loss + val metrics)
+- 체크포인트(`latest.pt`, `best.pt`) 저장 + resume
+- 자주 쓰는 CLI 옵션(epochs, batch size, workers, lr, device, amp, max batches, run name)
+
+### 빠른 실행 예시
+```bash
+uv run python tools/train_pv26.py \
+  --dataset-root datasets/pv26_v1_bdd \
+  --epochs 10 \
+  --batch-size 8 \
+  --workers 4 \
+  --lr 1e-3 \
+  --device auto \
+  --amp \
+  --run-name yolo26n_exp1
+```
+
+### 체크포인트에서 재시작
+```bash
+# latest.pt 자동 재개
+uv run python tools/train_pv26.py \
+  --dataset-root datasets/pv26_v1_bdd \
+  --run-name yolo26n_exp1 \
+  --resume-latest
+
+# 특정 체크포인트 재개
+uv run python tools/train_pv26.py \
+  --dataset-root datasets/pv26_v1_bdd \
+  --resume runs/pv26_train/yolo26n_exp1/checkpoints/latest.pt
+```
+
+### TensorBoard 보기
+```bash
+tensorboard --logdir runs/pv26_train
+```
+
+### 의존성 안내
+- `tqdm` 미설치 시: `uv pip install tqdm` 또는 `--no-progress`
+- `tensorboard` 미설치 시: `uv pip install tensorboard` 또는 `--no-tensorboard`
