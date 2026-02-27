@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from pv26.torch_dataset import LetterboxSpec, Pv26ManifestDataset
+from pv26.torch_dataset import AugmentSpec, LetterboxSpec, Pv26ManifestDataset
 
 
 class TestPv26ManifestDataset(unittest.TestCase):
@@ -144,7 +144,123 @@ class TestPv26ManifestDataset(unittest.TestCase):
             # stop_line is unsupervised -> ignore mask
             self.assertTrue(bool((s.rm_mask[2] == 255).all().item()))
 
+    def test_train_augmentation_hflip_updates_masks_and_boxes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "meta").mkdir(parents=True, exist_ok=True)
+            for p in [
+                "images/train",
+                "labels_det/train",
+                "labels_seg_da/train",
+                "labels_seg_rm_lane_marker/train",
+                "labels_seg_rm_road_marker_non_lane/train",
+                "labels_seg_rm_stop_line/train",
+            ]:
+                (root / p).mkdir(parents=True, exist_ok=True)
+
+            sample_id = "bdd100k__seq__000000__cam0"
+            img_rel = f"images/train/{sample_id}.jpg"
+            det_rel = f"labels_det/train/{sample_id}.txt"
+            da_rel = f"labels_seg_da/train/{sample_id}.png"
+            rm_lane_rel = f"labels_seg_rm_lane_marker/train/{sample_id}.png"
+            rm_road_rel = f"labels_seg_rm_road_marker_non_lane/train/{sample_id}.png"
+            rm_stop_rel = f"labels_seg_rm_stop_line/train/{sample_id}.png"
+
+            img = Image.fromarray(np.full((2, 4, 3), 10, dtype=np.uint8), mode="RGB")
+            img.save(root / img_rel)
+            (root / det_rel).write_text("0 0.250000 0.500000 0.500000 0.500000\n", encoding="utf-8")
+
+            da = np.array([[0, 1, 1, 0], [0, 0, 1, 0]], dtype=np.uint8)
+            Image.fromarray(da, mode="L").save(root / da_rel)
+            rm_lane = np.array([[0, 0, 1, 0], [0, 0, 1, 0]], dtype=np.uint8)
+            rm_road = np.array([[0, 1, 0, 0], [0, 1, 0, 0]], dtype=np.uint8)
+            Image.fromarray(rm_lane, mode="L").save(root / rm_lane_rel)
+            Image.fromarray(rm_road, mode="L").save(root / rm_road_rel)
+            Image.fromarray(np.full((2, 4), 255, dtype=np.uint8), mode="L").save(root / rm_stop_rel)
+
+            manifest_path = root / "meta" / "split_manifest.csv"
+            with manifest_path.open("w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(
+                    [
+                        "sample_id",
+                        "split",
+                        "source",
+                        "sequence",
+                        "frame",
+                        "camera_id",
+                        "timestamp_ns",
+                        "has_det",
+                        "has_da",
+                        "has_rm_lane_marker",
+                        "has_rm_road_marker_non_lane",
+                        "has_rm_stop_line",
+                        "has_semantic_id",
+                        "det_label_scope",
+                        "det_annotated_class_ids",
+                        "image_relpath",
+                        "det_relpath",
+                        "da_relpath",
+                        "rm_lane_marker_relpath",
+                        "rm_road_marker_non_lane_relpath",
+                        "rm_stop_line_relpath",
+                        "semantic_relpath",
+                        "width",
+                        "height",
+                        "weather_tag",
+                        "time_tag",
+                        "scene_tag",
+                        "source_group_key",
+                    ]
+                )
+                w.writerow(
+                    [
+                        sample_id,
+                        "train",
+                        "bdd100k",
+                        "seq",
+                        "000000",
+                        "cam0",
+                        "",
+                        "1",
+                        "1",
+                        "1",
+                        "1",
+                        "0",
+                        "0",
+                        "full",
+                        "",
+                        img_rel,
+                        det_rel,
+                        da_rel,
+                        rm_lane_rel,
+                        rm_road_rel,
+                        rm_stop_rel,
+                        "",
+                        "4",
+                        "2",
+                        "dry",
+                        "day",
+                        "open",
+                        "bdd100k::seq",
+                    ]
+                )
+
+            ds = Pv26ManifestDataset(
+                dataset_root=root,
+                splits=("train",),
+                letterbox=LetterboxSpec(out_width=4, out_height=2),
+                augment=AugmentSpec(hflip_prob=1.0, brightness=0.0, contrast=0.0, saturation=0.0),
+            )
+            s = ds[0]
+
+            # cx must be mirrored: 0.25 -> 0.75
+            self.assertAlmostEqual(float(s.det_yolo[0, 1].item()), 0.75, places=5)
+            # First row [0,1,1,0] after hflip stays symmetric.
+            self.assertEqual(s.da_mask[0].tolist(), [0, 1, 1, 0])
+            # Second row [0,0,1,0] -> [0,1,0,0]
+            self.assertEqual(s.da_mask[1].tolist(), [0, 1, 0, 0])
+
 
 if __name__ == "__main__":
     unittest.main()
-

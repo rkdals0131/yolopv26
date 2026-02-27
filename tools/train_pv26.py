@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 from pv26.constants import DET_CLASSES_CANONICAL
 from pv26.criterion import PV26Criterion
 from pv26.multitask_model import PV26MultiHead, PV26MultiHeadYOLO26
-from pv26.torch_dataset import Pv26ManifestDataset, Pv26Sample
+from pv26.torch_dataset import AugmentSpec, Pv26ManifestDataset, Pv26Sample
 from tools.train_pv26_smoke import (
     _compute_map50,
     _cxcywh_to_xyxy,
@@ -42,9 +42,9 @@ def build_argparser() -> argparse.ArgumentParser:
         help=f"PV26 dataset root with meta/split_manifest.csv (default: {DEFAULT_DATASET_ROOT})",
     )
     p.add_argument("--arch", type=str, default="yolo26n", choices=["yolo26n", "stub"])
-    p.add_argument("--epochs", type=int, default=20)
-    p.add_argument("--batch-size", type=int, default=4)
-    p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--epochs", type=int, default=5)
+    p.add_argument("--batch-size", type=int, default=10)
+    p.add_argument("--workers", type=int, default=6)
     p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda|cuda:N")
     p.add_argument("--amp", dest="amp", action="store_true", default=True, help="Enable AMP (CUDA only, default: on)")
@@ -62,6 +62,12 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--progress", dest="progress", action="store_true", default=True)
     p.add_argument("--no-progress", dest="progress", action="store_false")
     p.add_argument("--log-every", type=int, default=10, help="Console print interval when tqdm is disabled")
+    p.add_argument("--augment", dest="augment", action="store_true", default=True, help="Enable train-time augmentation")
+    p.add_argument("--no-augment", dest="augment", action="store_false", help="Disable train-time augmentation")
+    p.add_argument("--aug-hflip", type=float, default=0.5, help="Horizontal flip probability for train set")
+    p.add_argument("--aug-brightness", type=float, default=0.2, help="Brightness jitter delta (0 disables)")
+    p.add_argument("--aug-contrast", type=float, default=0.2, help="Contrast jitter delta (0 disables)")
+    p.add_argument("--aug-saturation", type=float, default=0.2, help="Saturation jitter delta (0 disables)")
     return p
 
 
@@ -383,7 +389,16 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     writer = _build_tb_writer(args.tensorboard, tb_dir)
 
-    train_ds = Pv26ManifestDataset(dataset_root=args.dataset_root, splits=("train",))
+    train_aug = None
+    if bool(args.augment):
+        train_aug = AugmentSpec(
+            hflip_prob=max(0.0, min(1.0, float(args.aug_hflip))),
+            brightness=max(0.0, float(args.aug_brightness)),
+            contrast=max(0.0, float(args.aug_contrast)),
+            saturation=max(0.0, float(args.aug_saturation)),
+        )
+
+    train_ds = Pv26ManifestDataset(dataset_root=args.dataset_root, splits=("train",), augment=train_aug)
     val_ds = Pv26ManifestDataset(dataset_root=args.dataset_root, splits=("val",))
     if len(train_ds) == 0:
         raise RuntimeError("train split is empty")

@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
+from PIL import ImageEnhance
 
 import torch
 from torch import Tensor
@@ -51,6 +52,19 @@ class Pv26Sample:
     has_rm_stop_line: int
     det_label_scope: str
     det_annotated_class_ids: str
+
+
+@dataclass(frozen=True)
+class AugmentSpec:
+    """
+    Online augmentation applied after deterministic letterbox.
+    All geometric transforms must be synchronized across image/det/masks.
+    """
+
+    hflip_prob: float = 0.5
+    brightness: float = 0.2
+    contrast: float = 0.2
+    saturation: float = 0.2
 
 
 def _parse_bool01(v: str) -> int:
@@ -183,6 +197,34 @@ def _letterbox_det_yolo(
     return out
 
 
+def _sample_jitter_factor(delta: float) -> float:
+    d = max(0.0, float(delta))
+    if d <= 0.0:
+        return 1.0
+    r = float(torch.rand((), dtype=torch.float32).item())  # [0,1)
+    return 1.0 + (2.0 * r - 1.0) * d
+
+
+def _apply_color_jitter(image: Image.Image, *, spec: AugmentSpec) -> Image.Image:
+    # Mild photometric jitter only on RGB image.
+    b = _sample_jitter_factor(spec.brightness)
+    c = _sample_jitter_factor(spec.contrast)
+    s = _sample_jitter_factor(spec.saturation)
+    image = ImageEnhance.Brightness(image).enhance(b)
+    image = ImageEnhance.Contrast(image).enhance(c)
+    image = ImageEnhance.Color(image).enhance(s)
+    return image
+
+
+def _apply_hflip_yolo(det_yolo: np.ndarray) -> np.ndarray:
+    if det_yolo.size == 0:
+        return det_yolo
+    out = det_yolo.copy().astype(np.float32, copy=False)
+    out[:, 1] = 1.0 - out[:, 1]  # cx normalized
+    out[:, 1] = np.clip(out[:, 1], 0.0, 1.0)
+    return out
+
+
 class Pv26ManifestDataset(Dataset[Pv26Sample]):
     """
     Minimal manifest-driven PyTorch Dataset.
@@ -200,6 +242,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         dataset_root: Path,
         splits: Sequence[str] = ("train",),
         letterbox: Optional[LetterboxSpec] = LetterboxSpec(),
+        augment: Optional[AugmentSpec] = None,
     ):
         self.dataset_root = Path(dataset_root)
         self.splits = tuple(s.strip().lower() for s in splits if s.strip())
@@ -212,6 +255,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         manifest_path = self.dataset_root / "meta" / "split_manifest.csv"
         self.rows = [r for r in _read_manifest_rows(manifest_path) if r.get("split", "") in set(self.splits)]
         self.letterbox = letterbox
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -295,6 +339,18 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
                 pad_value=int(lb.mask_pad_value),
             )
             det_yolo = _letterbox_det_yolo(det_yolo, in_w=in_w, in_h=in_h, out_w=lb.out_width, out_h=lb.out_height)
+
+        if self.augment is not None:
+            image = _apply_color_jitter(image, spec=self.augment)
+
+            do_hflip = float(torch.rand((), dtype=torch.float32).item()) < float(self.augment.hflip_prob)
+            if do_hflip:
+                image = image.transpose(Image.FLIP_LEFT_RIGHT)
+                da_u8 = np.ascontiguousarray(np.fliplr(da_u8))
+                rm_lane_u8 = np.ascontiguousarray(np.fliplr(rm_lane_u8))
+                rm_road_u8 = np.ascontiguousarray(np.fliplr(rm_road_u8))
+                rm_stop_u8 = np.ascontiguousarray(np.fliplr(rm_stop_u8))
+                det_yolo = _apply_hflip_yolo(det_yolo)
 
         # Convert to torch
         img_np = np.array(image, dtype=np.float32) / 255.0  # [H,W,3]
