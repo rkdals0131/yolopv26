@@ -89,15 +89,23 @@ modal run tools/train/modal_train_pv26.py \
 ## 5) 스크립트가 내부에서 하는 일
 `train_remote` 동작 순서:
 1. 데이터 볼륨에서 `pv26_v1_bdd_full/meta/split_manifest.csv` 존재 확인
-2. 없으면 `pv26_v1_bdd_full.tar`를 찾아 자동 압축해제
-3. 압축해제 후 manifest 재확인
-4. `tools/train/train_pv26.py`를 원격에서 실행
-5. 체크포인트/로그를 `pv26-artifacts` 볼륨에 저장
+2. `pv26_v1_bdd_full.tar`가 있으면 컨테이너 로컬 SSD(`/tmp`)로 복사
+3. 로컬 SSD(`/tmp`)에서 압축해제 후 로컬 경로를 학습에 사용
+4. tar가 없고 볼륨에 디렉토리만 있으면 디렉토리를 `/tmp`로 복사해서 사용
+5. `tools/train/train_pv26.py`를 원격에서 실행
+6. 체크포인트/로그를 `pv26-artifacts` 볼륨에 저장
 
 기본 출력 루트:
 - `/vol/artifacts/runs/pv26_train`
 
 ## 6) 체크포인트/TensorBoard 로그 확인
+기본 설정(`AUTO_DOWNLOAD_ARTIFACTS=True`)이면 학습 성공 후 아래 경로로 자동 동기화됩니다.
+- `runs/pv26_train/<run-name>`
+
+학습 중 자동 동기화 정책(`tools/train/modal_train_pv26.py`):
+- TensorBoard(`tb`): 매 epoch(정확히는 `latest.pt` 갱신 감지 시)마다 동기화
+- 체크포인트(`latest.pt`, `best.pt`): `SYNC_EVERY_N_EPOCHS`마다 동기화
+
 원격 산출물 확인:
 ```bash
 modal volume ls pv26-artifacts /runs/pv26_train
@@ -126,3 +134,35 @@ modal volume delete pv26-datasets
 - `PV26_MODAL_ARTIFACT_VOLUME` (기본: `pv26-artifacts`)
 - `PV26_MODAL_GPU` (기본: `A10G`)
 - `PV26_MODAL_TIMEOUT_SEC` (기본: `86400`)
+
+`tools/train/modal_train_pv26.py` 사용자 수정 블록 예시:
+```python
+GPU_NAME             = os.getenv("PV26_MODAL_GPU", "A10G")  # 예: "A10G", "L4", "A100"
+```
+
+## 8) Modal GPU 요약 (대략)
+아래는 선택 판단용 요약입니다. 실제 가격/가용성은 수시로 바뀌므로 실행 전에 공식 페이지를 확인하세요.
+
+지원 GPU 타입(문서 기준):
+- `T4`, `L4`, `A10`, `A100`(`A100-40GB`, `A100-80GB`), `L40S`, `H100`, `H200`, `B200`
+
+대략 성능 그룹:
+- 최고 성능/대형 학습: `B200`, `H200`, `H100`
+- 균형형 학습: `A100-80GB`, `A100-40GB`
+- 중간급 학습/추론: `L40S`, `A10`, `L4`
+- 저비용 테스트/가벼운 추론: `T4`
+
+대략 가격(Modal Pricing, GPU Tasks):
+- `B200`: `$0.001736/s` (약 `$6.2496/hr`)
+- `H200`: `$0.001261/s` (약 `$4.5396/hr`)
+- `H100`: `$0.001097/s` (약 `$3.9492/hr`)
+- `A100-80GB`: `$0.000694/s` (약 `$2.4984/hr`)
+- `A100-40GB`: `$0.000583/s` (약 `$2.0988/hr`)
+- `L40S`: `$0.000542/s` (약 `$1.9512/hr`)
+- `A10`: `$0.000306/s` (약 `$1.1016/hr`)
+- `L4`: `$0.000222/s` (약 `$0.7992/hr`)
+- `T4`: `$0.000164/s` (약 `$0.5904/hr`)
+
+공식 참고:
+- Pricing: `https://modal.com/pricing`
+- GPU docs: `https://modal.com/docs/guide/gpu`

@@ -70,3 +70,5 @@ repos/
 AGENTS.md
 
 .omx/
+.env
+.envrc

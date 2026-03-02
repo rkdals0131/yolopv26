@@ -5,7 +5,8 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 import sys
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Tuple
 import warnings
 
 import torch
@@ -45,7 +46,32 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--batch-size", type=int, default=10)
     p.add_argument("--workers", type=int, default=6)
+    p.add_argument("--prefetch-factor", type=int, default=4, help="DataLoader prefetch factor when workers > 0")
+    p.add_argument(
+        "--persistent-workers",
+        dest="persistent_workers",
+        action="store_true",
+        default=True,
+        help="Keep DataLoader workers alive across epochs (default: on)",
+    )
+    p.add_argument(
+        "--no-persistent-workers",
+        dest="persistent_workers",
+        action="store_false",
+        help="Disable persistent DataLoader workers",
+    )
     p.add_argument("--lr", type=float, default=5e-4)
+    p.add_argument(
+        "--profile-every",
+        type=int,
+        default=0,
+        help="If >0, print N-step averaged train stage timings (data_wait/h2d/fwd/loss/bwd/opt).",
+    )
+    p.add_argument(
+        "--profile-sync-cuda",
+        action="store_true",
+        help="Synchronize CUDA around profiling timers for more accurate stage timings (adds overhead).",
+    )
     p.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda|cuda:N")
     p.add_argument("--amp", dest="amp", action="store_true", default=True, help="Enable AMP (CUDA only, default: on)")
     p.add_argument("--no-amp", dest="amp", action="store_false", help="Disable AMP")
@@ -114,6 +140,12 @@ def _build_tb_writer(enabled: bool, log_dir: Path):
             "TensorBoard logging requires 'tensorboard'. Install it with: uv pip install tensorboard "
             "or run with --no-tensorboard."
         ) from exc
+
+
+def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, List[Pv26Sample]]:
+    # Build image batch in worker process so main thread can focus on GPU steps.
+    images = torch.stack([s.image for s in samples], dim=0)
+    return images, list(samples)
 
 
 def _make_run_dir(base: Path, run_name: str, arch: str) -> Path:
@@ -196,7 +228,7 @@ def train_one_epoch(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[List[Pv26Sample]],
+    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample]]],
     optimizer: torch.optim.Optimizer,
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
@@ -205,37 +237,110 @@ def train_one_epoch(
     show_progress: bool,
     tqdm_fn,
     log_every: int,
+    profile_every: int,
+    profile_sync_cuda: bool,
 ) -> Dict[str, float]:
     model.train()
     losses_sum = {"total": 0.0, "od": 0.0, "da": 0.0, "rm": 0.0}
     steps = 0
+    prof_every = max(0, int(profile_every))
+    prof_sync = bool(profile_sync_cuda and device.type == "cuda")
+    prof_count = 0
+    prof_sum_total = 0.0
+    prof_sum_wait = 0.0
+    prof_sum_h2d = 0.0
+    prof_sum_fwd = 0.0
+    prof_sum_loss = 0.0
+    prof_sum_bwd = 0.0
+    prof_sum_opt = 0.0
     step_cap = _limit_steps(len(loader), max_batches)
     iterator = enumerate(loader)
     if show_progress and tqdm_fn is not None:
         iterator = tqdm_fn(iterator, total=step_cap, desc="train", leave=False)
 
-    for batch_idx, batch in iterator:
+    last_iter_end = time.perf_counter()
+    for batch_idx, packed in iterator:
         if max_batches > 0 and batch_idx >= max_batches:
             break
 
-        images = torch.stack([s.image for s in batch], dim=0).to(device=device, non_blocking=True)
+        images_cpu, batch = packed
+        t_iter_enter = time.perf_counter()
+        t_wait = t_iter_enter - last_iter_end
+        t0 = t_iter_enter
+        images = images_cpu.to(device=device, non_blocking=True)
+        if device.type == "cuda":
+            images = images.contiguous(memory_format=torch.channels_last)
+        if prof_sync:
+            torch.cuda.synchronize(device)
+        t1 = time.perf_counter()
+
         optimizer.zero_grad(set_to_none=True)
+        t2 = time.perf_counter()
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
             preds = model(images)
+            if prof_sync:
+                torch.cuda.synchronize(device)
+            t3 = time.perf_counter()
             losses = criterion(preds, batch)
+            if prof_sync:
+                torch.cuda.synchronize(device)
+            t4 = time.perf_counter()
         scaler.scale(losses["total"]).backward()
+        if prof_sync:
+            torch.cuda.synchronize(device)
+        t5 = time.perf_counter()
         scaler.step(optimizer)
         scaler.update()
+        if prof_sync:
+            torch.cuda.synchronize(device)
+        t6 = time.perf_counter()
 
         steps += 1
         for key in losses_sum:
             losses_sum[key] += float(losses[key].detach().item())
+
+        if prof_every > 0:
+            prof_count += 1
+            prof_sum_total += (t6 - t0 + t_wait)
+            prof_sum_wait += t_wait
+            prof_sum_h2d += (t1 - t0)
+            prof_sum_fwd += (t3 - t2)
+            prof_sum_loss += (t4 - t3)
+            prof_sum_bwd += (t5 - t4)
+            prof_sum_opt += (t6 - t5)
+            if prof_count >= prof_every:
+                avg_total_ms = 1000.0 * prof_sum_total / float(prof_count)
+                avg_wait_ms = 1000.0 * prof_sum_wait / float(prof_count)
+                avg_h2d_ms = 1000.0 * prof_sum_h2d / float(prof_count)
+                avg_fwd_ms = 1000.0 * prof_sum_fwd / float(prof_count)
+                avg_loss_ms = 1000.0 * prof_sum_loss / float(prof_count)
+                avg_bwd_ms = 1000.0 * prof_sum_bwd / float(prof_count)
+                avg_opt_ms = 1000.0 * prof_sum_opt / float(prof_count)
+                wait_pct = (100.0 * avg_wait_ms / avg_total_ms) if avg_total_ms > 0 else 0.0
+                sync_tag = "sync" if prof_sync else "async"
+                print(
+                    "[profile][train] "
+                    f"step={batch_idx + 1} avg{prof_count}({sync_tag}) "
+                    f"total={avg_total_ms:.1f}ms wait={avg_wait_ms:.1f}ms({wait_pct:.1f}%) "
+                    f"h2d={avg_h2d_ms:.1f}ms fwd={avg_fwd_ms:.1f}ms loss={avg_loss_ms:.1f}ms "
+                    f"bwd={avg_bwd_ms:.1f}ms opt={avg_opt_ms:.1f}ms",
+                    flush=True,
+                )
+                prof_count = 0
+                prof_sum_total = 0.0
+                prof_sum_wait = 0.0
+                prof_sum_h2d = 0.0
+                prof_sum_fwd = 0.0
+                prof_sum_loss = 0.0
+                prof_sum_bwd = 0.0
+                prof_sum_opt = 0.0
 
         if show_progress and tqdm_fn is not None:
             iterator.set_postfix(loss=float(losses["total"].detach().item()))
         elif (batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0:
             step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
             print(format_loss_line(f"[train] step={batch_idx + 1}", step_losses), flush=True)
+        last_iter_end = t6
 
     return mean_losses(losses_sum, steps)
 
@@ -244,7 +349,7 @@ def validate(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[List[Pv26Sample]],
+    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample]]],
     device: torch.device,
     amp_enabled: bool,
     max_batches: int,
@@ -276,11 +381,14 @@ def validate(
         iterator = tqdm_fn(iterator, total=step_cap, desc="val", leave=False)
 
     with torch.no_grad():
-        for batch_idx, batch in iterator:
+        for batch_idx, packed in iterator:
             if max_batches > 0 and batch_idx >= max_batches:
                 break
 
-            images = torch.stack([s.image for s in batch], dim=0).to(device=device, non_blocking=True)
+            images_cpu, batch = packed
+            images = images_cpu.to(device=device, non_blocking=True)
+            if device.type == "cuda":
+                images = images.contiguous(memory_format=torch.channels_last)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
                 preds = model(images)
                 losses = criterion(preds, batch)
@@ -375,6 +483,11 @@ def validate(
 def main() -> int:
     args = build_argparser().parse_args()
     device = resolve_device(args.device)
+    if device.type == "cuda":
+        # Throughput-oriented defaults for Ampere+ training workloads.
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     if device.type == "cpu":
         warnings.filterwarnings(
             "ignore",
@@ -406,22 +519,33 @@ def main() -> int:
         raise RuntimeError("val split is empty")
 
     dl_gen = torch.Generator().manual_seed(int(args.seed))
+    num_workers = max(0, int(args.workers))
+    loader_perf_kwargs = {}
+    if num_workers > 0:
+        pf = max(2, int(args.prefetch_factor))
+        loader_perf_kwargs = {
+            "persistent_workers": bool(args.persistent_workers),
+            "prefetch_factor": pf,
+        }
+
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=max(0, int(args.workers)),
-        collate_fn=lambda x: x,
+        num_workers=num_workers,
+        collate_fn=_collate_with_images,
         generator=dl_gen,
         pin_memory=(device.type == "cuda"),
+        **loader_perf_kwargs,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=max(0, int(args.workers)),
-        collate_fn=lambda x: x,
+        num_workers=num_workers,
+        collate_fn=_collate_with_images,
         pin_memory=(device.type == "cuda"),
+        **loader_perf_kwargs,
     )
 
     if args.arch == "stub":
@@ -434,6 +558,8 @@ def main() -> int:
             od_loss_impl="ultralytics_e2e",
             ultra_det_model=model.det_model,
         ).to(device)
+    if device.type == "cuda":
+        model = model.to(memory_format=torch.channels_last)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     amp_enabled = bool(args.amp and device.type == "cuda")
@@ -479,6 +605,8 @@ def main() -> int:
             show_progress=args.progress,
             tqdm_fn=tqdm_fn,
             log_every=args.log_every,
+            profile_every=args.profile_every,
+            profile_sync_cuda=args.profile_sync_cuda,
         )
         print(format_loss_line("[train] mean", train_losses))
 

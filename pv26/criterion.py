@@ -314,24 +314,19 @@ class PV26Criterion(nn.Module):
         bsz = da_logits.shape[0]
         if da_mask.shape[0] != bsz:
             raise ValueError("da batch size mismatch")
-        losses: List[Tensor] = []
-        for b in range(bsz):
-            if int(has_da[b].item()) == 0:
-                continue
-            tgt = da_mask[b]
-            valid = tgt != 255
-            if not bool(valid.any()):
-                continue
-            losses.append(
-                F.binary_cross_entropy_with_logits(
-                    da_logits[b, 0][valid],
-                    tgt[valid].to(dtype=da_logits.dtype),
-                    reduction="mean",
-                )
-            )
-        if not losses:
+        # Vectorized DA loss:
+        # per-sample mean BCE over valid pixels, then mean over supervised samples.
+        logits = da_logits[:, 0]  # [B,H,W]
+        valid = (da_mask != 255) & has_da.view(-1, 1, 1).bool()
+        valid_count = valid.to(dtype=da_logits.dtype).sum(dim=(1, 2))  # [B]
+        keep = valid_count > 0
+        if not bool(keep.any()):
             return da_logits.new_zeros(())
-        return torch.stack(losses).mean()
+
+        target = torch.where(valid, da_mask, torch.zeros_like(da_mask)).to(dtype=da_logits.dtype)
+        bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+        per_sample = (bce * valid.to(dtype=bce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
+        return per_sample[keep].mean()
 
     def _rm_loss(self, *, rm_logits: Tensor, rm_mask: Tensor, has_rm: Tensor) -> Tensor:
         bsz, ch, _, _ = rm_logits.shape
@@ -339,29 +334,28 @@ class PV26Criterion(nn.Module):
             raise ValueError("rm logits must have 3 channels")
         if rm_mask.shape[0] != bsz or rm_mask.shape[1] != 3:
             raise ValueError("rm batch shape mismatch")
-
-        losses: List[Tensor] = []
-        for b in range(bsz):
-            for c in range(3):
-                if int(has_rm[b, c].item()) == 0:
-                    continue
-                tgt = rm_mask[b, c]
-                valid = tgt != 255
-                if not bool(valid.any()):
-                    continue
-
-                logit = rm_logits[b, c][valid]
-                target = tgt[valid].to(dtype=rm_logits.dtype)
-
-                bce = F.binary_cross_entropy_with_logits(logit, target, reduction="none")
-                prob = torch.sigmoid(logit)
-                pt = prob * target + (1.0 - prob) * (1.0 - target)
-                focal = ((1.0 - pt).pow(self.focal_gamma) * bce).mean()
-
-                inter = (prob * target).sum()
-                dice = 1.0 - (2.0 * inter + self.dice_eps) / (prob.sum() + target.sum() + self.dice_eps)
-                losses.append(focal + dice)
-
-        if not losses:
+        # Vectorized RM loss:
+        # per (B,C) channel focal+dice over valid pixels, then mean over supervised channels.
+        supervised = has_rm.view(bsz, ch, 1, 1).bool()
+        valid = (rm_mask != 255) & supervised
+        valid_count = valid.to(dtype=rm_logits.dtype).sum(dim=(2, 3))  # [B,C]
+        keep = valid_count > 0
+        if not bool(keep.any()):
             return rm_logits.new_zeros(())
-        return torch.stack(losses).mean()
+
+        target = torch.where(valid, rm_mask, torch.zeros_like(rm_mask)).to(dtype=rm_logits.dtype)
+        valid_f = valid.to(dtype=rm_logits.dtype)
+
+        bce = F.binary_cross_entropy_with_logits(rm_logits, target, reduction="none")
+        prob = torch.sigmoid(rm_logits)
+        pt = prob * target + (1.0 - prob) * (1.0 - target)
+        focal_num = (((1.0 - pt).pow(self.focal_gamma) * bce) * valid_f).sum(dim=(2, 3))
+        focal = focal_num / valid_count.clamp_min(1.0)
+
+        inter = (prob * target * valid_f).sum(dim=(2, 3))
+        prob_sum = (prob * valid_f).sum(dim=(2, 3))
+        target_sum = (target * valid_f).sum(dim=(2, 3))
+        dice = 1.0 - (2.0 * inter + self.dice_eps) / (prob_sum + target_sum + self.dice_eps)
+
+        per_channel = focal + dice
+        return per_channel[keep].mean()
