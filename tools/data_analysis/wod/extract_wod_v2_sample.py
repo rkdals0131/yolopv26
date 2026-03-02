@@ -2,7 +2,7 @@
 """Extract images / masks / boxes from Waymo Perception v2 parquet files.
 
 Usage example:
-  python tools/extract_wod_v2_sample.py \
+  python tools/data_analysis/wod/extract_wod_v2_sample.py \
     --training-root /home/user1/Python_Workspace/YOLOPv26/datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training \
     --out-root /home/user1/Python_Workspace/YOLOPv26/datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/decoded \
     --max-rows 50

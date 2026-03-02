@@ -10,10 +10,10 @@ This script is intentionally BDD-only and hardcodes:
       - bdd100k_drivable_maps/labels
 
 It runs the pipeline in order:
-  1) tools/convert_bdd_type_a.py
-  2) tools/validate_pv26_dataset.py (optional)
-  3) tools/pv26_qc_report.py (always; writes meta/qc_report.json)
-  4) tools/render_pv26_debug_masks.py (optional)
+  1) tools/data_analysis/bdd/convert_bdd_type_a.py
+  2) tools/data_analysis/bdd/validate_pv26_dataset.py (optional)
+  3) tools/data_analysis/bdd/pv26_qc_report.py (always; writes meta/qc_report.json)
+  4) tools/debug/render_pv26_debug_masks.py (optional)
 
 And writes a run manifest to:
   <out_root>/meta/run_manifest.json
@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -404,7 +404,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         # 4) Debug visualization (optional).
         if run_debug:
-            debug_py = REPO_ROOT / "tools" / "render_pv26_debug_masks.py"
+            debug_py = REPO_ROOT / "tools" / "debug" / "render_pv26_debug_masks.py"
             debug_out_root = out_root / "meta" / "debug_vis"
             dbg_argv = [
                 sys.executable,

@@ -70,12 +70,12 @@ RoadMarking 채널(회의 확정, 최소 세트):
 
 로컬 인벤토리/커버리지 리포트 생성:
 ```bash
-python tools/dataset_label_inventory.py --out /tmp/dataset_label_inventory.json
+python tools/data_analysis/bdd/dataset_label_inventory.py --out /tmp/dataset_label_inventory.json
 ```
 
 ## 5. Coverage Snapshot (회의용, 2026-02-19)
 
-아래 표는 `tools/dataset_label_inventory.py` 실행 결과를 문서에 옮긴 “스냅샷”이다.
+아래 표는 `tools/data_analysis/bdd/dataset_label_inventory.py` 실행 결과를 문서에 옮긴 “스냅샷”이다.
 숫자는 데이터셋 다운로드/정규화 진행에 따라 계속 변하므로, 회의 전에는 리포트를 다시 뽑고 표도 갱신한다.
 
 |Dataset|Drivable(frames)|rm_lane_marker(frames)|rm_road_marker_non_lane(frames)|rm_stop_line(frames)|비고|
@@ -155,7 +155,7 @@ camera segmentation class 관점(중요):
 
 샘플 디코딩(세그 있는 프레임만 뽑기; 샘플링 바이어스 방지):
 ```bash
-python tools/extract_wod_v2_sample.py \
+python tools/data_analysis/wod/extract_wod_v2_sample.py \
   --training-root /home/user1/Storage/seg_dataset/WaymoOpenDataset/wod_pv2_minimal_1ctx/training \
   --out-root /tmp/wod_decoded \
   --require-seg

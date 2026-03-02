@@ -17,7 +17,7 @@
 - **인터랙티브 실행기**: 변환→검증→QC→디버그(옵션) 순서 자동 실행
 
 ### 입력 경로 규칙
-`tools/run_bdd100k_normalize_interactive.py` 기준으로, `--bdd-root` 아래에 다음 구조가 필요합니다.
+`tools/data_analysis/bdd/run_bdd100k_normalize_interactive.py` 기준으로, `--bdd-root` 아래에 다음 구조가 필요합니다.
 
 - `bdd100k_images_100k/100k`
 - `bdd100k_labels/100k`
@@ -25,7 +25,7 @@
 
 ### 변환 방법 1) 단일 CLI로 직접 실행
 ```bash
-python tools/convert_bdd_type_a.py \
+python tools/data_analysis/bdd/convert_bdd_type_a.py \
   --images-root datasets/BDD100K/bdd100k_images_100k/100k \
   --labels datasets/BDD100K/bdd100k_labels/100k \
   --drivable-root datasets/BDD100K/bdd100k_drivable_maps/labels \
@@ -38,25 +38,25 @@ python tools/convert_bdd_type_a.py \
 
 ### 변환 방법 2) 인터랙티브 파이프라인 실행
 ```bash
-python tools/run_bdd100k_normalize_interactive.py --bdd-root datasets/BDD100K
+python tools/data_analysis/bdd/run_bdd100k_normalize_interactive.py --bdd-root datasets/BDD100K
 ```
 실행 중 질문에 따라 `limit`, `split`, 검증/디버그 실행 여부 등을 선택할 수 있습니다.
 
 ### 변환 후 검증
 ```bash
-python tools/validate_pv26_dataset.py --out-root datasets/pv26_v1_bdd
+python tools/data_analysis/bdd/validate_pv26_dataset.py --out-root datasets/pv26_v1_bdd
 ```
 
 ### QC 리포트 생성
 ```bash
-python tools/pv26_qc_report.py \
+python tools/data_analysis/bdd/pv26_qc_report.py \
   --dataset-root datasets/pv26_v1_bdd \
   --out-json datasets/pv26_v1_bdd/meta/qc_report.json
 ```
 
 ### 디버그 시각화 생성
 ```bash
-python tools/render_pv26_debug_masks.py \
+python tools/debug/render_pv26_debug_masks.py \
   --dataset-root datasets/pv26_v1_bdd \
   --split val \
   --channels da,rm_lane_marker,rm_road_marker_non_lane,rm_stop_line \
@@ -73,50 +73,3 @@ python tools/render_pv26_debug_masks.py \
 - 변환 리포트: `meta/conversion_report.json`
 - QC 리포트: `meta/qc_report.json`
 - 디버그 시각화(선택): `<out-root>/meta/debug_vis` 또는 `--out-root` 지정 경로
-
-## PV26 Type-A 학습 파이프라인 (실전용)
-
-`tools/train_pv26.py`는 smoke 루프를 확장한 실전 학습 스크립트입니다.
-
-지원 항목:
-- `yolo26n`(기본) + `stub` 아키텍처 선택
-- Train/Val 루프 진행률 바(`tqdm`)
-- TensorBoard 로깅(train/val loss + val metrics)
-- 체크포인트(`latest.pt`, `best.pt`) 저장 + resume
-- 자주 쓰는 CLI 옵션(epochs, batch size, workers, lr, device, amp, max batches, run name)
-
-### 빠른 실행 예시
-```bash
-uv run python tools/train_pv26.py \
-  --dataset-root datasets/pv26_v1_bdd \
-  --epochs 10 \
-  --batch-size 8 \
-  --workers 4 \
-  --lr 1e-3 \
-  --device auto \
-  --amp \
-  --run-name yolo26n_exp1
-```
-
-### 체크포인트에서 재시작
-```bash
-# latest.pt 자동 재개
-uv run python tools/train_pv26.py \
-  --dataset-root datasets/pv26_v1_bdd \
-  --run-name yolo26n_exp1 \
-  --resume-latest
-
-# 특정 체크포인트 재개
-uv run python tools/train_pv26.py \
-  --dataset-root datasets/pv26_v1_bdd \
-  --resume runs/pv26_train/yolo26n_exp1/checkpoints/latest.pt
-```
-
-### TensorBoard 보기
-```bash
-tensorboard --logdir runs/pv26_train
-```
-
-### 의존성 안내
-- `tqdm` 미설치 시: `uv pip install tqdm` 또는 `--no-progress`
-- `tensorboard` 미설치 시: `uv pip install tensorboard` 또는 `--no-tensorboard`

@@ -25,7 +25,7 @@ Contracts implemented:
 
 This is a shape/interface bootstrap for PV26 integration and tests, not a final YOLO26 production graph yet.
 
-## 1) Converter: `tools/convert_bdd_type_a.py`
+## 1) Converter: `tools/data_analysis/bdd/convert_bdd_type_a.py`
 
 ### Expected inputs
 - `--images-root`: directory containing BDD images (`.jpg/.jpeg/.png`)
@@ -38,7 +38,7 @@ This is a shape/interface bootstrap for PV26 integration and tests, not a final 
 
 ### Example
 ```bash
-python tools/convert_bdd_type_a.py \
+python tools/data_analysis/bdd/convert_bdd_type_a.py \
   --images-root /path/to/bdd/images \
   --labels /path/to/bdd/per_image_json \
   --drivable-root /path/to/bdd/drivable_id_masks \
@@ -53,7 +53,7 @@ Notes:
 - To include unknown tags: add `--allow-unknown-tags`
 - `--splits train,val` can be used when only train/val output is desired
 
-## 2) Validator: `tools/validate_pv26_dataset.py`
+## 2) Validator: `tools/data_analysis/bdd/validate_pv26_dataset.py`
 
 Validates:
 - `meta/split_manifest.csv` schema and referenced file existence
@@ -64,7 +64,7 @@ Validates:
 
 Example:
 ```bash
-python tools/validate_pv26_dataset.py --out-root /tmp/pv26_v1_bdd
+python tools/data_analysis/bdd/validate_pv26_dataset.py --out-root /tmp/pv26_v1_bdd
 ```
 
 Exit codes:

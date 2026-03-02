@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from tools.pv26_qc_report import compute_qc_report
+from tools.data_analysis.bdd.pv26_qc_report import compute_qc_report
 
 
 class TestPv26QcReport(unittest.TestCase):
