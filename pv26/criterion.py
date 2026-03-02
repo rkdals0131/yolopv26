@@ -70,7 +70,10 @@ class PV26Criterion(nn.Module):
             self._ultra_det_loss = E2ELoss(ultra_det_model)
 
     def forward(self, preds: PV26MultiHeadOutput, batch: Any) -> Dict[str, Tensor]:
-        t = self._normalize_batch(batch=batch, device=preds.da.device)
+        if isinstance(batch, Mapping) and bool(batch.get("_pv26_prepared", False)):
+            t = dict(batch)
+        else:
+            t = self._normalize_batch(batch=batch, device=preds.da.device)
 
         if self.od_loss_impl == "dense":
             od = self._od_loss(
@@ -82,9 +85,13 @@ class PV26Criterion(nn.Module):
         else:
             od = self._od_loss_ultralytics(
                 det_out=preds.det,
-                det_yolo=t["det_yolo"],
+                det_yolo=t.get("det_yolo", ()),
                 has_det=t["has_det"],
-                det_label_scope=t["det_label_scope"],
+                det_label_scope=t.get("det_label_scope", ()),
+                det_scope_code=t.get("det_scope_code", None),
+                det_tgt_batch_idx=t.get("det_tgt_batch_idx", None),
+                det_tgt_cls=t.get("det_tgt_cls", None),
+                det_tgt_bboxes=t.get("det_tgt_bboxes", None),
             )
         da = self._da_loss(da_logits=preds.da, da_mask=t["da_mask"], has_da=t["has_da"])
         rm = self._rm_loss(
@@ -103,6 +110,10 @@ class PV26Criterion(nn.Module):
         det_yolo: Sequence[Tensor],
         has_det: Tensor,
         det_label_scope: Sequence[str],
+        det_scope_code: Optional[Tensor] = None,
+        det_tgt_batch_idx: Optional[Tensor] = None,
+        det_tgt_cls: Optional[Tensor] = None,
+        det_tgt_bboxes: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Ultralytics YOLO26 detection loss (E2E loss wrapper over v8DetectionLoss).
@@ -119,26 +130,41 @@ class PV26Criterion(nn.Module):
         if not isinstance(preds, Mapping) or "one2many" not in preds or "one2one" not in preds:
             raise TypeError("det_out must be an ultralytics Detect output (dict or (y, preds))")
 
-        bsz = int(len(det_yolo))
-        keep: List[int] = []
-        for i in range(bsz):
-            scope = str(det_label_scope[i]).strip().lower()
-            if scope not in {"full", "subset", "none"}:
-                raise ValueError(f"invalid det_label_scope: {scope}")
-            if int(has_det[i].item()) == 0 or scope == "none":
-                continue
-            if scope == "subset":
-                # TODO(PRD): mask negative loss for unannotated classes.
-                # For now, treat as full (current PV26 BDD build uses full only).
-                pass
-            keep.append(i)
+        bsz = int(has_det.shape[0])
+        keep_idx: Tensor
+        if det_scope_code is not None:
+            if det_scope_code.shape[0] != bsz:
+                raise ValueError("det_scope_code length mismatch")
+            scope_code = det_scope_code.to(device=has_det.device, dtype=torch.long)
+            valid_code = (scope_code == 0) | (scope_code == 1) | (scope_code == 2)
+            if not bool(valid_code.all()):
+                raise ValueError("det_scope_code must be in {0(full),1(subset),2(none)}")
+            keep_mask = has_det.to(dtype=torch.long) != 0
+            keep_mask = keep_mask & (scope_code != 2)
+            keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
+        else:
+            if len(det_label_scope) != bsz:
+                raise ValueError("det_label_scope length mismatch")
+            keep: List[int] = []
+            for i in range(bsz):
+                scope = str(det_label_scope[i]).strip().lower()
+                if scope not in {"full", "subset", "none"}:
+                    raise ValueError(f"invalid det_label_scope: {scope}")
+                if int(has_det[i].item()) == 0 or scope == "none":
+                    continue
+                if scope == "subset":
+                    # TODO(PRD): mask negative loss for unannotated classes.
+                    # For now, treat as full (current PV26 BDD build uses full only).
+                    pass
+                keep.append(i)
+            keep_idx = torch.as_tensor(keep, dtype=torch.long, device=has_det.device)
 
-        if not keep:
+        if int(keep_idx.numel()) == 0:
             # No supervised detection samples in this batch.
             return torch.zeros((), dtype=torch.float32, device=has_det.device)
 
         device = preds["one2many"]["boxes"].device
-        idx = torch.as_tensor(keep, dtype=torch.long, device=device)
+        idx = keep_idx.to(device=device, dtype=torch.long)
 
         def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
             return {
@@ -150,33 +176,51 @@ class PV26Criterion(nn.Module):
         preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
 
         # Build flat targets with re-indexed batch indices.
-        batch_idx_list: List[Tensor] = []
-        cls_list: List[Tensor] = []
-        box_list: List[Tensor] = []
-        for new_i, old_i in enumerate(keep):
-            gt = det_yolo[old_i]
-            if gt.numel() == 0:
-                continue
-            # expected gt: [N,5] (cls,cx,cy,w,h) normalized.
-            batch_idx_list.append(torch.full((gt.shape[0],), float(new_i), device=device, dtype=torch.float32))
-            cls_list.append(gt[:, 0].to(device=device, dtype=torch.float32))
-            box_list.append(gt[:, 1:5].to(device=device, dtype=torch.float32))
+        if det_tgt_batch_idx is not None and det_tgt_cls is not None and det_tgt_bboxes is not None:
+            old_to_new = torch.full((bsz,), -1, device=device, dtype=torch.long)
+            old_to_new[idx] = torch.arange(idx.shape[0], device=device, dtype=torch.long)
 
-        if batch_idx_list:
-            batch_idx_t = torch.cat(batch_idx_list, dim=0)
-            cls_t = torch.cat(cls_list, dim=0)
-            bboxes_t = torch.cat(box_list, dim=0)
+            src_old = det_tgt_batch_idx.to(device=device, dtype=torch.long)
+            new_idx = old_to_new[src_old]
+            m = new_idx >= 0
+            if bool(m.any()):
+                batch_idx_t = new_idx[m].to(dtype=torch.float32)
+                cls_t = det_tgt_cls.to(device=device, dtype=torch.float32)[m]
+                bboxes_t = det_tgt_bboxes.to(device=device, dtype=torch.float32)[m]
+            else:
+                batch_idx_t = torch.zeros((0,), device=device, dtype=torch.float32)
+                cls_t = torch.zeros((0,), device=device, dtype=torch.float32)
+                bboxes_t = torch.zeros((0, 4), device=device, dtype=torch.float32)
         else:
-            batch_idx_t = torch.zeros((0,), device=device, dtype=torch.float32)
-            cls_t = torch.zeros((0,), device=device, dtype=torch.float32)
-            bboxes_t = torch.zeros((0, 4), device=device, dtype=torch.float32)
+            if len(det_yolo) != bsz:
+                raise ValueError("det_yolo length mismatch")
+            batch_idx_list: List[Tensor] = []
+            cls_list: List[Tensor] = []
+            box_list: List[Tensor] = []
+            for new_i, old_i in enumerate(idx.tolist()):
+                gt = det_yolo[int(old_i)]
+                if gt.numel() == 0:
+                    continue
+                # expected gt: [N,5] (cls,cx,cy,w,h) normalized.
+                batch_idx_list.append(torch.full((gt.shape[0],), float(new_i), device=device, dtype=torch.float32))
+                cls_list.append(gt[:, 0].to(device=device, dtype=torch.float32))
+                box_list.append(gt[:, 1:5].to(device=device, dtype=torch.float32))
+
+            if batch_idx_list:
+                batch_idx_t = torch.cat(batch_idx_list, dim=0)
+                cls_t = torch.cat(cls_list, dim=0)
+                bboxes_t = torch.cat(box_list, dim=0)
+            else:
+                batch_idx_t = torch.zeros((0,), device=device, dtype=torch.float32)
+                cls_t = torch.zeros((0,), device=device, dtype=torch.float32)
+                bboxes_t = torch.zeros((0, 4), device=device, dtype=torch.float32)
 
         det_batch = {"batch_idx": batch_idx_t, "cls": cls_t, "bboxes": bboxes_t}
 
         loss_total, _loss_items = self._ultra_det_loss(preds_sel, det_batch)
         # Ultralytics losses are returned as a vector (box/cls/dfl) scaled by batch size.
         # Convert to mean-per-image scalar for PV26 weighting.
-        loss_mean = loss_total / float(len(keep))
+        loss_mean = loss_total / float(int(idx.shape[0]))
         if loss_mean.ndim != 0:
             loss_mean = loss_mean.sum()
         return loss_mean.to(dtype=torch.float32)

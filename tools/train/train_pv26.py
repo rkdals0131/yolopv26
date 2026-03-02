@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import warnings
 
 import torch
@@ -142,10 +142,76 @@ def _build_tb_writer(enabled: bool, log_dir: Path):
         ) from exc
 
 
-def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, List[Pv26Sample]]:
-    # Build image batch in worker process so main thread can focus on GPU steps.
+_SCOPE_TO_CODE = {"full": 0, "subset": 1, "none": 2}
+
+
+def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, List[Pv26Sample], Dict[str, Any]]:
+    # Build image batch/targets in worker process so main thread can focus on GPU steps.
     images = torch.stack([s.image for s in samples], dim=0)
-    return images, list(samples)
+    det_yolo_list = [s.det_yolo for s in samples]
+    det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
+    det_scope_code_list: List[int] = []
+    for scope in det_scope_list:
+        if scope not in _SCOPE_TO_CODE:
+            raise ValueError(f"invalid det_label_scope in batch: {scope}")
+        det_scope_code_list.append(int(_SCOPE_TO_CODE[scope]))
+
+    has_det = torch.tensor([s.has_det for s in samples], dtype=torch.long)
+    has_da = torch.tensor([s.has_da for s in samples], dtype=torch.long)
+    has_rm = torch.tensor(
+        [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
+        dtype=torch.long,
+    )
+    da_mask = torch.stack([s.da_mask for s in samples], dim=0)
+    rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
+    det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
+
+    det_tgt_batch_idx_parts: List[torch.Tensor] = []
+    det_tgt_cls_parts: List[torch.Tensor] = []
+    det_tgt_box_parts: List[torch.Tensor] = []
+    for i, gt in enumerate(det_yolo_list):
+        if gt.numel() == 0:
+            continue
+        if gt.ndim != 2 or gt.shape[-1] != 5:
+            raise ValueError("det_yolo per sample must be [N,5]")
+        det_tgt_batch_idx_parts.append(torch.full((gt.shape[0],), int(i), dtype=torch.long))
+        det_tgt_cls_parts.append(gt[:, 0].to(dtype=torch.float32))
+        det_tgt_box_parts.append(gt[:, 1:5].to(dtype=torch.float32))
+
+    if det_tgt_batch_idx_parts:
+        det_tgt_batch_idx = torch.cat(det_tgt_batch_idx_parts, dim=0)
+        det_tgt_cls = torch.cat(det_tgt_cls_parts, dim=0)
+        det_tgt_bboxes = torch.cat(det_tgt_box_parts, dim=0)
+    else:
+        det_tgt_batch_idx = torch.zeros((0,), dtype=torch.long)
+        det_tgt_cls = torch.zeros((0,), dtype=torch.float32)
+        det_tgt_bboxes = torch.zeros((0, 4), dtype=torch.float32)
+
+    target_batch: Dict[str, Any] = {
+        "_pv26_prepared": True,
+        "det_yolo": det_yolo_list,
+        "det_label_scope": det_scope_list,
+        "det_scope_code": det_scope_code,
+        "det_tgt_batch_idx": det_tgt_batch_idx,
+        "det_tgt_cls": det_tgt_cls,
+        "det_tgt_bboxes": det_tgt_bboxes,
+        "has_det": has_det,
+        "has_da": has_da,
+        "has_rm": has_rm,
+        "da_mask": da_mask,
+        "rm_mask": rm_mask,
+    }
+    return images, list(samples), target_batch
+
+
+def _move_prepared_batch_to_device(batch: Dict[str, Any], *, device: torch.device) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in batch.items():
+        if isinstance(v, torch.Tensor):
+            out[k] = v.to(device=device, non_blocking=True)
+        else:
+            out[k] = v
+    return out
 
 
 def _make_run_dir(base: Path, run_name: str, arch: str) -> Path:
@@ -228,7 +294,7 @@ def train_one_epoch(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample]]],
+    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample], Dict[str, Any]]],
     optimizer: torch.optim.Optimizer,
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
@@ -263,13 +329,14 @@ def train_one_epoch(
         if max_batches > 0 and batch_idx >= max_batches:
             break
 
-        images_cpu, batch = packed
+        images_cpu, batch, target_batch_cpu = packed
         t_iter_enter = time.perf_counter()
         t_wait = t_iter_enter - last_iter_end
         t0 = t_iter_enter
         images = images_cpu.to(device=device, non_blocking=True)
         if device.type == "cuda":
             images = images.contiguous(memory_format=torch.channels_last)
+        target_batch = _move_prepared_batch_to_device(target_batch_cpu, device=device)
         if prof_sync:
             torch.cuda.synchronize(device)
         t1 = time.perf_counter()
@@ -281,7 +348,7 @@ def train_one_epoch(
             if prof_sync:
                 torch.cuda.synchronize(device)
             t3 = time.perf_counter()
-            losses = criterion(preds, batch)
+            losses = criterion(preds, target_batch)
             if prof_sync:
                 torch.cuda.synchronize(device)
             t4 = time.perf_counter()
@@ -349,7 +416,7 @@ def validate(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample]]],
+    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample], Dict[str, Any]]],
     device: torch.device,
     amp_enabled: bool,
     max_batches: int,
@@ -385,13 +452,14 @@ def validate(
             if max_batches > 0 and batch_idx >= max_batches:
                 break
 
-            images_cpu, batch = packed
+            images_cpu, batch, target_batch_cpu = packed
             images = images_cpu.to(device=device, non_blocking=True)
             if device.type == "cuda":
                 images = images.contiguous(memory_format=torch.channels_last)
+            target_batch = _move_prepared_batch_to_device(target_batch_cpu, device=device)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
                 preds = model(images)
-                losses = criterion(preds, batch)
+                losses = criterion(preds, target_batch)
 
             steps += 1
             for key in losses_sum:
