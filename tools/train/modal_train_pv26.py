@@ -57,7 +57,7 @@ DEFAULT_MEMORY_MB    = 65536     # Modal 컨테이너 RAM(MB) 할당량
 DEFAULT_PREFETCH_FACTOR = 6      # 워커당 prefetch 배치 수 (workers>0일 때만 사용)
 DEFAULT_PERSISTENT_WORKERS = True  # epoch 사이에 워커 프로세스 유지(재시작 오버헤드 감소)
 DEFAULT_PROFILE_EVERY = 10       # N step 평균 프로파일 로그 주기(0이면 비활성화)
-DEFAULT_PROFILE_SYNC_CUDA = False  # True면 CUDA 동기화 기반 정밀 타이밍(오버헤드 증가)
+DEFAULT_PROFILE_SYNC_CUDA = True  # True면 CUDA 동기화 기반 정밀 타이밍(오버헤드 증가)
 
 
 DEFAULT_DATASET_DIR_IN_VOLUME   = "pv26_v1_bdd_full"	# 예: "pv26_v1_bdd_full"

@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from datetime import datetime
+import os
 from pathlib import Path
+import resource
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -290,6 +294,66 @@ def _choose_best_score(val_losses: Dict[str, float], map50: Optional[float]) -> 
     return -float(val_losses["total"]), "neg_val_total_loss"
 
 
+def _gib(num_bytes: int) -> float:
+    return float(num_bytes) / float(1024 ** 3)
+
+
+def _format_cuda_mem_stats(*, device: torch.device) -> str:
+    free_b, total_b = torch.cuda.mem_get_info(device)
+    alloc_b = torch.cuda.memory_allocated(device)
+    reserved_b = torch.cuda.memory_reserved(device)
+    peak_alloc_b = torch.cuda.max_memory_allocated(device)
+    peak_reserved_b = torch.cuda.max_memory_reserved(device)
+    return (
+        f"cuda_mem alloc={_gib(alloc_b):.2f}GiB resv={_gib(reserved_b):.2f}GiB "
+        f"peak_alloc={_gib(peak_alloc_b):.2f}GiB peak_resv={_gib(peak_reserved_b):.2f}GiB "
+        f"free={_gib(free_b):.2f}/{_gib(total_b):.2f}GiB"
+    )
+
+
+def _query_nvidia_smi() -> str:
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=1.0,
+        ).strip()
+    except Exception:
+        return ""
+    if not out:
+        return ""
+    first = out.splitlines()[0]
+    parts = [p.strip() for p in first.split(",")]
+    if len(parts) != 6:
+        return ""
+    u_gpu, u_mem, mem_used, mem_total, power_w, temp_c = parts
+    return (
+        f"smi util={u_gpu}% memutil={u_mem}% mem={mem_used}/{mem_total}MiB "
+        f"pwr={power_w}W temp={temp_c}C"
+    )
+
+
+def _format_cpu_stats() -> str:
+    rss_kib = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    rss_mib = rss_kib / 1024.0
+    if hasattr(os, "getloadavg"):
+        l1, l5, l15 = os.getloadavg()
+        return f"cpu rss={rss_mib:.0f}MiB load={l1:.1f},{l5:.1f},{l15:.1f}"
+    return f"cpu rss={rss_mib:.0f}MiB"
+
+
+def _quantile(values: List[float], q: float) -> float:
+    if not values:
+        return 0.0
+    qq = max(0.0, min(1.0, float(q)))
+    idx = int((len(values) - 1) * qq)
+    return values[idx]
+
+
 def train_one_epoch(
     *,
     model: torch.nn.Module,
@@ -319,6 +383,9 @@ def train_one_epoch(
     prof_sum_loss = 0.0
     prof_sum_bwd = 0.0
     prof_sum_opt = 0.0
+    prof_sum_batch = 0
+    wait_hist: deque[float] = deque(maxlen=200)
+    min_free_b_window: Optional[int] = None
     step_cap = _limit_steps(len(loader), max_batches)
     iterator = enumerate(loader)
     if show_progress and tqdm_fn is not None:
@@ -332,10 +399,14 @@ def train_one_epoch(
         images_cpu, batch, target_batch_cpu = packed
         t_iter_enter = time.perf_counter()
         t_wait = t_iter_enter - last_iter_end
+        wait_hist.append(float(t_wait))
         t0 = t_iter_enter
         images = images_cpu.to(device=device, non_blocking=True)
         if device.type == "cuda":
             images = images.contiguous(memory_format=torch.channels_last)
+            free_b, _ = torch.cuda.mem_get_info(device)
+            if min_free_b_window is None or free_b < min_free_b_window:
+                min_free_b_window = int(free_b)
         target_batch = _move_prepared_batch_to_device(target_batch_cpu, device=device)
         if prof_sync:
             torch.cuda.synchronize(device)
@@ -375,6 +446,7 @@ def train_one_epoch(
             prof_sum_loss += (t4 - t3)
             prof_sum_bwd += (t5 - t4)
             prof_sum_opt += (t6 - t5)
+            prof_sum_batch += int(images_cpu.shape[0])
             if prof_count >= prof_every:
                 avg_total_ms = 1000.0 * prof_sum_total / float(prof_count)
                 avg_wait_ms = 1000.0 * prof_sum_wait / float(prof_count)
@@ -385,12 +457,38 @@ def train_one_epoch(
                 avg_opt_ms = 1000.0 * prof_sum_opt / float(prof_count)
                 wait_pct = (100.0 * avg_wait_ms / avg_total_ms) if avg_total_ms > 0 else 0.0
                 sync_tag = "sync" if prof_sync else "async"
+                total_batch = max(1, int(prof_sum_batch))
+                thr = float(total_batch) / max(1e-9, prof_sum_total)
+                compute_s = max(1e-9, prof_sum_total - prof_sum_wait)
+                thr_no_wait = float(total_batch) / compute_s
+                wait_vals = sorted(wait_hist)
+                wait_p50_ms = 1000.0 * _quantile(wait_vals, 0.50)
+                wait_p90_ms = 1000.0 * _quantile(wait_vals, 0.90)
+                wait_p99_ms = 1000.0 * _quantile(wait_vals, 0.99)
+                extra_parts = [
+                    f"thr={thr:.1f}img/s",
+                    f"thr_no_wait={thr_no_wait:.1f}img/s",
+                    f"wait_p50={wait_p50_ms:.1f}ms",
+                    f"wait_p90={wait_p90_ms:.1f}ms",
+                    f"wait_p99={wait_p99_ms:.1f}ms",
+                    _format_cpu_stats(),
+                ]
+                if device.type == "cuda":
+                    extra_parts.append(_format_cuda_mem_stats(device=device))
+                    if min_free_b_window is not None:
+                        extra_parts.append(f"min_free={_gib(min_free_b_window):.2f}GiB")
+                    smi_line = _query_nvidia_smi()
+                    if smi_line:
+                        extra_parts.append(smi_line)
+                    if amp_enabled:
+                        extra_parts.append(f"amp_scale={float(scaler.get_scale()):.0f}")
                 print(
                     "[profile][train] "
                     f"step={batch_idx + 1} avg{prof_count}({sync_tag}) "
                     f"total={avg_total_ms:.1f}ms wait={avg_wait_ms:.1f}ms({wait_pct:.1f}%) "
                     f"h2d={avg_h2d_ms:.1f}ms fwd={avg_fwd_ms:.1f}ms loss={avg_loss_ms:.1f}ms "
-                    f"bwd={avg_bwd_ms:.1f}ms opt={avg_opt_ms:.1f}ms",
+                    f"bwd={avg_bwd_ms:.1f}ms opt={avg_opt_ms:.1f}ms "
+                    + " ".join(extra_parts),
                     flush=True,
                 )
                 prof_count = 0
@@ -401,6 +499,8 @@ def train_one_epoch(
                 prof_sum_loss = 0.0
                 prof_sum_bwd = 0.0
                 prof_sum_opt = 0.0
+                prof_sum_batch = 0
+                min_free_b_window = None
 
         if show_progress and tqdm_fn is not None:
             iterator.set_postfix(loss=float(losses["total"].detach().item()))
