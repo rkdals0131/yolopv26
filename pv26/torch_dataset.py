@@ -37,7 +37,7 @@ class LetterboxSpec:
 class Pv26Sample:
     sample_id: str
     split: str
-    # Image: float32 [3, H, W], 0..1 (letterboxed)
+    # Image: uint8 [3, H, W], 0..255 (letterboxed). Normalization is done on device.
     image: Tensor
     # Detection targets: float32 [N, 5] with YOLO format (cls, cx, cy, w, h) normalized to letterboxed image.
     det_yolo: Tensor
@@ -353,7 +353,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
                 det_yolo = _apply_hflip_yolo(det_yolo)
 
         # Convert to torch
-        img_np = np.array(image, dtype=np.float32) / 255.0  # [H,W,3]
+        img_np = np.array(image, dtype=np.uint8)  # [H,W,3]
         img_t = torch.from_numpy(img_np).permute(2, 0, 1).contiguous()  # [3,H,W]
 
         det_t = torch.from_numpy(det_yolo).to(torch.float32) if has_det else torch.zeros((0, 5), dtype=torch.float32)

@@ -45,17 +45,17 @@ ARTIFACT_VOLUME_NAME = os.getenv("PV26_MODAL_ARTIFACT_VOLUME", "pv26-artifacts")
 GPU_NAME             = os.getenv("PV26_MODAL_GPU", "A10G")	# 예: "A10G", "L4", "A100"
 TIMEOUT_SEC          = int(os.getenv("PV26_MODAL_TIMEOUT_SEC", str(24 * 60 * 60)))	# 예: 3600(1h), 86400(24h)
 
-DEFAULT_EPOCHS       = 10        # 총 학습 epoch 수 (비용/시간에 거의 선형 비례)
+DEFAULT_EPOCHS       = 1        # 총 학습 epoch 수 (비용/시간에 거의 선형 비례)
 DEFAULT_BATCH_SIZE   = 40        # 스텝당 배치 크기 (크면 GPU 사용률↑, 너무 크면 OOM)
-DEFAULT_WORKERS      = 16        # DataLoader 워커 수 (CPU 전처리 병목 완화, 과하면 컨텍스트 스위칭 증가)
+DEFAULT_WORKERS      = 12        # DataLoader 워커 수 (AB 비교용 기본값)
 DEFAULT_AUGMENT      = True      # train 증강 on/off (False면 --no-augment 전달)
 DEFAULT_LR           = "5e-4"    # 학습률 (수렴 안정성/속도에 직접 영향)
 DEFAULT_LOG_EVERY    = 100       # --no-progress일 때 몇 step마다 로그 출력할지
 DEFAULT_PROGRESS     = False     # True면 tqdm 진행바 사용(원격 로그 줄 수가 급증할 수 있음)
-DEFAULT_CPU          = 20.0      # Modal 컨테이너 CPU 코어 할당량 (워커/전처리 처리량에 영향)
+DEFAULT_CPU          = 16.0      # Modal 컨테이너 CPU 코어 할당량 (AB 비교용 기본값)
 DEFAULT_MEMORY_MB    = 65536     # Modal 컨테이너 RAM(MB) 할당량
 
-DEFAULT_PREFETCH_FACTOR = 6      # 워커당 prefetch 배치 수 (workers>0일 때만 사용)
+DEFAULT_PREFETCH_FACTOR = 4      # 워커당 prefetch 배치 수 (AB 비교용 기본값)
 DEFAULT_PERSISTENT_WORKERS = True  # epoch 사이에 워커 프로세스 유지(재시작 오버헤드 감소)
 DEFAULT_PROFILE_EVERY = 10       # N step 평균 프로파일 로그 주기(0이면 비활성화)
 DEFAULT_PROFILE_SYNC_CUDA = True  # True면 CUDA 동기화 기반 정밀 타이밍(오버헤드 증가)

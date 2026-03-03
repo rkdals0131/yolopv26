@@ -354,6 +354,17 @@ def _quantile(values: List[float], q: float) -> float:
     return values[idx]
 
 
+def _prepare_images_for_model(images_cpu: torch.Tensor, *, device: torch.device) -> torch.Tensor:
+    images = images_cpu.to(device=device, non_blocking=True)
+    if images.dtype != torch.float32:
+        # Keep dataset/collate tensors compact on CPU (uint8), normalize on device.
+        images = images.to(dtype=torch.float32)
+        images.mul_(1.0 / 255.0)
+    if device.type == "cuda":
+        images = images.contiguous(memory_format=torch.channels_last)
+    return images
+
+
 def train_one_epoch(
     *,
     model: torch.nn.Module,
@@ -401,9 +412,8 @@ def train_one_epoch(
         t_wait = t_iter_enter - last_iter_end
         wait_hist.append(float(t_wait))
         t0 = t_iter_enter
-        images = images_cpu.to(device=device, non_blocking=True)
+        images = _prepare_images_for_model(images_cpu, device=device)
         if device.type == "cuda":
-            images = images.contiguous(memory_format=torch.channels_last)
             free_b, _ = torch.cuda.mem_get_info(device)
             if min_free_b_window is None or free_b < min_free_b_window:
                 min_free_b_window = int(free_b)
@@ -432,6 +442,8 @@ def train_one_epoch(
         if prof_sync:
             torch.cuda.synchronize(device)
         t6 = time.perf_counter()
+        # Mark compute boundary here so "wait" reflects loader latency only.
+        last_iter_end = t6
 
         steps += 1
         for key in losses_sum:
@@ -507,7 +519,6 @@ def train_one_epoch(
         elif (batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0:
             step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
             print(format_loss_line(f"[train] step={batch_idx + 1}", step_losses), flush=True)
-        last_iter_end = t6
 
     return mean_losses(losses_sum, steps)
 
@@ -553,9 +564,7 @@ def validate(
                 break
 
             images_cpu, batch, target_batch_cpu = packed
-            images = images_cpu.to(device=device, non_blocking=True)
-            if device.type == "cuda":
-                images = images.contiguous(memory_format=torch.channels_last)
+            images = _prepare_images_for_model(images_cpu, device=device)
             target_batch = _move_prepared_batch_to_device(target_batch_cpu, device=device)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
                 preds = model(images)
