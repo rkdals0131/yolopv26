@@ -29,7 +29,6 @@ from tools.train.common import (
     cxcywh_to_xyxy,
     decode_det_predictions,
     format_loss_line,
-    mean_losses,
     resolve_device,
     seed_everything,
     update_binary_iou,
@@ -64,7 +63,12 @@ def build_argparser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable persistent DataLoader workers",
     )
-    p.add_argument("--lr", type=float, default=5e-4)
+    p.add_argument(
+        "--lr",
+        type=float,
+        default=0.0,
+        help="Base LR. Set <=0 to use optimizer-specific auto LR (adam/adamw=1e-3, sgd=1e-2).",
+    )
     p.add_argument(
         "--optimizer",
         type=str,
@@ -92,6 +96,18 @@ def build_argparser() -> argparse.ArgumentParser:
         help="LR scheduler policy (default: cosine).",
     )
     p.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=3,
+        help="Warmup epochs before cosine phase (0 disables warmup).",
+    )
+    p.add_argument(
+        "--warmup-start-factor",
+        type=float,
+        default=0.1,
+        help="Warmup start LR factor for LinearLR (0<factor<=1).",
+    )
+    p.add_argument(
         "--min-lr-ratio",
         type=float,
         default=0.05,
@@ -113,9 +129,22 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--compile-mode",
         type=str,
-        default="reduce-overhead",
+        default="default",
         choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
         help="torch.compile mode.",
+    )
+    p.add_argument(
+        "--compile-fullgraph",
+        dest="compile_fullgraph",
+        action="store_true",
+        default=False,
+        help="Enable fullgraph mode in torch.compile (useful for graph-break A/B).",
+    )
+    p.add_argument(
+        "--no-compile-fullgraph",
+        dest="compile_fullgraph",
+        action="store_false",
+        help="Disable fullgraph mode in torch.compile.",
     )
     p.add_argument(
         "--det-pretrained",
@@ -207,11 +236,12 @@ def _build_tb_writer(enabled: bool, log_dir: Path):
 _SCOPE_TO_CODE = {"full": 0, "subset": 1, "none": 2}
 
 
-def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, List[Pv26Sample], Dict[str, Any]]:
+def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, Any]]:
     # Build image batch/targets in worker process so main thread can focus on GPU steps.
     images = torch.stack([s.image for s in samples], dim=0)
     det_yolo_list = [s.det_yolo for s in samples]
     det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
+    sample_id_list = [str(s.sample_id) for s in samples]
     det_scope_code_list: List[int] = []
     for scope in det_scope_list:
         if scope not in _SCOPE_TO_CODE:
@@ -251,6 +281,7 @@ def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, List[
 
     target_batch: Dict[str, Any] = {
         "_pv26_prepared": True,
+        "sample_id": sample_id_list,
         "det_yolo": det_yolo_list,
         "det_label_scope": det_scope_list,
         "det_scope_code": det_scope_code,
@@ -263,7 +294,7 @@ def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, List[
         "da_mask": da_mask,
         "rm_mask": rm_mask,
     }
-    return images, list(samples), target_batch
+    return images, target_batch
 
 
 def _move_prepared_batch_to_device(batch: Dict[str, Any], *, device: torch.device) -> Dict[str, Any]:
@@ -436,19 +467,28 @@ def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
     return base
 
 
-def _build_optimizer(*, model: torch.nn.Module, args: argparse.Namespace) -> torch.optim.Optimizer:
+def _resolve_base_lr(*, args: argparse.Namespace) -> tuple[float, str]:
+    lr = float(args.lr)
+    if lr > 0.0:
+        return lr, "manual"
+    opt_name = str(args.optimizer).strip().lower()
+    if opt_name == "sgd":
+        return 1e-2, "auto"
+    return 1e-3, "auto"
+
+
+def _build_optimizer(*, model: torch.nn.Module, args: argparse.Namespace, base_lr: float) -> torch.optim.Optimizer:
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
         raise RuntimeError("no trainable parameters found")
     opt_name = str(args.optimizer).strip().lower()
-    lr = float(args.lr)
     wd = float(args.weight_decay)
     if opt_name == "adamw":
-        return torch.optim.AdamW(params, lr=lr, weight_decay=wd)
+        return torch.optim.AdamW(params, lr=base_lr, weight_decay=wd)
     if opt_name == "adam":
-        return torch.optim.Adam(params, lr=lr, weight_decay=wd)
+        return torch.optim.Adam(params, lr=base_lr, weight_decay=wd)
     if opt_name == "sgd":
-        return torch.optim.SGD(params, lr=lr, momentum=float(args.momentum), nesterov=True, weight_decay=wd)
+        return torch.optim.SGD(params, lr=base_lr, momentum=float(args.momentum), nesterov=True, weight_decay=wd)
     raise ValueError(f"unsupported optimizer: {opt_name}")
 
 
@@ -457,14 +497,55 @@ def _build_scheduler(
     optimizer: torch.optim.Optimizer,
     args: argparse.Namespace,
     total_epochs: int,
+    base_lr: float,
 ) -> Optional[torch.optim.lr_scheduler.LRScheduler]:
     sched_name = str(args.scheduler).strip().lower()
+    warmup_epochs = max(0, int(args.warmup_epochs))
+    start_factor = float(args.warmup_start_factor)
+    if start_factor <= 0.0 or start_factor > 1.0:
+        raise ValueError("--warmup-start-factor must be in (0, 1]")
+
     if sched_name == "none":
+        if warmup_epochs > 0:
+            return torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=start_factor,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
         return None
     if sched_name == "cosine":
-        t_max = max(1, int(total_epochs))
-        eta_min = float(args.lr) * max(0.0, float(args.min_lr_ratio))
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+        eta_min = float(base_lr) * max(0.0, float(args.min_lr_ratio))
+        total_epochs_i = max(1, int(total_epochs))
+        if warmup_epochs > 0 and warmup_epochs < total_epochs_i:
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=start_factor,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max(1, total_epochs_i - warmup_epochs),
+                eta_min=eta_min,
+            )
+            return torch.optim.lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[warmup, cosine],
+                milestones=[warmup_epochs],
+            )
+        if warmup_epochs > 0:
+            return torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=start_factor,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=total_epochs_i,
+            eta_min=eta_min,
+        )
     raise ValueError(f"unsupported scheduler: {sched_name}")
 
 
@@ -555,6 +636,7 @@ def _maybe_compile_model(
     device: torch.device,
     enable_compile: bool,
     compile_mode: str,
+    compile_fullgraph: bool,
 ) -> torch.nn.Module:
     if not bool(enable_compile):
         print("[pv26] torch.compile disabled", flush=True)
@@ -566,8 +648,11 @@ def _maybe_compile_model(
         print("[pv26] torch.compile unavailable on this torch build", flush=True)
         return model
     try:
-        compiled = torch.compile(model, mode=str(compile_mode))
-        print(f"[pv26] torch.compile enabled (mode={compile_mode})", flush=True)
+        compiled = torch.compile(model, mode=str(compile_mode), fullgraph=bool(compile_fullgraph))
+        print(
+            f"[pv26] torch.compile enabled (mode={compile_mode}, fullgraph={bool(compile_fullgraph)})",
+            flush=True,
+        )
         return compiled
     except Exception as exc:
         print(f"[pv26] warning: torch.compile failed, fallback to eager ({exc})", flush=True)
@@ -578,7 +663,7 @@ def train_one_epoch(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample], Dict[str, Any]]],
+    loader: DataLoader[Tuple[torch.Tensor, Dict[str, Any]]],
     optimizer: torch.optim.Optimizer,
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
@@ -591,7 +676,7 @@ def train_one_epoch(
     profile_sync_cuda: bool,
 ) -> Dict[str, float]:
     model.train()
-    losses_sum = {"total": 0.0, "od": 0.0, "da": 0.0, "rm": 0.0}
+    losses_sum = {k: torch.zeros((), device=device, dtype=torch.float32) for k in ("total", "od", "da", "rm")}
     steps = 0
     prof_every = max(0, int(profile_every))
     prof_sync = bool(profile_sync_cuda and device.type == "cuda")
@@ -607,20 +692,20 @@ def train_one_epoch(
     wait_hist: deque[float] = deque(maxlen=200)
     min_free_b_window: Optional[int] = None
     step_cap = _limit_steps(len(loader), max_batches)
-    iterator = enumerate(loader)
+    loader_it = iter(loader)
+    step_iter = range(step_cap)
     if show_progress and tqdm_fn is not None:
-        iterator = tqdm_fn(iterator, total=step_cap, desc="train", leave=False)
+        step_iter = tqdm_fn(step_iter, total=step_cap, desc="train", leave=False)
 
-    last_iter_end = time.perf_counter()
-    for batch_idx, packed in iterator:
-        if max_batches > 0 and batch_idx >= max_batches:
+    for batch_idx in step_iter:
+        t_wait0 = time.perf_counter()
+        try:
+            images_cpu, target_batch_cpu = next(loader_it)
+        except StopIteration:
             break
-
-        images_cpu, batch, target_batch_cpu = packed
-        t_iter_enter = time.perf_counter()
-        t_wait = t_iter_enter - last_iter_end
+        t_wait = time.perf_counter() - t_wait0
         wait_hist.append(float(t_wait))
-        t0 = t_iter_enter
+        t0 = time.perf_counter()
         images = _prepare_images_for_model(images_cpu, device=device)
         if device.type == "cuda":
             free_b, _ = torch.cuda.mem_get_info(device)
@@ -651,12 +736,10 @@ def train_one_epoch(
         if prof_sync:
             torch.cuda.synchronize(device)
         t6 = time.perf_counter()
-        # Mark compute boundary here so "wait" reflects loader latency only.
-        last_iter_end = t6
 
         steps += 1
         for key in losses_sum:
-            losses_sum[key] += float(losses[key].detach().item())
+            losses_sum[key] += losses[key].detach()
 
         if prof_every > 0:
             prof_count += 1
@@ -723,20 +806,19 @@ def train_one_epoch(
                 prof_sum_batch = 0
                 min_free_b_window = None
 
-        if show_progress and tqdm_fn is not None:
-            iterator.set_postfix(loss=float(losses["total"].detach().item()))
-        elif (batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0:
+        if (not show_progress) and ((batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0):
             step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
             print(format_loss_line(f"[train] step={batch_idx + 1}/{step_cap}", step_losses), flush=True)
 
-    return mean_losses(losses_sum, steps)
+    den = max(1, steps)
+    return {k: float((v / float(den)).detach().cpu()) for k, v in losses_sum.items()}
 
 
 def validate(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[Tuple[torch.Tensor, List[Pv26Sample], Dict[str, Any]]],
+    loader: DataLoader[Tuple[torch.Tensor, Dict[str, Any]]],
     device: torch.device,
     amp_enabled: bool,
     max_batches: int,
@@ -745,7 +827,7 @@ def validate(
     log_every: int,
 ) -> tuple[Dict[str, float], Dict[str, Optional[float]], Optional[float]]:
     model.eval()
-    losses_sum = {"total": 0.0, "od": 0.0, "da": 0.0, "rm": 0.0}
+    losses_sum = {k: torch.zeros((), device=device, dtype=torch.float32) for k in ("total", "od", "da", "rm")}
     steps = 0
 
     metric_stats: Dict[str, Dict[str, int]] = {
@@ -772,7 +854,7 @@ def validate(
             if max_batches > 0 and batch_idx >= max_batches:
                 break
 
-            images_cpu, batch, target_batch_cpu = packed
+            images_cpu, target_batch_cpu = packed
             images = _prepare_images_for_model(images_cpu, device=device)
             target_batch = _move_prepared_batch_to_device(target_batch_cpu, device=device)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
@@ -781,43 +863,53 @@ def validate(
 
             steps += 1
             for key in losses_sum:
-                losses_sum[key] += float(losses[key].detach().item())
+                losses_sum[key] += losses[key].detach()
 
-            if show_progress and tqdm_fn is not None:
-                iterator.set_postfix(loss=float(losses["total"].detach().item()))
-            elif (batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0:
+            if (not show_progress) and ((batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0):
                 step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
                 print(format_loss_line(f"[val] step={batch_idx + 1}/{step_cap}", step_losses), flush=True)
 
-            for i, sample in enumerate(batch):
-                if sample.has_da:
-                    update_binary_iou(metric_stats["da"], preds.da[i, 0], sample.da_mask.to(device=device))
+            sample_ids: List[str] = list(target_batch_cpu.get("sample_id", []))
+            has_da_cpu: torch.Tensor = target_batch_cpu["has_da"]
+            has_rm_cpu: torch.Tensor = target_batch_cpu["has_rm"]
+            has_det_cpu: torch.Tensor = target_batch_cpu["has_det"]
+            det_scope_list: List[str] = list(target_batch_cpu["det_label_scope"])
+            det_yolo_list: List[torch.Tensor] = list(target_batch_cpu["det_yolo"])
+            da_mask_cpu: torch.Tensor = target_batch_cpu["da_mask"]
+            rm_mask_cpu: torch.Tensor = target_batch_cpu["rm_mask"]
+            img_h = int(images_cpu.shape[-2])
+            img_w = int(images_cpu.shape[-1])
+
+            for i in range(int(images_cpu.shape[0])):
+                sid = sample_ids[i] if i < len(sample_ids) else f"{batch_idx}:{i}"
+                if int(has_da_cpu[i].item()) != 0:
+                    update_binary_iou(metric_stats["da"], preds.da[i, 0], da_mask_cpu[i].to(device=device))
 
                 rm_channels = [
-                    ("rm_lane_marker", sample.has_rm_lane_marker),
-                    ("rm_road_marker_non_lane", sample.has_rm_road_marker_non_lane),
-                    ("rm_stop_line", sample.has_rm_stop_line),
+                    "rm_lane_marker",
+                    "rm_road_marker_non_lane",
+                    "rm_stop_line",
                 ]
-                for c_idx, (name, has_flag) in enumerate(rm_channels):
-                    if has_flag:
-                        update_binary_iou(metric_stats[name], preds.rm[i, c_idx], sample.rm_mask[c_idx].to(device=device))
+                for c_idx, name in enumerate(rm_channels):
+                    if int(has_rm_cpu[i, c_idx].item()) != 0:
+                        update_binary_iou(metric_stats[name], preds.rm[i, c_idx], rm_mask_cpu[i, c_idx].to(device=device))
 
-                if sample.has_det and str(sample.det_label_scope) == "full":
-                    gt = sample.det_yolo
+                scope = str(det_scope_list[i]).strip().lower()
+                if int(has_det_cpu[i].item()) != 0 and scope == "full":
+                    gt = det_yolo_list[i]
                     if gt.numel():
                         gt_cls = gt[:, 0].to(dtype=torch.long)
                         gt_boxes_norm = cxcywh_to_xyxy(gt[:, 1:5].to(dtype=torch.float32)).clamp(0.0, 1.0)
                         if isinstance(preds.det, tuple):
-                            _, h, w = tuple(sample.image.shape)
                             gt_boxes = gt_boxes_norm.clone()
-                            gt_boxes[:, 0::2] *= float(w)
-                            gt_boxes[:, 1::2] *= float(h)
+                            gt_boxes[:, 0::2] *= float(img_w)
+                            gt_boxes[:, 1::2] *= float(img_h)
                         else:
                             gt_boxes = gt_boxes_norm
                         for c in range(num_det_classes):
                             m = gt_cls == c
                             if bool(m.any()):
-                                gt_by_img_class[(sample.sample_id, c)] = gt_boxes[m].detach().cpu()
+                                gt_by_img_class[(sid, c)] = gt_boxes[m].detach().cpu()
 
                     if isinstance(preds.det, tuple):
                         y = preds.det[0]
@@ -831,7 +923,7 @@ def validate(
                             for j in range(int(det_scores.shape[0])):
                                 c = int(det_cls[j].item())
                                 if 0 <= c < num_det_classes:
-                                    det_preds_by_class[c].append((float(det_scores[j].item()), sample.sample_id, det_boxes[j]))
+                                    det_preds_by_class[c].append((float(det_scores[j].item()), sid, det_boxes[j]))
                     else:
                         det_boxes, det_scores, det_cls = decode_det_predictions(
                             preds.det[i].detach(),
@@ -845,9 +937,10 @@ def validate(
                         for j in range(int(det_scores.shape[0])):
                             c = int(det_cls[j].item())
                             if 0 <= c < num_det_classes:
-                                det_preds_by_class[c].append((float(det_scores[j].item()), sample.sample_id, det_boxes[j]))
+                                det_preds_by_class[c].append((float(det_scores[j].item()), sid, det_boxes[j]))
 
-    val_losses = mean_losses(losses_sum, steps)
+    den = max(1, steps)
+    val_losses = {k: float((v / float(den)).detach().cpu()) for k, v in losses_sum.items()}
     iou_metrics: Dict[str, Optional[float]] = {}
     for name, stats in metric_stats.items():
         if stats["supervised"] == 0:
@@ -948,8 +1041,14 @@ def main() -> int:
         model = model.to(memory_format=torch.channels_last)
 
     _maybe_load_det_pretrained(model=model, det_pretrained=args.det_pretrained, device=device)
-    optimizer = _build_optimizer(model=model, args=args)
-    scheduler = _build_scheduler(optimizer=optimizer, args=args, total_epochs=int(args.epochs))
+    base_lr, lr_mode = _resolve_base_lr(args=args)
+    optimizer = _build_optimizer(model=model, args=args, base_lr=base_lr)
+    scheduler = _build_scheduler(
+        optimizer=optimizer,
+        args=args,
+        total_epochs=int(args.epochs),
+        base_lr=base_lr,
+    )
     amp_enabled = bool(args.amp and device.type == "cuda")
     try:
         scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -980,14 +1079,18 @@ def main() -> int:
         device=device,
         enable_compile=bool(args.compile),
         compile_mode=str(args.compile_mode),
+        compile_fullgraph=bool(args.compile_fullgraph),
     )
 
     max_train_batches, max_val_batches = _resolve_max_batches(args)
     print(f"[pv26] run_dir={run_dir}")
     print(f"[pv26] device={device} seed={int(args.seed)} amp={amp_enabled}")
+    print(f"[pv26] lr={base_lr:.6g} (mode={lr_mode})")
     print(
         f"[pv26] optimizer={str(args.optimizer).lower()} scheduler={str(args.scheduler).lower()} "
-        f"compile={bool(args.compile)} compile_mode={args.compile_mode}"
+        f"warmup_epochs={int(args.warmup_epochs)} warmup_start_factor={float(args.warmup_start_factor):.3f} "
+        f"compile={bool(args.compile)} compile_mode={args.compile_mode} "
+        f"compile_fullgraph={bool(args.compile_fullgraph)}"
     )
     if args.det_pretrained is not None:
         print(f"[pv26] det_pretrained={Path(args.det_pretrained)}")

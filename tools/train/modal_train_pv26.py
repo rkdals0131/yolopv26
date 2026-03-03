@@ -49,14 +49,17 @@ DEFAULT_EPOCHS       = 1        # 총 학습 epoch 수 (비용/시간에 거의 
 DEFAULT_BATCH_SIZE   = 40        # 스텝당 배치 크기 (크면 GPU 사용률↑, 너무 크면 OOM)
 DEFAULT_WORKERS      = 12        # DataLoader 워커 수 (AB 비교용 기본값)
 DEFAULT_AUGMENT      = True      # train 증강 on/off (False면 --no-augment 전달)
-DEFAULT_LR           = "5e-4"    # 학습률 (수렴 안정성/속도에 직접 영향)
+DEFAULT_LR           = "0"       # 0이면 optimizer별 자동 LR(adam/adamw=1e-3, sgd=1e-2)
 DEFAULT_OPTIMIZER    = "adamw"   # Optimizer: adamw|adam|sgd
 DEFAULT_WEIGHT_DECAY = "1e-4"    # Optimizer weight decay
 DEFAULT_MOMENTUM     = "0.937"   # SGD momentum (adam/adamw에서는 무시됨)
 DEFAULT_SCHEDULER    = "cosine"  # LR 스케줄러: cosine|none
 DEFAULT_MIN_LR_RATIO = "0.05"    # cosine eta_min = lr * ratio
+DEFAULT_WARMUP_EPOCHS = 3        # warmup epoch 수 (0이면 비활성화)
+DEFAULT_WARMUP_START_FACTOR = "0.1"  # warmup 시작 LR 비율(0<factor<=1)
 DEFAULT_COMPILE      = True      # torch.compile on/off (A/B 측정 후 필요시 off)
-DEFAULT_COMPILE_MODE = "reduce-overhead"  # compile mode: default|reduce-overhead|max-autotune
+DEFAULT_COMPILE_MODE = "default"  # compile mode: default|reduce-overhead|max-autotune
+DEFAULT_COMPILE_FULLGRAPH = False # fullgraph=True면 graph break 탐지/A-B에 유용
 DEFAULT_DET_PRETRAINED = ""      # 선택: detection trunk pretrained 체크포인트 경로(비우면 미사용)
 DEFAULT_LOG_EVERY    = 100       # --no-progress일 때 몇 step마다 로그 출력할지
 DEFAULT_PROGRESS     = False     # True면 tqdm 진행바 사용(원격 로그 줄 수가 급증할 수 있음)
@@ -446,6 +449,10 @@ def train_remote(
         str(DEFAULT_SCHEDULER),
         "--min-lr-ratio",
         str(DEFAULT_MIN_LR_RATIO),
+        "--warmup-epochs",
+        str(DEFAULT_WARMUP_EPOCHS),
+        "--warmup-start-factor",
+        str(DEFAULT_WARMUP_START_FACTOR),
         "--compile-mode",
         str(DEFAULT_COMPILE_MODE),
         "--log-every",
@@ -453,6 +460,8 @@ def train_remote(
     ]
     if not bool(DEFAULT_COMPILE):
         cmd.append("--no-compile")
+    if bool(DEFAULT_COMPILE_FULLGRAPH):
+        cmd.append("--compile-fullgraph")
     if str(DEFAULT_DET_PRETRAINED).strip():
         cmd.extend(["--det-pretrained", str(DEFAULT_DET_PRETRAINED).strip()])
     if not DEFAULT_PERSISTENT_WORKERS:
@@ -473,8 +482,10 @@ def train_remote(
         "[modal] profile: "
         f"gpu={GPU_NAME} cpu={DEFAULT_CPU} memory_mb={DEFAULT_MEMORY_MB} "
         f"batch={DEFAULT_BATCH_SIZE} augment={bool(augment)} "
-        f"optimizer={DEFAULT_OPTIMIZER} scheduler={DEFAULT_SCHEDULER} "
+        f"optimizer={DEFAULT_OPTIMIZER} lr={DEFAULT_LR} "
+        f"scheduler={DEFAULT_SCHEDULER} warmup_epochs={DEFAULT_WARMUP_EPOCHS} "
         f"compile={DEFAULT_COMPILE} compile_mode={DEFAULT_COMPILE_MODE} "
+        f"compile_fullgraph={DEFAULT_COMPILE_FULLGRAPH} "
         f"workers={DEFAULT_WORKERS} prefetch={DEFAULT_PREFETCH_FACTOR} "
         f"persistent_workers={DEFAULT_PERSISTENT_WORKERS} progress={DEFAULT_PROGRESS} "
         f"log_every={DEFAULT_LOG_EVERY} profile_every={DEFAULT_PROFILE_EVERY} "
