@@ -68,8 +68,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--profile-every",
         type=int,
-        default=0,
-        help="If >0, print N-step averaged train stage timings (data_wait/h2d/fwd/loss/bwd/opt).",
+        default=10,
+        help="Print N-step averaged train stage timings (set 0 to disable).",
     )
     p.add_argument(
         "--profile-sync-cuda",
@@ -496,7 +496,7 @@ def train_one_epoch(
                         extra_parts.append(f"amp_scale={float(scaler.get_scale()):.0f}")
                 print(
                     "[profile][train] "
-                    f"step={batch_idx + 1} avg{prof_count}({sync_tag}) "
+                    f"step={batch_idx + 1}/{step_cap} avg{prof_count}({sync_tag}) "
                     f"total={avg_total_ms:.1f}ms wait={avg_wait_ms:.1f}ms({wait_pct:.1f}%) "
                     f"h2d={avg_h2d_ms:.1f}ms fwd={avg_fwd_ms:.1f}ms loss={avg_loss_ms:.1f}ms "
                     f"bwd={avg_bwd_ms:.1f}ms opt={avg_opt_ms:.1f}ms "
@@ -518,7 +518,7 @@ def train_one_epoch(
             iterator.set_postfix(loss=float(losses["total"].detach().item()))
         elif (batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0:
             step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
-            print(format_loss_line(f"[train] step={batch_idx + 1}", step_losses), flush=True)
+            print(format_loss_line(f"[train] step={batch_idx + 1}/{step_cap}", step_losses), flush=True)
 
     return mean_losses(losses_sum, steps)
 
@@ -578,7 +578,7 @@ def validate(
                 iterator.set_postfix(loss=float(losses["total"].detach().item()))
             elif (batch_idx + 1) % max(1, log_every) == 0 or batch_idx == 0:
                 step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
-                print(format_loss_line(f"[val] step={batch_idx + 1}", step_losses), flush=True)
+                print(format_loss_line(f"[val] step={batch_idx + 1}/{step_cap}", step_losses), flush=True)
 
             for i, sample in enumerate(batch):
                 if sample.has_da:
