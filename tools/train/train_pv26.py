@@ -185,6 +185,12 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no-progress", dest="progress", action="store_false")
     p.add_argument("--log-every", type=int, default=10, help="Console print interval when tqdm is disabled")
     p.add_argument(
+        "--eval-map-every",
+        type=int,
+        default=1,
+        help="Compute validation mAP every N epochs (final epoch always computes mAP).",
+    )
+    p.add_argument(
         "--train-drop-last",
         action="store_true",
         default=False,
@@ -885,8 +891,11 @@ def validate(
     show_progress: bool,
     tqdm_fn,
     log_every: int,
-) -> tuple[Dict[str, float], Dict[str, Optional[float]], Optional[float]]:
+    profile_every: int,
+    compute_map: bool,
+) -> tuple[Dict[str, float], Dict[str, Optional[float]], Optional[float], bool]:
     model.eval()
+    t_val_start = time.perf_counter()
     losses_sum = {k: torch.zeros((), device=device, dtype=torch.float32) for k in ("total", "od", "da", "rm")}
     steps = 0
 
@@ -1011,6 +1020,7 @@ def validate(
                             if 0 <= c < num_det_classes:
                                 det_preds_by_class[c].append((float(det_scores[j].item()), sid, det_boxes[j]))
 
+    t_loop_end = time.perf_counter()
     den = max(1, steps)
     val_losses = {k: float((v / float(den)).detach().cpu()) for k, v in losses_sum.items()}
     iou_metrics: Dict[str, Optional[float]] = {}
@@ -1022,13 +1032,31 @@ def validate(
         else:
             iou_metrics[name] = float(stats["inter"]) / float(stats["union"])
 
-    map50, _ap_by_class = compute_map50(
-        preds_by_class=det_preds_by_class,
-        gt_by_img_class=gt_by_img_class,
-        num_classes=num_det_classes,
-        iou_thres=0.5,
-    )
-    return val_losses, iou_metrics, map50
+    t_map_start = time.perf_counter()
+    map50: Optional[float]
+    map_computed = bool(compute_map)
+    if map_computed:
+        map50, _ap_by_class = compute_map50(
+            preds_by_class=det_preds_by_class,
+            gt_by_img_class=gt_by_img_class,
+            num_classes=num_det_classes,
+            iou_thres=0.5,
+        )
+    else:
+        map50 = None
+    t_map_end = time.perf_counter()
+
+    if int(profile_every) > 0:
+        loop_ms = 1000.0 * (t_loop_end - t_val_start)
+        map_ms = 1000.0 * (t_map_end - t_map_start)
+        total_ms = 1000.0 * (t_map_end - t_val_start)
+        print(
+            "[profile][val] "
+            f"steps={steps}/{step_cap} loop={loop_ms:.1f}ms map={map_ms:.1f}ms "
+            f"total={total_ms:.1f}ms map_computed={map_computed}",
+            flush=True,
+        )
+    return val_losses, iou_metrics, map50, map_computed
 
 
 def main() -> int:
@@ -1183,12 +1211,16 @@ def main() -> int:
         f"[pv26] train_drop_last={bool(args.train_drop_last)} "
         f"validate_masks={bool(args.validate_masks)}"
     )
+    print(f"[pv26] eval_map_every={max(1, int(args.eval_map_every))}")
     if args.det_pretrained is not None:
         print(f"[pv26] det_pretrained={Path(args.det_pretrained)}")
     print(f"[pv26] train_samples={len(train_ds)} val_samples={len(val_ds)}")
 
-    for epoch in range(start_epoch, int(args.epochs)):
-        print(f"\n[pv26] epoch {epoch + 1}/{args.epochs}")
+    eval_map_every = max(1, int(args.eval_map_every))
+    total_epochs = int(args.epochs)
+    for epoch in range(start_epoch, total_epochs):
+        epoch_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n[pv26] epoch {epoch + 1}/{args.epochs} [{epoch_ts}]")
         train_losses = train_one_epoch(
             model=model,
             criterion=criterion,
@@ -1207,7 +1239,8 @@ def main() -> int:
         )
         print(format_loss_line("[train] mean", train_losses))
 
-        val_losses, ious, map50 = validate(
+        compute_map = ((epoch + 1) % eval_map_every == 0) or ((epoch + 1) == total_epochs)
+        val_losses, ious, map50, map_computed = validate(
             model=model,
             criterion=criterion,
             loader=val_loader,
@@ -1217,6 +1250,8 @@ def main() -> int:
             show_progress=args.progress,
             tqdm_fn=tqdm_fn,
             log_every=args.log_every,
+            profile_every=args.profile_every,
+            compute_map=compute_map,
         )
         print(format_loss_line("[val] mean", val_losses))
         for name, iou in ious.items():
@@ -1224,7 +1259,9 @@ def main() -> int:
                 print(f"[val] iou_{name}=skipped(no_supervision)")
             else:
                 print(f"[val] iou_{name}={iou:.4f}")
-        if map50 is None:
+        if not map_computed:
+            print(f"[val] map50=skipped(eval_map_every={eval_map_every})")
+        elif map50 is None:
             print("[val] map50=skipped(no_det_gt)")
         else:
             print(f"[val] map50={map50:.4f}")
@@ -1238,7 +1275,7 @@ def main() -> int:
             writer.add_scalar("val/loss_od", val_losses["od"], epoch + 1)
             writer.add_scalar("val/loss_da", val_losses["da"], epoch + 1)
             writer.add_scalar("val/loss_rm", val_losses["rm"], epoch + 1)
-            if map50 is not None:
+            if map_computed and map50 is not None:
                 writer.add_scalar("val/map50", map50, epoch + 1)
             for name, iou in ious.items():
                 if iou is not None:
