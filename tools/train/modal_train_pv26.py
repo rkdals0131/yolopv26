@@ -36,13 +36,25 @@ def _detect_repo_root() -> Path:
 REPO_ROOT = _detect_repo_root()
 TRAIN_SCRIPT = REPO_ROOT / "tools" / "train" / "train_pv26.py"
 
+
+def _default_torch_specs_for_gpu(gpu_name: str) -> tuple[str, str]:
+    normalized = gpu_name.strip().upper()
+    if "B200" in normalized:
+        # B200(sm_100) requires a newer torch build than the pinned A100 baseline.
+        return "torch>=2.7.0", "torchvision>=0.22.0"
+    return "torch==2.6.0", "torchvision==0.21.0"
+
+
 # =========================
 # User-editable defaults
 # =========================
-APP_NAME             = os.getenv("PV26_MODAL_APP_NAME", "pv26-train-a100-test")     # Modal app 이름 (보통 수정 불필요)
+APP_NAME             = os.getenv("PV26_MODAL_APP_NAME", "pv26-train")     # Modal app 이름 (보통 수정 불필요)
 DATASET_VOLUME_NAME  = os.getenv("PV26_MODAL_DATASET_VOLUME", "pv26-datasets")	# 데이터 볼륨 이름
 ARTIFACT_VOLUME_NAME = os.getenv("PV26_MODAL_ARTIFACT_VOLUME", "pv26-artifacts")	# 체크포인트/로그 볼륨 이름
-GPU_NAME             = os.getenv("PV26_MODAL_GPU", "A100-80GB")	# 예: "A10G", "L4", "A100"
+GPU_NAME             = os.getenv("PV26_MODAL_GPU", "A100-80GB")	# 예: "A10G", "L4", "A100", "B200"
+_DEFAULT_TORCH_SPEC, _DEFAULT_TORCHVISION_SPEC = _default_torch_specs_for_gpu(GPU_NAME)
+TORCH_SPEC           = os.getenv("PV26_MODAL_TORCH_SPEC", _DEFAULT_TORCH_SPEC)
+TORCHVISION_SPEC     = os.getenv("PV26_MODAL_TORCHVISION_SPEC", _DEFAULT_TORCHVISION_SPEC)
 TIMEOUT_SEC          = int(os.getenv("PV26_MODAL_TIMEOUT_SEC", str(24 * 60 * 60)))	# 예: 3600(1h), 86400(24h)
 
 DEFAULT_EPOCHS       = 2        # 총 학습 epoch 수 (비용/시간에 거의 선형 비례)
@@ -98,8 +110,8 @@ image = (
         "libxrender1",
     )
     .pip_install(
-        "torch==2.6.0",
-        "torchvision==0.21.0",
+        TORCH_SPEC,
+        TORCHVISION_SPEC,
         "numpy",
         "Pillow",
         "tqdm",
@@ -124,6 +136,51 @@ image = (
 
 dataset_volume = modal.Volume.from_name(DATASET_VOLUME_NAME, create_if_missing=True)
 artifact_volume = modal.Volume.from_name(ARTIFACT_VOLUME_NAME, create_if_missing=True)
+
+
+def _preflight_cuda_compat_or_raise(*, requested_gpu: str) -> None:
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is not available inside this Modal container. "
+            f"requested_gpu={requested_gpu}"
+        )
+
+    capability = torch.cuda.get_device_capability(0)
+    required_sm = f"sm_{capability[0]}{capability[1]}"
+    supported_arches = sorted(set(torch.cuda.get_arch_list()))
+    supported = any(a == required_sm or a.startswith(required_sm) for a in supported_arches)
+    if supported:
+        device_name = torch.cuda.get_device_name(0)
+        print(
+            "[modal] cuda preflight: "
+            f"device={device_name} capability={required_sm} torch={torch.__version__}",
+            flush=True,
+        )
+        return
+
+    try:
+        import torchvision
+
+        tv_version = torchvision.__version__
+    except Exception:
+        tv_version = "unknown"
+
+    device_name = torch.cuda.get_device_name(0)
+    supported_str = " ".join(supported_arches) if supported_arches else "(none)"
+    raise RuntimeError(
+        "PyTorch CUDA arch mismatch for selected GPU.\n"
+        f"- requested_gpu={requested_gpu}\n"
+        f"- detected_gpu={device_name}\n"
+        f"- required_arch={required_sm}\n"
+        f"- torch_supported_arches={supported_str}\n"
+        f"- torch_version={torch.__version__} torchvision_version={tv_version}\n"
+        f"- image_specs: {TORCH_SPEC}, {TORCHVISION_SPEC}\n"
+        "Fix: install a newer torch build with "
+        "PV26_MODAL_TORCH_SPEC/PV26_MODAL_TORCHVISION_SPEC "
+        "(for B200, start with torch>=2.7.0 and torchvision>=0.22.0)."
+    )
 
 
 def _safe_rel_path(v: str) -> Path:
@@ -427,6 +484,8 @@ def train_remote(
     if not run_name:
         raise ValueError("--run-name is required and cannot be empty.")
 
+    _preflight_cuda_compat_or_raise(requested_gpu=GPU_NAME)
+
     dataset_mount = Path(DATASET_MOUNT)
     artifact_mount = Path(ARTIFACT_MOUNT)
     dataset_root = _prepare_dataset_on_local_ssd(
@@ -510,7 +569,8 @@ def train_remote(
         f"persistent_workers={DEFAULT_PERSISTENT_WORKERS} progress={DEFAULT_PROGRESS} "
         f"log_every={DEFAULT_LOG_EVERY} profile_every={DEFAULT_PROFILE_EVERY} "
         f"profile_sync_cuda={DEFAULT_PROFILE_SYNC_CUDA} profile_system={DEFAULT_PROFILE_SYSTEM} "
-        f"eval_map_every={DEFAULT_EVAL_MAP_EVERY}",
+        f"eval_map_every={DEFAULT_EVAL_MAP_EVERY} "
+        f"torch_spec={TORCH_SPEC} torchvision_spec={TORCHVISION_SPEC}",
         flush=True,
     )
     rc = _stream_subprocess(cmd, env=env)
