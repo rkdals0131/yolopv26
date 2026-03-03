@@ -31,7 +31,6 @@ from tools.train.common import (
     format_loss_line,
     resolve_device,
     seed_everything,
-    update_binary_iou,
 )
 
 DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_bdd_full")
@@ -155,8 +154,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--profile-every",
         type=int,
-        default=10,
-        help="Print N-step averaged train stage timings (set 0 to disable).",
+        default=0,
+        help="Print N-step averaged train stage timings (default: off; set >0 to enable).",
     )
     p.add_argument(
         "--profile-sync-cuda",
@@ -179,6 +178,18 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--progress", dest="progress", action="store_true", default=True)
     p.add_argument("--no-progress", dest="progress", action="store_false")
     p.add_argument("--log-every", type=int, default=10, help="Console print interval when tqdm is disabled")
+    p.add_argument(
+        "--train-drop-last",
+        action="store_true",
+        default=False,
+        help="Drop incomplete final train batch (useful for throughput/compile-shape benchmarks).",
+    )
+    p.add_argument(
+        "--validate-masks",
+        action="store_true",
+        default=False,
+        help="Enable strict mask value validation in dataset __getitem__ (debug only; adds CPU overhead).",
+    )
     p.add_argument("--augment", dest="augment", action="store_true", default=True, help="Enable train-time augmentation")
     p.add_argument("--no-augment", dest="augment", action="store_false", help="Disable train-time augmentation")
     p.add_argument("--aug-hflip", type=float, default=0.5, help="Horizontal flip probability for train set")
@@ -236,28 +247,7 @@ def _build_tb_writer(enabled: bool, log_dir: Path):
 _SCOPE_TO_CODE = {"full": 0, "subset": 1, "none": 2}
 
 
-def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    # Build image batch/targets in worker process so main thread can focus on GPU steps.
-    images = torch.stack([s.image for s in samples], dim=0)
-    det_yolo_list = [s.det_yolo for s in samples]
-    det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
-    sample_id_list = [str(s.sample_id) for s in samples]
-    det_scope_code_list: List[int] = []
-    for scope in det_scope_list:
-        if scope not in _SCOPE_TO_CODE:
-            raise ValueError(f"invalid det_label_scope in batch: {scope}")
-        det_scope_code_list.append(int(_SCOPE_TO_CODE[scope]))
-
-    has_det = torch.tensor([s.has_det for s in samples], dtype=torch.long)
-    has_da = torch.tensor([s.has_da for s in samples], dtype=torch.long)
-    has_rm = torch.tensor(
-        [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
-        dtype=torch.long,
-    )
-    da_mask = torch.stack([s.da_mask for s in samples], dim=0)
-    rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
-    det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
-
+def _build_flat_det_targets(det_yolo_list: List[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     det_tgt_batch_idx_parts: List[torch.Tensor] = []
     det_tgt_cls_parts: List[torch.Tensor] = []
     det_tgt_box_parts: List[torch.Tensor] = []
@@ -278,6 +268,67 @@ def _collate_with_images(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[
         det_tgt_batch_idx = torch.zeros((0,), dtype=torch.long)
         det_tgt_cls = torch.zeros((0,), dtype=torch.float32)
         det_tgt_bboxes = torch.zeros((0, 4), dtype=torch.float32)
+    return det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes
+
+
+def _collate_train(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    # Build image batch/targets in worker process so main thread can focus on GPU steps.
+    images = torch.stack([s.image for s in samples], dim=0)
+    det_yolo_list = [s.det_yolo for s in samples]
+    det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
+    det_scope_code_list: List[int] = []
+    for scope in det_scope_list:
+        if scope not in _SCOPE_TO_CODE:
+            raise ValueError(f"invalid det_label_scope in batch: {scope}")
+        det_scope_code_list.append(int(_SCOPE_TO_CODE[scope]))
+
+    has_det = torch.tensor([s.has_det for s in samples], dtype=torch.long)
+    has_da = torch.tensor([s.has_da for s in samples], dtype=torch.long)
+    has_rm = torch.tensor(
+        [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
+        dtype=torch.long,
+    )
+    da_mask = torch.stack([s.da_mask for s in samples], dim=0)
+    rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
+    det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
+    det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = _build_flat_det_targets(det_yolo_list)
+
+    target_batch: Dict[str, Any] = {
+        "_pv26_prepared": True,
+        "det_scope_code": det_scope_code,
+        "det_tgt_batch_idx": det_tgt_batch_idx,
+        "det_tgt_cls": det_tgt_cls,
+        "det_tgt_bboxes": det_tgt_bboxes,
+        "has_det": has_det,
+        "has_da": has_da,
+        "has_rm": has_rm,
+        "da_mask": da_mask,
+        "rm_mask": rm_mask,
+    }
+    return images, target_batch
+
+
+def _collate_eval(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    images = torch.stack([s.image for s in samples], dim=0)
+    det_yolo_list = [s.det_yolo for s in samples]
+    det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
+    sample_id_list = [str(s.sample_id) for s in samples]
+    det_scope_code_list: List[int] = []
+    for scope in det_scope_list:
+        if scope not in _SCOPE_TO_CODE:
+            raise ValueError(f"invalid det_label_scope in batch: {scope}")
+        det_scope_code_list.append(int(_SCOPE_TO_CODE[scope]))
+
+    has_det = torch.tensor([s.has_det for s in samples], dtype=torch.long)
+    has_da = torch.tensor([s.has_da for s in samples], dtype=torch.long)
+    has_rm = torch.tensor(
+        [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
+        dtype=torch.long,
+    )
+    da_mask = torch.stack([s.da_mask for s in samples], dim=0)
+    rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
+    det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
+    det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = _build_flat_det_targets(det_yolo_list)
 
     target_batch: Dict[str, Any] = {
         "_pv26_prepared": True,
@@ -704,10 +755,11 @@ def train_one_epoch(
         except StopIteration:
             break
         t_wait = time.perf_counter() - t_wait0
-        wait_hist.append(float(t_wait))
+        if prof_every > 0:
+            wait_hist.append(float(t_wait))
         t0 = time.perf_counter()
         images = _prepare_images_for_model(images_cpu, device=device)
-        if device.type == "cuda":
+        if prof_every > 0 and device.type == "cuda":
             free_b, _ = torch.cuda.mem_get_info(device)
             if min_free_b_window is None or free_b < min_free_b_window:
                 min_free_b_window = int(free_b)
@@ -870,30 +922,42 @@ def validate(
                 print(format_loss_line(f"[val] step={batch_idx + 1}/{step_cap}", step_losses), flush=True)
 
             sample_ids: List[str] = list(target_batch_cpu.get("sample_id", []))
-            has_da_cpu: torch.Tensor = target_batch_cpu["has_da"]
-            has_rm_cpu: torch.Tensor = target_batch_cpu["has_rm"]
             has_det_cpu: torch.Tensor = target_batch_cpu["has_det"]
             det_scope_list: List[str] = list(target_batch_cpu["det_label_scope"])
             det_yolo_list: List[torch.Tensor] = list(target_batch_cpu["det_yolo"])
-            da_mask_cpu: torch.Tensor = target_batch_cpu["da_mask"]
-            rm_mask_cpu: torch.Tensor = target_batch_cpu["rm_mask"]
             img_h = int(images_cpu.shape[-2])
             img_w = int(images_cpu.shape[-1])
 
+            da_mask_dev: torch.Tensor = target_batch["da_mask"]
+            rm_mask_dev: torch.Tensor = target_batch["rm_mask"]
+            has_da_dev: torch.Tensor = target_batch["has_da"].to(dtype=torch.bool)
+            has_rm_dev: torch.Tensor = target_batch["has_rm"].to(dtype=torch.bool)
+
+            valid_da = (da_mask_dev != 255) & has_da_dev[:, None, None]
+            supervised_da = valid_da.reshape(valid_da.shape[0], -1).any(dim=1)
+            pred_da = preds.da[:, 0] > 0
+            tgt_da = da_mask_dev == 1
+            metric_stats["da"]["inter"] += int((((pred_da & tgt_da) & valid_da).sum()).item())
+            metric_stats["da"]["union"] += int((((pred_da | tgt_da) & valid_da).sum()).item())
+            metric_stats["da"]["supervised"] += int(supervised_da.sum().item())
+
+            rm_channels = [
+                "rm_lane_marker",
+                "rm_road_marker_non_lane",
+                "rm_stop_line",
+            ]
+            valid_rm = (rm_mask_dev != 255) & has_rm_dev[:, :, None, None]
+            pred_rm = preds.rm > 0
+            tgt_rm = rm_mask_dev == 1
+            for c_idx, name in enumerate(rm_channels):
+                valid_c = valid_rm[:, c_idx]
+                supervised_c = valid_c.reshape(valid_c.shape[0], -1).any(dim=1)
+                metric_stats[name]["inter"] += int((((pred_rm[:, c_idx] & tgt_rm[:, c_idx]) & valid_c).sum()).item())
+                metric_stats[name]["union"] += int((((pred_rm[:, c_idx] | tgt_rm[:, c_idx]) & valid_c).sum()).item())
+                metric_stats[name]["supervised"] += int(supervised_c.sum().item())
+
             for i in range(int(images_cpu.shape[0])):
                 sid = sample_ids[i] if i < len(sample_ids) else f"{batch_idx}:{i}"
-                if int(has_da_cpu[i].item()) != 0:
-                    update_binary_iou(metric_stats["da"], preds.da[i, 0], da_mask_cpu[i].to(device=device))
-
-                rm_channels = [
-                    "rm_lane_marker",
-                    "rm_road_marker_non_lane",
-                    "rm_stop_line",
-                ]
-                for c_idx, name in enumerate(rm_channels):
-                    if int(has_rm_cpu[i, c_idx].item()) != 0:
-                        update_binary_iou(metric_stats[name], preds.rm[i, c_idx], rm_mask_cpu[i, c_idx].to(device=device))
-
                 scope = str(det_scope_list[i]).strip().lower()
                 if int(has_det_cpu[i].item()) != 0 and scope == "full":
                     gt = det_yolo_list[i]
@@ -990,8 +1054,17 @@ def main() -> int:
             saturation=max(0.0, float(args.aug_saturation)),
         )
 
-    train_ds = Pv26ManifestDataset(dataset_root=args.dataset_root, splits=("train",), augment=train_aug)
-    val_ds = Pv26ManifestDataset(dataset_root=args.dataset_root, splits=("val",))
+    train_ds = Pv26ManifestDataset(
+        dataset_root=args.dataset_root,
+        splits=("train",),
+        augment=train_aug,
+        validate_masks=bool(args.validate_masks),
+    )
+    val_ds = Pv26ManifestDataset(
+        dataset_root=args.dataset_root,
+        splits=("val",),
+        validate_masks=bool(args.validate_masks),
+    )
     if len(train_ds) == 0:
         raise RuntimeError("train split is empty")
     if len(val_ds) == 0:
@@ -1007,14 +1080,16 @@ def main() -> int:
             "prefetch_factor": pf,
         }
 
+    train_collate_fn = _collate_eval if args.arch == "stub" else _collate_train
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=_collate_with_images,
+        collate_fn=train_collate_fn,
         generator=dl_gen,
         pin_memory=(device.type == "cuda"),
+        drop_last=bool(args.train_drop_last),
         **loader_perf_kwargs,
     )
     val_loader = DataLoader(
@@ -1022,7 +1097,7 @@ def main() -> int:
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=_collate_with_images,
+        collate_fn=_collate_eval,
         pin_memory=(device.type == "cuda"),
         **loader_perf_kwargs,
     )
@@ -1091,6 +1166,10 @@ def main() -> int:
         f"warmup_epochs={int(args.warmup_epochs)} warmup_start_factor={float(args.warmup_start_factor):.3f} "
         f"compile={bool(args.compile)} compile_mode={args.compile_mode} "
         f"compile_fullgraph={bool(args.compile_fullgraph)}"
+    )
+    print(
+        f"[pv26] train_drop_last={bool(args.train_drop_last)} "
+        f"validate_masks={bool(args.validate_masks)}"
     )
     if args.det_pretrained is not None:
         print(f"[pv26] det_pretrained={Path(args.det_pretrained)}")

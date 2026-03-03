@@ -148,10 +148,12 @@ def _letterbox_mask_u8(
     out_w: int,
     out_h: int,
     pad_value: int,
+    validate: bool,
 ) -> np.ndarray:
     if mask_u8.shape != (in_h, in_w):
         raise ValueError(f"mask size mismatch: expected={(in_h, in_w)} got={mask_u8.shape}")
-    validate_binary_mask_u8(mask_u8, allow_ignore=True, name="mask")
+    if validate:
+        validate_binary_mask_u8(mask_u8, allow_ignore=True, name="mask")
 
     scale, new_w, new_h, pad_x, pad_y = _letterbox_params(in_w, in_h, out_w, out_h)
     # uint8 index mask: nearest interpolation
@@ -160,7 +162,8 @@ def _letterbox_mask_u8(
     canvas = Image.new("L", (out_w, out_h), color=int(pad_value))
     canvas.paste(resized, (pad_x, pad_y))
     out = np.array(canvas, dtype=np.uint8)
-    validate_binary_mask_u8(out, allow_ignore=True, name="mask_letterboxed")
+    if validate:
+        validate_binary_mask_u8(out, allow_ignore=True, name="mask_letterboxed")
     return out
 
 
@@ -243,6 +246,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         splits: Sequence[str] = ("train",),
         letterbox: Optional[LetterboxSpec] = LetterboxSpec(),
         augment: Optional[AugmentSpec] = None,
+        validate_masks: bool = False,
     ):
         self.dataset_root = Path(dataset_root)
         self.splits = tuple(s.strip().lower() for s in splits if s.strip())
@@ -256,6 +260,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         self.rows = [r for r in _read_manifest_rows(manifest_path) if r.get("split", "") in set(self.splits)]
         self.letterbox = letterbox
         self.augment = augment
+        self.validate_masks = bool(validate_masks)
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -287,57 +292,84 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         det_scope = row["det_label_scope"]
         det_annotated = row["det_annotated_class_ids"]
 
-        # Masks: if unsupervised, we still return an all-ignore mask of the right size.
+        lb = self.letterbox
+        out_h = int(lb.out_height) if lb is not None else int(in_h)
+        out_w = int(lb.out_width) if lb is not None else int(in_w)
+
+        # Masks: unsupervised channels are generated directly at output size to skip useless resize work.
         if has_da:
             da_path = self.dataset_root / row["da_relpath"]
             da_u8 = np.array(Image.open(da_path), dtype=np.uint8)
         else:
-            da_u8 = make_all_ignore_mask(in_h, in_w)
+            da_u8 = make_all_ignore_mask(out_h, out_w)
 
         rm_lane_path = self.dataset_root / row["rm_lane_marker_relpath"]
         rm_road_path = self.dataset_root / row["rm_road_marker_non_lane_relpath"]
         rm_stop_path = self.dataset_root / row["rm_stop_line_relpath"]
 
-        rm_lane_u8 = np.array(Image.open(rm_lane_path), dtype=np.uint8) if has_rm_lane else make_all_ignore_mask(in_h, in_w)
-        rm_road_u8 = np.array(Image.open(rm_road_path), dtype=np.uint8) if has_rm_road else make_all_ignore_mask(in_h, in_w)
-        rm_stop_u8 = np.array(Image.open(rm_stop_path), dtype=np.uint8) if has_rm_stop else make_all_ignore_mask(in_h, in_w)
+        rm_lane_u8 = (
+            np.array(Image.open(rm_lane_path), dtype=np.uint8) if has_rm_lane else make_all_ignore_mask(out_h, out_w)
+        )
+        rm_road_u8 = (
+            np.array(Image.open(rm_road_path), dtype=np.uint8) if has_rm_road else make_all_ignore_mask(out_h, out_w)
+        )
+        rm_stop_u8 = (
+            np.array(Image.open(rm_stop_path), dtype=np.uint8) if has_rm_stop else make_all_ignore_mask(out_h, out_w)
+        )
+
+        if self.validate_masks and lb is None:
+            if has_da:
+                validate_binary_mask_u8(da_u8, allow_ignore=True, name="da_mask")
+            if has_rm_lane:
+                validate_binary_mask_u8(rm_lane_u8, allow_ignore=True, name="rm_lane_marker")
+            if has_rm_road:
+                validate_binary_mask_u8(rm_road_u8, allow_ignore=True, name="rm_road_marker_non_lane")
+            if has_rm_stop:
+                validate_binary_mask_u8(rm_stop_u8, allow_ignore=True, name="rm_stop_line")
 
         # Apply letterbox (default PRD sizes)
-        if self.letterbox is not None:
-            lb = self.letterbox
+        if lb is not None:
             image = _letterbox_image(image, out_w=lb.out_width, out_h=lb.out_height, pad_value=int(lb.image_pad_value))
-            da_u8 = _letterbox_mask_u8(
-                da_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
-            rm_lane_u8 = _letterbox_mask_u8(
-                rm_lane_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
-            rm_road_u8 = _letterbox_mask_u8(
-                rm_road_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
-            rm_stop_u8 = _letterbox_mask_u8(
-                rm_stop_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
+            if has_da:
+                da_u8 = _letterbox_mask_u8(
+                    da_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                )
+            if has_rm_lane:
+                rm_lane_u8 = _letterbox_mask_u8(
+                    rm_lane_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                )
+            if has_rm_road:
+                rm_road_u8 = _letterbox_mask_u8(
+                    rm_road_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                )
+            if has_rm_stop:
+                rm_stop_u8 = _letterbox_mask_u8(
+                    rm_stop_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                )
             det_yolo = _letterbox_det_yolo(det_yolo, in_w=in_w, in_h=in_h, out_w=lb.out_width, out_h=lb.out_height)
 
         if self.augment is not None:

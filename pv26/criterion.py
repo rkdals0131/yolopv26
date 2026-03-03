@@ -136,21 +136,19 @@ class PV26Criterion(nn.Module):
             if det_scope_code.shape[0] != bsz:
                 raise ValueError("det_scope_code length mismatch")
             scope_code = det_scope_code.to(device=has_det.device, dtype=torch.long)
-            valid_code = (scope_code == 0) | (scope_code == 1) | (scope_code == 2)
-            if not bool(valid_code.all()):
-                raise ValueError("det_scope_code must be in {0(full),1(subset),2(none)}")
             keep_mask = has_det.to(dtype=torch.long) != 0
             keep_mask = keep_mask & (scope_code != 2)
             keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
         else:
             if len(det_label_scope) != bsz:
                 raise ValueError("det_label_scope length mismatch")
+            has_det_cpu = has_det.to(device="cpu", dtype=torch.long).tolist()
             keep: List[int] = []
             for i in range(bsz):
                 scope = str(det_label_scope[i]).strip().lower()
                 if scope not in {"full", "subset", "none"}:
                     raise ValueError(f"invalid det_label_scope: {scope}")
-                if int(has_det[i].item()) == 0 or scope == "none":
+                if int(has_det_cpu[i]) == 0 or scope == "none":
                     continue
                 if scope == "subset":
                     # TODO(PRD): mask negative loss for unannotated classes.
@@ -182,15 +180,12 @@ class PV26Criterion(nn.Module):
 
             src_old = det_tgt_batch_idx.to(device=device, dtype=torch.long)
             new_idx = old_to_new[src_old]
-            m = new_idx >= 0
-            if bool(m.any()):
-                batch_idx_t = new_idx[m].to(dtype=torch.float32)
-                cls_t = det_tgt_cls.to(device=device, dtype=torch.float32)[m]
-                bboxes_t = det_tgt_bboxes.to(device=device, dtype=torch.float32)[m]
-            else:
-                batch_idx_t = torch.zeros((0,), device=device, dtype=torch.float32)
-                cls_t = torch.zeros((0,), device=device, dtype=torch.float32)
-                bboxes_t = torch.zeros((0, 4), device=device, dtype=torch.float32)
+            m = new_idx.ge(0)
+            det_tgt_cls_dev = det_tgt_cls.to(device=device, dtype=torch.float32)
+            det_tgt_bboxes_dev = det_tgt_bboxes.to(device=device, dtype=torch.float32)
+            batch_idx_t = new_idx.masked_select(m).to(dtype=torch.float32)
+            cls_t = det_tgt_cls_dev.masked_select(m)
+            bboxes_t = det_tgt_bboxes_dev[m]
         else:
             if len(det_yolo) != bsz:
                 raise ValueError("det_yolo length mismatch")
@@ -363,14 +358,11 @@ class PV26Criterion(nn.Module):
         logits = da_logits[:, 0]  # [B,H,W]
         valid = (da_mask != 255) & has_da.view(-1, 1, 1).bool()
         valid_count = valid.to(dtype=da_logits.dtype).sum(dim=(1, 2))  # [B]
-        keep = valid_count > 0
-        if not bool(keep.any()):
-            return da_logits.new_zeros(())
-
         target = torch.where(valid, da_mask, torch.zeros_like(da_mask)).to(dtype=da_logits.dtype)
         bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
         per_sample = (bce * valid.to(dtype=bce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
-        return per_sample[keep].mean()
+        keep_f = valid_count.gt(0).to(dtype=per_sample.dtype)
+        return (per_sample * keep_f).sum() / keep_f.sum().clamp_min(1.0)
 
     def _rm_loss(self, *, rm_logits: Tensor, rm_mask: Tensor, has_rm: Tensor) -> Tensor:
         bsz, ch, _, _ = rm_logits.shape
@@ -383,10 +375,6 @@ class PV26Criterion(nn.Module):
         supervised = has_rm.view(bsz, ch, 1, 1).bool()
         valid = (rm_mask != 255) & supervised
         valid_count = valid.to(dtype=rm_logits.dtype).sum(dim=(2, 3))  # [B,C]
-        keep = valid_count > 0
-        if not bool(keep.any()):
-            return rm_logits.new_zeros(())
-
         target = torch.where(valid, rm_mask, torch.zeros_like(rm_mask)).to(dtype=rm_logits.dtype)
         valid_f = valid.to(dtype=rm_logits.dtype)
 
@@ -402,4 +390,5 @@ class PV26Criterion(nn.Module):
         dice = 1.0 - (2.0 * inter + self.dice_eps) / (prob_sum + target_sum + self.dice_eps)
 
         per_channel = focal + dice
-        return per_channel[keep].mean()
+        keep_f = valid_count.gt(0).to(dtype=per_channel.dtype)
+        return (per_channel * keep_f).sum() / keep_f.sum().clamp_min(1.0)
