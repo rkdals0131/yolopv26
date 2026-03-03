@@ -48,6 +48,7 @@ TIMEOUT_SEC          = int(os.getenv("PV26_MODAL_TIMEOUT_SEC", str(24 * 60 * 60)
 DEFAULT_EPOCHS       = 10        # 총 학습 epoch 수 (비용/시간에 거의 선형 비례)
 DEFAULT_BATCH_SIZE   = 40        # 스텝당 배치 크기 (크면 GPU 사용률↑, 너무 크면 OOM)
 DEFAULT_WORKERS      = 16        # DataLoader 워커 수 (CPU 전처리 병목 완화, 과하면 컨텍스트 스위칭 증가)
+DEFAULT_AUGMENT      = True      # train 증강 on/off (False면 --no-augment 전달)
 DEFAULT_LR           = "5e-4"    # 학습률 (수렴 안정성/속도에 직접 영향)
 DEFAULT_LOG_EVERY    = 100       # --no-progress일 때 몇 step마다 로그 출력할지
 DEFAULT_PROGRESS     = False     # True면 tqdm 진행바 사용(원격 로그 줄 수가 급증할 수 있음)
@@ -390,6 +391,7 @@ def _maybe_download_artifacts(result: dict[str, str], artifact_root_in_volume: s
 )
 def train_remote(
     run_name: str,
+    augment: bool = DEFAULT_AUGMENT,
     dataset_dir_in_volume: str = DEFAULT_DATASET_DIR_IN_VOLUME,
     dataset_tar_in_volume: str = DEFAULT_DATASET_TAR_IN_VOLUME,
     artifact_root_in_volume: str = DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
@@ -437,6 +439,8 @@ def train_remote(
         cmd.append("--profile-sync-cuda")
     if not DEFAULT_PROGRESS:
         cmd.append("--no-progress")
+    if not bool(augment):
+        cmd.append("--no-augment")
     cmd.extend(["--run-name", run_name])
 
     env = dict(os.environ)
@@ -444,7 +448,8 @@ def train_remote(
     print(
         "[modal] profile: "
         f"gpu={GPU_NAME} cpu={DEFAULT_CPU} memory_mb={DEFAULT_MEMORY_MB} "
-        f"batch={DEFAULT_BATCH_SIZE} workers={DEFAULT_WORKERS} prefetch={DEFAULT_PREFETCH_FACTOR} "
+        f"batch={DEFAULT_BATCH_SIZE} augment={bool(augment)} "
+        f"workers={DEFAULT_WORKERS} prefetch={DEFAULT_PREFETCH_FACTOR} "
         f"persistent_workers={DEFAULT_PERSISTENT_WORKERS} progress={DEFAULT_PROGRESS} "
         f"log_every={DEFAULT_LOG_EVERY} profile_every={DEFAULT_PROFILE_EVERY} "
         f"profile_sync_cuda={DEFAULT_PROFILE_SYNC_CUDA}",
@@ -468,6 +473,7 @@ def train_remote(
 @app.local_entrypoint()
 def modal_entrypoint(
     run_name: str = "",
+    augment: bool = DEFAULT_AUGMENT,
 ):
     run_name = run_name.strip()
     if not run_name:
@@ -492,6 +498,7 @@ def modal_entrypoint(
             dataset_tar_in_volume=DEFAULT_DATASET_TAR_IN_VOLUME,
             artifact_root_in_volume=DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
             run_name=run_name,
+            augment=bool(augment),
         )
     finally:
         stop_event.set()
@@ -506,6 +513,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     train = sub.add_parser("train", help="Run remote training on Modal")
     train.add_argument("--run-name", required=True, help="Required. Modal run name / checkpoint namespace.")
+    train.add_argument(
+        "--augment",
+        dest="augment",
+        action="store_true",
+        default=DEFAULT_AUGMENT,
+        help="Enable train-time augmentation (default: on)",
+    )
+    train.add_argument(
+        "--no-augment",
+        dest="augment",
+        action="store_false",
+        help="Disable train-time augmentation",
+    )
     return p
 
 
@@ -535,6 +555,7 @@ def _main() -> int:
             dataset_tar_in_volume=DEFAULT_DATASET_TAR_IN_VOLUME,
             artifact_root_in_volume=DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
             run_name=run_name,
+            augment=bool(args.augment),
         )
     finally:
         stop_event.set()
