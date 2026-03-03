@@ -46,8 +46,8 @@ GPU_NAME             = os.getenv("PV26_MODAL_GPU", "A10G")	# 예: "A10G", "L4", 
 TIMEOUT_SEC          = int(os.getenv("PV26_MODAL_TIMEOUT_SEC", str(24 * 60 * 60)))	# 예: 3600(1h), 86400(24h)
 
 DEFAULT_EPOCHS       = 1        # 총 학습 epoch 수 (비용/시간에 거의 선형 비례)
-DEFAULT_BATCH_SIZE   = 40        # 스텝당 배치 크기 (크면 GPU 사용률↑, 너무 크면 OOM)
-DEFAULT_WORKERS      = 12        # DataLoader 워커 수 (AB 비교용 기본값)
+DEFAULT_BATCH_SIZE   = 16        # 스텝당 배치 크기 (크면 GPU 사용률↑, 너무 크면 OOM)
+DEFAULT_WORKERS      = 8        # DataLoader 워커 수 (AB 비교용 기본값)
 DEFAULT_AUGMENT      = True      # train 증강 on/off (False면 --no-augment 전달)
 DEFAULT_LR           = "0"       # 0이면 optimizer별 자동 LR(adam/adamw=1e-3, sgd=1e-2)
 DEFAULT_OPTIMIZER    = "adamw"   # Optimizer: adamw|adam|sgd
@@ -57,19 +57,20 @@ DEFAULT_SCHEDULER    = "cosine"  # LR 스케줄러: cosine|none
 DEFAULT_MIN_LR_RATIO = "0.05"    # cosine eta_min = lr * ratio
 DEFAULT_WARMUP_EPOCHS = 3        # warmup epoch 수 (0이면 비활성화)
 DEFAULT_WARMUP_START_FACTOR = "0.1"  # warmup 시작 LR 비율(0<factor<=1)
-DEFAULT_COMPILE      = True      # torch.compile on/off (A/B 측정 후 필요시 off)
+DEFAULT_COMPILE      = False      # torch.compile on/off (A/B 측정 후 필요시 off)
 DEFAULT_COMPILE_MODE = "default"  # compile mode: default|reduce-overhead|max-autotune
 DEFAULT_COMPILE_FULLGRAPH = False # fullgraph=True면 graph break 탐지/A-B에 유용
 DEFAULT_DET_PRETRAINED = ""      # 선택: detection trunk pretrained 체크포인트 경로(비우면 미사용)
-DEFAULT_LOG_EVERY    = 100       # --no-progress일 때 몇 step마다 로그 출력할지
+DEFAULT_LOG_EVERY    = 20       # --no-progress일 때 몇 step마다 로그 출력할지
 DEFAULT_PROGRESS     = False     # True면 tqdm 진행바 사용(원격 로그 줄 수가 급증할 수 있음)
 DEFAULT_CPU          = 16.0      # Modal 컨테이너 CPU 코어 할당량 (AB 비교용 기본값)
 DEFAULT_MEMORY_MB    = 65536     # Modal 컨테이너 RAM(MB) 할당량
 
 DEFAULT_PREFETCH_FACTOR = 4      # 워커당 prefetch 배치 수 (AB 비교용 기본값)
 DEFAULT_PERSISTENT_WORKERS = True  # epoch 사이에 워커 프로세스 유지(재시작 오버헤드 감소)
-DEFAULT_PROFILE_EVERY = 0        # 기본은 throughput 모드(필요할 때만 >0으로 계측)
+DEFAULT_PROFILE_EVERY = 20       # 저오버헤드 ms 프로파일 로그 주기(평균 window)
 DEFAULT_PROFILE_SYNC_CUDA = False  # 기본 비동기(정밀 타이밍이 필요할 때만 True)
+DEFAULT_PROFILE_SYSTEM = False   # True면 nvidia-smi/메모리 통계 포함(오버헤드 증가)
 
 
 DEFAULT_DATASET_DIR_IN_VOLUME   = "pv26_v1_bdd_full"	# 예: "pv26_v1_bdd_full"
@@ -470,6 +471,8 @@ def train_remote(
         cmd.extend(["--profile-every", str(int(DEFAULT_PROFILE_EVERY))])
     if DEFAULT_PROFILE_SYNC_CUDA:
         cmd.append("--profile-sync-cuda")
+    if DEFAULT_PROFILE_SYSTEM:
+        cmd.append("--profile-system")
     if not DEFAULT_PROGRESS:
         cmd.append("--no-progress")
     if not bool(augment):
@@ -489,7 +492,7 @@ def train_remote(
         f"workers={DEFAULT_WORKERS} prefetch={DEFAULT_PREFETCH_FACTOR} "
         f"persistent_workers={DEFAULT_PERSISTENT_WORKERS} progress={DEFAULT_PROGRESS} "
         f"log_every={DEFAULT_LOG_EVERY} profile_every={DEFAULT_PROFILE_EVERY} "
-        f"profile_sync_cuda={DEFAULT_PROFILE_SYNC_CUDA}",
+        f"profile_sync_cuda={DEFAULT_PROFILE_SYNC_CUDA} profile_system={DEFAULT_PROFILE_SYSTEM}",
         flush=True,
     )
     rc = _stream_subprocess(cmd, env=env)

@@ -162,6 +162,12 @@ def build_argparser() -> argparse.ArgumentParser:
         action="store_true",
         help="Synchronize CUDA around profiling timers for more accurate stage timings (adds overhead).",
     )
+    p.add_argument(
+        "--profile-system",
+        action="store_true",
+        default=False,
+        help="Include CPU/CUDA memory + nvidia-smi in profile logs (higher overhead).",
+    )
     p.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda|cuda:N")
     p.add_argument("--amp", dest="amp", action="store_true", default=True, help="Enable AMP (CUDA only, default: on)")
     p.add_argument("--no-amp", dest="amp", action="store_false", help="Disable AMP")
@@ -725,6 +731,7 @@ def train_one_epoch(
     log_every: int,
     profile_every: int,
     profile_sync_cuda: bool,
+    profile_system: bool,
 ) -> Dict[str, float]:
     model.train()
     losses_sum = {k: torch.zeros((), device=device, dtype=torch.float32) for k in ("total", "od", "da", "rm")}
@@ -759,7 +766,7 @@ def train_one_epoch(
             wait_hist.append(float(t_wait))
         t0 = time.perf_counter()
         images = _prepare_images_for_model(images_cpu, device=device)
-        if prof_every > 0 and device.type == "cuda":
+        if prof_every > 0 and profile_system and device.type == "cuda":
             free_b, _ = torch.cuda.mem_get_info(device)
             if min_free_b_window is None or free_b < min_free_b_window:
                 min_free_b_window = int(free_b)
@@ -827,17 +834,18 @@ def train_one_epoch(
                     f"wait_p50={wait_p50_ms:.1f}ms",
                     f"wait_p90={wait_p90_ms:.1f}ms",
                     f"wait_p99={wait_p99_ms:.1f}ms",
-                    _format_cpu_stats(),
                 ]
-                if device.type == "cuda":
-                    extra_parts.append(_format_cuda_mem_stats(device=device))
-                    if min_free_b_window is not None:
-                        extra_parts.append(f"min_free={_gib(min_free_b_window):.2f}GiB")
-                    smi_line = _query_nvidia_smi()
-                    if smi_line:
-                        extra_parts.append(smi_line)
-                    if amp_enabled:
-                        extra_parts.append(f"amp_scale={float(scaler.get_scale()):.0f}")
+                if profile_system:
+                    extra_parts.append(_format_cpu_stats())
+                    if device.type == "cuda":
+                        extra_parts.append(_format_cuda_mem_stats(device=device))
+                        if min_free_b_window is not None:
+                            extra_parts.append(f"min_free={_gib(min_free_b_window):.2f}GiB")
+                        smi_line = _query_nvidia_smi()
+                        if smi_line:
+                            extra_parts.append(smi_line)
+                if device.type == "cuda" and amp_enabled:
+                    extra_parts.append(f"amp_scale={float(scaler.get_scale()):.0f}")
                 print(
                     "[profile][train] "
                     f"step={batch_idx + 1}/{step_cap} avg{prof_count}({sync_tag}) "
@@ -1168,6 +1176,10 @@ def main() -> int:
         f"compile_fullgraph={bool(args.compile_fullgraph)}"
     )
     print(
+        f"[pv26] profile_every={int(args.profile_every)} profile_sync_cuda={bool(args.profile_sync_cuda)} "
+        f"profile_system={bool(args.profile_system)}"
+    )
+    print(
         f"[pv26] train_drop_last={bool(args.train_drop_last)} "
         f"validate_masks={bool(args.validate_masks)}"
     )
@@ -1191,6 +1203,7 @@ def main() -> int:
             log_every=args.log_every,
             profile_every=args.profile_every,
             profile_sync_cuda=args.profile_sync_cuda,
+            profile_system=args.profile_system,
         )
         print(format_loss_line("[train] mean", train_losses))
 
