@@ -50,6 +50,14 @@ DEFAULT_BATCH_SIZE   = 40        # 스텝당 배치 크기 (크면 GPU 사용률
 DEFAULT_WORKERS      = 12        # DataLoader 워커 수 (AB 비교용 기본값)
 DEFAULT_AUGMENT      = True      # train 증강 on/off (False면 --no-augment 전달)
 DEFAULT_LR           = "5e-4"    # 학습률 (수렴 안정성/속도에 직접 영향)
+DEFAULT_OPTIMIZER    = "adamw"   # Optimizer: adamw|adam|sgd
+DEFAULT_WEIGHT_DECAY = "1e-4"    # Optimizer weight decay
+DEFAULT_MOMENTUM     = "0.937"   # SGD momentum (adam/adamw에서는 무시됨)
+DEFAULT_SCHEDULER    = "cosine"  # LR 스케줄러: cosine|none
+DEFAULT_MIN_LR_RATIO = "0.05"    # cosine eta_min = lr * ratio
+DEFAULT_COMPILE      = True      # torch.compile on/off (A/B 측정 후 필요시 off)
+DEFAULT_COMPILE_MODE = "reduce-overhead"  # compile mode: default|reduce-overhead|max-autotune
+DEFAULT_DET_PRETRAINED = ""      # 선택: detection trunk pretrained 체크포인트 경로(비우면 미사용)
 DEFAULT_LOG_EVERY    = 100       # --no-progress일 때 몇 step마다 로그 출력할지
 DEFAULT_PROGRESS     = False     # True면 tqdm 진행바 사용(원격 로그 줄 수가 급증할 수 있음)
 DEFAULT_CPU          = 16.0      # Modal 컨테이너 CPU 코어 할당량 (AB 비교용 기본값)
@@ -428,9 +436,25 @@ def train_remote(
         str(DEFAULT_PREFETCH_FACTOR),
         "--lr",
         str(DEFAULT_LR),
+        "--optimizer",
+        str(DEFAULT_OPTIMIZER),
+        "--weight-decay",
+        str(DEFAULT_WEIGHT_DECAY),
+        "--momentum",
+        str(DEFAULT_MOMENTUM),
+        "--scheduler",
+        str(DEFAULT_SCHEDULER),
+        "--min-lr-ratio",
+        str(DEFAULT_MIN_LR_RATIO),
+        "--compile-mode",
+        str(DEFAULT_COMPILE_MODE),
         "--log-every",
         str(DEFAULT_LOG_EVERY),
     ]
+    if not bool(DEFAULT_COMPILE):
+        cmd.append("--no-compile")
+    if str(DEFAULT_DET_PRETRAINED).strip():
+        cmd.extend(["--det-pretrained", str(DEFAULT_DET_PRETRAINED).strip()])
     if not DEFAULT_PERSISTENT_WORKERS:
         cmd.append("--no-persistent-workers")
     if int(DEFAULT_PROFILE_EVERY) > 0:
@@ -449,6 +473,8 @@ def train_remote(
         "[modal] profile: "
         f"gpu={GPU_NAME} cpu={DEFAULT_CPU} memory_mb={DEFAULT_MEMORY_MB} "
         f"batch={DEFAULT_BATCH_SIZE} augment={bool(augment)} "
+        f"optimizer={DEFAULT_OPTIMIZER} scheduler={DEFAULT_SCHEDULER} "
+        f"compile={DEFAULT_COMPILE} compile_mode={DEFAULT_COMPILE_MODE} "
         f"workers={DEFAULT_WORKERS} prefetch={DEFAULT_PREFETCH_FACTOR} "
         f"persistent_workers={DEFAULT_PERSISTENT_WORKERS} progress={DEFAULT_PROGRESS} "
         f"log_every={DEFAULT_LOG_EVERY} profile_every={DEFAULT_PROFILE_EVERY} "

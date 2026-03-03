@@ -66,6 +66,64 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument(
+        "--optimizer",
+        type=str,
+        default="adamw",
+        choices=["adamw", "adam", "sgd"],
+        help="Optimizer for all trainable params (default: adamw).",
+    )
+    p.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-4,
+        help="Weight decay (used by adamw/adam/sgd).",
+    )
+    p.add_argument(
+        "--momentum",
+        type=float,
+        default=0.937,
+        help="Momentum for SGD optimizer.",
+    )
+    p.add_argument(
+        "--scheduler",
+        type=str,
+        default="cosine",
+        choices=["cosine", "none"],
+        help="LR scheduler policy (default: cosine).",
+    )
+    p.add_argument(
+        "--min-lr-ratio",
+        type=float,
+        default=0.05,
+        help="eta_min ratio for cosine scheduler (eta_min = lr * ratio).",
+    )
+    p.add_argument(
+        "--compile",
+        dest="compile",
+        action="store_true",
+        default=True,
+        help="Enable torch.compile on CUDA (default: on).",
+    )
+    p.add_argument(
+        "--no-compile",
+        dest="compile",
+        action="store_false",
+        help="Disable torch.compile.",
+    )
+    p.add_argument(
+        "--compile-mode",
+        type=str,
+        default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        help="torch.compile mode.",
+    )
+    p.add_argument(
+        "--det-pretrained",
+        type=Path,
+        default=None,
+        help="Optional path to detection trunk checkpoint/state_dict to load before training.",
+    )
+    p.add_argument(
         "--profile-every",
         type=int,
         default=10,
@@ -230,6 +288,7 @@ def _save_checkpoint(
     path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     scaler: torch.cuda.amp.GradScaler,
     epoch: int,
     best_score: Optional[float],
@@ -245,13 +304,15 @@ def _save_checkpoint(
 
     payload = {
         "epoch": int(epoch),
-        "model_state": model.state_dict(),
+        "model_state": _unwrap_compiled_model(model).state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "scaler_state": scaler.state_dict(),
         "best_score": best_score,
         "best_epoch": best_epoch,
         "args": args_serialized,
     }
+    if scheduler is not None:
+        payload["scheduler_state"] = scheduler.state_dict()
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)
 
@@ -261,6 +322,7 @@ def _load_checkpoint(
     ckpt_path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
 ) -> tuple[int, Optional[float], Optional[int]]:
@@ -273,9 +335,11 @@ def _load_checkpoint(
         # Backward compatibility for older torch versions.
         ckpt = torch.load(ckpt_path, map_location=device)
     if "model_state" in ckpt:
-        model.load_state_dict(ckpt["model_state"])
+        _unwrap_compiled_model(model).load_state_dict(ckpt["model_state"])
         if "optimizer_state" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state"])
+        if scheduler is not None and "scheduler_state" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state"])
         if "scaler_state" in ckpt:
             scaler.load_state_dict(ckpt["scaler_state"])
         start_epoch = int(ckpt.get("epoch", -1)) + 1
@@ -284,7 +348,7 @@ def _load_checkpoint(
         return start_epoch, best_score, best_epoch
 
     # Fallback for raw state_dict checkpoints.
-    model.load_state_dict(ckpt)
+    _unwrap_compiled_model(model).load_state_dict(ckpt)
     return 0, None, None
 
 
@@ -363,6 +427,151 @@ def _prepare_images_for_model(images_cpu: torch.Tensor, *, device: torch.device)
     if device.type == "cuda":
         images = images.contiguous(memory_format=torch.channels_last)
     return images
+
+
+def _unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
+    base = model
+    while hasattr(base, "_orig_mod"):
+        base = getattr(base, "_orig_mod")
+    return base
+
+
+def _build_optimizer(*, model: torch.nn.Module, args: argparse.Namespace) -> torch.optim.Optimizer:
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        raise RuntimeError("no trainable parameters found")
+    opt_name = str(args.optimizer).strip().lower()
+    lr = float(args.lr)
+    wd = float(args.weight_decay)
+    if opt_name == "adamw":
+        return torch.optim.AdamW(params, lr=lr, weight_decay=wd)
+    if opt_name == "adam":
+        return torch.optim.Adam(params, lr=lr, weight_decay=wd)
+    if opt_name == "sgd":
+        return torch.optim.SGD(params, lr=lr, momentum=float(args.momentum), nesterov=True, weight_decay=wd)
+    raise ValueError(f"unsupported optimizer: {opt_name}")
+
+
+def _build_scheduler(
+    *,
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+    total_epochs: int,
+) -> Optional[torch.optim.lr_scheduler.LRScheduler]:
+    sched_name = str(args.scheduler).strip().lower()
+    if sched_name == "none":
+        return None
+    if sched_name == "cosine":
+        t_max = max(1, int(total_epochs))
+        eta_min = float(args.lr) * max(0.0, float(args.min_lr_ratio))
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+    raise ValueError(f"unsupported scheduler: {sched_name}")
+
+
+def _extract_state_dict_candidates(payload: Any) -> List[Dict[str, torch.Tensor]]:
+    candidates: List[Dict[str, torch.Tensor]] = []
+    if isinstance(payload, torch.nn.Module):
+        candidates.append({k: v for k, v in payload.state_dict().items() if isinstance(v, torch.Tensor)})
+        return candidates
+    if isinstance(payload, dict):
+        tensor_entries = {str(k): v for k, v in payload.items() if isinstance(v, torch.Tensor)}
+        if tensor_entries:
+            candidates.append(tensor_entries)
+        for key in ("state_dict", "model_state", "model", "ema"):
+            if key in payload:
+                candidates.extend(_extract_state_dict_candidates(payload[key]))
+    return candidates
+
+
+def _select_best_det_state_dict(
+    *,
+    candidates: List[Dict[str, torch.Tensor]],
+    target_state: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    best: Dict[str, torch.Tensor] = {}
+    best_count = 0
+    prefixes = ("", "model.", "module.", "_orig_mod.")
+    for cand in candidates:
+        for prefix in prefixes:
+            matched: Dict[str, torch.Tensor] = {}
+            for k, v in cand.items():
+                if prefix:
+                    if not k.startswith(prefix):
+                        continue
+                    kk = k[len(prefix) :]
+                else:
+                    kk = k
+                tgt = target_state.get(kk, None)
+                if tgt is None:
+                    continue
+                if tuple(v.shape) != tuple(tgt.shape):
+                    continue
+                matched[kk] = v
+            if len(matched) > best_count:
+                best = matched
+                best_count = len(matched)
+    return best
+
+
+def _maybe_load_det_pretrained(*, model: torch.nn.Module, det_pretrained: Optional[Path], device: torch.device) -> None:
+    if det_pretrained is None:
+        return
+    p = Path(det_pretrained).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"--det-pretrained not found: {p}")
+    model_base = _unwrap_compiled_model(model)
+    det_model = getattr(model_base, "det_model", None)
+    if det_model is None:
+        print(f"[pv26] warning: det_pretrained ignored (model has no det_model): {p}", flush=True)
+        return
+    try:
+        payload = torch.load(p, map_location=device, weights_only=False)
+    except TypeError:
+        payload = torch.load(p, map_location=device)
+    candidates = _extract_state_dict_candidates(payload)
+    if not candidates:
+        raise RuntimeError(f"no state_dict-like payload found in {p}")
+    target_state = det_model.state_dict()
+    matched = _select_best_det_state_dict(candidates=candidates, target_state=target_state)
+    if not matched:
+        raise RuntimeError(
+            f"failed to match detection trunk state_dict keys from {p}; "
+            f"target_keys={len(target_state)} candidates={len(candidates)}"
+        )
+    casted: Dict[str, torch.Tensor] = {}
+    for k, v in matched.items():
+        tgt = target_state[k]
+        casted[k] = v.detach().to(dtype=tgt.dtype)
+    det_model.load_state_dict(casted, strict=False)
+    print(
+        f"[pv26] loaded detection pretrained weights: matched={len(casted)}/{len(target_state)} from {p}",
+        flush=True,
+    )
+
+
+def _maybe_compile_model(
+    *,
+    model: torch.nn.Module,
+    device: torch.device,
+    enable_compile: bool,
+    compile_mode: str,
+) -> torch.nn.Module:
+    if not bool(enable_compile):
+        print("[pv26] torch.compile disabled", flush=True)
+        return model
+    if device.type != "cuda":
+        print("[pv26] torch.compile skipped (device is not CUDA)", flush=True)
+        return model
+    if not hasattr(torch, "compile"):
+        print("[pv26] torch.compile unavailable on this torch build", flush=True)
+        return model
+    try:
+        compiled = torch.compile(model, mode=str(compile_mode))
+        print(f"[pv26] torch.compile enabled (mode={compile_mode})", flush=True)
+        return compiled
+    except Exception as exc:
+        print(f"[pv26] warning: torch.compile failed, fallback to eager ({exc})", flush=True)
+        return model
 
 
 def train_one_epoch(
@@ -738,7 +947,9 @@ def main() -> int:
     if device.type == "cuda":
         model = model.to(memory_format=torch.channels_last)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    _maybe_load_det_pretrained(model=model, det_pretrained=args.det_pretrained, device=device)
+    optimizer = _build_optimizer(model=model, args=args)
+    scheduler = _build_scheduler(optimizer=optimizer, args=args, total_epochs=int(args.epochs))
     amp_enabled = bool(args.amp and device.type == "cuda")
     try:
         scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -758,14 +969,28 @@ def main() -> int:
             ckpt_path=resume_path,
             model=model,
             optimizer=optimizer,
+            scheduler=scheduler,
             scaler=scaler,
             device=device,
         )
         print(f"[pv26] resumed from {resume_path} (start_epoch={start_epoch + 1})")
 
+    model = _maybe_compile_model(
+        model=model,
+        device=device,
+        enable_compile=bool(args.compile),
+        compile_mode=str(args.compile_mode),
+    )
+
     max_train_batches, max_val_batches = _resolve_max_batches(args)
     print(f"[pv26] run_dir={run_dir}")
     print(f"[pv26] device={device} seed={int(args.seed)} amp={amp_enabled}")
+    print(
+        f"[pv26] optimizer={str(args.optimizer).lower()} scheduler={str(args.scheduler).lower()} "
+        f"compile={bool(args.compile)} compile_mode={args.compile_mode}"
+    )
+    if args.det_pretrained is not None:
+        print(f"[pv26] det_pretrained={Path(args.det_pretrained)}")
     print(f"[pv26] train_samples={len(train_ds)} val_samples={len(val_ds)}")
 
     for epoch in range(start_epoch, int(args.epochs)):
@@ -823,7 +1048,14 @@ def main() -> int:
             for name, iou in ious.items():
                 if iou is not None:
                     writer.add_scalar(f"val/iou_{name}", iou, epoch + 1)
+            writer.add_scalar("train/lr", float(optimizer.param_groups[0]["lr"]), epoch + 1)
             writer.flush()
+
+        if scheduler is not None:
+            prev_lr = float(optimizer.param_groups[0]["lr"])
+            scheduler.step()
+            next_lr = float(optimizer.param_groups[0]["lr"])
+            print(f"[pv26] lr {prev_lr:.6g} -> {next_lr:.6g}")
 
         score, score_name = _choose_best_score(val_losses, map50)
         is_best = best_score is None or score > float(best_score)
@@ -834,6 +1066,7 @@ def main() -> int:
                 path=ckpt_dir / "best.pt",
                 model=model,
                 optimizer=optimizer,
+                scheduler=scheduler,
                 scaler=scaler,
                 epoch=epoch,
                 best_score=best_score,
@@ -846,6 +1079,7 @@ def main() -> int:
             path=ckpt_dir / "latest.pt",
             model=model,
             optimizer=optimizer,
+            scheduler=scheduler,
             scaler=scaler,
             epoch=epoch,
             best_score=best_score,
