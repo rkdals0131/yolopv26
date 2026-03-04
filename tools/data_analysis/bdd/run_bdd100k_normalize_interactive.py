@@ -23,12 +23,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -170,25 +174,80 @@ def _tail(s: str, *, max_chars: int = 8000) -> str:
     return s[-max_chars:]
 
 
+def _stream_pipe(
+    *,
+    src,
+    dst,
+    tail_chunks: Deque[str],
+    tail_size_ref: List[int],
+    max_tail_chars: int,
+) -> None:
+    for line in iter(src.readline, ""):
+        dst.write(line)
+        dst.flush()
+        if not line:
+            continue
+        tail_chunks.append(line)
+        tail_size_ref[0] += len(line)
+        while tail_size_ref[0] > max_tail_chars and tail_chunks:
+            removed = tail_chunks.popleft()
+            tail_size_ref[0] -= len(removed)
+
+
 def _run_stage(name: str, argv: Sequence[str], *, cwd: Path) -> StageResult:
     started = utc_now_iso()
-    p = subprocess.run(
+    t0 = time.monotonic()
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    p = subprocess.Popen(
         list(argv),
         cwd=str(cwd),
         text=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=1,
+        env=env,
     )
-    completed = utc_now_iso()
+    if p.stdout is None or p.stderr is None:
+        raise RuntimeError(f"stage failed to open pipes: {name}")
 
-    # Always print stage output to console.
-    if p.stdout:
-        sys.stdout.write(p.stdout)
-        if not p.stdout.endswith("\n"):
-            sys.stdout.write("\n")
-    if p.stderr:
-        sys.stderr.write(p.stderr)
-        if not p.stderr.endswith("\n"):
-            sys.stderr.write("\n")
+    out_chunks: Deque[str] = deque()
+    err_chunks: Deque[str] = deque()
+    out_size_ref = [0]
+    err_size_ref = [0]
+    tout = threading.Thread(
+        target=_stream_pipe,
+        kwargs={
+            "src": p.stdout,
+            "dst": sys.stdout,
+            "tail_chunks": out_chunks,
+            "tail_size_ref": out_size_ref,
+            "max_tail_chars": 8000,
+        },
+        daemon=True,
+    )
+    terr = threading.Thread(
+        target=_stream_pipe,
+        kwargs={
+            "src": p.stderr,
+            "dst": sys.stderr,
+            "tail_chunks": err_chunks,
+            "tail_size_ref": err_size_ref,
+            "max_tail_chars": 8000,
+        },
+        daemon=True,
+    )
+    tout.start()
+    terr.start()
+    rc = p.wait()
+    tout.join()
+    terr.join()
+    completed = utc_now_iso()
+    elapsed = time.monotonic() - t0
+    print(
+        f"[pv26][로딩][{name}] 완료: rc={rc} 소요={elapsed:.1f}초",
+        flush=True,
+    )
 
     return StageResult(
         name=name,
@@ -196,9 +255,9 @@ def _run_stage(name: str, argv: Sequence[str], *, cwd: Path) -> StageResult:
         cwd=str(cwd),
         started_at=started,
         completed_at=completed,
-        returncode=int(p.returncode),
-        stdout_tail=_tail(p.stdout or ""),
-        stderr_tail=_tail(p.stderr or ""),
+        returncode=int(rc),
+        stdout_tail=_tail("".join(out_chunks)),
+        stderr_tail=_tail("".join(err_chunks)),
     )
 
 
@@ -253,6 +312,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     splits = _ask_splits("Splits to process (comma-separated)", default_csv="train,val,test")
     limit = _ask_int("Limit (0=all)", default=0, min_value=0)
     seed = _ask_int("Seed", default=0, min_value=0)
+    workers = _ask_int("convert workers (권장 12, 고성능 16)", default=12, min_value=1)
     min_box_area_px = _ask_int("min_box_area_px", default=0, min_value=0)
     include_rain = _ask_yes_no("Include rain?", default=False)
     include_night = _ask_yes_no("Include night?", default=False)
@@ -273,6 +333,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"  - splits:              {splits}")
     print(f"  - limit:               {limit}")
     print(f"  - seed:                {seed}")
+    print(f"  - workers:             {workers}")
     print(f"  - min_box_area_px:     {min_box_area_px}")
     print(f"  - include_rain:        {include_rain}")
     print(f"  - include_night:       {include_night}")
@@ -307,6 +368,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "splits": splits,
             "limit": int(limit),
             "seed": int(seed),
+            "workers": int(workers),
             "min_box_area_px": int(min_box_area_px),
             "include_rain": bool(include_rain),
             "include_night": bool(include_night),
@@ -337,6 +399,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         convert_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "convert_bdd_type_a.py"
         convert_argv: List[str] = [
             sys.executable,
+            "-u",
             str(convert_py),
             "--images-root",
             str(images_root),
@@ -348,6 +411,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             str(out_root),
             "--seed",
             str(seed),
+            "--workers",
+            str(workers),
             "--min-box-area-px",
             str(min_box_area_px),
             "--limit",
@@ -362,6 +427,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if allow_unknown_tags:
             convert_argv.append("--allow-unknown-tags")
 
+        print(
+            "[pv26][로딩][1/4 변환] 원본 이미지/라벨을 학습 포맷으로 변환하고 "
+            "검출 라벨+주행가능영역+도로마커 마스크를 생성합니다.",
+            flush=True,
+        )
         r = _run_stage("convert_bdd_type_a", convert_argv, cwd=REPO_ROOT)
         stage_results.append(r)
         if r.returncode != 0:
@@ -374,10 +444,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             validate_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "validate_pv26_dataset.py"
             validate_argv = [
                 sys.executable,
+                "-u",
                 str(validate_py),
                 "--out-root",
                 str(out_root),
+                "--workers",
+                str(workers),
             ]
+            print(
+                "[pv26][로딩][2/4 검증] 생성된 파일의 존재/해상도/마스크 값 도메인/부분라벨 계약을 전수 검사합니다.",
+                flush=True,
+            )
             r = _run_stage("validate_pv26_dataset", validate_argv, cwd=REPO_ROOT)
             stage_results.append(r)
             if r.returncode != 0:
@@ -390,12 +467,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         qc_out = out_root / "meta" / "qc_report.json"
         qc_argv = [
             sys.executable,
+            "-u",
             str(qc_py),
             "--dataset-root",
             str(out_root),
+            "--workers",
+            str(workers),
             "--out-json",
             str(qc_out),
         ]
+        print(
+            "[pv26][로딩][3/4 QC] split/태그/라벨 존재 분포와 마스크 non-empty 통계를 산출합니다.",
+            flush=True,
+        )
         r = _run_stage("pv26_qc_report", qc_argv, cwd=REPO_ROOT)
         stage_results.append(r)
         if r.returncode != 0:
@@ -409,6 +493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             debug_out_root = out_root / "meta" / "debug_vis"
             dbg_argv = [
                 sys.executable,
+                "-u",
                 str(debug_py),
                 "--dataset-root",
                 str(out_root),
@@ -420,9 +505,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 str(debug_num_samples),
                 "--out-root",
                 str(debug_out_root),
+                "--workers",
+                str(workers),
                 "--seed",
                 str(seed),
             ]
+            print(
+                "[pv26][로딩][4/4 디버그 시각화] 마스크를 컬러맵/오버레이 이미지로 렌더링해 사람이 빠르게 품질 확인할 수 있게 만듭니다.",
+                flush=True,
+            )
             r = _run_stage("render_pv26_debug_masks", dbg_argv, cwd=REPO_ROOT)
             stage_results.append(r)
             if r.returncode != 0:

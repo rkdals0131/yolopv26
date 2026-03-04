@@ -69,7 +69,7 @@ DEFAULT_SCHEDULER    = "cosine"  # LR 스케줄러: cosine|none
 DEFAULT_MIN_LR_RATIO = "0.05"    # cosine eta_min = lr * ratio
 DEFAULT_WARMUP_EPOCHS = 3        # warmup epoch 수 (0이면 비활성화)
 DEFAULT_WARMUP_START_FACTOR = "0.1"  # warmup 시작 LR 비율(0<factor<=1)
-DEFAULT_COMPILE      = False      # torch.compile on/off (A/B 측정 후 필요시 off)
+DEFAULT_COMPILE      = True      # torch.compile on/off (A/B 측정 후 필요시 off)
 DEFAULT_COMPILE_MODE = "default"  # compile mode: default|reduce-overhead|max-autotune
 DEFAULT_COMPILE_FULLGRAPH = False # fullgraph=True면 graph break 탐지/A-B에 유용
 DEFAULT_DET_PRETRAINED = ""      # 선택: detection trunk pretrained 체크포인트 경로(비우면 미사용)

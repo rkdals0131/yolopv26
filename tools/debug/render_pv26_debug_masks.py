@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import random
 import sys
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -202,6 +205,17 @@ def _stable_seed(base_seed: int, channel: str) -> int:
     return (base_seed + int(h)) & 0xFFFFFFFF
 
 
+def _fmt_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "계산중"
+    sec = max(0, int(round(float(seconds))))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
 def render_channel(
     *,
     dataset_root: Path,
@@ -210,6 +224,7 @@ def render_channel(
     num_samples: int,
     out_root: Path,
     seed: int,
+    workers: int,
     lut: np.ndarray,
 ) -> List[Path]:
     rows = _load_manifest_rows(dataset_root, split, channel)
@@ -221,36 +236,120 @@ def render_channel(
     rng = random.Random(_stable_seed(seed, channel))
     rng.shuffle(eligible)
     selected = eligible[: max(0, int(num_samples))]
+    total = len(selected)
+    started = time.monotonic()
+    interval = max(1, total // 20) if total > 0 else 1
 
-    written: List[Path] = []
-    for r in selected:
-        mask_path = dataset_root / r.mask_relpath
+    print(
+        f"[pv26][로딩][디버그 렌더링:{channel}] 시작: {total:,}개 샘플 | "
+        "의미: 마스크를 컬러맵/오버레이로 시각화해 라벨 품질을 빠르게 육안 점검하는 중",
+        flush=True,
+    )
+
+    workers_norm = max(1, int(workers))
+    workers_norm = min(workers_norm, 32)
+    out_dir = out_root / split / channel
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _render_one(sample_idx: int, row: ManifestRow) -> Tuple[int, List[Path], List[str]]:
+        warns: List[str] = []
+        sample_written: List[Path] = []
+        mask_path = dataset_root / row.mask_relpath
         if not mask_path.exists():
-            print(f"[pv26][warn] missing mask: {mask_path}", file=sys.stderr)
-            continue
+            warns.append(f"[pv26][warn] missing mask: {mask_path}")
+            return sample_idx, sample_written, warns
 
         mask_u8 = _load_u8_mask(mask_path)
         mask_vis = _colorize_mask(mask_u8, lut)
 
-        out_dir = out_root / split / channel
-        out_dir.mkdir(parents=True, exist_ok=True)
-        mask_out = out_dir / f"{r.sample_id}__mask.png"
+        mask_out = out_dir / f"{row.sample_id}__mask.png"
         mask_vis.save(mask_out)
-        written.append(mask_out)
+        sample_written.append(mask_out)
 
-        if r.image_relpath:
-            img_path = dataset_root / r.image_relpath
+        if row.image_relpath:
+            img_path = dataset_root / row.image_relpath
             if img_path.exists():
                 with Image.open(img_path) as im:
                     overlay = _make_overlay(im.convert("RGB"), mask_u8, lut)
-                overlay_out = out_dir / f"{r.sample_id}__overlay.png"
+                overlay_out = out_dir / f"{row.sample_id}__overlay.png"
                 overlay.save(overlay_out)
-                written.append(overlay_out)
+                sample_written.append(overlay_out)
             else:
-                print(f"[pv26][warn] missing image (skip overlay): {img_path}", file=sys.stderr)
+                warns.append(f"[pv26][warn] missing image (skip overlay): {img_path}")
         else:
-            print(f"[pv26][warn] missing image_relpath in manifest (skip overlay) sample_id={r.sample_id}", file=sys.stderr)
+            warns.append(
+                f"[pv26][warn] missing image_relpath in manifest (skip overlay) sample_id={row.sample_id}"
+            )
+        return sample_idx, sample_written, warns
+
+    completed: Dict[int, List[Path]] = {}
+    done = 0
+
+    if workers_norm <= 1 or total <= 0:
+        for sample_idx, row in enumerate(selected):
+            idx, sample_written, warns = _render_one(sample_idx, row)
+            completed[idx] = sample_written
+            for w in warns:
+                print(w, file=sys.stderr)
+            done += 1
+            if done % interval == 0 or done == total:
+                elapsed = max(1e-9, time.monotonic() - started)
+                rate = float(done) / elapsed
+                eta = None if rate <= 1e-9 else max(0.0, float(total - done) / rate)
+                pct = 100.0 if total <= 0 else (100.0 * float(done) / float(total))
+                print(
+                    f"[pv26][로딩][디버그 렌더링:{channel}] {done:,}/{total:,} ({pct:6.2f}%) | "
+                    f"속도 {rate:,.2f} 샘플/초 | 남은 시간 {_fmt_duration(eta)}",
+                    flush=True,
+                )
+    else:
+        max_inflight = max(1, workers_norm * 4)
+        task_iter = iter(enumerate(selected))
+        inflight: Dict[Any, int] = {}
+        with ThreadPoolExecutor(max_workers=workers_norm) as ex:
+
+            def _submit_next() -> bool:
+                try:
+                    sample_idx, row = next(task_iter)
+                except StopIteration:
+                    return False
+                fut = ex.submit(_render_one, sample_idx, row)
+                inflight[fut] = sample_idx
+                return True
+
+            for _ in range(min(max_inflight, total)):
+                _submit_next()
+
+            while inflight:
+                done_set, _ = wait(tuple(inflight.keys()), return_when=FIRST_COMPLETED)
+                for fut in done_set:
+                    inflight.pop(fut)
+                    idx, sample_written, warns = fut.result()
+                    completed[idx] = sample_written
+                    for w in warns:
+                        print(w, file=sys.stderr)
+                    done += 1
+                    if done % interval == 0 or done == total:
+                        elapsed = max(1e-9, time.monotonic() - started)
+                        rate = float(done) / elapsed
+                        eta = None if rate <= 1e-9 else max(0.0, float(total - done) / rate)
+                        pct = 100.0 if total <= 0 else (100.0 * float(done) / float(total))
+                        print(
+                            f"[pv26][로딩][디버그 렌더링:{channel}] {done:,}/{total:,} ({pct:6.2f}%) | "
+                            f"속도 {rate:,.2f} 샘플/초 | 남은 시간 {_fmt_duration(eta)}",
+                            flush=True,
+                        )
+                    _submit_next()
+
+    written: List[Path] = []
+    for idx in range(total):
+        written.extend(completed.get(idx, []))
     return written
+
+
+def _default_workers() -> int:
+    cpu = os.cpu_count() or 1
+    return max(1, min(12, cpu - 2 if cpu > 2 else cpu))
 
 
 def _parse_channels(s: str) -> List[str]:
@@ -276,6 +375,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--num-samples", type=int, default=10, help="Number of samples per channel (default: 10)")
     p.add_argument("--out-root", type=Path, default=Path("/tmp/pv26_mask_vis"), help="Output root (default: /tmp/pv26_mask_vis)")
     p.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42)")
+    p.add_argument("--workers", type=int, default=_default_workers(), help="Number of parallel workers for rendering")
     return p
 
 
@@ -285,6 +385,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out_root: Path = args.out_root
     split: str = args.split
     num_samples: int = int(args.num_samples)
+    workers = max(1, int(args.workers))
 
     try:
         channels = _parse_channels(args.channels)
@@ -292,6 +393,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[pv26] invalid --channels: {ex}", file=sys.stderr)
         return 2
 
+    print(
+        f"[pv26][로딩][디버그 렌더링] 시작: workers={workers} | 의미: 선택 샘플의 마스크/오버레이를 병렬 생성",
+        flush=True,
+    )
     lut = build_color_lut()
     lut_path = out_root / "pv26_mask_lut.csv"
     write_lut_csv(lut_path, lut)
@@ -306,6 +411,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 num_samples=num_samples,
                 out_root=out_root,
                 seed=int(args.seed),
+                workers=workers,
                 lut=lut,
             )
         except Exception as ex:

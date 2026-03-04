@@ -13,10 +13,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -59,6 +62,26 @@ SEG_CHANNELS: Tuple[SegChannelSpec, ...] = (
     SegChannelSpec(name="semantic_id", flag_key="has_semantic_id", relpath_key="semantic_relpath", is_semantic_id=True),
 )
 
+QcProgressHook = Callable[[str, str, int, int, float, Optional[float]], None]
+
+
+@dataclass(frozen=True)
+class MaskEvalTask:
+    index: int
+    channel: str
+    relpath: str
+    path: Path
+    is_semantic_id: bool
+
+
+@dataclass(frozen=True)
+class MaskEvalResult:
+    index: int
+    channel: str
+    relpath: str
+    nonempty: bool
+    error: str = ""
+
 
 def _parse_splits_arg(split_arg: Optional[str]) -> Optional[Tuple[str, ...]]:
     """
@@ -86,6 +109,12 @@ def build_argparser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Comma-separated split(s) to analyze: train,val,test (default: all).",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, min(12, (os.cpu_count() or 1) - 2 if (os.cpu_count() or 1) > 2 else (os.cpu_count() or 1))),
+        help="Number of parallel workers for mask statistics scan",
     )
     p.add_argument("--out-json", type=Path, default=None, help="Optional path to write JSON report.")
     return p
@@ -125,18 +154,71 @@ def _pct(n: int, d: int) -> float:
     return 0.0 if d <= 0 else (100.0 * float(n) / float(d))
 
 
-def compute_qc_report(dataset_root: Path, *, splits: Optional[Tuple[str, ...]]) -> Dict[str, Any]:
+def _evaluate_mask_task(task: MaskEvalTask) -> MaskEvalResult:
+    try:
+        mask = _open_mask_u8(task.path)
+        nonempty = _mask_has_positive(mask, is_semantic_id=task.is_semantic_id)
+        return MaskEvalResult(
+            index=task.index,
+            channel=task.channel,
+            relpath=task.relpath,
+            nonempty=bool(nonempty),
+            error="",
+        )
+    except Exception as e:  # noqa: BLE001 - CLI tool: capture and report.
+        return MaskEvalResult(
+            index=task.index,
+            channel=task.channel,
+            relpath=task.relpath,
+            nonempty=False,
+            error=f"{type(e).__name__}: {e}",
+        )
+
+
+def compute_qc_report(
+    dataset_root: Path,
+    *,
+    splits: Optional[Tuple[str, ...]],
+    progress_hook: Optional[QcProgressHook] = None,
+    workers: int = 1,
+) -> Dict[str, Any]:
     manifest_csv = dataset_root / MANIFEST_REL
     if not manifest_csv.exists():
         raise FileNotFoundError(f"manifest not found: {manifest_csv}")
 
+    started = time.monotonic()
+
+    def _emit(stage: str, meaning: str, done: int, total: int) -> None:
+        if progress_hook is None:
+            return
+        elapsed = max(1e-9, time.monotonic() - started)
+        rate = float(done) / elapsed if done > 0 else 0.0
+        eta: Optional[float]
+        if done <= 0 or total <= 0 or rate <= 1e-9:
+            eta = None
+        else:
+            eta = max(0.0, float(total - done) / rate)
+        progress_hook(stage, meaning, done, total, rate, eta)
+
     rows_all = _read_manifest_rows(manifest_csv)
+    _emit(
+        "manifest 로드",
+        "split_manifest.csv를 읽어 QC 계산의 기준 행 집합을 구성하는 중",
+        len(rows_all),
+        len(rows_all),
+    )
     if splits is None:
         rows = rows_all
         splits_used = ("train", "val", "test")
     else:
         rows = [r for r in rows_all if r.get("split", "").strip() in set(splits)]
         splits_used = tuple(sorted(set(splits), key=lambda x: {"train": 0, "val": 1, "test": 2}[x]))
+    _emit(
+        "행 필터링",
+        "요청 split 조건에 맞는 행만 남겨 통계 모수(denominator)를 고정하는 중",
+        len(rows),
+        len(rows_all),
+    )
 
     row_count_per_split = Counter()
     for r in rows:
@@ -157,8 +239,7 @@ def compute_qc_report(dataset_root: Path, *, splits: Optional[Tuple[str, ...]]) 
             c[_safe_tag(r.get(k, ""))] += 1
         tag_counts[k] = dict(c.most_common())
 
-    seg_nonempty: Dict[str, Any] = {}
-    seg_read_errors: Dict[str, List[str]] = defaultdict(list)
+    supervised_rows_by_channel: Dict[str, List[Dict[str, str]]] = {}
     for spec in SEG_CHANNELS:
         supervised_rows: List[Dict[str, str]] = []
         for r in rows:
@@ -168,19 +249,96 @@ def compute_qc_report(dataset_root: Path, *, splits: Optional[Tuple[str, ...]]) 
             if not rel:
                 continue
             supervised_rows.append(r)
+        supervised_rows_by_channel[spec.name] = supervised_rows
 
-        n_supervised = len(supervised_rows)
-        n_nonempty = 0
-        for r in supervised_rows:
+    total_mask_reads = sum(len(v) for v in supervised_rows_by_channel.values())
+    mask_reads_done = 0
+    progress_interval = max(1, total_mask_reads // 100) if total_mask_reads > 0 else 1
+
+    tasks: List[MaskEvalTask] = []
+    for spec in SEG_CHANNELS:
+        for r in supervised_rows_by_channel[spec.name]:
             rel = (r.get(spec.relpath_key, "") or "").strip()
-            p = dataset_root / rel
-            try:
-                m = _open_mask_u8(p)
-                if _mask_has_positive(m, is_semantic_id=spec.is_semantic_id):
-                    n_nonempty += 1
-            except Exception as e:  # noqa: BLE001 - CLI tool: capture and report.
-                seg_read_errors[spec.name].append(f"{rel} :: {type(e).__name__}: {e}")
+            tasks.append(
+                MaskEvalTask(
+                    index=len(tasks),
+                    channel=spec.name,
+                    relpath=rel,
+                    path=dataset_root / rel,
+                    is_semantic_id=spec.is_semantic_id,
+                )
+            )
 
+    workers_norm = max(1, int(workers))
+    workers_norm = min(workers_norm, 32)
+    results: List[MaskEvalResult] = []
+
+    if total_mask_reads > 0:
+        _emit(
+            "마스크 통계 준비",
+            f"supervised mask {total_mask_reads:,}개를 병렬 스캔해 non-empty 비율을 계산하는 중",
+            0,
+            total_mask_reads,
+        )
+
+    if workers_norm <= 1 or total_mask_reads <= 0:
+        for t in tasks:
+            results.append(_evaluate_mask_task(t))
+            mask_reads_done += 1
+            if mask_reads_done % progress_interval == 0 or mask_reads_done == total_mask_reads:
+                _emit(
+                    "마스크 통계",
+                    "supervised mask를 다시 열어 실제 양성 픽셀이 있는지 채널별 품질 지표를 계산하는 중",
+                    mask_reads_done,
+                    total_mask_reads,
+                )
+    else:
+        max_inflight = max(1, workers_norm * 8)
+        task_iter = iter(tasks)
+        inflight: Dict[Any, MaskEvalTask] = {}
+        with ThreadPoolExecutor(max_workers=workers_norm) as ex:
+
+            def _submit_next() -> bool:
+                try:
+                    t = next(task_iter)
+                except StopIteration:
+                    return False
+                fut = ex.submit(_evaluate_mask_task, t)
+                inflight[fut] = t
+                return True
+
+            for _ in range(min(max_inflight, total_mask_reads)):
+                _submit_next()
+
+            while inflight:
+                done_set, _ = wait(tuple(inflight.keys()), return_when=FIRST_COMPLETED)
+                for fut in done_set:
+                    inflight.pop(fut)
+                    results.append(fut.result())
+                    mask_reads_done += 1
+                    if mask_reads_done % progress_interval == 0 or mask_reads_done == total_mask_reads:
+                        _emit(
+                            "마스크 통계",
+                            "supervised mask를 다시 열어 실제 양성 픽셀이 있는지 채널별 품질 지표를 계산하는 중",
+                            mask_reads_done,
+                            total_mask_reads,
+                        )
+                    _submit_next()
+
+    results.sort(key=lambda x: x.index)
+    nonempty_by_channel = Counter()
+    seg_read_errors: Dict[str, List[str]] = defaultdict(list)
+    for r in results:
+        if r.error:
+            seg_read_errors[r.channel].append(f"{r.relpath} :: {r.error}")
+            continue
+        if r.nonempty:
+            nonempty_by_channel[r.channel] += 1
+
+    seg_nonempty: Dict[str, Any] = {}
+    for spec in SEG_CHANNELS:
+        n_supervised = len(supervised_rows_by_channel[spec.name])
+        n_nonempty = int(nonempty_by_channel.get(spec.name, 0))
         seg_nonempty[spec.name] = {
             "n_supervised": n_supervised,
             "n_nonempty": n_nonempty,
@@ -198,6 +356,12 @@ def compute_qc_report(dataset_root: Path, *, splits: Optional[Tuple[str, ...]]) 
         "seg_read_errors": {k: v[:50] for k, v in seg_read_errors.items()},
         "seg_read_error_counts": {k: len(v) for k, v in seg_read_errors.items()},
     }
+    _emit(
+        "QC 리포트 생성",
+        "집계된 지표를 JSON/Human-readable 출력 구조로 마무리하는 중",
+        1,
+        1,
+    )
     return report
 
 
@@ -249,6 +413,7 @@ def _print_report_human(report: Dict[str, Any]) -> None:
 def main() -> int:
     args = build_argparser().parse_args()
     dataset_root: Path = args.dataset_root
+    workers = max(1, int(args.workers))
     out_json: Optional[Path] = args.out_json
     try:
         splits = _parse_splits_arg(args.split)
@@ -256,8 +421,37 @@ def main() -> int:
         print(f"[pv26-qc] error: {e}")
         return 2
 
+    def _fmt_duration(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "계산중"
+        sec = max(0, int(round(float(seconds))))
+        h, rem = divmod(sec, 3600)
+        m, s = divmod(rem, 60)
+        if h > 0:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+    def _progress_hook(
+        stage: str,
+        meaning: str,
+        done: int,
+        total: int,
+        rate: float,
+        eta_seconds: Optional[float],
+    ) -> None:
+        pct = 100.0 if total <= 0 else (100.0 * float(done) / float(total))
+        print(
+            f"[pv26][로딩][QC:{stage}] {done:,}/{total:,} ({pct:6.2f}%) | "
+            f"속도 {rate:,.2f} unit/초 | 남은 시간 {_fmt_duration(eta_seconds)} | 의미: {meaning}",
+            flush=True,
+        )
+
+    print(
+        f"[pv26][로딩][QC] 시작: workers={workers} | 의미: split/tag 분포 및 마스크 non-empty 품질 지표 계산",
+        flush=True,
+    )
     try:
-        report = compute_qc_report(dataset_root, splits=splits)
+        report = compute_qc_report(dataset_root, splits=splits, progress_hook=_progress_hook, workers=workers)
     except Exception as e:  # noqa: BLE001 - CLI
         print(f"[pv26-qc] error: {type(e).__name__}: {e}")
         return 2
