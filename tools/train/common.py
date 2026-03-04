@@ -23,7 +23,7 @@ def seed_everything(seed: int, *, device: torch.device) -> None:
 
 def mean_losses(losses_sum: Dict[str, float], steps: int) -> Dict[str, float]:
     if steps <= 0:
-        return {"total": 0.0, "od": 0.0, "da": 0.0, "rm": 0.0}
+        return {"total": 0.0, "od": 0.0, "da": 0.0, "rm": 0.0, "rm_lane_subclass": 0.0}
     return {k: v / float(steps) for k, v in losses_sum.items()}
 
 
@@ -174,7 +174,10 @@ def compute_map50(
 
 
 def format_loss_line(prefix: str, losses: Dict[str, float]) -> str:
-    return (
+    line = (
         f"{prefix} total={losses['total']:.4f} od={losses['od']:.4f} "
         f"da={losses['da']:.4f} rm={losses['rm']:.4f}"
     )
+    if "rm_lane_subclass" in losses:
+        line += f" rm_lane_subclass={losses['rm_lane_subclass']:.4f}"
+    return line

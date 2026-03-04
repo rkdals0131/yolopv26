@@ -34,6 +34,7 @@ IGNORE_COLOR = (255, 0, 255)  # magenta
 CHANNELS: Dict[str, Dict[str, str]] = {
     "da": {"mask_col": "da_relpath", "has_col": "has_da"},
     "rm_lane_marker": {"mask_col": "rm_lane_marker_relpath", "has_col": "has_rm_lane_marker"},
+    "rm_lane_subclass": {"mask_col": "rm_lane_subclass_relpath", "has_col": "has_rm_lane_subclass"},
     "rm_road_marker_non_lane": {
         "mask_col": "rm_road_marker_non_lane_relpath",
         "has_col": "has_rm_road_marker_non_lane",

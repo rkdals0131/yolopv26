@@ -66,6 +66,10 @@ datasets/pv26_v1/
     train/
     val/
     test/
+  labels_seg_rm_lane_subclass/
+    train/
+    val/
+    test/
   labels_seg_rm_road_marker_non_lane/
     train/
     val/
@@ -101,6 +105,7 @@ For each sample:
 3. Drivable mask: `labels_seg_da/{split}/{sample_id}.png`
 4. Road-marking masks:
    - `labels_seg_rm_lane_marker/{split}/{sample_id}.png`
+   - `labels_seg_rm_lane_subclass/{split}/{sample_id}.png`
    - `labels_seg_rm_road_marker_non_lane/{split}/{sample_id}.png`
    - `labels_seg_rm_stop_line/{split}/{sample_id}.png`
 5. Semantic ID mask: `labels_semantic_id/{split}/{sample_id}.png` (required only when `has_semantic_id=1`)
@@ -140,7 +145,14 @@ All mask files are `uint8 PNG`.
 2. `labels_seg_rm_lane_marker`: binary + ignore mask (`0=background`, `1=lane_marker`, `255=ignore`)
 3. `labels_seg_rm_road_marker_non_lane`: binary + ignore mask (`0=background`, `1=road_marker_non_lane`, `255=ignore`)
 4. `labels_seg_rm_stop_line`: binary + ignore mask (`0=background`, `1=stop_line`, `255=ignore`)
-5. `labels_semantic_id`: single-channel semantic mask (`uint8`, `255` forbidden)
+5. `labels_seg_rm_lane_subclass`: mono8 + ignore mask
+   - `0=background`
+   - `1=white_solid`
+   - `2=white_dashed`
+   - `3=yellow_solid`
+   - `4=yellow_dashed`
+   - `255=ignore`
+6. `labels_semantic_id`: single-channel semantic mask (`uint8`, `255` forbidden)
    - class IDs are defined by `meta/class_map.yaml` and `classmap_version`
 
 Critical rule:
@@ -151,8 +163,8 @@ Semantic composition order:
 1. Initialize all pixels to `0`
 2. Set drivable pixels to `1`
 3. Overwrite road-marking pixels by priority (example):
-   - `lane_marker` > `road_marker_non_lane` > `drivable_area` > `background`
-   - `stop_line` is a subset of `road_marker_non_lane` in multi-channel masks; semantic ID uses a single chosen class per pixel
+   - `stop_line` > `lane_subclass` > `road_marker_non_lane` > `drivable_area` > `background`
+   - `stop_line` may still be a subset of `road_marker_non_lane` in binary RM channels; semantic ID uses a single chosen class per pixel
 
 Notes:
 1. `labels_semantic_id` is required only when `has_semantic_id=1`.
@@ -173,22 +185,24 @@ Notes:
 10. `has_rm_lane_marker` (`0|1`)
 11. `has_rm_road_marker_non_lane` (`0|1`)
 12. `has_rm_stop_line` (`0|1`)
-13. `has_semantic_id` (`0|1`)
-14. `det_label_scope` (`full|subset|none`)
-15. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
-16. `image_relpath`
-17. `det_relpath`
-18. `da_relpath`
-19. `rm_lane_marker_relpath`
-20. `rm_road_marker_non_lane_relpath`
-21. `rm_stop_line_relpath`
-22. `semantic_relpath` (nullable when `has_semantic_id=0`)
-23. `width`
-24. `height`
-25. `weather_tag` (`dry|rain|snow|unknown`)
-26. `time_tag` (`day|night|dawn_dusk|unknown`)
-27. `scene_tag` (`open|tunnel|shadow|unknown`)
-28. `source_group_key`
+13. `has_rm_lane_subclass` (`0|1`)
+14. `has_semantic_id` (`0|1`)
+15. `det_label_scope` (`full|subset|none`)
+16. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
+17. `image_relpath`
+18. `det_relpath`
+19. `da_relpath`
+20. `rm_lane_marker_relpath`
+21. `rm_road_marker_non_lane_relpath`
+22. `rm_stop_line_relpath`
+23. `rm_lane_subclass_relpath`
+24. `semantic_relpath` (nullable when `has_semantic_id=0`)
+25. `width`
+26. `height`
+27. `weather_tag` (`dry|rain|snow|unknown`)
+28. `time_tag` (`day|night|dawn_dusk|unknown`)
+29. `scene_tag` (`open|tunnel|shadow|unknown`)
+30. `source_group_key`
 
 ## 3.8 RoadMarking Label Normalization Policy
 
@@ -229,13 +243,18 @@ Notes:
 
 ## 4.2 Segmentation Classes
 
-This table describes the default `classmap-v1` semantic ID contract. New semantic IDs must be introduced via a new `classmap-vX` and `meta/class_map.yaml`.
+This table describes the current `classmap-v3` semantic ID contract. New semantic IDs must be introduced via a new `classmap-vX` and `meta/class_map.yaml`.
 
 | seg_id | class_name |
 |---|---|
 | 0 | background |
 | 1 | drivable_area |
-| 2 | lane_marking |
+| 2 | lane_white_solid |
+| 3 | lane_white_dashed |
+| 4 | lane_yellow_solid |
+| 5 | lane_yellow_dashed |
+| 6 | road_marker_non_lane |
+| 7 | stop_line |
 
 ## 5. Source Dataset Adapter Rules
 

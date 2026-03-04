@@ -169,7 +169,9 @@ python tools/data_analysis/wod/extract_wod_v2_sample.py \
 
 ## 8. Immediate Policy Decisions (Locked)
 
-1. RoadMarking은 `rm_lane_marker`, `rm_road_marker_non_lane`, `rm_stop_line` 3채널로 시작한다.
-2. `rm_stop_line ⊂ rm_road_marker_non_lane`을 전제로 한다.
-3. json/polygon 라벨은 “룩업 테이블 + 오프라인 rasterization” 후에만 학습에 넣는다.
-4. 데이터셋에 없는 태스크/채널은 `255(ignore)` + `has_*=0`으로 loss에서 제외한다.
+1. RoadMarking binary 채널은 `rm_lane_marker`, `rm_road_marker_non_lane`, `rm_stop_line` 3채널을 유지한다.
+2. lane 세분 supervision은 `rm_lane_subclass`(mono8: white/yellow x solid/dashed)로 병행 운영한다.
+3. `rm_stop_line ⊂ rm_road_marker_non_lane`을 전제로 한다.
+4. json/polygon 라벨은 “룩업 테이블 + 오프라인 rasterization” 후에만 학습에 넣는다.
+5. 데이터셋에 없는 태스크/채널은 `255(ignore)` + `has_*=0`으로 loss에서 제외한다.
+6. RLMD/ETRI/Waymo 후속 매핑 계획은 `docs/LANE_SUBCLASS_COMPAT_PLAN.md`를 단일 기준 문서로 유지한다.

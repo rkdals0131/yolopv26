@@ -42,6 +42,7 @@ ALLOWED_SPLITS: Tuple[str, ...] = ("train", "val", "test")
 ALLOWED_DEBUG_CHANNELS: Tuple[str, ...] = (
     "da",
     "rm_lane_marker",
+    "rm_lane_subclass",
     "rm_road_marker_non_lane",
     "rm_stop_line",
 )
@@ -333,7 +334,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         # 1) Convert.
-        convert_py = REPO_ROOT / "tools" / "convert_bdd_type_a.py"
+        convert_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "convert_bdd_type_a.py"
         convert_argv: List[str] = [
             sys.executable,
             str(convert_py),
@@ -370,7 +371,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         # 2) Validate (optional).
         if run_validate:
-            validate_py = REPO_ROOT / "tools" / "validate_pv26_dataset.py"
+            validate_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "validate_pv26_dataset.py"
             validate_argv = [
                 sys.executable,
                 str(validate_py),
@@ -385,7 +386,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise RuntimeError(f"stage failed: {r.name} rc={r.returncode}")
 
         # 3) QC report (always).
-        qc_py = REPO_ROOT / "tools" / "pv26_qc_report.py"
+        qc_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "pv26_qc_report.py"
         qc_out = out_root / "meta" / "qc_report.json"
         qc_argv = [
             sys.executable,

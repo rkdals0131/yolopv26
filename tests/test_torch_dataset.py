@@ -20,6 +20,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                 "labels_det/train",
                 "labels_seg_da/train",
                 "labels_seg_rm_lane_marker/train",
+                "labels_seg_rm_lane_subclass/train",
                 "labels_seg_rm_road_marker_non_lane/train",
                 "labels_seg_rm_stop_line/train",
             ]:
@@ -30,6 +31,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
             det_rel = f"labels_det/train/{sample_id}.txt"
             da_rel = f"labels_seg_da/train/{sample_id}.png"
             rm_lane_rel = f"labels_seg_rm_lane_marker/train/{sample_id}.png"
+            rm_lane_sub_rel = f"labels_seg_rm_lane_subclass/train/{sample_id}.png"
             rm_road_rel = f"labels_seg_rm_road_marker_non_lane/train/{sample_id}.png"
             rm_stop_rel = f"labels_seg_rm_stop_line/train/{sample_id}.png"
 
@@ -47,7 +49,9 @@ class TestPv26ManifestDataset(unittest.TestCase):
             # RM lane/road masks
             rm_lane = np.array([[0, 0, 1, 0], [0, 0, 1, 0]], dtype=np.uint8)
             rm_road = np.array([[0, 1, 0, 0], [0, 1, 0, 0]], dtype=np.uint8)
+            rm_lane_sub = np.array([[0, 1, 0, 0], [0, 2, 0, 0]], dtype=np.uint8)
             Image.fromarray(rm_lane, mode="L").save(root / rm_lane_rel)
+            Image.fromarray(rm_lane_sub, mode="L").save(root / rm_lane_sub_rel)
             Image.fromarray(rm_road, mode="L").save(root / rm_road_rel)
             # stop_line file exists but will be ignored (has_rm_stop_line=0)
             Image.fromarray(np.full((2, 4), 255, dtype=np.uint8), mode="L").save(root / rm_stop_rel)
@@ -70,6 +74,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         "has_rm_lane_marker",
                         "has_rm_road_marker_non_lane",
                         "has_rm_stop_line",
+                        "has_rm_lane_subclass",
                         "has_semantic_id",
                         "det_label_scope",
                         "det_annotated_class_ids",
@@ -79,6 +84,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         "rm_lane_marker_relpath",
                         "rm_road_marker_non_lane_relpath",
                         "rm_stop_line_relpath",
+                        "rm_lane_subclass_relpath",
                         "semantic_relpath",
                         "width",
                         "height",
@@ -102,6 +108,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         "1",
                         "1",
                         "0",
+                        "1",
                         "0",
                         "full",
                         "",
@@ -111,6 +118,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         rm_lane_rel,
                         rm_road_rel,
                         rm_stop_rel,
+                        rm_lane_sub_rel,
                         "",
                         "4",
                         "2",
@@ -132,6 +140,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
             self.assertEqual(tuple(s.image.shape), (3, 6, 6))
             self.assertEqual(tuple(s.da_mask.shape), (6, 6))
             self.assertEqual(tuple(s.rm_mask.shape), (3, 6, 6))
+            self.assertEqual(tuple(s.rm_lane_subclass_mask.shape), (6, 6))
             self.assertEqual(tuple(s.det_yolo.shape), (1, 5))
 
             # Check bbox transforms roughly (see letterbox math in pv26.torch_dataset)
@@ -153,6 +162,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                 "labels_det/train",
                 "labels_seg_da/train",
                 "labels_seg_rm_lane_marker/train",
+                "labels_seg_rm_lane_subclass/train",
                 "labels_seg_rm_road_marker_non_lane/train",
                 "labels_seg_rm_stop_line/train",
             ]:
@@ -163,6 +173,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
             det_rel = f"labels_det/train/{sample_id}.txt"
             da_rel = f"labels_seg_da/train/{sample_id}.png"
             rm_lane_rel = f"labels_seg_rm_lane_marker/train/{sample_id}.png"
+            rm_lane_sub_rel = f"labels_seg_rm_lane_subclass/train/{sample_id}.png"
             rm_road_rel = f"labels_seg_rm_road_marker_non_lane/train/{sample_id}.png"
             rm_stop_rel = f"labels_seg_rm_stop_line/train/{sample_id}.png"
 
@@ -174,7 +185,9 @@ class TestPv26ManifestDataset(unittest.TestCase):
             Image.fromarray(da, mode="L").save(root / da_rel)
             rm_lane = np.array([[0, 0, 1, 0], [0, 0, 1, 0]], dtype=np.uint8)
             rm_road = np.array([[0, 1, 0, 0], [0, 1, 0, 0]], dtype=np.uint8)
+            rm_lane_sub = np.array([[0, 1, 0, 0], [0, 2, 0, 0]], dtype=np.uint8)
             Image.fromarray(rm_lane, mode="L").save(root / rm_lane_rel)
+            Image.fromarray(rm_lane_sub, mode="L").save(root / rm_lane_sub_rel)
             Image.fromarray(rm_road, mode="L").save(root / rm_road_rel)
             Image.fromarray(np.full((2, 4), 255, dtype=np.uint8), mode="L").save(root / rm_stop_rel)
 
@@ -195,6 +208,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         "has_rm_lane_marker",
                         "has_rm_road_marker_non_lane",
                         "has_rm_stop_line",
+                        "has_rm_lane_subclass",
                         "has_semantic_id",
                         "det_label_scope",
                         "det_annotated_class_ids",
@@ -204,6 +218,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         "rm_lane_marker_relpath",
                         "rm_road_marker_non_lane_relpath",
                         "rm_stop_line_relpath",
+                        "rm_lane_subclass_relpath",
                         "semantic_relpath",
                         "width",
                         "height",
@@ -227,6 +242,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         "1",
                         "1",
                         "0",
+                        "1",
                         "0",
                         "full",
                         "",
@@ -236,6 +252,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
                         rm_lane_rel,
                         rm_road_rel,
                         rm_stop_rel,
+                        rm_lane_sub_rel,
                         "",
                         "4",
                         "2",
@@ -260,6 +277,8 @@ class TestPv26ManifestDataset(unittest.TestCase):
             self.assertEqual(s.da_mask[0].tolist(), [0, 1, 1, 0])
             # Second row [0,0,1,0] -> [0,1,0,0]
             self.assertEqual(s.da_mask[1].tolist(), [0, 1, 0, 0])
+            # Lane subclass mask must be flipped consistently.
+            self.assertEqual(s.rm_lane_subclass_mask[1].tolist(), [0, 0, 2, 0])
 
 
 if __name__ == "__main__":

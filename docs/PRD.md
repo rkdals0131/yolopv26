@@ -99,6 +99,8 @@ flowchart LR
 1. 모델의 학습/논리 출력은 `OD + Drivable(binary) + RoadMarking(multi-channel)` 3개다.
    - RoadMarking 기본 채널(회의 확정): `lane_marker`, `road_marker_non_lane`, `stop_line`
    - 채널 관계: `stop_line ⊂ road_marker_non_lane` (멀티라벨이므로 픽셀에서 동시 활성 허용)
+   - lane 세분 supervision은 별도 mono8 채널 `lane_subclass`를 추가한다.
+     - class id: `0(background), 1(white_solid), 2(white_dashed), 3(yellow_solid), 4(yellow_dashed), 255(ignore)`
 2. 배포/연동용 semantic 출력은 `semantic_id mono8` class-id map 형태로 제공한다.
    - class id는 `classmap_version` 및 `class_map.yaml`에 의해 정의된다.
 3. Drivable/RoadMarking masks는 학습 및 디버깅용 내부 출력이며, ROS2에서는 optional debug 토픽으로 발행할 수 있다.
@@ -110,6 +112,8 @@ flowchart LR
 2. semantic map class id는 `classmap_version`으로 버저닝하며, 상세 매핑은 `class_map.yaml`에 정의한다.
    - `classmap-v1` 예시: `{0: background, 1: drivable_area, 2: lane_marking}`
    - `classmap-v2` 예시: `{0: background, 1: drivable_area, 2: lane_marking, 3: stop_line}`
+   - `classmap-v3` 예시:
+     `{0: background, 1: drivable_area, 2: lane_white_solid, 3: lane_white_dashed, 4: lane_yellow_solid, 5: lane_yellow_dashed, 6: road_marker_non_lane, 7: stop_line}`
 3. OD 출력은 별도 토픽으로 발행하고, SPADE core는 semantic 입력만 필수로 사용한다.
 
 ### FR-04. 장애물/기물 처리 정책
@@ -121,7 +125,7 @@ flowchart LR
 
 1. 라벨이 없는 태스크를 `background(0)`로 채우는 것을 금지한다.
 2. 라벨 부재 태스크/채널은 `ignore index=255`로 저장하고, `has_*` 플래그로 명시한다.
-   - 예: `has_det/has_da/has_rm_lane_marker/has_rm_road_marker_non_lane/has_rm_stop_line`
+   - 예: `has_det/has_da/has_rm_lane_marker/has_rm_road_marker_non_lane/has_rm_stop_line/has_rm_lane_subclass`
 3. 학습 시 `has_*` 플래그와 `ignore(255)`를 이용해 task별 loss masking을 적용한다.
 4. Detection 부분 라벨 처리를 위해 `det_label_scope(full|subset|none)`와 `det_annotated_class_ids`를 manifest에 포함한다.
 5. `det_label_scope=subset` 샘플은 미주석 클래스에 대해 OD negative loss를 적용하지 않는다.
@@ -156,9 +160,23 @@ flowchart LR
 | 2 | lane_marking |
 | 3 | stop_line |
 
+#### classmap-v3 (lane subclass 분리)
+
+| seg_id | class_name |
+|---|---|
+| 0 | background |
+| 1 | drivable_area |
+| 2 | lane_white_solid |
+| 3 | lane_white_dashed |
+| 4 | lane_yellow_solid |
+| 5 | lane_yellow_dashed |
+| 6 | road_marker_non_lane |
+| 7 | stop_line |
+
 참고:
 1. `semantic_id`는 연동/시각화 목적의 single-channel 결과다.
-2. 학습용 RoadMarking은 multi-channel mask(`lane_marker`, `road_marker_non_lane`, `stop_line`)로 별도 운영한다.
+2. 학습용 RoadMarking binary 채널(`lane_marker`, `road_marker_non_lane`, `stop_line`)은 유지한다.
+3. lane subclass supervision은 `labels_seg_rm_lane_subclass` mono8로 별도 운영한다.
 
 ### 6.2 Object Detection 클래스 (MVP 고정)
 
@@ -204,6 +222,7 @@ flowchart LR
    - `labels_seg_rm_lane_marker`: `uint8 PNG`, 값 `{0,1,255}`
    - `labels_seg_rm_road_marker_non_lane`: `uint8 PNG`, 값 `{0,1,255}`
    - `labels_seg_rm_stop_line`: `uint8 PNG`, 값 `{0,1,255}`
+   - `labels_seg_rm_lane_subclass`: `uint8 PNG`, 값 `{0,1,2,3,4,255}`
 4. 배포/연동용 Segmentation:
    - `labels_semantic_id`: `uint8 PNG mono8`, 값은 `class_map.yaml`에 정의된 class id만 허용
 5. 라벨이 없는 태스크는 반드시 `255(ignore)`로 저장하며 `has_*` 플래그를 함께 제공한다.
@@ -230,6 +249,10 @@ dataset/
     val/
     test/
   labels_seg_rm_lane_marker/
+    train/
+    val/
+    test/
+  labels_seg_rm_lane_subclass/
     train/
     val/
     test/

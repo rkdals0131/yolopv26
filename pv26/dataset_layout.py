@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List
 
 
 SPLITS = ("train", "val", "test")
@@ -23,6 +22,9 @@ class Pv26Layout:
 
     def labels_seg_rm_lane_marker_dir(self, split: str) -> Path:
         return self.out_root / "labels_seg_rm_lane_marker" / split
+
+    def labels_seg_rm_lane_subclass_dir(self, split: str) -> Path:
+        return self.out_root / "labels_seg_rm_lane_subclass" / split
 
     def labels_seg_rm_road_marker_non_lane_dir(self, split: str) -> Path:
         return self.out_root / "labels_seg_rm_road_marker_non_lane" / split
@@ -57,8 +59,8 @@ class Pv26Layout:
             self.labels_det_dir(split).mkdir(parents=True, exist_ok=True)
             self.labels_seg_da_dir(split).mkdir(parents=True, exist_ok=True)
             self.labels_seg_rm_lane_marker_dir(split).mkdir(parents=True, exist_ok=True)
+            self.labels_seg_rm_lane_subclass_dir(split).mkdir(parents=True, exist_ok=True)
             self.labels_seg_rm_road_marker_non_lane_dir(split).mkdir(parents=True, exist_ok=True)
             self.labels_seg_rm_stop_line_dir(split).mkdir(parents=True, exist_ok=True)
             self.labels_semantic_id_dir(split).mkdir(parents=True, exist_ok=True)
         self.meta_dir().mkdir(parents=True, exist_ok=True)
-

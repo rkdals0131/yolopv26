@@ -5,7 +5,9 @@ import numpy as np
 from pv26.masks import (
     IGNORE_VALUE,
     compose_semantic_id_v2,
+    compose_semantic_id_v3,
     validate_binary_mask_u8,
+    validate_lane_subclass_mask_u8,
     validate_semantic_id_u8,
 )
 
@@ -43,7 +45,23 @@ class TestMasks(unittest.TestCase):
         sem = np.array([[0, 1, 2, 3]], dtype=np.uint8)
         validate_semantic_id_u8(sem, allowed_ids={0, 1, 2, 3})
 
+    def test_validate_lane_subclass_mask_u8(self):
+        m = np.array([[0, 1, 2, 3, 4, IGNORE_VALUE]], dtype=np.uint8)
+        validate_lane_subclass_mask_u8(m, allow_ignore=True)
+
+    def test_compose_semantic_id_v3_priority(self):
+        da = np.array([[1, 1], [1, 0]], dtype=np.uint8)
+        lane_sub = np.array([[1, 2], [0, 0]], dtype=np.uint8)
+        rm_road = np.array([[0, 0], [1, 0]], dtype=np.uint8)
+        rm_stop = np.array([[0, 0], [1, 0]], dtype=np.uint8)
+        res = compose_semantic_id_v3(da, lane_sub, rm_road, rm_stop)
+        self.assertTrue(res.ok)
+        # (0,0): lane white solid(2)
+        # (0,1): lane white dashed(3)
+        # (1,0): stop line(7) overrides road marker/drivable
+        # (1,1): background(0)
+        self.assertEqual(res.semantic_id.tolist(), [[2, 3], [7, 0]])
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -31,6 +31,7 @@ FLAG_COLUMNS: Tuple[str, ...] = (
     "has_rm_lane_marker",
     "has_rm_road_marker_non_lane",
     "has_rm_stop_line",
+    "has_rm_lane_subclass",
     "has_semantic_id",
 )
 
@@ -54,6 +55,7 @@ SEG_CHANNELS: Tuple[SegChannelSpec, ...] = (
         relpath_key="rm_road_marker_non_lane_relpath",
     ),
     SegChannelSpec(name="rm_stop_line", flag_key="has_rm_stop_line", relpath_key="rm_stop_line_relpath"),
+    SegChannelSpec(name="rm_lane_subclass", flag_key="has_rm_lane_subclass", relpath_key="rm_lane_subclass_relpath"),
     SegChannelSpec(name="semantic_id", flag_key="has_semantic_id", relpath_key="semantic_relpath", is_semantic_id=True),
 )
 
@@ -273,4 +275,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

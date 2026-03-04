@@ -15,11 +15,13 @@ class TestPV26CriterionMasking(unittest.TestCase):
             "det_yolo": [torch.zeros((0, 5), dtype=torch.float32)],
             "da_mask": torch.full((1, 2, 2), 255, dtype=torch.uint8),
             "rm_mask": torch.full((1, 3, 2, 2), 255, dtype=torch.uint8),
+            "rm_lane_subclass_mask": torch.full((1, 2, 2), 255, dtype=torch.uint8),
             "has_det": torch.tensor([0], dtype=torch.long),
             "has_da": torch.tensor([0], dtype=torch.long),
             "has_rm_lane_marker": torch.tensor([0], dtype=torch.long),
             "has_rm_road_marker_non_lane": torch.tensor([0], dtype=torch.long),
             "has_rm_stop_line": torch.tensor([0], dtype=torch.long),
+            "has_rm_lane_subclass": torch.tensor([0], dtype=torch.long),
             "det_label_scope": ["none"],
         }
 
@@ -28,6 +30,7 @@ class TestPV26CriterionMasking(unittest.TestCase):
             det=torch.zeros(1, 7, 1, 1),
             da=torch.zeros(1, 1, 2, 2),
             rm=torch.zeros(1, 3, 2, 2),
+            rm_lane_subclass=torch.zeros(1, 5, 2, 2),
         )
 
     def test_da_loss_ignores_255_pixels(self):
@@ -100,6 +103,19 @@ class TestPV26CriterionMasking(unittest.TestCase):
 
         self.assertEqual(float(od_subset), 0.0)
         self.assertGreater(float(od_full), 0.0)
+
+    def test_rm_lane_subclass_is_masked_when_flag_is_zero(self):
+        preds_a = self._preds()
+        preds_b = self._preds()
+        preds_b.rm_lane_subclass[:, 1, :, :] = 10.0
+
+        batch = self._base_batch()
+        batch["has_rm_lane_subclass"] = torch.tensor([0], dtype=torch.long)
+        batch["rm_lane_subclass_mask"] = torch.tensor([[[1, 2], [3, 4]]], dtype=torch.uint8)
+
+        loss_a = self.criterion(preds_a, batch)["rm_lane_subclass"]
+        loss_b = self.criterion(preds_b, batch)["rm_lane_subclass"]
+        self.assertAlmostEqual(float(loss_a), float(loss_b), places=6)
 
 
 if __name__ == "__main__":

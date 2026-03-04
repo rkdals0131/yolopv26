@@ -18,6 +18,8 @@ class PV26MultiHeadOutput:
     da: Tensor
     # Road-marking logits: [B, 3, H, W]
     rm: Tensor
+    # Lane-subclass logits: [B, 5, H, W] => [background + 4 subclasses]
+    rm_lane_subclass: Tensor
 
 
 class ConvBNAct(nn.Module):
@@ -157,11 +159,13 @@ class PV26MultiHead(nn.Module):
     def __init__(
         self,
         num_det_classes: int = 11,
+        num_lane_subclasses: int = 4,
         backbone: Optional[nn.Module] = None,
         neck: Optional[nn.Module] = None,
         fused_ch: int = 160,
     ):
         super().__init__()
+        self.num_lane_subclasses = int(num_lane_subclasses)
         self.backbone = backbone if backbone is not None else TinyPV26Backbone()
         self.neck = neck if neck is not None else TinyFPN(out_ch=fused_ch)
         self.det_head = DetectionHeadDense(in_ch=fused_ch, num_classes=num_det_classes)
@@ -170,6 +174,10 @@ class PV26MultiHead(nn.Module):
         # - RM from deeper fused feature (after neck/FPN) with deconvolution
         self.da_head = DrivableAreaHeadP3(in_ch=128)
         self.rm_head = RoadMarkingHeadDeconv(in_ch=fused_ch, out_ch=3)
+        self.rm_lane_subclass_head = RoadMarkingHeadDeconv(
+            in_ch=fused_ch,
+            out_ch=(self.num_lane_subclasses + 1),
+        )
 
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
@@ -178,7 +186,8 @@ class PV26MultiHead(nn.Module):
         det = self.det_head(fused)
         da = self.da_head(p3, out_size=(in_h, in_w))
         rm = self.rm_head(fused, out_size=(in_h, in_w))
-        return PV26MultiHeadOutput(det=det, da=da, rm=rm)
+        rm_lane_subclass = self.rm_lane_subclass_head(fused, out_size=(in_h, in_w))
+        return PV26MultiHeadOutput(det=det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
 
 
 class PV26MultiHeadYOLO26(nn.Module):
@@ -198,11 +207,13 @@ class PV26MultiHeadYOLO26(nn.Module):
         self,
         *,
         num_det_classes: int = 11,
+        num_lane_subclasses: int = 4,
         yolo26_cfg: str = "yolo26n.yaml",
         verbose: bool = False,
     ):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
+        self.num_lane_subclasses = int(num_lane_subclasses)
         self.yolo26_cfg = str(yolo26_cfg)
 
         # Lazy import: Ultralytics writes settings.json under a user config dir by default.
@@ -249,6 +260,10 @@ class PV26MultiHeadYOLO26(nn.Module):
 
         self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]))
         self.rm_head = RoadMarkingHeadDeconv(in_ch=int(p3_head.shape[1]), out_ch=3)
+        self.rm_lane_subclass_head = RoadMarkingHeadDeconv(
+            in_ch=int(p3_head.shape[1]),
+            out_ch=(self.num_lane_subclasses + 1),
+        )
 
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
@@ -266,4 +281,5 @@ class PV26MultiHeadYOLO26(nn.Module):
 
         da = self.da_head(p3_backbone, out_size=(in_h, in_w))
         rm = self.rm_head(p3_head, out_size=(in_h, in_w))
-        return PV26MultiHeadOutput(det=det_out, da=da, rm=rm)
+        rm_lane_subclass = self.rm_lane_subclass_head(p3_head, out_size=(in_h, in_w))
+        return PV26MultiHeadOutput(det=det_out, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)

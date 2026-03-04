@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, fields
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List
 
 
 MANIFEST_COLUMNS: List[str] = [
@@ -18,6 +18,7 @@ MANIFEST_COLUMNS: List[str] = [
     "has_rm_lane_marker",
     "has_rm_road_marker_non_lane",
     "has_rm_stop_line",
+    "has_rm_lane_subclass",
     "has_semantic_id",
     "det_label_scope",
     "det_annotated_class_ids",
@@ -27,6 +28,7 @@ MANIFEST_COLUMNS: List[str] = [
     "rm_lane_marker_relpath",
     "rm_road_marker_non_lane_relpath",
     "rm_stop_line_relpath",
+    "rm_lane_subclass_relpath",
     "semantic_relpath",
     "width",
     "height",
@@ -51,6 +53,7 @@ class ManifestRow:
     has_rm_lane_marker: int
     has_rm_road_marker_non_lane: int
     has_rm_stop_line: int
+    has_rm_lane_subclass: int
     has_semantic_id: int
     det_label_scope: str
     det_annotated_class_ids: str
@@ -60,6 +63,7 @@ class ManifestRow:
     rm_lane_marker_relpath: str
     rm_road_marker_non_lane_relpath: str
     rm_stop_line_relpath: str
+    rm_lane_subclass_relpath: str
     semantic_relpath: str
     width: int
     height: int
@@ -109,6 +113,7 @@ def validate_manifest_row_basic(row: Dict[str, str]) -> List[str]:
         "has_rm_lane_marker",
         "has_rm_road_marker_non_lane",
         "has_rm_stop_line",
+        "has_rm_lane_subclass",
         "has_semantic_id",
     ]:
         v = row.get(k, "")
@@ -126,4 +131,3 @@ def validate_manifest_row_basic(row: Dict[str, str]) -> List[str]:
         errs.append("det_annotated_class_ids_must_be_empty_for_full_or_none")
 
     return errs
-

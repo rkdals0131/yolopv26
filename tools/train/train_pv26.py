@@ -300,8 +300,10 @@ def _collate_train(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, A
         [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
         dtype=torch.long,
     )
+    has_rm_lane_subclass = torch.tensor([s.has_rm_lane_subclass for s in samples], dtype=torch.long)
     da_mask = torch.stack([s.da_mask for s in samples], dim=0)
     rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
+    rm_lane_subclass_mask = torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0)
     det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
     det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = _build_flat_det_targets(det_yolo_list)
 
@@ -314,8 +316,10 @@ def _collate_train(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, A
         "has_det": has_det,
         "has_da": has_da,
         "has_rm": has_rm,
+        "has_rm_lane_subclass": has_rm_lane_subclass,
         "da_mask": da_mask,
         "rm_mask": rm_mask,
+        "rm_lane_subclass_mask": rm_lane_subclass_mask,
     }
     return images, target_batch
 
@@ -337,8 +341,10 @@ def _collate_eval(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, An
         [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
         dtype=torch.long,
     )
+    has_rm_lane_subclass = torch.tensor([s.has_rm_lane_subclass for s in samples], dtype=torch.long)
     da_mask = torch.stack([s.da_mask for s in samples], dim=0)
     rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
+    rm_lane_subclass_mask = torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0)
     det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
     det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = _build_flat_det_targets(det_yolo_list)
 
@@ -354,8 +360,10 @@ def _collate_eval(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, An
         "has_det": has_det,
         "has_da": has_da,
         "has_rm": has_rm,
+        "has_rm_lane_subclass": has_rm_lane_subclass,
         "da_mask": da_mask,
         "rm_mask": rm_mask,
+        "rm_lane_subclass_mask": rm_lane_subclass_mask,
     }
     return images, target_batch
 
@@ -740,7 +748,10 @@ def train_one_epoch(
     profile_system: bool,
 ) -> Dict[str, float]:
     model.train()
-    losses_sum = {k: torch.zeros((), device=device, dtype=torch.float32) for k in ("total", "od", "da", "rm")}
+    losses_sum = {
+        k: torch.zeros((), device=device, dtype=torch.float32)
+        for k in ("total", "od", "da", "rm", "rm_lane_subclass")
+    }
     steps = 0
     prof_every = max(0, int(profile_every))
     prof_sync = bool(profile_sync_cuda and device.type == "cuda")
@@ -896,7 +907,10 @@ def validate(
 ) -> tuple[Dict[str, float], Dict[str, Optional[float]], Optional[float], bool]:
     model.eval()
     t_val_start = time.perf_counter()
-    losses_sum = {k: torch.zeros((), device=device, dtype=torch.float32) for k in ("total", "od", "da", "rm")}
+    losses_sum = {
+        k: torch.zeros((), device=device, dtype=torch.float32)
+        for k in ("total", "od", "da", "rm", "rm_lane_subclass")
+    }
     steps = 0
 
     metric_stats: Dict[str, Dict[str, int]] = {
@@ -904,6 +918,10 @@ def validate(
         "rm_lane_marker": {"inter": 0, "union": 0, "supervised": 0},
         "rm_road_marker_non_lane": {"inter": 0, "union": 0, "supervised": 0},
         "rm_stop_line": {"inter": 0, "union": 0, "supervised": 0},
+        "rm_lane_subclass_white_solid": {"inter": 0, "union": 0, "supervised": 0},
+        "rm_lane_subclass_white_dashed": {"inter": 0, "union": 0, "supervised": 0},
+        "rm_lane_subclass_yellow_solid": {"inter": 0, "union": 0, "supervised": 0},
+        "rm_lane_subclass_yellow_dashed": {"inter": 0, "union": 0, "supervised": 0},
     }
 
     num_det_classes = len(DET_CLASSES_CANONICAL)
@@ -949,6 +967,8 @@ def validate(
             rm_mask_dev: torch.Tensor = target_batch["rm_mask"]
             has_da_dev: torch.Tensor = target_batch["has_da"].to(dtype=torch.bool)
             has_rm_dev: torch.Tensor = target_batch["has_rm"].to(dtype=torch.bool)
+            rm_lane_subclass_mask_dev: torch.Tensor = target_batch["rm_lane_subclass_mask"]
+            has_rm_lane_subclass_dev: torch.Tensor = target_batch["has_rm_lane_subclass"].to(dtype=torch.bool)
 
             valid_da = (da_mask_dev != 255) & has_da_dev[:, None, None]
             supervised_da = valid_da.reshape(valid_da.shape[0], -1).any(dim=1)
@@ -972,6 +992,22 @@ def validate(
                 metric_stats[name]["inter"] += int((((pred_rm[:, c_idx] & tgt_rm[:, c_idx]) & valid_c).sum()).item())
                 metric_stats[name]["union"] += int((((pred_rm[:, c_idx] | tgt_rm[:, c_idx]) & valid_c).sum()).item())
                 metric_stats[name]["supervised"] += int(supervised_c.sum().item())
+
+            lane_subclass_specs = [
+                (1, "rm_lane_subclass_white_solid"),
+                (2, "rm_lane_subclass_white_dashed"),
+                (3, "rm_lane_subclass_yellow_solid"),
+                (4, "rm_lane_subclass_yellow_dashed"),
+            ]
+            pred_lane_subclass = torch.argmax(preds.rm_lane_subclass, dim=1)
+            valid_lane_subclass = (rm_lane_subclass_mask_dev != 255) & has_rm_lane_subclass_dev[:, None, None]
+            supervised_lane_subclass = valid_lane_subclass.reshape(valid_lane_subclass.shape[0], -1).any(dim=1)
+            for cls_id, cls_name in lane_subclass_specs:
+                pred_c = pred_lane_subclass == int(cls_id)
+                tgt_c = rm_lane_subclass_mask_dev == int(cls_id)
+                metric_stats[cls_name]["inter"] += int((((pred_c & tgt_c) & valid_lane_subclass).sum()).item())
+                metric_stats[cls_name]["union"] += int((((pred_c | tgt_c) & valid_lane_subclass).sum()).item())
+                metric_stats[cls_name]["supervised"] += int(supervised_lane_subclass.sum().item())
 
             for i in range(int(images_cpu.shape[0])):
                 sid = sample_ids[i] if i < len(sample_ids) else f"{batch_idx}:{i}"
@@ -1031,6 +1067,17 @@ def validate(
             iou_metrics[name] = 0.0
         else:
             iou_metrics[name] = float(stats["inter"]) / float(stats["union"])
+
+    lane_subclass_metric_names = [
+        "rm_lane_subclass_white_solid",
+        "rm_lane_subclass_white_dashed",
+        "rm_lane_subclass_yellow_solid",
+        "rm_lane_subclass_yellow_dashed",
+    ]
+    lane_subclass_ious = [iou_metrics[n] for n in lane_subclass_metric_names if iou_metrics.get(n) is not None]
+    iou_metrics["rm_lane_subclass_miou4"] = (
+        None if not lane_subclass_ious else float(sum(lane_subclass_ious) / float(len(lane_subclass_ious)))
+    )
 
     t_map_start = time.perf_counter()
     map50: Optional[float]
@@ -1139,12 +1186,17 @@ def main() -> int:
     )
 
     if args.arch == "stub":
-        model = PV26MultiHead(num_det_classes=len(DET_CLASSES_CANONICAL)).to(device)
-        criterion = PV26Criterion(num_det_classes=len(DET_CLASSES_CANONICAL)).to(device)
+        model = PV26MultiHead(num_det_classes=len(DET_CLASSES_CANONICAL), num_lane_subclasses=4).to(device)
+        criterion = PV26Criterion(num_det_classes=len(DET_CLASSES_CANONICAL), num_lane_subclasses=4).to(device)
     else:
-        model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device)
+        model = PV26MultiHeadYOLO26(
+            num_det_classes=len(DET_CLASSES_CANONICAL),
+            num_lane_subclasses=4,
+            yolo26_cfg="yolo26n.yaml",
+        ).to(device)
         criterion = PV26Criterion(
             num_det_classes=len(DET_CLASSES_CANONICAL),
+            num_lane_subclasses=4,
             od_loss_impl="ultralytics_e2e",
             ultra_det_model=model.det_model,
         ).to(device)
@@ -1271,10 +1323,12 @@ def main() -> int:
             writer.add_scalar("train/loss_od", train_losses["od"], epoch + 1)
             writer.add_scalar("train/loss_da", train_losses["da"], epoch + 1)
             writer.add_scalar("train/loss_rm", train_losses["rm"], epoch + 1)
+            writer.add_scalar("train/loss_rm_lane_subclass", train_losses["rm_lane_subclass"], epoch + 1)
             writer.add_scalar("val/loss_total", val_losses["total"], epoch + 1)
             writer.add_scalar("val/loss_od", val_losses["od"], epoch + 1)
             writer.add_scalar("val/loss_da", val_losses["da"], epoch + 1)
             writer.add_scalar("val/loss_rm", val_losses["rm"], epoch + 1)
+            writer.add_scalar("val/loss_rm_lane_subclass", val_losses["rm_lane_subclass"], epoch + 1)
             if map_computed and map50 is not None:
                 writer.add_scalar("val/map50", map50, epoch + 1)
             for name, iou in ious.items():

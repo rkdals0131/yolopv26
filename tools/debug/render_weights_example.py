@@ -34,7 +34,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda", "auto"])
     p.add_argument("--da-alpha", type=float, default=0.30, help="Max alpha for DA overlay")
     p.add_argument("--lane-alpha", type=float, default=0.55, help="Max alpha for lane overlay")
-    p.add_argument("--pv26-lane-thres", type=float, default=0.0, help="Optional floor for PV26 lane prob before overlay")
+    p.add_argument(
+        "--pv26-lane-thres",
+        type=float,
+        default=0.0,
+        help="Optional floor for PV26 lane-subclass confidence before overlay",
+    )
     p.add_argument("--out-pv2", type=Path, default=Path("datasets/weights/result_pv2.jpg"))
     p.add_argument("--out-pv26", type=Path, default=Path("datasets/weights/result_pv26.jpg"))
     return p.parse_args()
@@ -114,6 +119,36 @@ def overlay_prob(base: np.ndarray, prob: np.ndarray, color: tuple[int, int, int]
     color_arr = np.array(color, dtype=np.float32).reshape(1, 1, 3)
     out = base.astype(np.float32) * (1.0 - a) + color_arr * a
     return np.clip(out, 0.0, 255.0).astype(np.uint8)
+
+
+def overlay_alpha_map(base: np.ndarray, alpha_map: np.ndarray, color: tuple[int, int, int]) -> np.ndarray:
+    a = np.clip(alpha_map.astype(np.float32), 0.0, 1.0)[..., None]
+    color_arr = np.array(color, dtype=np.float32).reshape(1, 1, 3)
+    out = base.astype(np.float32) * (1.0 - a) + color_arr * a
+    return np.clip(out, 0.0, 255.0).astype(np.uint8)
+
+
+def _hsv_to_bgr(h: float, s: float, v: float) -> tuple[int, int, int]:
+    rgb = np.array(cv2.cvtColor(np.uint8([[[int(h * 179.0), int(s * 255.0), int(v * 255.0)]]]), cv2.COLOR_HSV2BGR)[0, 0])
+    return int(rgb[0]), int(rgb[1]), int(rgb[2])
+
+
+def build_det_class_colors(num_classes: int) -> list[tuple[int, int, int]]:
+    # Deterministic distinct-ish palette in BGR.
+    out: list[tuple[int, int, int]] = []
+    for i in range(max(1, int(num_classes))):
+        h = ((i * 0.1618033989) % 1.0)
+        out.append(_hsv_to_bgr(h, 0.75, 0.95))
+    return out
+
+
+LANE_SUBCLASS_INFO: list[tuple[int, str, tuple[int, int, int]]] = [
+    (1, "lane_white_solid", (255, 170, 60)),
+    (2, "lane_white_dashed", (255, 235, 140)),
+    (3, "lane_yellow_solid", (30, 210, 255)),
+    (4, "lane_yellow_dashed", (0, 255, 255)),
+]
+DA_COLOR_BGR: tuple[int, int, int] = (40, 180, 40)
 
 
 def draw_boxes(
@@ -208,6 +243,13 @@ def _unletterbox_binary_mask(mask: np.ndarray, meta: LetterboxMeta) -> np.ndarra
     return out.astype(bool)
 
 
+def _unletterbox_class_map(class_map: np.ndarray, meta: LetterboxMeta) -> np.ndarray:
+    m = class_map.astype(np.uint8)
+    crop = m[meta.pad_y : meta.pad_y + meta.new_h, meta.pad_x : meta.pad_x + meta.new_w]
+    out = cv2.resize(crop, (meta.orig_w, meta.orig_h), interpolation=cv2.INTER_NEAREST)
+    return out.astype(np.uint8)
+
+
 def _unletterbox_boxes_xyxy(boxes_xyxy: torch.Tensor, meta: LetterboxMeta) -> torch.Tensor:
     if boxes_xyxy.numel() == 0:
         return boxes_xyxy
@@ -218,6 +260,83 @@ def _unletterbox_boxes_xyxy(boxes_xyxy: torch.Tensor, meta: LetterboxMeta) -> to
     out[:, 3] = (out[:, 3] - float(meta.pad_y)) / float(meta.scale)
     out[:, [0, 2]] = out[:, [0, 2]].clamp(0.0, float(meta.orig_w - 1))
     out[:, [1, 3]] = out[:, [1, 3]].clamp(0.0, float(meta.orig_h - 1))
+    return out
+
+
+def draw_od_boxes_colored(
+    image: np.ndarray,
+    boxes_xyxy: torch.Tensor,
+    scores: torch.Tensor,
+    classes: torch.Tensor,
+    names: list[str],
+    class_colors: list[tuple[int, int, int]],
+) -> np.ndarray:
+    out = image.copy()
+    for i in range(int(boxes_xyxy.shape[0])):
+        x1, y1, x2, y2 = [int(v) for v in boxes_xyxy[i].tolist()]
+        conf = float(scores[i].item())
+        cls = int(classes[i].item())
+        color = class_colors[cls % len(class_colors)] if class_colors else (0, 165, 255)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cls_name = names[cls] if 0 <= cls < len(names) else str(cls)
+        label = f"{cls_name} {conf:.2f}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        ty1 = max(0, y1 - th - 6)
+        ty2 = max(0, y1)
+        tx2 = min(out.shape[1] - 1, x1 + tw + 4)
+        cv2.rectangle(out, (x1, ty1), (tx2, ty2), color, -1)
+        cv2.putText(out, label, (x1 + 2, ty2 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (20, 20, 20), 1, cv2.LINE_AA)
+    return out
+
+
+def draw_legend(
+    image: np.ndarray,
+    *,
+    da_color: tuple[int, int, int],
+    lane_info: list[tuple[int, str, tuple[int, int, int]]],
+    det_names: list[str],
+    det_colors: list[tuple[int, int, int]],
+    lane_thres: float,
+) -> np.ndarray:
+    out = image.copy()
+    entries: list[tuple[str, tuple[int, int, int] | None]] = [
+        ("DA overlay", da_color),
+        ("Lane subclasses", None),
+    ]
+    for _cid, lname, lcolor in lane_info:
+        entries.append((f"  {lname}", lcolor))
+    entries.append((f"Lane prob thres: {lane_thres:.2f}", None))
+    entries.append(("OD boxes (class color)", None))
+    for i, n in enumerate(det_names):
+        entries.append((f"  {n}", det_colors[i % len(det_colors)] if det_colors else None))
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fs = 0.38
+    th = 1
+    pad = 8
+    line_h = 14
+    sw = 10
+    gap = 6
+    text_w = 0
+    for text, _c in entries:
+        (tw, _th), _ = cv2.getTextSize(text, font, fs, th)
+        if tw > text_w:
+            text_w = tw
+    panel_w = pad * 2 + sw + gap + text_w
+    panel_h = pad * 2 + line_h * len(entries)
+    x0, y0 = 8, 8
+    x1, y1 = min(out.shape[1] - 1, x0 + panel_w), min(out.shape[0] - 1, y0 + panel_h)
+
+    panel = out.copy()
+    cv2.rectangle(panel, (x0, y0), (x1, y1), (24, 24, 24), -1)
+    out = cv2.addWeighted(panel, 0.65, out, 0.35, 0)
+
+    y = y0 + pad + 11
+    for text, c in entries:
+        if c is not None:
+            cv2.rectangle(out, (x0 + pad, y - 8), (x0 + pad + sw, y + 2), c, -1)
+        cv2.putText(out, text, (x0 + pad + sw + gap, y), font, fs, (235, 235, 235), th, cv2.LINE_AA)
+        y += line_h
     return out
 
 
@@ -276,47 +395,73 @@ def render_pv26(
 ) -> np.ndarray:
     ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device).eval()
-    model.load_state_dict(ckpt["model_state"], strict=True)
+    try:
+        model.load_state_dict(ckpt["model_state"], strict=True)
+    except RuntimeError as ex:
+        raise RuntimeError(
+            "PV26 checkpoint/model mismatch. "
+            "This renderer requires a checkpoint trained with the current PV26 model "
+            "(including rm_lane_subclass_head)."
+        ) from ex
 
     with torch.no_grad():
         out = model(input_tensor.to(device))
 
-    det = out.det[0][0] if isinstance(out.det, tuple) else out.det[0]
+    det: torch.Tensor
+    if isinstance(out.det, tuple) and len(out.det) >= 1 and isinstance(out.det[0], torch.Tensor):
+        det = out.det[0][0]
+    elif isinstance(out.det, torch.Tensor):
+        det = out.det[0]
+    else:
+        det = torch.zeros((0, 6), dtype=torch.float32, device=device)
+
     if det.numel() > 0:
-        conf = det[:, 4]
-        keep = conf > conf_thres
+        conf = det[:, 4].to(torch.float32)
+        keep = conf > float(conf_thres)
         det = det[keep]
     if det.numel() > 0:
         boxes = det[:, :4].detach().cpu()
-        scores = det[:, 4].detach().cpu()
-        classes = det[:, 5].long().detach().cpu()
+        scores = det[:, 4].to(torch.float32).detach().cpu()
+        classes = det[:, 5].to(torch.long).detach().cpu()
     else:
         boxes = torch.zeros((0, 4), dtype=torch.float32)
         scores = torch.zeros((0,), dtype=torch.float32)
         classes = torch.zeros((0,), dtype=torch.long)
 
     boxes = _unletterbox_boxes_xyxy(boxes, meta)
+    det_names = [c.name for c in DET_CLASSES_CANONICAL]
+    det_colors = build_det_class_colors(len(det_names))
+
+    # DA overlay (probability-driven alpha).
     da_prob = torch.sigmoid(out.da[0, 0]).detach().cpu().numpy()
-    lane_prob = torch.sigmoid(out.rm[0, 0])
-    lane_prob_np = lane_prob.detach().cpu().numpy()
-    if float(lane_thres) > 0.0:
-        lane_prob_np = np.where(lane_prob_np > float(lane_thres), lane_prob_np, 0.0)
-
     da_prob_np = _unletterbox_prob_map(da_prob, meta)
-    lane_prob_np = _unletterbox_prob_map(lane_prob_np, meta)
+    vis = overlay_prob(base_bgr, da_prob_np, color=DA_COLOR_BGR, max_alpha=da_alpha)
 
-    vis = overlay_prob(base_bgr, da_prob_np, color=(0, 180, 0), max_alpha=da_alpha)
-    vis = overlay_prob(vis, lane_prob_np, color=(0, 0, 255), max_alpha=lane_alpha)
-    vis = draw_boxes(vis, boxes, scores, classes, names=[c.name for c in DET_CLASSES_CANONICAL])
-    cv2.putText(
+    # Lane subclass overlay (class-specific color + confidence alpha).
+    lane_logits = out.rm_lane_subclass[0]
+    lane_soft = torch.softmax(lane_logits, dim=0).detach().cpu().numpy()  # [5,H,W]
+    lane_cls = np.argmax(lane_soft, axis=0).astype(np.uint8)  # [H,W]
+    lane_conf = np.max(lane_soft, axis=0).astype(np.float32)  # [H,W]
+    lane_cls_np = _unletterbox_class_map(lane_cls, meta)
+    lane_conf_np = _unletterbox_prob_map(lane_conf, meta)
+    for cls_id, _name, cls_color in LANE_SUBCLASS_INFO:
+        m = lane_cls_np == int(cls_id)
+        if not np.any(m):
+            continue
+        alpha_map = np.zeros_like(lane_conf_np, dtype=np.float32)
+        alpha_map[m] = lane_conf_np[m] * float(lane_alpha)
+        if float(lane_thres) > 0.0:
+            alpha_map[m & (lane_conf_np < float(lane_thres))] = 0.0
+        vis = overlay_alpha_map(vis, alpha_map, color=cls_color)
+
+    vis = draw_od_boxes_colored(vis, boxes, scores, classes, names=det_names, class_colors=det_colors)
+    vis = draw_legend(
         vis,
-        f"PV26: DA(green) + Lane(red,t>{float(lane_thres):.2f})",
-        (10, 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
+        da_color=DA_COLOR_BGR,
+        lane_info=LANE_SUBCLASS_INFO,
+        det_names=det_names,
+        det_colors=det_colors,
+        lane_thres=float(lane_thres),
     )
     return vis
 

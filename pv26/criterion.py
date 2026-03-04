@@ -17,6 +17,7 @@ class PV26LossBreakdown:
     od: Tensor
     da: Tensor
     rm: Tensor
+    rm_lane_subclass: Tensor
 
 
 class PV26Criterion(nn.Module):
@@ -27,7 +28,8 @@ class PV26Criterion(nn.Module):
       - OD: minimal dense YOLO-style loss (box + obj + class)
       - DA: BCE-with-logits on {0,1} with ignore=255 masking
       - RM: per-channel binary focal + dice with ignore=255 masking
-      - Weights: w_od=1, w_da=1, w_rm=2 (defaults)
+      - Lane-subclass: cross-entropy on {0..4} with ignore=255 masking
+      - Weights: w_od=1, w_da=1, w_rm=2, w_rm_lane_subclass=1 (defaults)
     """
 
     def __init__(
@@ -39,8 +41,10 @@ class PV26Criterion(nn.Module):
         w_od: float = 1.0,
         w_da: float = 1.0,
         w_rm: float = 2.0,
+        w_rm_lane_subclass: float = 1.0,
         focal_gamma: float = 2.0,
         dice_eps: float = 1e-6,
+        num_lane_subclasses: int = 4,
     ):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
@@ -48,8 +52,10 @@ class PV26Criterion(nn.Module):
         self.w_od = float(w_od)
         self.w_da = float(w_da)
         self.w_rm = float(w_rm)
+        self.w_rm_lane_subclass = float(w_rm_lane_subclass)
         self.focal_gamma = float(focal_gamma)
         self.dice_eps = float(dice_eps)
+        self.num_lane_subclasses = int(num_lane_subclasses)
 
         self._ultra_det_loss = None
         if self.od_loss_impl not in {"dense", "ultralytics_e2e"}:
@@ -75,6 +81,24 @@ class PV26Criterion(nn.Module):
         else:
             t = self._normalize_batch(batch=batch, device=preds.da.device)
 
+        if "has_rm_lane_subclass" not in t:
+            if isinstance(t.get("has_rm"), Tensor):
+                bsz = int(t["has_rm"].shape[0])
+                t["has_rm_lane_subclass"] = torch.zeros((bsz,), dtype=torch.long, device=preds.da.device)
+            else:
+                raise ValueError("missing has_rm_lane_subclass in normalized batch")
+        if "rm_lane_subclass_mask" not in t:
+            if isinstance(t.get("rm_mask"), Tensor):
+                bsz, _ch, h, w = t["rm_mask"].shape
+                t["rm_lane_subclass_mask"] = torch.full(
+                    (bsz, h, w),
+                    255,
+                    dtype=torch.uint8,
+                    device=preds.da.device,
+                )
+            else:
+                raise ValueError("missing rm_lane_subclass_mask in normalized batch")
+
         if self.od_loss_impl == "dense":
             od = self._od_loss(
                 det_logits=preds.det,
@@ -99,9 +123,14 @@ class PV26Criterion(nn.Module):
             rm_mask=t["rm_mask"],
             has_rm=t["has_rm"],
         )
+        rm_lane_subclass = self._rm_lane_subclass_loss(
+            rm_lane_subclass_logits=preds.rm_lane_subclass,
+            rm_lane_subclass_mask=t["rm_lane_subclass_mask"],
+            has_rm_lane_subclass=t["has_rm_lane_subclass"],
+        )
 
-        total = self.w_od * od + self.w_da * da + self.w_rm * rm
-        return {"total": total, "od": od, "da": da, "rm": rm}
+        total = self.w_od * od + self.w_da * da + self.w_rm * rm + self.w_rm_lane_subclass * rm_lane_subclass
+        return {"total": total, "od": od, "da": da, "rm": rm, "rm_lane_subclass": rm_lane_subclass}
 
     def _od_loss_ultralytics(
         self,
@@ -227,6 +256,7 @@ class PV26Criterion(nn.Module):
                 "det_yolo": [s.det_yolo.to(device=device, dtype=torch.float32) for s in samples],
                 "da_mask": torch.stack([s.da_mask for s in samples], dim=0).to(device=device),
                 "rm_mask": torch.stack([s.rm_mask for s in samples], dim=0).to(device=device),
+                "rm_lane_subclass_mask": torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0).to(device=device),
                 "has_det": torch.tensor([s.has_det for s in samples], dtype=torch.long, device=device),
                 "has_da": torch.tensor([s.has_da for s in samples], dtype=torch.long, device=device),
                 "has_rm": torch.tensor(
@@ -234,6 +264,11 @@ class PV26Criterion(nn.Module):
                         [s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line]
                         for s in samples
                     ],
+                    dtype=torch.long,
+                    device=device,
+                ),
+                "has_rm_lane_subclass": torch.tensor(
+                    [s.has_rm_lane_subclass for s in samples],
                     dtype=torch.long,
                     device=device,
                 ),
@@ -260,6 +295,17 @@ class PV26Criterion(nn.Module):
             ],
             dim=1,
         ).to(device=device, dtype=torch.long)
+        bsz = int(has_rm.shape[0])
+        if "has_rm_lane_subclass" in batch:
+            has_rm_lane_subclass = batch["has_rm_lane_subclass"].to(device=device, dtype=torch.long)
+        else:
+            has_rm_lane_subclass = torch.zeros((bsz,), dtype=torch.long, device=device)
+
+        if "rm_lane_subclass_mask" in batch:
+            rm_lane_subclass_mask = batch["rm_lane_subclass_mask"].to(device=device)
+        else:
+            _bsz, _ch, h, w = batch["rm_mask"].shape
+            rm_lane_subclass_mask = torch.full((int(_bsz), int(h), int(w)), 255, dtype=torch.uint8, device=device)
 
         scopes = [str(s) for s in list(batch["det_label_scope"])]
 
@@ -267,9 +313,11 @@ class PV26Criterion(nn.Module):
             "det_yolo": det_list,
             "da_mask": batch["da_mask"].to(device=device),
             "rm_mask": batch["rm_mask"].to(device=device),
+            "rm_lane_subclass_mask": rm_lane_subclass_mask,
             "has_det": batch["has_det"].to(device=device, dtype=torch.long),
             "has_da": batch["has_da"].to(device=device, dtype=torch.long),
             "has_rm": has_rm,
+            "has_rm_lane_subclass": has_rm_lane_subclass,
             "det_label_scope": scopes,
         }
 
@@ -392,3 +440,35 @@ class PV26Criterion(nn.Module):
         per_channel = focal + dice
         keep_f = valid_count.gt(0).to(dtype=per_channel.dtype)
         return (per_channel * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+
+    def _rm_lane_subclass_loss(
+        self,
+        *,
+        rm_lane_subclass_logits: Tensor,
+        rm_lane_subclass_mask: Tensor,
+        has_rm_lane_subclass: Tensor,
+    ) -> Tensor:
+        bsz, ch, h, w = rm_lane_subclass_logits.shape
+        expected_ch = int(self.num_lane_subclasses + 1)  # + background
+        if ch != expected_ch:
+            raise ValueError(
+                f"rm lane-subclass logits must have {expected_ch} channels "
+                f"(bg + {self.num_lane_subclasses} subclasses), got {ch}"
+            )
+        if rm_lane_subclass_mask.shape != (bsz, h, w):
+            raise ValueError(
+                "rm lane-subclass batch shape mismatch: "
+                f"logits={(bsz, ch, h, w)} mask={tuple(rm_lane_subclass_mask.shape)}"
+            )
+
+        supervised = has_rm_lane_subclass.view(bsz, 1, 1).bool()
+        valid = (rm_lane_subclass_mask != 255) & supervised
+        valid_count = valid.to(dtype=rm_lane_subclass_logits.dtype).sum(dim=(1, 2))
+
+        target = torch.where(valid, rm_lane_subclass_mask, torch.zeros_like(rm_lane_subclass_mask))
+        target = target.to(dtype=torch.long)
+        ce = F.cross_entropy(rm_lane_subclass_logits, target, reduction="none")
+
+        per_sample = (ce * valid.to(dtype=ce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
+        keep_f = valid_count.gt(0).to(dtype=per_sample.dtype)
+        return (per_sample * keep_f).sum() / keep_f.sum().clamp_min(1.0)

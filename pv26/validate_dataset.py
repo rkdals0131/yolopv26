@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from .manifest import read_manifest_csv, validate_manifest_row_basic
-from .masks import IGNORE_VALUE, validate_binary_mask_u8, validate_semantic_id_u8
+from .masks import IGNORE_VALUE, validate_binary_mask_u8, validate_lane_subclass_mask_u8, validate_semantic_id_u8
 
 
 @dataclass
@@ -105,10 +105,11 @@ def validate_pv26_dataset(out_root: Path) -> ValidationSummary:
         rm_lane_p = _p(row["rm_lane_marker_relpath"])
         rm_road_p = _p(row["rm_road_marker_non_lane_relpath"])
         rm_stop_p = _p(row["rm_stop_line_relpath"])
+        rm_lane_subclass_p = _p(row["rm_lane_subclass_relpath"])
         sem_rel = row.get("semantic_relpath", "")
         sem_p = _p(sem_rel) if sem_rel else None
 
-        for p in [img_p, det_p, da_p, rm_lane_p, rm_road_p, rm_stop_p]:
+        for p in [img_p, det_p, da_p, rm_lane_p, rm_road_p, rm_stop_p, rm_lane_subclass_p]:
             if not p.exists():
                 errors.append(prefix + f"missing_file:{p}")
 
@@ -126,7 +127,7 @@ def validate_pv26_dataset(out_root: Path) -> ValidationSummary:
             errors.append(prefix + f"manifest_size_mismatch manifest=({row['width']},{row['height']}) image=({w},{h})")
 
         # Mask domain + size checks.
-        def _check_mask(mask_path: Path, *, allow_ignore: bool, name: str) -> Optional[np.ndarray]:
+        def _check_mask(mask_path: Path, *, allow_ignore: bool, name: str, lane_subclass: bool = False) -> Optional[np.ndarray]:
             try:
                 arr = _load_u8_mask(mask_path)
             except Exception as ex:
@@ -136,7 +137,10 @@ def validate_pv26_dataset(out_root: Path) -> ValidationSummary:
                 errors.append(prefix + f"mask_size_mismatch:{name} mask={arr.shape} image={(h,w)}")
                 return None
             try:
-                validate_binary_mask_u8(arr, allow_ignore=allow_ignore, name=name)
+                if lane_subclass:
+                    validate_lane_subclass_mask_u8(arr, allow_ignore=allow_ignore, name=name)
+                else:
+                    validate_binary_mask_u8(arr, allow_ignore=allow_ignore, name=name)
             except Exception as ex:
                 errors.append(prefix + f"mask_invalid:{name} err={ex}")
             return arr
@@ -145,6 +149,12 @@ def validate_pv26_dataset(out_root: Path) -> ValidationSummary:
         rm_lane = _check_mask(rm_lane_p, allow_ignore=True, name="rm_lane_marker")
         rm_road = _check_mask(rm_road_p, allow_ignore=True, name="rm_road_marker_non_lane")
         rm_stop = _check_mask(rm_stop_p, allow_ignore=True, name="rm_stop_line")
+        rm_lane_subclass = _check_mask(
+            rm_lane_subclass_p,
+            allow_ignore=True,
+            name="rm_lane_subclass",
+            lane_subclass=True,
+        )
 
         # Partial-label contract: has_*==0 => all-255
         def _expect_all_ignore(arr: Optional[np.ndarray], flag: str, name: str) -> None:
@@ -158,6 +168,7 @@ def validate_pv26_dataset(out_root: Path) -> ValidationSummary:
         _expect_all_ignore(rm_lane, "has_rm_lane_marker", "rm_lane_marker")
         _expect_all_ignore(rm_road, "has_rm_road_marker_non_lane", "rm_road_marker_non_lane")
         _expect_all_ignore(rm_stop, "has_rm_stop_line", "rm_stop_line")
+        _expect_all_ignore(rm_lane_subclass, "has_rm_lane_subclass", "rm_lane_subclass")
 
         # Semantic validation.
         if row["has_semantic_id"] == "1":
@@ -188,4 +199,3 @@ def validate_pv26_dataset(out_root: Path) -> ValidationSummary:
                     errors.append(prefix + "det_scope_none_but_det_file_not_empty")
 
     return ValidationSummary(num_rows=len(rows), errors=errors, warnings=warnings)
-

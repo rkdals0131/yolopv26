@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pv26.bdd import (
-    bdd_record_to_rm_masks,
+    bdd_record_to_rm_masks_with_lane_subclass,
     bdd_record_tags,
     bdd_record_to_image_name,
     bdd_record_to_yolo_lines,
@@ -32,13 +32,12 @@ from pv26.bdd import (
     parse_bdd_filename_for_sequence_and_frame,
 )
 from pv26.class_map import render_class_map_yaml
-from pv26.constants import CLASSMAP_VERSION_V2
+from pv26.constants import CLASSMAP_VERSION_V3
 from pv26.dataset_layout import Pv26Layout, SPLITS
 from pv26.manifest import ManifestRow, write_manifest_csv
 from pv26.masks import (
-    IGNORE_VALUE,
     SemanticComposeResult,
-    compose_semantic_id_v2,
+    compose_semantic_id_v3,
     convert_bdd_drivable_id_to_da_mask_u8,
     make_all_ignore_mask,
 )
@@ -262,6 +261,7 @@ def main() -> int:
         out_rm_lane_rel = str(Path("labels_seg_rm_lane_marker") / split / f"{sample_id}.png")
         out_rm_road_rel = str(Path("labels_seg_rm_road_marker_non_lane") / split / f"{sample_id}.png")
         out_rm_stop_rel = str(Path("labels_seg_rm_stop_line") / split / f"{sample_id}.png")
+        out_rm_lane_sub_rel = str(Path("labels_seg_rm_lane_subclass") / split / f"{sample_id}.png")
         out_sem_rel = str(Path("labels_semantic_id") / split / f"{sample_id}.png")
 
         # Write image (re-encode to jpg for consistent contract).
@@ -304,16 +304,27 @@ def main() -> int:
                 da_mask = convert_bdd_drivable_id_to_da_mask_u8(drivable_id)
         _save_u8_mask(out_root / out_da_rel, da_mask)
 
-        # RM masks: not available for Type-A BDD in this slice; emit all-255.
+        # RM masks.
         if rec is None:
             has_rm_lane = 0
             has_rm_road = 0
             has_rm_stop = 0
+            has_rm_lane_subclass = 0
             rm_lane = make_all_ignore_mask(h, w)
             rm_road = make_all_ignore_mask(h, w)
             rm_stop = make_all_ignore_mask(h, w)
+            rm_lane_subclass = make_all_ignore_mask(h, w)
         else:
-            rm_lane, rm_road, rm_stop, has_rm_lane, has_rm_road, has_rm_stop = bdd_record_to_rm_masks(
+            (
+                rm_lane,
+                rm_road,
+                rm_stop,
+                rm_lane_subclass,
+                has_rm_lane,
+                has_rm_road,
+                has_rm_stop,
+                has_rm_lane_subclass,
+            ) = bdd_record_to_rm_masks_with_lane_subclass(
                 rec,
                 width=w,
                 height=h,
@@ -322,11 +333,12 @@ def main() -> int:
         _save_u8_mask(out_root / out_rm_lane_rel, rm_lane)
         _save_u8_mask(out_root / out_rm_road_rel, rm_road)
         _save_u8_mask(out_root / out_rm_stop_rel, rm_stop)
+        _save_u8_mask(out_root / out_rm_lane_sub_rel, rm_lane_subclass)
 
         # Semantic ID: only when all channels are supervised and contain no ignore(255).
         sem_ok = False
-        if has_da and has_rm_lane and has_rm_road and has_rm_stop:
-            sem: SemanticComposeResult = compose_semantic_id_v2(da_mask, rm_lane, rm_road, rm_stop)
+        if has_da and has_rm_lane_subclass and has_rm_road and has_rm_stop:
+            sem: SemanticComposeResult = compose_semantic_id_v3(da_mask, rm_lane_subclass, rm_road, rm_stop)
             if sem.ok:
                 sem_ok = True
                 _save_u8_mask(out_root / out_sem_rel, sem.semantic_id)
@@ -346,6 +358,7 @@ def main() -> int:
             has_rm_lane_marker=has_rm_lane,
             has_rm_road_marker_non_lane=has_rm_road,
             has_rm_stop_line=has_rm_stop,
+            has_rm_lane_subclass=has_rm_lane_subclass,
             has_semantic_id=has_sem,
             det_label_scope=det_scope,
             det_annotated_class_ids=det_annotated,
@@ -355,6 +368,7 @@ def main() -> int:
             rm_lane_marker_relpath=out_rm_lane_rel,
             rm_road_marker_non_lane_relpath=out_rm_road_rel,
             rm_stop_line_relpath=out_rm_stop_rel,
+            rm_lane_subclass_relpath=out_rm_lane_sub_rel,
             semantic_relpath=semantic_relpath,
             width=w,
             height=h,
@@ -368,10 +382,11 @@ def main() -> int:
         counts["total"] += 1
         counts[f"has_det:{has_det}"] += 1
         counts[f"has_da:{has_da}"] += 1
+        counts[f"has_rm_lane_subclass:{has_rm_lane_subclass}"] += 1
 
     # meta outputs
     (layout.meta_dir()).mkdir(parents=True, exist_ok=True)
-    (layout.class_map_path()).write_text(render_class_map_yaml(classmap_version=CLASSMAP_VERSION_V2), encoding="utf-8")
+    (layout.class_map_path()).write_text(render_class_map_yaml(classmap_version=CLASSMAP_VERSION_V3), encoding="utf-8")
     write_manifest_csv(layout.manifest_path(), rows)
 
     # source_stats.csv (minimal)
@@ -406,12 +421,14 @@ def main() -> int:
             "include_night": bool(args.include_night),
             "allow_unknown_tags": bool(args.allow_unknown_tags),
             "limit": int(args.limit),
-            "classmap_version": CLASSMAP_VERSION_V2,
+            "classmap_version": CLASSMAP_VERSION_V3,
         },
         "counts": dict(counts),
         "skipped": dict(skipped),
         "notes": [
             "Type-A BDD-only slice: lane/non-lane RM masks are rasterized from BDD lane/* poly2d labels.",
+            "rm_lane_subclass mono8 mask is exported: "
+            "0=background, 1=white_solid, 2=white_dashed, 3=yellow_solid, 4=yellow_dashed, 255=ignore.",
             "stop_line channel defaults to ignore(255) unless explicit stop-line category is present.",
             "semantic_id is exported only when DA+RM supervision is fully available without ignore(255).",
         ],

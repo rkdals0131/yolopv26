@@ -22,6 +22,7 @@ class TestDatasetValidatorSmoke(unittest.TestCase):
             (root / "labels_seg_rm_lane_marker/train").mkdir(parents=True, exist_ok=True)
             (root / "labels_seg_rm_road_marker_non_lane/train").mkdir(parents=True, exist_ok=True)
             (root / "labels_seg_rm_stop_line/train").mkdir(parents=True, exist_ok=True)
+            (root / "labels_seg_rm_lane_subclass/train").mkdir(parents=True, exist_ok=True)
             (root / "meta").mkdir(parents=True, exist_ok=True)
 
             sample_id = "bdd100k__seq__000001__cam0"
@@ -37,6 +38,7 @@ class TestDatasetValidatorSmoke(unittest.TestCase):
                 "labels_seg_rm_lane_marker/train",
                 "labels_seg_rm_road_marker_non_lane/train",
                 "labels_seg_rm_stop_line/train",
+                "labels_seg_rm_lane_subclass/train",
             ]:
                 Image.fromarray(mask, mode="L").save(root / sub / f"{sample_id}.png", format="PNG")
 
@@ -54,6 +56,7 @@ class TestDatasetValidatorSmoke(unittest.TestCase):
                 has_rm_lane_marker=0,
                 has_rm_road_marker_non_lane=0,
                 has_rm_stop_line=0,
+                has_rm_lane_subclass=0,
                 has_semantic_id=0,
                 det_label_scope="none",
                 det_annotated_class_ids="",
@@ -63,6 +66,7 @@ class TestDatasetValidatorSmoke(unittest.TestCase):
                 rm_lane_marker_relpath=f"labels_seg_rm_lane_marker/train/{sample_id}.png",
                 rm_road_marker_non_lane_relpath=f"labels_seg_rm_road_marker_non_lane/train/{sample_id}.png",
                 rm_stop_line_relpath=f"labels_seg_rm_stop_line/train/{sample_id}.png",
+                rm_lane_subclass_relpath=f"labels_seg_rm_lane_subclass/train/{sample_id}.png",
                 semantic_relpath="",
                 width=2,
                 height=2,
@@ -79,4 +83,3 @@ class TestDatasetValidatorSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

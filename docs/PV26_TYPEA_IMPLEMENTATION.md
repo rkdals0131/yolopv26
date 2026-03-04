@@ -8,20 +8,23 @@ Scope of this slice (intentionally minimal):
 - Export drivable-area mask (`labels_seg_da`) when BDD drivable *id masks* are provided
 - Export road-marking masks from BDD `lane/*` poly2d labels:
   - `labels_seg_rm_lane_marker`: rasterized lane-marker classes (`lane/single|double ...`)
+  - `labels_seg_rm_lane_subclass`: mono8 lane subclass
+    - `1=white_solid`, `2=white_dashed`, `3=yellow_solid`, `4=yellow_dashed`, `255=ignore`
   - `labels_seg_rm_road_marker_non_lane`: rasterized non-lane classes (`lane/crosswalk`, `lane/road curb`)
   - `labels_seg_rm_stop_line`: default `255(ignore)` unless explicit stop-line class appears
 - Export manifest + conversion report + class_map
 
 Contracts implemented:
-- `docs/PRD.md` (partial-label policy, classmap-v2)
+- `docs/PRD.md` (partial-label policy, classmap-v3)
 - `docs/DATASET_CONVERSION_SPEC.md` (directory layout, mask domains, manifest columns)
 
 ## 0) Multi-head architecture stub (for implementation bootstrap)
 
-`pv26/multitask_model.py` provides a runnable **shared-trunk + 3-head** structure:
+`pv26/multitask_model.py` provides a runnable **shared-trunk + 4-head** structure:
 - Detection head (dense logits): `det` tensor
 - Drivable head: `da` logits, 1 channel
 - Road-marking head: `rm` logits, 3 channels
+- Lane-subclass head: `rm_lane_subclass` logits, 5 channels (`bg + 4 subclasses`)
 
 This is a shape/interface bootstrap for PV26 integration and tests, not a final YOLO26 production graph yet.
 
