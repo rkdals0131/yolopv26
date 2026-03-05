@@ -28,7 +28,7 @@ class PV26Criterion(nn.Module):
       - OD: minimal dense YOLO-style loss (box + obj + class)
       - DA: BCE-with-logits on {0,1} with ignore=255 masking
       - RM: per-channel binary focal + dice with ignore=255 masking
-      - Lane-subclass: cross-entropy on {0..4} with ignore=255 masking
+      - Lane-subclass: cross-entropy on {1..4} positive pixels only (ignore=255 and background=0 are masked out)
       - Weights: w_od=1, w_da=1, w_rm=2, w_rm_lane_subclass=1 (defaults)
     """
 
@@ -462,7 +462,9 @@ class PV26Criterion(nn.Module):
             )
 
         supervised = has_rm_lane_subclass.view(bsz, 1, 1).bool()
-        valid = (rm_lane_subclass_mask != 255) & supervised
+        # Lane subclasses are very sparse; training over all background pixels tends to dominate.
+        # We supervise subclass CE only on positive pixels (1..K), masking out background(0) and ignore(255).
+        valid = (rm_lane_subclass_mask != 255) & (rm_lane_subclass_mask != 0) & supervised
         valid_count = valid.to(dtype=rm_lane_subclass_logits.dtype).sum(dim=(1, 2))
 
         target = torch.where(valid, rm_lane_subclass_mask, torch.zeros_like(rm_lane_subclass_mask))
