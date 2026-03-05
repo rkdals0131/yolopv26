@@ -44,8 +44,16 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Optional floor for PV26 lane-subclass confidence before overlay",
     )
+    p.add_argument(
+        "--pv26-rm-lane-thres",
+        type=float,
+        default=0.5,
+        help="RM lane_marker threshold used to gate lane-subclass (default: 0.5)",
+    )
     p.add_argument("--out-pv2", type=Path, default=Path("datasets/weights/result_pv2.jpg"))
     p.add_argument("--out-pv26", type=Path, default=Path("datasets/weights/result_pv26.jpg"))
+    p.add_argument("--out-pv26-verbose", type=Path, default=Path("datasets/weights/result_pv26_verbose.jpg"))
+    p.add_argument("--out-pv26-rm-lane", type=Path, default=Path("datasets/weights/result_pv26_rm_lane.jpg"))
     p.add_argument("--quiet", action="store_true", help="상세 진행 로그 출력 비활성화")
     return p.parse_args()
 
@@ -61,6 +69,19 @@ class LetterboxMeta:
     pad_y: int
     pad_x: int
     scale: float
+
+
+@dataclass(frozen=True)
+class PV26RenderData:
+    boxes: torch.Tensor
+    scores: torch.Tensor
+    classes: torch.Tensor
+    da_prob_np: np.ndarray
+    rm_lane_prob_np: np.ndarray
+    lane_cls_np: np.ndarray
+    lane_conf_np: np.ndarray
+    det_names: list[str]
+    det_colors: list[tuple[int, int, int]]
 
 
 def pick_device(name: str) -> torch.device:
@@ -446,18 +467,15 @@ def render_pv2(
     return vis
 
 
-def render_pv26(
+def infer_pv26(
     ckpt_path: Path,
     input_tensor: torch.Tensor,
-    base_bgr: np.ndarray,
     meta: LetterboxMeta,
     conf_thres: float,
-    da_alpha: float,
-    lane_alpha: float,
-    lane_thres: float,
+    rm_lane_thres: float,
     device: torch.device,
-) -> np.ndarray:
-    t_total = log_step_start(f"PV26 렌더링 시작 (checkpoint={ckpt_path})")
+) -> PV26RenderData:
+    t_total = log_step_start(f"PV26 추론/후처리 시작 (checkpoint={ckpt_path})")
     t_load = log_step_start("PV26 체크포인트 및 모델 로드")
     ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device).eval()
@@ -507,45 +525,142 @@ def render_pv26(
     det_names = [c.name for c in DET_CLASSES_CANONICAL]
     det_colors = build_det_class_colors(len(det_names))
 
-    # DA overlay (probability-driven alpha).
-    da_prob = torch.sigmoid(out.da[0, 0]).detach().cpu().numpy()
-    da_prob_np = _unletterbox_prob_map(da_prob, meta)
-    vis = overlay_prob(base_bgr, da_prob_np, color=DA_COLOR_BGR, max_alpha=da_alpha)
+    da_prob_in = torch.sigmoid(out.da[0, 0]).detach().cpu().numpy()
+    da_prob_np = _unletterbox_prob_map(da_prob_in, meta)
+    rm_lane_prob_in = torch.sigmoid(out.rm[0, 0]).detach().cpu().numpy()
+    rm_lane_prob_np = _unletterbox_prob_map(rm_lane_prob_in, meta)
 
-    # Lane subclass overlay (class-specific color + confidence alpha).
     lane_logits = out.rm_lane_subclass[0]
-    lane_soft = torch.softmax(lane_logits, dim=0).detach().cpu().numpy()  # [5,H,W]
-    lane_cls = np.argmax(lane_soft, axis=0).astype(np.uint8)  # [H,W]
-    lane_conf = np.max(lane_soft, axis=0).astype(np.float32)  # [H,W]
-    lane_cls_np = _unletterbox_class_map(lane_cls, meta)
-    lane_conf_np = _unletterbox_prob_map(lane_conf, meta)
+    lane_soft = torch.softmax(lane_logits, dim=0).detach().cpu().numpy()
+    lane_cls_in = np.argmax(lane_soft, axis=0).astype(np.uint8)
+    lane_conf_in = np.max(lane_soft, axis=0).astype(np.float32)
+
+    # Option-A policy: lane-subclass is meaningful only where RM lane_marker is positive.
+    rm_lane_thres = float(rm_lane_thres)
+    if not (0.0 <= rm_lane_thres <= 1.0):
+        raise ValueError(f"--pv26-rm-lane-thres must be in [0,1], got {rm_lane_thres}")
+    lane_gate_in = rm_lane_prob_in >= rm_lane_thres
+    lane_cls_in = np.where(lane_gate_in, lane_cls_in, 0).astype(np.uint8)
+    lane_conf_in = np.where(lane_gate_in, lane_conf_in, 0.0).astype(np.float32)
+
+    lane_cls_np = _unletterbox_class_map(lane_cls_in, meta)
+    lane_conf_np = _unletterbox_prob_map(lane_conf_in, meta)
     lane_summary: list[str] = []
-    for cls_id, _name, cls_color in LANE_SUBCLASS_INFO:
+    for cls_id, _name, _cls_color in LANE_SUBCLASS_INFO:
         m = lane_cls_np == int(cls_id)
         if not np.any(m):
             lane_summary.append(f"{_name}=0")
             continue
         lane_summary.append(f"{_name}={int(np.count_nonzero(m))}")
-        alpha_map = np.zeros_like(lane_conf_np, dtype=np.float32)
-        alpha_map[m] = lane_conf_np[m] * float(lane_alpha)
-        if float(lane_thres) > 0.0:
-            alpha_map[m & (lane_conf_np < float(lane_thres))] = 0.0
-        vis = overlay_alpha_map(vis, alpha_map, color=cls_color)
     LOGGER.info(
         "PV26 lane 픽셀 분포: %s",
         ", ".join(lane_summary) if lane_summary else "없음",
     )
+    log_step_done("PV26 추론/후처리 완료", t_total)
+    return PV26RenderData(
+        boxes=boxes,
+        scores=scores,
+        classes=classes,
+        da_prob_np=da_prob_np,
+        rm_lane_prob_np=rm_lane_prob_np,
+        lane_cls_np=lane_cls_np,
+        lane_conf_np=lane_conf_np,
+        det_names=det_names,
+        det_colors=det_colors,
+    )
 
-    vis = draw_od_boxes_colored(vis, boxes, scores, classes, names=det_names, class_colors=det_colors)
+
+def render_pv26_simple(
+    *,
+    base_bgr: np.ndarray,
+    data: PV26RenderData,
+    da_alpha: float,
+    lane_alpha: float,
+    lane_thres: float,
+) -> np.ndarray:
+    t_vis = log_step_start("PV26 단순 시각화 합성")
+    da_mask_np = data.da_prob_np > 0.5
+    lane_conf_floor = max(0.5, float(lane_thres))
+    lane_mask_np = (data.lane_cls_np != 0) & (data.lane_conf_np >= lane_conf_floor)
+    LOGGER.info(
+        "PV26 단순 시각화: boxes=%d, DA pixels=%d, Lane pixels=%d, lane_thres=%.2f",
+        int(data.boxes.shape[0]),
+        int(np.count_nonzero(da_mask_np)),
+        int(np.count_nonzero(lane_mask_np)),
+        lane_conf_floor,
+    )
+    vis = overlay_mask(base_bgr, da_mask_np, color=(0, 200, 0), alpha=da_alpha)
+    vis = overlay_mask(vis, lane_mask_np, color=(0, 0, 255), alpha=lane_alpha)
+    vis = draw_boxes(vis, data.boxes, data.scores, data.classes, names=None)
+    cv2.putText(vis, "PV26(simple): OD + DA(green) + Lane(red)", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    log_step_done("PV26 단순 시각화 합성", t_vis)
+    return vis
+
+
+def render_pv26_rm_lane(
+    *,
+    base_bgr: np.ndarray,
+    data: PV26RenderData,
+    da_alpha: float,
+    lane_alpha: float,
+    lane_thres: float,
+) -> np.ndarray:
+    t_vis = log_step_start("PV26 RM-lane 시각화 합성")
+    da_mask_np = data.da_prob_np > 0.5
+    lane_floor = max(0.5, float(lane_thres))
+    lane_mask_np = data.rm_lane_prob_np >= lane_floor
+    LOGGER.info(
+        "PV26 RM-lane 시각화: boxes=%d, DA pixels=%d, Lane pixels=%d, lane_thres=%.2f",
+        int(data.boxes.shape[0]),
+        int(np.count_nonzero(da_mask_np)),
+        int(np.count_nonzero(lane_mask_np)),
+        lane_floor,
+    )
+    vis = overlay_mask(base_bgr, da_mask_np, color=(0, 200, 0), alpha=da_alpha)
+    vis = overlay_mask(vis, lane_mask_np, color=(0, 0, 255), alpha=lane_alpha)
+    vis = draw_boxes(vis, data.boxes, data.scores, data.classes, names=None)
+    cv2.putText(vis, "PV26(rm-lane): OD + DA(green) + Lane(red)", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    log_step_done("PV26 RM-lane 시각화 합성", t_vis)
+    return vis
+
+
+def render_pv26_verbose(
+    *,
+    base_bgr: np.ndarray,
+    data: PV26RenderData,
+    da_alpha: float,
+    lane_alpha: float,
+    lane_thres: float,
+) -> np.ndarray:
+    t_vis = log_step_start("PV26 상세 시각화 합성")
+    vis = overlay_prob(base_bgr, data.da_prob_np, color=DA_COLOR_BGR, max_alpha=da_alpha)
+    for cls_id, _name, cls_color in LANE_SUBCLASS_INFO:
+        m = data.lane_cls_np == int(cls_id)
+        if not np.any(m):
+            continue
+        alpha_map = np.zeros_like(data.lane_conf_np, dtype=np.float32)
+        alpha_map[m] = data.lane_conf_np[m] * float(lane_alpha)
+        if float(lane_thres) > 0.0:
+            alpha_map[m & (data.lane_conf_np < float(lane_thres))] = 0.0
+        vis = overlay_alpha_map(vis, alpha_map, color=cls_color)
+
+    vis = draw_od_boxes_colored(
+        vis,
+        data.boxes,
+        data.scores,
+        data.classes,
+        names=data.det_names,
+        class_colors=data.det_colors,
+    )
     vis = draw_legend(
         vis,
         da_color=DA_COLOR_BGR,
         lane_info=LANE_SUBCLASS_INFO,
-        det_names=det_names,
-        det_colors=det_colors,
+        det_names=data.det_names,
+        det_colors=data.det_colors,
         lane_thres=float(lane_thres),
     )
-    log_step_done("PV26 렌더링 완료", t_total)
+    log_step_done("PV26 상세 시각화 합성", t_vis)
     return vis
 
 
@@ -566,32 +681,60 @@ def main() -> int:
 
     base_bgr, x, meta = read_image(args.image, in_h=in_h, in_w=in_w)
     pv2_img = render_pv2(args.pv2_weight, x, base_bgr, meta, args.conf_thres, args.iou_thres, args.da_alpha, args.lane_alpha, device)
-    pv26_img = render_pv26(
+    pv26_data = infer_pv26(
         args.pv26_weight,
         x,
-        base_bgr,
         meta,
         args.conf_thres,
-        args.da_alpha,
-        args.lane_alpha,
-        args.pv26_lane_thres,
+        args.pv26_rm_lane_thres,
         device,
+    )
+    pv26_img = render_pv26_simple(
+        base_bgr=base_bgr,
+        data=pv26_data,
+        da_alpha=args.da_alpha,
+        lane_alpha=args.lane_alpha,
+        lane_thres=args.pv26_lane_thres,
+    )
+    pv26_rm_lane_img = render_pv26_rm_lane(
+        base_bgr=base_bgr,
+        data=pv26_data,
+        da_alpha=args.da_alpha,
+        lane_alpha=args.lane_alpha,
+        lane_thres=args.pv26_lane_thres,
+    )
+    pv26_verbose_img = render_pv26_verbose(
+        base_bgr=base_bgr,
+        data=pv26_data,
+        da_alpha=args.da_alpha,
+        lane_alpha=args.lane_alpha,
+        lane_thres=args.pv26_lane_thres,
     )
 
     t_save = log_step_start("결과 이미지 저장")
     args.out_pv2.parent.mkdir(parents=True, exist_ok=True)
     args.out_pv26.parent.mkdir(parents=True, exist_ok=True)
+    args.out_pv26_verbose.parent.mkdir(parents=True, exist_ok=True)
+    args.out_pv26_rm_lane.parent.mkdir(parents=True, exist_ok=True)
     ok_pv2 = cv2.imwrite(str(args.out_pv2), pv2_img)
     ok_pv26 = cv2.imwrite(str(args.out_pv26), pv26_img)
+    ok_pv26_rm_lane = cv2.imwrite(str(args.out_pv26_rm_lane), pv26_rm_lane_img)
+    ok_pv26_verbose = cv2.imwrite(str(args.out_pv26_verbose), pv26_verbose_img)
     if not ok_pv2:
         raise RuntimeError(f"failed to save output image: {args.out_pv2}")
     if not ok_pv26:
         raise RuntimeError(f"failed to save output image: {args.out_pv26}")
+    if not ok_pv26_rm_lane:
+        raise RuntimeError(f"failed to save output image: {args.out_pv26_rm_lane}")
+    if not ok_pv26_verbose:
+        raise RuntimeError(f"failed to save output image: {args.out_pv26_verbose}")
     log_step_done("결과 이미지 저장", t_save)
     log_step_done("전체 파이프라인 완료", t_main)
 
     print(f"saved: {args.out_pv2}")
     print(f"saved: {args.out_pv26}")
+    print(f"saved: {args.out_pv26_rm_lane}")
+    print(f"saved: {args.out_pv26_verbose}")
     return 0
 
 
