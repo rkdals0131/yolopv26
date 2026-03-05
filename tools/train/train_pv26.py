@@ -395,6 +395,8 @@ def _save_checkpoint(
     epoch: int,
     best_score: Optional[float],
     best_epoch: Optional[int],
+    best_det_score: Optional[float] = None,
+    best_det_epoch: Optional[int] = None,
     args: argparse.Namespace,
 ) -> None:
     args_serialized: Dict[str, object] = {}
@@ -411,6 +413,8 @@ def _save_checkpoint(
         "scaler_state": scaler.state_dict(),
         "best_score": best_score,
         "best_epoch": best_epoch,
+        "best_det_score": best_det_score,
+        "best_det_epoch": best_det_epoch,
         "args": args_serialized,
     }
     if scheduler is not None:
@@ -427,7 +431,7 @@ def _load_checkpoint(
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
-) -> tuple[int, Optional[float], Optional[int]]:
+) -> tuple[int, Optional[float], Optional[int], Optional[float], Optional[int]]:
     # PyTorch 2.6 changed torch.load default to weights_only=True.
     # Our checkpoint stores optimizer/scaler/args metadata, so we explicitly
     # request full load for local, trusted checkpoints.
@@ -447,17 +451,18 @@ def _load_checkpoint(
         start_epoch = int(ckpt.get("epoch", -1)) + 1
         best_score = ckpt.get("best_score", None)
         best_epoch = ckpt.get("best_epoch", None)
-        return start_epoch, best_score, best_epoch
+        best_det_score = ckpt.get("best_det_score", None)
+        best_det_epoch = ckpt.get("best_det_epoch", None)
+        return start_epoch, best_score, best_epoch, best_det_score, best_det_epoch
 
     # Fallback for raw state_dict checkpoints.
     _unwrap_compiled_model(model).load_state_dict(ckpt)
-    return 0, None, None
+    return 0, None, None, None, None
 
 
-def _choose_best_score(val_losses: Dict[str, float], map50: Optional[float]) -> tuple[float, str]:
-    if map50 is not None:
-        return float(map50), "map50"
-    return -float(val_losses["total"]), "neg_val_total_loss"
+def _choose_best_total_score(val_losses: Dict[str, float]) -> float:
+    # Multi-task default: select best checkpoint by the aggregate validation loss.
+    return -float(val_losses["total"])
 
 
 def _gib(num_bytes: int) -> float:
@@ -1221,13 +1226,15 @@ def main() -> int:
     start_epoch = 0
     best_score: Optional[float] = None
     best_epoch: Optional[int] = None
+    best_det_score: Optional[float] = None
+    best_det_epoch: Optional[int] = None
     resume_path = args.resume
     if args.resume_latest:
         resume_path = ckpt_dir / "latest.pt"
     if resume_path is not None:
         if not resume_path.exists():
             raise FileNotFoundError(f"resume checkpoint does not exist: {resume_path}")
-        start_epoch, best_score, best_epoch = _load_checkpoint(
+        start_epoch, best_score, best_epoch, best_det_score, best_det_epoch = _load_checkpoint(
             ckpt_path=resume_path,
             model=model,
             optimizer=optimizer,
@@ -1343,10 +1350,10 @@ def main() -> int:
             next_lr = float(optimizer.param_groups[0]["lr"])
             print(f"[pv26] lr {prev_lr:.6g} -> {next_lr:.6g}")
 
-        score, score_name = _choose_best_score(val_losses, map50)
-        is_best = best_score is None or score > float(best_score)
-        if is_best:
-            best_score = score
+        total_score = _choose_best_total_score(val_losses)
+        is_best_total = best_score is None or total_score > float(best_score)
+        if is_best_total:
+            best_score = total_score
             best_epoch = epoch + 1
             _save_checkpoint(
                 path=ckpt_dir / "best.pt",
@@ -1357,9 +1364,32 @@ def main() -> int:
                 epoch=epoch,
                 best_score=best_score,
                 best_epoch=best_epoch,
+                best_det_score=best_det_score,
+                best_det_epoch=best_det_epoch,
                 args=args,
             )
-            print(f"[pv26] new best checkpoint ({score_name}={score:.6f}) at epoch {best_epoch}")
+            print(f"[pv26] new best checkpoint (neg_val_total_loss={best_score:.6f}) at epoch {best_epoch}")
+
+        if map_computed and map50 is not None:
+            det_score = float(map50)
+            is_best_det = best_det_score is None or det_score > float(best_det_score)
+            if is_best_det:
+                best_det_score = det_score
+                best_det_epoch = epoch + 1
+                _save_checkpoint(
+                    path=ckpt_dir / "best_det.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    epoch=epoch,
+                    best_score=best_score,
+                    best_epoch=best_epoch,
+                    best_det_score=best_det_score,
+                    best_det_epoch=best_det_epoch,
+                    args=args,
+                )
+                print(f"[pv26] new best_det checkpoint (map50={best_det_score:.6f}) at epoch {best_det_epoch}")
 
         _save_checkpoint(
             path=ckpt_dir / "latest.pt",
@@ -1370,13 +1400,18 @@ def main() -> int:
             epoch=epoch,
             best_score=best_score,
             best_epoch=best_epoch,
+            best_det_score=best_det_score,
+            best_det_epoch=best_det_epoch,
             args=args,
         )
         print(f"[pv26] saved latest checkpoint: {ckpt_dir / 'latest.pt'}")
 
     if writer is not None:
         writer.close()
-    print(f"[pv26] finished. latest={ckpt_dir / 'latest.pt'} best={ckpt_dir / 'best.pt'}")
+    print(
+        f"[pv26] finished. latest={ckpt_dir / 'latest.pt'} "
+        f"best_total={ckpt_dir / 'best.pt'} best_det={ckpt_dir / 'best_det.pt'}"
+    )
     return 0
 
 
