@@ -1121,6 +1121,16 @@ def validate(
     iou_metrics["rm_lane_subclass_miou4"] = (
         None if not lane_subclass_ious else float(sum(lane_subclass_ious) / float(len(lane_subclass_ious)))
     )
+    lane_subclass_present_ious = [
+        float(iou_metrics[n])
+        for n in lane_subclass_metric_names
+        if iou_metrics.get(n) is not None and metric_stats[n]["union"] > 0
+    ]
+    iou_metrics["rm_lane_subclass_miou4_present"] = (
+        None
+        if not lane_subclass_present_ious
+        else float(sum(lane_subclass_present_ious) / float(len(lane_subclass_present_ious)))
+    )
 
     t_map_start = time.perf_counter()
     map50: Optional[float]
