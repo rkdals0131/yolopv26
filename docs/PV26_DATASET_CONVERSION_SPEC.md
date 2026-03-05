@@ -1,8 +1,8 @@
 # YOLO PV26 Dataset Conversion Specification
 
-- Spec version: `v1.4`
-- Date: `2026-02-19`
-- Related doc: `docs/PRD.md`
+- Spec version: `v1.5`
+- Date: `2026-03-05`
+- Related doc: `docs/PV26_PRD.md`
 - Status: `Implementation-ready`
 
 ## 1. Purpose
@@ -463,39 +463,74 @@ Step definitions:
 
 ## 9. Reproducibility and Versioning
 
-1. Every conversion run writes:
-   - converter version
-   - config hash
+1. Every conversion run writes `meta/conversion_report.json` including:
+   - converter name + version
+   - spec reference (this document)
+   - timestamp (UTC)
+   - run id (if provided)
+   - conversion config summary (paths + key options)
+2. Recommended (optional) fields for stronger reproducibility:
    - git commit hash
-   - timestamp
-2. `checksums.sha256` includes all exported images and labels
-3. Any mapping change requires:
+   - config hash
+3. `checksums.sha256` includes all exported images and labels
+4. Any mapping change requires:
    - class map version bump
    - full dataset rebuild
    - new output root name (example: `pv26_v2`)
 
-## 10. Converter CLI Contract
+## 10. Entry Points (Current) and Adapter Checklist
 
-Target CLI (to be implemented or aligned with existing scripts):
+This repo currently uses dataset-specific converter scripts (adapters).
 
+### 10.1 BDD100K (implemented)
+
+Convert:
 ```bash
-python tools/convert_dataset.py \
-  --raw-root datasets/raw \
-  --out-root datasets/pv26_v1 \
-  --config configs/dataset_conversion/pv26.yaml \
-  --num-workers 8 \
-  --run-id pv26_build_001
+python tools/data_analysis/bdd/convert_bdd_type_a.py \
+  --images-root <BDD_IMAGES_DIR> \
+  --labels <BDD_LABELS_DIR_OR_JSON> \
+  --drivable-root <BDD_DRIVABLE_MASK_DIR> \
+  --out-root <OUT_ROOT> \
+  --splits train,val
 ```
 
-Subcommands:
-1. `audit`: source availability and schema checks only
-2. `convert`: full conversion and export
-3. `validate`: QA validation on an existing converted dataset
+Interactive runner (convert → validate → QC → debug optional):
+```bash
+python tools/data_analysis/bdd/run_bdd100k_normalize_interactive.py --bdd-root <BDD100K_ROOT>
+```
 
-Exit codes:
-1. `0`: success
-2. `2`: validation failure
-3. `3`: configuration or missing-source failure
+Validate:
+```bash
+python tools/data_analysis/bdd/validate_pv26_dataset.py --out-root <OUT_ROOT>
+```
+
+QC report:
+```bash
+python tools/data_analysis/bdd/pv26_qc_report.py --dataset-root <OUT_ROOT> --out-json <OUT_ROOT>/meta/qc_report.json
+```
+
+### 10.2 Adding a new dataset adapter (ETRI/RLMD/WOD/…)
+
+When implementing `tools/data_analysis/<dataset>/convert_<dataset>_type_a.py`, enforce:
+1. Output directory layout matches Section 3.2.
+2. `meta/split_manifest.csv` is the source-of-truth for loaders and validators.
+3. Partial-label policy is strict:
+   - missing supervision is exported as all-`255` mask
+   - corresponding `has_*` flag is `0`
+   - never fill missing labels with background(`0`)
+4. Detection labels follow Section 3.5 and respect `det_label_scope` semantics.
+5. Segmentation masks follow Section 3.6 value domains.
+6. Write:
+   - `meta/conversion_report.json`
+   - `meta/checksums.sha256`
+
+### 10.3 Target unified CLI (future)
+
+If we later add a unified CLI, it must be a thin wrapper over adapters, not a second conversion path.
+
+```bash
+python tools/convert_dataset.py <audit|convert|validate> --config <pv26.yaml> ...
+```
 
 ## 11. Acceptance Checklist
 

@@ -2,6 +2,7 @@
 
 - 문서 버전: `v0.7`
 - 작성일: `2026-02-14`
+- 최종 검토일: `2026-03-05`
 - 상태: `Draft for implementation`
 - 대상 시스템: `SPADE 입력용 멀티태스크 비전 모델`
 
@@ -101,6 +102,7 @@ flowchart LR
    - 채널 관계: `stop_line ⊂ road_marker_non_lane` (멀티라벨이므로 픽셀에서 동시 활성 허용)
    - lane 세분 supervision은 별도 mono8 채널 `lane_subclass`를 추가한다.
      - class id: `0(background), 1(white_solid), 2(white_dashed), 3(yellow_solid), 4(yellow_dashed), 255(ignore)`
+     - (운영 정책) `lane_subclass`는 `lane_marker` 조건부로 사용한다(추론/후처리에서 `lane_marker`로 게이팅).
 2. 배포/연동용 semantic 출력은 `semantic_id mono8` class-id map 형태로 제공한다.
    - class id는 `classmap_version` 및 `class_map.yaml`에 의해 정의된다.
 3. Drivable/RoadMarking masks는 학습 및 디버깅용 내부 출력이며, ROS2에서는 optional debug 토픽으로 발행할 수 있다.
@@ -177,6 +179,7 @@ flowchart LR
 1. `semantic_id`는 연동/시각화 목적의 single-channel 결과다.
 2. 학습용 RoadMarking binary 채널(`lane_marker`, `road_marker_non_lane`, `stop_line`)은 유지한다.
 3. lane subclass supervision은 `labels_seg_rm_lane_subclass` mono8로 별도 운영한다.
+4. lane subclass를 사용하는 데이터셋/학습은 기본 `classmap-v3`로 운영하며, `classmap-v1/v2`는 호환/축소 출력 용도로만 유지한다.
 
 ### 6.2 Object Detection 클래스 (MVP 고정)
 
@@ -321,8 +324,6 @@ dataset/
 ### 8.3 추론 프로파일
 
 1. 기본 프로파일: `quality profile` (`960x544`)
-2. 백업 프로파일: `latency profile` (`768x448`)
-3. 런타임에서 profile 전환 가능한 파라미터 제공
 
 ### 8.4 학습 증강 정책 (MVP 기본값)
 
@@ -487,7 +488,7 @@ flowchart TD
 6. 리스크: 터널 구간에서 급격한 노출 변화로 lane/drivable 붕괴
    - 대응: 터널 샘플 비중 확보 + exposure 증강 + 터널 전용 검증 게이트
 7. 리스크: 대회 상세미션/평가기준이 최종 확정 전 변경될 수 있음
-   - 대응: `Provisional 섹션(2.4, 10.4, 11)` 기준으로 추적하고, 확정 공지 수신 시 `classmap + gate + dataset profile` 동시 업데이트
+   - 대응: `Provisional 섹션(2.4, 10.4, 11)` 기준으로 추적하고, 확정 공지 수신 시 `classmap + gate + dataset sources/mapping` 동시 업데이트
 
 ## 14. 산출물 (Deliverables)
 
@@ -508,7 +509,7 @@ flowchart TD
 
 1. LiDAR 투영/재투영 패키지는 개발 완료 상태로 간주
 2. MVP에서 obstacle segmentation은 제외하고 OD만 제공
-3. semantic class id 계약은 기본 `classmap-v1`을 사용하며, 필요 시 `classmap-v2`로 확장한다.
+3. semantic class id 계약은 기본 `classmap-v3`를 사용하며, `classmap-v1/v2`는 호환/축소 출력 용도로만 유지한다.
 4. primary camera 기본값은 `cam0`
 5. RLMD는 MVP 기본 설정에서 lane supervision 소스로 사용하지 않음
 6. 현재 작업 기본 도메인은 `주간 + 건조` 우선이며 `야간/우천`은 기본 비활성 상태

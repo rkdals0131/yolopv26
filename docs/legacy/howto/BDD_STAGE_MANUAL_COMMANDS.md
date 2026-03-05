@@ -1,3 +1,6 @@
+> **Archived (2026-03-05)** — kept for history; may be outdated.  
+> Canonical docs: `docs/PV26_PRD.md`, `docs/PV26_DATASET_CONVERSION_SPEC.md`, `docs/PV26_DATASET_SOURCES_AND_MAPPING.md`, `docs/PV26_IMPLEMENTATION_STATUS.md`.
+
 # BDD Stage Manual Commands (No Variables)
 
 아래 명령어는 변수 없이 바로 실행 가능한 형태입니다.

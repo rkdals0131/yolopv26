@@ -10,7 +10,7 @@ class DetClass:
     name: str
 
 
-# Canonical OD classes (11) from docs/PRD.md and docs/DATASET_CONVERSION_SPEC.md.
+# Canonical OD classes (11) from docs/PV26_PRD.md and docs/PV26_DATASET_CONVERSION_SPEC.md.
 DET_CLASSES_CANONICAL: List[DetClass] = [
     DetClass(0, "car"),
     DetClass(1, "bus"),

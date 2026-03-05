@@ -15,8 +15,8 @@ Scope of this slice (intentionally minimal):
 - Export manifest + conversion report + class_map
 
 Contracts implemented:
-- `docs/PRD.md` (partial-label policy, classmap-v3)
-- `docs/DATASET_CONVERSION_SPEC.md` (directory layout, mask domains, manifest columns)
+- `docs/PV26_PRD.md` (partial-label policy, classmap-v3)
+- `docs/PV26_DATASET_CONVERSION_SPEC.md` (directory layout, mask domains, manifest columns)
 
 ## 0) Multi-head architecture stub (for implementation bootstrap)
 
@@ -74,7 +74,30 @@ Exit codes:
 - `0`: valid
 - `2`: validation failures
 
-## 3) Tests
+## 3) QC Report: `tools/data_analysis/bdd/pv26_qc_report.py`
+
+Summarizes split distribution and label availability (`has_*`) from `meta/split_manifest.csv`.
+
+Example:
+```bash
+python tools/data_analysis/bdd/pv26_qc_report.py \
+  --dataset-root /tmp/pv26_v1_bdd \
+  --out-json /tmp/pv26_v1_bdd/meta/qc_report.json
+```
+
+## 4) Debug visualization: `tools/debug/render_pv26_debug_masks.py`
+
+Example:
+```bash
+python tools/debug/render_pv26_debug_masks.py \
+  --dataset-root /tmp/pv26_v1_bdd \
+  --split val \
+  --channels da,rm_lane_marker,rm_road_marker_non_lane,rm_stop_line \
+  --num-samples 20 \
+  --out-root /tmp/pv26_mask_vis
+```
+
+## 5) Tests
 
 Run:
 ```bash

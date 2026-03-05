@@ -1,3 +1,6 @@
+> **Archived (2026-03-05)** — kept for history; may be outdated.  
+> Canonical docs: `docs/PV26_PRD.md`, `docs/PV26_DATASET_CONVERSION_SPEC.md`, `docs/PV26_DATASET_SOURCES_AND_MAPPING.md`, `docs/PV26_IMPLEMENTATION_STATUS.md`.
+
 압축 파일 기준으로 `pv26/multitask_model.py`, `pv26/criterion.py`, `pv26/torch_dataset.py`, `tools/train/train_pv26.py`를 중심으로 검토했습니다. 테스트는 23개가 수집되는 구조였고, stub/데이터셋/criterion 계열은 통과했습니다. 다만 실제 `PV26MultiHeadYOLO26` 경로는 이 환경에 `ultralytics`가 없어 실행 확인 대신 정적 리뷰로 판단했습니다.
 
 총평부터 말씀드리면, 이 코드는 생각보다 꽤 잘 정리되어 있습니다.

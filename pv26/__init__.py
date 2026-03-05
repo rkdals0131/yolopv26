@@ -3,8 +3,8 @@ PV26 dataset conversion utilities.
 
 This package implements the first executable slice for PV26 Type-A (BDD-only)
 dataset conversion, following:
-- docs/PRD.md
-- docs/DATASET_CONVERSION_SPEC.md
+- docs/PV26_PRD.md
+- docs/PV26_DATASET_CONVERSION_SPEC.md
 """
 
 from .constants import (  # noqa: F401

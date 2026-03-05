@@ -3,8 +3,8 @@
 Convert BDD100K assets into PV26 Type-A dataset layout (BDD-only, BDD adapter).
 
 Implements the first executable slice described in:
-- docs/PRD.md
-- docs/DATASET_CONVERSION_SPEC.md
+- docs/PV26_PRD.md
+- docs/PV26_DATASET_CONVERSION_SPEC.md
 """
 
 from __future__ import annotations
@@ -783,7 +783,7 @@ def main() -> int:
     report = {
         "converter": "convert_bdd_type_a.py",
         "converter_version": "0.2.0",
-        "spec": "docs/DATASET_CONVERSION_SPEC.md v1.4",
+        "spec": "docs/PV26_DATASET_CONVERSION_SPEC.md v1.5",
         "timestamp_utc": utc_now_iso(),
         "run_id": args.run_id,
         "config": {
