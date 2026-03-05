@@ -1,18 +1,12 @@
-# PV26 Type-A (BDD-only) — First Executable Slice
+# PV26 Type-A — Dataset Adapters Status
 
-This repo now contains an initial, runnable implementation of **PV26 Type‑A** dataset conversion for **BDD100K** only.
+This repo contains runnable **PV26 Type‑A** dataset converters (adapters) that export the canonical layout + manifest.
 
-Scope of this slice (intentionally minimal):
-- Export PV26 canonical directory layout (`datasets/pv26_v1/` by default)
-- Export detection labels (YOLO txt) when BDD per-image JSON is provided
-- Export drivable-area mask (`labels_seg_da`) when BDD drivable *id masks* are provided
-- Export road-marking masks from BDD `lane/*` poly2d labels:
-  - `labels_seg_rm_lane_marker`: rasterized lane-marker classes (`lane/single|double ...`)
-  - `labels_seg_rm_lane_subclass`: mono8 lane subclass
-    - `1=white_solid`, `2=white_dashed`, `3=yellow_solid`, `4=yellow_dashed`, `255=ignore`
-  - `labels_seg_rm_road_marker_non_lane`: rasterized non-lane classes (`lane/crosswalk`, `lane/road curb`)
-  - `labels_seg_rm_stop_line`: default `255(ignore)` unless explicit stop-line class appears
-- Export manifest + conversion report + class_map
+Implemented adapters:
+- **BDD100K**: OD + DA + RM(mask + subclass) (implemented)
+- **ETRI (Mono+Multi)**: polygon JSON → DA + RM(mask + subclass) (OD 없음)
+- **RLMD (1080p + AC labeled)**: palette RGB mask → RM(mask + subclass) (OD/DA 없음)
+- **Waymo / WOD (Perception v2 parquet, minimal-first)**: parquet → OD(subset) + DA + RM(mask) (stop line / lane subclass 없음)
 
 Contracts implemented:
 - `docs/PV26_PRD.md` (partial-label policy, classmap-v3)
@@ -28,7 +22,7 @@ Contracts implemented:
 
 This is a shape/interface bootstrap for PV26 integration and tests, not a final YOLO26 production graph yet.
 
-## 1) Converter: `tools/data_analysis/bdd/convert_bdd_type_a.py`
+## 1) Converter: `tools/data_analysis/bdd/convert_bdd_type_a.py` (BDD100K)
 
 ### Expected inputs
 - `--images-root`: directory containing BDD images (`.jpg/.jpeg/.png`)
@@ -103,3 +97,26 @@ Run:
 ```bash
 python -m unittest -v
 ```
+
+## 6) Additional Converters (ETRI/RLMD/WOD)
+
+### 6.1 ETRI: `tools/data_analysis/etri/convert_etri_type_a.py`
+- Inputs: `datasets/ETRI/MonoCameraSemanticSegmentation` + `datasets/ETRI/Multi Camera Semantic Segmentation`
+- Outputs:
+  - `has_det=0`, empty detection txt
+  - DA from `road`
+  - RM lane subclass from `whsol/whdot/yesol/yedot` (others lane-like are `255(ignore)` in subclass)
+
+### 6.2 RLMD: `tools/data_analysis/rlmd/convert_rlmd_type_a.py`
+- Inputs: `datasets/RLMD/RLMD_1080p` + `datasets/RLMD/RLMD-AC` (labels가 존재하는 split만)
+- Outputs:
+  - `has_det=0`, `has_da=0` (DA는 all-255)
+  - RM lane marker + non-lane + stop line
+  - lane subclass는 white/yellow solid/dashed만 매핑, 나머지 lane-marker 픽셀은 `255(ignore)`
+
+### 6.3 Waymo/WOD: `tools/data_analysis/wod/convert_wod_type_a.py`
+- Inputs: `datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training` (parquet)
+- Outputs:
+  - Detection은 subset(`vehicle/pedestrian/cyclist/sign`)만 매핑 → `det_label_scope=subset`
+  - Segmentation은 `ROAD/LANE_MARKER/ROAD_MARKER`만 사용
+  - `rm_stop_line` + `rm_lane_subclass`는 제공 불가 → all-255, `has_*=0`

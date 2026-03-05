@@ -4,8 +4,9 @@
 
 ## data_analysis
 - `tools/data_analysis/bdd/`: BDD100K 분석/표준화 스크립트
-- `tools/data_analysis/wod/`: Waymo v2 분석/추출 스크립트
-- `tools/data_analysis/etri/`: ETRI 분석/표준화 스크립트 자리
+- `tools/data_analysis/etri/`: ETRI 분석/표준화 스크립트
+- `tools/data_analysis/rlmd/`: RLMD 분석/표준화 스크립트
+- `tools/data_analysis/wod/`: Waymo v2 분석/추출/표준화 스크립트
 
 ### bdd
 - `tools/data_analysis/bdd/convert_bdd_type_a.py`: BDD100K -> PV26 Type-A 변환
@@ -14,8 +15,15 @@
 - `tools/data_analysis/bdd/run_bdd100k_normalize_interactive.py`: 변환/검증/QC 인터랙티브 실행기
 - `tools/data_analysis/bdd/dataset_label_inventory.py`: 데이터셋 라벨/채널 인벤토리 분석
 
+### etri
+- `tools/data_analysis/etri/convert_etri_type_a.py`: ETRI(Mono+Multi) polygon JSON -> PV26 Type-A 변환
+
+### rlmd
+- `tools/data_analysis/rlmd/convert_rlmd_type_a.py`: RLMD(1080p + AC labeled) -> PV26 Type-A 변환
+
 ### wod
 - `tools/data_analysis/wod/extract_wod_v2_sample.py`: Waymo v2 parquet 샘플 추출
+- `tools/data_analysis/wod/convert_wod_type_a.py`: Waymo v2 parquet -> PV26 Type-A 변환(minimal 우선)
 
 ## debug
 - `tools/debug/render_pv26_debug_masks.py`: DA/Lane 마스크 디버그 시각화
