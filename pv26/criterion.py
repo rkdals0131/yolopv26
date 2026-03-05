@@ -28,7 +28,7 @@ class PV26Criterion(nn.Module):
       - OD: minimal dense YOLO-style loss (box + obj + class)
       - DA: BCE-with-logits on {0,1} with ignore=255 masking
       - RM: per-channel binary focal + dice with ignore=255 masking
-      - Lane-subclass: cross-entropy on {0..4} with ignore=255 masking
+      - Lane-subclass: cross-entropy on {1..4} positive pixels only (ignore=255 and background=0 are masked out)
       - Weights: w_od=1, w_da=1, w_rm=2, w_rm_lane_subclass=1 (defaults)
     """
 
@@ -149,7 +149,7 @@ class PV26Criterion(nn.Module):
 
         Notes:
         - This path currently supports only per-sample gating for `has_det` and `det_label_scope=none` by filtering the
-          batch. `det_label_scope=subset` is treated as `full` for now (current BDD build is full-only).
+          batch. `det_label_scope=subset` is not supported yet (raise to avoid silently learning false negatives).
         """
         if self._ultra_det_loss is None:
             raise RuntimeError("ultralytics det loss is not initialized")
@@ -165,6 +165,12 @@ class PV26Criterion(nn.Module):
             if det_scope_code.shape[0] != bsz:
                 raise ValueError("det_scope_code length mismatch")
             scope_code = det_scope_code.to(device=has_det.device, dtype=torch.long)
+            subset = (scope_code == 1) & (has_det.to(dtype=torch.long) != 0)
+            if bool(subset.any()):
+                raise NotImplementedError(
+                    "det_label_scope=subset is not supported with od_loss_impl='ultralytics_e2e' yet. "
+                    "Implement class-aware negative masking (det_annotated_class_ids) or exclude subset samples."
+                )
             keep_mask = has_det.to(dtype=torch.long) != 0
             keep_mask = keep_mask & (scope_code != 2)
             keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
@@ -180,9 +186,10 @@ class PV26Criterion(nn.Module):
                 if int(has_det_cpu[i]) == 0 or scope == "none":
                     continue
                 if scope == "subset":
-                    # TODO(PRD): mask negative loss for unannotated classes.
-                    # For now, treat as full (current PV26 BDD build uses full only).
-                    pass
+                    raise NotImplementedError(
+                        "det_label_scope=subset is not supported with od_loss_impl='ultralytics_e2e' yet. "
+                        "Implement class-aware negative masking (det_annotated_class_ids) or exclude subset samples."
+                    )
                 keep.append(i)
             keep_idx = torch.as_tensor(keep, dtype=torch.long, device=has_det.device)
 
@@ -462,7 +469,9 @@ class PV26Criterion(nn.Module):
             )
 
         supervised = has_rm_lane_subclass.view(bsz, 1, 1).bool()
-        valid = (rm_lane_subclass_mask != 255) & supervised
+        # Lane subclasses are very sparse; training over all background pixels tends to dominate.
+        # We supervise subclass CE only on positive pixels (1..K), masking out background(0) and ignore(255).
+        valid = (rm_lane_subclass_mask != 255) & (rm_lane_subclass_mask != 0) & supervised
         valid_count = valid.to(dtype=rm_lane_subclass_logits.dtype).sum(dim=(1, 2))
 
         target = torch.where(valid, rm_lane_subclass_mask, torch.zeros_like(rm_lane_subclass_mask))

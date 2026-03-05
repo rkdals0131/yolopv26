@@ -246,8 +246,9 @@ class PV26MultiHeadYOLO26(nn.Module):
         self.det_model.model[4].register_forward_hook(_save("p3_backbone"))
 
         # Infer channels for segmentation heads with a small dry forward.
-        with torch.no_grad():
-            self.det_model.train()
+        was_training = bool(self.det_model.training)
+        self.det_model.eval()  # avoid polluting BN running stats during init
+        with torch.inference_mode():
             self._feat.clear()
             dummy = torch.zeros(1, 3, 256, 384)
             det_out = self.det_model(dummy)
@@ -257,6 +258,7 @@ class PV26MultiHeadYOLO26(nn.Module):
                 raise RuntimeError("failed to capture backbone P3 feature (hook did not fire)")
             p3_backbone = self._feat["p3_backbone"]
             p3_head = det_out["one2many"]["feats"][0]
+        self.det_model.train(was_training)
 
         self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]))
         self.rm_head = RoadMarkingHeadDeconv(in_ch=int(p3_head.shape[1]), out_ch=3)

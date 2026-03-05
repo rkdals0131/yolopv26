@@ -395,6 +395,8 @@ def _save_checkpoint(
     epoch: int,
     best_score: Optional[float],
     best_epoch: Optional[int],
+    best_det_score: Optional[float] = None,
+    best_det_epoch: Optional[int] = None,
     args: argparse.Namespace,
 ) -> None:
     args_serialized: Dict[str, object] = {}
@@ -411,6 +413,8 @@ def _save_checkpoint(
         "scaler_state": scaler.state_dict(),
         "best_score": best_score,
         "best_epoch": best_epoch,
+        "best_det_score": best_det_score,
+        "best_det_epoch": best_det_epoch,
         "args": args_serialized,
     }
     if scheduler is not None:
@@ -427,7 +431,7 @@ def _load_checkpoint(
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
-) -> tuple[int, Optional[float], Optional[int]]:
+) -> tuple[int, Optional[float], Optional[int], Optional[float], Optional[int]]:
     # PyTorch 2.6 changed torch.load default to weights_only=True.
     # Our checkpoint stores optimizer/scaler/args metadata, so we explicitly
     # request full load for local, trusted checkpoints.
@@ -447,17 +451,18 @@ def _load_checkpoint(
         start_epoch = int(ckpt.get("epoch", -1)) + 1
         best_score = ckpt.get("best_score", None)
         best_epoch = ckpt.get("best_epoch", None)
-        return start_epoch, best_score, best_epoch
+        best_det_score = ckpt.get("best_det_score", None)
+        best_det_epoch = ckpt.get("best_det_epoch", None)
+        return start_epoch, best_score, best_epoch, best_det_score, best_det_epoch
 
     # Fallback for raw state_dict checkpoints.
     _unwrap_compiled_model(model).load_state_dict(ckpt)
-    return 0, None, None
+    return 0, None, None, None, None
 
 
-def _choose_best_score(val_losses: Dict[str, float], map50: Optional[float]) -> tuple[float, str]:
-    if map50 is not None:
-        return float(map50), "map50"
-    return -float(val_losses["total"]), "neg_val_total_loss"
+def _choose_best_total_score(val_losses: Dict[str, float]) -> float:
+    # Multi-task default: select best checkpoint by the aggregate validation loss.
+    return -float(val_losses["total"])
 
 
 def _gib(num_bytes: int) -> float:
@@ -549,17 +554,55 @@ def _resolve_base_lr(*, args: argparse.Namespace) -> tuple[float, str]:
 
 
 def _build_optimizer(*, model: torch.nn.Module, args: argparse.Namespace, base_lr: float) -> torch.optim.Optimizer:
-    params = [p for p in model.parameters() if p.requires_grad]
-    if not params:
+    # Param groups:
+    # - Separate detection trunk vs PV26 heads when using --det-pretrained (helps stability).
+    # - Exclude bias/1D params (norm scales, biases) from weight decay.
+    det_lr_mult = 1.0
+    if getattr(args, "det_pretrained", None) is not None and hasattr(model, "det_model"):
+        det_lr_mult = 0.1
+    trunk_lr = float(base_lr) * float(det_lr_mult)
+    head_lr = float(base_lr)
+
+    trunk_decay: List[torch.nn.Parameter] = []
+    trunk_no_decay: List[torch.nn.Parameter] = []
+    head_decay: List[torch.nn.Parameter] = []
+    head_no_decay: List[torch.nn.Parameter] = []
+
+    def _is_no_decay(n: str, p: torch.nn.Parameter) -> bool:
+        return n.endswith(".bias") or int(p.ndim) < 2
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        is_trunk = name.startswith("det_model.")
+        is_no_decay = _is_no_decay(name, p)
+        if is_trunk and is_no_decay:
+            trunk_no_decay.append(p)
+        elif is_trunk:
+            trunk_decay.append(p)
+        elif is_no_decay:
+            head_no_decay.append(p)
+        else:
+            head_decay.append(p)
+
+    groups: List[Dict[str, Any]] = []
+    if trunk_decay:
+        groups.append({"params": trunk_decay, "lr": trunk_lr, "weight_decay": float(args.weight_decay), "name": "trunk_decay"})
+    if trunk_no_decay:
+        groups.append({"params": trunk_no_decay, "lr": trunk_lr, "weight_decay": 0.0, "name": "trunk_no_decay"})
+    if head_decay:
+        groups.append({"params": head_decay, "lr": head_lr, "weight_decay": float(args.weight_decay), "name": "head_decay"})
+    if head_no_decay:
+        groups.append({"params": head_no_decay, "lr": head_lr, "weight_decay": 0.0, "name": "head_no_decay"})
+    if not groups:
         raise RuntimeError("no trainable parameters found")
     opt_name = str(args.optimizer).strip().lower()
-    wd = float(args.weight_decay)
     if opt_name == "adamw":
-        return torch.optim.AdamW(params, lr=base_lr, weight_decay=wd)
+        return torch.optim.AdamW(groups, lr=base_lr)
     if opt_name == "adam":
-        return torch.optim.Adam(params, lr=base_lr, weight_decay=wd)
+        return torch.optim.Adam(groups, lr=base_lr)
     if opt_name == "sgd":
-        return torch.optim.SGD(params, lr=base_lr, momentum=float(args.momentum), nesterov=True, weight_decay=wd)
+        return torch.optim.SGD(groups, lr=base_lr, momentum=float(args.momentum), nesterov=True)
     raise ValueError(f"unsupported optimizer: {opt_name}")
 
 
@@ -1078,6 +1121,16 @@ def validate(
     iou_metrics["rm_lane_subclass_miou4"] = (
         None if not lane_subclass_ious else float(sum(lane_subclass_ious) / float(len(lane_subclass_ious)))
     )
+    lane_subclass_present_ious = [
+        float(iou_metrics[n])
+        for n in lane_subclass_metric_names
+        if iou_metrics.get(n) is not None and metric_stats[n]["union"] > 0
+    ]
+    iou_metrics["rm_lane_subclass_miou4_present"] = (
+        None
+        if not lane_subclass_present_ious
+        else float(sum(lane_subclass_present_ious) / float(len(lane_subclass_present_ious)))
+    )
 
     t_map_start = time.perf_counter()
     map50: Optional[float]
@@ -1221,13 +1274,15 @@ def main() -> int:
     start_epoch = 0
     best_score: Optional[float] = None
     best_epoch: Optional[int] = None
+    best_det_score: Optional[float] = None
+    best_det_epoch: Optional[int] = None
     resume_path = args.resume
     if args.resume_latest:
         resume_path = ckpt_dir / "latest.pt"
     if resume_path is not None:
         if not resume_path.exists():
             raise FileNotFoundError(f"resume checkpoint does not exist: {resume_path}")
-        start_epoch, best_score, best_epoch = _load_checkpoint(
+        start_epoch, best_score, best_epoch, best_det_score, best_det_epoch = _load_checkpoint(
             ckpt_path=resume_path,
             model=model,
             optimizer=optimizer,
@@ -1334,19 +1389,26 @@ def main() -> int:
             for name, iou in ious.items():
                 if iou is not None:
                     writer.add_scalar(f"val/iou_{name}", iou, epoch + 1)
-            writer.add_scalar("train/lr", float(optimizer.param_groups[0]["lr"]), epoch + 1)
+            for gi, g in enumerate(optimizer.param_groups):
+                g_name = str(g.get("name", f"group{gi}"))
+                writer.add_scalar(f"train/lr_{g_name}", float(g["lr"]), epoch + 1)
             writer.flush()
 
         if scheduler is not None:
-            prev_lr = float(optimizer.param_groups[0]["lr"])
+            prev_lrs = [(str(g.get("name", f"group{gi}")), float(g["lr"])) for gi, g in enumerate(optimizer.param_groups)]
             scheduler.step()
-            next_lr = float(optimizer.param_groups[0]["lr"])
-            print(f"[pv26] lr {prev_lr:.6g} -> {next_lr:.6g}")
+            next_lrs = [(str(g.get("name", f"group{gi}")), float(g["lr"])) for gi, g in enumerate(optimizer.param_groups)]
+            if len(prev_lrs) == 1:
+                print(f"[pv26] lr {prev_lrs[0][1]:.6g} -> {next_lrs[0][1]:.6g}")
+            else:
+                prev_s = " ".join([f"{n}={lr:.6g}" for n, lr in prev_lrs])
+                next_s = " ".join([f"{n}={lr:.6g}" for n, lr in next_lrs])
+                print(f"[pv26] lr {prev_s} -> {next_s}")
 
-        score, score_name = _choose_best_score(val_losses, map50)
-        is_best = best_score is None or score > float(best_score)
-        if is_best:
-            best_score = score
+        total_score = _choose_best_total_score(val_losses)
+        is_best_total = best_score is None or total_score > float(best_score)
+        if is_best_total:
+            best_score = total_score
             best_epoch = epoch + 1
             _save_checkpoint(
                 path=ckpt_dir / "best.pt",
@@ -1357,9 +1419,32 @@ def main() -> int:
                 epoch=epoch,
                 best_score=best_score,
                 best_epoch=best_epoch,
+                best_det_score=best_det_score,
+                best_det_epoch=best_det_epoch,
                 args=args,
             )
-            print(f"[pv26] new best checkpoint ({score_name}={score:.6f}) at epoch {best_epoch}")
+            print(f"[pv26] new best checkpoint (neg_val_total_loss={best_score:.6f}) at epoch {best_epoch}")
+
+        if map_computed and map50 is not None:
+            det_score = float(map50)
+            is_best_det = best_det_score is None or det_score > float(best_det_score)
+            if is_best_det:
+                best_det_score = det_score
+                best_det_epoch = epoch + 1
+                _save_checkpoint(
+                    path=ckpt_dir / "best_det.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    epoch=epoch,
+                    best_score=best_score,
+                    best_epoch=best_epoch,
+                    best_det_score=best_det_score,
+                    best_det_epoch=best_det_epoch,
+                    args=args,
+                )
+                print(f"[pv26] new best_det checkpoint (map50={best_det_score:.6f}) at epoch {best_det_epoch}")
 
         _save_checkpoint(
             path=ckpt_dir / "latest.pt",
@@ -1370,13 +1455,18 @@ def main() -> int:
             epoch=epoch,
             best_score=best_score,
             best_epoch=best_epoch,
+            best_det_score=best_det_score,
+            best_det_epoch=best_det_epoch,
             args=args,
         )
         print(f"[pv26] saved latest checkpoint: {ckpt_dir / 'latest.pt'}")
 
     if writer is not None:
         writer.close()
-    print(f"[pv26] finished. latest={ckpt_dir / 'latest.pt'} best={ckpt_dir / 'best.pt'}")
+    print(
+        f"[pv26] finished. latest={ckpt_dir / 'latest.pt'} "
+        f"best_total={ckpt_dir / 'best.pt'} best_det={ckpt_dir / 'best_det.pt'}"
+    )
     return 0
 
 
