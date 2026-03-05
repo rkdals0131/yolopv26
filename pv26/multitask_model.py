@@ -252,12 +252,17 @@ class PV26MultiHeadYOLO26(nn.Module):
             self._feat.clear()
             dummy = torch.zeros(1, 3, 256, 384)
             det_out = self.det_model(dummy)
-            if not isinstance(det_out, dict) or "one2many" not in det_out:
-                raise RuntimeError("unexpected yolo26 forward output during init")
+            preds = self._extract_preds_dict(det_out, context="during init")
             if "p3_backbone" not in self._feat:
                 raise RuntimeError("failed to capture backbone P3 feature (hook did not fire)")
+            one2many = preds.get("one2many")
+            if not isinstance(one2many, dict):
+                raise RuntimeError("unexpected yolo26 one2many output during init")
+            feats = one2many.get("feats")
+            if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
+                raise RuntimeError("unexpected yolo26 one2many.feats output during init")
             p3_backbone = self._feat["p3_backbone"]
-            p3_head = det_out["one2many"]["feats"][0]
+            p3_head = feats[0]
         self.det_model.train(was_training)
 
         self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]))
@@ -272,16 +277,35 @@ class PV26MultiHeadYOLO26(nn.Module):
         self._feat.clear()
         det_out = self.det_model(x)
 
-        preds = det_out[1] if isinstance(det_out, tuple) else det_out
-        if not isinstance(preds, dict) or "one2many" not in preds:
+        preds = self._extract_preds_dict(det_out, context="")
+        if "one2many" not in preds:
             raise RuntimeError("unexpected yolo26 forward output")
+        one2many = preds.get("one2many")
+        if not isinstance(one2many, dict):
+            raise RuntimeError("unexpected yolo26 one2many output")
+        feats = one2many.get("feats")
+        if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
+            raise RuntimeError("unexpected yolo26 one2many.feats output")
 
         p3_backbone = self._feat.get("p3_backbone", None)
         if p3_backbone is None:
             raise RuntimeError("missing backbone P3 feature (hook did not fire)")
-        p3_head = preds["one2many"]["feats"][0]
+        p3_head = feats[0]
 
         da = self.da_head(p3_backbone, out_size=(in_h, in_w))
         rm = self.rm_head(p3_head, out_size=(in_h, in_w))
         rm_lane_subclass = self.rm_lane_subclass_head(p3_head, out_size=(in_h, in_w))
         return PV26MultiHeadOutput(det=det_out, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
+
+    @staticmethod
+    def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
+        preds = det_out
+        if isinstance(det_out, (tuple, list)):
+            if len(det_out) >= 2 and isinstance(det_out[1], dict):
+                preds = det_out[1]
+            elif len(det_out) >= 1 and isinstance(det_out[0], dict):
+                preds = det_out[0]
+        if not isinstance(preds, dict):
+            detail = f" {context}" if context else ""
+            raise RuntimeError(f"unexpected yolo26 forward output{detail}")
+        return preds

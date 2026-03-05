@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -19,6 +21,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from pv26.constants import DET_CLASSES_CANONICAL
 from pv26.multitask_model import PV26MultiHeadYOLO26
+
+LOGGER = logging.getLogger("render_weights_example")
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--out-pv2", type=Path, default=Path("datasets/weights/result_pv2.jpg"))
     p.add_argument("--out-pv26", type=Path, default=Path("datasets/weights/result_pv26.jpg"))
+    p.add_argument("--quiet", action="store_true", help="상세 진행 로그 출력 비활성화")
     return p.parse_args()
 
 
@@ -62,6 +67,28 @@ def pick_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(name)
+
+
+def setup_logging(*, quiet: bool = False) -> None:
+    level = logging.WARNING if quiet else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="[%(asctime)s] [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+    if not quiet:
+        LOGGER.info("상세 진행 로그를 활성화했습니다.")
+
+
+def log_step_start(step_name: str) -> float:
+    LOGGER.info("▶ %s", step_name)
+    return time.perf_counter()
+
+
+def log_step_done(step_name: str, started_at: float) -> None:
+    elapsed = time.perf_counter() - started_at
+    LOGGER.info("✓ %s (%.2f초)", step_name, elapsed)
 
 
 def _letterbox_image_for_model(image_bgr: np.ndarray, *, in_h: int, in_w: int, pad_value: int = 114) -> tuple[np.ndarray, LetterboxMeta]:
@@ -95,12 +122,26 @@ def _letterbox_image_for_model(image_bgr: np.ndarray, *, in_h: int, in_w: int, p
 
 
 def read_image(path: Path, *, in_h: int, in_w: int) -> tuple[np.ndarray, torch.Tensor, LetterboxMeta]:
+    t0 = log_step_start(f"입력 이미지 로드 및 전처리: {path}")
     orig_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if orig_bgr is None:
         raise FileNotFoundError(f"failed to load image: {path}")
     model_bgr, meta = _letterbox_image_for_model(orig_bgr, in_h=in_h, in_w=in_w, pad_value=114)
     rgb = cv2.cvtColor(model_bgr, cv2.COLOR_BGR2RGB)
     x = torch.from_numpy(rgb).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+    LOGGER.info(
+        "입력 크기 원본=%dx%d, 모델입력=%dx%d, resize=%dx%d, pad=(y:%d, x:%d), scale=%.6f",
+        meta.orig_w,
+        meta.orig_h,
+        meta.in_w,
+        meta.in_h,
+        meta.new_w,
+        meta.new_h,
+        meta.pad_y,
+        meta.pad_x,
+        meta.scale,
+    )
+    log_step_done("입력 이미지 로드 및 전처리", t0)
     return orig_bgr, x, meta
 
 
@@ -351,13 +392,26 @@ def render_pv2(
     lane_alpha: float,
     device: torch.device,
 ) -> np.ndarray:
+    t_total = log_step_start(f"PV2 렌더링 시작 (weight={model_path})")
+    t_load = log_step_start("PV2 TorchScript 모델 로드")
     model = torch.jit.load(str(model_path), map_location=device).eval()
+    log_step_done("PV2 TorchScript 모델 로드", t_load)
+    t_infer = log_step_start("PV2 추론 실행")
     with torch.no_grad():
         out = model(input_tensor.to(device))
+    log_step_done("PV2 추론 실행", t_infer)
 
     (pred_raw, anchor_grid), seg, ll = out
     in_h = int(input_tensor.shape[-2])
     in_w = int(input_tensor.shape[-1])
+    LOGGER.info(
+        "PV2 출력 텐서: pred_layers=%d, seg=%s, lane=%s",
+        len(pred_raw),
+        tuple(seg.shape),
+        tuple(ll.shape),
+    )
+
+    t_post = log_step_start("PV2 후처리 (decode + NMS + 마스크)")
     pred = decode_pv2_preds(list(pred_raw), list(anchor_grid), input_h=in_h, input_w=in_w)[0]
     boxes, scores, classes = nms_yolo(pred, conf_thres=conf_thres, iou_thres=iou_thres)
     boxes = _unletterbox_boxes_xyxy(boxes, meta)
@@ -374,11 +428,21 @@ def render_pv2(
 
     da_mask_np = _unletterbox_binary_mask(da_mask, meta)
     ll_mask_np = _unletterbox_binary_mask(ll_mask, meta)
+    LOGGER.info(
+        "PV2 탐지 결과: boxes=%d, DA pixels=%d, Lane pixels=%d",
+        int(boxes.shape[0]),
+        int(np.count_nonzero(da_mask_np)),
+        int(np.count_nonzero(ll_mask_np)),
+    )
+    log_step_done("PV2 후처리 (decode + NMS + 마스크)", t_post)
 
+    t_vis = log_step_start("PV2 시각화 합성")
     vis = overlay_mask(base_bgr, da_mask_np, color=(0, 200, 0), alpha=da_alpha)
     vis = overlay_mask(vis, ll_mask_np, color=(0, 0, 255), alpha=lane_alpha)
     vis = draw_boxes(vis, boxes.cpu(), scores.cpu(), classes.cpu(), names=None)
     cv2.putText(vis, "PV2: DA(green) + Lane(red)", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    log_step_done("PV2 시각화 합성", t_vis)
+    log_step_done("PV2 렌더링 완료", t_total)
     return vis
 
 
@@ -393,6 +457,8 @@ def render_pv26(
     lane_thres: float,
     device: torch.device,
 ) -> np.ndarray:
+    t_total = log_step_start(f"PV26 렌더링 시작 (checkpoint={ckpt_path})")
+    t_load = log_step_start("PV26 체크포인트 및 모델 로드")
     ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device).eval()
     try:
@@ -403,9 +469,17 @@ def render_pv26(
             "This renderer requires a checkpoint trained with the current PV26 model "
             "(including rm_lane_subclass_head)."
         ) from ex
+    log_step_done("PV26 체크포인트 및 모델 로드", t_load)
 
+    t_infer = log_step_start("PV26 추론 실행")
     with torch.no_grad():
         out = model(input_tensor.to(device))
+    log_step_done("PV26 추론 실행", t_infer)
+    LOGGER.info(
+        "PV26 출력 텐서: da=%s, lane_subclass=%s",
+        tuple(out.da.shape),
+        tuple(out.rm_lane_subclass.shape),
+    )
 
     det: torch.Tensor
     if isinstance(out.det, tuple) and len(out.det) >= 1 and isinstance(out.det[0], torch.Tensor):
@@ -427,6 +501,7 @@ def render_pv26(
         boxes = torch.zeros((0, 4), dtype=torch.float32)
         scores = torch.zeros((0,), dtype=torch.float32)
         classes = torch.zeros((0,), dtype=torch.long)
+    LOGGER.info("PV26 탐지 결과: conf_thres=%.3f, boxes=%d", float(conf_thres), int(boxes.shape[0]))
 
     boxes = _unletterbox_boxes_xyxy(boxes, meta)
     det_names = [c.name for c in DET_CLASSES_CANONICAL]
@@ -444,15 +519,22 @@ def render_pv26(
     lane_conf = np.max(lane_soft, axis=0).astype(np.float32)  # [H,W]
     lane_cls_np = _unletterbox_class_map(lane_cls, meta)
     lane_conf_np = _unletterbox_prob_map(lane_conf, meta)
+    lane_summary: list[str] = []
     for cls_id, _name, cls_color in LANE_SUBCLASS_INFO:
         m = lane_cls_np == int(cls_id)
         if not np.any(m):
+            lane_summary.append(f"{_name}=0")
             continue
+        lane_summary.append(f"{_name}={int(np.count_nonzero(m))}")
         alpha_map = np.zeros_like(lane_conf_np, dtype=np.float32)
         alpha_map[m] = lane_conf_np[m] * float(lane_alpha)
         if float(lane_thres) > 0.0:
             alpha_map[m & (lane_conf_np < float(lane_thres))] = 0.0
         vis = overlay_alpha_map(vis, alpha_map, color=cls_color)
+    LOGGER.info(
+        "PV26 lane 픽셀 분포: %s",
+        ", ".join(lane_summary) if lane_summary else "없음",
+    )
 
     vis = draw_od_boxes_colored(vis, boxes, scores, classes, names=det_names, class_colors=det_colors)
     vis = draw_legend(
@@ -463,16 +545,24 @@ def render_pv26(
         det_colors=det_colors,
         lane_thres=float(lane_thres),
     )
+    log_step_done("PV26 렌더링 완료", t_total)
     return vis
 
 
 def main() -> int:
     args = parse_args()
+    setup_logging(quiet=bool(args.quiet))
     os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
+    LOGGER.info("YOLO_CONFIG_DIR=%s", os.environ.get("YOLO_CONFIG_DIR"))
+    LOGGER.info("입력 인자: %s", args)
+
+    t_main = log_step_start("전체 파이프라인 시작")
     device = pick_device(args.device)
+    LOGGER.info("사용 디바이스: %s", device)
 
     in_h = int(args.input_height) if args.input_height is not None else int(args.imgsz)
     in_w = int(args.input_width) if args.input_width is not None else int(args.imgsz)
+    LOGGER.info("모델 입력 크기: width=%d, height=%d", in_w, in_h)
 
     base_bgr, x, meta = read_image(args.image, in_h=in_h, in_w=in_w)
     pv2_img = render_pv2(args.pv2_weight, x, base_bgr, meta, args.conf_thres, args.iou_thres, args.da_alpha, args.lane_alpha, device)
@@ -488,10 +578,18 @@ def main() -> int:
         device,
     )
 
+    t_save = log_step_start("결과 이미지 저장")
     args.out_pv2.parent.mkdir(parents=True, exist_ok=True)
     args.out_pv26.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(args.out_pv2), pv2_img)
-    cv2.imwrite(str(args.out_pv26), pv26_img)
+    ok_pv2 = cv2.imwrite(str(args.out_pv2), pv2_img)
+    ok_pv26 = cv2.imwrite(str(args.out_pv26), pv26_img)
+    if not ok_pv2:
+        raise RuntimeError(f"failed to save output image: {args.out_pv2}")
+    if not ok_pv26:
+        raise RuntimeError(f"failed to save output image: {args.out_pv26}")
+    log_step_done("결과 이미지 저장", t_save)
+    log_step_done("전체 파이프라인 완료", t_main)
+
     print(f"saved: {args.out_pv2}")
     print(f"saved: {args.out_pv26}")
     return 0
