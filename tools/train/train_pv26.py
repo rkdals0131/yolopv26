@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 import os
@@ -38,32 +39,87 @@ from tools.train.common import (
 DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_bdd_full")
 
 
+@dataclass(frozen=True)
+class TrainPv26ScriptDefaults:
+    # Edit this block when you run train_pv26.py directly from the repo.
+    # Any CLI argument still overrides the value here, so Modal wrappers remain compatible.
+    dataset_root: Path = DEFAULT_DATASET_ROOT
+    arch: str = "yolo26n"
+    epochs: int = 5
+    batch_size: int = 10
+    seg_output_stride: int = 2
+    workers: int = 6
+    prefetch_factor: int = 4
+    persistent_workers: bool = True
+    lr: float = 0.0
+    optimizer: str = "adamw"
+    weight_decay: float = 1e-4
+    momentum: float = 0.937
+    scheduler: str = "cosine"
+    warmup_epochs: int = 3
+    warmup_start_factor: float = 0.1
+    min_lr_ratio: float = 0.05
+    compile: bool = False
+    compile_mode: str = "default"
+    compile_fullgraph: bool = False
+    compile_seg_loss: bool = True
+    profile_every: int = 0
+    profile_sync_cuda: bool = False
+    profile_system: bool = False
+    device: str = "auto"
+    amp: bool = True
+    eval_map_every: int = 1
+    train_drop_last: bool = False
+    validate_masks: bool = False
+    tensorboard: bool = True
+    progress: bool = True
+    log_every: int = 10
+    augment: bool = True
+    aug_hflip: float = 0.5
+    aug_brightness: float = 0.2
+    aug_contrast: float = 0.2
+    aug_saturation: float = 0.2
+
+
+SCRIPT_DEFAULTS = TrainPv26ScriptDefaults()
+
+
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="PV26 practical train/val pipeline")
     p.add_argument(
         "--dataset-root",
         type=Path,
-        default=DEFAULT_DATASET_ROOT,
-        help=f"PV26 dataset root with meta/split_manifest.csv (default: {DEFAULT_DATASET_ROOT})",
+        default=SCRIPT_DEFAULTS.dataset_root,
+        help=(
+            "PV26 dataset root with meta/split_manifest.csv "
+            f"(default: {SCRIPT_DEFAULTS.dataset_root})"
+        ),
     )
-    p.add_argument("--arch", type=str, default="yolo26n", choices=["yolo26n", "stub"])
-    p.add_argument("--epochs", type=int, default=5)
-    p.add_argument("--batch-size", type=int, default=10)
+    p.add_argument("--arch", type=str, default=SCRIPT_DEFAULTS.arch, choices=["yolo26n", "stub"])
+    p.add_argument("--epochs", type=int, default=SCRIPT_DEFAULTS.epochs)
+    p.add_argument("--batch-size", type=int, default=SCRIPT_DEFAULTS.batch_size)
     p.add_argument(
         "--seg-output-stride",
         type=int,
-        default=2,
+        default=SCRIPT_DEFAULTS.seg_output_stride,
         choices=[1, 2],
-        help="Segmentation output stride relative to input resolution (default: 2).",
+        help=(
+            "Segmentation output stride relative to input resolution "
+            f"(default: {SCRIPT_DEFAULTS.seg_output_stride})."
+        ),
     )
-    p.add_argument("--workers", type=int, default=6)
-    p.add_argument("--prefetch-factor", type=int, default=4, help="DataLoader prefetch factor when workers > 0")
+    p.add_argument("--workers", type=int, default=SCRIPT_DEFAULTS.workers)
+    p.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=SCRIPT_DEFAULTS.prefetch_factor,
+        help="DataLoader prefetch factor when workers > 0",
+    )
     p.add_argument(
         "--persistent-workers",
         dest="persistent_workers",
         action="store_true",
-        default=True,
-        help="Keep DataLoader workers alive across epochs (default: on)",
+        help="Keep DataLoader workers alive across epochs",
     )
     p.add_argument(
         "--no-persistent-workers",
@@ -74,59 +130,58 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--lr",
         type=float,
-        default=0.0,
+        default=SCRIPT_DEFAULTS.lr,
         help="Base LR. Set <=0 to use optimizer-specific auto LR (adam/adamw=1e-3, sgd=1e-2).",
     )
     p.add_argument(
         "--optimizer",
         type=str,
-        default="adamw",
+        default=SCRIPT_DEFAULTS.optimizer,
         choices=["adamw", "adam", "sgd"],
         help="Optimizer for all trainable params (default: adamw).",
     )
     p.add_argument(
         "--weight-decay",
         type=float,
-        default=1e-4,
+        default=SCRIPT_DEFAULTS.weight_decay,
         help="Weight decay (used by adamw/adam/sgd).",
     )
     p.add_argument(
         "--momentum",
         type=float,
-        default=0.937,
+        default=SCRIPT_DEFAULTS.momentum,
         help="Momentum for SGD optimizer.",
     )
     p.add_argument(
         "--scheduler",
         type=str,
-        default="cosine",
+        default=SCRIPT_DEFAULTS.scheduler,
         choices=["cosine", "none"],
         help="LR scheduler policy (default: cosine).",
     )
     p.add_argument(
         "--warmup-epochs",
         type=int,
-        default=3,
+        default=SCRIPT_DEFAULTS.warmup_epochs,
         help="Warmup epochs before cosine phase (0 disables warmup).",
     )
     p.add_argument(
         "--warmup-start-factor",
         type=float,
-        default=0.1,
+        default=SCRIPT_DEFAULTS.warmup_start_factor,
         help="Warmup start LR factor for LinearLR (0<factor<=1).",
     )
     p.add_argument(
         "--min-lr-ratio",
         type=float,
-        default=0.05,
+        default=SCRIPT_DEFAULTS.min_lr_ratio,
         help="eta_min ratio for cosine scheduler (eta_min = lr * ratio).",
     )
     p.add_argument(
         "--compile",
         dest="compile",
         action="store_true",
-        default=False,
-        help="Enable torch.compile on CUDA (default: off).",
+        help="Enable torch.compile on CUDA.",
     )
     p.add_argument(
         "--no-compile",
@@ -137,7 +192,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--compile-mode",
         type=str,
-        default="default",
+        default=SCRIPT_DEFAULTS.compile_mode,
         choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
         help="torch.compile mode.",
     )
@@ -145,7 +200,6 @@ def build_argparser() -> argparse.ArgumentParser:
         "--compile-fullgraph",
         dest="compile_fullgraph",
         action="store_true",
-        default=False,
         help="Enable fullgraph mode in torch.compile (useful for graph-break A/B).",
     )
     p.add_argument(
@@ -158,8 +212,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--compile-seg-loss",
         dest="compile_seg_loss",
         action="store_true",
-        default=True,
-        help="Enable torch.compile on the DA/RM seg loss block only (default: on).",
+        help="Enable torch.compile on the DA/RM seg loss block only.",
     )
     p.add_argument(
         "--no-compile-seg-loss",
@@ -176,7 +229,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--profile-every",
         type=int,
-        default=0,
+        default=SCRIPT_DEFAULTS.profile_every,
         help="Print N-step averaged train stage timings (default: off; set >0 to enable).",
     )
     p.add_argument(
@@ -187,11 +240,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--profile-system",
         action="store_true",
-        default=False,
         help="Include CPU/CUDA memory + nvidia-smi in profile logs (higher overhead).",
     )
-    p.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda|cuda:N")
-    p.add_argument("--amp", dest="amp", action="store_true", default=True, help="Enable AMP (CUDA only, default: on)")
+    p.add_argument("--device", type=str, default=SCRIPT_DEFAULTS.device, help="auto|cpu|cuda|cuda:N")
+    p.add_argument("--amp", dest="amp", action="store_true", help="Enable AMP (CUDA only)")
     p.add_argument("--no-amp", dest="amp", action="store_false", help="Disable AMP")
     p.add_argument("--max-batches", type=int, default=0, help="Max batches for both train/val (0=all)")
     p.add_argument("--max-train-batches", type=int, default=0, help="Max train batches (0=all or --max-batches)")
@@ -201,35 +253,72 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resume", type=Path, default=None, help="Checkpoint path to resume from")
     p.add_argument("--resume-latest", action="store_true", help="Resume from <run>/checkpoints/latest.pt")
-    p.add_argument("--tensorboard", dest="tensorboard", action="store_true", default=True)
+    p.add_argument("--tensorboard", dest="tensorboard", action="store_true")
     p.add_argument("--no-tensorboard", dest="tensorboard", action="store_false")
-    p.add_argument("--progress", dest="progress", action="store_true", default=True)
+    p.add_argument("--progress", dest="progress", action="store_true")
     p.add_argument("--no-progress", dest="progress", action="store_false")
-    p.add_argument("--log-every", type=int, default=10, help="Console print interval when tqdm is disabled")
+    p.add_argument(
+        "--log-every",
+        type=int,
+        default=SCRIPT_DEFAULTS.log_every,
+        help="Console print interval when tqdm is disabled",
+    )
     p.add_argument(
         "--eval-map-every",
         type=int,
-        default=1,
+        default=SCRIPT_DEFAULTS.eval_map_every,
         help="Compute validation mAP every N epochs (final epoch always computes mAP).",
     )
     p.add_argument(
         "--train-drop-last",
         action="store_true",
-        default=False,
         help="Drop incomplete final train batch (useful for throughput/compile-shape benchmarks).",
     )
     p.add_argument(
         "--validate-masks",
         action="store_true",
-        default=False,
         help="Enable strict mask value validation in dataset __getitem__ (debug only; adds CPU overhead).",
     )
-    p.add_argument("--augment", dest="augment", action="store_true", default=True, help="Enable train-time augmentation")
+    p.add_argument("--augment", dest="augment", action="store_true", help="Enable train-time augmentation")
     p.add_argument("--no-augment", dest="augment", action="store_false", help="Disable train-time augmentation")
-    p.add_argument("--aug-hflip", type=float, default=0.5, help="Horizontal flip probability for train set")
-    p.add_argument("--aug-brightness", type=float, default=0.2, help="Brightness jitter delta (0 disables)")
-    p.add_argument("--aug-contrast", type=float, default=0.2, help="Contrast jitter delta (0 disables)")
-    p.add_argument("--aug-saturation", type=float, default=0.2, help="Saturation jitter delta (0 disables)")
+    p.add_argument(
+        "--aug-hflip",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_hflip,
+        help="Horizontal flip probability for train set",
+    )
+    p.add_argument(
+        "--aug-brightness",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_brightness,
+        help="Brightness jitter delta (0 disables)",
+    )
+    p.add_argument(
+        "--aug-contrast",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_contrast,
+        help="Contrast jitter delta (0 disables)",
+    )
+    p.add_argument(
+        "--aug-saturation",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_saturation,
+        help="Saturation jitter delta (0 disables)",
+    )
+    p.set_defaults(
+        persistent_workers=SCRIPT_DEFAULTS.persistent_workers,
+        compile=SCRIPT_DEFAULTS.compile,
+        compile_fullgraph=SCRIPT_DEFAULTS.compile_fullgraph,
+        compile_seg_loss=SCRIPT_DEFAULTS.compile_seg_loss,
+        profile_sync_cuda=SCRIPT_DEFAULTS.profile_sync_cuda,
+        profile_system=SCRIPT_DEFAULTS.profile_system,
+        amp=SCRIPT_DEFAULTS.amp,
+        tensorboard=SCRIPT_DEFAULTS.tensorboard,
+        progress=SCRIPT_DEFAULTS.progress,
+        train_drop_last=SCRIPT_DEFAULTS.train_drop_last,
+        validate_masks=SCRIPT_DEFAULTS.validate_masks,
+        augment=SCRIPT_DEFAULTS.augment,
+    )
     return p
 
 
