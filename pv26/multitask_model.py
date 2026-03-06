@@ -265,18 +265,8 @@ class UltralyticsYOLO26DetBackend(nn.Module):
 
         self.det_model = DetectionModel(self.yolo26_cfg, ch=3, nc=self.num_det_classes, verbose=bool(verbose))
         self.det_model.args = DEFAULT_CFG
-
-        self._feat: dict[str, Tensor] = {}
-
-        def _save(name: str):
-            def hook(_module, _inp, out):
-                self._feat[name] = out
-
-            return hook
-
         if len(self.det_model.model) <= 4:
             raise RuntimeError("unexpected yolo26 model layout: module count too small")
-        self.det_model.model[4].register_forward_hook(_save("p3_backbone"))
 
         was_training = bool(self.det_model.training)
         self.det_model.eval()
@@ -288,8 +278,7 @@ class UltralyticsYOLO26DetBackend(nn.Module):
         self.p3_head_channels = int(backend_out.p3_head.shape[1])
 
     def forward(self, x: Tensor) -> PV26DetBackendOutput:
-        self._feat.clear()
-        det_out = self.det_model(x)
+        det_out, p3_backbone = self._predict_once_with_p3_backbone(x)
         preds = self._extract_preds_dict(det_out, context="")
         if "one2many" not in preds:
             raise RuntimeError("unexpected yolo26 forward output")
@@ -299,11 +288,23 @@ class UltralyticsYOLO26DetBackend(nn.Module):
         feats = one2many.get("feats")
         if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
             raise RuntimeError("unexpected yolo26 one2many.feats output")
-
-        p3_backbone = self._feat.get("p3_backbone", None)
-        if p3_backbone is None:
-            raise RuntimeError("missing backbone P3 feature (hook did not fire)")
         return PV26DetBackendOutput(det=det_out, p3_backbone=p3_backbone, p3_head=feats[0])
+
+    def _predict_once_with_p3_backbone(self, x: Tensor) -> tuple[Any, Tensor]:
+        y: list[Any] = []
+        p3_backbone: Optional[Tensor] = None
+        for m in self.det_model.model:
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            x = m(x)
+            if int(m.i) == 4:
+                if not torch.is_tensor(x):
+                    raise RuntimeError("unexpected backbone P3 feature type")
+                p3_backbone = x
+            y.append(x if m.i in self.det_model.save else None)
+        if p3_backbone is None:
+            raise RuntimeError("missing backbone P3 feature")
+        return x, p3_backbone
 
     @staticmethod
     def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:

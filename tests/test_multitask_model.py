@@ -11,6 +11,7 @@ from pv26.multitask_model import (
     PV26MultiHead,
     PV26MultiHeadYOLO26,
     RoadMarkingHeadDeconv,
+    UltralyticsYOLO26DetBackend,
 )
 
 
@@ -29,6 +30,46 @@ class _FakeDetBackend(nn.Module):
             p3_backbone=p3_backbone,
             p3_head=p3_head,
         )
+
+
+class _FakeIndexedConv(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, *, i: int, f: int = -1):
+        super().__init__()
+        self.i = i
+        self.f = f
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+
+class _FakeDetectModule(nn.Module):
+    def __init__(self, *, i: int, f: int = -1):
+        super().__init__()
+        self.i = i
+        self.f = f
+
+    def forward(self, x):
+        return {
+            "one2many": {"feats": [x]},
+            "one2one": {"feats": [x]},
+        }
+
+
+class _FakeUltralyticsLikeModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = nn.ModuleList(
+            [
+                _FakeIndexedConv(3, 4, i=0),
+                _FakeIndexedConv(4, 5, i=1),
+                _FakeIndexedConv(5, 6, i=2),
+                _FakeIndexedConv(6, 7, i=3),
+                _FakeIndexedConv(7, 8, i=4),
+                _FakeDetectModule(i=5),
+            ]
+        )
+        self.save = [4]
 
 
 class TestPV26MultiHead(unittest.TestCase):
@@ -92,6 +133,17 @@ class TestPV26MultiHead(unittest.TestCase):
         self.assertEqual(tuple(y.da.shape), (2, 1, 128, 192))
         self.assertEqual(tuple(y.rm.shape), (2, 3, 128, 192))
         self.assertEqual(tuple(y.rm_lane_subclass.shape), (2, 5, 128, 192))
+
+    def test_ultralytics_backend_adapter_can_capture_p3_without_hooks(self):
+        backend = UltralyticsYOLO26DetBackend.__new__(UltralyticsYOLO26DetBackend)
+        nn.Module.__init__(backend)
+        backend.det_model = _FakeUltralyticsLikeModel()
+
+        out = backend.forward(torch.randn(2, 3, 32, 32))
+
+        self.assertFalse(hasattr(backend, "_feat"))
+        self.assertEqual(tuple(out.p3_backbone.shape), (2, 8, 32, 32))
+        self.assertIs(out.p3_head, out.det["one2many"]["feats"][0])
 
     def test_da_head_skips_final_interpolate_when_size_already_matches(self):
         head = DrivableAreaHeadP3(in_ch=128)
