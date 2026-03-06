@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Set, Tuple
+from typing import Set
 
 import numpy as np
 
 IGNORE_VALUE = 255
+
+# lane subclass ids in mono8 rm_lane_subclass mask
+LANE_SUBCLASS_BG = 0
+LANE_SUBCLASS_WHITE_SOLID = 1
+LANE_SUBCLASS_WHITE_DASHED = 2
+LANE_SUBCLASS_YELLOW_SOLID = 3
+LANE_SUBCLASS_YELLOW_DASHED = 4
 
 
 def validate_binary_mask_u8(mask: np.ndarray, *, allow_ignore: bool = True, name: str = "mask") -> None:
@@ -19,6 +26,40 @@ def validate_binary_mask_u8(mask: np.ndarray, *, allow_ignore: bool = True, name
         raise ValueError(f"{name}: expected 2D mask, got shape={mask.shape}")
 
     allowed = {0, 1, IGNORE_VALUE} if allow_ignore else {0, 1}
+    vals = set(np.unique(mask).tolist())
+    bad = vals - allowed
+    if bad:
+        raise ValueError(f"{name}: invalid values {sorted(bad)} (allowed {sorted(allowed)})")
+
+
+def validate_lane_subclass_mask_u8(mask: np.ndarray, *, allow_ignore: bool = True, name: str = "rm_lane_subclass") -> None:
+    """
+    Validate lane-subclass mono8 mask.
+
+    Domain:
+      0 background
+      1 white_solid
+      2 white_dashed
+      3 yellow_solid
+      4 yellow_dashed
+      255 ignore (optional)
+    """
+    if mask.dtype != np.uint8:
+        raise ValueError(f"{name}: expected dtype=uint8, got {mask.dtype}")
+    if mask.ndim != 2:
+        raise ValueError(f"{name}: expected 2D mask, got shape={mask.shape}")
+
+    allowed = {
+        LANE_SUBCLASS_BG,
+        LANE_SUBCLASS_WHITE_SOLID,
+        LANE_SUBCLASS_WHITE_DASHED,
+        LANE_SUBCLASS_YELLOW_SOLID,
+        LANE_SUBCLASS_YELLOW_DASHED,
+    }
+    if allow_ignore:
+        allowed = set(allowed)
+        allowed.add(IGNORE_VALUE)
+
     vals = set(np.unique(mask).tolist())
     bad = vals - allowed
     if bad:
@@ -111,6 +152,65 @@ def compose_semantic_id_v2(
     return SemanticComposeResult(semantic_id=sem, ok=True)
 
 
+def compose_semantic_id_v3(
+    da_mask: np.ndarray,
+    rm_lane_subclass: np.ndarray,
+    rm_road_marker_non_lane: np.ndarray,
+    rm_stop_line: np.ndarray,
+) -> SemanticComposeResult:
+    """
+    Compose classmap-v3 semantic_id from DA + lane-subclass + road-marker channels.
+
+    Priority:
+      stop_line > lane_subclass > road_marker_non_lane > drivable > background
+
+    Contract:
+      - semantic_id must contain no 255.
+      - If any input contains ignore(255), composition is refused.
+    """
+    validate_binary_mask_u8(da_mask, allow_ignore=True, name="da_mask")
+    validate_lane_subclass_mask_u8(rm_lane_subclass, allow_ignore=True, name="rm_lane_subclass")
+    validate_binary_mask_u8(rm_road_marker_non_lane, allow_ignore=True, name="rm_road_marker_non_lane")
+    validate_binary_mask_u8(rm_stop_line, allow_ignore=True, name="rm_stop_line")
+
+    if not (da_mask.shape == rm_lane_subclass.shape == rm_road_marker_non_lane.shape == rm_stop_line.shape):
+        return SemanticComposeResult(
+            semantic_id=np.zeros((1, 1), dtype=np.uint8),
+            ok=False,
+            reason="shape_mismatch",
+        )
+
+    if _has_ignore(da_mask) or _has_ignore(rm_lane_subclass) or _has_ignore(rm_road_marker_non_lane) or _has_ignore(rm_stop_line):
+        return SemanticComposeResult(
+            semantic_id=np.zeros((1, 1), dtype=np.uint8),
+            ok=False,
+            reason="has_ignore_255_in_inputs",
+        )
+
+    from .constants import (
+        SEG3_ID_BACKGROUND,
+        SEG3_ID_DRIVABLE,
+        SEG3_ID_LANE_WHITE_DASHED,
+        SEG3_ID_LANE_WHITE_SOLID,
+        SEG3_ID_LANE_YELLOW_DASHED,
+        SEG3_ID_LANE_YELLOW_SOLID,
+        SEG3_ID_ROAD_MARKER_NON_LANE,
+        SEG3_ID_STOP_LINE,
+    )
+
+    sem = np.full(da_mask.shape, SEG3_ID_BACKGROUND, dtype=np.uint8)
+    sem[da_mask == 1] = SEG3_ID_DRIVABLE
+    sem[rm_road_marker_non_lane == 1] = SEG3_ID_ROAD_MARKER_NON_LANE
+
+    sem[rm_lane_subclass == LANE_SUBCLASS_WHITE_SOLID] = SEG3_ID_LANE_WHITE_SOLID
+    sem[rm_lane_subclass == LANE_SUBCLASS_WHITE_DASHED] = SEG3_ID_LANE_WHITE_DASHED
+    sem[rm_lane_subclass == LANE_SUBCLASS_YELLOW_SOLID] = SEG3_ID_LANE_YELLOW_SOLID
+    sem[rm_lane_subclass == LANE_SUBCLASS_YELLOW_DASHED] = SEG3_ID_LANE_YELLOW_DASHED
+
+    sem[rm_stop_line == 1] = SEG3_ID_STOP_LINE
+    return SemanticComposeResult(semantic_id=sem, ok=True)
+
+
 def validate_semantic_id_u8(semantic_id: np.ndarray, *, allowed_ids: Set[int], name: str = "semantic_id") -> None:
     if semantic_id.dtype != np.uint8:
         raise ValueError(f"{name}: expected dtype=uint8, got {semantic_id.dtype}")
@@ -122,4 +222,3 @@ def validate_semantic_id_u8(semantic_id: np.ndarray, *, allowed_ids: Set[int], n
     bad = vals - set(allowed_ids)
     if bad:
         raise ValueError(f"{name}: contains invalid class ids {sorted(bad)} (allowed {sorted(allowed_ids)})")
-

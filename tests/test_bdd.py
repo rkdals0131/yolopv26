@@ -2,7 +2,12 @@ import unittest
 
 import numpy as np
 
-from pv26.bdd import bdd_record_to_image_name, bdd_record_to_rm_masks, bdd_record_to_yolo_lines
+from pv26.bdd import (
+    bdd_record_to_image_name,
+    bdd_record_to_rm_masks,
+    bdd_record_to_rm_masks_with_lane_subclass,
+    bdd_record_to_yolo_lines,
+)
 from pv26.masks import IGNORE_VALUE
 
 
@@ -60,6 +65,41 @@ class TestBddAdapter(unittest.TestCase):
         self.assertTrue(np.any(rm_lane == 1))
         self.assertTrue(np.any(rm_road == 1))
         self.assertTrue(np.all(rm_stop == IGNORE_VALUE))
+
+    def test_lane_subclass_rasterization(self):
+        rec = {
+            "name": "sample",
+            "frames": [
+                {
+                    "objects": [
+                        {
+                            "category": "lane/single white",
+                            "attributes": {"style": "solid"},
+                            "poly2d": [[10.0, 10.0, "L"], [90.0, 10.0, "L"]],
+                        },
+                        {
+                            "category": "lane/single yellow",
+                            "attributes": {"style": "dashed"},
+                            "poly2d": [[10.0, 20.0, "L"], [90.0, 20.0, "L"]],
+                        },
+                        {
+                            "category": "lane/single other",
+                            "attributes": {"style": "solid"},
+                            "poly2d": [[10.0, 30.0, "L"], [90.0, 30.0, "L"]],
+                        },
+                    ]
+                }
+            ],
+        }
+        rm_lane, _rm_road, _rm_stop, rm_lane_sub, has_lane, _has_road, _has_stop, has_lane_sub = (
+            bdd_record_to_rm_masks_with_lane_subclass(rec, width=100, height=60)
+        )
+        self.assertEqual(has_lane, 1)
+        self.assertEqual(has_lane_sub, 1)
+        self.assertTrue(np.any(rm_lane == 1))
+        self.assertTrue(np.any(rm_lane_sub == 1))  # white solid
+        self.assertTrue(np.any(rm_lane_sub == 4))  # yellow dashed
+        self.assertTrue(np.any(rm_lane_sub == IGNORE_VALUE))  # lane other -> ignore
 
 
 if __name__ == "__main__":

@@ -1,3 +1,6 @@
+> **Archived (2026-03-05)** — kept for history; may be outdated.  
+> Canonical docs: `docs/PV26_PRD.md`, `docs/PV26_DATASET_CONVERSION_SPEC.md`, `docs/PV26_DATASET_SOURCES_AND_MAPPING.md`, `docs/PV26_IMPLEMENTATION_STATUS.md`.
+
 # YOLOPv26 작업 계획 (BDD100K Type-A 기준)
 
 이 문서는 **BDD100K → PV26 Type-A 변환 산출물**을 입력으로, **YOLOPv26 멀티태스크 모델(OD + Drivable + RoadMarking)**을 “정석대로(문서 계약 기반)” 구현/학습하기 위한 **단일 작업 계획서**입니다.

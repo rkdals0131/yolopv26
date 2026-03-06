@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
@@ -10,7 +9,13 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .constants import DET_NAME_TO_ID
-from .masks import make_all_ignore_mask
+from .masks import (
+    LANE_SUBCLASS_WHITE_DASHED,
+    LANE_SUBCLASS_WHITE_SOLID,
+    LANE_SUBCLASS_YELLOW_DASHED,
+    LANE_SUBCLASS_YELLOW_SOLID,
+    make_all_ignore_mask,
+)
 from .yolo import BoxXYXY, format_yolo_line, xyxy_to_yolo_normalized
 
 
@@ -52,6 +57,7 @@ BDD_LANE_MARKER_CATEGORIES = {
     "lane/single yellow",
     "lane/double yellow",
     "lane/single other",
+    "lane/double other",
 }
 
 BDD_ROAD_MARKER_NON_LANE_CATEGORIES = {
@@ -287,23 +293,70 @@ def _poly2d_points(poly2d: Any) -> List[Tuple[float, float]]:
     return pts
 
 
-def bdd_record_to_rm_masks(
+def _lane_subclass_id_for_obj(*, cat: str, obj: Mapping[str, Any]) -> Optional[int]:
+    """
+    Map BDD lane object to lane-subclass id.
+
+    Mapping target:
+      1 white_solid
+      2 white_dashed
+      3 yellow_solid
+      4 yellow_dashed
+
+    Returns None when class should be ignored in subclass supervision.
+    """
+    c = str(cat).strip().lower()
+    if "white" in c:
+        color = "white"
+    elif "yellow" in c:
+        color = "yellow"
+    else:
+        return None
+
+    attrs = obj.get("attributes") if isinstance(obj.get("attributes"), dict) else {}
+    style = str(attrs.get("style", "")).strip().lower()
+    if style not in {"solid", "dashed"}:
+        return None
+
+    if color == "white" and style == "solid":
+        return LANE_SUBCLASS_WHITE_SOLID
+    if color == "white" and style == "dashed":
+        return LANE_SUBCLASS_WHITE_DASHED
+    if color == "yellow" and style == "solid":
+        return LANE_SUBCLASS_YELLOW_SOLID
+    if color == "yellow" and style == "dashed":
+        return LANE_SUBCLASS_YELLOW_DASHED
+    return None
+
+
+def bdd_record_to_rm_masks_with_lane_subclass(
     rec: Mapping[str, Any],
     *,
     width: int,
     height: int,
     line_width: int = 8,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, int, int]:
     """
-    Rasterize BDD lane annotations into PV26 RM masks.
+    Rasterize BDD lane annotations into PV26 RM masks with lane-subclass mask.
 
     Returns:
-      (rm_lane_marker, rm_road_marker_non_lane, rm_stop_line, has_lane, has_road, has_stop)
+      (
+        rm_lane_marker,
+        rm_road_marker_non_lane,
+        rm_stop_line,
+        rm_lane_subclass,
+        has_lane,
+        has_road,
+        has_stop,
+        has_lane_subclass,
+      )
 
     Policy for current Type-A:
-    - lane/non-lane channels are supervised when record exists (has_lane=has_road=1)
+    - lane/non-lane/subclass channels are supervised when record exists
+      (has_lane=has_road=has_lane_subclass=1)
     - stop_line class is treated as unavailable in BDD100K 100k schema by default
       (has_stop=0, all-255 mask), unless explicit stop-line category is present.
+    - lane/single|double other are included in rm_lane_marker but ignored (255) in rm_lane_subclass.
     """
     if width <= 0 or height <= 0:
         raise ValueError("width/height must be positive")
@@ -311,10 +364,16 @@ def bdd_record_to_rm_masks(
     lane_img = Image.new("L", (width, height), 0)
     road_img = Image.new("L", (width, height), 0)
     stop_img = Image.new("L", (width, height), 0)
+    lane_sub_img = Image.new("L", (width, height), 0)
+    lane_sub_ign_img = Image.new("L", (width, height), 0)
+
     lane_draw = ImageDraw.Draw(lane_img)
     road_draw = ImageDraw.Draw(road_img)
     stop_draw = ImageDraw.Draw(stop_img)
+    lane_sub_draw = ImageDraw.Draw(lane_sub_img)
+    lane_sub_ign_draw = ImageDraw.Draw(lane_sub_ign_img)
 
+    line_w = max(1, int(line_width))
     objs = _bdd_record_objects(rec)
     saw_explicit_stop = False
     for o in objs:
@@ -329,24 +388,33 @@ def bdd_record_to_rm_masks(
             continue
 
         if c in BDD_LANE_MARKER_CATEGORIES:
-            lane_draw.line(pts, fill=1, width=max(1, int(line_width)))
+            lane_draw.line(pts, fill=1, width=line_w)
+            lane_sub_id = _lane_subclass_id_for_obj(cat=c, obj=o)
+            if lane_sub_id is None:
+                lane_sub_ign_draw.line(pts, fill=1, width=line_w)
+            else:
+                lane_sub_draw.line(pts, fill=int(lane_sub_id), width=line_w)
             continue
 
         if c in BDD_ROAD_MARKER_NON_LANE_CATEGORIES:
             if c == "lane/crosswalk" and len(pts) >= 3:
                 road_draw.polygon(pts, fill=1)
             else:
-                road_draw.line(pts, fill=1, width=max(1, int(line_width)))
+                road_draw.line(pts, fill=1, width=line_w)
             continue
 
         if c in BDD_STOP_LINE_CATEGORIES:
             saw_explicit_stop = True
-            stop_draw.line(pts, fill=1, width=max(1, int(line_width)))
-            road_draw.line(pts, fill=1, width=max(1, int(line_width)))
+            stop_draw.line(pts, fill=1, width=line_w)
+            road_draw.line(pts, fill=1, width=line_w)
             continue
 
     rm_lane = np.array(lane_img, dtype=np.uint8)
     rm_road = np.array(road_img, dtype=np.uint8)
+
+    rm_lane_subclass = np.array(lane_sub_img, dtype=np.uint8)
+    rm_lane_sub_ign = np.array(lane_sub_ign_img, dtype=np.uint8)
+    rm_lane_subclass[rm_lane_sub_ign == 1] = 255
 
     # Current Type-A default: stop line supervision unavailable -> ignore channel.
     if saw_explicit_stop:
@@ -358,4 +426,27 @@ def bdd_record_to_rm_masks(
 
     has_lane = 1
     has_road = 1
+    has_lane_subclass = 1
+    return rm_lane, rm_road, rm_stop, rm_lane_subclass, has_lane, has_road, has_stop, has_lane_subclass
+
+
+def bdd_record_to_rm_masks(
+    rec: Mapping[str, Any],
+    *,
+    width: int,
+    height: int,
+    line_width: int = 8,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
+    """
+    Backward-compatible wrapper returning legacy 3-channel RM masks.
+
+    Returns:
+      (rm_lane_marker, rm_road_marker_non_lane, rm_stop_line, has_lane, has_road, has_stop)
+    """
+    rm_lane, rm_road, rm_stop, _rm_lane_sub, has_lane, has_road, has_stop, _has_lane_sub = bdd_record_to_rm_masks_with_lane_subclass(
+        rec,
+        width=width,
+        height=height,
+        line_width=line_width,
+    )
     return rm_lane, rm_road, rm_stop, has_lane, has_road, has_stop

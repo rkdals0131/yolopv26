@@ -1,3 +1,6 @@
+> **Archived (2026-03-05)** — kept for history; may be outdated.  
+> Canonical docs: `docs/PV26_PRD.md`, `docs/PV26_DATASET_CONVERSION_SPEC.md`, `docs/PV26_DATASET_SOURCES_AND_MAPPING.md`, `docs/PV26_IMPLEMENTATION_STATUS.md`.
+
 # Dataset Profile
 
 `datasets/`는 심볼릭 링크이며 실제 경로는 `/home/user1/Storage/seg_dataset`(= `/mnt/data/data/seg_dataset`)입니다.

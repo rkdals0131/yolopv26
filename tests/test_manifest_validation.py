@@ -20,6 +20,7 @@ class TestManifestValidation(unittest.TestCase):
                 "has_rm_lane_marker": "0",
                 "has_rm_road_marker_non_lane": "0",
                 "has_rm_stop_line": "0",
+                "has_rm_lane_subclass": "0",
                 "has_semantic_id": "0",
                 "det_label_scope": "none",
                 "det_annotated_class_ids": "",
@@ -29,6 +30,7 @@ class TestManifestValidation(unittest.TestCase):
                 "rm_lane_marker_relpath": "labels_seg_rm_lane_marker/train/x.png",
                 "rm_road_marker_non_lane_relpath": "labels_seg_rm_road_marker_non_lane/train/x.png",
                 "rm_stop_line_relpath": "labels_seg_rm_stop_line/train/x.png",
+                "rm_lane_subclass_relpath": "labels_seg_rm_lane_subclass/train/x.png",
                 "semantic_relpath": "",
                 "width": "2",
                 "height": "2",
@@ -49,4 +51,3 @@ class TestManifestValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

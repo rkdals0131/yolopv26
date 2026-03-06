@@ -1,3 +1,6 @@
+> **Archived (2026-03-05)** — kept for history; may be outdated.  
+> Canonical docs: `docs/PV26_PRD.md`, `docs/PV26_DATASET_CONVERSION_SPEC.md`, `docs/PV26_DATASET_SOURCES_AND_MAPPING.md`, `docs/PV26_IMPLEMENTATION_STATUS.md`.
+
 # Modal 학습 빠른 가이드 (PV26)
 
 이 문서는 `tools/train/modal_train_pv26.py`를 기준으로, Modal에서 PV26 학습을 돌릴 때 사용자에게 필요한 행동만 간단히 정리합니다.

@@ -7,6 +7,17 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
+from .det_loss_backends import UltralyticsE2EDetLossAdapter
+
+_VALID_SEG_OUTPUT_STRIDES = {1, 2}
+
+
+def _validate_seg_output_stride(seg_output_stride: int) -> int:
+    stride = int(seg_output_stride)
+    if stride not in _VALID_SEG_OUTPUT_STRIDES:
+        raise ValueError(f"invalid seg_output_stride: {stride}")
+    return stride
+
 
 @dataclass(frozen=True)
 class PV26MultiHeadOutput:
@@ -14,10 +25,20 @@ class PV26MultiHeadOutput:
     # - stub: dense logits [B, (4 + 1 + num_classes), H/8, W/8]
     # - YOLO26: Ultralytics Detect output (train: dict(one2many/one2one), eval: (y, preds))
     det: Any
-    # Drivable logits: [B, 1, H, W]
+    # Drivable logits: [B, 1, H/seg_output_stride, W/seg_output_stride]
     da: Tensor
-    # Road-marking logits: [B, 3, H, W]
+    # Road-marking logits: [B, 3, H/seg_output_stride, W/seg_output_stride]
     rm: Tensor
+    # Lane-subclass logits: [B, 5, H/seg_output_stride, W/seg_output_stride]
+    # => [background + 4 subclasses]
+    rm_lane_subclass: Tensor
+
+
+@dataclass(frozen=True)
+class PV26DetBackendOutput:
+    det: Any
+    p3_backbone: Tensor
+    p3_head: Tensor
 
 
 class ConvBNAct(nn.Module):
@@ -97,8 +118,9 @@ class DrivableAreaHeadP3(nn.Module):
     DA branch from shallow stride-8 feature (pre-FPN), then explicit upsampling.
     """
 
-    def __init__(self, in_ch: int):
+    def __init__(self, in_ch: int, *, output_stride: int = 1):
         super().__init__()
+        self.output_stride = _validate_seg_output_stride(output_stride)
         mid = max(32, in_ch // 2)
         self.stage0 = ConvBNAct(in_ch, mid, k=3, s=1)
         self.up8_to4 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
@@ -114,9 +136,12 @@ class DrivableAreaHeadP3(nn.Module):
         x = self.stage1(x)
         x = self.up4_to2(x)
         x = self.stage2(x)
-        x = self.up2_to1(x)
+        if self.output_stride == 1:
+            x = self.up2_to1(x)
         logits = self.pred(x)
-        return F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        if logits.shape[-2:] != out_size:
+            logits = F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        return logits
 
 
 class RoadMarkingHeadDeconv(nn.Module):
@@ -124,11 +149,27 @@ class RoadMarkingHeadDeconv(nn.Module):
     RM branch from fused neck feature (post-FPN) with deconvolution blocks.
     """
 
-    def __init__(self, in_ch: int, out_ch: int = 3):
+    def __init__(self, in_ch: int, out_ch: int = 3, *, output_stride: int = 1):
         super().__init__()
+        self.decoder = RoadMarkingDecoderDeconv(in_ch=in_ch, output_stride=output_stride)
+        self.pred = RoadMarkingPredictionHead(in_ch=self.decoder.out_ch, out_ch=out_ch)
+
+    def forward(self, x: Tensor, out_size: Tuple[int, int]) -> Tensor:
+        return self.pred(self.decoder(x, out_size))
+
+
+class RoadMarkingDecoderDeconv(nn.Module):
+    """
+    Shared RM decoder trunk up to the configured segmentation output resolution.
+    """
+
+    def __init__(self, in_ch: int, *, output_stride: int = 1):
+        super().__init__()
+        self.output_stride = _validate_seg_output_stride(output_stride)
         c1 = max(64, in_ch // 2)
         c2 = max(32, c1 // 2)
         c3 = max(16, c2 // 2)
+        self.out_ch = c3
         self.stem = ConvBNAct(in_ch, c1, k=3, s=1)
         self.deconv1 = nn.ConvTranspose2d(c1, c2, kernel_size=4, stride=2, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(c2)
@@ -137,15 +178,25 @@ class RoadMarkingHeadDeconv(nn.Module):
         self.deconv3 = nn.ConvTranspose2d(c3, c3, kernel_size=4, stride=2, padding=1, bias=False)
         self.bn3 = nn.BatchNorm2d(c3)
         self.act = nn.SiLU(inplace=True)
-        self.pred = nn.Conv2d(c3, out_ch, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x: Tensor, out_size: Tuple[int, int]) -> Tensor:
         x = self.stem(x)
         x = self.act(self.bn1(self.deconv1(x)))
         x = self.act(self.bn2(self.deconv2(x)))
-        x = self.act(self.bn3(self.deconv3(x)))
-        logits = self.pred(x)
-        return F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        if self.output_stride == 1:
+            x = self.act(self.bn3(self.deconv3(x)))
+        if x.shape[-2:] != out_size:
+            x = F.interpolate(x, size=out_size, mode="bilinear", align_corners=False)
+        return x
+
+
+class RoadMarkingPredictionHead(nn.Module):
+    def __init__(self, *, in_ch: int, out_ch: int):
+        super().__init__()
+        self.pred = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.pred(x)
 
 
 class PV26MultiHead(nn.Module):
@@ -157,28 +208,122 @@ class PV26MultiHead(nn.Module):
     def __init__(
         self,
         num_det_classes: int = 11,
+        num_lane_subclasses: int = 4,
         backbone: Optional[nn.Module] = None,
         neck: Optional[nn.Module] = None,
         fused_ch: int = 160,
+        seg_output_stride: int = 1,
     ):
         super().__init__()
+        self.num_lane_subclasses = int(num_lane_subclasses)
+        self.seg_output_stride = _validate_seg_output_stride(seg_output_stride)
         self.backbone = backbone if backbone is not None else TinyPV26Backbone()
         self.neck = neck if neck is not None else TinyFPN(out_ch=fused_ch)
         self.det_head = DetectionHeadDense(in_ch=fused_ch, num_classes=num_det_classes)
         # YOLOPv2-style split:
         # - DA from shallower feature (before neck/FPN)
-        # - RM from deeper fused feature (after neck/FPN) with deconvolution
-        self.da_head = DrivableAreaHeadP3(in_ch=128)
-        self.rm_head = RoadMarkingHeadDeconv(in_ch=fused_ch, out_ch=3)
+        # - RM from deeper fused feature (after neck/FPN) with a shared decoder trunk
+        self.da_head = DrivableAreaHeadP3(in_ch=128, output_stride=self.seg_output_stride)
+        self.rm_decoder = RoadMarkingDecoderDeconv(in_ch=fused_ch, output_stride=self.seg_output_stride)
+        self.rm_head = RoadMarkingPredictionHead(in_ch=self.rm_decoder.out_ch, out_ch=3)
+        self.rm_lane_subclass_head = RoadMarkingPredictionHead(
+            in_ch=self.rm_decoder.out_ch,
+            out_ch=(self.num_lane_subclasses + 1),
+        )
 
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
+        seg_out_size = (in_h // self.seg_output_stride, in_w // self.seg_output_stride)
         p3, p4, p5 = self.backbone(x)
         fused = self.neck(p3, p4, p5)
         det = self.det_head(fused)
-        da = self.da_head(p3, out_size=(in_h, in_w))
-        rm = self.rm_head(fused, out_size=(in_h, in_w))
-        return PV26MultiHeadOutput(det=det, da=da, rm=rm)
+        da = self.da_head(p3, out_size=seg_out_size)
+        rm_hidden = self.rm_decoder(fused, out_size=seg_out_size)
+        rm = self.rm_head(rm_hidden)
+        rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
+        return PV26MultiHeadOutput(det=det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
+
+
+class UltralyticsYOLO26DetBackend(nn.Module):
+    """
+    Adapter shell for the Ultralytics YOLO26 detection backend.
+
+    Current contract:
+    - expose a stable `forward() -> PV26DetBackendOutput` API
+    - return explicit `p3_backbone` and `p3_head` tensors without feature hooks
+    - keep `det_model` reachable for pretrained load + criterion wiring
+    """
+
+    def __init__(self, *, num_det_classes: int, yolo26_cfg: str = "yolo26n.yaml", verbose: bool = False):
+        super().__init__()
+        self.num_det_classes = int(num_det_classes)
+        self.yolo26_cfg = str(yolo26_cfg)
+
+        import os
+
+        os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
+
+        from ultralytics.nn.tasks import DetectionModel  # type: ignore
+        from ultralytics.utils import DEFAULT_CFG  # type: ignore
+
+        self.det_model = DetectionModel(self.yolo26_cfg, ch=3, nc=self.num_det_classes, verbose=bool(verbose))
+        self.det_model.args = DEFAULT_CFG
+        if len(self.det_model.model) <= 4:
+            raise RuntimeError("unexpected yolo26 model layout: module count too small")
+
+        was_training = bool(self.det_model.training)
+        self.det_model.eval()
+        with torch.inference_mode():
+            backend_out = self.forward(torch.zeros(1, 3, 256, 384))
+        self.det_model.train(was_training)
+
+        self.p3_backbone_channels = int(backend_out.p3_backbone.shape[1])
+        self.p3_head_channels = int(backend_out.p3_head.shape[1])
+
+    def forward(self, x: Tensor) -> PV26DetBackendOutput:
+        det_out, p3_backbone = self._predict_once_with_p3_backbone(x)
+        preds = self._extract_preds_dict(det_out, context="")
+        if "one2many" not in preds:
+            raise RuntimeError("unexpected yolo26 forward output")
+        one2many = preds.get("one2many")
+        if not isinstance(one2many, dict):
+            raise RuntimeError("unexpected yolo26 one2many output")
+        feats = one2many.get("feats")
+        if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
+            raise RuntimeError("unexpected yolo26 one2many.feats output")
+        return PV26DetBackendOutput(det=det_out, p3_backbone=p3_backbone, p3_head=feats[0])
+
+    def _predict_once_with_p3_backbone(self, x: Tensor) -> tuple[Any, Tensor]:
+        y: list[Any] = []
+        p3_backbone: Optional[Tensor] = None
+        for m in self.det_model.model:
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            x = m(x)
+            if int(m.i) == 4:
+                if not torch.is_tensor(x):
+                    raise RuntimeError("unexpected backbone P3 feature type")
+                p3_backbone = x
+            y.append(x if m.i in self.det_model.save else None)
+        if p3_backbone is None:
+            raise RuntimeError("missing backbone P3 feature")
+        return x, p3_backbone
+
+    def build_det_loss_adapter(self) -> UltralyticsE2EDetLossAdapter:
+        return UltralyticsE2EDetLossAdapter(self.det_model)
+
+    @staticmethod
+    def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
+        preds = det_out
+        if isinstance(det_out, (tuple, list)):
+            if len(det_out) >= 2 and isinstance(det_out[1], dict):
+                preds = det_out[1]
+            elif len(det_out) >= 1 and isinstance(det_out[0], dict):
+                preds = det_out[0]
+        if not isinstance(preds, dict):
+            detail = f" {context}" if context else ""
+            raise RuntimeError(f"unexpected yolo26 forward output{detail}")
+        return preds
 
 
 class PV26MultiHeadYOLO26(nn.Module):
@@ -198,72 +343,65 @@ class PV26MultiHeadYOLO26(nn.Module):
         self,
         *,
         num_det_classes: int = 11,
+        num_lane_subclasses: int = 4,
         yolo26_cfg: str = "yolo26n.yaml",
         verbose: bool = False,
+        seg_output_stride: int = 1,
+        det_backend: Optional[nn.Module] = None,
     ):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
+        self.num_lane_subclasses = int(num_lane_subclasses)
         self.yolo26_cfg = str(yolo26_cfg)
+        self.seg_output_stride = _validate_seg_output_stride(seg_output_stride)
+        self.det_backend = (
+            det_backend
+            if det_backend is not None
+            else UltralyticsYOLO26DetBackend(
+                num_det_classes=self.num_det_classes,
+                yolo26_cfg=self.yolo26_cfg,
+                verbose=bool(verbose),
+            )
+        )
+        self.det_model = getattr(self.det_backend, "det_model", None)
+        if self.det_model is None:
+            raise RuntimeError("det backend must expose det_model")
 
-        # Lazy import: Ultralytics writes settings.json under a user config dir by default.
-        # In this repo sandbox, $HOME may not be writable, so we default to /tmp.
-        import os
+        p3_backbone_ch = getattr(self.det_backend, "p3_backbone_channels", None)
+        p3_head_ch = getattr(self.det_backend, "p3_head_channels", None)
+        if p3_backbone_ch is None or p3_head_ch is None:
+            was_training = bool(self.det_backend.training)
+            self.det_backend.eval()
+            with torch.inference_mode():
+                backend_out = self.det_backend(torch.zeros(1, 3, 256, 384))
+            self.det_backend.train(was_training)
+            p3_backbone_ch = int(backend_out.p3_backbone.shape[1])
+            p3_head_ch = int(backend_out.p3_head.shape[1])
 
-        os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
-
-        from ultralytics.nn.tasks import DetectionModel  # type: ignore
-        from ultralytics.utils import DEFAULT_CFG  # type: ignore
-
-        self.det_model = DetectionModel(self.yolo26_cfg, ch=3, nc=self.num_det_classes, verbose=bool(verbose))
-        # Loss classes expect model.args to be an IterableSimpleNamespace with .box/.cls/.dfl/.epochs, etc.
-        self.det_model.args = DEFAULT_CFG
-
-        self._feat: dict[str, Tensor] = {}
-
-        def _save(name: str):
-            def hook(_module, _inp, out):
-                # out: Tensor
-                self._feat[name] = out
-
-            return hook
-
-        # For Ultralytics YOLO26 (P3/8-P5/32) configs:
-        # - backbone P3/8 feature corresponds to module index 4
-        # - head P3/8 feature is available as preds["one2many"]["feats"][0]
-        if len(self.det_model.model) <= 4:
-            raise RuntimeError("unexpected yolo26 model layout: module count too small")
-        self.det_model.model[4].register_forward_hook(_save("p3_backbone"))
-
-        # Infer channels for segmentation heads with a small dry forward.
-        with torch.no_grad():
-            self.det_model.train()
-            self._feat.clear()
-            dummy = torch.zeros(1, 3, 256, 384)
-            det_out = self.det_model(dummy)
-            if not isinstance(det_out, dict) or "one2many" not in det_out:
-                raise RuntimeError("unexpected yolo26 forward output during init")
-            if "p3_backbone" not in self._feat:
-                raise RuntimeError("failed to capture backbone P3 feature (hook did not fire)")
-            p3_backbone = self._feat["p3_backbone"]
-            p3_head = det_out["one2many"]["feats"][0]
-
-        self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]))
-        self.rm_head = RoadMarkingHeadDeconv(in_ch=int(p3_head.shape[1]), out_ch=3)
+        self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone_ch), output_stride=self.seg_output_stride)
+        self.rm_decoder = RoadMarkingDecoderDeconv(
+            in_ch=int(p3_head_ch),
+            output_stride=self.seg_output_stride,
+        )
+        self.rm_head = RoadMarkingPredictionHead(in_ch=self.rm_decoder.out_ch, out_ch=3)
+        self.rm_lane_subclass_head = RoadMarkingPredictionHead(
+            in_ch=self.rm_decoder.out_ch,
+            out_ch=(self.num_lane_subclasses + 1),
+        )
 
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
-        self._feat.clear()
-        det_out = self.det_model(x)
+        seg_out_size = (in_h // self.seg_output_stride, in_w // self.seg_output_stride)
+        backend_out = self.det_backend(x)
 
-        preds = det_out[1] if isinstance(det_out, tuple) else det_out
-        if not isinstance(preds, dict) or "one2many" not in preds:
-            raise RuntimeError("unexpected yolo26 forward output")
+        da = self.da_head(backend_out.p3_backbone, out_size=seg_out_size)
+        rm_hidden = self.rm_decoder(backend_out.p3_head, out_size=seg_out_size)
+        rm = self.rm_head(rm_hidden)
+        rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
+        return PV26MultiHeadOutput(det=backend_out.det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
 
-        p3_backbone = self._feat.get("p3_backbone", None)
-        if p3_backbone is None:
-            raise RuntimeError("missing backbone P3 feature (hook did not fire)")
-        p3_head = preds["one2many"]["feats"][0]
-
-        da = self.da_head(p3_backbone, out_size=(in_h, in_w))
-        rm = self.rm_head(p3_head, out_size=(in_h, in_w))
-        return PV26MultiHeadOutput(det=det_out, da=da, rm=rm)
+    def build_det_loss_adapter(self) -> Any:
+        build = getattr(self.det_backend, "build_det_loss_adapter", None)
+        if build is None:
+            raise RuntimeError("det backend does not expose build_det_loss_adapter()")
+        return build()

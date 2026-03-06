@@ -81,10 +81,15 @@ def _summarize_obj(obj: Any, *, _depth: int = 0, _max_depth: int = 8) -> Any:
     return {"type": type(obj).__name__, "repr": repr(obj)}
 
 
-def _extract_best_feat_shapes(det_out: Any, feat_cache: dict[str, torch.Tensor]) -> dict[str, Any]:
+def _extract_best_feat_shapes(det_out: Any, backend_out: Any | None) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    if "p3_backbone" in feat_cache and torch.is_tensor(feat_cache["p3_backbone"]):
-        out["p3_backbone"] = list(feat_cache["p3_backbone"].shape)
+    if backend_out is not None:
+        p3_backbone = getattr(backend_out, "p3_backbone", None)
+        p3_head = getattr(backend_out, "p3_head", None)
+        if torch.is_tensor(p3_backbone):
+            out["p3_backbone"] = list(p3_backbone.shape)
+        if torch.is_tensor(p3_head):
+            out["p3_head"] = list(p3_head.shape)
     try:
         if isinstance(det_out, tuple) and len(det_out) >= 2 and isinstance(det_out[1], dict):
             one2many = det_out[1].get("one2many", {})
@@ -121,13 +126,16 @@ def _run_best(best_path: Path, x: torch.Tensor, device: torch.device) -> dict[st
     model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device)
     model.load_state_dict(ckpt["model_state"], strict=True)
     model.eval()
+    backend_out = None
     with torch.no_grad():
         out = model(x)
+        if hasattr(model, "det_backend"):
+            backend_out = model.det_backend(x)
     out_summary = _summarize_obj(out)
     return {
         "checkpoint_keys": sorted(list(ckpt.keys())),
         "output_summary": out_summary,
-        "feature_shapes": _extract_best_feat_shapes(out.det, model._feat),
+        "feature_shapes": _extract_best_feat_shapes(out.det, backend_out),
     }
 
 

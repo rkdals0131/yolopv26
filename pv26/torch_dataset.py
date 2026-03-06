@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -13,7 +13,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from .masks import IGNORE_VALUE, make_all_ignore_mask, validate_binary_mask_u8
+from .masks import IGNORE_VALUE, make_all_ignore_mask, validate_binary_mask_u8, validate_lane_subclass_mask_u8
 from .manifest import MANIFEST_COLUMNS, validate_manifest_row_basic
 
 
@@ -37,19 +37,22 @@ class LetterboxSpec:
 class Pv26Sample:
     sample_id: str
     split: str
-    # Image: float32 [3, H, W], 0..1 (letterboxed)
+    # Image: uint8 [3, H, W], 0..255 (letterboxed). Normalization is done on device.
     image: Tensor
     # Detection targets: float32 [N, 5] with YOLO format (cls, cx, cy, w, h) normalized to letterboxed image.
     det_yolo: Tensor
     # Seg masks: uint8 in {0,1,255(ignore)} (letterboxed)
     da_mask: Tensor  # [H, W]
     rm_mask: Tensor  # [3, H, W] channels: lane_marker, road_marker_non_lane, stop_line
+    # Lane-subclass mask: uint8 in {0,1,2,3,4,255(ignore)} (letterboxed)
+    rm_lane_subclass_mask: Tensor  # [H, W]
     # Availability flags
     has_det: int
     has_da: int
     has_rm_lane_marker: int
     has_rm_road_marker_non_lane: int
     has_rm_stop_line: int
+    has_rm_lane_subclass: int
     det_label_scope: str
     det_annotated_class_ids: str
 
@@ -148,10 +151,16 @@ def _letterbox_mask_u8(
     out_w: int,
     out_h: int,
     pad_value: int,
+    validate: bool,
+    validator: Optional[Callable[..., None]] = None,
 ) -> np.ndarray:
     if mask_u8.shape != (in_h, in_w):
         raise ValueError(f"mask size mismatch: expected={(in_h, in_w)} got={mask_u8.shape}")
-    validate_binary_mask_u8(mask_u8, allow_ignore=True, name="mask")
+    if validate:
+        if validator is None:
+            validate_binary_mask_u8(mask_u8, allow_ignore=True, name="mask")
+        else:
+            validator(mask_u8, allow_ignore=True, name="mask")
 
     scale, new_w, new_h, pad_x, pad_y = _letterbox_params(in_w, in_h, out_w, out_h)
     # uint8 index mask: nearest interpolation
@@ -160,7 +169,11 @@ def _letterbox_mask_u8(
     canvas = Image.new("L", (out_w, out_h), color=int(pad_value))
     canvas.paste(resized, (pad_x, pad_y))
     out = np.array(canvas, dtype=np.uint8)
-    validate_binary_mask_u8(out, allow_ignore=True, name="mask_letterboxed")
+    if validate:
+        if validator is None:
+            validate_binary_mask_u8(out, allow_ignore=True, name="mask_letterboxed")
+        else:
+            validator(out, allow_ignore=True, name="mask_letterboxed")
     return out
 
 
@@ -243,6 +256,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         splits: Sequence[str] = ("train",),
         letterbox: Optional[LetterboxSpec] = LetterboxSpec(),
         augment: Optional[AugmentSpec] = None,
+        validate_masks: bool = False,
     ):
         self.dataset_root = Path(dataset_root)
         self.splits = tuple(s.strip().lower() for s in splits if s.strip())
@@ -256,6 +270,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         self.rows = [r for r in _read_manifest_rows(manifest_path) if r.get("split", "") in set(self.splits)]
         self.letterbox = letterbox
         self.augment = augment
+        self.validate_masks = bool(validate_masks)
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -284,60 +299,111 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         has_rm_lane = _parse_bool01(row["has_rm_lane_marker"])
         has_rm_road = _parse_bool01(row["has_rm_road_marker_non_lane"])
         has_rm_stop = _parse_bool01(row["has_rm_stop_line"])
+        has_rm_lane_subclass = _parse_bool01(row["has_rm_lane_subclass"])
         det_scope = row["det_label_scope"]
         det_annotated = row["det_annotated_class_ids"]
 
-        # Masks: if unsupervised, we still return an all-ignore mask of the right size.
+        lb = self.letterbox
+        out_h = int(lb.out_height) if lb is not None else int(in_h)
+        out_w = int(lb.out_width) if lb is not None else int(in_w)
+
+        # Masks: unsupervised channels are generated directly at output size to skip useless resize work.
         if has_da:
             da_path = self.dataset_root / row["da_relpath"]
             da_u8 = np.array(Image.open(da_path), dtype=np.uint8)
         else:
-            da_u8 = make_all_ignore_mask(in_h, in_w)
+            da_u8 = make_all_ignore_mask(out_h, out_w)
 
         rm_lane_path = self.dataset_root / row["rm_lane_marker_relpath"]
         rm_road_path = self.dataset_root / row["rm_road_marker_non_lane_relpath"]
         rm_stop_path = self.dataset_root / row["rm_stop_line_relpath"]
+        rm_lane_subclass_path = self.dataset_root / row["rm_lane_subclass_relpath"]
 
-        rm_lane_u8 = np.array(Image.open(rm_lane_path), dtype=np.uint8) if has_rm_lane else make_all_ignore_mask(in_h, in_w)
-        rm_road_u8 = np.array(Image.open(rm_road_path), dtype=np.uint8) if has_rm_road else make_all_ignore_mask(in_h, in_w)
-        rm_stop_u8 = np.array(Image.open(rm_stop_path), dtype=np.uint8) if has_rm_stop else make_all_ignore_mask(in_h, in_w)
+        rm_lane_u8 = (
+            np.array(Image.open(rm_lane_path), dtype=np.uint8) if has_rm_lane else make_all_ignore_mask(out_h, out_w)
+        )
+        rm_road_u8 = (
+            np.array(Image.open(rm_road_path), dtype=np.uint8) if has_rm_road else make_all_ignore_mask(out_h, out_w)
+        )
+        rm_stop_u8 = (
+            np.array(Image.open(rm_stop_path), dtype=np.uint8) if has_rm_stop else make_all_ignore_mask(out_h, out_w)
+        )
+        rm_lane_subclass_u8 = (
+            np.array(Image.open(rm_lane_subclass_path), dtype=np.uint8)
+            if has_rm_lane_subclass
+            else make_all_ignore_mask(out_h, out_w)
+        )
+
+        if self.validate_masks and lb is None:
+            if has_da:
+                validate_binary_mask_u8(da_u8, allow_ignore=True, name="da_mask")
+            if has_rm_lane:
+                validate_binary_mask_u8(rm_lane_u8, allow_ignore=True, name="rm_lane_marker")
+            if has_rm_road:
+                validate_binary_mask_u8(rm_road_u8, allow_ignore=True, name="rm_road_marker_non_lane")
+            if has_rm_stop:
+                validate_binary_mask_u8(rm_stop_u8, allow_ignore=True, name="rm_stop_line")
+            if has_rm_lane_subclass:
+                validate_lane_subclass_mask_u8(rm_lane_subclass_u8, allow_ignore=True, name="rm_lane_subclass")
 
         # Apply letterbox (default PRD sizes)
-        if self.letterbox is not None:
-            lb = self.letterbox
+        if lb is not None:
             image = _letterbox_image(image, out_w=lb.out_width, out_h=lb.out_height, pad_value=int(lb.image_pad_value))
-            da_u8 = _letterbox_mask_u8(
-                da_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
-            rm_lane_u8 = _letterbox_mask_u8(
-                rm_lane_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
-            rm_road_u8 = _letterbox_mask_u8(
-                rm_road_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
-            rm_stop_u8 = _letterbox_mask_u8(
-                rm_stop_u8,
-                in_w=in_w,
-                in_h=in_h,
-                out_w=lb.out_width,
-                out_h=lb.out_height,
-                pad_value=int(lb.mask_pad_value),
-            )
+            if has_da:
+                da_u8 = _letterbox_mask_u8(
+                    da_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                    validator=validate_binary_mask_u8,
+                )
+            if has_rm_lane:
+                rm_lane_u8 = _letterbox_mask_u8(
+                    rm_lane_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                    validator=validate_binary_mask_u8,
+                )
+            if has_rm_road:
+                rm_road_u8 = _letterbox_mask_u8(
+                    rm_road_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                    validator=validate_binary_mask_u8,
+                )
+            if has_rm_stop:
+                rm_stop_u8 = _letterbox_mask_u8(
+                    rm_stop_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                    validator=validate_binary_mask_u8,
+                )
+            if has_rm_lane_subclass:
+                rm_lane_subclass_u8 = _letterbox_mask_u8(
+                    rm_lane_subclass_u8,
+                    in_w=in_w,
+                    in_h=in_h,
+                    out_w=lb.out_width,
+                    out_h=lb.out_height,
+                    pad_value=int(lb.mask_pad_value),
+                    validate=self.validate_masks,
+                    validator=validate_lane_subclass_mask_u8,
+                )
             det_yolo = _letterbox_det_yolo(det_yolo, in_w=in_w, in_h=in_h, out_w=lb.out_width, out_h=lb.out_height)
 
         if self.augment is not None:
@@ -350,10 +416,11 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
                 rm_lane_u8 = np.ascontiguousarray(np.fliplr(rm_lane_u8))
                 rm_road_u8 = np.ascontiguousarray(np.fliplr(rm_road_u8))
                 rm_stop_u8 = np.ascontiguousarray(np.fliplr(rm_stop_u8))
+                rm_lane_subclass_u8 = np.ascontiguousarray(np.fliplr(rm_lane_subclass_u8))
                 det_yolo = _apply_hflip_yolo(det_yolo)
 
         # Convert to torch
-        img_np = np.array(image, dtype=np.float32) / 255.0  # [H,W,3]
+        img_np = np.array(image, dtype=np.uint8)  # [H,W,3]
         img_t = torch.from_numpy(img_np).permute(2, 0, 1).contiguous()  # [3,H,W]
 
         det_t = torch.from_numpy(det_yolo).to(torch.float32) if has_det else torch.zeros((0, 5), dtype=torch.float32)
@@ -366,6 +433,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
             ],
             dim=0,
         )
+        rm_lane_subclass_t = torch.from_numpy(rm_lane_subclass_u8).to(torch.uint8)
 
         return Pv26Sample(
             sample_id=sample_id,
@@ -374,11 +442,13 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
             det_yolo=det_t,
             da_mask=da_t,
             rm_mask=rm_t,
+            rm_lane_subclass_mask=rm_lane_subclass_t,
             has_det=has_det,
             has_da=has_da,
             has_rm_lane_marker=has_rm_lane,
             has_rm_road_marker_non_lane=has_rm_road,
             has_rm_stop_line=has_rm_stop,
+            has_rm_lane_subclass=has_rm_lane_subclass,
             det_label_scope=det_scope,
             det_annotated_class_ids=det_annotated,
         )

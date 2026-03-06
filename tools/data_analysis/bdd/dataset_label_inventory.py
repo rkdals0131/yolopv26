@@ -186,6 +186,21 @@ def _rlmd_stats(rlmd_root: Path) -> Dict[str, Any]:
     }
 
 
+def _rlmd_ac_basic_stats(rlmd_root: Path) -> Dict[str, Any]:
+    ac_root = rlmd_root / "RLMD-AC"
+    if not ac_root.exists():
+        return {"present": False, "reason": "RLMD-AC not found"}
+
+    out: Dict[str, Any] = {"present": True, "conditions": {}}
+    for cond in ["clear", "night", "rainy"]:
+        row: Dict[str, Any] = {}
+        for split in ["train", "val"]:
+            row[f"{split}_images_jpg"] = _count_glob(ac_root / cond / split / "images", "*.jpg")
+            row[f"{split}_labels_png"] = _count_glob(ac_root / cond / split / "labels", "*.png")
+        out["conditions"][cond] = row
+    return out
+
+
 def _etri_stats(etri_root: Path) -> Dict[str, Any]:
     # Cityscapes-like polygon JSON: {"imgHeight","imgWidth","objects":[{"label":..., "polygon":[[x,y],...]}]}
     mono = etri_root / "MonoCameraSemanticSegmentation" / "labels"
@@ -459,6 +474,14 @@ def _basic_file_counts(datasets_root: Path) -> Dict[str, Any]:
             "label_png_train": _count_glob(base / "labels" / "train", "*.png"),
             "label_png_val": _count_glob(base / "labels" / "val", "*.png"),
         }
+        ac = rlmd / "RLMD-AC"
+        if ac.exists():
+            out["RLMD-AC"] = {
+                f"{cond}_{split}_{kind}": _count_glob(ac / cond / split / kind, "*.jpg" if kind == "images" else "*.png")
+                for cond in ["clear", "night", "rainy"]
+                for split in ["train", "val"]
+                for kind in ["images", "labels"]
+            }
 
     etri = datasets_root / "ETRI"
     if etri.exists():
@@ -495,6 +518,7 @@ def main() -> int:
         "datasets_root": str(datasets_root.resolve()) if datasets_root.exists() else str(datasets_root),
         "basic_counts": _basic_file_counts(datasets_root),
         "rlmd": _rlmd_stats(datasets_root / "RLMD"),
+        "rlmd_ac": _rlmd_ac_basic_stats(datasets_root / "RLMD"),
         "etri": _etri_stats(datasets_root / "ETRI"),
         "waymo_decoded": _waymo_decoded_manifest_stats(datasets_root / "WaymoOpenDataset"),
         "waymo_training": _waymo_training_join_stats(datasets_root / "WaymoOpenDataset"),
@@ -572,6 +596,8 @@ def main() -> int:
     for ds_name in ["BDD100K", "Cityscapes", "KITTI-360", "RLMD", "ETRI", "WaymoOpenDataset"]:
         if ds_name in basic:
             print(f"- {ds_name}: {basic[ds_name]}")
+    if "RLMD-AC" in basic:
+        print(f"- RLMD-AC: {basic['RLMD-AC']}")
     print("")
 
     if report["rlmd"].get("present"):

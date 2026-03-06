@@ -1,8 +1,8 @@
 # YOLO PV26 Dataset Conversion Specification
 
-- Spec version: `v1.4`
-- Date: `2026-02-19`
-- Related doc: `docs/PRD.md`
+- Spec version: `v1.5`
+- Date: `2026-03-05`
+- Related doc: `docs/PV26_PRD.md`
 - Status: `Implementation-ready`
 
 ## 1. Purpose
@@ -66,6 +66,10 @@ datasets/pv26_v1/
     train/
     val/
     test/
+  labels_seg_rm_lane_subclass/
+    train/
+    val/
+    test/
   labels_seg_rm_road_marker_non_lane/
     train/
     val/
@@ -101,6 +105,7 @@ For each sample:
 3. Drivable mask: `labels_seg_da/{split}/{sample_id}.png`
 4. Road-marking masks:
    - `labels_seg_rm_lane_marker/{split}/{sample_id}.png`
+   - `labels_seg_rm_lane_subclass/{split}/{sample_id}.png`
    - `labels_seg_rm_road_marker_non_lane/{split}/{sample_id}.png`
    - `labels_seg_rm_stop_line/{split}/{sample_id}.png`
 5. Semantic ID mask: `labels_semantic_id/{split}/{sample_id}.png` (required only when `has_semantic_id=1`)
@@ -140,7 +145,14 @@ All mask files are `uint8 PNG`.
 2. `labels_seg_rm_lane_marker`: binary + ignore mask (`0=background`, `1=lane_marker`, `255=ignore`)
 3. `labels_seg_rm_road_marker_non_lane`: binary + ignore mask (`0=background`, `1=road_marker_non_lane`, `255=ignore`)
 4. `labels_seg_rm_stop_line`: binary + ignore mask (`0=background`, `1=stop_line`, `255=ignore`)
-5. `labels_semantic_id`: single-channel semantic mask (`uint8`, `255` forbidden)
+5. `labels_seg_rm_lane_subclass`: mono8 + ignore mask
+   - `0=background`
+   - `1=white_solid`
+   - `2=white_dashed`
+   - `3=yellow_solid`
+   - `4=yellow_dashed`
+   - `255=ignore`
+6. `labels_semantic_id`: single-channel semantic mask (`uint8`, `255` forbidden)
    - class IDs are defined by `meta/class_map.yaml` and `classmap_version`
 
 Critical rule:
@@ -151,8 +163,8 @@ Semantic composition order:
 1. Initialize all pixels to `0`
 2. Set drivable pixels to `1`
 3. Overwrite road-marking pixels by priority (example):
-   - `lane_marker` > `road_marker_non_lane` > `drivable_area` > `background`
-   - `stop_line` is a subset of `road_marker_non_lane` in multi-channel masks; semantic ID uses a single chosen class per pixel
+   - `stop_line` > `lane_subclass` > `road_marker_non_lane` > `drivable_area` > `background`
+   - `stop_line` may still be a subset of `road_marker_non_lane` in binary RM channels; semantic ID uses a single chosen class per pixel
 
 Notes:
 1. `labels_semantic_id` is required only when `has_semantic_id=1`.
@@ -173,22 +185,24 @@ Notes:
 10. `has_rm_lane_marker` (`0|1`)
 11. `has_rm_road_marker_non_lane` (`0|1`)
 12. `has_rm_stop_line` (`0|1`)
-13. `has_semantic_id` (`0|1`)
-14. `det_label_scope` (`full|subset|none`)
-15. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
-16. `image_relpath`
-17. `det_relpath`
-18. `da_relpath`
-19. `rm_lane_marker_relpath`
-20. `rm_road_marker_non_lane_relpath`
-21. `rm_stop_line_relpath`
-22. `semantic_relpath` (nullable when `has_semantic_id=0`)
-23. `width`
-24. `height`
-25. `weather_tag` (`dry|rain|snow|unknown`)
-26. `time_tag` (`day|night|dawn_dusk|unknown`)
-27. `scene_tag` (`open|tunnel|shadow|unknown`)
-28. `source_group_key`
+13. `has_rm_lane_subclass` (`0|1`)
+14. `has_semantic_id` (`0|1`)
+15. `det_label_scope` (`full|subset|none`)
+16. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
+17. `image_relpath`
+18. `det_relpath`
+19. `da_relpath`
+20. `rm_lane_marker_relpath`
+21. `rm_road_marker_non_lane_relpath`
+22. `rm_stop_line_relpath`
+23. `rm_lane_subclass_relpath`
+24. `semantic_relpath` (nullable when `has_semantic_id=0`)
+25. `width`
+26. `height`
+27. `weather_tag` (`dry|rain|snow|unknown`)
+28. `time_tag` (`day|night|dawn_dusk|unknown`)
+29. `scene_tag` (`open|tunnel|shadow|unknown`)
+30. `source_group_key`
 
 ## 3.8 RoadMarking Label Normalization Policy
 
@@ -229,13 +243,18 @@ Notes:
 
 ## 4.2 Segmentation Classes
 
-This table describes the default `classmap-v1` semantic ID contract. New semantic IDs must be introduced via a new `classmap-vX` and `meta/class_map.yaml`.
+This table describes the current `classmap-v3` semantic ID contract. New semantic IDs must be introduced via a new `classmap-vX` and `meta/class_map.yaml`.
 
 | seg_id | class_name |
 |---|---|
 | 0 | background |
 | 1 | drivable_area |
-| 2 | lane_marking |
+| 2 | lane_white_solid |
+| 3 | lane_white_dashed |
+| 4 | lane_yellow_solid |
+| 5 | lane_yellow_dashed |
+| 6 | road_marker_non_lane |
+| 7 | stop_line |
 
 ## 5. Source Dataset Adapter Rules
 
@@ -444,39 +463,74 @@ Step definitions:
 
 ## 9. Reproducibility and Versioning
 
-1. Every conversion run writes:
-   - converter version
-   - config hash
+1. Every conversion run writes `meta/conversion_report.json` including:
+   - converter name + version
+   - spec reference (this document)
+   - timestamp (UTC)
+   - run id (if provided)
+   - conversion config summary (paths + key options)
+2. Recommended (optional) fields for stronger reproducibility:
    - git commit hash
-   - timestamp
-2. `checksums.sha256` includes all exported images and labels
-3. Any mapping change requires:
+   - config hash
+3. `checksums.sha256` includes all exported images and labels
+4. Any mapping change requires:
    - class map version bump
    - full dataset rebuild
    - new output root name (example: `pv26_v2`)
 
-## 10. Converter CLI Contract
+## 10. Entry Points (Current) and Adapter Checklist
 
-Target CLI (to be implemented or aligned with existing scripts):
+This repo currently uses dataset-specific converter scripts (adapters).
 
+### 10.1 BDD100K (implemented)
+
+Convert:
 ```bash
-python tools/convert_dataset.py \
-  --raw-root datasets/raw \
-  --out-root datasets/pv26_v1 \
-  --config configs/dataset_conversion/pv26.yaml \
-  --num-workers 8 \
-  --run-id pv26_build_001
+python tools/data_analysis/bdd/convert_bdd_type_a.py \
+  --images-root <BDD_IMAGES_DIR> \
+  --labels <BDD_LABELS_DIR_OR_JSON> \
+  --drivable-root <BDD_DRIVABLE_MASK_DIR> \
+  --out-root <OUT_ROOT> \
+  --splits train,val
 ```
 
-Subcommands:
-1. `audit`: source availability and schema checks only
-2. `convert`: full conversion and export
-3. `validate`: QA validation on an existing converted dataset
+Interactive runner (convert → validate → QC → debug optional):
+```bash
+python tools/data_analysis/bdd/run_bdd100k_normalize_interactive.py --bdd-root <BDD100K_ROOT>
+```
 
-Exit codes:
-1. `0`: success
-2. `2`: validation failure
-3. `3`: configuration or missing-source failure
+Validate:
+```bash
+python tools/data_analysis/bdd/validate_pv26_dataset.py --out-root <OUT_ROOT>
+```
+
+QC report:
+```bash
+python tools/data_analysis/bdd/pv26_qc_report.py --dataset-root <OUT_ROOT> --out-json <OUT_ROOT>/meta/qc_report.json
+```
+
+### 10.2 Adding a new dataset adapter (ETRI/RLMD/WOD/…)
+
+When implementing `tools/data_analysis/<dataset>/convert_<dataset>_type_a.py`, enforce:
+1. Output directory layout matches Section 3.2.
+2. `meta/split_manifest.csv` is the source-of-truth for loaders and validators.
+3. Partial-label policy is strict:
+   - missing supervision is exported as all-`255` mask
+   - corresponding `has_*` flag is `0`
+   - never fill missing labels with background(`0`)
+4. Detection labels follow Section 3.5 and respect `det_label_scope` semantics.
+5. Segmentation masks follow Section 3.6 value domains.
+6. Write:
+   - `meta/conversion_report.json`
+   - `meta/checksums.sha256`
+
+### 10.3 Target unified CLI (future)
+
+If we later add a unified CLI, it must be a thin wrapper over adapters, not a second conversion path.
+
+```bash
+python tools/convert_dataset.py <audit|convert|validate> --config <pv26.yaml> ...
+```
 
 ## 11. Acceptance Checklist
 
