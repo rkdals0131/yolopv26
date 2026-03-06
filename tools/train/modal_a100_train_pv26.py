@@ -34,65 +34,97 @@ def _detect_repo_root() -> Path:
 
 
 REPO_ROOT = _detect_repo_root()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 TRAIN_SCRIPT = REPO_ROOT / "tools" / "train" / "train_pv26.py"
-
-
-def _default_torch_specs_for_gpu(gpu_name: str) -> tuple[str, str]:
-    normalized = gpu_name.strip().upper()
-    if "B200" in normalized:
-        # B200(sm_100) requires a newer torch build than the pinned A100 baseline.
-        return "torch>=2.7.0", "torchvision>=0.22.0"
-    return "torch==2.6.0", "torchvision==0.21.0"
+from tools.train.modal_train_common import (
+    ModalDatasetDefaults,
+    ModalRuntimeDefaults,
+    ModalSyncDefaults,
+    ModalTrainDefaults,
+    build_train_command,
+    default_torch_specs_for_gpu,
+    format_modal_profile,
+)
 
 
 # =========================
 # User-editable defaults
 # =========================
-APP_NAME             = os.getenv("PV26_MODAL_APP_NAME", "pv26-train-a100")     # Modal app 이름 (보통 수정 불필요)
-DATASET_VOLUME_NAME  = os.getenv("PV26_MODAL_DATASET_VOLUME", "pv26-datasets")	# 데이터 볼륨 이름
-ARTIFACT_VOLUME_NAME = os.getenv("PV26_MODAL_ARTIFACT_VOLUME", "pv26-artifacts")	# 체크포인트/로그 볼륨 이름
-GPU_NAME             = os.getenv("PV26_MODAL_GPU", "A100-80GB")	# 예: "A10G", "L4", "A100", "B200"
-_DEFAULT_TORCH_SPEC, _DEFAULT_TORCHVISION_SPEC = _default_torch_specs_for_gpu(GPU_NAME)
-TORCH_SPEC           = os.getenv("PV26_MODAL_TORCH_SPEC", _DEFAULT_TORCH_SPEC)
-TORCHVISION_SPEC     = os.getenv("PV26_MODAL_TORCHVISION_SPEC", _DEFAULT_TORCHVISION_SPEC)
-TIMEOUT_SEC          = int(os.getenv("PV26_MODAL_TIMEOUT_SEC", str(24 * 60 * 60)))	# 예: 3600(1h), 86400(24h)
+_DEFAULT_TORCH_SPEC, _DEFAULT_TORCHVISION_SPEC = default_torch_specs_for_gpu(
+    os.getenv("PV26_MODAL_GPU", "A100-80GB")
+)
 
-DEFAULT_EPOCHS       = 2        # 총 학습 epoch 수 (비용/시간에 거의 선형 비례)
-DEFAULT_BATCH_SIZE   = 128        # 스텝당 배치 크기 (크면 GPU 사용률↑, 너무 크면 OOM)
-DEFAULT_WORKERS      = 10        # A100 튜닝 기본값
-DEFAULT_AUGMENT      = True      # train 증강 on/off (False면 --no-augment 전달)
-DEFAULT_LR           = "0"       # 0이면 optimizer별 자동 LR(adam/adamw=1e-3, sgd=1e-2)
-DEFAULT_OPTIMIZER    = "adamw"   # Optimizer: adamw|adam|sgd
-DEFAULT_WEIGHT_DECAY = "1e-4"    # Optimizer weight decay
-DEFAULT_MOMENTUM     = "0.937"   # SGD momentum (adam/adamw에서는 무시됨)
-DEFAULT_SCHEDULER    = "cosine"  # LR 스케줄러: cosine|none
-DEFAULT_MIN_LR_RATIO = "0.05"    # cosine eta_min = lr * ratio
-DEFAULT_WARMUP_EPOCHS = 3        # warmup epoch 수 (0이면 비활성화)
-DEFAULT_WARMUP_START_FACTOR = "0.1"  # warmup 시작 LR 비율(0<factor<=1)
-DEFAULT_COMPILE      = True      # torch.compile on/off (A/B 측정 후 필요시 off)
-DEFAULT_COMPILE_MODE = "default"  # compile mode: default|reduce-overhead|max-autotune
-DEFAULT_COMPILE_FULLGRAPH = False # fullgraph=True면 graph break 탐지/A-B에 유용
-DEFAULT_DET_PRETRAINED = ""      # 선택: detection trunk pretrained 체크포인트 경로(비우면 미사용)
-DEFAULT_LOG_EVERY    = 20       # --no-progress일 때 몇 step마다 로그 출력할지
-DEFAULT_PROGRESS     = False     # True면 tqdm 진행바 사용(원격 로그 줄 수가 급증할 수 있음)
-DEFAULT_CPU          = 16.0      # A100 튜닝 기본값
-DEFAULT_MEMORY_MB    = 65536     # A100 튜닝 기본값
+RUNTIME_DEFAULTS = ModalRuntimeDefaults(
+    app_name=os.getenv("PV26_MODAL_APP_NAME", "pv26-train-a100"),            # Modal app 이름
+    dataset_volume_name=os.getenv("PV26_MODAL_DATASET_VOLUME", "pv26-datasets"),  # 데이터 볼륨 이름
+    artifact_volume_name=os.getenv("PV26_MODAL_ARTIFACT_VOLUME", "pv26-artifacts"),  # 산출물 볼륨 이름
+    gpu_name=os.getenv("PV26_MODAL_GPU", "A100-80GB"),                        # 예: A100-80GB | A100-40GB
+    torch_spec=os.getenv("PV26_MODAL_TORCH_SPEC", _DEFAULT_TORCH_SPEC),      # torch wheel spec
+    torchvision_spec=os.getenv("PV26_MODAL_TORCHVISION_SPEC", _DEFAULT_TORCHVISION_SPEC),  # torchvision wheel spec
+    timeout_sec=int(os.getenv("PV26_MODAL_TIMEOUT_SEC", str(24 * 60 * 60))), # Modal timeout(초)
+    cpu=16.0,                                                                 # 컨테이너 CPU 코어 할당량
+    memory_mb=65536,                                                          # 컨테이너 RAM(MB)
+)
 
-DEFAULT_PREFETCH_FACTOR = 2      # A100 튜닝 기본값
-DEFAULT_PERSISTENT_WORKERS = True  # epoch 사이에 워커 프로세스 유지(재시작 오버헤드 감소)
-DEFAULT_PROFILE_EVERY = 20       # 저오버헤드 ms 프로파일 로그 주기(평균 window)
-DEFAULT_PROFILE_SYNC_CUDA = False  # 기본 비동기(정밀 타이밍이 필요할 때만 True)
-DEFAULT_PROFILE_SYSTEM = False   # True면 nvidia-smi/메모리 통계 포함(오버헤드 증가)
-DEFAULT_EVAL_MAP_EVERY = 5       # validation mAP 계산 주기(epoch 단위, 마지막 epoch는 항상 계산)
+TRAIN_DEFAULTS = ModalTrainDefaults(
+    epochs=2,                     # 총 학습 epoch 수
+    batch_size=128,               # 스텝당 배치 크기
+    workers=10,                   # A100 튜닝 worker 수
+    prefetch_factor=2,            # A100 튜닝 prefetch
+    persistent_workers=True,      # epoch 사이 worker 유지
+    augment=True,                 # train augmentation on/off
+    lr="0",                       # 0이면 optimizer별 자동 LR
+    optimizer="adamw",            # adamw | adam | sgd
+    weight_decay="1e-4",          # optimizer weight decay
+    momentum="0.937",             # SGD momentum
+    scheduler="cosine",           # cosine | none
+    min_lr_ratio="0.05",          # cosine eta_min 비율
+    warmup_epochs=3,              # warmup epoch 수
+    warmup_start_factor="0.1",    # warmup 시작 LR 비율
+    compile=False,                # model torch.compile on/off
+    compile_mode="default",       # compile mode
+    compile_fullgraph=False,      # fullgraph compile on/off
+    compile_seg_loss=True,        # seg loss block만 compile
+    seg_output_stride=2,          # segmentation output stride
+    det_pretrained="",            # detection pretrained 경로
+    log_every=20,                 # --no-progress일 때 로그 주기
+    progress=False,               # tqdm progress bar 사용 여부
+    tensorboard=True,             # TensorBoard writer 사용 여부
+    profile_every=20,             # train profile 출력 주기
+    profile_sync_cuda=False,      # profile 시 CUDA sync 여부
+    profile_system=False,         # 시스템 메모리/GPU 통계 포함 여부
+    eval_map_every=5,             # validation mAP 계산 주기
+    train_drop_last=False,        # 마지막 ragged batch drop 여부
+)
 
+DATASET_DEFAULTS = ModalDatasetDefaults(
+    dataset_dir_in_volume="pv26_v1_bdd_full",    # 볼륨 내 dataset 디렉토리
+    dataset_tar_in_volume="pv26_v1_bdd_full.tar",  # 볼륨 내 dataset tar 파일
+    artifact_root_in_volume="runs/pv26_train",   # 볼륨 내 산출물 루트
+)
 
-DEFAULT_DATASET_DIR_IN_VOLUME   = "pv26_v1_bdd_full"	# 예: "pv26_v1_bdd_full"
-DEFAULT_DATASET_TAR_IN_VOLUME   = "pv26_v1_bdd_full.tar"	# 예: ".tar", ".tar.gz"
-DEFAULT_ARTIFACT_ROOT_IN_VOLUME = "runs/pv26_train"	# 예: "runs/pv26_train", "experiments/pv26"
-AUTO_DOWNLOAD_ARTIFACTS         = True	# True면 학습 성공 후 로컬 runs/로 자동 다운로드
-LOCAL_ARTIFACT_ROOT             = "runs/pv26_train"	# 로컬 저장 루트 (repo 기준 상대경로)
-SYNC_EVERY_N_EPOCHS             = 1	 # latest.pt 갱신 N회(대략 N epoch)마다 로컬 동기화
-SYNC_POLL_SEC                   = 30 # 동기화 폴링 주기(초)
+SYNC_DEFAULTS = ModalSyncDefaults(
+    auto_download_artifacts=True,    # 학습 완료 후 로컬 자동 다운로드
+    local_artifact_root="runs/pv26_train",  # 로컬 저장 루트
+    sync_every_n_epochs=1,           # latest.pt 갱신 N회마다 checkpoint sync
+    sync_poll_sec=30,                # sync polling 주기
+)
+
+APP_NAME = RUNTIME_DEFAULTS.app_name
+DATASET_VOLUME_NAME = RUNTIME_DEFAULTS.dataset_volume_name
+ARTIFACT_VOLUME_NAME = RUNTIME_DEFAULTS.artifact_volume_name
+GPU_NAME = RUNTIME_DEFAULTS.gpu_name
+TORCH_SPEC = RUNTIME_DEFAULTS.torch_spec
+TORCHVISION_SPEC = RUNTIME_DEFAULTS.torchvision_spec
+TIMEOUT_SEC = RUNTIME_DEFAULTS.timeout_sec
+DEFAULT_CPU = RUNTIME_DEFAULTS.cpu
+DEFAULT_MEMORY_MB = RUNTIME_DEFAULTS.memory_mb
+AUTO_DOWNLOAD_ARTIFACTS = SYNC_DEFAULTS.auto_download_artifacts
+LOCAL_ARTIFACT_ROOT = SYNC_DEFAULTS.local_artifact_root
+SYNC_EVERY_N_EPOCHS = SYNC_DEFAULTS.sync_every_n_epochs
+SYNC_POLL_SEC = SYNC_DEFAULTS.sync_poll_sec
 
 DATASET_MOUNT = "/vol/datasets"
 ARTIFACT_MOUNT = "/vol/artifacts"
@@ -475,10 +507,10 @@ def _maybe_download_artifacts(result: dict[str, str], artifact_root_in_volume: s
 )
 def train_remote(
     run_name: str,
-    augment: bool = DEFAULT_AUGMENT,
-    dataset_dir_in_volume: str = DEFAULT_DATASET_DIR_IN_VOLUME,
-    dataset_tar_in_volume: str = DEFAULT_DATASET_TAR_IN_VOLUME,
-    artifact_root_in_volume: str = DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
+    augment: bool = TRAIN_DEFAULTS.augment,
+    dataset_dir_in_volume: str = DATASET_DEFAULTS.dataset_dir_in_volume,
+    dataset_tar_in_volume: str = DATASET_DEFAULTS.dataset_tar_in_volume,
+    artifact_root_in_volume: str = DATASET_DEFAULTS.artifact_root_in_volume,
 ) -> dict[str, str]:
     run_name = run_name.strip()
     if not run_name:
@@ -497,80 +529,26 @@ def train_remote(
     out_root = _resolve_under(artifact_mount, artifact_root_in_volume)
     out_root.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        sys.executable,
-        str(TRAIN_SCRIPT),
-        "--dataset-root",
-        str(dataset_root),
-        "--out-dir",
-        str(out_root),
-        "--epochs",
-        str(DEFAULT_EPOCHS),
-        "--batch-size",
-        str(DEFAULT_BATCH_SIZE),
-        "--workers",
-        str(DEFAULT_WORKERS),
-        "--prefetch-factor",
-        str(DEFAULT_PREFETCH_FACTOR),
-        "--lr",
-        str(DEFAULT_LR),
-        "--optimizer",
-        str(DEFAULT_OPTIMIZER),
-        "--weight-decay",
-        str(DEFAULT_WEIGHT_DECAY),
-        "--momentum",
-        str(DEFAULT_MOMENTUM),
-        "--scheduler",
-        str(DEFAULT_SCHEDULER),
-        "--min-lr-ratio",
-        str(DEFAULT_MIN_LR_RATIO),
-        "--warmup-epochs",
-        str(DEFAULT_WARMUP_EPOCHS),
-        "--warmup-start-factor",
-        str(DEFAULT_WARMUP_START_FACTOR),
-        "--eval-map-every",
-        str(DEFAULT_EVAL_MAP_EVERY),
-        "--compile-mode",
-        str(DEFAULT_COMPILE_MODE),
-        "--log-every",
-        str(DEFAULT_LOG_EVERY),
-    ]
-    if not bool(DEFAULT_COMPILE):
-        cmd.append("--no-compile")
-    if bool(DEFAULT_COMPILE_FULLGRAPH):
-        cmd.append("--compile-fullgraph")
-    if str(DEFAULT_DET_PRETRAINED).strip():
-        cmd.extend(["--det-pretrained", str(DEFAULT_DET_PRETRAINED).strip()])
-    if not DEFAULT_PERSISTENT_WORKERS:
-        cmd.append("--no-persistent-workers")
-    if int(DEFAULT_PROFILE_EVERY) > 0:
-        cmd.extend(["--profile-every", str(int(DEFAULT_PROFILE_EVERY))])
-    if DEFAULT_PROFILE_SYNC_CUDA:
-        cmd.append("--profile-sync-cuda")
-    if DEFAULT_PROFILE_SYSTEM:
-        cmd.append("--profile-system")
-    if not DEFAULT_PROGRESS:
-        cmd.append("--no-progress")
-    if not bool(augment):
-        cmd.append("--no-augment")
-    cmd.extend(["--run-name", run_name])
+    cmd = [sys.executable]
+    cmd.extend(
+        build_train_command(
+            train_script=TRAIN_SCRIPT,
+            dataset_root=dataset_root,
+            out_root=out_root,
+            run_name=run_name,
+            train_defaults=TRAIN_DEFAULTS,
+            augment=bool(augment),
+        )
+    )
 
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{REPO_ROOT}:{env.get('PYTHONPATH', '')}".rstrip(":")
     print(
-        "[modal] profile: "
-        f"gpu={GPU_NAME} cpu={DEFAULT_CPU} memory_mb={DEFAULT_MEMORY_MB} "
-        f"batch={DEFAULT_BATCH_SIZE} augment={bool(augment)} "
-        f"optimizer={DEFAULT_OPTIMIZER} lr={DEFAULT_LR} "
-        f"scheduler={DEFAULT_SCHEDULER} warmup_epochs={DEFAULT_WARMUP_EPOCHS} "
-        f"compile={DEFAULT_COMPILE} compile_mode={DEFAULT_COMPILE_MODE} "
-        f"compile_fullgraph={DEFAULT_COMPILE_FULLGRAPH} "
-        f"workers={DEFAULT_WORKERS} prefetch={DEFAULT_PREFETCH_FACTOR} "
-        f"persistent_workers={DEFAULT_PERSISTENT_WORKERS} progress={DEFAULT_PROGRESS} "
-        f"log_every={DEFAULT_LOG_EVERY} profile_every={DEFAULT_PROFILE_EVERY} "
-        f"profile_sync_cuda={DEFAULT_PROFILE_SYNC_CUDA} profile_system={DEFAULT_PROFILE_SYSTEM} "
-        f"eval_map_every={DEFAULT_EVAL_MAP_EVERY} "
-        f"torch_spec={TORCH_SPEC} torchvision_spec={TORCHVISION_SPEC}",
+        format_modal_profile(
+            runtime_defaults=RUNTIME_DEFAULTS,
+            train_defaults=TRAIN_DEFAULTS,
+            augment=bool(augment),
+        ),
         flush=True,
     )
     rc = _stream_subprocess(cmd, env=env)
@@ -591,7 +569,7 @@ def train_remote(
 @app.local_entrypoint()
 def modal_entrypoint(
     run_name: str = "",
-    augment: bool = DEFAULT_AUGMENT,
+    augment: bool = TRAIN_DEFAULTS.augment,
 ):
     run_name = run_name.strip()
     if not run_name:
@@ -603,7 +581,7 @@ def modal_entrypoint(
         kwargs={
             "stop_event": stop_event,
             "run_name": run_name,
-            "artifact_root_in_volume": DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
+            "artifact_root_in_volume": DATASET_DEFAULTS.artifact_root_in_volume,
             "every_n_epochs": SYNC_EVERY_N_EPOCHS,
             "poll_sec": SYNC_POLL_SEC,
         },
@@ -612,16 +590,16 @@ def modal_entrypoint(
     sync_thread.start()
     try:
         result = train_remote.remote(
-            dataset_dir_in_volume=DEFAULT_DATASET_DIR_IN_VOLUME,
-            dataset_tar_in_volume=DEFAULT_DATASET_TAR_IN_VOLUME,
-            artifact_root_in_volume=DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
+            dataset_dir_in_volume=DATASET_DEFAULTS.dataset_dir_in_volume,
+            dataset_tar_in_volume=DATASET_DEFAULTS.dataset_tar_in_volume,
+            artifact_root_in_volume=DATASET_DEFAULTS.artifact_root_in_volume,
             run_name=run_name,
             augment=bool(augment),
         )
     finally:
         stop_event.set()
         sync_thread.join(timeout=2.0)
-    _maybe_download_artifacts(result, DEFAULT_ARTIFACT_ROOT_IN_VOLUME)
+    _maybe_download_artifacts(result, DATASET_DEFAULTS.artifact_root_in_volume)
     print(result)
 
 
@@ -635,7 +613,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--augment",
         dest="augment",
         action="store_true",
-        default=DEFAULT_AUGMENT,
+        default=TRAIN_DEFAULTS.augment,
         help="Enable train-time augmentation (default: on)",
     )
     train.add_argument(
@@ -660,7 +638,7 @@ def _main() -> int:
         kwargs={
             "stop_event": stop_event,
             "run_name": run_name,
-            "artifact_root_in_volume": DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
+            "artifact_root_in_volume": DATASET_DEFAULTS.artifact_root_in_volume,
             "every_n_epochs": SYNC_EVERY_N_EPOCHS,
             "poll_sec": SYNC_POLL_SEC,
         },
@@ -669,16 +647,16 @@ def _main() -> int:
     sync_thread.start()
     try:
         result = train_remote.remote(
-            dataset_dir_in_volume=DEFAULT_DATASET_DIR_IN_VOLUME,
-            dataset_tar_in_volume=DEFAULT_DATASET_TAR_IN_VOLUME,
-            artifact_root_in_volume=DEFAULT_ARTIFACT_ROOT_IN_VOLUME,
+            dataset_dir_in_volume=DATASET_DEFAULTS.dataset_dir_in_volume,
+            dataset_tar_in_volume=DATASET_DEFAULTS.dataset_tar_in_volume,
+            artifact_root_in_volume=DATASET_DEFAULTS.artifact_root_in_volume,
             run_name=run_name,
             augment=bool(args.augment),
         )
     finally:
         stop_event.set()
         sync_thread.join(timeout=2.0)
-    _maybe_download_artifacts(result, DEFAULT_ARTIFACT_ROOT_IN_VOLUME)
+    _maybe_download_artifacts(result, DATASET_DEFAULTS.artifact_root_in_volume)
     print(result)
     return 0
 
