@@ -55,6 +55,15 @@ class ConvertTaskResult:
     row: ManifestRow
 
 
+@dataclass(frozen=True)
+class ConvertTaskFailure:
+    index: int
+    sample_id: str
+    image_path: str
+    label_json: str
+    error: str
+
+
 def _fmt_duration(seconds: Optional[float]) -> str:
     if seconds is None:
         return "계산중"
@@ -180,37 +189,67 @@ def _process_convert_task(task: ConvertTask, *, out_root: Path) -> ConvertTaskRe
     return ConvertTaskResult(index=task.index, row=row)
 
 
-def _process_tasks_serial(tasks: Sequence[ConvertTask], *, out_root: Path) -> List[ConvertTaskResult]:
+def _process_convert_task_safe(
+    task: ConvertTask, *, out_root: Path
+) -> Tuple[Optional[ConvertTaskResult], Optional[ConvertTaskFailure]]:
+    try:
+        return _process_convert_task(task, out_root=out_root), None
+    except Exception as ex:  # noqa: BLE001 - converter should continue on bad sample
+        failure = ConvertTaskFailure(
+            index=task.index,
+            sample_id=task.sample_id,
+            image_path=task.image_path,
+            label_json=task.label_json,
+            error=f"{type(ex).__name__}: {ex}",
+        )
+        return None, failure
+
+
+def _process_tasks_serial(
+    tasks: Sequence[ConvertTask], *, out_root: Path
+) -> Tuple[List[ConvertTaskResult], List[ConvertTaskFailure]]:
     total = len(tasks)
     results: List[ConvertTaskResult] = []
+    failures: List[ConvertTaskFailure] = []
     started = time.monotonic()
     interval = _progress_interval(total=total)
     for i, task in enumerate(tasks, start=1):
-        results.append(_process_convert_task(task, out_root=out_root))
+        result, failure = _process_convert_task_safe(task, out_root=out_root)
+        if result is not None:
+            results.append(result)
+        if failure is not None:
+            failures.append(failure)
         if i % interval == 0 or i == total:
             _log_progress(stage="convert", done=i, total=total, started_at=started)
-    return results
+    return results, failures
 
 
-def _process_tasks_parallel(tasks: Sequence[ConvertTask], *, out_root: Path, workers: int) -> List[ConvertTaskResult]:
+def _process_tasks_parallel(
+    tasks: Sequence[ConvertTask], *, out_root: Path, workers: int
+) -> Tuple[List[ConvertTaskResult], List[ConvertTaskFailure]]:
     total = len(tasks)
     if total == 0:
-        return []
+        return [], []
 
     started = time.monotonic()
     interval = _progress_interval(total=total)
     max_inflight = max(1, int(workers) * 4)
     results: List[ConvertTaskResult] = []
+    failures: List[ConvertTaskFailure] = []
 
     with ThreadPoolExecutor(max_workers=int(workers)) as ex:
         futs = []
         done = 0
         for t in tasks:
-            futs.append(ex.submit(_process_convert_task, t, out_root=out_root))
+            futs.append(ex.submit(_process_convert_task_safe, t, out_root=out_root))
             if len(futs) >= max_inflight:
                 done_set, pending = wait(futs, return_when=FIRST_COMPLETED)
                 for fut in done_set:
-                    results.append(fut.result())
+                    result, failure = fut.result()
+                    if result is not None:
+                        results.append(result)
+                    if failure is not None:
+                        failures.append(failure)
                 futs = list(pending)
                 done += len(done_set)
                 if done % interval == 0:
@@ -218,10 +257,14 @@ def _process_tasks_parallel(tasks: Sequence[ConvertTask], *, out_root: Path, wor
 
         done_set, _pending = wait(futs)
         for fut in done_set:
-            results.append(fut.result())
-        _log_progress(stage="convert", done=len(results), total=total, started_at=started)
+            result, failure = fut.result()
+            if result is not None:
+                results.append(result)
+            if failure is not None:
+                failures.append(failure)
+        _log_progress(stage="convert", done=total, total=total, started_at=started)
 
-    return results
+    return results, failures
 
 
 def _write_checksums_parallel(*, out_root: Path, files: Sequence[Path], workers: int, out_path: Path) -> None:
@@ -428,11 +471,33 @@ def main() -> int:
 
     conv_started = time.monotonic()
     if workers <= 1:
-        results = _process_tasks_serial(tasks, out_root=out_root)
+        results, failures = _process_tasks_serial(tasks, out_root=out_root)
     else:
-        results = _process_tasks_parallel(tasks, out_root=out_root, workers=workers)
+        results, failures = _process_tasks_parallel(tasks, out_root=out_root, workers=workers)
     results.sort(key=lambda x: x.index)
     rows = [r.row for r in results]
+    failures.sort(key=lambda x: x.index)
+
+    if failures:
+        print(f"[pv26][etri][warn] skipped bad samples: {len(failures):,}", flush=True)
+        preview = min(20, len(failures))
+        for f in failures[:preview]:
+            print(
+                f"[pv26][etri][warn] sample_id={f.sample_id} | image={f.image_path} | reason={f.error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if len(failures) > preview:
+            print(
+                f"[pv26][etri][warn] ... skipped log truncated ({len(failures) - preview:,} more)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    if not rows:
+        print("[pv26][etri] no valid rows exported (all selected samples failed)", flush=True)
+        return 2
+
     print(f"[pv26][etri] converted: {len(rows):,} samples in {_fmt_duration(time.monotonic() - conv_started)}", flush=True)
 
     counts = Counter()
@@ -440,6 +505,7 @@ def main() -> int:
         counts["total"] += 1
         counts[f"split:{row.split}"] += 1
         counts[f"has_da:{int(row.has_da)}"] += 1
+    counts["skipped_bad_samples"] = len(failures)
 
     meta_started = time.monotonic()
     layout.meta_dir().mkdir(parents=True, exist_ok=True)
@@ -472,6 +538,15 @@ def main() -> int:
             "classmap_version": CLASSMAP_VERSION_V3,
         },
         "counts": dict(counts),
+        "skipped_samples_preview": [
+            {
+                "sample_id": f.sample_id,
+                "image_path": f.image_path,
+                "label_json": f.label_json,
+                "error": f.error,
+            }
+            for f in failures[:100]
+        ],
         "notes": [
             "ETRI polygon JSON (Mono+Multi) is rasterized into DA/RM masks.",
             "Lane subclass mapping: whsol/whdot/yesol/yedot -> {1..4}; other lane-like pixels are ignored(255) in rm_lane_subclass.",
