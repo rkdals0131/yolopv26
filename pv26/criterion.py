@@ -37,6 +37,7 @@ class PV26Criterion(nn.Module):
         *,
         num_det_classes: int,
         od_loss_impl: str = "dense",
+        rm_lane_subclass_loss_impl: str = "dense_masked",
         ultra_det_model: Optional[nn.Module] = None,
         w_od: float = 1.0,
         w_da: float = 1.0,
@@ -49,6 +50,7 @@ class PV26Criterion(nn.Module):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
         self.od_loss_impl = str(od_loss_impl).strip().lower()
+        self.rm_lane_subclass_loss_impl = str(rm_lane_subclass_loss_impl).strip().lower()
         self.w_od = float(w_od)
         self.w_da = float(w_da)
         self.w_rm = float(w_rm)
@@ -60,6 +62,8 @@ class PV26Criterion(nn.Module):
         self._ultra_det_loss = None
         if self.od_loss_impl not in {"dense", "ultralytics_e2e"}:
             raise ValueError(f"invalid od_loss_impl: {self.od_loss_impl}")
+        if self.rm_lane_subclass_loss_impl not in {"dense_masked", "sparse_pos"}:
+            raise ValueError(f"invalid rm_lane_subclass_loss_impl: {self.rm_lane_subclass_loss_impl}")
         if self.od_loss_impl == "ultralytics_e2e":
             if ultra_det_model is None:
                 raise ValueError("ultra_det_model must be provided when od_loss_impl='ultralytics_e2e'")
@@ -149,7 +153,8 @@ class PV26Criterion(nn.Module):
 
         Notes:
         - This path currently supports only per-sample gating for `has_det` and `det_label_scope=none` by filtering the
-          batch. `det_label_scope=subset` is not supported yet (raise to avoid silently learning false negatives).
+          batch. `det_label_scope=subset` is conservatively excluded from OD loss until class-aware negative masking is
+          implemented.
         """
         if self._ultra_det_loss is None:
             raise RuntimeError("ultralytics det loss is not initialized")
@@ -165,14 +170,8 @@ class PV26Criterion(nn.Module):
             if det_scope_code.shape[0] != bsz:
                 raise ValueError("det_scope_code length mismatch")
             scope_code = det_scope_code.to(device=has_det.device, dtype=torch.long)
-            subset = (scope_code == 1) & (has_det.to(dtype=torch.long) != 0)
-            if bool(subset.any()):
-                raise NotImplementedError(
-                    "det_label_scope=subset is not supported with od_loss_impl='ultralytics_e2e' yet. "
-                    "Implement class-aware negative masking (det_annotated_class_ids) or exclude subset samples."
-                )
             keep_mask = has_det.to(dtype=torch.long) != 0
-            keep_mask = keep_mask & (scope_code != 2)
+            keep_mask = keep_mask & (scope_code == 0)
             keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
         else:
             if len(det_label_scope) != bsz:
@@ -183,13 +182,8 @@ class PV26Criterion(nn.Module):
                 scope = str(det_label_scope[i]).strip().lower()
                 if scope not in {"full", "subset", "none"}:
                     raise ValueError(f"invalid det_label_scope: {scope}")
-                if int(has_det_cpu[i]) == 0 or scope == "none":
+                if int(has_det_cpu[i]) == 0 or scope != "full":
                     continue
-                if scope == "subset":
-                    raise NotImplementedError(
-                        "det_label_scope=subset is not supported with od_loss_impl='ultralytics_e2e' yet. "
-                        "Implement class-aware negative masking (det_annotated_class_ids) or exclude subset samples."
-                    )
                 keep.append(i)
             keep_idx = torch.as_tensor(keep, dtype=torch.long, device=has_det.device)
 
@@ -199,30 +193,45 @@ class PV26Criterion(nn.Module):
 
         device = preds["one2many"]["boxes"].device
         idx = keep_idx.to(device=device, dtype=torch.long)
+        full_batch_kept = int(idx.shape[0]) == bsz
 
-        def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
-            return {
-                "boxes": h["boxes"].index_select(0, idx),
-                "scores": h["scores"].index_select(0, idx),
-                "feats": [f.index_select(0, idx) for f in h["feats"]],
-            }
-
-        preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
-
-        # Build flat targets with re-indexed batch indices.
         if det_tgt_batch_idx is not None and det_tgt_cls is not None and det_tgt_bboxes is not None:
-            old_to_new = torch.full((bsz,), -1, device=device, dtype=torch.long)
-            old_to_new[idx] = torch.arange(idx.shape[0], device=device, dtype=torch.long)
+            if full_batch_kept:
+                preds_sel = preds
+                batch_idx_t = det_tgt_batch_idx.to(device=device, dtype=torch.float32)
+                cls_t = det_tgt_cls.to(device=device, dtype=torch.float32)
+                bboxes_t = det_tgt_bboxes.to(device=device, dtype=torch.float32)
+            else:
+                def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
+                    return {
+                        "boxes": h["boxes"].index_select(0, idx),
+                        "scores": h["scores"].index_select(0, idx),
+                        "feats": [f.index_select(0, idx) for f in h["feats"]],
+                    }
 
-            src_old = det_tgt_batch_idx.to(device=device, dtype=torch.long)
-            new_idx = old_to_new[src_old]
-            m = new_idx.ge(0)
-            det_tgt_cls_dev = det_tgt_cls.to(device=device, dtype=torch.float32)
-            det_tgt_bboxes_dev = det_tgt_bboxes.to(device=device, dtype=torch.float32)
-            batch_idx_t = new_idx.masked_select(m).to(dtype=torch.float32)
-            cls_t = det_tgt_cls_dev.masked_select(m)
-            bboxes_t = det_tgt_bboxes_dev[m]
+                preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
+
+                old_to_new = torch.full((bsz,), -1, device=device, dtype=torch.long)
+                old_to_new[idx] = torch.arange(idx.shape[0], device=device, dtype=torch.long)
+
+                src_old = det_tgt_batch_idx.to(device=device, dtype=torch.long)
+                new_idx = old_to_new[src_old]
+                m = new_idx.ge(0)
+                det_tgt_cls_dev = det_tgt_cls.to(device=device, dtype=torch.float32)
+                det_tgt_bboxes_dev = det_tgt_bboxes.to(device=device, dtype=torch.float32)
+                batch_idx_t = new_idx.masked_select(m).to(dtype=torch.float32)
+                cls_t = det_tgt_cls_dev.masked_select(m)
+                bboxes_t = det_tgt_bboxes_dev[m]
         else:
+            def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
+                return {
+                    "boxes": h["boxes"].index_select(0, idx),
+                    "scores": h["scores"].index_select(0, idx),
+                    "feats": [f.index_select(0, idx) for f in h["feats"]],
+                }
+
+            preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
+
             if len(det_yolo) != bsz:
                 raise ValueError("det_yolo length mismatch")
             batch_idx_list: List[Tensor] = []
@@ -473,11 +482,51 @@ class PV26Criterion(nn.Module):
         # We supervise subclass CE only on positive pixels (1..K), masking out background(0) and ignore(255).
         valid = (rm_lane_subclass_mask != 255) & (rm_lane_subclass_mask != 0) & supervised
         valid_count = valid.to(dtype=rm_lane_subclass_logits.dtype).sum(dim=(1, 2))
+        keep_f = valid_count.gt(0).to(dtype=rm_lane_subclass_logits.dtype)
+        if not bool(keep_f.any()):
+            return torch.zeros((), dtype=rm_lane_subclass_logits.dtype, device=rm_lane_subclass_logits.device)
 
-        target = torch.where(valid, rm_lane_subclass_mask, torch.zeros_like(rm_lane_subclass_mask))
-        target = target.to(dtype=torch.long)
-        ce = F.cross_entropy(rm_lane_subclass_logits, target, reduction="none")
-
-        per_sample = (ce * valid.to(dtype=ce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
-        keep_f = valid_count.gt(0).to(dtype=per_sample.dtype)
+        if self.rm_lane_subclass_loss_impl == "dense_masked":
+            per_sample = self._rm_lane_subclass_loss_dense_masked(
+                rm_lane_subclass_logits=rm_lane_subclass_logits,
+                rm_lane_subclass_mask=rm_lane_subclass_mask,
+                valid=valid,
+                valid_count=valid_count,
+            )
+        else:
+            per_sample = self._rm_lane_subclass_loss_sparse_pos(
+                rm_lane_subclass_logits=rm_lane_subclass_logits,
+                rm_lane_subclass_mask=rm_lane_subclass_mask,
+                valid=valid,
+                valid_count=valid_count,
+            )
         return (per_sample * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+
+    def _rm_lane_subclass_loss_dense_masked(
+        self,
+        *,
+        rm_lane_subclass_logits: Tensor,
+        rm_lane_subclass_mask: Tensor,
+        valid: Tensor,
+        valid_count: Tensor,
+    ) -> Tensor:
+        target = torch.where(valid, rm_lane_subclass_mask, torch.zeros_like(rm_lane_subclass_mask)).to(dtype=torch.long)
+        ce = F.cross_entropy(rm_lane_subclass_logits, target, reduction="none")
+        return (ce * valid.to(dtype=ce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
+
+    def _rm_lane_subclass_loss_sparse_pos(
+        self,
+        *,
+        rm_lane_subclass_logits: Tensor,
+        rm_lane_subclass_mask: Tensor,
+        valid: Tensor,
+        valid_count: Tensor,
+    ) -> Tensor:
+        bsz = int(rm_lane_subclass_logits.shape[0])
+        logits_flat = rm_lane_subclass_logits.permute(0, 2, 3, 1)[valid]
+        target_flat = rm_lane_subclass_mask[valid].to(dtype=torch.long)
+        ce_flat = F.cross_entropy(logits_flat, target_flat, reduction="none")
+        sample_idx = torch.nonzero(valid, as_tuple=False)[:, 0]
+        per_sample_sum = torch.zeros((bsz,), dtype=ce_flat.dtype, device=ce_flat.device)
+        per_sample_sum.index_add_(0, sample_idx, ce_flat)
+        return per_sample_sum / valid_count.to(dtype=ce_flat.dtype).clamp_min(1.0)
