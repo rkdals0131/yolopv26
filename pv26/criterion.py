@@ -188,6 +188,29 @@ class PV26PreparedBatch:
             else self.det_tgt_bboxes.to(device=device, dtype=torch.float32, non_blocking=True),
         )
 
+    def pin_memory(self) -> "PV26PreparedBatch":
+        def _pin(t: Tensor) -> Tensor:
+            try:
+                return t.pin_memory()
+            except RuntimeError:
+                return t
+
+        return replace(
+            self,
+            det_yolo=tuple(_pin(t) for t in self.det_yolo),
+            has_det=_pin(self.has_det),
+            has_da=_pin(self.has_da),
+            has_rm=_pin(self.has_rm),
+            has_rm_lane_subclass=_pin(self.has_rm_lane_subclass),
+            da_mask=_pin(self.da_mask),
+            rm_mask=_pin(self.rm_mask),
+            rm_lane_subclass_mask=_pin(self.rm_lane_subclass_mask),
+            det_scope_code=None if self.det_scope_code is None else _pin(self.det_scope_code),
+            det_tgt_batch_idx=None if self.det_tgt_batch_idx is None else _pin(self.det_tgt_batch_idx),
+            det_tgt_cls=None if self.det_tgt_cls is None else _pin(self.det_tgt_cls),
+            det_tgt_bboxes=None if self.det_tgt_bboxes is None else _pin(self.det_tgt_bboxes),
+        )
+
 
 class PV26Criterion(nn.Module):
     """
