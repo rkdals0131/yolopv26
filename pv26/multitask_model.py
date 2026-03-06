@@ -118,7 +118,9 @@ class DrivableAreaHeadP3(nn.Module):
         x = self.stage2(x)
         x = self.up2_to1(x)
         logits = self.pred(x)
-        return F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        if logits.shape[-2:] != out_size:
+            logits = F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        return logits
 
 
 class RoadMarkingHeadDeconv(nn.Module):
@@ -147,7 +149,9 @@ class RoadMarkingHeadDeconv(nn.Module):
         x = self.act(self.bn2(self.deconv2(x)))
         x = self.act(self.bn3(self.deconv3(x)))
         logits = self.pred(x)
-        return F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        if logits.shape[-2:] != out_size:
+            logits = F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        return logits
 
 
 class PV26MultiHead(nn.Module):
