@@ -25,11 +25,12 @@ class PV26MultiHeadOutput:
     # - stub: dense logits [B, (4 + 1 + num_classes), H/8, W/8]
     # - YOLO26: Ultralytics Detect output (train: dict(one2many/one2one), eval: (y, preds))
     det: Any
-    # Drivable logits: [B, 1, H, W]
+    # Drivable logits: [B, 1, H/seg_output_stride, W/seg_output_stride]
     da: Tensor
-    # Road-marking logits: [B, 3, H, W]
+    # Road-marking logits: [B, 3, H/seg_output_stride, W/seg_output_stride]
     rm: Tensor
-    # Lane-subclass logits: [B, 5, H, W] => [background + 4 subclasses]
+    # Lane-subclass logits: [B, 5, H/seg_output_stride, W/seg_output_stride]
+    # => [background + 4 subclasses]
     rm_lane_subclass: Tensor
 
 
@@ -159,7 +160,7 @@ class RoadMarkingHeadDeconv(nn.Module):
 
 class RoadMarkingDecoderDeconv(nn.Module):
     """
-    Shared RM decoder trunk up to full-resolution hidden features.
+    Shared RM decoder trunk up to the configured segmentation output resolution.
     """
 
     def __init__(self, in_ch: int, *, output_stride: int = 1):
@@ -247,9 +248,9 @@ class UltralyticsYOLO26DetBackend(nn.Module):
     """
     Adapter shell for the Ultralytics YOLO26 detection backend.
 
-    Phase 5A scope:
-    - preserve current hook-based feature capture
-    - expose a stable `forward() -> PV26DetBackendOutput` contract
+    Current contract:
+    - expose a stable `forward() -> PV26DetBackendOutput` API
+    - return explicit `p3_backbone` and `p3_head` tensors without feature hooks
     - keep `det_model` reachable for pretrained load + criterion wiring
     """
 

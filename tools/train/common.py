@@ -4,7 +4,12 @@ import random
 from typing import Dict, List, Optional
 
 import torch
-from torchvision.ops import nms
+
+
+def _run_nms(boxes_xyxy: torch.Tensor, scores: torch.Tensor, nms_iou: float) -> torch.Tensor:
+    from torchvision.ops import nms
+
+    return nms(boxes_xyxy, scores, float(nms_iou))
 
 
 def resolve_device(device_arg: str) -> torch.device:
@@ -108,7 +113,7 @@ def decode_det_predictions(
         idx = (cls_idx == c).nonzero(as_tuple=False).squeeze(1)
         if idx.numel() == 0:
             continue
-        keep_idx = nms(boxes_xyxy[idx], scores[idx], float(nms_iou))
+        keep_idx = _run_nms(boxes_xyxy[idx], scores[idx], float(nms_iou))
         kept_all.append(idx[keep_idx])
 
     if not kept_all:

@@ -6,6 +6,7 @@ import torch
 from pv26.criterion import PV26Criterion, PV26PreparedBatch
 from pv26.det_loss_backends import UltralyticsE2EDetLossAdapter
 from pv26.multitask_model import PV26MultiHeadOutput
+from pv26.torch_dataset import Pv26Sample
 
 
 class TestPV26CriterionMasking(unittest.TestCase):
@@ -237,6 +238,30 @@ class TestPV26CriterionMasking(unittest.TestCase):
         self.assertIsNotNone(preds.da.grad)
         self.assertIsNotNone(preds.rm.grad)
         self.assertIsNotNone(preds.rm_lane_subclass.grad)
+
+    def test_raw_pv26sample_batches_are_rejected(self):
+        criterion = PV26Criterion(num_det_classes=2)
+        preds = self._preds()
+        sample = Pv26Sample(
+            sample_id="s0",
+            split="train",
+            image=torch.zeros((3, 4, 4), dtype=torch.uint8),
+            det_yolo=torch.zeros((0, 5), dtype=torch.float32),
+            da_mask=torch.zeros((4, 4), dtype=torch.uint8),
+            rm_mask=torch.zeros((3, 4, 4), dtype=torch.uint8),
+            rm_lane_subclass_mask=torch.zeros((4, 4), dtype=torch.uint8),
+            has_det=0,
+            has_da=0,
+            has_rm_lane_marker=0,
+            has_rm_road_marker_non_lane=0,
+            has_rm_stop_line=0,
+            has_rm_lane_subclass=0,
+            det_label_scope="none",
+            det_annotated_class_ids="",
+        )
+
+        with self.assertRaisesRegex(TypeError, "PV26PreparedBatch.from_samples"):
+            criterion(preds, [sample])
 
     def test_seg_loss_block_matches_helper_numerics(self):
         criterion = PV26Criterion(num_det_classes=2)

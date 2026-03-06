@@ -573,10 +573,13 @@ class PV26Criterion(nn.Module):
             return batch.to_device(device=device)
 
         if isinstance(batch, Sequence) and batch and isinstance(batch[0], Pv26Sample):
-            return PV26PreparedBatch.from_samples(batch).to_device(device=device)
+            raise TypeError(
+                "Sequence[Pv26Sample] batches are no longer supported in PV26Criterion; "
+                "prepare the batch first with PV26PreparedBatch.from_samples(..., seg_output_stride=...)"
+            )
 
         if not isinstance(batch, Mapping):
-            raise TypeError("batch must be Sequence[Pv26Sample] or Mapping[str, Any]")
+            raise TypeError("batch must be PV26PreparedBatch or Mapping[str, Any]")
         return PV26PreparedBatch.from_mapping(batch, device=device)
 
     def _seg_loss(
