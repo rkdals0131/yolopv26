@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from pv26.wod import WAYMO_SEM_LANE_MARKER, WAYMO_SEM_ROAD, WAYMO_SEM_ROAD_MARKER, semantic_to_pv26_da_rm_masks
+from pv26.dataset.sources.wod import WAYMO_SEM_LANE_MARKER, WAYMO_SEM_ROAD, WAYMO_SEM_ROAD_MARKER, semantic_to_pv26_da_rm_masks
 
 
 class TestWodSemanticMapping(unittest.TestCase):

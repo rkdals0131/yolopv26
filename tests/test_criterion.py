@@ -3,10 +3,11 @@ from unittest import mock
 
 import torch
 
-from pv26.criterion import PV26Criterion, PV26PreparedBatch
-from pv26.det_loss_backends import UltralyticsE2EDetLossAdapter
-from pv26.multitask_model import PV26MultiHeadOutput
-from pv26.torch_dataset import Pv26Sample
+from pv26.loss.criterion import PV26Criterion
+from pv26.loss.det_ultralytics_e2e import UltralyticsE2EDetLossAdapter
+from pv26.model.outputs import PV26MultiHeadOutput
+from pv26.dataset.loading.sample_types import Pv26Sample
+from pv26.training.prepared_batch import PV26PreparedBatch
 
 
 class TestPV26CriterionMasking(unittest.TestCase):
@@ -402,7 +403,7 @@ class TestPV26CriterionMasking(unittest.TestCase):
         criterion = PV26Criterion(num_det_classes=2)
         compiled_sentinel = torch.nn.Identity()
 
-        with mock.patch("pv26.criterion.torch.compile", return_value=compiled_sentinel) as compile_mock:
+        with mock.patch("pv26.loss.criterion.torch.compile", return_value=compiled_sentinel) as compile_mock:
             criterion.enable_compile_seg_loss(compile_mode="reduce-overhead", compile_fullgraph=True)
 
         compile_mock.assert_called_once_with(
@@ -420,7 +421,7 @@ class TestPV26CriterionMasking(unittest.TestCase):
     def test_enable_compile_seg_loss_propagates_compile_failure(self):
         criterion = PV26Criterion(num_det_classes=2)
 
-        with mock.patch("pv26.criterion.torch.compile", side_effect=RuntimeError("compile boom")):
+        with mock.patch("pv26.loss.criterion.torch.compile", side_effect=RuntimeError("compile boom")):
             with self.assertRaisesRegex(RuntimeError, "compile boom"):
                 criterion.enable_compile_seg_loss(compile_mode="default", compile_fullgraph=False)
 

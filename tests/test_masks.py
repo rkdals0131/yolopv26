@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from pv26.masks import (
+from pv26.dataset.masks import (
     IGNORE_VALUE,
     compose_semantic_id_v2,
     compose_semantic_id_v3,

@@ -19,8 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pv26.constants import DET_CLASSES_CANONICAL
-from pv26.multitask_model import PV26MultiHeadYOLO26
+from pv26.dataset.labels import DET_CLASSES_CANONICAL
+from pv26.model.multitask_yolo26 import PV26MultiHeadYOLO26
 
 LOGGER = logging.getLogger("render_weights_example")
 
@@ -171,7 +171,17 @@ def overlay_mask(base: np.ndarray, mask: np.ndarray, color: tuple[int, int, int]
     overlay = np.zeros_like(out, dtype=np.uint8)
     overlay[:, :] = np.array(color, dtype=np.uint8)
     sel = mask.astype(bool)
-    out[sel] = cv2.addWeighted(base[sel], 1.0 - alpha, overlay[sel], alpha, 0)
+    if not np.any(sel):
+        return out
+
+    blended = cv2.addWeighted(base[sel], 1.0 - alpha, overlay[sel], alpha, 0)
+    if blended is None:
+        # OpenCV returns None for zero-length slices on some builds.
+        blended = (
+            base[sel].astype(np.float32) * (1.0 - alpha)
+            + overlay[sel].astype(np.float32) * alpha
+        ).astype(np.uint8)
+    out[sel] = blended
     return out
 
 

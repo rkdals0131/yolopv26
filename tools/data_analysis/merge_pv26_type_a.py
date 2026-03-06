@@ -32,9 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pv26.manifest import MANIFEST_COLUMNS, read_manifest_csv, validate_manifest_row_basic
-from pv26.utils import utc_now_iso, write_json
-from pv26.validate_dataset import validate_pv26_dataset
+from pv26.dataset.manifest import MANIFEST_COLUMNS, read_manifest_csv, validate_manifest_row_basic
+from pv26.io import utc_now_iso, write_json
+from pv26.dataset.validation import validate_pv26_dataset
 
 
 FILE_RELPATH_KEYS: Tuple[str, ...] = (

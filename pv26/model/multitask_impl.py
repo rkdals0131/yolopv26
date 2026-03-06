@@ -1,44 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from .det_loss_backends import UltralyticsE2EDetLossAdapter
-
-_VALID_SEG_OUTPUT_STRIDES = {1, 2}
+from .contracts import PV26DetBackendOutput, validate_seg_output_stride
+from .outputs import PV26MultiHeadOutput
 
 
 def _validate_seg_output_stride(seg_output_stride: int) -> int:
-    stride = int(seg_output_stride)
-    if stride not in _VALID_SEG_OUTPUT_STRIDES:
-        raise ValueError(f"invalid seg_output_stride: {stride}")
-    return stride
-
-
-@dataclass(frozen=True)
-class PV26MultiHeadOutput:
-    # Detection output:
-    # - stub: dense logits [B, (4 + 1 + num_classes), H/8, W/8]
-    # - YOLO26: Ultralytics Detect output (train: dict(one2many/one2one), eval: (y, preds))
-    det: Any
-    # Drivable logits: [B, 1, H/seg_output_stride, W/seg_output_stride]
-    da: Tensor
-    # Road-marking logits: [B, 3, H/seg_output_stride, W/seg_output_stride]
-    rm: Tensor
-    # Lane-subclass logits: [B, 5, H/seg_output_stride, W/seg_output_stride]
-    # => [background + 4 subclasses]
-    rm_lane_subclass: Tensor
-
-
-@dataclass(frozen=True)
-class PV26DetBackendOutput:
-    det: Any
-    p3_backbone: Tensor
-    p3_head: Tensor
+    return validate_seg_output_stride(seg_output_stride)
 
 
 class ConvBNAct(nn.Module):
@@ -309,9 +282,6 @@ class UltralyticsYOLO26DetBackend(nn.Module):
             raise RuntimeError("missing backbone P3 feature")
         return x, p3_backbone
 
-    def build_det_loss_adapter(self) -> UltralyticsE2EDetLossAdapter:
-        return UltralyticsE2EDetLossAdapter(self.det_model)
-
     @staticmethod
     def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
         preds = det_out
@@ -399,9 +369,3 @@ class PV26MultiHeadYOLO26(nn.Module):
         rm = self.rm_head(rm_hidden)
         rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
         return PV26MultiHeadOutput(det=backend_out.det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
-
-    def build_det_loss_adapter(self) -> Any:
-        build = getattr(self.det_backend, "build_det_loss_adapter", None)
-        if build is None:
-            raise RuntimeError("det backend does not expose build_det_loss_adapter()")
-        return build()

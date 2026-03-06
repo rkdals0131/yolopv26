@@ -14,7 +14,7 @@ Contracts implemented:
 
 ## 0) Multi-head architecture stub (for implementation bootstrap)
 
-`pv26/multitask_model.py` provides a runnable **shared-trunk + 4-head** structure:
+`pv26/model/multitask_stub.py` + `pv26/model/multitask_yolo26.py` provide a runnable **shared-trunk + 4-head** structure:
 - Detection head (dense logits): `det` tensor
 - Drivable head: `da` logits, 1 channel
 - Road-marking head: `rm` logits, 3 channels

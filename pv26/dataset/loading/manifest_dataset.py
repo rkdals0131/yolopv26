@@ -13,8 +13,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from .masks import IGNORE_VALUE, make_all_ignore_mask, validate_binary_mask_u8, validate_lane_subclass_mask_u8
-from .manifest import MANIFEST_COLUMNS, validate_manifest_row_basic
+from ..masks import IGNORE_VALUE, make_all_ignore_mask, validate_binary_mask_u8, validate_lane_subclass_mask_u8
+from ..manifest import MANIFEST_COLUMNS, validate_manifest_row_basic
 
 
 @dataclass(frozen=True)

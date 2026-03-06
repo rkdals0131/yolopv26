@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from tools.train.modal_train_common import (
+from tools.train.modal.common import (
     ModalRuntimeDefaults,
     ModalTrainDefaults,
     build_train_command,

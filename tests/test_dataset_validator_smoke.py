@@ -5,10 +5,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from pv26.class_map import render_class_map_yaml
-from pv26.manifest import ManifestRow, write_manifest_csv
-from pv26.masks import IGNORE_VALUE
-from pv26.validate_dataset import validate_pv26_dataset
+from pv26.dataset.classmap import render_class_map_yaml
+from pv26.dataset.manifest import ManifestRow, write_manifest_csv
+from pv26.dataset.masks import IGNORE_VALUE
+from pv26.dataset.validation import validate_pv26_dataset
 
 
 class TestDatasetValidatorSmoke(unittest.TestCase):

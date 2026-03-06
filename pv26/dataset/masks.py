@@ -139,7 +139,7 @@ def compose_semantic_id_v2(
         )
 
     # Import here to avoid circular import at module load time.
-    from .constants import SEG_ID_BACKGROUND, SEG_ID_DRIVABLE, SEG_ID_LANE_MARKING, SEG_ID_STOP_LINE
+    from .labels import SEG_ID_BACKGROUND, SEG_ID_DRIVABLE, SEG_ID_LANE_MARKING, SEG_ID_STOP_LINE
 
     sem = np.full(da_mask.shape, SEG_ID_BACKGROUND, dtype=np.uint8)
     sem[da_mask == 1] = SEG_ID_DRIVABLE
@@ -187,7 +187,7 @@ def compose_semantic_id_v3(
             reason="has_ignore_255_in_inputs",
         )
 
-    from .constants import (
+    from .labels import (
         SEG3_ID_BACKGROUND,
         SEG3_ID_DRIVABLE,
         SEG3_ID_LANE_WHITE_DASHED,

@@ -2,13 +2,13 @@ import unittest
 
 import numpy as np
 
-from pv26.bdd import (
+from pv26.dataset.sources.bdd import (
     bdd_record_to_image_name,
     bdd_record_to_rm_masks,
     bdd_record_to_rm_masks_with_lane_subclass,
     bdd_record_to_yolo_lines,
 )
-from pv26.masks import IGNORE_VALUE
+from pv26.dataset.masks import IGNORE_VALUE
 
 
 class TestBddAdapter(unittest.TestCase):

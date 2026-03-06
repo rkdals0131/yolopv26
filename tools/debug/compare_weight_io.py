@@ -18,8 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pv26.constants import DET_CLASSES_CANONICAL
-from pv26.multitask_model import PV26MultiHeadYOLO26
+from pv26.dataset.labels import DET_CLASSES_CANONICAL
+from pv26.model.multitask_yolo26 import PV26MultiHeadYOLO26
 
 
 def _parse_args() -> argparse.Namespace:
