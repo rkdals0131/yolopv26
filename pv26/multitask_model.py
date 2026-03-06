@@ -7,6 +7,15 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
+_VALID_SEG_OUTPUT_STRIDES = {1, 2}
+
+
+def _validate_seg_output_stride(seg_output_stride: int) -> int:
+    stride = int(seg_output_stride)
+    if stride not in _VALID_SEG_OUTPUT_STRIDES:
+        raise ValueError(f"invalid seg_output_stride: {stride}")
+    return stride
+
 
 @dataclass(frozen=True)
 class PV26MultiHeadOutput:
@@ -99,8 +108,9 @@ class DrivableAreaHeadP3(nn.Module):
     DA branch from shallow stride-8 feature (pre-FPN), then explicit upsampling.
     """
 
-    def __init__(self, in_ch: int):
+    def __init__(self, in_ch: int, *, output_stride: int = 1):
         super().__init__()
+        self.output_stride = _validate_seg_output_stride(output_stride)
         mid = max(32, in_ch // 2)
         self.stage0 = ConvBNAct(in_ch, mid, k=3, s=1)
         self.up8_to4 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
@@ -116,7 +126,8 @@ class DrivableAreaHeadP3(nn.Module):
         x = self.stage1(x)
         x = self.up4_to2(x)
         x = self.stage2(x)
-        x = self.up2_to1(x)
+        if self.output_stride == 1:
+            x = self.up2_to1(x)
         logits = self.pred(x)
         if logits.shape[-2:] != out_size:
             logits = F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
@@ -128,9 +139,9 @@ class RoadMarkingHeadDeconv(nn.Module):
     RM branch from fused neck feature (post-FPN) with deconvolution blocks.
     """
 
-    def __init__(self, in_ch: int, out_ch: int = 3):
+    def __init__(self, in_ch: int, out_ch: int = 3, *, output_stride: int = 1):
         super().__init__()
-        self.decoder = RoadMarkingDecoderDeconv(in_ch=in_ch)
+        self.decoder = RoadMarkingDecoderDeconv(in_ch=in_ch, output_stride=output_stride)
         self.pred = RoadMarkingPredictionHead(in_ch=self.decoder.out_ch, out_ch=out_ch)
 
     def forward(self, x: Tensor, out_size: Tuple[int, int]) -> Tensor:
@@ -142,8 +153,9 @@ class RoadMarkingDecoderDeconv(nn.Module):
     Shared RM decoder trunk up to full-resolution hidden features.
     """
 
-    def __init__(self, in_ch: int):
+    def __init__(self, in_ch: int, *, output_stride: int = 1):
         super().__init__()
+        self.output_stride = _validate_seg_output_stride(output_stride)
         c1 = max(64, in_ch // 2)
         c2 = max(32, c1 // 2)
         c3 = max(16, c2 // 2)
@@ -161,7 +173,8 @@ class RoadMarkingDecoderDeconv(nn.Module):
         x = self.stem(x)
         x = self.act(self.bn1(self.deconv1(x)))
         x = self.act(self.bn2(self.deconv2(x)))
-        x = self.act(self.bn3(self.deconv3(x)))
+        if self.output_stride == 1:
+            x = self.act(self.bn3(self.deconv3(x)))
         if x.shape[-2:] != out_size:
             x = F.interpolate(x, size=out_size, mode="bilinear", align_corners=False)
         return x
@@ -189,17 +202,19 @@ class PV26MultiHead(nn.Module):
         backbone: Optional[nn.Module] = None,
         neck: Optional[nn.Module] = None,
         fused_ch: int = 160,
+        seg_output_stride: int = 1,
     ):
         super().__init__()
         self.num_lane_subclasses = int(num_lane_subclasses)
+        self.seg_output_stride = _validate_seg_output_stride(seg_output_stride)
         self.backbone = backbone if backbone is not None else TinyPV26Backbone()
         self.neck = neck if neck is not None else TinyFPN(out_ch=fused_ch)
         self.det_head = DetectionHeadDense(in_ch=fused_ch, num_classes=num_det_classes)
         # YOLOPv2-style split:
         # - DA from shallower feature (before neck/FPN)
         # - RM from deeper fused feature (after neck/FPN) with a shared decoder trunk
-        self.da_head = DrivableAreaHeadP3(in_ch=128)
-        self.rm_decoder = RoadMarkingDecoderDeconv(in_ch=fused_ch)
+        self.da_head = DrivableAreaHeadP3(in_ch=128, output_stride=self.seg_output_stride)
+        self.rm_decoder = RoadMarkingDecoderDeconv(in_ch=fused_ch, output_stride=self.seg_output_stride)
         self.rm_head = RoadMarkingPredictionHead(in_ch=self.rm_decoder.out_ch, out_ch=3)
         self.rm_lane_subclass_head = RoadMarkingPredictionHead(
             in_ch=self.rm_decoder.out_ch,
@@ -208,11 +223,12 @@ class PV26MultiHead(nn.Module):
 
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
+        seg_out_size = (in_h // self.seg_output_stride, in_w // self.seg_output_stride)
         p3, p4, p5 = self.backbone(x)
         fused = self.neck(p3, p4, p5)
         det = self.det_head(fused)
-        da = self.da_head(p3, out_size=(in_h, in_w))
-        rm_hidden = self.rm_decoder(fused, out_size=(in_h, in_w))
+        da = self.da_head(p3, out_size=seg_out_size)
+        rm_hidden = self.rm_decoder(fused, out_size=seg_out_size)
         rm = self.rm_head(rm_hidden)
         rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
         return PV26MultiHeadOutput(det=det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
@@ -238,11 +254,13 @@ class PV26MultiHeadYOLO26(nn.Module):
         num_lane_subclasses: int = 4,
         yolo26_cfg: str = "yolo26n.yaml",
         verbose: bool = False,
+        seg_output_stride: int = 1,
     ):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
         self.num_lane_subclasses = int(num_lane_subclasses)
         self.yolo26_cfg = str(yolo26_cfg)
+        self.seg_output_stride = _validate_seg_output_stride(seg_output_stride)
 
         # Lazy import: Ultralytics writes settings.json under a user config dir by default.
         # In this repo sandbox, $HOME may not be writable, so we default to /tmp.
@@ -293,8 +311,11 @@ class PV26MultiHeadYOLO26(nn.Module):
             p3_head = feats[0]
         self.det_model.train(was_training)
 
-        self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]))
-        self.rm_decoder = RoadMarkingDecoderDeconv(in_ch=int(p3_head.shape[1]))
+        self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]), output_stride=self.seg_output_stride)
+        self.rm_decoder = RoadMarkingDecoderDeconv(
+            in_ch=int(p3_head.shape[1]),
+            output_stride=self.seg_output_stride,
+        )
         self.rm_head = RoadMarkingPredictionHead(in_ch=self.rm_decoder.out_ch, out_ch=3)
         self.rm_lane_subclass_head = RoadMarkingPredictionHead(
             in_ch=self.rm_decoder.out_ch,
@@ -303,6 +324,7 @@ class PV26MultiHeadYOLO26(nn.Module):
 
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
+        seg_out_size = (in_h // self.seg_output_stride, in_w // self.seg_output_stride)
         self._feat.clear()
         det_out = self.det_model(x)
 
@@ -321,8 +343,8 @@ class PV26MultiHeadYOLO26(nn.Module):
             raise RuntimeError("missing backbone P3 feature (hook did not fire)")
         p3_head = feats[0]
 
-        da = self.da_head(p3_backbone, out_size=(in_h, in_w))
-        rm_hidden = self.rm_decoder(p3_head, out_size=(in_h, in_w))
+        da = self.da_head(p3_backbone, out_size=seg_out_size)
+        rm_hidden = self.rm_decoder(p3_head, out_size=seg_out_size)
         rm = self.rm_head(rm_hidden)
         rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
         return PV26MultiHeadOutput(det=det_out, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from datetime import datetime
+from functools import partial
 import os
 from pathlib import Path
 import resource
@@ -14,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import warnings
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +49,13 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--arch", type=str, default="yolo26n", choices=["yolo26n", "stub"])
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--batch-size", type=int, default=10)
+    p.add_argument(
+        "--seg-output-stride",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Segmentation output stride relative to input resolution (default: 1).",
+    )
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--prefetch-factor", type=int, default=4, help="DataLoader prefetch factor when workers > 0")
     p.add_argument(
@@ -269,19 +278,30 @@ def _build_tb_writer(enabled: bool, log_dir: Path):
         ) from exc
 
 
-def _collate_train(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, PV26PreparedBatch]:
+def _collate_train(samples: List[Pv26Sample], *, seg_output_stride: int) -> Tuple[torch.Tensor, PV26PreparedBatch]:
     # Build image batch/targets in worker process so main thread can focus on GPU steps.
     images = torch.stack([s.image for s in samples], dim=0)
-    return images, PV26PreparedBatch.from_samples(samples)
+    return images, PV26PreparedBatch.from_samples(samples, seg_output_stride=int(seg_output_stride))
 
 
-def _collate_eval(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, PV26PreparedBatch]:
+def _collate_eval(samples: List[Pv26Sample], *, seg_output_stride: int) -> Tuple[torch.Tensor, PV26PreparedBatch]:
     images = torch.stack([s.image for s in samples], dim=0)
-    return images, PV26PreparedBatch.from_samples(samples, include_sample_id=True)
+    return images, PV26PreparedBatch.from_samples(
+        samples,
+        include_sample_id=True,
+        include_fullres_masks=True,
+        seg_output_stride=int(seg_output_stride),
+    )
 
 
 def _move_prepared_batch_to_device(batch: PV26PreparedBatch, *, device: torch.device) -> PV26PreparedBatch:
     return batch.to_device(device=device)
+
+
+def _resize_seg_logits_for_eval(logits: torch.Tensor, out_size: tuple[int, int]) -> torch.Tensor:
+    if logits.shape[-2:] == out_size:
+        return logits
+    return F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
 
 
 def _make_run_dir(base: Path, run_name: str, arch: str) -> Path:
@@ -946,16 +966,31 @@ def validate(
             img_h = int(images_cpu.shape[-2])
             img_w = int(images_cpu.shape[-1])
 
-            da_mask_dev: torch.Tensor = target_batch.da_mask
-            rm_mask_dev: torch.Tensor = target_batch.rm_mask
+            da_mask_dev: torch.Tensor = (
+                target_batch.da_mask_fullres if target_batch.da_mask_fullres is not None else target_batch.da_mask
+            )
+            rm_mask_dev: torch.Tensor = (
+                target_batch.rm_mask_fullres if target_batch.rm_mask_fullres is not None else target_batch.rm_mask
+            )
             has_da_dev: torch.Tensor = target_batch.has_da.to(dtype=torch.bool)
             has_rm_dev: torch.Tensor = target_batch.has_rm.to(dtype=torch.bool)
-            rm_lane_subclass_mask_dev: torch.Tensor = target_batch.rm_lane_subclass_mask
+            rm_lane_subclass_mask_dev: torch.Tensor = (
+                target_batch.rm_lane_subclass_mask_fullres
+                if target_batch.rm_lane_subclass_mask_fullres is not None
+                else target_batch.rm_lane_subclass_mask
+            )
             has_rm_lane_subclass_dev: torch.Tensor = target_batch.has_rm_lane_subclass.to(dtype=torch.bool)
+
+            pred_da_logits = _resize_seg_logits_for_eval(preds.da, da_mask_dev.shape[-2:])
+            pred_rm_logits = _resize_seg_logits_for_eval(preds.rm, rm_mask_dev.shape[-2:])
+            pred_lane_subclass_logits = _resize_seg_logits_for_eval(
+                preds.rm_lane_subclass,
+                rm_lane_subclass_mask_dev.shape[-2:],
+            )
 
             valid_da = (da_mask_dev != 255) & has_da_dev[:, None, None]
             supervised_da = valid_da.reshape(valid_da.shape[0], -1).any(dim=1)
-            pred_da = preds.da[:, 0] > 0
+            pred_da = pred_da_logits[:, 0] > 0
             tgt_da = da_mask_dev == 1
             metric_stats["da"]["inter"] += int((((pred_da & tgt_da) & valid_da).sum()).item())
             metric_stats["da"]["union"] += int((((pred_da | tgt_da) & valid_da).sum()).item())
@@ -967,7 +1002,7 @@ def validate(
                 "rm_stop_line",
             ]
             valid_rm = (rm_mask_dev != 255) & has_rm_dev[:, :, None, None]
-            pred_rm = preds.rm > 0
+            pred_rm = pred_rm_logits > 0
             tgt_rm = rm_mask_dev == 1
             for c_idx, name in enumerate(rm_channels):
                 valid_c = valid_rm[:, c_idx]
@@ -982,7 +1017,7 @@ def validate(
                 (3, "rm_lane_subclass_yellow_solid"),
                 (4, "rm_lane_subclass_yellow_dashed"),
             ]
-            pred_lane_subclass = torch.argmax(preds.rm_lane_subclass, dim=1)
+            pred_lane_subclass = torch.argmax(pred_lane_subclass_logits, dim=1)
             valid_lane_subclass = (rm_lane_subclass_mask_dev != 255) & has_rm_lane_subclass_dev[:, None, None]
             supervised_lane_subclass = valid_lane_subclass.reshape(valid_lane_subclass.shape[0], -1).any(dim=1)
             for cls_id, cls_name in lane_subclass_specs:
@@ -1156,7 +1191,10 @@ def main() -> int:
             "prefetch_factor": pf,
         }
 
-    train_collate_fn = _collate_eval if args.arch == "stub" else _collate_train
+    train_collate_fn = partial(
+        _collate_eval if args.arch == "stub" else _collate_train,
+        seg_output_stride=int(args.seg_output_stride),
+    )
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -1173,19 +1211,24 @@ def main() -> int:
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=_collate_eval,
+        collate_fn=partial(_collate_eval, seg_output_stride=int(args.seg_output_stride)),
         pin_memory=(device.type == "cuda"),
         **loader_perf_kwargs,
     )
 
     if args.arch == "stub":
-        model = PV26MultiHead(num_det_classes=len(DET_CLASSES_CANONICAL), num_lane_subclasses=4).to(device)
+        model = PV26MultiHead(
+            num_det_classes=len(DET_CLASSES_CANONICAL),
+            num_lane_subclasses=4,
+            seg_output_stride=int(args.seg_output_stride),
+        ).to(device)
         criterion = PV26Criterion(num_det_classes=len(DET_CLASSES_CANONICAL), num_lane_subclasses=4).to(device)
     else:
         model = PV26MultiHeadYOLO26(
             num_det_classes=len(DET_CLASSES_CANONICAL),
             num_lane_subclasses=4,
             yolo26_cfg="yolo26n.yaml",
+            seg_output_stride=int(args.seg_output_stride),
         ).to(device)
         criterion = PV26Criterion(
             num_det_classes=len(DET_CLASSES_CANONICAL),
@@ -1264,7 +1307,8 @@ def main() -> int:
     )
     print(
         f"[pv26] train_drop_last={bool(args.train_drop_last)} "
-        f"validate_masks={bool(args.validate_masks)}"
+        f"validate_masks={bool(args.validate_masks)} "
+        f"seg_output_stride={int(args.seg_output_stride)}"
     )
     print(f"[pv26] eval_map_every={max(1, int(args.eval_map_every))}")
     if args.det_pretrained is not None:

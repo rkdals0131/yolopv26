@@ -280,6 +280,98 @@ class TestPV26CriterionMasking(unittest.TestCase):
         self.assertAlmostEqual(float(da_ref), float(da_block), places=6)
         self.assertAlmostEqual(float(rm_ref), float(rm_block), places=6)
 
+    def test_prepared_batch_downsamples_seg_targets_for_stride2(self):
+        prepared = PV26PreparedBatch.from_mapping(
+            {
+                "det_yolo": [torch.zeros((0, 5), dtype=torch.float32)],
+                "det_label_scope": ["none"],
+                "has_det": torch.tensor([0], dtype=torch.long),
+                "has_da": torch.tensor([1], dtype=torch.long),
+                "has_rm_lane_marker": torch.tensor([1], dtype=torch.long),
+                "has_rm_road_marker_non_lane": torch.tensor([1], dtype=torch.long),
+                "has_rm_stop_line": torch.tensor([1], dtype=torch.long),
+                "has_rm_lane_subclass": torch.tensor([1], dtype=torch.long),
+                "da_mask": torch.tensor(
+                    [[[1, 0, 255, 255], [0, 0, 255, 255], [0, 1, 0, 0], [0, 0, 0, 0]]],
+                    dtype=torch.uint8,
+                ),
+                "rm_mask": torch.tensor(
+                    [
+                        [
+                            [[1, 0, 255, 255], [0, 0, 255, 255], [0, 1, 0, 0], [0, 0, 0, 0]],
+                            [[0, 0, 0, 0], [0, 0, 0, 0], [255, 255, 255, 255], [255, 255, 255, 255]],
+                            [[0, 0, 1, 0], [0, 0, 0, 0], [255, 255, 0, 0], [255, 255, 0, 0]],
+                        ]
+                    ],
+                    dtype=torch.uint8,
+                ),
+                "rm_lane_subclass_mask": torch.tensor(
+                    [[[1, 1, 2, 0], [0, 255, 2, 255], [0, 0, 255, 255], [255, 255, 255, 255]]],
+                    dtype=torch.uint8,
+                ),
+            },
+            device=torch.device("cpu"),
+            seg_output_stride=2,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                prepared.da_mask,
+                torch.tensor([[[1, 255], [1, 0]]], dtype=torch.uint8),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                prepared.rm_mask,
+                torch.tensor(
+                    [
+                        [
+                            [[1, 255], [1, 0]],
+                            [[0, 0], [255, 255]],
+                            [[0, 1], [255, 0]],
+                        ]
+                    ],
+                    dtype=torch.uint8,
+                ),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                prepared.rm_lane_subclass_mask,
+                torch.tensor([[[1, 2], [0, 255]]], dtype=torch.uint8),
+            )
+        )
+
+    def test_prepared_batch_can_preserve_fullres_masks_for_eval(self):
+        sample = mock.Mock()
+        sample.sample_id = "s0"
+        sample.det_yolo = torch.zeros((0, 5), dtype=torch.float32)
+        sample.det_label_scope = "none"
+        sample.has_det = 0
+        sample.has_da = 1
+        sample.has_rm_lane_marker = 1
+        sample.has_rm_road_marker_non_lane = 1
+        sample.has_rm_stop_line = 1
+        sample.has_rm_lane_subclass = 1
+        sample.da_mask = torch.zeros((4, 4), dtype=torch.uint8)
+        sample.rm_mask = torch.zeros((3, 4, 4), dtype=torch.uint8)
+        sample.rm_lane_subclass_mask = torch.zeros((4, 4), dtype=torch.uint8)
+
+        prepared = PV26PreparedBatch.from_samples(
+            [sample],
+            include_sample_id=True,
+            include_fullres_masks=True,
+            seg_output_stride=2,
+        )
+
+        self.assertEqual(prepared.sample_id, ("s0",))
+        self.assertEqual(tuple(prepared.da_mask.shape), (1, 2, 2))
+        self.assertEqual(tuple(prepared.rm_mask.shape), (1, 3, 2, 2))
+        self.assertEqual(tuple(prepared.rm_lane_subclass_mask.shape), (1, 2, 2))
+        self.assertEqual(tuple(prepared.da_mask_fullres.shape), (1, 4, 4))
+        self.assertEqual(tuple(prepared.rm_mask_fullres.shape), (1, 3, 4, 4))
+        self.assertEqual(tuple(prepared.rm_lane_subclass_mask_fullres.shape), (1, 4, 4))
+
     def test_enable_compile_seg_loss_uses_torch_compile(self):
         criterion = PV26Criterion(num_det_classes=2)
         compiled_sentinel = torch.nn.Identity()
