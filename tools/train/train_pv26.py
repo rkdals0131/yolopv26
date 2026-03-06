@@ -146,6 +146,19 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Disable fullgraph mode in torch.compile.",
     )
     p.add_argument(
+        "--compile-seg-loss",
+        dest="compile_seg_loss",
+        action="store_true",
+        default=False,
+        help="Enable torch.compile on the DA/RM seg loss block only (default: off).",
+    )
+    p.add_argument(
+        "--no-compile-seg-loss",
+        dest="compile_seg_loss",
+        action="store_false",
+        help="Disable seg loss torch.compile.",
+    )
+    p.add_argument(
         "--det-pretrained",
         type=Path,
         default=None,
@@ -664,6 +677,40 @@ def _maybe_compile_model(
     except Exception as exc:
         print(f"[pv26] warning: torch.compile failed, fallback to eager ({exc})", flush=True)
         return model
+
+
+def _maybe_compile_seg_loss(
+    *,
+    criterion: PV26Criterion,
+    device: torch.device,
+    enable_compile: bool,
+    compile_mode: str,
+    compile_fullgraph: bool,
+) -> PV26Criterion:
+    criterion.disable_compile_seg_loss()
+    if not bool(enable_compile):
+        print("[pv26] seg-loss compile disabled", flush=True)
+        return criterion
+    if device.type != "cuda":
+        print("[pv26] seg-loss compile skipped (device is not CUDA)", flush=True)
+        return criterion
+    if not hasattr(torch, "compile"):
+        print("[pv26] seg-loss compile unavailable on this torch build", flush=True)
+        return criterion
+    try:
+        criterion.enable_compile_seg_loss(
+            compile_mode=str(compile_mode),
+            compile_fullgraph=bool(compile_fullgraph),
+        )
+        print(
+            f"[pv26] seg-loss compile enabled (mode={compile_mode}, fullgraph={bool(compile_fullgraph)})",
+            flush=True,
+        )
+        return criterion
+    except Exception as exc:
+        criterion.disable_compile_seg_loss()
+        print(f"[pv26] warning: seg-loss compile failed, fallback to eager ({exc})", flush=True)
+        return criterion
 
 
 def train_one_epoch(
@@ -1192,6 +1239,13 @@ def main() -> int:
         compile_mode=str(args.compile_mode),
         compile_fullgraph=bool(args.compile_fullgraph),
     )
+    criterion = _maybe_compile_seg_loss(
+        criterion=criterion,
+        device=device,
+        enable_compile=bool(args.compile_seg_loss),
+        compile_mode=str(args.compile_mode),
+        compile_fullgraph=bool(args.compile_fullgraph),
+    )
 
     max_train_batches, max_val_batches = _resolve_max_batches(args)
     print(f"[pv26] run_dir={run_dir}")
@@ -1201,7 +1255,8 @@ def main() -> int:
         f"[pv26] optimizer={str(args.optimizer).lower()} scheduler={str(args.scheduler).lower()} "
         f"warmup_epochs={int(args.warmup_epochs)} warmup_start_factor={float(args.warmup_start_factor):.3f} "
         f"compile={bool(args.compile)} compile_mode={args.compile_mode} "
-        f"compile_fullgraph={bool(args.compile_fullgraph)}"
+        f"compile_fullgraph={bool(args.compile_fullgraph)} "
+        f"compile_seg_loss={bool(args.compile_seg_loss)}"
     )
     print(
         f"[pv26] profile_every={int(args.profile_every)} profile_sync_cuda={bool(args.profile_sync_cuda)} "

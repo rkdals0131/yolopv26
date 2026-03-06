@@ -212,6 +212,83 @@ class PV26PreparedBatch:
         )
 
 
+def _pv26_da_loss_impl(*, da_logits: Tensor, da_mask: Tensor, has_da: Tensor) -> Tensor:
+    bsz = da_logits.shape[0]
+    if da_mask.shape[0] != bsz:
+        raise ValueError("da batch size mismatch")
+    logits = da_logits[:, 0]  # [B,H,W]
+    valid = (da_mask != 255) & has_da.view(-1, 1, 1).bool()
+    valid_count = valid.to(dtype=da_logits.dtype).sum(dim=(1, 2))  # [B]
+    target = torch.where(valid, da_mask, torch.zeros_like(da_mask)).to(dtype=da_logits.dtype)
+    bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    per_sample = (bce * valid.to(dtype=bce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
+    keep_f = valid_count.gt(0).to(dtype=per_sample.dtype)
+    return (per_sample * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+
+
+def _pv26_rm_loss_impl(
+    *,
+    rm_logits: Tensor,
+    rm_mask: Tensor,
+    has_rm: Tensor,
+    focal_gamma: float,
+    dice_eps: float,
+) -> Tensor:
+    bsz, ch, _, _ = rm_logits.shape
+    if ch != 3:
+        raise ValueError("rm logits must have 3 channels")
+    if rm_mask.shape[0] != bsz or rm_mask.shape[1] != 3:
+        raise ValueError("rm batch shape mismatch")
+
+    supervised = has_rm.view(bsz, ch, 1, 1).bool()
+    valid = (rm_mask != 255) & supervised
+    valid_count = valid.to(dtype=rm_logits.dtype).sum(dim=(2, 3))  # [B,C]
+    target = torch.where(valid, rm_mask, torch.zeros_like(rm_mask)).to(dtype=rm_logits.dtype)
+    valid_f = valid.to(dtype=rm_logits.dtype)
+
+    bce = F.binary_cross_entropy_with_logits(rm_logits, target, reduction="none")
+    prob = torch.sigmoid(rm_logits)
+    pt = prob * target + (1.0 - prob) * (1.0 - target)
+    focal_num = (((1.0 - pt).pow(focal_gamma) * bce) * valid_f).sum(dim=(2, 3))
+    focal = focal_num / valid_count.clamp_min(1.0)
+
+    inter = (prob * target * valid_f).sum(dim=(2, 3))
+    prob_sum = (prob * valid_f).sum(dim=(2, 3))
+    target_sum = (target * valid_f).sum(dim=(2, 3))
+    dice = 1.0 - (2.0 * inter + dice_eps) / (prob_sum + target_sum + dice_eps)
+
+    per_channel = focal + dice
+    keep_f = valid_count.gt(0).to(dtype=per_channel.dtype)
+    return (per_channel * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+
+
+class _PV26SegLossBlock(nn.Module):
+    def __init__(self, *, focal_gamma: float, dice_eps: float):
+        super().__init__()
+        self.focal_gamma = float(focal_gamma)
+        self.dice_eps = float(dice_eps)
+
+    def forward(
+        self,
+        da_logits: Tensor,
+        da_mask: Tensor,
+        has_da: Tensor,
+        rm_logits: Tensor,
+        rm_mask: Tensor,
+        has_rm: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        return (
+            _pv26_da_loss_impl(da_logits=da_logits, da_mask=da_mask, has_da=has_da),
+            _pv26_rm_loss_impl(
+                rm_logits=rm_logits,
+                rm_mask=rm_mask,
+                has_rm=has_rm,
+                focal_gamma=self.focal_gamma,
+                dice_eps=self.dice_eps,
+            ),
+        )
+
+
 class PV26Criterion(nn.Module):
     """
     Multi-task criterion for PV26 step-3 training bootstrap.
@@ -250,6 +327,9 @@ class PV26Criterion(nn.Module):
         self.focal_gamma = float(focal_gamma)
         self.dice_eps = float(dice_eps)
         self.num_lane_subclasses = int(num_lane_subclasses)
+        self._seg_loss_block = _PV26SegLossBlock(focal_gamma=self.focal_gamma, dice_eps=self.dice_eps)
+        self._seg_loss_block_impl: Any = self._seg_loss_block
+        self.seg_loss_compile_enabled = False
 
         self._ultra_det_loss = None
         if self.od_loss_impl not in {"dense", "ultralytics_e2e"}:
@@ -270,6 +350,20 @@ class PV26Criterion(nn.Module):
             if not hasattr(ultra_det_model, "args"):
                 ultra_det_model.args = DEFAULT_CFG  # type: ignore[attr-defined]
             self._ultra_det_loss = E2ELoss(ultra_det_model)
+
+    def disable_compile_seg_loss(self) -> None:
+        self._seg_loss_block_impl = self._seg_loss_block
+        self.seg_loss_compile_enabled = False
+
+    def enable_compile_seg_loss(self, *, compile_mode: str, compile_fullgraph: bool) -> None:
+        if not hasattr(torch, "compile"):
+            raise RuntimeError("torch.compile unavailable on this torch build")
+        self._seg_loss_block_impl = torch.compile(
+            self._seg_loss_block,
+            mode=str(compile_mode),
+            fullgraph=bool(compile_fullgraph),
+        )
+        self.seg_loss_compile_enabled = True
 
     def forward(self, preds: PV26MultiHeadOutput, batch: Any) -> Dict[str, Tensor]:
         t = self._normalize_batch(batch=batch, device=preds.da.device)
@@ -292,8 +386,10 @@ class PV26Criterion(nn.Module):
                 det_tgt_cls=t.det_tgt_cls,
                 det_tgt_bboxes=t.det_tgt_bboxes,
             )
-        da = self._da_loss(da_logits=preds.da, da_mask=t.da_mask, has_da=t.has_da)
-        rm = self._rm_loss(
+        da, rm = self._seg_loss(
+            da_logits=preds.da,
+            da_mask=t.da_mask,
+            has_da=t.has_da,
             rm_logits=preds.rm,
             rm_mask=t.rm_mask,
             has_rm=t.has_rm,
@@ -447,6 +543,26 @@ class PV26Criterion(nn.Module):
             raise TypeError("batch must be Sequence[Pv26Sample] or Mapping[str, Any]")
         return PV26PreparedBatch.from_mapping(batch, device=device)
 
+    def _seg_loss(
+        self,
+        *,
+        da_logits: Tensor,
+        da_mask: Tensor,
+        has_da: Tensor,
+        rm_logits: Tensor,
+        rm_mask: Tensor,
+        has_rm: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        da, rm = self._seg_loss_block_impl(
+            da_logits,
+            da_mask,
+            has_da,
+            rm_logits,
+            rm_mask,
+            has_rm,
+        )
+        return da, rm
+
     def _od_loss(
         self,
         *,
@@ -524,48 +640,16 @@ class PV26Criterion(nn.Module):
         return total
 
     def _da_loss(self, *, da_logits: Tensor, da_mask: Tensor, has_da: Tensor) -> Tensor:
-        bsz = da_logits.shape[0]
-        if da_mask.shape[0] != bsz:
-            raise ValueError("da batch size mismatch")
-        # Vectorized DA loss:
-        # per-sample mean BCE over valid pixels, then mean over supervised samples.
-        logits = da_logits[:, 0]  # [B,H,W]
-        valid = (da_mask != 255) & has_da.view(-1, 1, 1).bool()
-        valid_count = valid.to(dtype=da_logits.dtype).sum(dim=(1, 2))  # [B]
-        target = torch.where(valid, da_mask, torch.zeros_like(da_mask)).to(dtype=da_logits.dtype)
-        bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-        per_sample = (bce * valid.to(dtype=bce.dtype)).sum(dim=(1, 2)) / valid_count.clamp_min(1.0)
-        keep_f = valid_count.gt(0).to(dtype=per_sample.dtype)
-        return (per_sample * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+        return _pv26_da_loss_impl(da_logits=da_logits, da_mask=da_mask, has_da=has_da)
 
     def _rm_loss(self, *, rm_logits: Tensor, rm_mask: Tensor, has_rm: Tensor) -> Tensor:
-        bsz, ch, _, _ = rm_logits.shape
-        if ch != 3:
-            raise ValueError("rm logits must have 3 channels")
-        if rm_mask.shape[0] != bsz or rm_mask.shape[1] != 3:
-            raise ValueError("rm batch shape mismatch")
-        # Vectorized RM loss:
-        # per (B,C) channel focal+dice over valid pixels, then mean over supervised channels.
-        supervised = has_rm.view(bsz, ch, 1, 1).bool()
-        valid = (rm_mask != 255) & supervised
-        valid_count = valid.to(dtype=rm_logits.dtype).sum(dim=(2, 3))  # [B,C]
-        target = torch.where(valid, rm_mask, torch.zeros_like(rm_mask)).to(dtype=rm_logits.dtype)
-        valid_f = valid.to(dtype=rm_logits.dtype)
-
-        bce = F.binary_cross_entropy_with_logits(rm_logits, target, reduction="none")
-        prob = torch.sigmoid(rm_logits)
-        pt = prob * target + (1.0 - prob) * (1.0 - target)
-        focal_num = (((1.0 - pt).pow(self.focal_gamma) * bce) * valid_f).sum(dim=(2, 3))
-        focal = focal_num / valid_count.clamp_min(1.0)
-
-        inter = (prob * target * valid_f).sum(dim=(2, 3))
-        prob_sum = (prob * valid_f).sum(dim=(2, 3))
-        target_sum = (target * valid_f).sum(dim=(2, 3))
-        dice = 1.0 - (2.0 * inter + self.dice_eps) / (prob_sum + target_sum + self.dice_eps)
-
-        per_channel = focal + dice
-        keep_f = valid_count.gt(0).to(dtype=per_channel.dtype)
-        return (per_channel * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+        return _pv26_rm_loss_impl(
+            rm_logits=rm_logits,
+            rm_mask=rm_mask,
+            has_rm=has_rm,
+            focal_gamma=self.focal_gamma,
+            dice_eps=self.dice_eps,
+        )
 
     def _rm_lane_subclass_loss(
         self,

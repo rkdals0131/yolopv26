@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import torch
 
@@ -235,6 +236,79 @@ class TestPV26CriterionMasking(unittest.TestCase):
         self.assertIsNotNone(preds.da.grad)
         self.assertIsNotNone(preds.rm.grad)
         self.assertIsNotNone(preds.rm_lane_subclass.grad)
+
+    def test_seg_loss_block_matches_helper_numerics(self):
+        criterion = PV26Criterion(num_det_classes=2)
+        da_logits = torch.randn(2, 1, 4, 4, dtype=torch.float32)
+        da_mask = torch.tensor(
+            [
+                [[0, 1, 255, 1], [1, 0, 1, 0], [0, 1, 0, 1], [255, 0, 1, 0]],
+                [[1, 0, 1, 0], [0, 255, 1, 0], [1, 0, 1, 0], [0, 1, 0, 1]],
+            ],
+            dtype=torch.uint8,
+        )
+        has_da = torch.tensor([1, 1], dtype=torch.long)
+        rm_logits = torch.randn(2, 3, 4, 4, dtype=torch.float32)
+        rm_mask = torch.tensor(
+            [
+                [
+                    [[1, 0, 255, 1], [0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1]],
+                    [[0, 1, 0, 0], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]],
+                    [[0, 0, 1, 0], [0, 1, 0, 1], [255, 0, 1, 0], [0, 1, 0, 0]],
+                ],
+                [
+                    [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]],
+                    [[1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1]],
+                    [[0, 0, 0, 0], [0, 0, 255, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+                ],
+            ],
+            dtype=torch.uint8,
+        )
+        has_rm = torch.tensor([[1, 1, 1], [1, 1, 0]], dtype=torch.long)
+
+        da_ref = criterion._da_loss(da_logits=da_logits, da_mask=da_mask, has_da=has_da)
+        rm_ref = criterion._rm_loss(rm_logits=rm_logits, rm_mask=rm_mask, has_rm=has_rm)
+        da_block, rm_block = criterion._seg_loss_block(
+            da_logits,
+            da_mask,
+            has_da,
+            rm_logits,
+            rm_mask,
+            has_rm,
+        )
+
+        self.assertAlmostEqual(float(da_ref), float(da_block), places=6)
+        self.assertAlmostEqual(float(rm_ref), float(rm_block), places=6)
+
+    def test_enable_compile_seg_loss_uses_torch_compile(self):
+        criterion = PV26Criterion(num_det_classes=2)
+        compiled_sentinel = torch.nn.Identity()
+
+        with mock.patch("pv26.criterion.torch.compile", return_value=compiled_sentinel) as compile_mock:
+            criterion.enable_compile_seg_loss(compile_mode="reduce-overhead", compile_fullgraph=True)
+
+        compile_mock.assert_called_once_with(
+            criterion._seg_loss_block,
+            mode="reduce-overhead",
+            fullgraph=True,
+        )
+        self.assertIs(criterion._seg_loss_block_impl, compiled_sentinel)
+        self.assertTrue(criterion.seg_loss_compile_enabled)
+
+        criterion.disable_compile_seg_loss()
+        self.assertIs(criterion._seg_loss_block_impl, criterion._seg_loss_block)
+        self.assertFalse(criterion.seg_loss_compile_enabled)
+
+    def test_enable_compile_seg_loss_propagates_compile_failure(self):
+        criterion = PV26Criterion(num_det_classes=2)
+
+        with mock.patch("pv26.criterion.torch.compile", side_effect=RuntimeError("compile boom")):
+            with self.assertRaisesRegex(RuntimeError, "compile boom"):
+                criterion.enable_compile_seg_loss(compile_mode="default", compile_fullgraph=False)
+
+        criterion.disable_compile_seg_loss()
+        self.assertIs(criterion._seg_loss_block_impl, criterion._seg_loss_block)
+        self.assertFalse(criterion.seg_loss_compile_enabled)
 
 
 class _FakeUltraDetLoss:
