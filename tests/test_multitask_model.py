@@ -18,6 +18,29 @@ class TestPV26MultiHead(unittest.TestCase):
         self.assertEqual(y.det.shape[1], 16)  # 4 bbox + 1 obj + 11 classes
         self.assertEqual(tuple(y.det.shape[-2:]), (32, 48))  # stride-8 grid
 
+    def test_shared_rm_decoder_runs_once_for_both_heads(self):
+        model = PV26MultiHead(num_det_classes=11)
+        x = torch.randn(2, 3, 256, 384)
+
+        with mock.patch.object(model.rm_decoder, "forward", wraps=model.rm_decoder.forward) as decoder_forward:
+            y = model(x)
+
+        self.assertEqual(decoder_forward.call_count, 1)
+        self.assertEqual(tuple(y.rm.shape), (2, 3, 256, 384))
+        self.assertEqual(tuple(y.rm_lane_subclass.shape), (2, 5, 256, 384))
+
+    def test_shared_rm_decoder_backward_smoke(self):
+        model = PV26MultiHead(num_det_classes=11)
+        x = torch.randn(2, 3, 64, 96, requires_grad=True)
+
+        y = model(x)
+        loss = y.rm.mean() + y.rm_lane_subclass.mean()
+        loss.backward()
+
+        self.assertIsNotNone(model.rm_decoder.stem.conv.weight.grad)
+        self.assertIsNotNone(model.rm_head.pred.weight.grad)
+        self.assertIsNotNone(model.rm_lane_subclass_head.pred.weight.grad)
+
     def test_da_head_skips_final_interpolate_when_size_already_matches(self):
         head = DrivableAreaHeadP3(in_ch=128)
         x = torch.randn(2, 128, 32, 48)
