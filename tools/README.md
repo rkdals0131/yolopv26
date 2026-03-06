@@ -8,6 +8,7 @@
 - `tools/data_analysis/rlmd/`: RLMD 분석/표준화 스크립트
 - `tools/data_analysis/wod/`: Waymo v2 분석/추출/표준화 스크립트
 - `tools/data_analysis/run_multidataset_normalize_interactive.py`: BDD/ETRI/RLMD/WOD 선택형 인터랙티브 일괄 실행기
+- `tools/data_analysis/merge_pv26_type_a.py`: 여러 PV26 Type-A 루트를 하나의 merged root로 병합
 
 ### bdd
 - `tools/data_analysis/bdd/convert_bdd_type_a.py`: BDD100K -> PV26 Type-A 변환
