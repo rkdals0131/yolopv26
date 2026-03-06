@@ -52,9 +52,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--seg-output-stride",
         type=int,
-        default=1,
+        default=2,
         choices=[1, 2],
-        help="Segmentation output stride relative to input resolution (default: 1).",
+        help="Segmentation output stride relative to input resolution (default: 2).",
     )
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--prefetch-factor", type=int, default=4, help="DataLoader prefetch factor when workers > 0")
@@ -125,8 +125,8 @@ def build_argparser() -> argparse.ArgumentParser:
         "--compile",
         dest="compile",
         action="store_true",
-        default=True,
-        help="Enable torch.compile on CUDA (default: on).",
+        default=False,
+        help="Enable torch.compile on CUDA (default: off).",
     )
     p.add_argument(
         "--no-compile",
@@ -158,8 +158,8 @@ def build_argparser() -> argparse.ArgumentParser:
         "--compile-seg-loss",
         dest="compile_seg_loss",
         action="store_true",
-        default=False,
-        help="Enable torch.compile on the DA/RM seg loss block only (default: off).",
+        default=True,
+        help="Enable torch.compile on the DA/RM seg loss block only (default: on).",
     )
     p.add_argument(
         "--no-compile-seg-loss",
@@ -500,7 +500,7 @@ def _build_optimizer(*, model: torch.nn.Module, args: argparse.Namespace, base_l
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        is_trunk = name.startswith("det_model.")
+        is_trunk = name.startswith("det_model.") or name.startswith("det_backend.det_model.")
         is_no_decay = _is_no_decay(name, p)
         if is_trunk and is_no_decay:
             trunk_no_decay.append(p)
