@@ -3,8 +3,32 @@ from unittest import mock
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
-from pv26.multitask_model import DrivableAreaHeadP3, PV26MultiHead, RoadMarkingHeadDeconv
+from pv26.multitask_model import (
+    DrivableAreaHeadP3,
+    PV26DetBackendOutput,
+    PV26MultiHead,
+    PV26MultiHeadYOLO26,
+    RoadMarkingHeadDeconv,
+)
+
+
+class _FakeDetBackend(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.det_model = nn.Identity()
+        self.p3_backbone_proj = nn.Conv2d(3, 8, kernel_size=1, stride=8)
+        self.p3_head_proj = nn.Conv2d(3, 16, kernel_size=1, stride=8)
+
+    def forward(self, x):
+        p3_backbone = self.p3_backbone_proj(x)
+        p3_head = self.p3_head_proj(x)
+        return PV26DetBackendOutput(
+            det={"backend": "fake"},
+            p3_backbone=p3_backbone,
+            p3_head=p3_head,
+        )
 
 
 class TestPV26MultiHead(unittest.TestCase):
@@ -50,6 +74,24 @@ class TestPV26MultiHead(unittest.TestCase):
         self.assertIsNotNone(model.rm_decoder.stem.conv.weight.grad)
         self.assertIsNotNone(model.rm_head.pred.weight.grad)
         self.assertIsNotNone(model.rm_lane_subclass_head.pred.weight.grad)
+
+    def test_yolo26_wrapper_accepts_fake_backend_and_preserves_det_model_contract(self):
+        backend = _FakeDetBackend()
+        model = PV26MultiHeadYOLO26(
+            num_det_classes=11,
+            det_backend=backend,
+            seg_output_stride=2,
+        )
+        x = torch.randn(2, 3, 256, 384)
+
+        y = model(x)
+
+        self.assertIs(model.det_backend, backend)
+        self.assertIs(model.det_model, backend.det_model)
+        self.assertEqual(y.det, {"backend": "fake"})
+        self.assertEqual(tuple(y.da.shape), (2, 1, 128, 192))
+        self.assertEqual(tuple(y.rm.shape), (2, 3, 128, 192))
+        self.assertEqual(tuple(y.rm_lane_subclass.shape), (2, 5, 128, 192))
 
     def test_da_head_skips_final_interpolate_when_size_already_matches(self):
         head = DrivableAreaHeadP3(in_ch=128)

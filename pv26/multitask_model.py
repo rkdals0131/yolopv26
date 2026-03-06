@@ -31,6 +31,13 @@ class PV26MultiHeadOutput:
     rm_lane_subclass: Tensor
 
 
+@dataclass(frozen=True)
+class PV26DetBackendOutput:
+    det: Any
+    p3_backbone: Tensor
+    p3_head: Tensor
+
+
 class ConvBNAct(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, k: int = 3, s: int = 1):
         super().__init__()
@@ -234,6 +241,84 @@ class PV26MultiHead(nn.Module):
         return PV26MultiHeadOutput(det=det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
 
 
+class UltralyticsYOLO26DetBackend(nn.Module):
+    """
+    Adapter shell for the Ultralytics YOLO26 detection backend.
+
+    Phase 5A scope:
+    - preserve current hook-based feature capture
+    - expose a stable `forward() -> PV26DetBackendOutput` contract
+    - keep `det_model` reachable for pretrained load + criterion wiring
+    """
+
+    def __init__(self, *, num_det_classes: int, yolo26_cfg: str = "yolo26n.yaml", verbose: bool = False):
+        super().__init__()
+        self.num_det_classes = int(num_det_classes)
+        self.yolo26_cfg = str(yolo26_cfg)
+
+        import os
+
+        os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
+
+        from ultralytics.nn.tasks import DetectionModel  # type: ignore
+        from ultralytics.utils import DEFAULT_CFG  # type: ignore
+
+        self.det_model = DetectionModel(self.yolo26_cfg, ch=3, nc=self.num_det_classes, verbose=bool(verbose))
+        self.det_model.args = DEFAULT_CFG
+
+        self._feat: dict[str, Tensor] = {}
+
+        def _save(name: str):
+            def hook(_module, _inp, out):
+                self._feat[name] = out
+
+            return hook
+
+        if len(self.det_model.model) <= 4:
+            raise RuntimeError("unexpected yolo26 model layout: module count too small")
+        self.det_model.model[4].register_forward_hook(_save("p3_backbone"))
+
+        was_training = bool(self.det_model.training)
+        self.det_model.eval()
+        with torch.inference_mode():
+            backend_out = self.forward(torch.zeros(1, 3, 256, 384))
+        self.det_model.train(was_training)
+
+        self.p3_backbone_channels = int(backend_out.p3_backbone.shape[1])
+        self.p3_head_channels = int(backend_out.p3_head.shape[1])
+
+    def forward(self, x: Tensor) -> PV26DetBackendOutput:
+        self._feat.clear()
+        det_out = self.det_model(x)
+        preds = self._extract_preds_dict(det_out, context="")
+        if "one2many" not in preds:
+            raise RuntimeError("unexpected yolo26 forward output")
+        one2many = preds.get("one2many")
+        if not isinstance(one2many, dict):
+            raise RuntimeError("unexpected yolo26 one2many output")
+        feats = one2many.get("feats")
+        if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
+            raise RuntimeError("unexpected yolo26 one2many.feats output")
+
+        p3_backbone = self._feat.get("p3_backbone", None)
+        if p3_backbone is None:
+            raise RuntimeError("missing backbone P3 feature (hook did not fire)")
+        return PV26DetBackendOutput(det=det_out, p3_backbone=p3_backbone, p3_head=feats[0])
+
+    @staticmethod
+    def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
+        preds = det_out
+        if isinstance(det_out, (tuple, list)):
+            if len(det_out) >= 2 and isinstance(det_out[1], dict):
+                preds = det_out[1]
+            elif len(det_out) >= 1 and isinstance(det_out[0], dict):
+                preds = det_out[0]
+        if not isinstance(preds, dict):
+            detail = f" {context}" if context else ""
+            raise RuntimeError(f"unexpected yolo26 forward output{detail}")
+        return preds
+
+
 class PV26MultiHeadYOLO26(nn.Module):
     """
     PV26 multi-task model using an Ultralytics YOLO26 detection trunk.
@@ -255,65 +340,40 @@ class PV26MultiHeadYOLO26(nn.Module):
         yolo26_cfg: str = "yolo26n.yaml",
         verbose: bool = False,
         seg_output_stride: int = 1,
+        det_backend: Optional[nn.Module] = None,
     ):
         super().__init__()
         self.num_det_classes = int(num_det_classes)
         self.num_lane_subclasses = int(num_lane_subclasses)
         self.yolo26_cfg = str(yolo26_cfg)
         self.seg_output_stride = _validate_seg_output_stride(seg_output_stride)
+        self.det_backend = (
+            det_backend
+            if det_backend is not None
+            else UltralyticsYOLO26DetBackend(
+                num_det_classes=self.num_det_classes,
+                yolo26_cfg=self.yolo26_cfg,
+                verbose=bool(verbose),
+            )
+        )
+        self.det_model = getattr(self.det_backend, "det_model", None)
+        if self.det_model is None:
+            raise RuntimeError("det backend must expose det_model")
 
-        # Lazy import: Ultralytics writes settings.json under a user config dir by default.
-        # In this repo sandbox, $HOME may not be writable, so we default to /tmp.
-        import os
+        p3_backbone_ch = getattr(self.det_backend, "p3_backbone_channels", None)
+        p3_head_ch = getattr(self.det_backend, "p3_head_channels", None)
+        if p3_backbone_ch is None or p3_head_ch is None:
+            was_training = bool(self.det_backend.training)
+            self.det_backend.eval()
+            with torch.inference_mode():
+                backend_out = self.det_backend(torch.zeros(1, 3, 256, 384))
+            self.det_backend.train(was_training)
+            p3_backbone_ch = int(backend_out.p3_backbone.shape[1])
+            p3_head_ch = int(backend_out.p3_head.shape[1])
 
-        os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
-
-        from ultralytics.nn.tasks import DetectionModel  # type: ignore
-        from ultralytics.utils import DEFAULT_CFG  # type: ignore
-
-        self.det_model = DetectionModel(self.yolo26_cfg, ch=3, nc=self.num_det_classes, verbose=bool(verbose))
-        # Loss classes expect model.args to be an IterableSimpleNamespace with .box/.cls/.dfl/.epochs, etc.
-        self.det_model.args = DEFAULT_CFG
-
-        self._feat: dict[str, Tensor] = {}
-
-        def _save(name: str):
-            def hook(_module, _inp, out):
-                # out: Tensor
-                self._feat[name] = out
-
-            return hook
-
-        # For Ultralytics YOLO26 (P3/8-P5/32) configs:
-        # - backbone P3/8 feature corresponds to module index 4
-        # - head P3/8 feature is available as preds["one2many"]["feats"][0]
-        if len(self.det_model.model) <= 4:
-            raise RuntimeError("unexpected yolo26 model layout: module count too small")
-        self.det_model.model[4].register_forward_hook(_save("p3_backbone"))
-
-        # Infer channels for segmentation heads with a small dry forward.
-        was_training = bool(self.det_model.training)
-        self.det_model.eval()  # avoid polluting BN running stats during init
-        with torch.inference_mode():
-            self._feat.clear()
-            dummy = torch.zeros(1, 3, 256, 384)
-            det_out = self.det_model(dummy)
-            preds = self._extract_preds_dict(det_out, context="during init")
-            if "p3_backbone" not in self._feat:
-                raise RuntimeError("failed to capture backbone P3 feature (hook did not fire)")
-            one2many = preds.get("one2many")
-            if not isinstance(one2many, dict):
-                raise RuntimeError("unexpected yolo26 one2many output during init")
-            feats = one2many.get("feats")
-            if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
-                raise RuntimeError("unexpected yolo26 one2many.feats output during init")
-            p3_backbone = self._feat["p3_backbone"]
-            p3_head = feats[0]
-        self.det_model.train(was_training)
-
-        self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone.shape[1]), output_stride=self.seg_output_stride)
+        self.da_head = DrivableAreaHeadP3(in_ch=int(p3_backbone_ch), output_stride=self.seg_output_stride)
         self.rm_decoder = RoadMarkingDecoderDeconv(
-            in_ch=int(p3_head.shape[1]),
+            in_ch=int(p3_head_ch),
             output_stride=self.seg_output_stride,
         )
         self.rm_head = RoadMarkingPredictionHead(in_ch=self.rm_decoder.out_ch, out_ch=3)
@@ -325,39 +385,10 @@ class PV26MultiHeadYOLO26(nn.Module):
     def forward(self, x: Tensor) -> PV26MultiHeadOutput:
         in_h, in_w = x.shape[-2:]
         seg_out_size = (in_h // self.seg_output_stride, in_w // self.seg_output_stride)
-        self._feat.clear()
-        det_out = self.det_model(x)
+        backend_out = self.det_backend(x)
 
-        preds = self._extract_preds_dict(det_out, context="")
-        if "one2many" not in preds:
-            raise RuntimeError("unexpected yolo26 forward output")
-        one2many = preds.get("one2many")
-        if not isinstance(one2many, dict):
-            raise RuntimeError("unexpected yolo26 one2many output")
-        feats = one2many.get("feats")
-        if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
-            raise RuntimeError("unexpected yolo26 one2many.feats output")
-
-        p3_backbone = self._feat.get("p3_backbone", None)
-        if p3_backbone is None:
-            raise RuntimeError("missing backbone P3 feature (hook did not fire)")
-        p3_head = feats[0]
-
-        da = self.da_head(p3_backbone, out_size=seg_out_size)
-        rm_hidden = self.rm_decoder(p3_head, out_size=seg_out_size)
+        da = self.da_head(backend_out.p3_backbone, out_size=seg_out_size)
+        rm_hidden = self.rm_decoder(backend_out.p3_head, out_size=seg_out_size)
         rm = self.rm_head(rm_hidden)
         rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
-        return PV26MultiHeadOutput(det=det_out, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
-
-    @staticmethod
-    def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
-        preds = det_out
-        if isinstance(det_out, (tuple, list)):
-            if len(det_out) >= 2 and isinstance(det_out[1], dict):
-                preds = det_out[1]
-            elif len(det_out) >= 1 and isinstance(det_out[0], dict):
-                preds = det_out[0]
-        if not isinstance(preds, dict):
-            detail = f" {context}" if context else ""
-            raise RuntimeError(f"unexpected yolo26 forward output{detail}")
-        return preds
+        return PV26MultiHeadOutput(det=backend_out.det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
