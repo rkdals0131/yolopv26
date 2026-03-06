@@ -8,10 +8,13 @@ from torch import nn
 from pv26.multitask_model import (
     DrivableAreaHeadP3,
     PV26DetBackendOutput,
+    PV26LegacyMultiHeadYOLO26,
     PV26MultiHead,
     PV26MultiHeadYOLO26,
     RoadMarkingHeadDeconv,
     UltralyticsYOLO26DetBackend,
+    build_pv26_inference_model_from_state_dict,
+    infer_pv26_checkpoint_layout,
 )
 
 
@@ -74,6 +77,15 @@ class _FakeUltralyticsLikeModel(nn.Module):
             ]
         )
         self.save = [4]
+
+    def forward(self, x):
+        y = []
+        for m in self.model:
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
+            x = m(x)
+            y.append(x if m.i in self.save else None)
+        return x
 
 
 class TestPV26MultiHead(unittest.TestCase):
@@ -138,6 +150,77 @@ class TestPV26MultiHead(unittest.TestCase):
         self.assertEqual(tuple(y.da.shape), (2, 1, 128, 192))
         self.assertEqual(tuple(y.rm.shape), (2, 3, 128, 192))
         self.assertEqual(tuple(y.rm_lane_subclass.shape), (2, 5, 128, 192))
+
+    def test_legacy_yolo26_wrapper_accepts_fake_det_model(self):
+        det_model = _FakeUltralyticsLikeModel()
+        model = PV26LegacyMultiHeadYOLO26(
+            num_det_classes=11,
+            det_model=det_model,
+            seg_output_stride=2,
+        )
+        x = torch.randn(2, 3, 256, 384)
+
+        y = model(x)
+
+        self.assertIs(model.det_model, det_model)
+        self.assertEqual(tuple(y.da.shape), (2, 1, 128, 192))
+        self.assertEqual(tuple(y.rm.shape), (2, 3, 128, 192))
+        self.assertEqual(tuple(y.rm_lane_subclass.shape), (2, 5, 128, 192))
+
+    def test_infer_checkpoint_layout_detects_current_and_legacy_formats(self):
+        current_model = PV26MultiHeadYOLO26(
+            num_det_classes=11,
+            det_backend=_FakeDetBackend(),
+        )
+        legacy_model = PV26LegacyMultiHeadYOLO26(
+            num_det_classes=11,
+            det_model=_FakeUltralyticsLikeModel(),
+        )
+
+        self.assertEqual(
+            infer_pv26_checkpoint_layout(current_model.state_dict()),
+            "current_shared_rm_decoder",
+        )
+        self.assertEqual(
+            infer_pv26_checkpoint_layout(legacy_model.state_dict()),
+            "legacy_separate_rm_heads",
+        )
+
+    def test_inference_builder_loads_current_checkpoint_layout(self):
+        source = PV26MultiHeadYOLO26(
+            num_det_classes=11,
+            det_backend=_FakeDetBackend(),
+            seg_output_stride=2,
+        )
+
+        loaded, layout = build_pv26_inference_model_from_state_dict(
+            source.state_dict(),
+            num_det_classes=11,
+            seg_output_stride=2,
+            det_backend=_FakeDetBackend(),
+        )
+
+        self.assertIsInstance(loaded, PV26MultiHeadYOLO26)
+        self.assertEqual(layout, "current_shared_rm_decoder")
+        self.assertEqual(set(loaded.state_dict().keys()), set(source.state_dict().keys()))
+
+    def test_inference_builder_loads_legacy_checkpoint_layout(self):
+        source = PV26LegacyMultiHeadYOLO26(
+            num_det_classes=11,
+            det_model=_FakeUltralyticsLikeModel(),
+            seg_output_stride=2,
+        )
+
+        loaded, layout = build_pv26_inference_model_from_state_dict(
+            source.state_dict(),
+            num_det_classes=11,
+            seg_output_stride=2,
+            legacy_det_model=_FakeUltralyticsLikeModel(),
+        )
+
+        self.assertIsInstance(loaded, PV26LegacyMultiHeadYOLO26)
+        self.assertEqual(layout, "legacy_separate_rm_heads")
+        self.assertEqual(set(loaded.state_dict().keys()), set(source.state_dict().keys()))
 
     def test_ultralytics_backend_adapter_can_capture_p3_without_hooks(self):
         backend = UltralyticsYOLO26DetBackend.__new__(UltralyticsYOLO26DetBackend)
