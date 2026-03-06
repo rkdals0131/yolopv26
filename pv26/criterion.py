@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import torch
@@ -10,6 +10,8 @@ from torch import Tensor, nn
 from .multitask_model import PV26MultiHeadOutput
 from .torch_dataset import Pv26Sample
 
+_SCOPE_TO_CODE = {"full": 0, "subset": 1, "none": 2}
+
 
 @dataclass(frozen=True)
 class PV26LossBreakdown:
@@ -18,6 +20,173 @@ class PV26LossBreakdown:
     da: Tensor
     rm: Tensor
     rm_lane_subclass: Tensor
+
+
+@dataclass(frozen=True)
+class PV26PreparedBatch:
+    det_yolo: tuple[Tensor, ...]
+    det_label_scope: tuple[str, ...]
+    has_det: Tensor
+    has_da: Tensor
+    has_rm: Tensor
+    has_rm_lane_subclass: Tensor
+    da_mask: Tensor
+    rm_mask: Tensor
+    rm_lane_subclass_mask: Tensor
+    det_scope_code: Optional[Tensor] = None
+    det_tgt_batch_idx: Optional[Tensor] = None
+    det_tgt_cls: Optional[Tensor] = None
+    det_tgt_bboxes: Optional[Tensor] = None
+    sample_id: tuple[str, ...] = ()
+
+    @staticmethod
+    def _build_flat_det_targets(det_yolo_list: Sequence[Tensor]) -> tuple[Tensor, Tensor, Tensor]:
+        det_tgt_batch_idx_parts: List[Tensor] = []
+        det_tgt_cls_parts: List[Tensor] = []
+        det_tgt_box_parts: List[Tensor] = []
+        for i, gt in enumerate(det_yolo_list):
+            if gt.numel() == 0:
+                continue
+            if gt.ndim != 2 or gt.shape[-1] != 5:
+                raise ValueError("det_yolo per sample must be [N,5]")
+            det_tgt_batch_idx_parts.append(torch.full((gt.shape[0],), int(i), dtype=torch.long))
+            det_tgt_cls_parts.append(gt[:, 0].to(dtype=torch.float32))
+            det_tgt_box_parts.append(gt[:, 1:5].to(dtype=torch.float32))
+
+        if det_tgt_batch_idx_parts:
+            det_tgt_batch_idx = torch.cat(det_tgt_batch_idx_parts, dim=0)
+            det_tgt_cls = torch.cat(det_tgt_cls_parts, dim=0)
+            det_tgt_bboxes = torch.cat(det_tgt_box_parts, dim=0)
+        else:
+            det_tgt_batch_idx = torch.zeros((0,), dtype=torch.long)
+            det_tgt_cls = torch.zeros((0,), dtype=torch.float32)
+            det_tgt_bboxes = torch.zeros((0, 4), dtype=torch.float32)
+        return det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes
+
+    @classmethod
+    def from_samples(cls, samples: Sequence[Pv26Sample], *, include_sample_id: bool = False) -> "PV26PreparedBatch":
+        det_yolo = tuple(s.det_yolo.to(dtype=torch.float32) for s in samples)
+        det_label_scope = tuple(str(s.det_label_scope).strip().lower() for s in samples)
+        for scope in det_label_scope:
+            if scope not in _SCOPE_TO_CODE:
+                raise ValueError(f"invalid det_label_scope in batch: {scope}")
+
+        det_scope_code = torch.tensor([int(_SCOPE_TO_CODE[s]) for s in det_label_scope], dtype=torch.long)
+        det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = cls._build_flat_det_targets(det_yolo)
+        sample_id = tuple(str(s.sample_id) for s in samples) if include_sample_id else ()
+        return cls(
+            det_yolo=det_yolo,
+            det_label_scope=det_label_scope,
+            has_det=torch.tensor([s.has_det for s in samples], dtype=torch.long),
+            has_da=torch.tensor([s.has_da for s in samples], dtype=torch.long),
+            has_rm=torch.tensor(
+                [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
+                dtype=torch.long,
+            ),
+            has_rm_lane_subclass=torch.tensor([s.has_rm_lane_subclass for s in samples], dtype=torch.long),
+            da_mask=torch.stack([s.da_mask for s in samples], dim=0),
+            rm_mask=torch.stack([s.rm_mask for s in samples], dim=0),
+            rm_lane_subclass_mask=torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0),
+            det_scope_code=det_scope_code,
+            det_tgt_batch_idx=det_tgt_batch_idx,
+            det_tgt_cls=det_tgt_cls,
+            det_tgt_bboxes=det_tgt_bboxes,
+            sample_id=sample_id,
+        )
+
+    @classmethod
+    def from_mapping(cls, batch: Mapping[str, Any], *, device: torch.device) -> "PV26PreparedBatch":
+        det_yolo_raw = batch["det_yolo"]
+        if isinstance(det_yolo_raw, Tensor):
+            det_list = [det_yolo_raw[i] for i in range(det_yolo_raw.shape[0])]
+        else:
+            det_list = list(det_yolo_raw)
+        det_yolo = tuple(
+            d.to(device=device, dtype=torch.float32)[(d[:, 3] > 0) & (d[:, 4] > 0)] if d.numel() else d.to(device=device, dtype=torch.float32)
+            for d in det_list
+        )
+        bsz = len(det_yolo)
+
+        if "has_rm" in batch:
+            has_rm = batch["has_rm"].to(device=device, dtype=torch.long)
+        else:
+            has_rm = torch.stack(
+                [
+                    batch["has_rm_lane_marker"],
+                    batch["has_rm_road_marker_non_lane"],
+                    batch["has_rm_stop_line"],
+                ],
+                dim=1,
+            ).to(device=device, dtype=torch.long)
+
+        det_label_scope = tuple(str(s).strip().lower() for s in list(batch["det_label_scope"]))
+        for scope in det_label_scope:
+            if scope not in _SCOPE_TO_CODE:
+                raise ValueError(f"invalid det_label_scope: {scope}")
+
+        det_scope_code = batch.get("det_scope_code", None)
+        if det_scope_code is None:
+            det_scope_code_t = torch.tensor([int(_SCOPE_TO_CODE[s]) for s in det_label_scope], dtype=torch.long, device=device)
+        else:
+            det_scope_code_t = det_scope_code.to(device=device, dtype=torch.long)
+
+        return cls(
+            det_yolo=det_yolo,
+            det_label_scope=det_label_scope,
+            has_det=batch["has_det"].to(device=device, dtype=torch.long),
+            has_da=batch["has_da"].to(device=device, dtype=torch.long),
+            has_rm=has_rm,
+            has_rm_lane_subclass=batch.get(
+                "has_rm_lane_subclass",
+                torch.zeros((bsz,), dtype=torch.long),
+            ).to(device=device, dtype=torch.long),
+            da_mask=batch["da_mask"].to(device=device),
+            rm_mask=batch["rm_mask"].to(device=device),
+            rm_lane_subclass_mask=batch.get(
+                "rm_lane_subclass_mask",
+                torch.full((bsz, int(batch["rm_mask"].shape[2]), int(batch["rm_mask"].shape[3])), 255, dtype=torch.uint8),
+            ).to(device=device),
+            det_scope_code=det_scope_code_t,
+            det_tgt_batch_idx=(
+                batch["det_tgt_batch_idx"].to(device=device, dtype=torch.long)
+                if "det_tgt_batch_idx" in batch
+                else None
+            ),
+            det_tgt_cls=(
+                batch["det_tgt_cls"].to(device=device, dtype=torch.float32)
+                if "det_tgt_cls" in batch
+                else None
+            ),
+            det_tgt_bboxes=(
+                batch["det_tgt_bboxes"].to(device=device, dtype=torch.float32)
+                if "det_tgt_bboxes" in batch
+                else None
+            ),
+            sample_id=tuple(str(s) for s in list(batch.get("sample_id", ()))),
+        )
+
+    def to_device(self, *, device: torch.device) -> "PV26PreparedBatch":
+        return replace(
+            self,
+            det_yolo=tuple(t.to(device=device, dtype=torch.float32, non_blocking=True) for t in self.det_yolo),
+            has_det=self.has_det.to(device=device, dtype=torch.long, non_blocking=True),
+            has_da=self.has_da.to(device=device, dtype=torch.long, non_blocking=True),
+            has_rm=self.has_rm.to(device=device, dtype=torch.long, non_blocking=True),
+            has_rm_lane_subclass=self.has_rm_lane_subclass.to(device=device, dtype=torch.long, non_blocking=True),
+            da_mask=self.da_mask.to(device=device, non_blocking=True),
+            rm_mask=self.rm_mask.to(device=device, non_blocking=True),
+            rm_lane_subclass_mask=self.rm_lane_subclass_mask.to(device=device, non_blocking=True),
+            det_scope_code=None if self.det_scope_code is None else self.det_scope_code.to(device=device, dtype=torch.long, non_blocking=True),
+            det_tgt_batch_idx=None
+            if self.det_tgt_batch_idx is None
+            else self.det_tgt_batch_idx.to(device=device, dtype=torch.long, non_blocking=True),
+            det_tgt_cls=None
+            if self.det_tgt_cls is None
+            else self.det_tgt_cls.to(device=device, dtype=torch.float32, non_blocking=True),
+            det_tgt_bboxes=None
+            if self.det_tgt_bboxes is None
+            else self.det_tgt_bboxes.to(device=device, dtype=torch.float32, non_blocking=True),
+        )
 
 
 class PV26Criterion(nn.Module):
@@ -80,57 +249,36 @@ class PV26Criterion(nn.Module):
             self._ultra_det_loss = E2ELoss(ultra_det_model)
 
     def forward(self, preds: PV26MultiHeadOutput, batch: Any) -> Dict[str, Tensor]:
-        if isinstance(batch, Mapping) and bool(batch.get("_pv26_prepared", False)):
-            t = dict(batch)
-        else:
-            t = self._normalize_batch(batch=batch, device=preds.da.device)
-
-        if "has_rm_lane_subclass" not in t:
-            if isinstance(t.get("has_rm"), Tensor):
-                bsz = int(t["has_rm"].shape[0])
-                t["has_rm_lane_subclass"] = torch.zeros((bsz,), dtype=torch.long, device=preds.da.device)
-            else:
-                raise ValueError("missing has_rm_lane_subclass in normalized batch")
-        if "rm_lane_subclass_mask" not in t:
-            if isinstance(t.get("rm_mask"), Tensor):
-                bsz, _ch, h, w = t["rm_mask"].shape
-                t["rm_lane_subclass_mask"] = torch.full(
-                    (bsz, h, w),
-                    255,
-                    dtype=torch.uint8,
-                    device=preds.da.device,
-                )
-            else:
-                raise ValueError("missing rm_lane_subclass_mask in normalized batch")
+        t = self._normalize_batch(batch=batch, device=preds.da.device)
 
         if self.od_loss_impl == "dense":
             od = self._od_loss(
                 det_logits=preds.det,
-                det_yolo=t["det_yolo"],
-                has_det=t["has_det"],
-                det_label_scope=t["det_label_scope"],
+                det_yolo=t.det_yolo,
+                has_det=t.has_det,
+                det_label_scope=t.det_label_scope,
             )
         else:
             od = self._od_loss_ultralytics(
                 det_out=preds.det,
-                det_yolo=t.get("det_yolo", ()),
-                has_det=t["has_det"],
-                det_label_scope=t.get("det_label_scope", ()),
-                det_scope_code=t.get("det_scope_code", None),
-                det_tgt_batch_idx=t.get("det_tgt_batch_idx", None),
-                det_tgt_cls=t.get("det_tgt_cls", None),
-                det_tgt_bboxes=t.get("det_tgt_bboxes", None),
+                det_yolo=t.det_yolo,
+                has_det=t.has_det,
+                det_label_scope=t.det_label_scope,
+                det_scope_code=t.det_scope_code,
+                det_tgt_batch_idx=t.det_tgt_batch_idx,
+                det_tgt_cls=t.det_tgt_cls,
+                det_tgt_bboxes=t.det_tgt_bboxes,
             )
-        da = self._da_loss(da_logits=preds.da, da_mask=t["da_mask"], has_da=t["has_da"])
+        da = self._da_loss(da_logits=preds.da, da_mask=t.da_mask, has_da=t.has_da)
         rm = self._rm_loss(
             rm_logits=preds.rm,
-            rm_mask=t["rm_mask"],
-            has_rm=t["has_rm"],
+            rm_mask=t.rm_mask,
+            has_rm=t.has_rm,
         )
         rm_lane_subclass = self._rm_lane_subclass_loss(
             rm_lane_subclass_logits=preds.rm_lane_subclass,
-            rm_lane_subclass_mask=t["rm_lane_subclass_mask"],
-            has_rm_lane_subclass=t["has_rm_lane_subclass"],
+            rm_lane_subclass_mask=t.rm_lane_subclass_mask,
+            has_rm_lane_subclass=t.has_rm_lane_subclass,
         )
 
         total = self.w_od * od + self.w_da * da + self.w_rm * rm + self.w_rm_lane_subclass * rm_lane_subclass
@@ -265,77 +413,16 @@ class PV26Criterion(nn.Module):
             loss_mean = loss_mean.sum()
         return loss_mean.to(dtype=torch.float32)
 
-    def _normalize_batch(self, batch: Any, device: torch.device) -> Dict[str, Any]:
+    def _normalize_batch(self, batch: Any, device: torch.device) -> PV26PreparedBatch:
+        if isinstance(batch, PV26PreparedBatch):
+            return batch.to_device(device=device)
+
         if isinstance(batch, Sequence) and batch and isinstance(batch[0], Pv26Sample):
-            samples = list(batch)
-            return {
-                "det_yolo": [s.det_yolo.to(device=device, dtype=torch.float32) for s in samples],
-                "da_mask": torch.stack([s.da_mask for s in samples], dim=0).to(device=device),
-                "rm_mask": torch.stack([s.rm_mask for s in samples], dim=0).to(device=device),
-                "rm_lane_subclass_mask": torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0).to(device=device),
-                "has_det": torch.tensor([s.has_det for s in samples], dtype=torch.long, device=device),
-                "has_da": torch.tensor([s.has_da for s in samples], dtype=torch.long, device=device),
-                "has_rm": torch.tensor(
-                    [
-                        [s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line]
-                        for s in samples
-                    ],
-                    dtype=torch.long,
-                    device=device,
-                ),
-                "has_rm_lane_subclass": torch.tensor(
-                    [s.has_rm_lane_subclass for s in samples],
-                    dtype=torch.long,
-                    device=device,
-                ),
-                "det_label_scope": [s.det_label_scope for s in samples],
-            }
+            return PV26PreparedBatch.from_samples(batch).to_device(device=device)
 
         if not isinstance(batch, Mapping):
             raise TypeError("batch must be Sequence[Pv26Sample] or Mapping[str, Any]")
-
-        det_yolo = batch["det_yolo"]
-        if isinstance(det_yolo, Tensor):
-            det_list = [det_yolo[i] for i in range(det_yolo.shape[0])]
-        else:
-            det_list = list(det_yolo)
-
-        det_list = [d.to(device=device, dtype=torch.float32) for d in det_list]
-        det_list = [d[(d[:, 3] > 0) & (d[:, 4] > 0)] if d.numel() else d for d in det_list]
-
-        has_rm = torch.stack(
-            [
-                batch["has_rm_lane_marker"],
-                batch["has_rm_road_marker_non_lane"],
-                batch["has_rm_stop_line"],
-            ],
-            dim=1,
-        ).to(device=device, dtype=torch.long)
-        bsz = int(has_rm.shape[0])
-        if "has_rm_lane_subclass" in batch:
-            has_rm_lane_subclass = batch["has_rm_lane_subclass"].to(device=device, dtype=torch.long)
-        else:
-            has_rm_lane_subclass = torch.zeros((bsz,), dtype=torch.long, device=device)
-
-        if "rm_lane_subclass_mask" in batch:
-            rm_lane_subclass_mask = batch["rm_lane_subclass_mask"].to(device=device)
-        else:
-            _bsz, _ch, h, w = batch["rm_mask"].shape
-            rm_lane_subclass_mask = torch.full((int(_bsz), int(h), int(w)), 255, dtype=torch.uint8, device=device)
-
-        scopes = [str(s) for s in list(batch["det_label_scope"])]
-
-        return {
-            "det_yolo": det_list,
-            "da_mask": batch["da_mask"].to(device=device),
-            "rm_mask": batch["rm_mask"].to(device=device),
-            "rm_lane_subclass_mask": rm_lane_subclass_mask,
-            "has_det": batch["has_det"].to(device=device, dtype=torch.long),
-            "has_da": batch["has_da"].to(device=device, dtype=torch.long),
-            "has_rm": has_rm,
-            "has_rm_lane_subclass": has_rm_lane_subclass,
-            "det_label_scope": scopes,
-        }
+        return PV26PreparedBatch.from_mapping(batch, device=device)
 
     def _od_loss(
         self,

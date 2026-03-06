@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pv26.constants import DET_CLASSES_CANONICAL
-from pv26.criterion import PV26Criterion
+from pv26.criterion import PV26Criterion, PV26PreparedBatch
 from pv26.multitask_model import PV26MultiHead, PV26MultiHeadYOLO26
 from pv26.torch_dataset import AugmentSpec, Pv26ManifestDataset, Pv26Sample
 from tools.train.common import (
@@ -256,126 +256,19 @@ def _build_tb_writer(enabled: bool, log_dir: Path):
         ) from exc
 
 
-_SCOPE_TO_CODE = {"full": 0, "subset": 1, "none": 2}
-
-
-def _build_flat_det_targets(det_yolo_list: List[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    det_tgt_batch_idx_parts: List[torch.Tensor] = []
-    det_tgt_cls_parts: List[torch.Tensor] = []
-    det_tgt_box_parts: List[torch.Tensor] = []
-    for i, gt in enumerate(det_yolo_list):
-        if gt.numel() == 0:
-            continue
-        if gt.ndim != 2 or gt.shape[-1] != 5:
-            raise ValueError("det_yolo per sample must be [N,5]")
-        det_tgt_batch_idx_parts.append(torch.full((gt.shape[0],), int(i), dtype=torch.long))
-        det_tgt_cls_parts.append(gt[:, 0].to(dtype=torch.float32))
-        det_tgt_box_parts.append(gt[:, 1:5].to(dtype=torch.float32))
-
-    if det_tgt_batch_idx_parts:
-        det_tgt_batch_idx = torch.cat(det_tgt_batch_idx_parts, dim=0)
-        det_tgt_cls = torch.cat(det_tgt_cls_parts, dim=0)
-        det_tgt_bboxes = torch.cat(det_tgt_box_parts, dim=0)
-    else:
-        det_tgt_batch_idx = torch.zeros((0,), dtype=torch.long)
-        det_tgt_cls = torch.zeros((0,), dtype=torch.float32)
-        det_tgt_bboxes = torch.zeros((0, 4), dtype=torch.float32)
-    return det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes
-
-
-def _collate_train(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+def _collate_train(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, PV26PreparedBatch]:
     # Build image batch/targets in worker process so main thread can focus on GPU steps.
     images = torch.stack([s.image for s in samples], dim=0)
-    det_yolo_list = [s.det_yolo for s in samples]
-    det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
-    det_scope_code_list: List[int] = []
-    for scope in det_scope_list:
-        if scope not in _SCOPE_TO_CODE:
-            raise ValueError(f"invalid det_label_scope in batch: {scope}")
-        det_scope_code_list.append(int(_SCOPE_TO_CODE[scope]))
-
-    has_det = torch.tensor([s.has_det for s in samples], dtype=torch.long)
-    has_da = torch.tensor([s.has_da for s in samples], dtype=torch.long)
-    has_rm = torch.tensor(
-        [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
-        dtype=torch.long,
-    )
-    has_rm_lane_subclass = torch.tensor([s.has_rm_lane_subclass for s in samples], dtype=torch.long)
-    da_mask = torch.stack([s.da_mask for s in samples], dim=0)
-    rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
-    rm_lane_subclass_mask = torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0)
-    det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
-    det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = _build_flat_det_targets(det_yolo_list)
-
-    target_batch: Dict[str, Any] = {
-        "_pv26_prepared": True,
-        "det_scope_code": det_scope_code,
-        "det_tgt_batch_idx": det_tgt_batch_idx,
-        "det_tgt_cls": det_tgt_cls,
-        "det_tgt_bboxes": det_tgt_bboxes,
-        "has_det": has_det,
-        "has_da": has_da,
-        "has_rm": has_rm,
-        "has_rm_lane_subclass": has_rm_lane_subclass,
-        "da_mask": da_mask,
-        "rm_mask": rm_mask,
-        "rm_lane_subclass_mask": rm_lane_subclass_mask,
-    }
-    return images, target_batch
+    return images, PV26PreparedBatch.from_samples(samples)
 
 
-def _collate_eval(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+def _collate_eval(samples: List[Pv26Sample]) -> Tuple[torch.Tensor, PV26PreparedBatch]:
     images = torch.stack([s.image for s in samples], dim=0)
-    det_yolo_list = [s.det_yolo for s in samples]
-    det_scope_list = [str(s.det_label_scope).strip().lower() for s in samples]
-    sample_id_list = [str(s.sample_id) for s in samples]
-    det_scope_code_list: List[int] = []
-    for scope in det_scope_list:
-        if scope not in _SCOPE_TO_CODE:
-            raise ValueError(f"invalid det_label_scope in batch: {scope}")
-        det_scope_code_list.append(int(_SCOPE_TO_CODE[scope]))
-
-    has_det = torch.tensor([s.has_det for s in samples], dtype=torch.long)
-    has_da = torch.tensor([s.has_da for s in samples], dtype=torch.long)
-    has_rm = torch.tensor(
-        [[s.has_rm_lane_marker, s.has_rm_road_marker_non_lane, s.has_rm_stop_line] for s in samples],
-        dtype=torch.long,
-    )
-    has_rm_lane_subclass = torch.tensor([s.has_rm_lane_subclass for s in samples], dtype=torch.long)
-    da_mask = torch.stack([s.da_mask for s in samples], dim=0)
-    rm_mask = torch.stack([s.rm_mask for s in samples], dim=0)
-    rm_lane_subclass_mask = torch.stack([s.rm_lane_subclass_mask for s in samples], dim=0)
-    det_scope_code = torch.tensor(det_scope_code_list, dtype=torch.long)
-    det_tgt_batch_idx, det_tgt_cls, det_tgt_bboxes = _build_flat_det_targets(det_yolo_list)
-
-    target_batch: Dict[str, Any] = {
-        "_pv26_prepared": True,
-        "sample_id": sample_id_list,
-        "det_yolo": det_yolo_list,
-        "det_label_scope": det_scope_list,
-        "det_scope_code": det_scope_code,
-        "det_tgt_batch_idx": det_tgt_batch_idx,
-        "det_tgt_cls": det_tgt_cls,
-        "det_tgt_bboxes": det_tgt_bboxes,
-        "has_det": has_det,
-        "has_da": has_da,
-        "has_rm": has_rm,
-        "has_rm_lane_subclass": has_rm_lane_subclass,
-        "da_mask": da_mask,
-        "rm_mask": rm_mask,
-        "rm_lane_subclass_mask": rm_lane_subclass_mask,
-    }
-    return images, target_batch
+    return images, PV26PreparedBatch.from_samples(samples, include_sample_id=True)
 
 
-def _move_prepared_batch_to_device(batch: Dict[str, Any], *, device: torch.device) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for k, v in batch.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v.to(device=device, non_blocking=True)
-        else:
-            out[k] = v
-    return out
+def _move_prepared_batch_to_device(batch: PV26PreparedBatch, *, device: torch.device) -> PV26PreparedBatch:
+    return batch.to_device(device=device)
 
 
 def _make_run_dir(base: Path, run_name: str, arch: str) -> Path:
@@ -777,7 +670,7 @@ def train_one_epoch(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[Tuple[torch.Tensor, Dict[str, Any]]],
+    loader: DataLoader[Tuple[torch.Tensor, PV26PreparedBatch]],
     optimizer: torch.optim.Optimizer,
     scaler: torch.cuda.amp.GradScaler,
     device: torch.device,
@@ -938,7 +831,7 @@ def validate(
     *,
     model: torch.nn.Module,
     criterion: PV26Criterion,
-    loader: DataLoader[Tuple[torch.Tensor, Dict[str, Any]]],
+    loader: DataLoader[Tuple[torch.Tensor, PV26PreparedBatch]],
     device: torch.device,
     amp_enabled: bool,
     max_batches: int,
@@ -999,19 +892,19 @@ def validate(
                 step_losses = {k: float(v.detach().item()) for k, v in losses.items()}
                 print(format_loss_line(f"[val] step={batch_idx + 1}/{step_cap}", step_losses), flush=True)
 
-            sample_ids: List[str] = list(target_batch_cpu.get("sample_id", []))
-            has_det_cpu: torch.Tensor = target_batch_cpu["has_det"]
-            det_scope_list: List[str] = list(target_batch_cpu["det_label_scope"])
-            det_yolo_list: List[torch.Tensor] = list(target_batch_cpu["det_yolo"])
+            sample_ids: List[str] = list(target_batch_cpu.sample_id)
+            has_det_cpu: torch.Tensor = target_batch_cpu.has_det
+            det_scope_list: List[str] = list(target_batch_cpu.det_label_scope)
+            det_yolo_list: List[torch.Tensor] = list(target_batch_cpu.det_yolo)
             img_h = int(images_cpu.shape[-2])
             img_w = int(images_cpu.shape[-1])
 
-            da_mask_dev: torch.Tensor = target_batch["da_mask"]
-            rm_mask_dev: torch.Tensor = target_batch["rm_mask"]
-            has_da_dev: torch.Tensor = target_batch["has_da"].to(dtype=torch.bool)
-            has_rm_dev: torch.Tensor = target_batch["has_rm"].to(dtype=torch.bool)
-            rm_lane_subclass_mask_dev: torch.Tensor = target_batch["rm_lane_subclass_mask"]
-            has_rm_lane_subclass_dev: torch.Tensor = target_batch["has_rm_lane_subclass"].to(dtype=torch.bool)
+            da_mask_dev: torch.Tensor = target_batch.da_mask
+            rm_mask_dev: torch.Tensor = target_batch.rm_mask
+            has_da_dev: torch.Tensor = target_batch.has_da.to(dtype=torch.bool)
+            has_rm_dev: torch.Tensor = target_batch.has_rm.to(dtype=torch.bool)
+            rm_lane_subclass_mask_dev: torch.Tensor = target_batch.rm_lane_subclass_mask
+            has_rm_lane_subclass_dev: torch.Tensor = target_batch.has_rm_lane_subclass.to(dtype=torch.bool)
 
             valid_da = (da_mask_dev != 255) & has_da_dev[:, None, None]
             supervised_da = valid_da.reshape(valid_da.shape[0], -1).any(dim=1)

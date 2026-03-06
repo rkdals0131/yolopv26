@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from pv26.criterion import PV26Criterion
+from pv26.criterion import PV26Criterion, PV26PreparedBatch
 from pv26.multitask_model import PV26MultiHeadOutput
 
 
@@ -172,6 +172,69 @@ class TestPV26CriterionMasking(unittest.TestCase):
     def test_invalid_rm_lane_subclass_loss_impl_raises(self):
         with self.assertRaises(ValueError):
             PV26Criterion(num_det_classes=2, rm_lane_subclass_loss_impl="bogus")
+
+    def test_prepared_batch_forward_loss_backward_smoke(self):
+        criterion = PV26Criterion(num_det_classes=2)
+        preds = PV26MultiHeadOutput(
+            det=torch.randn(2, 7, 2, 2, requires_grad=True),
+            da=torch.randn(2, 1, 4, 4, requires_grad=True),
+            rm=torch.randn(2, 3, 4, 4, requires_grad=True),
+            rm_lane_subclass=torch.randn(2, 5, 4, 4, requires_grad=True),
+        )
+        prepared = PV26PreparedBatch.from_mapping(
+            {
+                "det_yolo": [
+                    torch.tensor([[1.0, 0.5, 0.5, 0.2, 0.2]], dtype=torch.float32),
+                    torch.zeros((0, 5), dtype=torch.float32),
+                ],
+                "det_label_scope": ["full", "none"],
+                "has_det": torch.tensor([1, 0], dtype=torch.long),
+                "has_da": torch.tensor([1, 1], dtype=torch.long),
+                "has_rm_lane_marker": torch.tensor([1, 1], dtype=torch.long),
+                "has_rm_road_marker_non_lane": torch.tensor([1, 1], dtype=torch.long),
+                "has_rm_stop_line": torch.tensor([1, 0], dtype=torch.long),
+                "has_rm_lane_subclass": torch.tensor([1, 1], dtype=torch.long),
+                "da_mask": torch.tensor(
+                    [
+                        [[0, 1, 1, 0], [1, 1, 0, 0], [0, 0, 1, 1], [1, 0, 1, 0]],
+                        [[1, 1, 0, 0], [0, 1, 0, 1], [1, 0, 1, 0], [0, 0, 1, 1]],
+                    ],
+                    dtype=torch.uint8,
+                ),
+                "rm_mask": torch.tensor(
+                    [
+                        [
+                            [[1, 0, 0, 1], [0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1]],
+                            [[0, 1, 0, 0], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]],
+                            [[0, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 0]],
+                        ],
+                        [
+                            [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]],
+                            [[1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1]],
+                            [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+                        ],
+                    ],
+                    dtype=torch.uint8,
+                ),
+                "rm_lane_subclass_mask": torch.tensor(
+                    [
+                        [[0, 1, 2, 0], [3, 0, 4, 0], [0, 1, 0, 2], [4, 0, 3, 0]],
+                        [[1, 0, 0, 2], [0, 3, 0, 4], [2, 0, 1, 0], [0, 4, 0, 3]],
+                    ],
+                    dtype=torch.uint8,
+                ),
+            },
+            device=torch.device("cpu"),
+        )
+
+        losses = criterion(preds, prepared)
+        losses["total"].backward()
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertIsNotNone(preds.det.grad)
+        self.assertIsNotNone(preds.da.grad)
+        self.assertIsNotNone(preds.rm.grad)
+        self.assertIsNotNone(preds.rm_lane_subclass.grad)
 
 
 class _FakeUltraDetLoss:
