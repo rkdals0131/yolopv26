@@ -19,6 +19,7 @@ class _FakeDetBackend(nn.Module):
     def __init__(self):
         super().__init__()
         self.det_model = nn.Identity()
+        self.det_loss_adapter = object()
         self.p3_backbone_proj = nn.Conv2d(3, 8, kernel_size=1, stride=8)
         self.p3_head_proj = nn.Conv2d(3, 16, kernel_size=1, stride=8)
 
@@ -30,6 +31,9 @@ class _FakeDetBackend(nn.Module):
             p3_backbone=p3_backbone,
             p3_head=p3_head,
         )
+
+    def build_det_loss_adapter(self):
+        return self.det_loss_adapter
 
 
 class _FakeIndexedConv(nn.Module):
@@ -129,6 +133,7 @@ class TestPV26MultiHead(unittest.TestCase):
 
         self.assertIs(model.det_backend, backend)
         self.assertIs(model.det_model, backend.det_model)
+        self.assertIs(model.build_det_loss_adapter(), backend.det_loss_adapter)
         self.assertEqual(y.det, {"backend": "fake"})
         self.assertEqual(tuple(y.da.shape), (2, 1, 128, 192))
         self.assertEqual(tuple(y.rm.shape), (2, 3, 128, 192))

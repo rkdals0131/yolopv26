@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -451,7 +451,7 @@ class PV26Criterion(nn.Module):
         num_det_classes: int,
         od_loss_impl: str = "dense",
         rm_lane_subclass_loss_impl: str = "dense_masked",
-        ultra_det_model: Optional[nn.Module] = None,
+        det_loss_adapter: Optional[Callable[..., Tensor]] = None,
         w_od: float = 1.0,
         w_da: float = 1.0,
         w_rm: float = 2.0,
@@ -474,26 +474,14 @@ class PV26Criterion(nn.Module):
         self._seg_loss_block = _PV26SegLossBlock(focal_gamma=self.focal_gamma, dice_eps=self.dice_eps)
         self._seg_loss_block_impl: Any = self._seg_loss_block
         self.seg_loss_compile_enabled = False
+        self.det_loss_adapter = det_loss_adapter
 
-        self._ultra_det_loss = None
         if self.od_loss_impl not in {"dense", "ultralytics_e2e"}:
             raise ValueError(f"invalid od_loss_impl: {self.od_loss_impl}")
         if self.rm_lane_subclass_loss_impl not in {"dense_masked", "sparse_pos"}:
             raise ValueError(f"invalid rm_lane_subclass_loss_impl: {self.rm_lane_subclass_loss_impl}")
-        if self.od_loss_impl == "ultralytics_e2e":
-            if ultra_det_model is None:
-                raise ValueError("ultra_det_model must be provided when od_loss_impl='ultralytics_e2e'")
-            # Lazy import to avoid ultralytics side-effects unless requested.
-            import os
-
-            os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
-            from ultralytics.utils.loss import E2ELoss  # type: ignore
-            from ultralytics.utils import DEFAULT_CFG  # type: ignore
-
-            # Ultralytics loss expects model.args to exist and provide hyp (box/cls/dfl/epochs...).
-            if not hasattr(ultra_det_model, "args"):
-                ultra_det_model.args = DEFAULT_CFG  # type: ignore[attr-defined]
-            self._ultra_det_loss = E2ELoss(ultra_det_model)
+        if self.od_loss_impl == "ultralytics_e2e" and self.det_loss_adapter is None:
+            raise ValueError("det_loss_adapter must be provided when od_loss_impl='ultralytics_e2e'")
 
     def disable_compile_seg_loss(self) -> None:
         self._seg_loss_block_impl = self._seg_loss_block
@@ -567,114 +555,18 @@ class PV26Criterion(nn.Module):
           batch. `det_label_scope=subset` is conservatively excluded from OD loss until class-aware negative masking is
           implemented.
         """
-        if self._ultra_det_loss is None:
-            raise RuntimeError("ultralytics det loss is not initialized")
-
-        # Parse predictions dict (E2ELoss can parse tuple internally, but we need filtering).
-        preds = det_out[1] if isinstance(det_out, tuple) else det_out
-        if not isinstance(preds, Mapping) or "one2many" not in preds or "one2one" not in preds:
-            raise TypeError("det_out must be an ultralytics Detect output (dict or (y, preds))")
-
-        bsz = int(has_det.shape[0])
-        keep_idx: Tensor
-        if det_scope_code is not None:
-            if det_scope_code.shape[0] != bsz:
-                raise ValueError("det_scope_code length mismatch")
-            scope_code = det_scope_code.to(device=has_det.device, dtype=torch.long)
-            keep_mask = has_det.to(dtype=torch.long) != 0
-            keep_mask = keep_mask & (scope_code == 0)
-            keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
-        else:
-            if len(det_label_scope) != bsz:
-                raise ValueError("det_label_scope length mismatch")
-            has_det_cpu = has_det.to(device="cpu", dtype=torch.long).tolist()
-            keep: List[int] = []
-            for i in range(bsz):
-                scope = str(det_label_scope[i]).strip().lower()
-                if scope not in {"full", "subset", "none"}:
-                    raise ValueError(f"invalid det_label_scope: {scope}")
-                if int(has_det_cpu[i]) == 0 or scope != "full":
-                    continue
-                keep.append(i)
-            keep_idx = torch.as_tensor(keep, dtype=torch.long, device=has_det.device)
-
-        if int(keep_idx.numel()) == 0:
-            # No supervised detection samples in this batch.
-            return torch.zeros((), dtype=torch.float32, device=has_det.device)
-
-        device = preds["one2many"]["boxes"].device
-        idx = keep_idx.to(device=device, dtype=torch.long)
-        full_batch_kept = int(idx.shape[0]) == bsz
-
-        if det_tgt_batch_idx is not None and det_tgt_cls is not None and det_tgt_bboxes is not None:
-            if full_batch_kept:
-                preds_sel = preds
-                batch_idx_t = det_tgt_batch_idx.to(device=device, dtype=torch.float32)
-                cls_t = det_tgt_cls.to(device=device, dtype=torch.float32)
-                bboxes_t = det_tgt_bboxes.to(device=device, dtype=torch.float32)
-            else:
-                def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
-                    return {
-                        "boxes": h["boxes"].index_select(0, idx),
-                        "scores": h["scores"].index_select(0, idx),
-                        "feats": [f.index_select(0, idx) for f in h["feats"]],
-                    }
-
-                preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
-
-                old_to_new = torch.full((bsz,), -1, device=device, dtype=torch.long)
-                old_to_new[idx] = torch.arange(idx.shape[0], device=device, dtype=torch.long)
-
-                src_old = det_tgt_batch_idx.to(device=device, dtype=torch.long)
-                new_idx = old_to_new[src_old]
-                m = new_idx.ge(0)
-                det_tgt_cls_dev = det_tgt_cls.to(device=device, dtype=torch.float32)
-                det_tgt_bboxes_dev = det_tgt_bboxes.to(device=device, dtype=torch.float32)
-                batch_idx_t = new_idx.masked_select(m).to(dtype=torch.float32)
-                cls_t = det_tgt_cls_dev.masked_select(m)
-                bboxes_t = det_tgt_bboxes_dev[m]
-        else:
-            def _index_head(h: Mapping[str, Any]) -> Dict[str, Any]:
-                return {
-                    "boxes": h["boxes"].index_select(0, idx),
-                    "scores": h["scores"].index_select(0, idx),
-                    "feats": [f.index_select(0, idx) for f in h["feats"]],
-                }
-
-            preds_sel = {"one2many": _index_head(preds["one2many"]), "one2one": _index_head(preds["one2one"])}
-
-            if len(det_yolo) != bsz:
-                raise ValueError("det_yolo length mismatch")
-            batch_idx_list: List[Tensor] = []
-            cls_list: List[Tensor] = []
-            box_list: List[Tensor] = []
-            for new_i, old_i in enumerate(idx.tolist()):
-                gt = det_yolo[int(old_i)]
-                if gt.numel() == 0:
-                    continue
-                # expected gt: [N,5] (cls,cx,cy,w,h) normalized.
-                batch_idx_list.append(torch.full((gt.shape[0],), float(new_i), device=device, dtype=torch.float32))
-                cls_list.append(gt[:, 0].to(device=device, dtype=torch.float32))
-                box_list.append(gt[:, 1:5].to(device=device, dtype=torch.float32))
-
-            if batch_idx_list:
-                batch_idx_t = torch.cat(batch_idx_list, dim=0)
-                cls_t = torch.cat(cls_list, dim=0)
-                bboxes_t = torch.cat(box_list, dim=0)
-            else:
-                batch_idx_t = torch.zeros((0,), device=device, dtype=torch.float32)
-                cls_t = torch.zeros((0,), device=device, dtype=torch.float32)
-                bboxes_t = torch.zeros((0, 4), device=device, dtype=torch.float32)
-
-        det_batch = {"batch_idx": batch_idx_t, "cls": cls_t, "bboxes": bboxes_t}
-
-        loss_total, _loss_items = self._ultra_det_loss(preds_sel, det_batch)
-        # Ultralytics losses are returned as a vector (box/cls/dfl) scaled by batch size.
-        # Convert to mean-per-image scalar for PV26 weighting.
-        loss_mean = loss_total / float(int(idx.shape[0]))
-        if loss_mean.ndim != 0:
-            loss_mean = loss_mean.sum()
-        return loss_mean.to(dtype=torch.float32)
+        if self.det_loss_adapter is None:
+            raise RuntimeError("det loss adapter is not initialized")
+        return self.det_loss_adapter(
+            det_out=det_out,
+            det_yolo=det_yolo,
+            has_det=has_det,
+            det_label_scope=det_label_scope,
+            det_scope_code=det_scope_code,
+            det_tgt_batch_idx=det_tgt_batch_idx,
+            det_tgt_cls=det_tgt_cls,
+            det_tgt_bboxes=det_tgt_bboxes,
+        )
 
     def _normalize_batch(self, batch: Any, device: torch.device) -> PV26PreparedBatch:
         if isinstance(batch, PV26PreparedBatch):

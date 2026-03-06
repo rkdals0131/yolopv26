@@ -7,6 +7,8 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
+from .det_loss_backends import UltralyticsE2EDetLossAdapter
+
 _VALID_SEG_OUTPUT_STRIDES = {1, 2}
 
 
@@ -306,6 +308,9 @@ class UltralyticsYOLO26DetBackend(nn.Module):
             raise RuntimeError("missing backbone P3 feature")
         return x, p3_backbone
 
+    def build_det_loss_adapter(self) -> UltralyticsE2EDetLossAdapter:
+        return UltralyticsE2EDetLossAdapter(self.det_model)
+
     @staticmethod
     def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
         preds = det_out
@@ -393,3 +398,9 @@ class PV26MultiHeadYOLO26(nn.Module):
         rm = self.rm_head(rm_hidden)
         rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
         return PV26MultiHeadOutput(det=backend_out.det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
+
+    def build_det_loss_adapter(self) -> Any:
+        build = getattr(self.det_backend, "build_det_loss_adapter", None)
+        if build is None:
+            raise RuntimeError("det backend does not expose build_det_loss_adapter()")
+        return build()

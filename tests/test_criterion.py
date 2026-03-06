@@ -4,6 +4,7 @@ from unittest import mock
 import torch
 
 from pv26.criterion import PV26Criterion, PV26PreparedBatch
+from pv26.det_loss_backends import UltralyticsE2EDetLossAdapter
 from pv26.multitask_model import PV26MultiHeadOutput
 
 
@@ -424,6 +425,12 @@ class _FakeUltraDetReduceLoss:
         return total.to(dtype=torch.float32), torch.zeros(3, dtype=torch.float32)
 
 
+def _make_fake_ultralytics_det_loss_adapter(fake_loss):
+    adapter = UltralyticsE2EDetLossAdapter.__new__(UltralyticsE2EDetLossAdapter)
+    adapter._ultra_det_loss = fake_loss
+    return adapter
+
+
 class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
     def _make_det_out(self):
         return {
@@ -470,7 +477,7 @@ class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
         criterion = PV26Criterion(num_det_classes=2)
         fake_loss = _FakeUltraDetLoss()
         criterion.od_loss_impl = "ultralytics_e2e"
-        criterion._ultra_det_loss = fake_loss
+        criterion.det_loss_adapter = _make_fake_ultralytics_det_loss_adapter(fake_loss)
 
         det_out = {
             "one2many": {
@@ -516,7 +523,7 @@ class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
     def test_ultralytics_od_full_batch_fast_path_matches_old_slow_path_scalar(self):
         criterion = PV26Criterion(num_det_classes=2)
         criterion.od_loss_impl = "ultralytics_e2e"
-        criterion._ultra_det_loss = _FakeUltraDetReduceLoss()
+        criterion.det_loss_adapter = _make_fake_ultralytics_det_loss_adapter(_FakeUltraDetReduceLoss())
 
         det_out = self._make_det_out()
         det_tgt_batch_idx = torch.tensor([0, 0, 1, 2], dtype=torch.long)
@@ -555,7 +562,7 @@ class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
         criterion = PV26Criterion(num_det_classes=2)
         fake_loss = _FakeUltraDetLoss()
         criterion.od_loss_impl = "ultralytics_e2e"
-        criterion._ultra_det_loss = fake_loss
+        criterion.det_loss_adapter = _make_fake_ultralytics_det_loss_adapter(fake_loss)
 
         det_out = self._make_det_out()
         od = criterion._od_loss_ultralytics(

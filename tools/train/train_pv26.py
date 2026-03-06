@@ -1234,7 +1234,7 @@ def main() -> int:
             num_det_classes=len(DET_CLASSES_CANONICAL),
             num_lane_subclasses=4,
             od_loss_impl="ultralytics_e2e",
-            ultra_det_model=model.det_model,
+            det_loss_adapter=model.build_det_loss_adapter(),
         ).to(device)
     if device.type == "cuda":
         model = model.to(memory_format=torch.channels_last)
