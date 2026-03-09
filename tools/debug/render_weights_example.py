@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pv26.dataset.labels import DET_CLASSES_CANONICAL
-from pv26.model.multitask_yolo26 import PV26MultiHeadYOLO26
+from pv26.model.multitask_yolo26 import build_pv26_inference_model_from_state_dict
 
 LOGGER = logging.getLogger("render_weights_example")
 
@@ -488,15 +488,19 @@ def infer_pv26(
     t_total = log_step_start(f"PV26 추론/후처리 시작 (checkpoint={ckpt_path})")
     t_load = log_step_start("PV26 체크포인트 및 모델 로드")
     ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
-    model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device).eval()
     try:
-        model.load_state_dict(ckpt["model_state"], strict=True)
+        model, ckpt_layout = build_pv26_inference_model_from_state_dict(
+            ckpt["model_state"],
+            num_det_classes=len(DET_CLASSES_CANONICAL),
+            yolo26_cfg="yolo26n.yaml",
+        )
     except RuntimeError as ex:
         raise RuntimeError(
             "PV26 checkpoint/model mismatch. "
-            "This renderer requires a checkpoint trained with the current PV26 model "
-            "(including rm_lane_subclass_head)."
+            "This renderer could not match the checkpoint to a supported PV26 model layout."
         ) from ex
+    model = model.to(device).eval()
+    LOGGER.info("PV26 체크포인트 레이아웃: %s", ckpt_layout)
     log_step_done("PV26 체크포인트 및 모델 로드", t_load)
 
     t_infer = log_step_start("PV26 추론 실행")
@@ -590,7 +594,7 @@ def render_pv26_simple(
 ) -> np.ndarray:
     t_vis = log_step_start("PV26 단순 시각화 합성")
     da_mask_np = data.da_prob_np > 0.5
-    lane_conf_floor = max(0.5, float(lane_thres))
+    lane_conf_floor = max(0.0, min(1.0, float(lane_thres)))
     lane_mask_np = (data.lane_cls_np != 0) & (data.lane_conf_np >= lane_conf_floor)
     LOGGER.info(
         "PV26 단순 시각화: boxes=%d, DA pixels=%d, Lane pixels=%d, lane_thres=%.2f",
@@ -613,14 +617,14 @@ def render_pv26_rm_lane(
     data: PV26RenderData,
     da_alpha: float,
     lane_alpha: float,
-    lane_thres: float,
+    rm_lane_thres: float,
 ) -> np.ndarray:
     t_vis = log_step_start("PV26 RM-lane 시각화 합성")
     da_mask_np = data.da_prob_np > 0.5
-    lane_floor = max(0.5, float(lane_thres))
+    lane_floor = max(0.0, min(1.0, float(rm_lane_thres)))
     lane_mask_np = data.rm_lane_prob_np >= lane_floor
     LOGGER.info(
-        "PV26 RM-lane 시각화: boxes=%d, DA pixels=%d, Lane pixels=%d, lane_thres=%.2f",
+        "PV26 RM-lane 시각화: boxes=%d, DA pixels=%d, Lane pixels=%d, rm_lane_thres=%.2f",
         int(data.boxes.shape[0]),
         int(np.count_nonzero(da_mask_np)),
         int(np.count_nonzero(lane_mask_np)),
@@ -711,7 +715,7 @@ def main() -> int:
         data=pv26_data,
         da_alpha=args.da_alpha,
         lane_alpha=args.lane_alpha,
-        lane_thres=args.pv26_lane_thres,
+        rm_lane_thres=args.pv26_rm_lane_thres,
     )
     pv26_verbose_img = render_pv26_verbose(
         base_bgr=base_bgr,

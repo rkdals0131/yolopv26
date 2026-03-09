@@ -53,7 +53,7 @@ class TrainPv26ScriptDefaults:
     arch: str                   = "yolo26n"            # 모델 백본/헤드 조합
     epochs: int                 = 5                    # 총 학습 epoch 수
     batch_size: int             = 16                   # train/val 공통 배치 크기
-    seg_output_stride: int      = 2                    # segmentation logits stride
+    seg_output_stride: int      = 1                    # segmentation logits stride
     workers: int                = 6                    # DataLoader worker 수
     prefetch_factor: int        = 4                    # worker당 prefetch 배치 수
     persistent_workers: bool    = True                 # epoch 사이 worker 유지

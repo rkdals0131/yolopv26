@@ -52,6 +52,7 @@ class TestTrainPv26ScriptDefaults(unittest.TestCase):
     def test_argparser_uses_script_default_block(self):
         args = build_argparser().parse_args([])
 
+        self.assertEqual(SCRIPT_DEFAULTS.seg_output_stride, 1)
         self.assertEqual(args.dataset_root, SCRIPT_DEFAULTS.dataset_root)
         self.assertEqual(args.epochs, SCRIPT_DEFAULTS.epochs)
         self.assertEqual(args.batch_size, SCRIPT_DEFAULTS.batch_size)

@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pv26.dataset.labels import DET_CLASSES_CANONICAL
-from pv26.model.multitask_yolo26 import PV26MultiHeadYOLO26
+from pv26.model.multitask_yolo26 import build_pv26_inference_model_from_state_dict
 
 
 def _parse_args() -> argparse.Namespace:
@@ -123,9 +123,12 @@ def _shape_from_summary(summary: dict[str, Any]) -> list[int] | None:
 
 def _run_best(best_path: Path, x: torch.Tensor, device: torch.device) -> dict[str, Any]:
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
-    model = PV26MultiHeadYOLO26(num_det_classes=len(DET_CLASSES_CANONICAL), yolo26_cfg="yolo26n.yaml").to(device)
-    model.load_state_dict(ckpt["model_state"], strict=True)
-    model.eval()
+    model, ckpt_layout = build_pv26_inference_model_from_state_dict(
+        ckpt["model_state"],
+        num_det_classes=len(DET_CLASSES_CANONICAL),
+        yolo26_cfg="yolo26n.yaml",
+    )
+    model = model.to(device).eval()
     backend_out = None
     with torch.no_grad():
         out = model(x)
@@ -134,6 +137,7 @@ def _run_best(best_path: Path, x: torch.Tensor, device: torch.device) -> dict[st
     out_summary = _summarize_obj(out)
     return {
         "checkpoint_keys": sorted(list(ckpt.keys())),
+        "checkpoint_layout": ckpt_layout,
         "output_summary": out_summary,
         "feature_shapes": _extract_best_feat_shapes(out.det, backend_out),
     }

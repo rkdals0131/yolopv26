@@ -131,6 +131,39 @@ class RoadMarkingHeadDeconv(nn.Module):
         return self.pred(self.decoder(x, out_size))
 
 
+class LegacyRoadMarkingHeadDeconv(nn.Module):
+    """
+    Pre-shared-decoder RM head kept for legacy checkpoint compatibility.
+    """
+
+    def __init__(self, in_ch: int, out_ch: int = 3, *, output_stride: int = 1):
+        super().__init__()
+        self.output_stride = _validate_seg_output_stride(output_stride)
+        c1 = max(64, in_ch // 2)
+        c2 = max(32, c1 // 2)
+        c3 = max(16, c2 // 2)
+        self.stem = ConvBNAct(in_ch, c1, k=3, s=1)
+        self.deconv1 = nn.ConvTranspose2d(c1, c2, kernel_size=4, stride=2, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(c2)
+        self.deconv2 = nn.ConvTranspose2d(c2, c3, kernel_size=4, stride=2, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(c3)
+        self.deconv3 = nn.ConvTranspose2d(c3, c3, kernel_size=4, stride=2, padding=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(c3)
+        self.act = nn.SiLU(inplace=True)
+        self.pred = nn.Conv2d(c3, out_ch, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x: Tensor, out_size: Tuple[int, int]) -> Tensor:
+        x = self.stem(x)
+        x = self.act(self.bn1(self.deconv1(x)))
+        x = self.act(self.bn2(self.deconv2(x)))
+        if self.output_stride == 1:
+            x = self.act(self.bn3(self.deconv3(x)))
+        logits = self.pred(x)
+        if logits.shape[-2:] != out_size:
+            logits = F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+        return logits
+
+
 class RoadMarkingDecoderDeconv(nn.Module):
     """
     Shared RM decoder trunk up to the configured segmentation output resolution.
@@ -369,3 +402,203 @@ class PV26MultiHeadYOLO26(nn.Module):
         rm = self.rm_head(rm_hidden)
         rm_lane_subclass = self.rm_lane_subclass_head(rm_hidden)
         return PV26MultiHeadOutput(det=backend_out.det, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
+
+
+class PV26LegacyMultiHeadYOLO26(nn.Module):
+    """
+    Legacy PV26 multi-task model layout kept for checkpoint-compatible inference.
+
+    This matches checkpoints saved before:
+    - the shared RM decoder trunk split (`rm_head.*` -> `rm_decoder.*` + `rm_head.pred.*`)
+    - the detection backend adapter shell (`det_model.*` only, no `det_backend.*`)
+    """
+
+    def __init__(
+        self,
+        *,
+        num_det_classes: int = 11,
+        num_lane_subclasses: int = 4,
+        yolo26_cfg: str = "yolo26n.yaml",
+        verbose: bool = False,
+        seg_output_stride: int = 1,
+        det_model: Optional[nn.Module] = None,
+    ):
+        super().__init__()
+        self.num_det_classes = int(num_det_classes)
+        self.num_lane_subclasses = int(num_lane_subclasses)
+        self.yolo26_cfg = str(yolo26_cfg)
+        self.seg_output_stride = _validate_seg_output_stride(seg_output_stride)
+
+        if det_model is None:
+            import os
+
+            os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
+
+            from ultralytics.nn.tasks import DetectionModel  # type: ignore
+            from ultralytics.utils import DEFAULT_CFG  # type: ignore
+
+            det_model = DetectionModel(self.yolo26_cfg, ch=3, nc=self.num_det_classes, verbose=bool(verbose))
+            det_model.args = DEFAULT_CFG
+        self.det_model = det_model
+        self._feat: dict[str, Tensor] = {}
+
+        def _save(name: str):
+            def hook(_module, _inp, out):
+                self._feat[name] = out
+
+            return hook
+
+        det_layers = getattr(self.det_model, "model", None)
+        if det_layers is None or len(det_layers) <= 4:
+            raise RuntimeError("unexpected legacy yolo26 model layout: module count too small")
+        det_layers[4].register_forward_hook(_save("p3_backbone"))
+
+        was_training = bool(self.det_model.training)
+        self.det_model.eval()
+        with torch.inference_mode():
+            self._feat.clear()
+            det_out = self.det_model(torch.zeros(1, 3, 256, 384))
+            preds = self._extract_preds_dict(det_out, context="during init")
+            if "p3_backbone" not in self._feat:
+                raise RuntimeError("failed to capture legacy backbone P3 feature")
+            one2many = preds.get("one2many")
+            if not isinstance(one2many, dict):
+                raise RuntimeError("unexpected legacy yolo26 one2many output during init")
+            feats = one2many.get("feats")
+            if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
+                raise RuntimeError("unexpected legacy yolo26 one2many.feats output during init")
+            p3_backbone = self._feat["p3_backbone"]
+            p3_head = feats[0]
+        self.det_model.train(was_training)
+
+        self.da_head = DrivableAreaHeadP3(
+            in_ch=int(p3_backbone.shape[1]),
+            output_stride=self.seg_output_stride,
+        )
+        self.rm_head = LegacyRoadMarkingHeadDeconv(
+            in_ch=int(p3_head.shape[1]),
+            out_ch=3,
+            output_stride=self.seg_output_stride,
+        )
+        self.rm_lane_subclass_head = LegacyRoadMarkingHeadDeconv(
+            in_ch=int(p3_head.shape[1]),
+            out_ch=(self.num_lane_subclasses + 1),
+            output_stride=self.seg_output_stride,
+        )
+
+    def forward(self, x: Tensor) -> PV26MultiHeadOutput:
+        in_h, in_w = x.shape[-2:]
+        seg_out_size = (in_h // self.seg_output_stride, in_w // self.seg_output_stride)
+        self._feat.clear()
+        det_out = self.det_model(x)
+
+        preds = self._extract_preds_dict(det_out, context="")
+        if "one2many" not in preds:
+            raise RuntimeError("unexpected legacy yolo26 forward output")
+        one2many = preds.get("one2many")
+        if not isinstance(one2many, dict):
+            raise RuntimeError("unexpected legacy yolo26 one2many output")
+        feats = one2many.get("feats")
+        if not isinstance(feats, (list, tuple)) or len(feats) == 0 or not torch.is_tensor(feats[0]):
+            raise RuntimeError("unexpected legacy yolo26 one2many.feats output")
+
+        p3_backbone = self._feat.get("p3_backbone", None)
+        if p3_backbone is None:
+            raise RuntimeError("missing legacy backbone P3 feature (hook did not fire)")
+        p3_head = feats[0]
+
+        da = self.da_head(p3_backbone, out_size=seg_out_size)
+        rm = self.rm_head(p3_head, out_size=seg_out_size)
+        rm_lane_subclass = self.rm_lane_subclass_head(p3_head, out_size=seg_out_size)
+        return PV26MultiHeadOutput(det=det_out, da=da, rm=rm, rm_lane_subclass=rm_lane_subclass)
+
+    @staticmethod
+    def _extract_preds_dict(det_out: Any, *, context: str) -> dict[str, Any]:
+        preds = det_out
+        if isinstance(det_out, (tuple, list)):
+            if len(det_out) >= 2 and isinstance(det_out[1], dict):
+                preds = det_out[1]
+            elif len(det_out) >= 1 and isinstance(det_out[0], dict):
+                preds = det_out[0]
+        if not isinstance(preds, dict):
+            detail = f" {context}" if context else ""
+            raise RuntimeError(f"unexpected legacy yolo26 forward output{detail}")
+        return preds
+
+
+def _strip_known_state_dict_prefixes(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    normalized: dict[str, Tensor] = {}
+    strip_prefixes = ("module.", "_orig_mod.")
+    for raw_key, value in state_dict.items():
+        key = str(raw_key)
+        changed = True
+        while changed:
+            changed = False
+            for prefix in strip_prefixes:
+                if key.startswith(prefix):
+                    key = key[len(prefix) :]
+                    changed = True
+        normalized[key] = value
+    return normalized
+
+
+def _expand_det_model_alias_keys(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    remapped: dict[str, Tensor] = dict(state_dict)
+    for key, value in state_dict.items():
+        if key.startswith("det_model."):
+            remapped.setdefault(f"det_backend.{key}", value)
+        elif key.startswith("det_backend.det_model."):
+            remapped.setdefault(key[len("det_backend.") :], value)
+    return remapped
+
+
+def infer_pv26_checkpoint_layout(state_dict: dict[str, Tensor]) -> str:
+    keys = tuple(_strip_known_state_dict_prefixes(state_dict).keys())
+    if any(k.startswith("rm_head.stem.") for k in keys):
+        return "legacy_separate_rm_heads"
+    has_shared_rm_decoder = any(k.startswith("rm_decoder.") for k in keys)
+    has_det_backend = any(k.startswith("det_backend.det_model.") for k in keys)
+    has_legacy_det_model = any(k.startswith("det_model.") for k in keys)
+    if has_shared_rm_decoder and has_legacy_det_model and not has_det_backend:
+        return "legacy_shared_rm_decoder"
+    if has_shared_rm_decoder:
+        return "current_shared_rm_decoder"
+    raise RuntimeError("unsupported PV26 checkpoint layout: unable to identify RM head structure")
+
+
+def build_pv26_inference_model_from_state_dict(
+    state_dict: dict[str, Tensor],
+    *,
+    num_det_classes: int = 11,
+    num_lane_subclasses: int = 4,
+    yolo26_cfg: str = "yolo26n.yaml",
+    verbose: bool = False,
+    seg_output_stride: int = 1,
+    det_backend: Optional[nn.Module] = None,
+    legacy_det_model: Optional[nn.Module] = None,
+) -> tuple[nn.Module, str]:
+    normalized_state = _strip_known_state_dict_prefixes(state_dict)
+    layout = infer_pv26_checkpoint_layout(normalized_state)
+    if layout == "legacy_separate_rm_heads":
+        model = PV26LegacyMultiHeadYOLO26(
+            num_det_classes=num_det_classes,
+            num_lane_subclasses=num_lane_subclasses,
+            yolo26_cfg=yolo26_cfg,
+            verbose=verbose,
+            seg_output_stride=seg_output_stride,
+            det_model=legacy_det_model,
+        )
+    elif layout in {"current_shared_rm_decoder", "legacy_shared_rm_decoder"}:
+        normalized_state = _expand_det_model_alias_keys(normalized_state)
+        model = PV26MultiHeadYOLO26(
+            num_det_classes=num_det_classes,
+            num_lane_subclasses=num_lane_subclasses,
+            yolo26_cfg=yolo26_cfg,
+            verbose=verbose,
+            seg_output_stride=seg_output_stride,
+            det_backend=det_backend,
+        )
+    else:
+        raise RuntimeError(f"unsupported PV26 checkpoint layout: {layout}")
+    model.load_state_dict(normalized_state, strict=True)
+    return model, layout
