@@ -34,5 +34,6 @@
 
 ## train
 - `tools/train/train_pv26.py`: 학습 실행 스크립트(옵션/실행 흐름)
+- `tools/train/run_commit_train_sweep.sh`: 여러 commit을 detached worktree로 순차 학습하는 unattended runner
 - `tools/train/common.py`: 학습 공통 함수(device/seed/metric/decode 유틸)
 - `tools/train/modal_train_pv26.py`: Modal 원격 학습 래퍼(dir 우선 + tar 자동해제)

@@ -578,11 +578,26 @@ def _strip_known_state_dict_prefixes(state_dict: dict[str, Tensor]) -> dict[str,
     return normalized
 
 
+def _expand_det_model_alias_keys(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    remapped: dict[str, Tensor] = dict(state_dict)
+    for key, value in state_dict.items():
+        if key.startswith("det_model."):
+            remapped.setdefault(f"det_backend.{key}", value)
+        elif key.startswith("det_backend.det_model."):
+            remapped.setdefault(key[len("det_backend.") :], value)
+    return remapped
+
+
 def infer_pv26_checkpoint_layout(state_dict: dict[str, Tensor]) -> str:
     keys = tuple(_strip_known_state_dict_prefixes(state_dict).keys())
     if any(k.startswith("rm_head.stem.") for k in keys):
         return "legacy_separate_rm_heads"
-    if any(k.startswith("rm_decoder.") for k in keys):
+    has_shared_rm_decoder = any(k.startswith("rm_decoder.") for k in keys)
+    has_det_backend = any(k.startswith("det_backend.det_model.") for k in keys)
+    has_legacy_det_model = any(k.startswith("det_model.") for k in keys)
+    if has_shared_rm_decoder and has_legacy_det_model and not has_det_backend:
+        return "legacy_shared_rm_decoder"
+    if has_shared_rm_decoder:
         return "current_shared_rm_decoder"
     raise RuntimeError("unsupported PV26 checkpoint layout: unable to identify RM head structure")
 
@@ -609,7 +624,8 @@ def build_pv26_inference_model_from_state_dict(
             seg_output_stride=seg_output_stride,
             det_model=legacy_det_model,
         )
-    elif layout == "current_shared_rm_decoder":
+    elif layout in {"current_shared_rm_decoder", "legacy_shared_rm_decoder"}:
+        normalized_state = _expand_det_model_alias_keys(normalized_state)
         model = PV26MultiHeadYOLO26(
             num_det_classes=num_det_classes,
             num_lane_subclasses=num_lane_subclasses,

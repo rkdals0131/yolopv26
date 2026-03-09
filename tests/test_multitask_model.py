@@ -21,7 +21,7 @@ from pv26.multitask_model import (
 class _FakeDetBackend(nn.Module):
     def __init__(self):
         super().__init__()
-        self.det_model = nn.Identity()
+        self.det_model = nn.Sequential(nn.Conv2d(3, 3, kernel_size=1, bias=False))
         self.det_loss_adapter = object()
         self.p3_backbone_proj = nn.Conv2d(3, 8, kernel_size=1, stride=8)
         self.p3_head_proj = nn.Conv2d(3, 16, kernel_size=1, stride=8)
@@ -86,6 +86,17 @@ class _FakeUltralyticsLikeModel(nn.Module):
             x = m(x)
             y.append(x if m.i in self.save else None)
         return x
+
+
+def _rename_det_backend_state_as_legacy_direct_det_model(
+    state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    renamed: dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        if key.startswith("det_backend.det_model."):
+            key = key.replace("det_backend.det_model.", "det_model.", 1)
+        renamed[key] = value
+    return renamed
 
 
 class TestPV26MultiHead(unittest.TestCase):
@@ -176,10 +187,15 @@ class TestPV26MultiHead(unittest.TestCase):
             num_det_classes=11,
             det_model=_FakeUltralyticsLikeModel(),
         )
+        legacy_shared_state = _rename_det_backend_state_as_legacy_direct_det_model(current_model.state_dict())
 
         self.assertEqual(
             infer_pv26_checkpoint_layout(current_model.state_dict()),
             "current_shared_rm_decoder",
+        )
+        self.assertEqual(
+            infer_pv26_checkpoint_layout(legacy_shared_state),
+            "legacy_shared_rm_decoder",
         )
         self.assertEqual(
             infer_pv26_checkpoint_layout(legacy_model.state_dict()),
@@ -203,6 +219,26 @@ class TestPV26MultiHead(unittest.TestCase):
         self.assertIsInstance(loaded, PV26MultiHeadYOLO26)
         self.assertEqual(layout, "current_shared_rm_decoder")
         self.assertEqual(set(loaded.state_dict().keys()), set(source.state_dict().keys()))
+
+    def test_inference_builder_loads_legacy_shared_rm_checkpoint_layout(self):
+        source = PV26MultiHeadYOLO26(
+            num_det_classes=11,
+            det_backend=_FakeDetBackend(),
+            seg_output_stride=2,
+        )
+        legacy_shared_state = _rename_det_backend_state_as_legacy_direct_det_model(source.state_dict())
+
+        loaded, layout = build_pv26_inference_model_from_state_dict(
+            legacy_shared_state,
+            num_det_classes=11,
+            seg_output_stride=2,
+            det_backend=_FakeDetBackend(),
+        )
+
+        self.assertIsInstance(loaded, PV26MultiHeadYOLO26)
+        self.assertEqual(layout, "legacy_shared_rm_decoder")
+        for key, value in source.state_dict().items():
+            self.assertTrue(torch.equal(loaded.state_dict()[key], value), key)
 
     def test_inference_builder_loads_legacy_checkpoint_layout(self):
         source = PV26LegacyMultiHeadYOLO26(
