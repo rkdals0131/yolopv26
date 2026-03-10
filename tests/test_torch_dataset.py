@@ -564,7 +564,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
             self.assertEqual(s.da_mask[2].tolist(), [255, 0, 0, 255])
             self.assertEqual(s.da_mask[3].tolist(), [255, 255, 255, 255])
 
-    def test_legacy_subset_scope_is_normalized_to_full_at_runtime(self):
+    def test_subset_scope_is_rejected_at_runtime(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "meta").mkdir(parents=True, exist_ok=True)
@@ -668,9 +668,8 @@ class TestPv26ManifestDataset(unittest.TestCase):
                     ]
                 )
 
-            ds = Pv26ManifestDataset(dataset_root=root, splits=("train",), letterbox=None)
-            s = ds[0]
-            self.assertEqual(s.det_label_scope, "full")
+            with self.assertRaises(ValueError):
+                Pv26ManifestDataset(dataset_root=root, splits=("train",), letterbox=None)
 
 if __name__ == "__main__":
     unittest.main()
