@@ -221,13 +221,6 @@ def _sample_jitter_factor(delta: float) -> float:
     return 1.0 + (2.0 * r - 1.0) * d
 
 
-def _normalize_det_label_scope_for_runtime(scope: str) -> str:
-    s = str(scope).strip().lower()
-    if s not in {"full", "subset", "none"}:
-        raise ValueError(f"invalid det_label_scope: {scope}")
-    return "full" if s == "subset" else s
-
-
 def _sample_scale(spec: AugmentSpec) -> float:
     lo = max(1e-6, float(spec.scale_min))
     hi = max(lo, float(spec.scale_max))
@@ -513,7 +506,7 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
         has_rm_road = _parse_bool01(row["has_rm_road_marker_non_lane"])
         has_rm_stop = _parse_bool01(row["has_rm_stop_line"])
         has_rm_lane_subclass = _parse_bool01(row["has_rm_lane_subclass"])
-        det_scope = _normalize_det_label_scope_for_runtime(row["det_label_scope"])
+        det_scope = row["det_label_scope"]
         det_annotated = row["det_annotated_class_ids"]
 
         lb = self.letterbox
