@@ -157,9 +157,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--split-policy",
         type=str,
-        default="all_train",
+        default="stable_by_context",
         choices=["all_train", "stable_by_context"],
-        help="Split policy (default: all_train for minimal contexts)",
+        help="Split policy (default: stable_by_context; use all_train only for intentional minimal-context experiments)",
     )
     p.add_argument(
         "--splits",
