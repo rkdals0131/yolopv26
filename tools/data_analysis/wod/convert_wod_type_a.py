@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import csv
 import io
-import os
 import sys
 import time
 from collections import Counter
@@ -39,15 +38,14 @@ from pv26.dataset.manifest import ManifestRow, write_manifest_csv
 from pv26.dataset.masks import make_all_ignore_mask
 from pv26.dataset.split_policy import stable_split_for_group_key
 from pv26.io import list_files_recursive, sha256_file, utc_now_iso, write_json
-from pv26.dataset.sources.wod import semantic_to_pv26_da_rm_masks
-
-
-WAYMO_TYPE_TO_PV26 = {
-    1: 0,   # VEHICLE -> car
-    2: 5,   # PEDESTRIAN -> pedestrian
-    3: 10,  # SIGN -> sign_pole
-    4: 4,   # CYCLIST -> bicycle
-}
+from pv26.dataset.sources.wod import (
+    WAYMO_CAMERA_BOX_DET_ANNOTATED_CLASS_IDS_CSV,
+    WAYMO_CAMERA_BOX_TO_PV26_DET_ID,
+    WAYMO_PANOPTIC_DET_ANNOTATED_CLASS_IDS_CSV,
+    decode_panoptic_to_semantic_instance,
+    panoptic_to_pv26_det_yolo_lines,
+    semantic_to_pv26_da_rm_masks,
+)
 
 CAMERA_NAME_MAP = {
     0: "unknown",
@@ -123,15 +121,6 @@ def _key_from_row(row: dict) -> Key:
         timestamp_micros=int(row["key.frame_timestamp_micros"]),
         camera_name=int(row["key.camera_name"]),
     )
-
-
-def _decode_panoptic_to_semantic(panoptic_png: bytes, divisor: int) -> np.ndarray:
-    if divisor <= 0:
-        raise ValueError(f"invalid panoptic divisor: {divisor}")
-    panoptic = np.array(Image.open(io.BytesIO(panoptic_png)), dtype=np.uint16)
-    semantic = panoptic // np.uint16(divisor)
-    return semantic.astype(np.int32)
-
 
 def _save_u8_mask(path: Path, arr: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,19 +311,7 @@ def main() -> int:
         out_img_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(out_img_path, format="JPEG", quality=95, optimize=True)
 
-        det_lines: List[str] = []
-        for b in boxes_by_key.get(key, []):
-            cls = WAYMO_TYPE_TO_PV26.get(int(b.box_type))
-            if cls is None:
-                continue
-            cx_n = _norm(b.cx, w)
-            cy_n = _norm(b.cy, h)
-            w_n = _norm(b.w, w)
-            h_n = _norm(b.h, h)
-            det_lines.append(f"{cls} {cx_n:.6f} {cy_n:.6f} {w_n:.6f} {h_n:.6f}")
-
         out_det_rel = str(Path("labels_det") / split / f"{sample_id}.txt")
-        _save_det_txt(out_root / out_det_rel, det_lines)
 
         out_da_rel = str(Path("labels_seg_da") / split / f"{sample_id}.png")
         out_rm_lane_rel = str(Path("labels_seg_rm_lane_marker") / split / f"{sample_id}.png")
@@ -342,19 +319,43 @@ def main() -> int:
         out_rm_stop_rel = str(Path("labels_seg_rm_stop_line") / split / f"{sample_id}.png")
         out_rm_lane_sub_rel = str(Path("labels_seg_rm_lane_subclass") / split / f"{sample_id}.png")
 
+        det_source: str
+        det_annotated_class_ids: str
         if seg is None:
+            det_lines: List[str] = []
+            for b in boxes_by_key.get(key, []):
+                cls = WAYMO_CAMERA_BOX_TO_PV26_DET_ID.get(int(b.box_type))
+                if cls is None:
+                    continue
+                cx_n = _norm(b.cx, w)
+                cy_n = _norm(b.cy, h)
+                w_n = _norm(b.w, w)
+                h_n = _norm(b.h, h)
+                det_lines.append(f"{cls} {cx_n:.6f} {cy_n:.6f} {w_n:.6f} {h_n:.6f}")
             da = make_all_ignore_mask(h, w)
             rm_lane = make_all_ignore_mask(h, w)
             rm_road = make_all_ignore_mask(h, w)
             has_da = 0
             has_lane = 0
             has_road = 0
+            det_source = "camera_box"
+            det_annotated_class_ids = WAYMO_CAMERA_BOX_DET_ANNOTATED_CLASS_IDS_CSV
         else:
-            sem = _decode_panoptic_to_semantic(seg.panoptic_png, seg.divisor)
+            sem, inst = decode_panoptic_to_semantic_instance(seg.panoptic_png, divisor=seg.divisor)
             da, rm_lane, rm_road = semantic_to_pv26_da_rm_masks(sem)
+            det_lines = panoptic_to_pv26_det_yolo_lines(
+                semantic_id=sem,
+                instance_id=inst,
+                width=int(w),
+                height=int(h),
+            )
             has_da = 1
             has_lane = 1
             has_road = 1
+            det_source = "panoptic_instance"
+            det_annotated_class_ids = WAYMO_PANOPTIC_DET_ANNOTATED_CLASS_IDS_CSV
+
+        _save_det_txt(out_root / out_det_rel, det_lines)
 
         rm_stop = make_all_ignore_mask(h, w)
         rm_lane_sub = make_all_ignore_mask(h, w)
@@ -383,7 +384,7 @@ def main() -> int:
             has_rm_lane_subclass=has_lane_sub,
             has_semantic_id=0,
             det_label_scope="subset",
-            det_annotated_class_ids="0,4,5,10",
+            det_annotated_class_ids=det_annotated_class_ids,
             image_relpath=out_img_rel,
             det_relpath=out_det_rel,
             da_relpath=out_da_rel,
@@ -406,6 +407,7 @@ def main() -> int:
         counts[f"has_det:{int(manifest_row.has_det)}"] += 1
         counts[f"has_da:{int(manifest_row.has_da)}"] += 1
         counts[f"has_rm_lane_marker:{int(manifest_row.has_rm_lane_marker)}"] += 1
+        counts[f"det_source:{det_source}"] += 1
 
         done += 1
         if done % 500 == 0:
@@ -458,7 +460,9 @@ def main() -> int:
         "notes": [
             "Waymo Perception v2 semantic IDs are mapped: ROAD->DA, LANE_MARKER->rm_lane_marker, ROAD_MARKER->rm_road_marker_non_lane.",
             "Stop line and lane subclass supervision are unavailable; masks are all-255 with has_rm_stop_line=0 and has_rm_lane_subclass=0.",
-            "Detection labels cover only a subset of PV26 classes; det_label_scope=subset with det_annotated_class_ids='0,4,5,10'.",
+            "Detection labels stay subset-only, but segmentation-available samples now derive OD boxes from panoptic thing instances using minimal axis-aligned bbox.",
+            "When segmentation is unavailable, detection falls back to camera_box labels.",
+            "Panoptic-derived samples advertise det_annotated_class_ids='0,1,2,3,4,5,6,9,10'; camera_box fallback samples keep '0,4,5,10'.",
         ],
     }
     write_json(layout.report_path(), report)
