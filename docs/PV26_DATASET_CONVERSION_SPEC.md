@@ -128,13 +128,13 @@ YOLO text format per line:
 `<class_id> <cx> <cy> <w> <h>`
 
 Rules:
-1. `class_id`: integer in `[0, 10]`
+1. `class_id`: integer in `[0, 6]`
 2. `cx, cy, w, h`: normalized float in `[0.0, 1.0]`
 3. Float precision: 6 decimal places
 4. Empty file is allowed when no objects exist
 5. `min_box_area_px` is a configurable conversion parameter
 6. MVP default is `min_box_area_px=0` (no box drop by size)
-7. Small-object-critical classes (`traffic_cone`, `bollard`, `road_obstacle`) must never be dropped by area threshold
+7. Small-object-critical classes (`traffic_cone`, `traffic_light`, `sign_pole`) must never be dropped by area threshold
 8. Boxes clipped to image bounds before normalization
 
 ## 3.6 Segmentation Mask Format
@@ -204,6 +204,10 @@ Notes:
 29. `scene_tag` (`open|tunnel|shadow|unknown`)
 30. `source_group_key`
 
+Active policy note:
+1. New coarse-7class converters should prefer `det_label_scope=full` or `none`.
+2. `subset` remains only for backward compatibility or truly partial legacy sources.
+
 ## 3.8 RoadMarking Label Normalization Policy
 
 1. Road-marking source format must be declared per dataset/sample as one of:
@@ -229,17 +233,13 @@ Notes:
 
 | det_id | class_name |
 |---|---|
-| 0 | car |
-| 1 | bus |
-| 2 | truck |
-| 3 | motorcycle |
-| 4 | bicycle |
-| 5 | pedestrian |
-| 6 | traffic_cone |
-| 7 | barrier |
-| 8 | bollard |
-| 9 | road_obstacle |
-| 10 | sign_pole |
+| 0 | vehicle |
+| 1 | bike |
+| 2 | pedestrian |
+| 3 | traffic_cone |
+| 4 | obstacle |
+| 5 | traffic_light |
+| 6 | sign_pole |
 
 ## 4.2 Segmentation Classes
 
@@ -268,14 +268,13 @@ Inputs:
 3. Road marking annotations (lane markers and other road markers when available)
 
 Mapping:
-1. `car -> car`
-2. `bus -> bus`
-3. `truck -> truck`
-4. `motorcycle -> motorcycle`
-5. `bicycle -> bicycle`
-6. `person -> pedestrian`
-7. `traffic sign|traffic light|pole-like roadside fixture -> sign_pole`
-8. Unmapped movable road hazards -> `road_obstacle`
+1. `car|bus|truck|other vehicle -> vehicle`
+2. `motorcycle|bicycle|bike -> bike`
+3. `person|pedestrian|rider -> pedestrian`
+4. `traffic light|light -> traffic_light`
+5. `traffic sign|pole|pole-like roadside fixture|sign -> sign_pole`
+6. `traffic cone|construction cone|cone -> traffic_cone`
+7. `barrier|bollard|train|road obstacle -> obstacle`
 
 Segmentation:
 1. Drivable labels (`direct`, `alternative`) -> `drivable=1`
@@ -293,13 +292,12 @@ Inputs:
 Mapping:
 1. `person -> pedestrian`
 2. `rider -> pedestrian`
-3. `car -> car`
-4. `truck -> truck`
-5. `bus -> bus`
-6. `motorcycle -> motorcycle`
-7. `bicycle -> bicycle`
-8. `train -> road_obstacle`
-9. Set `det_label_scope=subset` and record actual annotated canonical det IDs in `det_annotated_class_ids`.
+3. `car|truck|bus -> vehicle`
+4. `motorcycle|bicycle -> bike`
+5. `traffic light -> traffic_light` when explicit external OD source is available
+6. `traffic sign|pole -> sign_pole` when explicit external OD source is available
+7. `train -> obstacle`
+8. Set `det_label_scope=subset` and record actual annotated canonical det IDs in `det_annotated_class_ids`.
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
@@ -315,9 +313,9 @@ Inputs:
 1. 2D/3D semantic and instance annotations
 
 Mapping policy:
-1. Apply Cityscapes-equivalent class mapping where labels overlap
-2. Vehicle/person/cycle classes map to PV26 detection IDs
-3. Static unknown obstacles map to `road_obstacle` only if confidently labeled
+1. Apply Cityscapes-equivalent coarse mapping where labels overlap
+2. Vehicle/person/cycle classes map to `vehicle|pedestrian|bike`
+3. Static unknown obstacles map to `obstacle` only if confidently labeled
 4. Set `det_label_scope=subset` and fill `det_annotated_class_ids` based on available labels.
 
 Segmentation:
@@ -331,13 +329,16 @@ Inputs:
 2. Panoptic/semantic labels when available
 
 Detection mapping:
-1. `vehicle -> car` (default)
-2. `pedestrian -> pedestrian`
-3. `cyclist -> bicycle`
-4. `motorcyclist -> motorcycle` (if explicitly available)
-5. `sign -> sign_pole`
-6. Unknown movable hazards -> `road_obstacle`
-7. Set `det_label_scope=subset` unless all canonical classes are explicitly covered.
+1. Active 7-class export is segmentation-backed only.
+2. `TYPE_CAR|TYPE_TRUCK|TYPE_BUS|TYPE_OTHER_LARGE_VEHICLE|TYPE_TRAILER -> vehicle`
+3. `TYPE_BICYCLE|TYPE_MOTORCYCLE|TYPE_CYCLIST|TYPE_MOTORCYCLIST -> bike`
+4. `TYPE_PEDESTRIAN -> pedestrian`
+5. `TYPE_CONSTRUCTION_CONE_POLE -> traffic_cone`
+6. `TYPE_PEDESTRIAN_OBJECT -> obstacle`
+7. `TYPE_TRAFFIC_LIGHT -> traffic_light`
+8. `TYPE_SIGN|TYPE_POLE -> sign_pole`
+9. Rows without `camera_segmentation` are skipped for OD export instead of falling back to coarse `camera_box` subset labels.
+10. Active generated WOD rows use `det_label_scope=full`.
 
 Segmentation:
 1. Road surface classes -> `drivable=1`
