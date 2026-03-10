@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scan and process many Waymo/WOD parquet contexts into per-context PV26 Type-A shards.
+Scan and process many Waymo/WOD parquet contexts into per-context PV26 shards.
 
 Workflow:
   1. `scan` records what is currently downloaded under training_root.
@@ -39,10 +39,10 @@ from pv26.dataset.wod_bulk import (
     write_wod_bulk_state_csv,
 )
 from pv26.io import utc_now_iso
-from tools.data_analysis.merge_pv26_type_a import merge_pv26_datasets
+from tools.data_analysis.merge_pv26_dataset import merge_pv26_datasets
 
 
-CONVERTER_SCRIPT = REPO_ROOT / "tools" / "data_analysis" / "wod" / "convert_wod_type_a.py"
+CONVERTER_SCRIPT = REPO_ROOT / "tools" / "data_analysis" / "wod" / "convert_wod_pv26.py"
 
 
 def _default_state_path(shards_root: Path) -> Path:
@@ -268,7 +268,7 @@ def _run_merge(args: argparse.Namespace) -> int:
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Bulk WOD scan/process/merge pipeline for PV26 Type-A shards.")
+    p = argparse.ArgumentParser(description="Bulk WOD scan/process/merge pipeline for PV26 shards.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def _add_common_scan_args(sp: argparse.ArgumentParser) -> None:

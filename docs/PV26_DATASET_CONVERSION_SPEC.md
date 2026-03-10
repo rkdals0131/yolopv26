@@ -487,7 +487,7 @@ This repo currently uses dataset-specific converter scripts (adapters).
 
 Convert:
 ```bash
-python tools/data_analysis/bdd/convert_bdd_type_a.py \
+python tools/data_analysis/bdd/convert_bdd_pv26.py \
   --images-root <BDD_IMAGES_DIR> \
   --labels <BDD_LABELS_DIR_OR_JSON> \
   --drivable-root <BDD_DRIVABLE_MASK_DIR> \
@@ -512,7 +512,7 @@ python tools/data_analysis/bdd/pv26_qc_report.py --dataset-root <OUT_ROOT> --out
 
 ### 10.2 Adding a new dataset adapter (ETRI/RLMD/WOD/…)
 
-When implementing `tools/data_analysis/<dataset>/convert_<dataset>_type_a.py`, enforce:
+When implementing `tools/data_analysis/<dataset>/convert_<dataset>_pv26.py`, enforce:
 1. Output directory layout matches Section 3.2.
 2. `meta/split_manifest.csv` is the source-of-truth for loaders and validators.
 3. Partial-label policy is strict:

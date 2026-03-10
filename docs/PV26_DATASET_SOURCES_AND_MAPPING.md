@@ -2,7 +2,7 @@
 
 - Doc version: `v1.2`
 - Last reviewed: `2026-03-10`
-- Scope: local `datasets/` inventory + source label inventory + mapping review notes for PV26 Type-A
+- Scope: local `datasets/` inventory + source label inventory + mapping review notes for the PV26 unified dataset format
 - See also:
   - Product / runtime contract: `docs/PV26_PRD.md`
   - Conversion output contract: `docs/PV26_DATASET_CONVERSION_SPEC.md`
@@ -364,7 +364,7 @@ From checked-in legacy snapshot:
 #### Current implementation usage
 
 - adapter is still planned
-- current repo has no active normalized KITTI-360 Type-A builder
+- current repo has no active normalized KITTI-360 PV26 builder
 
 #### Provisional 7-class proposal
 
@@ -476,7 +476,7 @@ Checked-in snapshot also shows semantic / panoptic types such as:
 
 #### Current implementation usage
 
-Current converter (`tools/data_analysis/wod/convert_wod_type_a.py`):
+Current converter (`tools/data_analysis/wod/convert_wod_pv26.py`):
 - rows without `camera_segmentation` are skipped for OD export
 - segmentation-backed rows:
   - decode panoptic into `semantic_id + instance_id`
@@ -549,7 +549,7 @@ These are still subject to ongoing review even though the baseline has moved to 
 ## 9) Read-Only Raw -> Unified Output Mapping
 
 원본 데이터셋은 read-only로 취급하고, 변환 결과만 `out_root`에 생성한다.
-입력 구조가 달라도 출력 구조는 PV26 Type-A로 동일하다.
+입력 구조가 달라도 출력 구조는 PV26로 동일하다.
 
 공통 결과 디렉터리:
 - `images/<split>/<sample_id>.jpg`

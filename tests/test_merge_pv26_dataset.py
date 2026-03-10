@@ -9,7 +9,7 @@ from PIL import Image
 
 from pv26.dataset.classmap import render_class_map_yaml
 from pv26.dataset.validation import validate_pv26_dataset
-from tools.data_analysis.merge_pv26_type_a import merge_pv26_datasets
+from tools.data_analysis.merge_pv26_dataset import merge_pv26_datasets
 
 
 def _write_text(path: Path, text: str) -> None:

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Interactive orchestrator for PV26 Type-A normalization across BDD/ETRI/RLMD/WOD.
+Interactive orchestrator for PV26 dataset normalization across BDD/ETRI/RLMD/WOD.
 
 Pipeline per selected dataset:
-  1) convert_<dataset>_type_a.py
+  1) convert_<dataset>_pv26.py
   2) validate_pv26_dataset.py (optional)
   3) pv26_qc_report.py (optional)
   4) render_pv26_debug_masks.py (optional)
@@ -444,7 +444,7 @@ def _build_dataset_configs(args: argparse.Namespace, *, run_id: str) -> List[Dat
         convert_argv = [
             sys.executable,
             "-u",
-            str(REPO_ROOT / "tools" / "data_analysis" / "bdd" / "convert_bdd_type_a.py"),
+            str(REPO_ROOT / "tools" / "data_analysis" / "bdd" / "convert_bdd_pv26.py"),
             "--images-root",
             str(images_root),
             "--labels",
@@ -499,7 +499,7 @@ def _build_dataset_configs(args: argparse.Namespace, *, run_id: str) -> List[Dat
         convert_argv = [
             sys.executable,
             "-u",
-            str(REPO_ROOT / "tools" / "data_analysis" / "etri" / "convert_etri_type_a.py"),
+            str(REPO_ROOT / "tools" / "data_analysis" / "etri" / "convert_etri_pv26.py"),
             "--etri-root",
             str(etri_root),
             "--out-root",
@@ -541,7 +541,7 @@ def _build_dataset_configs(args: argparse.Namespace, *, run_id: str) -> List[Dat
         convert_argv = [
             sys.executable,
             "-u",
-            str(REPO_ROOT / "tools" / "data_analysis" / "rlmd" / "convert_rlmd_type_a.py"),
+            str(REPO_ROOT / "tools" / "data_analysis" / "rlmd" / "convert_rlmd_pv26.py"),
             "--rlmd-root",
             str(rlmd_root),
             "--out-root",
@@ -599,7 +599,7 @@ def _build_dataset_configs(args: argparse.Namespace, *, run_id: str) -> List[Dat
         convert_argv = [
             sys.executable,
             "-u",
-            str(REPO_ROOT / "tools" / "data_analysis" / "wod" / "convert_wod_type_a.py"),
+            str(REPO_ROOT / "tools" / "data_analysis" / "wod" / "convert_wod_pv26.py"),
             "--training-root",
             str(wod_root),
             "--out-root",
@@ -855,7 +855,7 @@ def _run_single_dataset(ds: DatasetRunConfig, post_cfg: PostConfig, run_id: str)
 
     try:
         print(f"\n[pv26][{ds.key}] [1단계/변환] {ds.label} 변환 시작", flush=True)
-        print("  - 의미: 원본 데이터를 PV26 Type-A 학습 구조로 표준화합니다.", flush=True)
+        print("  - 의미: 원본 데이터를 PV26 학습 구조로 표준화합니다.", flush=True)
         r = _run_stage(f"{ds.key}:convert", ds.convert_argv, cwd=REPO_ROOT)
         stage_results.append(r)
         if r.returncode != 0:

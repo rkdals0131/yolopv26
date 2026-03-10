@@ -1,4 +1,4 @@
-# PV26 Type-A — Dataset Adapters Status
+# PV26 Unified Dataset Adapters Status
 
 This repo contains runnable **PV26 Type‑A** dataset converters (adapters) that export the canonical layout + manifest.
 
@@ -22,7 +22,7 @@ Contracts implemented:
 
 This is a shape/interface bootstrap for PV26 integration and tests, not a final YOLO26 production graph yet.
 
-## 1) Converter: `tools/data_analysis/bdd/convert_bdd_type_a.py` (BDD100K)
+## 1) Converter: `tools/data_analysis/bdd/convert_bdd_pv26.py` (BDD100K)
 
 ### Expected inputs
 - `--images-root`: directory containing BDD images (`.jpg/.jpeg/.png`)
@@ -35,7 +35,7 @@ This is a shape/interface bootstrap for PV26 integration and tests, not a final 
 
 ### Example
 ```bash
-python tools/data_analysis/bdd/convert_bdd_type_a.py \
+python tools/data_analysis/bdd/convert_bdd_pv26.py \
   --images-root /path/to/bdd/images \
   --labels /path/to/bdd/per_image_json \
   --drivable-root /path/to/bdd/drivable_id_masks \
@@ -100,21 +100,21 @@ python -m unittest -v
 
 ## 6) Additional Converters (ETRI/RLMD/WOD)
 
-### 6.1 ETRI: `tools/data_analysis/etri/convert_etri_type_a.py`
+### 6.1 ETRI: `tools/data_analysis/etri/convert_etri_pv26.py`
 - Inputs: `datasets/ETRI/MonoCameraSemanticSegmentation` + `datasets/ETRI/Multi Camera Semantic Segmentation`
 - Outputs:
   - `has_det=0`, empty detection txt
   - DA from `road`
   - RM lane subclass from `whsol/whdot/yesol/yedot` (others lane-like are `255(ignore)` in subclass)
 
-### 6.2 RLMD: `tools/data_analysis/rlmd/convert_rlmd_type_a.py`
+### 6.2 RLMD: `tools/data_analysis/rlmd/convert_rlmd_pv26.py`
 - Inputs: `datasets/RLMD/RLMD_1080p` + `datasets/RLMD/RLMD-AC` (labels가 존재하는 split만)
 - Outputs:
   - `has_det=0`, `has_da=0` (DA는 all-255)
   - RM lane marker + non-lane + stop line
   - lane subclass는 white/yellow solid/dashed만 매핑, 나머지 lane-marker 픽셀은 `255(ignore)`
 
-### 6.3 Waymo/WOD: `tools/data_analysis/wod/convert_wod_type_a.py`
+### 6.3 Waymo/WOD: `tools/data_analysis/wod/convert_wod_pv26.py`
 - Inputs: `datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training` (parquet)
 - Outputs:
   - Detection은 panoptic instance 기반 coarse 7-class로 추출 → `det_label_scope=full`

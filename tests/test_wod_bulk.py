@@ -17,7 +17,7 @@ from pv26.dataset.wod_bulk import (
     completed_shard_roots_from_state,
     reconcile_wod_bulk_state,
 )
-from tools.data_analysis.wod.process_wod_type_a_bulk import main as wod_bulk_main
+from tools.data_analysis.wod.process_wod_pv26_bulk import main as wod_bulk_main
 
 
 def _touch(path: Path, *, size: int = 1) -> None:
@@ -228,7 +228,7 @@ class TestWodBulkTool(unittest.TestCase):
 
             import subprocess
 
-            with mock.patch("tools.data_analysis.wod.process_wod_type_a_bulk.subprocess.run", side_effect=_fake_run):
+            with mock.patch("tools.data_analysis.wod.process_wod_pv26_bulk.subprocess.run", side_effect=_fake_run):
                 rc = wod_bulk_main(
                     [
                         "run",

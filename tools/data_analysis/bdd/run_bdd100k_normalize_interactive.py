@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Interactive BDD100K -> PV26 Type-A normalization orchestrator (BDD-only).
+Interactive BDD100K -> PV26 normalization orchestrator.
 
 This script is intentionally BDD-only and hardcodes:
   - output root: datasets/pv26_v1_bdd_full
@@ -10,7 +10,7 @@ This script is intentionally BDD-only and hardcodes:
       - bdd100k_drivable_maps/labels
 
 It runs the pipeline in order:
-  1) tools/data_analysis/bdd/convert_bdd_type_a.py
+  1) tools/data_analysis/bdd/convert_bdd_pv26.py
   2) tools/data_analysis/bdd/validate_pv26_dataset.py (optional)
   3) tools/data_analysis/bdd/pv26_qc_report.py (always; writes meta/qc_report.json)
   4) tools/debug/render_pv26_debug_masks.py (optional)
@@ -262,7 +262,7 @@ def _run_stage(name: str, argv: Sequence[str], *, cwd: Path) -> StageResult:
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Interactive BDD100K -> PV26 Type-A dataset normalization (BDD-only).")
+    p = argparse.ArgumentParser(description="Interactive BDD100K -> PV26 dataset normalization.")
     p.add_argument("--bdd-root", type=Path, required=True, help="BDD100K root directory.")
     return p
 
@@ -396,7 +396,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         # 1) Convert.
-        convert_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "convert_bdd_type_a.py"
+        convert_py = REPO_ROOT / "tools" / "data_analysis" / "bdd" / "convert_bdd_pv26.py"
         convert_argv: List[str] = [
             sys.executable,
             "-u",
@@ -432,7 +432,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "검출 라벨+주행가능영역+도로마커 마스크를 생성합니다.",
             flush=True,
         )
-        r = _run_stage("convert_bdd_type_a", convert_argv, cwd=REPO_ROOT)
+        r = _run_stage("convert_bdd_pv26", convert_argv, cwd=REPO_ROOT)
         stage_results.append(r)
         if r.returncode != 0:
             failed_stage = r.name

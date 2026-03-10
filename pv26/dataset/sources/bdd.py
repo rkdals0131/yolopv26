@@ -353,7 +353,7 @@ def bdd_record_to_rm_masks_with_lane_subclass(
         has_lane_subclass,
       )
 
-    Policy for current Type-A:
+    Policy for the current PV26 unified adapter:
     - lane/non-lane/subclass channels are supervised when record exists
       (has_lane=has_road=has_lane_subclass=1)
     - stop_line class is treated as unavailable in BDD100K 100k schema by default
@@ -418,7 +418,7 @@ def bdd_record_to_rm_masks_with_lane_subclass(
     rm_lane_sub_ign = np.array(lane_sub_ign_img, dtype=np.uint8)
     rm_lane_subclass[rm_lane_sub_ign == 1] = 255
 
-    # Current Type-A default: stop line supervision unavailable -> ignore channel.
+    # Current PV26 adapter default: stop line supervision unavailable -> ignore channel.
     if saw_explicit_stop:
         rm_stop = np.array(stop_img, dtype=np.uint8)
         has_stop = 1

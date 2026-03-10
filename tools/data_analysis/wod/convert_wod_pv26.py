@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert Waymo Open Dataset (Perception v2 parquet) into PV26 Type-A dataset layout.
+Convert Waymo Open Dataset (Perception v2 parquet) into the PV26 unified dataset layout.
 
 This implementation targets the minimal sample first (single context parquet per component)
 but keeps the I/O contract compatible with the PV26 conversion spec.
@@ -371,7 +371,7 @@ def main() -> int:
     _write_checksums_parallel(out_root=out_root, files=exported_files, out_path=layout.checksums_path())
 
     report = {
-        "converter": "convert_wod_type_a.py",
+        "converter": "convert_wod_pv26.py",
         "converter_version": "0.1.0",
         "spec": "docs/PV26_DATASET_CONVERSION_SPEC.md v1.5",
         "timestamp_utc": utc_now_iso(),

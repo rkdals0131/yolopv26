@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert ETRI (Mono+Multi polygon JSON) into PV26 Type-A dataset layout.
+Convert ETRI (Mono+Multi polygon JSON) into the PV26 unified dataset layout.
 
 Implements the adapter contract described in:
 - docs/PV26_PRD.md
@@ -30,7 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 from pv26.dataset.classmap import render_class_map_yaml
 from pv26.dataset.labels import CLASSMAP_VERSION_V3
 from pv26.dataset.layout import Pv26Layout, SPLITS
-from pv26.dataset.sources.etri import read_etri_polygon_json, rasterize_etri_type_a_masks
+from pv26.dataset.sources.etri import read_etri_polygon_json, rasterize_etri_pv26_masks
 from pv26.dataset.manifest import ManifestRow, write_manifest_csv
 from pv26.dataset.split_policy import stable_split_for_group_key
 from pv26.io import list_files_recursive, sha256_file, utc_now_iso, write_json
@@ -145,7 +145,7 @@ def _process_convert_task(task: ConvertTask, *, out_root: Path) -> ConvertTaskRe
     w, h = _save_image_as_jpg(out_root / out_img_rel, Path(task.image_path))
 
     data = read_etri_polygon_json(Path(task.label_json))
-    da, rm_lane, rm_road, rm_stop, rm_lane_sub = rasterize_etri_type_a_masks(data, width=w, height=h)
+    da, rm_lane, rm_road, rm_stop, rm_lane_sub = rasterize_etri_pv26_masks(data, width=w, height=h)
 
     _save_det_txt(out_root / out_det_rel, [])
     _save_u8_mask(out_root / out_da_rel, da)
@@ -522,7 +522,7 @@ def main() -> int:
     _write_checksums_parallel(out_root=out_root, files=exported_files, workers=workers, out_path=layout.checksums_path())
 
     report = {
-        "converter": "convert_etri_type_a.py",
+        "converter": "convert_etri_pv26.py",
         "converter_version": "0.1.0",
         "spec": "docs/PV26_DATASET_CONVERSION_SPEC.md v1.5",
         "timestamp_utc": utc_now_iso(),
