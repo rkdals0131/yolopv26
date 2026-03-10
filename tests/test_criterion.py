@@ -116,6 +116,24 @@ class TestPV26CriterionMasking(unittest.TestCase):
         loss_b = self.criterion(preds_b, batch)["rm_lane_subclass"]
         self.assertAlmostEqual(float(loss_a), float(loss_b), places=6)
 
+    def test_rm_lane_subclass_ignores_positive_labels_outside_gt_lane_marker(self):
+        preds_a = self._preds()
+        preds_b = self._preds()
+        preds_b.rm_lane_subclass[:, 2, 0, 0] = 12.0
+
+        batch = self._base_batch()
+        batch["has_rm_lane_marker"] = torch.tensor([1], dtype=torch.long)
+        batch["has_rm_lane_subclass"] = torch.tensor([1], dtype=torch.long)
+        batch["rm_mask"] = torch.tensor(
+            [[[[0, 1], [0, 0]], [[255, 255], [255, 255]], [[255, 255], [255, 255]]]],
+            dtype=torch.uint8,
+        )
+        batch["rm_lane_subclass_mask"] = torch.tensor([[[2, 1], [255, 255]]], dtype=torch.uint8)
+
+        loss_a = self.criterion(preds_a, batch)["rm_lane_subclass"]
+        loss_b = self.criterion(preds_b, batch)["rm_lane_subclass"]
+        self.assertAlmostEqual(float(loss_a), float(loss_b), places=6)
+
     def test_rm_lane_subclass_ignores_pixels_outside_gt_lane_marker(self):
         preds_a = self._preds()
         preds_b = self._preds()
