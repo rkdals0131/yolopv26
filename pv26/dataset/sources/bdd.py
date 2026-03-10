@@ -21,33 +21,35 @@ from ..yolo import BoxXYXY, format_yolo_line, xyxy_to_yolo_normalized
 
 BDD_TO_CANONICAL_DET: Dict[str, str] = {
     # direct matches
-    "car": "car",
-    "bus": "bus",
-    "truck": "truck",
-    "motorcycle": "motorcycle",
-    "bicycle": "bicycle",
-    "bike": "bicycle",
+    "car": "vehicle",
+    "bus": "vehicle",
+    "truck": "vehicle",
+    "other vehicle": "vehicle",
+    "motorcycle": "bike",
+    "bicycle": "bike",
+    "bike": "bike",
     "person": "pedestrian",
     "pedestrian": "pedestrian",
     # map "rider" to pedestrian (Cityscapes policy equivalent, pragmatic)
     "rider": "pedestrian",
-    # fixtures -> sign_pole bucket per spec
+    # fixtures
     "traffic sign": "sign_pole",
-    "traffic light": "sign_pole",
+    "traffic light": "traffic_light",
     "pole": "sign_pole",
     "pole-like roadside fixture": "sign_pole",
     "sign": "sign_pole",
-    "light": "sign_pole",
+    "light": "traffic_light",
     # obstacle-like classes
     "traffic cone": "traffic_cone",
     "construction cone": "traffic_cone",
     "cone": "traffic_cone",
-    "barrier": "barrier",
-    "bollard": "bollard",
+    "barrier": "obstacle",
+    "bollard": "obstacle",
+    "road obstacle": "obstacle",
+    "road_obstacle": "obstacle",
     # hazards (best-effort)
-    "other vehicle": "road_obstacle",
-    "train": "road_obstacle",
-    "motor": "motorcycle",
+    "train": "obstacle",
+    "motor": "bike",
 }
 
 

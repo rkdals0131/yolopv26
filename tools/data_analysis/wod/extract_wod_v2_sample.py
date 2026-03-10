@@ -39,10 +39,10 @@ CAMERA_NAME_MAP = {
 
 
 WAYMO_TYPE_TO_PV26 = {
-    1: 0,   # VEHICLE -> car
-    2: 5,   # PEDESTRIAN -> pedestrian
-    3: 10,  # SIGN -> sign_pole
-    4: 4,   # CYCLIST -> bicycle
+    1: 0,  # VEHICLE -> vehicle
+    2: 2,  # PEDESTRIAN -> pedestrian
+    3: 6,  # SIGN -> sign_pole
+    4: 1,  # CYCLIST -> bike
 }
 
 

@@ -39,9 +39,6 @@ from pv26.dataset.masks import make_all_ignore_mask
 from pv26.dataset.split_policy import stable_split_for_group_key
 from pv26.io import list_files_recursive, sha256_file, utc_now_iso, write_json
 from pv26.dataset.sources.wod import (
-    WAYMO_CAMERA_BOX_DET_ANNOTATED_CLASS_IDS_CSV,
-    WAYMO_CAMERA_BOX_TO_PV26_DET_ID,
-    WAYMO_PANOPTIC_DET_ANNOTATED_CLASS_IDS_CSV,
     decode_panoptic_to_semantic_instance,
     panoptic_to_pv26_det_yolo_lines,
     semantic_to_pv26_da_rm_masks,
@@ -68,15 +65,6 @@ class Key:
 class SegEntry:
     divisor: int
     panoptic_png: bytes
-
-
-@dataclass(frozen=True)
-class BoxEntry:
-    box_type: int
-    cx: float
-    cy: float
-    w: float
-    h: float
 
 
 def _fmt_duration(seconds: Optional[float]) -> str:
@@ -133,13 +121,6 @@ def _save_det_txt(path: Path, lines: List[str]) -> None:
         for ln in lines:
             f.write(ln.rstrip() + "\n")
 
-
-def _norm(v: float, denom: int) -> float:
-    if denom <= 0:
-        return 0.0
-    return float(v) / float(denom)
-
-
 def _write_checksums_parallel(*, out_root: Path, files: Sequence[Path], out_path: Path) -> None:
     if not files:
         out_path.write_text("", encoding="utf-8")
@@ -161,7 +142,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--training-root",
         type=Path,
         default=Path("datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training"),
-        help="Waymo training root containing camera_image/camera_box/camera_segmentation",
+        help="Waymo training root containing camera_image/camera_segmentation",
     )
     p.add_argument(
         "--out-root",
@@ -191,7 +172,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--require-seg",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Export only rows that have camera_segmentation (default: false)",
+        help="Legacy flag; 7-class export is segmentation-backed so seg-missing rows are skipped regardless.",
     )
     p.add_argument("--run-id", type=str, default="", help="Optional run id for conversion report")
     return p
@@ -210,15 +191,13 @@ def main() -> int:
 
     img_dir = training_root / "camera_image"
     seg_dir = training_root / "camera_segmentation"
-    box_dir = training_root / "camera_box"
-    if not img_dir.exists() or not seg_dir.exists() or not box_dir.exists():
+    if not img_dir.exists() or not seg_dir.exists():
         print(f"[pv26][waymo] missing component dirs under: {training_root}", flush=True)
         return 2
 
     ctx = args.context_name
     image_parquet = _pick_parquet(img_dir, ctx)
     seg_parquet = _pick_parquet(seg_dir, ctx)
-    box_parquet = _pick_parquet(box_dir, ctx)
 
     seg_cols = [
         "key.segment_context_name",
@@ -233,29 +212,6 @@ def main() -> int:
         seg_by_key[key] = SegEntry(
             divisor=int(row["[CameraSegmentationLabelComponent].panoptic_label_divisor"]),
             panoptic_png=row["[CameraSegmentationLabelComponent].panoptic_label"],
-        )
-
-    box_cols = [
-        "key.segment_context_name",
-        "key.frame_timestamp_micros",
-        "key.camera_name",
-        "[CameraBoxComponent].type",
-        "[CameraBoxComponent].box.center.x",
-        "[CameraBoxComponent].box.center.y",
-        "[CameraBoxComponent].box.size.x",
-        "[CameraBoxComponent].box.size.y",
-    ]
-    boxes_by_key: Dict[Key, List[BoxEntry]] = {}
-    for row in _iter_rows(str(box_parquet), columns=box_cols):
-        key = _key_from_row(row)
-        boxes_by_key.setdefault(key, []).append(
-            BoxEntry(
-                box_type=int(row["[CameraBoxComponent].type"]),
-                cx=float(row["[CameraBoxComponent].box.center.x"]),
-                cy=float(row["[CameraBoxComponent].box.center.y"]),
-                w=float(row["[CameraBoxComponent].box.size.x"]),
-                h=float(row["[CameraBoxComponent].box.size.y"]),
-            )
         )
 
     img_cols = [
@@ -276,7 +232,7 @@ def main() -> int:
         key = _key_from_row(row)
 
         seg = seg_by_key.get(key)
-        if args.require_seg and seg is None:
+        if seg is None:
             continue
 
         camera_name = CAMERA_NAME_MAP.get(int(key.camera_name), f"cam{int(key.camera_name)}")
@@ -319,41 +275,18 @@ def main() -> int:
         out_rm_stop_rel = str(Path("labels_seg_rm_stop_line") / split / f"{sample_id}.png")
         out_rm_lane_sub_rel = str(Path("labels_seg_rm_lane_subclass") / split / f"{sample_id}.png")
 
-        det_source: str
-        det_annotated_class_ids: str
-        if seg is None:
-            det_lines: List[str] = []
-            for b in boxes_by_key.get(key, []):
-                cls = WAYMO_CAMERA_BOX_TO_PV26_DET_ID.get(int(b.box_type))
-                if cls is None:
-                    continue
-                cx_n = _norm(b.cx, w)
-                cy_n = _norm(b.cy, h)
-                w_n = _norm(b.w, w)
-                h_n = _norm(b.h, h)
-                det_lines.append(f"{cls} {cx_n:.6f} {cy_n:.6f} {w_n:.6f} {h_n:.6f}")
-            da = make_all_ignore_mask(h, w)
-            rm_lane = make_all_ignore_mask(h, w)
-            rm_road = make_all_ignore_mask(h, w)
-            has_da = 0
-            has_lane = 0
-            has_road = 0
-            det_source = "camera_box"
-            det_annotated_class_ids = WAYMO_CAMERA_BOX_DET_ANNOTATED_CLASS_IDS_CSV
-        else:
-            sem, inst = decode_panoptic_to_semantic_instance(seg.panoptic_png, divisor=seg.divisor)
-            da, rm_lane, rm_road = semantic_to_pv26_da_rm_masks(sem)
-            det_lines = panoptic_to_pv26_det_yolo_lines(
-                semantic_id=sem,
-                instance_id=inst,
-                width=int(w),
-                height=int(h),
-            )
-            has_da = 1
-            has_lane = 1
-            has_road = 1
-            det_source = "panoptic_instance"
-            det_annotated_class_ids = WAYMO_PANOPTIC_DET_ANNOTATED_CLASS_IDS_CSV
+        sem, inst = decode_panoptic_to_semantic_instance(seg.panoptic_png, divisor=seg.divisor)
+        da, rm_lane, rm_road = semantic_to_pv26_da_rm_masks(sem)
+        det_lines = panoptic_to_pv26_det_yolo_lines(
+            semantic_id=sem,
+            instance_id=inst,
+            width=int(w),
+            height=int(h),
+        )
+        has_da = 1
+        has_lane = 1
+        has_road = 1
+        det_source = "panoptic_instance"
 
         _save_det_txt(out_root / out_det_rel, det_lines)
 
@@ -383,8 +316,8 @@ def main() -> int:
             has_rm_stop_line=has_stop,
             has_rm_lane_subclass=has_lane_sub,
             has_semantic_id=0,
-            det_label_scope="subset",
-            det_annotated_class_ids=det_annotated_class_ids,
+            det_label_scope="full",
+            det_annotated_class_ids="",
             image_relpath=out_img_rel,
             det_relpath=out_det_rel,
             da_relpath=out_da_rel,
@@ -460,9 +393,9 @@ def main() -> int:
         "notes": [
             "Waymo Perception v2 semantic IDs are mapped: ROAD->DA, LANE_MARKER->rm_lane_marker, ROAD_MARKER->rm_road_marker_non_lane.",
             "Stop line and lane subclass supervision are unavailable; masks are all-255 with has_rm_stop_line=0 and has_rm_lane_subclass=0.",
-            "Detection labels stay subset-only, but segmentation-available samples now derive OD boxes from panoptic thing instances using minimal axis-aligned bbox.",
-            "When segmentation is unavailable, detection falls back to camera_box labels.",
-            "Panoptic-derived samples advertise det_annotated_class_ids='0,1,2,3,4,5,6,9,10'; camera_box fallback samples keep '0,4,5,10'.",
+            "7-class WOD export is segmentation-backed only; rows without camera_segmentation are skipped.",
+            "Detection labels derive from panoptic thing instances using minimal axis-aligned bbox.",
+            "WOD exports full-scope detection labels in the coarse 7-class taxonomy.",
         ],
     }
     write_json(layout.report_path(), report)

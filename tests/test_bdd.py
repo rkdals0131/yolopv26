@@ -37,7 +37,7 @@ class TestBddAdapter(unittest.TestCase):
         }
         lines = bdd_record_to_yolo_lines(rec, width=100, height=100)
         self.assertEqual(len(lines), 1)
-        # class 0 car, cx=0.2, cy=0.4, w=0.2, h=0.4
+        # class 0 vehicle, cx=0.2, cy=0.4, w=0.2, h=0.4
         self.assertEqual(lines[0], "0 0.200000 0.400000 0.200000 0.400000")
 
     def test_lane_poly2d_rasterization(self):

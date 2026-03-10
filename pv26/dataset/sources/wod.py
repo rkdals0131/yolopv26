@@ -17,10 +17,10 @@ WAYMO_BOX_SIGN = 3
 WAYMO_BOX_CYCLIST = 4
 
 WAYMO_CAMERA_BOX_TO_PV26_DET_ID: Dict[int, int] = {
-    WAYMO_BOX_VEHICLE: DET_NAME_TO_ID["car"],
+    WAYMO_BOX_VEHICLE: DET_NAME_TO_ID["vehicle"],
     WAYMO_BOX_PEDESTRIAN: DET_NAME_TO_ID["pedestrian"],
     WAYMO_BOX_SIGN: DET_NAME_TO_ID["sign_pole"],
-    WAYMO_BOX_CYCLIST: DET_NAME_TO_ID["bicycle"],
+    WAYMO_BOX_CYCLIST: DET_NAME_TO_ID["bike"],
 }
 
 WAYMO_CAMERA_BOX_DET_ANNOTATED_IDS: Tuple[int, ...] = tuple(sorted(set(WAYMO_CAMERA_BOX_TO_PV26_DET_ID.values())))
@@ -49,25 +49,22 @@ WAYMO_SEM_ROAD_MARKER = 22
 WAYMO_SEM_SIDEWALK = 23
 
 
-# Active implementation note:
-# - traffic light still collapses to sign_pole because current PV26 OD has no dedicated traffic_light class
-# - construction_cone_pole is best-effort mapped to traffic_cone
 WAYMO_PANOPTIC_TO_PV26_DET_ID: Dict[int, int] = {
-    WAYMO_SEM_CAR: DET_NAME_TO_ID["car"],
-    WAYMO_SEM_TRUCK: DET_NAME_TO_ID["truck"],
-    WAYMO_SEM_BUS: DET_NAME_TO_ID["bus"],
-    WAYMO_SEM_OTHER_LARGE_VEHICLE: DET_NAME_TO_ID["truck"],
-    WAYMO_SEM_BICYCLE: DET_NAME_TO_ID["bicycle"],
-    WAYMO_SEM_MOTORCYCLE: DET_NAME_TO_ID["motorcycle"],
-    WAYMO_SEM_TRAILER: DET_NAME_TO_ID["truck"],
+    WAYMO_SEM_CAR: DET_NAME_TO_ID["vehicle"],
+    WAYMO_SEM_TRUCK: DET_NAME_TO_ID["vehicle"],
+    WAYMO_SEM_BUS: DET_NAME_TO_ID["vehicle"],
+    WAYMO_SEM_OTHER_LARGE_VEHICLE: DET_NAME_TO_ID["vehicle"],
+    WAYMO_SEM_BICYCLE: DET_NAME_TO_ID["bike"],
+    WAYMO_SEM_MOTORCYCLE: DET_NAME_TO_ID["bike"],
+    WAYMO_SEM_TRAILER: DET_NAME_TO_ID["vehicle"],
     WAYMO_SEM_PEDESTRIAN: DET_NAME_TO_ID["pedestrian"],
-    WAYMO_SEM_CYCLIST: DET_NAME_TO_ID["bicycle"],
-    WAYMO_SEM_MOTORCYCLIST: DET_NAME_TO_ID["motorcycle"],
+    WAYMO_SEM_CYCLIST: DET_NAME_TO_ID["bike"],
+    WAYMO_SEM_MOTORCYCLIST: DET_NAME_TO_ID["bike"],
     WAYMO_SEM_CONSTRUCTION_CONE_POLE: DET_NAME_TO_ID["traffic_cone"],
     WAYMO_SEM_POLE: DET_NAME_TO_ID["sign_pole"],
-    WAYMO_SEM_PEDESTRIAN_OBJECT: DET_NAME_TO_ID["road_obstacle"],
+    WAYMO_SEM_PEDESTRIAN_OBJECT: DET_NAME_TO_ID["obstacle"],
     WAYMO_SEM_SIGN: DET_NAME_TO_ID["sign_pole"],
-    WAYMO_SEM_TRAFFIC_LIGHT: DET_NAME_TO_ID["sign_pole"],
+    WAYMO_SEM_TRAFFIC_LIGHT: DET_NAME_TO_ID["traffic_light"],
 }
 
 WAYMO_PANOPTIC_DET_ANNOTATED_IDS: Tuple[int, ...] = tuple(sorted(set(WAYMO_PANOPTIC_TO_PV26_DET_ID.values())))

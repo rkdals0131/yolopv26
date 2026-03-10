@@ -10,19 +10,15 @@ class DetClass:
     name: str
 
 
-# Canonical OD classes (11) from docs/PV26_PRD.md and docs/PV26_DATASET_CONVERSION_SPEC.md.
+# Canonical OD classes (7) for the coarse unified PV26 taxonomy.
 DET_CLASSES_CANONICAL: List[DetClass] = [
-    DetClass(0, "car"),
-    DetClass(1, "bus"),
-    DetClass(2, "truck"),
-    DetClass(3, "motorcycle"),
-    DetClass(4, "bicycle"),
-    DetClass(5, "pedestrian"),
-    DetClass(6, "traffic_cone"),
-    DetClass(7, "barrier"),
-    DetClass(8, "bollard"),
-    DetClass(9, "road_obstacle"),
-    DetClass(10, "sign_pole"),
+    DetClass(0, "vehicle"),
+    DetClass(1, "bike"),
+    DetClass(2, "pedestrian"),
+    DetClass(3, "traffic_cone"),
+    DetClass(4, "obstacle"),
+    DetClass(5, "traffic_light"),
+    DetClass(6, "sign_pole"),
 ]
 
 DET_NAME_TO_ID: Dict[str, int] = {c.name: c.det_id for c in DET_CLASSES_CANONICAL}
