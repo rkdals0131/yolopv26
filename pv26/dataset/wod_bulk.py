@@ -16,6 +16,7 @@ WOD_STATUS_PENDING = "pending"
 WOD_STATUS_BLOCKED = "blocked_missing_components"
 WOD_STATUS_IN_PROGRESS = "in_progress"
 WOD_STATUS_COMPLETED = "completed"
+WOD_STATUS_SKIPPED_EMPTY_EXPORT = "skipped_empty_export"
 WOD_STATUS_FAILED = "failed"
 
 WOD_COMPONENTS = ("camera_image", "camera_segmentation", "camera_box")
@@ -134,6 +135,7 @@ def summarize_wod_bulk_state(state: Mapping[str, Any]) -> Dict[str, int]:
         "status_blocked_missing_components": 0,
         "status_in_progress": 0,
         "status_completed": 0,
+        "status_skipped_empty_export": 0,
         "status_failed": 0,
     }
     for ctx in state.get("contexts", []):
@@ -194,7 +196,7 @@ def reconcile_wod_bulk_state(
         prev_status = str(prev.get("status", "")).strip()
         if prev_status == WOD_STATUS_IN_PROGRESS:
             status = WOD_STATUS_PENDING if base["processable_now"] else WOD_STATUS_BLOCKED
-        elif prev_status in {WOD_STATUS_COMPLETED, WOD_STATUS_FAILED}:
+        elif prev_status in {WOD_STATUS_COMPLETED, WOD_STATUS_SKIPPED_EMPTY_EXPORT, WOD_STATUS_FAILED}:
             status = prev_status
         else:
             status = WOD_STATUS_PENDING if base["processable_now"] else WOD_STATUS_BLOCKED

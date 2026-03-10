@@ -14,12 +14,17 @@ converted, and deleted incrementally without losing the processing ledger.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Sequence
+
+import pyarrow.parquet as pq
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -30,6 +35,7 @@ from pv26.dataset.wod_bulk import (
     WOD_STATUS_COMPLETED,
     WOD_STATUS_FAILED,
     WOD_STATUS_IN_PROGRESS,
+    WOD_STATUS_SKIPPED_EMPTY_EXPORT,
     completed_shard_roots_from_state,
     iter_contexts_for_processing,
     load_wod_bulk_state,
@@ -88,6 +94,7 @@ def _print_summary(state: dict) -> None:
         "status_blocked_missing_components",
         "status_in_progress",
         "status_completed",
+        "status_skipped_empty_export",
         "status_failed",
     ]:
         print(f"  - {key}: {int(summary.get(key, 0))}", flush=True)
@@ -131,6 +138,28 @@ def _read_shard_stats(shard_root: Path) -> tuple[int, dict[str, int], int]:
     return len(rows), {k: int(v) for k, v in sorted(rows_by_split.items(), key=lambda kv: kv[0])}, int(has_det_rows)
 
 
+def _parquet_num_rows(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return int(pq.ParquetFile(path).metadata.num_rows)
+
+
+def _classify_empty_export(*, training_root: Path, entry: dict, rc: int) -> Optional[str]:
+    if int(rc) != 2:
+        return None
+    seg_rel = str(entry.get("segmentation_relpath", "")).strip()
+    if not seg_rel:
+        return "missing_segmentation_relpath"
+    seg_path = training_root / seg_rel
+    try:
+        seg_rows = _parquet_num_rows(seg_path)
+    except Exception as ex:  # noqa: BLE001
+        return f"segmentation_probe_error:{type(ex).__name__}:{ex}"
+    if seg_rows == 0:
+        return "empty_segmentation_rows"
+    return None
+
+
 def _delete_raw_components(*, training_root: Path, entry: dict) -> None:
     for key in ("image_relpath", "segmentation_relpath", "box_relpath"):
         rel = str(entry.get(key, "")).strip()
@@ -139,6 +168,143 @@ def _delete_raw_components(*, training_root: Path, entry: dict) -> None:
         p = training_root / rel
         if p.exists():
             p.unlink()
+
+
+def _stream_pipe_with_prefix(*, src, dst, prefix: str) -> None:
+    for line in iter(src.readline, ""):
+        if not line:
+            continue
+        dst.write(f"{prefix}{line}")
+        dst.flush()
+
+
+def _run_convert_command(*, cmd: Sequence[str], context_name: str) -> int:
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    proc = subprocess.Popen(
+        list(cmd),
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=1,
+        env=env,
+    )
+    if proc.stdout is None or proc.stderr is None:
+        raise RuntimeError(f"failed to open pipes for context={context_name}")
+
+    out_thread = threading.Thread(
+        target=_stream_pipe_with_prefix,
+        kwargs={"src": proc.stdout, "dst": sys.stdout, "prefix": f"[pv26][wod-bulk][{context_name}][out] "},
+        daemon=True,
+    )
+    err_thread = threading.Thread(
+        target=_stream_pipe_with_prefix,
+        kwargs={"src": proc.stderr, "dst": sys.stderr, "prefix": f"[pv26][wod-bulk][{context_name}][err] "},
+        daemon=True,
+    )
+    out_thread.start()
+    err_thread.start()
+    rc = proc.wait()
+    out_thread.join()
+    err_thread.join()
+    return int(rc)
+
+
+def _process_context_entry(
+    *,
+    entry: dict,
+    state: dict,
+    state_lock: threading.Lock,
+    training_root: Path,
+    state_path: Path,
+    summary_csv_path: Path,
+    split_policy: str,
+    splits: str,
+    seed: int,
+    run_id_prefix: str,
+    overwrite_shard: bool,
+    delete_raw_on_success: bool,
+) -> None:
+    context_name = str(entry["context_name"])
+    shard_root = Path(str(entry["shard_root"])).expanduser().resolve()
+    run_id = run_id_prefix or f"wod-bulk:{context_name}"
+
+    try:
+        with state_lock:
+            if shard_root.exists():
+                if overwrite_shard:
+                    shutil.rmtree(shard_root)
+                else:
+                    entry["status"] = WOD_STATUS_FAILED
+                    entry["last_error"] = f"shard_root_exists:{shard_root}"
+                    _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
+                    return
+
+            entry["status"] = WOD_STATUS_IN_PROGRESS
+            entry["attempt_count"] = int(entry.get("attempt_count", 0) or 0) + 1
+            entry["last_started_at"] = utc_now_iso()
+            entry["last_error"] = ""
+            _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
+
+        cmd = _build_convert_command(
+            training_root=training_root,
+            shard_root=shard_root,
+            context_name=context_name,
+            split_policy=split_policy,
+            splits=splits,
+            seed=seed,
+            run_id=run_id,
+        )
+        print(f"[pv26][wod-bulk] convert context={context_name}", flush=True)
+        print(f"[pv26][wod-bulk] cmd={' '.join(cmd)}", flush=True)
+        rc = _run_convert_command(cmd=cmd, context_name=context_name)
+
+        if rc != 0:
+            with state_lock:
+                empty_export_reason = _classify_empty_export(training_root=training_root, entry=entry, rc=rc)
+                if empty_export_reason:
+                    entry["status"] = WOD_STATUS_SKIPPED_EMPTY_EXPORT
+                    entry["last_error"] = empty_export_reason
+                    entry["last_completed_at"] = utc_now_iso()
+                    entry["output_num_rows"] = 0
+                    entry["output_rows_by_split"] = {}
+                    entry["output_has_det_rows"] = 0
+                    if delete_raw_on_success:
+                        _delete_raw_components(training_root=training_root, entry=entry)
+                        entry["raw_deleted_at"] = utc_now_iso()
+                        entry["has_image"] = False
+                        entry["has_segmentation"] = False
+                        entry["has_box"] = False
+                        entry["processable_now"] = False
+                else:
+                    entry["status"] = WOD_STATUS_FAILED
+                    entry["last_error"] = f"converter_exit_code:{int(rc)}"
+                _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
+            return
+
+        num_rows, rows_by_split, has_det_rows = _read_shard_stats(shard_root)
+        if delete_raw_on_success:
+            _delete_raw_components(training_root=training_root, entry=entry)
+
+        with state_lock:
+            entry["status"] = WOD_STATUS_COMPLETED
+            entry["last_completed_at"] = utc_now_iso()
+            entry["output_num_rows"] = int(num_rows)
+            entry["output_rows_by_split"] = rows_by_split
+            entry["output_has_det_rows"] = int(has_det_rows)
+            if delete_raw_on_success:
+                entry["raw_deleted_at"] = utc_now_iso()
+                entry["has_image"] = False
+                entry["has_segmentation"] = False
+                entry["has_box"] = False
+                entry["processable_now"] = False
+            _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
+    except Exception as ex:  # noqa: BLE001 - bulk orchestrator should continue other contexts
+        with state_lock:
+            entry["status"] = WOD_STATUS_FAILED
+            entry["last_error"] = f"{type(ex).__name__}:{ex}"
+            _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
 
 
 def _run_process(args: argparse.Namespace) -> int:
@@ -168,60 +334,47 @@ def _run_process(args: argparse.Namespace) -> int:
         print("[pv26][wod-bulk] no contexts selected for processing", flush=True)
         return 0
 
-    for entry in candidates:
-        context_name = str(entry["context_name"])
-        shard_root = Path(str(entry["shard_root"])).expanduser().resolve()
-        run_id = str(args.run_id).strip() or f"wod-bulk:{context_name}"
-
-        if shard_root.exists():
-            if bool(args.overwrite_shard):
-                shutil.rmtree(shard_root)
-            else:
-                entry["status"] = WOD_STATUS_FAILED
-                entry["last_error"] = f"shard_root_exists:{shard_root}"
-                _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
-                continue
-
-        entry["status"] = WOD_STATUS_IN_PROGRESS
-        entry["attempt_count"] = int(entry.get("attempt_count", 0) or 0) + 1
-        entry["last_started_at"] = utc_now_iso()
-        entry["last_error"] = ""
-        _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
-
-        cmd = _build_convert_command(
-            training_root=training_root,
-            shard_root=shard_root,
-            context_name=context_name,
-            split_policy=str(args.split_policy),
-            splits=str(args.splits),
-            seed=int(args.seed),
-            run_id=run_id,
-        )
-        print(f"[pv26][wod-bulk] convert context={context_name}", flush=True)
-        print(f"[pv26][wod-bulk] cmd={' '.join(cmd)}", flush=True)
-        proc = subprocess.run(cmd, cwd=REPO_ROOT, check=False)
-        if proc.returncode != 0:
-            entry["status"] = WOD_STATUS_FAILED
-            entry["last_error"] = f"converter_exit_code:{int(proc.returncode)}"
-            _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
-            continue
-
-        num_rows, rows_by_split, has_det_rows = _read_shard_stats(shard_root)
-        entry["status"] = WOD_STATUS_COMPLETED
-        entry["last_completed_at"] = utc_now_iso()
-        entry["output_num_rows"] = int(num_rows)
-        entry["output_rows_by_split"] = rows_by_split
-        entry["output_has_det_rows"] = int(has_det_rows)
-
-        if bool(args.delete_raw_on_success):
-            _delete_raw_components(training_root=training_root, entry=entry)
-            entry["raw_deleted_at"] = utc_now_iso()
-            entry["has_image"] = False
-            entry["has_segmentation"] = False
-            entry["has_box"] = False
-            entry["processable_now"] = False
-
-        _persist_state(state_path=state_path, summary_csv_path=summary_csv_path, state=state)
+    jobs = max(1, int(args.jobs))
+    state_lock = threading.Lock()
+    print(f"[pv26][wod-bulk] selected_contexts={len(candidates)} jobs={jobs}", flush=True)
+    if jobs == 1:
+        for entry in candidates:
+            _process_context_entry(
+                entry=entry,
+                state=state,
+                state_lock=state_lock,
+                training_root=training_root,
+                state_path=state_path,
+                summary_csv_path=summary_csv_path,
+                split_policy=str(args.split_policy),
+                splits=str(args.splits),
+                seed=int(args.seed),
+                run_id_prefix=str(args.run_id).strip(),
+                overwrite_shard=bool(args.overwrite_shard),
+                delete_raw_on_success=bool(args.delete_raw_on_success),
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="wod-bulk") as executor:
+            futures = [
+                executor.submit(
+                    _process_context_entry,
+                    entry=entry,
+                    state=state,
+                    state_lock=state_lock,
+                    training_root=training_root,
+                    state_path=state_path,
+                    summary_csv_path=summary_csv_path,
+                    split_policy=str(args.split_policy),
+                    splits=str(args.splits),
+                    seed=int(args.seed),
+                    run_id_prefix=str(args.run_id).strip(),
+                    overwrite_shard=bool(args.overwrite_shard),
+                    delete_raw_on_success=bool(args.delete_raw_on_success),
+                )
+                for entry in candidates
+            ]
+            for future in as_completed(futures):
+                future.result()
 
     _print_summary(state)
     return 0
@@ -312,6 +465,7 @@ def build_argparser() -> argparse.ArgumentParser:
     run_p.add_argument("--overwrite-shard", action="store_true", help="Delete an existing shard root before retrying.")
     run_p.add_argument("--delete-raw-on-success", action="store_true", help="Delete raw parquet files after success.")
     run_p.add_argument("--max-contexts", type=int, default=0, help="Max contexts to process in this run (0=all).")
+    run_p.add_argument("--jobs", type=int, default=1, help="Number of converter contexts to process in parallel.")
     run_p.add_argument("--seed", type=int, default=0, help="Split seed passed to the per-context converter.")
     run_p.add_argument(
         "--split-policy",

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Interactive orchestrator for PV26 dataset normalization across BDD/ETRI/RLMD/WOD.
+Interactive orchestrator for PV26 dataset normalization across BDD/ETRI/RLMD.
+
+All selected converters are expected to emit the active PV26 `classmap-v3`
+artifacts and coarse 7-class detection contract.
 
 Pipeline per selected dataset:
   1) convert_<dataset>_pv26.py
@@ -239,14 +242,11 @@ def _ask_dataset_selection() -> List[str]:
         "1": "bdd",
         "2": "etri",
         "3": "rlmd",
-        "4": "wod",
-        "5": "core_all",
-        "6": "all",
+        "4": "core_all",
+        "5": "all",
         "bdd": "bdd",
         "etri": "etri",
         "rlmd": "rlmd",
-        "wod": "wod",
-        "waymo": "wod",
         "all": "core_all",
         "전체": "all",
         "모두": "all",
@@ -256,12 +256,11 @@ def _ask_dataset_selection() -> List[str]:
     print("  1) BDD100K")
     print("  2) ETRI (Mono+Multi polygon JSON)")
     print("  3) RLMD (RLMD_1080p + RLMD-AC labeled)")
-    print("  4) WOD (Waymo v2 parquet)")
-    print("  5) 전체 실행(권장): ETRI + RLMD + WOD")
-    print("  6) 전체 실행(확장): BDD + ETRI + RLMD + WOD")
+    print("  4) 전체 실행(권장): ETRI + RLMD")
+    print("  5) 전체 실행(확장): BDD + ETRI + RLMD")
 
     while True:
-        s = _prompt("입력 (예: 2,4 또는 5) [필수]: ").strip().lower()
+        s = _prompt("입력 (예: 2,3 또는 4) [필수]: ").strip().lower()
         if not s:
             print("빈 입력은 허용되지 않습니다. 실행할 데이터셋 번호를 명시해 주세요.", file=sys.stderr)
             continue
@@ -278,9 +277,9 @@ def _ask_dataset_selection() -> List[str]:
                 bad.append(p)
                 continue
             if v == "core_all":
-                return ["etri", "rlmd", "wod"]
+                return ["etri", "rlmd"]
             if v == "all":
-                return ["bdd", "etri", "rlmd", "wod"]
+                return ["bdd", "etri", "rlmd"]
             if v not in out:
                 out.append(v)
         if bad:
@@ -406,12 +405,6 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--bdd-root", type=Path, default=Path("datasets/BDD100K"), help="BDD100K root")
     p.add_argument("--etri-root", type=Path, default=Path("datasets/ETRI"), help="ETRI root")
     p.add_argument("--rlmd-root", type=Path, default=Path("datasets/RLMD"), help="RLMD root")
-    p.add_argument(
-        "--wod-training-root",
-        type=Path,
-        default=Path("datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training"),
-        help="Waymo training root (camera_image/camera_box/camera_segmentation)",
-    )
     return p.parse_args(argv)
 
 
@@ -564,71 +557,6 @@ def _build_dataset_configs(args: argparse.Namespace, *, run_id: str) -> List[Dat
             )
         )
 
-    if "wod" in selected:
-        print("\n[WOD 설정]")
-        print("  - 기대 구조:")
-        print("    * <training_root>/camera_image/*.parquet")
-        print("    * <training_root>/camera_box/*.parquet")
-        print("    * <training_root>/camera_segmentation/*.parquet")
-        wod_root = _ask_path("WOD training 루트 경로", default=args.wod_training_root)
-        wod_out = _ask_path("WOD 출력 루트 경로", default=Path("datasets/pv26_v1_waymo_minimal_1ctx"))
-        context_name = _ask_optional_text("WOD context_name(비우면 parquet 1개일 때 자동)", default="")
-        split_choice = _ask_choice(
-            "WOD split 정책을 선택하세요. [기본=1(all_train)]",
-            options={
-                "1": "all_train (권장: minimal context에서 누수/불균형 회피)",
-                "2": "stable_by_context (context 기준 train/val/test 고정 분할)",
-            },
-            default_key="1",
-            aliases={
-                "all_train": "1",
-                "all-train": "1",
-                "stable_by_context": "2",
-                "stable-by-context": "2",
-                "stable": "2",
-                "context": "2",
-            },
-        )
-        split_policy = "all_train" if split_choice == "1" else "stable_by_context"
-        split_default = "train" if split_policy == "all_train" else "train,val,test"
-        wod_splits = _ask_splits("WOD split 필터(train,val,test)", default_csv=split_default)
-        wod_seed = _ask_int("WOD split seed", default=0, min_value=0)
-        wod_max_rows = _ask_int("WOD 최대 row 수(0=전체)", default=0, min_value=0)
-        wod_require_seg = _ask_yes_no("세그멘테이션 있는 row만 내보낼까요?", default=True)
-
-        convert_argv = [
-            sys.executable,
-            "-u",
-            str(REPO_ROOT / "tools" / "data_analysis" / "wod" / "convert_wod_pv26.py"),
-            "--training-root",
-            str(wod_root),
-            "--out-root",
-            str(wod_out),
-            "--split-policy",
-            str(split_policy),
-            "--splits",
-            str(wod_splits),
-            "--seed",
-            str(wod_seed),
-            "--max-rows",
-            str(wod_max_rows),
-            "--run-id",
-            str(run_id),
-            "--require-seg" if wod_require_seg else "--no-require-seg",
-        ]
-        if context_name:
-            convert_argv.extend(["--context-name", context_name])
-
-        configs.append(
-            DatasetRunConfig(
-                key="wod",
-                label="WOD",
-                source_root=wod_root,
-                out_root=wod_out,
-                convert_argv=convert_argv,
-            )
-        )
-
     return configs
 
 
@@ -665,15 +593,6 @@ def _validate_source_layout(ds: DatasetRunConfig) -> Tuple[bool, str]:
         if not palette_csv.exists():
             return False, f"RLMD 팔레트 파일 누락: {palette_csv}"
         return True, "RLMD_1080p 팔레트/루트 구조 확인 완료"
-
-    if ds.key == "wod":
-        camera_image = ds.source_root / "camera_image"
-        camera_box = ds.source_root / "camera_box"
-        camera_seg = ds.source_root / "camera_segmentation"
-        missing = [str(p) for p in [camera_image, camera_box, camera_seg] if not p.exists()]
-        if missing:
-            return False, "WOD 필수 component 디렉터리 누락: " + ", ".join(missing)
-        return True, "WOD training component 구조 확인 완료"
 
     return True, "구조 검증 로직이 정의되지 않은 데이터셋입니다."
 

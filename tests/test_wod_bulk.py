@@ -18,6 +18,11 @@ from pv26.dataset.wod_bulk import (
     reconcile_wod_bulk_state,
 )
 from tools.data_analysis.wod.process_wod_pv26_bulk import main as wod_bulk_main
+from tools.data_analysis.wod.run_wod_pv26_interactive import (
+    _build_bulk_command,
+    _canonical_choice,
+    _load_progress_snapshot,
+)
 
 
 def _touch(path: Path, *, size: int = 1) -> None:
@@ -218,17 +223,16 @@ class TestWodBulkTool(unittest.TestCase):
             _touch(training_root / "camera_image" / "ctx_a.parquet", size=10)
             _touch(training_root / "camera_segmentation" / "ctx_a.parquet", size=20)
 
-            def _fake_run(cmd, cwd=None, check=False):
+            def _fake_run_convert_command(*, cmd, context_name):
                 self.assertIn("--context-name", cmd)
-                context_name = cmd[cmd.index("--context-name") + 1]
                 shard_root = Path(cmd[cmd.index("--out-root") + 1])
                 _write_fake_wod_shard(shard_root, context_name=context_name)
-                cp = subprocess.CompletedProcess(cmd, 0)  # type: ignore[name-defined]
-                return cp
+                return 0
 
-            import subprocess
-
-            with mock.patch("tools.data_analysis.wod.process_wod_pv26_bulk.subprocess.run", side_effect=_fake_run):
+            with mock.patch(
+                "tools.data_analysis.wod.process_wod_pv26_bulk._run_convert_command",
+                side_effect=_fake_run_convert_command,
+            ):
                 rc = wod_bulk_main(
                     [
                         "run",
@@ -252,6 +256,100 @@ class TestWodBulkTool(unittest.TestCase):
             self.assertFalse((training_root / "camera_image" / "ctx_a.parquet").exists())
             self.assertFalse((training_root / "camera_segmentation" / "ctx_a.parquet").exists())
             self.assertTrue((shards_root / "meta" / "wod_bulk_state.csv").exists())
+
+    def test_run_jobs_parallel_completes_multiple_contexts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            training_root = root / "training"
+            shards_root = root / "shards"
+            _touch(training_root / "camera_image" / "ctx_a.parquet", size=10)
+            _touch(training_root / "camera_segmentation" / "ctx_a.parquet", size=20)
+            _touch(training_root / "camera_image" / "ctx_b.parquet", size=30)
+            _touch(training_root / "camera_segmentation" / "ctx_b.parquet", size=40)
+
+            def _fake_run_convert_command(*, cmd, context_name):
+                shard_root = Path(cmd[cmd.index("--out-root") + 1])
+                _write_fake_wod_shard(shard_root, context_name=context_name)
+                return 0
+
+            with mock.patch(
+                "tools.data_analysis.wod.process_wod_pv26_bulk._run_convert_command",
+                side_effect=_fake_run_convert_command,
+            ):
+                rc = wod_bulk_main(
+                    [
+                        "run",
+                        "--training-root",
+                        str(training_root),
+                        "--shards-root",
+                        str(shards_root),
+                        "--jobs",
+                        "2",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            state_path = shards_root / "meta" / "wod_bulk_state.json"
+            with state_path.open("r", encoding="utf-8") as f:
+                state = json.load(f)
+            statuses = {ctx["context_name"]: ctx["status"] for ctx in state["contexts"]}
+            self.assertEqual(statuses, {"ctx_a": WOD_STATUS_COMPLETED, "ctx_b": WOD_STATUS_COMPLETED})
+
+
+class TestWodInteractiveHelpers(unittest.TestCase):
+    def test_canonical_choice_accepts_number_and_word_alias(self):
+        aliases = {"1": "scan", "scan": "scan", "2": "run", "run": "run"}
+        self.assertEqual(_canonical_choice("1", aliases), "scan")
+        self.assertEqual(_canonical_choice("RUN", aliases), "run")
+        self.assertEqual(_canonical_choice("", aliases, default="scan"), "scan")
+
+    def test_load_progress_snapshot_filters_target_contexts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "contexts": [
+                            {"context_name": "ctx_a", "status": "completed", "output_num_rows": 10, "output_has_det_rows": 8},
+                            {"context_name": "ctx_b", "status": "failed", "output_num_rows": 4, "output_has_det_rows": 0},
+                            {"context_name": "ctx_c", "status": "pending", "output_num_rows": 0, "output_has_det_rows": 0},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            snapshot = _load_progress_snapshot(state_path, target_contexts=["ctx_a", "ctx_b"])
+            self.assertEqual(snapshot.total, 2)
+            self.assertEqual(snapshot.completed, 1)
+            self.assertEqual(snapshot.failed, 1)
+            self.assertEqual(snapshot.pending, 0)
+            self.assertEqual(snapshot.output_rows, 14)
+            self.assertEqual(snapshot.det_rows, 8)
+
+    def test_build_bulk_command_includes_parallel_run_options(self):
+        cmd = _build_bulk_command(
+            subcommand="run",
+            training_root=Path("/tmp/training"),
+            shards_root=Path("/tmp/shards"),
+            state_path=Path("/tmp/state.json"),
+            summary_csv_path=Path("/tmp/state.csv"),
+            contexts="ctx_a,ctx_b",
+            retry_failed=True,
+            overwrite_shard=True,
+            delete_raw_on_success=True,
+            max_contexts=5,
+            jobs=3,
+            seed=7,
+            split_policy="stable_by_context",
+            splits="train,val",
+            run_id="demo",
+        )
+        self.assertIn("--jobs", cmd)
+        self.assertIn("3", cmd)
+        self.assertIn("--retry-failed", cmd)
+        self.assertIn("--delete-raw-on-success", cmd)
+        self.assertIn("--contexts", cmd)
+        self.assertIn("ctx_a,ctx_b", cmd)
 
 
 if __name__ == "__main__":

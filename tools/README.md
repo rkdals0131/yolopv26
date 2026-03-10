@@ -7,7 +7,7 @@
 - `tools/data_analysis/etri/`: ETRI 분석/표준화 스크립트
 - `tools/data_analysis/rlmd/`: RLMD 분석/표준화 스크립트
 - `tools/data_analysis/wod/`: Waymo v2 분석/추출/표준화 스크립트
-- `tools/data_analysis/run_multidataset_normalize_interactive.py`: BDD/ETRI/RLMD/WOD 선택형 인터랙티브 일괄 실행기
+- `tools/data_analysis/run_multidataset_normalize_interactive.py`: BDD/ETRI/RLMD 선택형 인터랙티브 일괄 실행기
 - `tools/data_analysis/merge_pv26_dataset.py`: 여러 PV26 dataset 루트를 하나의 merged root로 병합
 
 ### bdd
