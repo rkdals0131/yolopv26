@@ -187,8 +187,8 @@ Notes:
 12. `has_rm_stop_line` (`0|1`)
 13. `has_rm_lane_subclass` (`0|1`)
 14. `has_semantic_id` (`0|1`)
-15. `det_label_scope` (`full|subset|none`)
-16. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
+15. `det_label_scope` (`full|none`)
+16. `det_annotated_class_ids` (reserved for schema compatibility; must be empty in active coarse-7class builds)
 17. `image_relpath`
 18. `det_relpath`
 19. `da_relpath`
@@ -205,8 +205,8 @@ Notes:
 30. `source_group_key`
 
 Active policy note:
-1. New coarse-7class converters should prefer `det_label_scope=full` or `none`.
-2. `subset` remains only for backward compatibility or truly partial legacy sources.
+1. Active coarse-7class converters must emit `det_label_scope=full` or `none`.
+2. Partial OD coverage must be resolved upstream by class remap, sample skip, or `has_det=0`; runtime `subset` masking is not part of the active contract.
 
 ## 3.8 RoadMarking Label Normalization Policy
 
@@ -297,7 +297,7 @@ Mapping:
 5. `traffic light -> traffic_light` when explicit external OD source is available
 6. `traffic sign|pole -> sign_pole` when explicit external OD source is available
 7. `train -> obstacle`
-8. Set `det_label_scope=subset` and record actual annotated canonical det IDs in `det_annotated_class_ids`.
+8. Cityscapes OD export is allowed only when the source inventory can be exhaustively remapped into the 7-class target. Otherwise export `has_det=0` and `det_label_scope=none`.
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
@@ -316,7 +316,7 @@ Mapping policy:
 1. Apply Cityscapes-equivalent coarse mapping where labels overlap
 2. Vehicle/person/cycle classes map to `vehicle|pedestrian|bike`
 3. Static unknown obstacles map to `obstacle` only if confidently labeled
-4. Set `det_label_scope=subset` and fill `det_annotated_class_ids` based on available labels.
+4. KITTI-360 OD export is allowed only when the source inventory can be exhaustively remapped into the 7-class target. Otherwise export `has_det=0` and `det_label_scope=none`.
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
@@ -368,7 +368,7 @@ If RLMD is explicitly enabled (experimental):
 ## 5.6 Self-Collected Adapter
 
 Mandatory annotation targets:
-1. Detection classes `0..10`
+1. Detection classes `0..6`
 2. Drivable binary mask
 3. Road-marking multi-channel masks (`rm_lane_marker`, `rm_road_marker_non_lane`, `rm_stop_line`)
 
@@ -397,7 +397,7 @@ Step definitions:
 2. Convert raw annotation schemas (`json/polygon/polyline`) into canonical label artifacts (`YOLO txt`, `PNG masks`)
 3. Generate canonical `sample_id` and file names
 4. Convert and clamp detection boxes with `min_box_area_px` policy
-5. Populate detection coverage metadata (`det_label_scope`, `det_annotated_class_ids`)
+5. Populate detection coverage metadata using the active contract (`det_label_scope=full|none`, empty `det_annotated_class_ids`)
 6. Convert drivable and road-marking masks with `ignore(255)` and `has_*` flags
 7. Normalize road-marking labels using Section `3.8` policy (mask pass-through or vector rasterization)
 8. Compose semantic ID mask (classmap-defined IDs) only for samples with valid semantic export (`has_semantic_id=1`)
@@ -444,9 +444,9 @@ Step definitions:
 10. `has_semantic_id=1` and semantic mask contains values outside `class_map.yaml` IDs
 11. Dimension mismatch among image/da/road-marking/semantic files
 12. Leakage detected: same `{source, sequence}` exists in multiple splits
-13. `det_label_scope=subset` but `det_annotated_class_ids` is empty
-14. `det_label_scope=none` with non-empty detection label file
-15. Detection class IDs outside `det_annotated_class_ids` for subset samples
+13. `det_label_scope` is not one of `full|none`
+14. `det_annotated_class_ids` is non-empty in an active coarse-7class build
+15. `det_label_scope=none` with non-empty detection label file
 16. MVP dataset contains samples outside `weather_tag=dry` or `time_tag=day`
 
 ## 8.2 Warning Rules

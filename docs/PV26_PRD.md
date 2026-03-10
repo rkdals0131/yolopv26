@@ -129,8 +129,8 @@ flowchart LR
 2. 라벨 부재 태스크/채널은 `ignore index=255`로 저장하고, `has_*` 플래그로 명시한다.
    - 예: `has_det/has_da/has_rm_lane_marker/has_rm_road_marker_non_lane/has_rm_stop_line/has_rm_lane_subclass`
 3. 학습 시 `has_*` 플래그와 `ignore(255)`를 이용해 task별 loss masking을 적용한다.
-4. Detection manifest는 호환성을 위해 `det_label_scope`와 `det_annotated_class_ids`를 유지한다.
-5. 다만 active coarse 7-class converter는 가급적 `full|none`만 사용하고, `subset`은 legacy/예외 source에 한해 유지한다.
+4. Detection manifest는 스키마 호환성을 위해 `det_label_scope`와 `det_annotated_class_ids`를 유지한다.
+5. 다만 active coarse 7-class runtime은 `full|none`만 허용하며, 부분 coverage 이슈는 converter 단계의 class remap/skip 정책으로 해결한다. `det_annotated_class_ids`는 active build에서 비워 둔다.
 
 ### FR-06. 대회 상세미션 대응 정책 (Provisional)
 
@@ -287,8 +287,8 @@ dataset/
    - `has_rm_* = 0`인 채널은 해당 마스크를 전 픽셀 `255`
    - `has_semantic_id=0`이면 semantic 파일 미존재를 허용
 6. Detection 부분 라벨 검사:
-   - `det_label_scope=subset`이면 `det_annotated_class_ids`가 비어 있으면 안 됨
-   - subset 샘플의 det 라벨은 `det_annotated_class_ids` 범위를 벗어나면 안 됨
+   - active runtime contract에서는 `det_label_scope`가 `full|none`만 허용됨
+   - `det_annotated_class_ids`는 active build에서 비어 있어야 함
 7. split 누수 검사:
    - grouping key는 `{source, sequence}`를 사용
    - 동일 `{source, sequence}`는 단일 split에만 존재
@@ -309,7 +309,7 @@ dataset/
    - Drivable: CE(`ignore=255`)
    - RoadMarking: Focal + Dice (`ignore=255`)
 6. 기본 손실 가중치 초기값: `w_od=1.0`, `w_da=1.0`, `w_rm=2.0`
-7. `det_label_scope=subset` 샘플은 미주석 클래스에 대한 OD 분류/객체성 negative loss를 마스킹한다.
+7. OD coverage 차이는 runtime subset masking이 아니라 source별 exhaustive remap 또는 sample skip으로 해결한다.
 
 ### 8.2 입력 전처리
 

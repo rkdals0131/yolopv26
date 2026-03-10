@@ -6,7 +6,7 @@ Implemented adapters:
 - **BDD100K**: OD + DA + RM(mask + subclass) (implemented)
 - **ETRI (Mono+Multi)**: polygon JSON → DA + RM(mask + subclass) (OD 없음)
 - **RLMD (1080p + AC labeled)**: palette RGB mask → RM(mask + subclass) (OD/DA 없음)
-- **Waymo / WOD (Perception v2 parquet, minimal-first)**: parquet → OD(subset) + DA + RM(mask) (stop line / lane subclass 없음)
+- **Waymo / WOD (Perception v2 parquet, minimal-first)**: parquet → panoptic-derived OD(full) + DA + RM(mask) (stop line / lane subclass 없음)
 
 Contracts implemented:
 - `docs/PV26_PRD.md` (partial-label policy, classmap-v3)
@@ -117,6 +117,6 @@ python -m unittest -v
 ### 6.3 Waymo/WOD: `tools/data_analysis/wod/convert_wod_type_a.py`
 - Inputs: `datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training` (parquet)
 - Outputs:
-  - Detection은 subset(`vehicle/pedestrian/cyclist/sign`)만 매핑 → `det_label_scope=subset`
+  - Detection은 panoptic instance 기반 coarse 7-class로 추출 → `det_label_scope=full`
   - Segmentation은 `ROAD/LANE_MARKER/ROAD_MARKER`만 사용
   - `rm_stop_line` + `rm_lane_subclass`는 제공 불가 → all-255, `has_*=0`
