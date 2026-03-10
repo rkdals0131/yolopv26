@@ -42,7 +42,7 @@ from pv26.training.runtime import (
     seed_everything,
 )
 
-DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_bdd_full")
+DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_merged_all")
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class TrainPv26ScriptDefaults:
     dataset_root: Path          = DEFAULT_DATASET_ROOT  # 직접 실행용 데이터셋 루트
     arch: str                   = "yolo26n"            # 모델 백본/헤드 조합
     epochs: int                 = 5                    # 총 학습 epoch 수
-    batch_size: int             = 16                   # train/val 공통 배치 크기
+    batch_size: int             = 12                   # train/val 공통 배치 크기
     seg_output_stride: int      = 1                    # segmentation logits stride
     workers: int                = 6                    # DataLoader worker 수
     prefetch_factor: int        = 4                    # worker당 prefetch 배치 수
@@ -69,7 +69,7 @@ class TrainPv26ScriptDefaults:
     compile_mode: str           = "default"            # compile mode
     compile_fullgraph: bool     = False                # fullgraph compile on/off
     compile_seg_loss: bool      = True                 # seg loss block만 compile
-    profile_every: int          = 20                   # train profile 출력 주기
+    profile_every: int          = 200                  # train profile 출력 주기
     profile_sync_cuda: bool     = False                # profile 시 CUDA sync 여부
     profile_system: bool        = False                # 시스템 메모리/GPU 통계 포함
     device: str                 = "auto"               # auto | cpu | cuda | cuda:N
@@ -78,8 +78,8 @@ class TrainPv26ScriptDefaults:
     train_drop_last: bool       = False                # 마지막 ragged batch drop 여부
     validate_masks: bool        = False                # dataset mask strict validation
     tensorboard: bool           = True                 # TensorBoard writer 사용 여부
-    progress: bool              = False                # tqdm progress bar 사용 여부
-    log_every: int              = 10                   # no-progress일 때 로그 주기
+    progress: bool              = True                 # tqdm progress bar 사용 여부
+    log_every: int              = 0                    # no-progress일 때 로그 주기
     augment: bool               = True                 # train augmentation on/off
     aug_hflip: float            = 0.5                  # horizontal flip 확률
     aug_brightness: float       = 0.2                  # brightness jitter 강도
