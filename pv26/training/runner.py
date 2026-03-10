@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
 import os
@@ -86,6 +86,11 @@ class TrainPv26ScriptDefaults:
     aug_brightness: float       = 0.2                  # brightness jitter 강도
     aug_contrast: float         = 0.2                  # contrast jitter 강도
     aug_saturation: float       = 0.2                  # saturation jitter 강도
+    aug_scale_min: float        = 0.9                  # fixed-canvas zoom-out minimum
+    aug_scale_max: float        = 1.1                  # fixed-canvas zoom-in maximum
+    aug_translate: float        = 0.1                  # max translation as fraction of canvas size
+    aug_multiscale_min: float   = 0.9                  # batch-level multi-scale minimum
+    aug_multiscale_max: float   = 1.1                  # batch-level multi-scale maximum
 
 
 SCRIPT_DEFAULTS = TrainPv26ScriptDefaults()
@@ -312,6 +317,36 @@ def build_argparser() -> argparse.ArgumentParser:
         default=SCRIPT_DEFAULTS.aug_saturation,
         help="Saturation jitter delta (0 disables)",
     )
+    p.add_argument(
+        "--aug-scale-min",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_scale_min,
+        help="Minimum fixed-canvas multi-scale factor (<1 zooms out with ignore padding).",
+    )
+    p.add_argument(
+        "--aug-scale-max",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_scale_max,
+        help="Maximum fixed-canvas multi-scale factor (>1 zooms in / crops).",
+    )
+    p.add_argument(
+        "--aug-translate",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_translate,
+        help="Maximum synchronized translation as a fraction of canvas size.",
+    )
+    p.add_argument(
+        "--aug-multiscale-min",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_multiscale_min,
+        help="Minimum batch-level multi-scale factor after dataset augmentation.",
+    )
+    p.add_argument(
+        "--aug-multiscale-max",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_multiscale_max,
+        help="Maximum batch-level multi-scale factor after dataset augmentation.",
+    )
     p.set_defaults(
         persistent_workers=SCRIPT_DEFAULTS.persistent_workers,
         compile=SCRIPT_DEFAULTS.compile,
@@ -398,6 +433,66 @@ def _resize_seg_logits_for_eval(logits: torch.Tensor, out_size: tuple[int, int])
     if logits.shape[-2:] == out_size:
         return logits
     return F.interpolate(logits, size=out_size, mode="bilinear", align_corners=False)
+
+
+def _resize_u8_mask(mask: torch.Tensor, *, out_size: tuple[int, int]) -> torch.Tensor:
+    if mask.shape[-2:] == out_size:
+        return mask
+    if mask.ndim == 3:
+        return F.interpolate(mask.unsqueeze(1).to(dtype=torch.float32), size=out_size, mode="nearest").squeeze(1).to(dtype=torch.uint8)
+    if mask.ndim == 4:
+        return F.interpolate(mask.to(dtype=torch.float32), size=out_size, mode="nearest").to(dtype=torch.uint8)
+    raise ValueError(f"mask ndim must be 3 or 4, got {mask.ndim}")
+
+
+def _pick_train_multiscale_size(
+    *,
+    base_h: int,
+    base_w: int,
+    scale_min: float,
+    scale_max: float,
+    size_multiple: int = 32,
+) -> tuple[int, int]:
+    lo = max(1e-6, float(min(scale_min, scale_max)))
+    hi = max(lo, float(max(scale_min, scale_max)))
+    if abs(hi - lo) <= 1e-6:
+        scale = lo
+    else:
+        scale = lo + (hi - lo) * float(torch.rand((), dtype=torch.float32).item())
+    out_h = max(int(size_multiple), int(round((float(base_h) * scale) / float(size_multiple))) * int(size_multiple))
+    out_w = max(int(size_multiple), int(round((float(base_w) * scale) / float(size_multiple))) * int(size_multiple))
+    return out_h, out_w
+
+
+def _apply_train_multiscale(
+    *,
+    images: torch.Tensor,
+    target_batch: PV26PreparedBatch,
+    seg_output_stride: int,
+    scale_min: float,
+    scale_max: float,
+) -> tuple[torch.Tensor, PV26PreparedBatch]:
+    base_h, base_w = int(images.shape[-2]), int(images.shape[-1])
+    out_h, out_w = _pick_train_multiscale_size(
+        base_h=base_h,
+        base_w=base_w,
+        scale_min=scale_min,
+        scale_max=scale_max,
+        size_multiple=32,
+    )
+    if (out_h, out_w) == (base_h, base_w):
+        return images, target_batch
+
+    mask_h = out_h // int(seg_output_stride)
+    mask_w = out_w // int(seg_output_stride)
+    images = F.interpolate(images, size=(out_h, out_w), mode="bilinear", align_corners=False)
+    target_batch = replace(
+        target_batch,
+        da_mask=_resize_u8_mask(target_batch.da_mask, out_size=(mask_h, mask_w)),
+        rm_mask=_resize_u8_mask(target_batch.rm_mask, out_size=(mask_h, mask_w)),
+        rm_lane_subclass_mask=_resize_u8_mask(target_batch.rm_lane_subclass_mask, out_size=(mask_h, mask_w)),
+    )
+    return images, target_batch
 
 
 def _make_run_dir(base: Path, run_name: str, arch: str) -> Path:
@@ -845,6 +940,9 @@ def train_one_epoch(
     profile_every: int,
     profile_sync_cuda: bool,
     profile_system: bool,
+    seg_output_stride: int,
+    aug_multiscale_min: float,
+    aug_multiscale_max: float,
 ) -> Dict[str, float]:
     model.train()
     losses_sum = {
@@ -887,6 +985,13 @@ def train_one_epoch(
             if min_free_b_window is None or free_b < min_free_b_window:
                 min_free_b_window = int(free_b)
         target_batch = _move_prepared_batch_to_device(target_batch_cpu, device=device)
+        images, target_batch = _apply_train_multiscale(
+            images=images,
+            target_batch=target_batch,
+            seg_output_stride=int(seg_output_stride),
+            scale_min=float(aug_multiscale_min),
+            scale_max=float(aug_multiscale_max),
+        )
         if prof_sync:
             torch.cuda.synchronize(device)
         t1 = time.perf_counter()
@@ -1263,6 +1368,9 @@ def main() -> int:
             brightness=max(0.0, float(args.aug_brightness)),
             contrast=max(0.0, float(args.aug_contrast)),
             saturation=max(0.0, float(args.aug_saturation)),
+            scale_min=max(1e-6, float(min(args.aug_scale_min, args.aug_scale_max))),
+            scale_max=max(1e-6, float(max(args.aug_scale_min, args.aug_scale_max))),
+            translate=max(0.0, float(args.aug_translate)),
         )
 
     train_ds = Pv26ManifestDataset(
@@ -1435,6 +1543,9 @@ def main() -> int:
             profile_every=args.profile_every,
             profile_sync_cuda=args.profile_sync_cuda,
             profile_system=args.profile_system,
+            seg_output_stride=int(args.seg_output_stride),
+            aug_multiscale_min=max(1e-6, float(min(args.aug_multiscale_min, args.aug_multiscale_max))),
+            aug_multiscale_max=max(1e-6, float(max(args.aug_multiscale_min, args.aug_multiscale_max))),
         )
         print(format_loss_line("[train] mean", train_losses))
 
