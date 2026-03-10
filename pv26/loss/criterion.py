@@ -216,9 +216,8 @@ class PV26Criterion(nn.Module):
         Ultralytics YOLO26 detection loss (E2E loss wrapper over v8DetectionLoss).
 
         Notes:
-        - This path currently supports only per-sample gating for `has_det` and `det_label_scope=none` by filtering the
-          batch. `det_label_scope=subset` is conservatively excluded from OD loss until class-aware negative masking is
-          implemented.
+        - This path supports the coarse 7-class manifest contract where detection labels are either
+          full supervision or absent (`none`).
         """
         if self.det_loss_adapter is None:
             raise RuntimeError("det loss adapter is not initialized")
@@ -292,8 +291,8 @@ class PV26Criterion(nn.Module):
         cls_losses: List[Tensor] = []
 
         for b in range(bsz):
-            scope = str(det_label_scope[b])
-            if scope not in {"full", "subset", "none"}:
+            scope = str(det_label_scope[b]).strip().lower()
+            if scope not in {"full", "none"}:
                 raise ValueError(f"invalid det_label_scope: {scope}")
             if int(has_det[b].item()) == 0 or scope == "none":
                 continue
@@ -323,12 +322,7 @@ class PV26Criterion(nn.Module):
                 box_target[gy, gx] = torch.tensor([cx, cy, bw, bh], dtype=det_logits.dtype, device=det_logits.device)
                 cls_target[gy, gx] = cls_idx
 
-            if scope == "full":
-                obj_losses.append(F.binary_cross_entropy_with_logits(pred_obj[b], obj_target, reduction="mean"))
-            elif pos_mask.any():
-                obj_losses.append(
-                    F.binary_cross_entropy_with_logits(pred_obj[b][pos_mask], obj_target[pos_mask], reduction="mean")
-                )
+            obj_losses.append(F.binary_cross_entropy_with_logits(pred_obj[b], obj_target, reduction="mean"))
 
             if pos_mask.any():
                 box_losses.append(F.smooth_l1_loss(pred_box[b].permute(1, 2, 0)[pos_mask], box_target[pos_mask], reduction="mean"))

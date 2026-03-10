@@ -42,11 +42,18 @@ class TestManifestValidation(unittest.TestCase):
         )
         return row
 
-    def test_subset_requires_annotated_ids(self):
+    def test_subset_scope_is_rejected(self):
         r = self._base_row()
         r["det_label_scope"] = "subset"
         errs = validate_manifest_row_basic(r)
-        self.assertIn("subset_missing_det_annotated_class_ids", errs)
+        self.assertIn("invalid_det_label_scope:subset", errs)
+
+    def test_det_annotated_ids_must_stay_empty(self):
+        r = self._base_row()
+        r["det_label_scope"] = "full"
+        r["det_annotated_class_ids"] = "0,1,2"
+        errs = validate_manifest_row_basic(r)
+        self.assertIn("det_annotated_class_ids_must_be_empty", errs)
 
 
 if __name__ == "__main__":

@@ -92,20 +92,15 @@ class TestPV26CriterionMasking(unittest.TestCase):
         od_loss = self.criterion(preds, batch)["od"]
         self.assertEqual(float(od_loss), 0.0)
 
-    def test_od_empty_gt_subset_is_zero_but_full_is_positive(self):
+    def test_od_empty_gt_full_is_positive(self):
         preds = self._preds()
         preds.det[:, 4, :, :] = 3.0  # non-zero objectness logits
 
         batch = self._base_batch()
         batch["has_det"] = torch.tensor([1], dtype=torch.long)
-
-        batch["det_label_scope"] = ["subset"]
-        od_subset = self.criterion(preds, batch)["od"]
-
         batch["det_label_scope"] = ["full"]
         od_full = self.criterion(preds, batch)["od"]
 
-        self.assertEqual(float(od_subset), 0.0)
         self.assertGreater(float(od_full), 0.0)
 
     def test_rm_lane_subclass_is_masked_when_flag_is_zero(self):
@@ -499,7 +494,7 @@ class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
         loss_total, _ = _FakeUltraDetReduceLoss()(preds_sel, det_batch)
         return loss_total / float(int(idx.shape[0]))
 
-    def test_ultralytics_od_excludes_subset_samples_instead_of_raising(self):
+    def test_ultralytics_od_excludes_none_samples_instead_of_raising(self):
         criterion = PV26Criterion(num_det_classes=2)
         fake_loss = _FakeUltraDetLoss()
         criterion.od_loss_impl = "ultralytics_e2e"
@@ -522,8 +517,8 @@ class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
             det_out=det_out,
             det_yolo=(),
             has_det=torch.tensor([1, 1, 1], dtype=torch.long),
-            det_label_scope=("full", "subset", "none"),
-            det_scope_code=torch.tensor([0, 1, 2], dtype=torch.long),
+            det_label_scope=("full", "none", "none"),
+            det_scope_code=torch.tensor([0, 1, 1], dtype=torch.long),
             det_tgt_batch_idx=torch.tensor([0, 1], dtype=torch.long),
             det_tgt_cls=torch.tensor([1.0, 0.0], dtype=torch.float32),
             det_tgt_bboxes=torch.tensor(
@@ -545,6 +540,24 @@ class TestPV26CriterionUltralyticsSubsetHandling(unittest.TestCase):
                 torch.tensor([[0.5, 0.5, 0.2, 0.2]], dtype=torch.float32),
             )
         )
+
+    def test_ultralytics_od_subset_scope_now_raises(self):
+        criterion = PV26Criterion(num_det_classes=2)
+        criterion.od_loss_impl = "ultralytics_e2e"
+        criterion.det_loss_adapter = _make_fake_ultralytics_det_loss_adapter(_FakeUltraDetLoss())
+
+        det_out = self._make_det_out()
+        with self.assertRaises(ValueError):
+            criterion._od_loss_ultralytics(
+                det_out=det_out,
+                det_yolo=(),
+                has_det=torch.tensor([1], dtype=torch.long),
+                det_label_scope=("subset",),
+                det_scope_code=torch.tensor([1], dtype=torch.long),
+                det_tgt_batch_idx=torch.tensor([0], dtype=torch.long),
+                det_tgt_cls=torch.tensor([1.0], dtype=torch.float32),
+                det_tgt_bboxes=torch.tensor([[0.5, 0.5, 0.2, 0.2]], dtype=torch.float32),
+            )
 
     def test_ultralytics_od_full_batch_fast_path_matches_old_slow_path_scalar(self):
         criterion = PV26Criterion(num_det_classes=2)

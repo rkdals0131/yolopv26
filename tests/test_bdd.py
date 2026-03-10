@@ -40,6 +40,29 @@ class TestBddAdapter(unittest.TestCase):
         # class 0 vehicle, cx=0.2, cy=0.4, w=0.2, h=0.4
         self.assertEqual(lines[0], "0 0.200000 0.400000 0.200000 0.400000")
 
+    def test_bdd_coarse_7class_mapping_distinguishes_light_and_obstacle(self):
+        rec = {
+            "name": "sample",
+            "frames": [
+                {
+                    "objects": [
+                        {
+                            "category": "traffic light",
+                            "box2d": {"x1": 10.0, "y1": 10.0, "x2": 30.0, "y2": 50.0},
+                        },
+                        {
+                            "category": "barrier",
+                            "box2d": {"x1": 40.0, "y1": 20.0, "x2": 90.0, "y2": 60.0},
+                        },
+                    ],
+                }
+            ],
+        }
+        lines = bdd_record_to_yolo_lines(rec, width=100, height=100)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], "5 0.200000 0.300000 0.200000 0.400000")
+        self.assertEqual(lines[1], "4 0.650000 0.400000 0.500000 0.400000")
+
     def test_lane_poly2d_rasterization(self):
         rec = {
             "name": "sample",
