@@ -1,6 +1,6 @@
 import unittest
 
-from pv26.manifest import MANIFEST_COLUMNS, validate_manifest_row_basic
+from pv26.dataset.manifest import MANIFEST_COLUMNS, validate_manifest_row_basic
 
 
 class TestManifestValidation(unittest.TestCase):

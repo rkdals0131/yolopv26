@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from pv26.class_map import render_class_map_yaml
-from pv26.validate_dataset import validate_pv26_dataset
+from pv26.dataset.classmap import render_class_map_yaml
+from pv26.dataset.validation import validate_pv26_dataset
 from tools.data_analysis.merge_pv26_type_a import merge_pv26_datasets
 
 

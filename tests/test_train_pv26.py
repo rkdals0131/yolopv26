@@ -4,7 +4,8 @@ import unittest
 import torch
 from torch import nn
 
-from tools.train.train_pv26 import SCRIPT_DEFAULTS, _build_optimizer, build_argparser
+from pv26.training.optimizer_factory import build_optimizer
+from pv26.training.train_config import SCRIPT_DEFAULTS, build_argparser
 
 
 class _FakeDetContainer(nn.Module):
@@ -38,7 +39,7 @@ class TestTrainPv26OptimizerGrouping(unittest.TestCase):
             momentum=0.937,
         )
 
-        opt = _build_optimizer(model=model, args=args, base_lr=1e-3)
+        opt = build_optimizer(model=model, args=args, base_lr=1e-3)
         group_names = [str(g.get("name")) for g in opt.param_groups]
 
         self.assertIn("trunk_decay", group_names)
@@ -51,6 +52,7 @@ class TestTrainPv26ScriptDefaults(unittest.TestCase):
     def test_argparser_uses_script_default_block(self):
         args = build_argparser().parse_args([])
 
+        self.assertEqual(SCRIPT_DEFAULTS.seg_output_stride, 1)
         self.assertEqual(args.dataset_root, SCRIPT_DEFAULTS.dataset_root)
         self.assertEqual(args.epochs, SCRIPT_DEFAULTS.epochs)
         self.assertEqual(args.batch_size, SCRIPT_DEFAULTS.batch_size)

@@ -1,164 +1,575 @@
 # PV26 Dataset Sources & Mapping
 
-- Doc version: `v1.1`
-- Last reviewed: `2026-03-05`
-- Scope: local `datasets/` inventory + per-source mapping notes for PV26 Type‑A
+- Doc version: `v1.2`
+- Last reviewed: `2026-03-10`
+- Scope: local `datasets/` inventory + source label inventory + mapping review notes for PV26 Type-A
 - See also:
   - Product / runtime contract: `docs/PV26_PRD.md`
   - Conversion output contract: `docs/PV26_DATASET_CONVERSION_SPEC.md`
+  - Historical inventory snapshot: `docs/legacy/snapshots/Dataset_Profile_2026-02-19.md`
 
 ## 1) Why this doc
 
-PV26는 여러 데이터셋을 섞어 학습해야 한다. 데이터셋마다 라벨 스키마와 클래스 정의가 달라서,
-학습 단계에서 원천 포맷을 직접 파싱하면 유지보수/재현성이 깨지고 “없는 라벨을 background로 오해”하는 문제가 발생한다.
+PV26는 여러 데이터셋을 섞어 학습해야 한다. 그런데 데이터셋마다:
+- OD taxonomy가 다르다
+- lane / road marker label-space가 다르다
+- 어떤 태스크는 원천에 없고, 어떤 태스크는 coarse only다
 
-이 문서는 다음을 **정성(qualitative) 기준**으로 유지한다.
-1. 로컬에 무엇이 있는지(인벤토리 refresh 루틴)
-2. 각 데이터셋이 PV26 태스크(OD/DA/RM/lanesub/semantic_id)에 무엇을 기여할 수 있는지
-3. 데이터셋별 매핑/어댑터의 구현 상태(implemented/planned/not-possible)
+그래서 이 문서는 두 가지를 명확히 분리해서 관리한다.
+- 현재 코드가 실제로 구현한 mapping
+- 앞으로 검토할 새로운 coarse taxonomy 제안
 
-> 커버리지 숫자/표는 시간이 지나면 바로 구버전이 되므로, 문서에 하드코딩하지 않는다.
+핵심 원칙은 다음과 같다.
+1. 원천 라벨을 학습 시점에 직접 파싱하지 않는다.
+2. source별 class inventory를 먼저 문서화한다.
+3. target taxonomy를 잠근 뒤에 converter / loss / eval을 바꾼다.
+4. “클래스 이름 remap”과 “라벨 coverage(full/subset/none)”를 같은 문제로 취급하지 않는다.
 
-## 2) PV26 canonical tasks (Type‑A)
+## 2) Two Tracks In This Doc
 
-- **OD (Detection)**: YOLO txt (`labels_det/*/*.txt`)
-- **DA (Drivable Area)**: binary mask `{0,1,255}` (`labels_seg_da/*/*.png`)
-- **RM (Road Marking)**: 3× binary masks `{0,1,255}`
-  - `rm_lane_marker`
-  - `rm_road_marker_non_lane`
-  - `rm_stop_line` (일부 데이터셋은 supervision 부재 가능)
-- **Lane subclass (sidecar)**: mono8 `{0,1,2,3,4,255}` (`labels_seg_rm_lane_subclass/*/*.png`)
-- **semantic_id (optional)**: mono8 class-id map (`labels_semantic_id/*/*.png`, `255` 금지)
+### 2.1 Current implementation track
 
-## 3) Offline normalization policy (must)
+현재 repo 코드가 실제로 사용 중인 canonical contract다.
+- OD: 11-class
+- DA: binary
+- RM: `lane_marker`, `road_marker_non_lane`, `stop_line`
+- lane subclass: `white/yellow x solid/dashed`
 
-- 학습 로더는 원천 라벨(JSON/polygon/parquet 등)을 직접 파싱하지 않는다.
-- 모든 데이터셋은 학습 전, Section 2의 형식(`jpg + txt + png`)으로 **오프라인 정규화**한다.
-- Partial label 정책:
-  - 라벨이 없는 태스크/채널은 절대 `0`으로 채우지 않는다.
-  - 라벨 부재는 “전 픽셀 `255`” + `has_* = 0`으로 표현하고, 학습 시 loss에서 제외한다.
-- polygon/json 계열은 “룩업 테이블(원천 클래스 → PV26 채널/ignore)”을 먼저 잠근 뒤 rasterization 한다.
+### 2.2 Provisional review track
 
-## 4) Inventory refresh (no hardcoded counts)
+이번 문서 업데이트의 목적은 “BDD 중심 11-class OD”가 아니라, 모든 source를 함께 놓고 더 적합한 coarse OD taxonomy를 다시 정하는 것이다.
 
-`datasets/`는 보통 외부 스토리지로 연결된 심볼릭 링크다(환경에 따라 다름).
+이 문서에서는 아래 draft를 검토 대상으로 둔다.
+- `vehicle`
+- `bike`
+- `pedestrian`
+- `traffic_cone`
+- `obstacle`
+- `traffic_light`
+- `sign_pole`
 
-인벤토리 리포트 생성(회의 전 표준 루틴):
-```bash
-python tools/data_analysis/bdd/dataset_label_inventory.py --out /tmp/dataset_label_inventory.json
-```
+주의:
+- 이 7-class taxonomy는 아직 구현 정책이 아니다.
+- 이 문서는 “7개로 충분한가?”를 source inventory 기반으로 검토하기 위한 문서다.
+- `others`는 현재 draft training class에 넣지 않는다. source마다 의미가 너무 달라 잡탕 클래스가 되기 쉽기 때문이다.
 
-과거 스냅샷(참고용):
-- `docs/legacy/snapshots/Dataset_Profile_2026-02-19.md`
+## 3) Current Active Canonical Tasks
 
-## 5) Source → PV26 mapping status (qualitative)
+### 3.1 Current OD classes in code
+
+현재 구현은 아래 11-class OD를 사용한다.
+
+| det_id | class_name |
+|---|---|
+| 0 | car |
+| 1 | bus |
+| 2 | truck |
+| 3 | motorcycle |
+| 4 | bicycle |
+| 5 | pedestrian |
+| 6 | traffic_cone |
+| 7 | barrier |
+| 8 | bollard |
+| 9 | road_obstacle |
+| 10 | sign_pole |
+
+Source of truth:
+- `pv26/dataset/labels.py`
+- `docs/PV26_DATASET_CONVERSION_SPEC.md`
+
+### 3.2 Current RM / lane contract
+
+- `rm_lane_marker`: binary `{0,1,255}`
+- `rm_road_marker_non_lane`: binary `{0,1,255}`
+- `rm_stop_line`: binary `{0,1,255}`
+- `rm_lane_subclass`: mono8 `{0,1,2,3,4,255}`
+  - `1 white_solid`
+  - `2 white_dashed`
+  - `3 yellow_solid`
+  - `4 yellow_dashed`
+
+## 4) Provisional 7-Class OD Review Target
+
+이 section은 아직 구현 규칙이 아니라 “문서 기반 검토안”이다.
+
+| draft_id | draft_class | Intended merges |
+|---|---|---|
+| 0 | vehicle | `car`, `bus`, `truck`, source-level `vehicle` |
+| 1 | bike | `bicycle`, `motorcycle`, source-level `cyclist` |
+| 2 | pedestrian | `person`, `pedestrian`, `rider` |
+| 3 | traffic_cone | `traffic cone`, `construction cone`, `rubber cone` |
+| 4 | obstacle | `barrier`, `bollard`, `road_obstacle`, unknown static/movable roadside hazard |
+| 5 | traffic_light | raw `traffic light` |
+| 6 | sign_pole | raw `traffic sign`, `pole`, `sign`, pole-like roadside fixture |
+
+Review notes:
+- `traffic_light`는 `sign_pole`과 분리해서 검토한다.
+- `traffic_cone`는 `obstacle`과 분리해서 검토한다.
+- `others`는 v0 draft에서 제외한다.
+- source별 raw inventory를 본 뒤 7개로 충분한지 최종 판단한다.
+
+## 5) Source Capability Matrix
 
 상태 표기:
-- `implemented`: PV26 adapter 스크립트가 있고, `validate_pv26_dataset.py` 계약으로 검증 가능
-- `planned`: 어댑터가 아직 없거나(또는 룩업테이블 미확정), 구현이 필요
-- `not-possible`: 원천 데이터가 해당 supervision을 제공하지 않음(또는 coarse하여 목적 불일치)
+- `implemented`: PV26 adapter가 있고 현재 계약으로 검증 가능
+- `planned`: source inventory는 있으나 adapter 또는 mapping policy가 미완성
+- `not-possible`: 원천 supervision이 현재 목적과 맞지 않거나 실질적으로 없음
 
-|Dataset|OD|DA|RM lane_marker|RM road_marker_non_lane|RM stop_line|lane_subclass|semantic_id|
+| Dataset | OD | DA | RM lane_marker | RM road_marker_non_lane | RM stop_line | lane_subclass | Notes |
 |---|---|---|---|---|---|---|---|
-|BDD100K|implemented|implemented|implemented|implemented|implemented|implemented|implemented|
-|Cityscapes|planned|planned|not-possible|not-possible|not-possible|not-possible|planned|
-|ETRI|not-possible|implemented|implemented|implemented|implemented|implemented|not-possible|
-|KITTI-360|planned|planned|planned|planned|planned|not-possible|planned|
-|RLMD|not-possible|not-possible|implemented|implemented|implemented|implemented|not-possible|
-|Waymo (Perception v2)|implemented|implemented|implemented|implemented|not-possible|not-possible|planned|
+| BDD100K | implemented | implemented | implemented | implemented | implemented | implemented | 현재 OD base source |
+| Cityscapes | planned | planned | not-possible | not-possible | not-possible | not-possible | OD는 semantic/instance 기반 재구성이 필요 |
+| ETRI | raw labels exist, adapter not using them | implemented | implemented | implemented | implemented | implemented | 현재는 RM/DA 전용으로 사용 중 |
+| KITTI-360 | planned | planned | planned | planned | planned | not-possible | Cityscapes-equivalent review 필요 |
+| RLMD | not-possible | not-possible | implemented | implemented | implemented | implemented | RM 전용 |
+| Waymo (Perception v2) | implemented, subset-only | implemented | implemented | implemented | not-possible | not-possible | camera_box는 coarse 4-type only |
 
-Notes:
-- Waymo OD는 subset class만 매핑한다(`det_label_scope=subset`, `det_annotated_class_ids=0,4,5,10`).
-- BDD100K `semantic_id`는 모든 선행 채널이 supervised이고 compose 가능할 때만 export된다.
-- supervision이 없는 채널은 all-`255` + `has_*=0`을 유지한다.
+## 6) Per-Source Inventory And Proposed Merge Review
 
-## 6) Dataset notes (adapter tips)
+이 section은 source별로 아래 네 가지를 기록한다.
+1. raw label inventory
+2. current implementation usage
+3. provisional 7-class OD proposal
+4. risk / open question
 
 ### 6.1 BDD100K
 
-- 자산: 이미지 + det JSON + drivable id mask + lane poly2d
-- PV26 변환: `tools/data_analysis/bdd/convert_bdd_type_a.py` (implemented)
-- RoadMarking:
-  - lane poly2d를 rasterize하여 `rm_*` 마스크를 만든다.
-  - stop_line은 명시 클래스가 없는 경우가 많아, 채널이 all-`255`로 남을 수 있다.
+Assets:
+- Image (RGB)
+- Detection JSON
+- Drivable area index mask
+- Lane poly2d / semantic-related labels
+
+#### Raw OD inventory
+
+From checked-in legacy snapshot and current adapter support:
+- standard det labels seen in BDD inventories:
+  - `pedestrian`
+  - `rider`
+  - `car`
+  - `truck`
+  - `bus`
+  - `train`
+  - `motorcycle`
+  - `bicycle`
+  - `traffic light`
+  - `traffic sign`
+- additional strings accepted by current adapter when present in source variants:
+  - `traffic cone`
+  - `construction cone`
+  - `cone`
+  - `barrier`
+  - `bollard`
+  - `other vehicle`
+  - `pole`
+  - `sign`
+  - `light`
+
+#### Current implemented mapping
+
+Current adapter (`pv26/dataset/sources/bdd.py`):
+- `car -> car`
+- `bus -> bus`
+- `truck -> truck`
+- `motorcycle -> motorcycle`
+- `bicycle|bike -> bicycle`
+- `person|pedestrian|rider -> pedestrian`
+- `traffic sign|traffic light|pole|sign|light -> sign_pole`
+- `traffic cone|construction cone|cone -> traffic_cone`
+- `barrier -> barrier`
+- `bollard -> bollard`
+- `other vehicle|train -> road_obstacle`
+
+#### Provisional 7-class proposal
+
+| Raw BDD label | Proposed 7-class |
+|---|---|
+| `car`, `bus`, `truck` | `vehicle` |
+| `motorcycle`, `bicycle`, `bike` | `bike` |
+| `person`, `pedestrian`, `rider` | `pedestrian` |
+| `traffic light` | `traffic_light` |
+| `traffic sign`, `pole`, `sign`, `light` | `sign_pole` |
+| `traffic cone`, `construction cone`, `cone` | `traffic_cone` |
+| `barrier`, `bollard`, `other vehicle`, `train` | `obstacle` |
+
+#### Raw RM / lane inventory
+
+Current source code explicitly recognizes:
+- lane-marker-like:
+  - `lane/single white`
+  - `lane/double white`
+  - `lane/single yellow`
+  - `lane/double yellow`
+  - `lane/single other`
+  - `lane/double other`
+- road-marker-non-lane:
+  - `lane/crosswalk`
+  - `lane/road curb`
+- stop line:
+  - `lane/stop line`
+- lane subclass cues:
+  - white/yellow x solid/dashed from lane attributes
+
+#### RM notes
+
+- `lane/single|double other`는 `rm_lane_marker`에는 포함하고 `lane_subclass`에서는 `255(ignore)` 처리한다.
+- BDD lane schema는 RM/lane_subclass 기준점으로 계속 가치가 높다.
 
 ### 6.2 Cityscapes
 
-- 자산: semantic/instance mask + polygon JSON
-- 정책(초기):
-  - DA는 semantic에서 `road/parking` 기반으로 파생 가능(planned)
-  - RoadMarking은 기본 미제공으로 보고 `has_rm_*=0`(not-possible)
+Assets:
+- Image (RGB)
+- Semantic labelIds / trainId
+- Instance ids
+- Polygon JSON
+
+#### Raw OD-relevant inventory
+
+From checked-in legacy snapshot:
+- `person`
+- `rider`
+- `car`
+- `truck`
+- `bus`
+- `train`
+- `motorcycle`
+- `bicycle`
+- `traffic light`
+- `traffic sign`
+- `pole`
+
+#### Current implementation usage
+
+- current repo policy는 Cityscapes OD adapter를 아직 구현하지 않았다
+- current repo policy는 RM을 기본 미제공으로 본다
+
+#### Provisional 7-class proposal
+
+| Raw Cityscapes label | Proposed 7-class |
+|---|---|
+| `car`, `truck`, `bus` | `vehicle` |
+| `motorcycle`, `bicycle` | `bike` |
+| `person`, `rider` | `pedestrian` |
+| `traffic light` | `traffic_light` |
+| `traffic sign`, `pole` | `sign_pole` |
+| `train` | `obstacle` |
+
+#### Risk / open question
+
+- Cityscapes는 bbox가 아니라 semantic / instance 기반이라 OD export policy를 따로 정해야 한다.
+- `traffic_cone`에 직접 해당하는 raw class는 없다.
 
 ### 6.3 ETRI
 
-- 자산: Cityscapes-like polygon JSON
-- PV26 변환: `tools/data_analysis/etri/convert_etri_type_a.py` (implemented)
-- 정책(현재):
-  - polygon 라벨을 오프라인 rasterization으로 DA/RM/lane_subclass 마스크로 변환한다.
-  - 검출 라벨은 원천 미제공이므로 `has_det=0`, `labels_det/*.txt`는 빈 파일로 기록한다.
-  - `whsol/whdot/yesol/yedot`만 lane_subclass(1..4)로 매핑하고, 기타 lane-like는 subclass에서 `255(ignore)` 처리한다.
+Assets:
+- Polygon JSON
+- RGB images
+
+#### Raw OD-relevant inventory
+
+From checked-in legacy snapshot for ETRI polygon labels:
+- `car`
+- `bus`
+- `truck`
+- `motorcycle`
+- `bicycle`
+- `person`
+- `rider`
+- `traffic light`
+- `traffic sign`
+- `rubber cone`
+- `pole`
+- `polegroup`
+
+Current converter does not export OD from these labels.
+
+#### Current implementation usage
+
+Current adapter (`pv26/dataset/sources/etri.py`) only uses ETRI for:
+- `road -> DA`
+- lane-like labels -> `rm_lane_marker`
+- non-lane road-mark labels -> `rm_road_marker_non_lane`
+- `stop line -> rm_stop_line`
+- `whsol/whdot/yesol/yedot -> lane_subclass`
+
+Current train-time manifest records:
+- `has_det=0`
+- `det_label_scope=none`
+
+#### Provisional 7-class proposal if OD extraction is added later
+
+| Raw ETRI label | Proposed 7-class |
+|---|---|
+| `car`, `bus`, `truck` | `vehicle` |
+| `motorcycle`, `bicycle` | `bike` |
+| `person`, `rider` | `pedestrian` |
+| `traffic light` | `traffic_light` |
+| `traffic sign`, `pole`, `polegroup` | `sign_pole` |
+| `rubber cone` | `traffic_cone` |
+
+#### Raw RM / lane inventory
+
+Current adapter groups:
+- lane-subclass-direct:
+  - `whsol`
+  - `whdot`
+  - `yesol`
+  - `yedot`
+- lane-like but not subclass-direct:
+  - `bldot`
+  - `blsol`
+  - `guidance line`
+  - `lane divider`
+- road-marker-non-lane regex bucket:
+  - `general road mark`
+  - `crosswalk`
+  - `stop line`
+  - `arrow`
+  - `prohibition`
+  - `number`
+  - `slow`
+  - `motor`
+  - `bike icon`
+  - `box junction`
+  - `parking`
+  - `speed bump`
+  - `channelizing line`
+  - `left`
+  - `right`
+  - `forward`
+  - `straight`
+  - `leftu`
+  - `protection zone`
+
+#### RM notes
+
+- ETRI는 RM inventory가 rich하다.
+- ETRI는 현재도 RM/lane_subclass 보강 source로 가치가 높다.
+- ETRI raw labels에는 OD-relevant objects도 보이므로, future OD source 후보로 재검토 가치가 있다.
 
 ### 6.4 KITTI-360
 
-- 자산: semantic mask가 대량 존재
-- 정책(초기):
-  - semantic id → (DA/RM) 매핑 룩업 테이블을 먼저 잠근 뒤 변환(planned)
+Assets:
+- Semantic / instance labels
+
+#### Raw OD-relevant inventory
+
+From checked-in legacy snapshot:
+- `person`
+- `rider`
+- `car`
+- `truck`
+- `bus`
+- `caravan`
+- `trailer`
+- `train`
+- `motorcycle`
+- `bicycle`
+- `traffic light`
+- `traffic sign`
+- `pole`
+
+#### Current implementation usage
+
+- adapter is still planned
+- current repo has no active normalized KITTI-360 Type-A builder
+
+#### Provisional 7-class proposal
+
+| Raw KITTI-360 label | Proposed 7-class |
+|---|---|
+| `car`, `truck`, `bus`, `caravan`, `trailer` | `vehicle` |
+| `motorcycle`, `bicycle` | `bike` |
+| `person`, `rider` | `pedestrian` |
+| `traffic light` | `traffic_light` |
+| `traffic sign`, `pole` | `sign_pole` |
+| `train` | `obstacle` |
+
+#### Risk / open question
+
+- `caravan` / `trailer`를 `vehicle`로 합치는 것이 충분한지 검토 필요
+- RM usable labels는 별도 inventory review가 더 필요하다
 
 ### 6.5 RLMD
 
-- 자산: RGB palette road marking mask(+ palette csv)
-- PV26 변환: `tools/data_analysis/rlmd/convert_rlmd_type_a.py` (implemented)
-- 정책(현재):
-  - palette 기반 remap으로 RM 채널/stop_line/lane_subclass를 생성한다.
-  - DA/OD는 원천 미제공으로 `has_da=0`, `has_det=0`을 기록한다.
-  - RLMD-AC는 라벨이 존재하는 split만 포함한다.
+Assets:
+- RGB palette road-marking masks
+
+#### Raw OD inventory
+
+- 없음
+- current RLMD source는 road marking 전용으로 간주한다
+
+#### Current implementation usage
+
+Current adapter (`pv26/dataset/sources/rlmd.py`) only exports RM channels and lane_subclass.
+
+#### Raw RM inventory
+
+From current source code and checked-in legacy snapshot:
+- stop line:
+  - `stop line`
+- lane-marker-like:
+  - `solid single white`
+  - `solid single yellow`
+  - `solid single red`
+  - `solid double white`
+  - `solid double yellow`
+  - `dashed single white`
+  - `dashed single yellow`
+  - `channelizing line`
+- non-lane road markers:
+  - `box junction`
+  - `crosswalk`
+  - `left arrow`
+  - `straight arrow`
+  - `right arrow`
+  - `left straight arrow`
+  - `right straight arrow`
+  - `motor prohibited`
+  - `slow`
+  - `motor priority lane`
+  - `motor waiting zone`
+  - `left turn box`
+  - `motor icon`
+  - `bike icon`
+  - `parking lot`
+
+#### Current implemented mapping
+
+- `stop line -> rm_stop_line` and also `rm_road_marker_non_lane`
+- lane-marker names -> `rm_lane_marker`
+- lane-marker names with white/yellow + solid/dashed -> `lane_subclass`
+- remaining known palette classes -> `rm_road_marker_non_lane`
+
+#### RM notes
+
+- RLMD는 OD source가 아니라 RM enrichment source다.
+- `solid single red`는 현재 lane_marker로 취급되지만 lane_subclass direct class에는 들어가지 않는다.
 
 ### 6.6 Waymo Open Dataset (Perception v2)
 
-- 자산: parquet 기반(디코딩 필요)
-- PV26 변환: `tools/data_analysis/wod/convert_wod_type_a.py` (implemented, minimal-first)
-- coarse class 정책(현재):
-  - `TYPE_ROAD` → DA
-  - `TYPE_LANE_MARKER` → `rm_lane_marker`
-  - `TYPE_ROAD_MARKER` → `rm_road_marker_non_lane`
-  - stop line과 lane_subclass는 dedicated class가 없어 `not-possible`
-  - OD는 subset class만 매핑(`vehicle/pedestrian/cyclist/sign`)
-  - parquet는 스크립트가 `pyarrow.parquet`로 직접 읽는다(수동 decode 필요 없음).
+Assets:
+- camera image parquet
+- camera box parquet
+- camera segmentation parquet
 
-샘플 디코딩(세그 있는 프레임만):
-```bash
-python tools/data_analysis/wod/extract_wod_v2_sample.py \
-  --training-root datasets/WaymoOpenDataset/wod_pv2_minimal_1ctx/training \
-  --out-root /tmp/wod_decoded \
-  --require-seg
-```
+#### Raw OD inventory
 
-## 7) Lane subclass mapping rules (canonical)
+Current camera box type inventory in checked-in snapshot:
+- `vehicle`
+- `pedestrian`
+- `sign`
+- `cyclist`
 
-- **BDD100K (implemented)**:
-  - white + solid → 1
-  - white + dashed → 2
-  - yellow + solid → 3
-  - yellow + dashed → 4
-  - 기타 lane-like는 `rm_lane_marker`에는 포함하되 `lane_subclass`에서는 `255(ignore)`
-- **RLMD (implemented)**: palette 클래스 기반 direct remap (double-line 처리 정책은 어댑터에서 고정)
-- **ETRI (implemented)**: `whsol/whdot/yesol/yedot` → (1..4) remap, 나머지 lane-like는 `255(ignore)`
-- **Waymo (not-possible)**: coarse class로는 (white/yellow × solid/dashed) supervision 불가
+#### Raw semantic inventory relevant to future review
 
-## 8) Immediate policy decisions (locked)
+Checked-in snapshot also shows semantic / panoptic types such as:
+- `TYPE_CAR`
+- `TYPE_TRUCK`
+- `TYPE_BUS`
+- `TYPE_OTHER_LARGE_VEHICLE`
+- `TYPE_BICYCLE`
+- `TYPE_MOTORCYCLE`
+- `TYPE_PEDESTRIAN`
+- `TYPE_CYCLIST`
+- `TYPE_MOTORCYCLIST`
+- `TYPE_CONSTRUCTION_CONE_POLE`
+- `TYPE_POLE`
+- `TYPE_SIGN`
+- `TYPE_TRAFFIC_LIGHT`
+- `TYPE_ROAD`
+- `TYPE_LANE_MARKER`
+- `TYPE_ROAD_MARKER`
 
-1. RoadMarking binary 채널은 `rm_lane_marker`, `rm_road_marker_non_lane`, `rm_stop_line` 3채널을 유지한다.
-2. lane 세분 supervision은 `rm_lane_subclass`(mono8: white/yellow × solid/dashed)로 sidecar 운영한다.
-3. `rm_stop_line ⊂ rm_road_marker_non_lane`을 전제로 한다.
-4. json/polygon 라벨은 “룩업 테이블 + 오프라인 rasterization” 후에만 학습에 넣는다.
-5. 데이터셋에 없는 태스크/채널은 `255(ignore)` + `has_*=0`으로 loss에서 제외한다.
+#### Current implementation usage
 
-## 9) Read-only raw → unified output mapping (implemented)
+Current converter (`tools/data_analysis/wod/convert_wod_type_a.py`):
+- if segmentation exists:
+  - decode panoptic into `semantic_id + instance_id`
+  - derive minimal axis-aligned 2D boxes per instance for selected thing classes
+  - current 11-class best-effort remap:
+    - `TYPE_CAR -> car`
+    - `TYPE_TRUCK -> truck`
+    - `TYPE_BUS -> bus`
+    - `TYPE_OTHER_LARGE_VEHICLE -> truck`
+    - `TYPE_BICYCLE|TYPE_CYCLIST -> bicycle`
+    - `TYPE_MOTORCYCLE|TYPE_MOTORCYCLIST -> motorcycle`
+    - `TYPE_PEDESTRIAN -> pedestrian`
+    - `TYPE_CONSTRUCTION_CONE_POLE -> traffic_cone`
+    - `TYPE_SIGN|TYPE_POLE|TYPE_TRAFFIC_LIGHT -> sign_pole`
+    - `TYPE_PEDESTRIAN_OBJECT -> road_obstacle`
+- if segmentation does not exist:
+  - fallback to `camera_box`
+  - `vehicle -> car`, `pedestrian -> pedestrian`, `sign -> sign_pole`, `cyclist -> bicycle`
+- manifest marks WOD OD as subset:
+  - panoptic-derived samples: `det_annotated_class_ids=0,1,2,3,4,5,6,9,10`
+  - camera_box fallback samples: `det_annotated_class_ids=0,4,5,10`
+- RM:
+  - `TYPE_ROAD -> DA`
+  - `TYPE_LANE_MARKER -> rm_lane_marker`
+  - `TYPE_ROAD_MARKER -> rm_road_marker_non_lane`
+- current converter still does not provide:
+  - `rm_stop_line`
+  - `lane_subclass`
+  - dedicated `traffic_light` class in active 11-class pipeline
+
+#### Provisional 7-class proposal
+
+| Raw Waymo source label | Proposed 7-class |
+|---|---|
+| `vehicle`, `TYPE_CAR`, `TYPE_TRUCK`, `TYPE_BUS`, `TYPE_OTHER_LARGE_VEHICLE` | `vehicle` |
+| `pedestrian` | `pedestrian` |
+| `cyclist`, `TYPE_BICYCLE`, `TYPE_MOTORCYCLE`, `TYPE_CYCLIST`, `TYPE_MOTORCYCLIST` | `bike` |
+| `TYPE_CONSTRUCTION_CONE_POLE` | `traffic_cone` |
+| `TYPE_TRAFFIC_LIGHT` | `traffic_light` |
+| `sign`, `TYPE_SIGN`, `TYPE_POLE` | `sign_pole` |
+
+#### Risk / open question
+
+- `TYPE_CONSTRUCTION_CONE_POLE`는 cone/pole 혼합 이름이라 `traffic_cone` 매핑 품질 확인이 필요하다.
+- `TYPE_POLE`를 `sign_pole`로 넣으면 일반 pole도 함께 들어올 수 있다.
+- current active 11-class에는 `traffic_light`가 없어서, panoptic-derived `TYPE_TRAFFIC_LIGHT`도 현재는 `sign_pole`로 합쳐진다.
+- provisional 7-class로 가면 WOD는 `vehicle / bike / pedestrian / traffic_cone / traffic_light / sign_pole` coverage가 강하지만, generic `obstacle` coverage는 약하다.
+
+## 7) Road-Marking Harmonization Summary
+
+This section records how each source distinguishes lane / road-marker semantics today.
+
+| Dataset | lane_marker signal | road_marker_non_lane signal | stop_line signal | lane_subclass signal | Notes |
+|---|---|---|---|---|---|
+| BDD100K | lane white/yellow single/double + other | crosswalk, curb | explicit if present | white/yellow x solid/dashed from attributes | current base source |
+| ETRI | `wh*`, `ye*`, `bl*`, guidance line, lane divider | crosswalk, arrows, numbers, speed bump, box junction, parking, etc. | explicit `stop line` | `whsol`, `whdot`, `yesol`, `yedot` | rich polygon inventory |
+| RLMD | solid/dashed white/yellow/red, channelizing line | crosswalk, arrows, icons, parking lot, motor zones, etc. | explicit `stop line` | white/yellow x solid/dashed only | palette mask source |
+| Waymo | `TYPE_LANE_MARKER` | `TYPE_ROAD_MARKER` | unavailable in current converter | unavailable | coarse RM only |
+| Cityscapes | unavailable in current policy | unavailable in current policy | unavailable | unavailable | separate source needed |
+| KITTI-360 | pending review | pending review | pending review | unavailable | planned |
+
+## 8) Current Active Decisions vs Review Decisions
+
+### 8.1 Current active implementation decisions
+
+These remain true until code changes land.
+1. Current code still uses 11-class OD.
+2. Current code still exports `classmap-v3`.
+3. Current BDD / ETRI / RLMD / WOD converters keep their present behavior.
+4. WOD OD is still subset-only in the active implementation.
+
+### 8.2 Provisional review decisions
+
+These are the current documentation review stance, not active code.
+1. Review a 7-class OD taxonomy first.
+2. Treat `traffic_light` as separate from `sign_pole` during review.
+3. Treat `traffic_cone` as separate from generic `obstacle` during review.
+4. Do not create an `others` class unless source inventory review proves it is necessary and well-defined.
+5. Revisit every source, including BDD100K, as a remap candidate rather than assuming BDD taxonomy should stay canonical.
+
+## 9) Read-Only Raw -> Unified Output Mapping
 
 원본 데이터셋은 read-only로 취급하고, 변환 결과만 `out_root`에 생성한다.
 입력 구조가 달라도 출력 구조는 PV26 Type-A로 동일하다.
 
-공통 결과 디렉터리(모든 데이터셋):
+공통 결과 디렉터리:
 - `images/<split>/<sample_id>.jpg`
 - `labels_det/<split>/<sample_id>.txt`
 - `labels_seg_da/<split>/<sample_id>.png`
@@ -167,40 +578,16 @@ python tools/data_analysis/wod/extract_wod_v2_sample.py \
 - `labels_seg_rm_stop_line/<split>/<sample_id>.png`
 - `labels_seg_rm_lane_subclass/<split>/<sample_id>.png`
 - `labels_semantic_id/<split>/<sample_id>.png` (optional)
-- `meta/split_manifest.csv`, `meta/conversion_report.json`, `meta/source_stats.csv`, `meta/checksums.sha256`
+- `meta/split_manifest.csv`
+- `meta/conversion_report.json`
+- `meta/source_stats.csv`
+- `meta/checksums.sha256`
 
-|Dataset|raw image source|OD source → `labels_det`|seg/rm source → `labels_seg_*`|remarks|
-|---|---|---|---|---|
-|BDD100K|`bdd100k_images_100k/100k`|det JSON|drivable id + lane poly2d|`semantic_id`는 조건 충족 시에만 export|
-|ETRI|Mono/Multi 이미지 폴더|없음(빈 txt + `has_det=0`)|polygon JSON rasterization|`out of roi`는 mask ignore(255) 반영|
-|RLMD|`RLMD_1080p/images/*` (+ RLMD-AC)|없음(빈 txt + `has_det=0`)|palette RGB label png remap|DA 없음(`has_da=0`, all-255)|
-|Waymo v2|`camera_image/*.parquet`|`camera_box/*.parquet`(subset class)|`camera_segmentation/*.parquet`|WOD parquet는 스크립트가 직접 로딩/디코딩|
+## 10) What Must Be Decided Before Code Changes
 
-## 10) WOD parquet handling note
-
-`tools/data_analysis/wod/convert_wod_type_a.py`는 WOD parquet를 직접 읽는다.
-
-- `pyarrow.parquet.ParquetFile(...).iter_batches(...)`로 row batch 순회
-- 컴포넌트별 parquet를 key(`context`, `timestamp`, `camera`)로 조인
-- 이미지 바이트는 JPEG로 저장, 세그 panoptic은 semantic id로 환산해 PV26 채널로 매핑
-
-즉, 사용자는 parquet를 필요한 범위만 내려받으면 되고, 별도 수동 decode 파이프라인은 필수 아니다.
-
-## 11) WOD external references (official)
-
-WOD v2 내부 구조/형식 확인 시 우선 보는 공식 레퍼런스:
-
-- Waymo Perception 페이지(공식): modular format이 Apache Parquet 기반이며 component 분리 구조임을 명시  
-  https://waymo.com/intl/zh-cn/open/data/perception
-- Waymo Download 페이지(공식): Perception v2.0.1(modular, without maps) 배포 정보  
-  https://waymo.com/intl/fil/open/download
-- Waymo Open Dataset GitHub(공식): 저장소 루트 및 릴리즈 히스토리  
-  https://github.com/waymo-research/waymo-open-dataset  
-  https://github.com/waymo-research/waymo-open-dataset/releases
-- v2 tutorial notebook(공식): parquet component를 직접 로딩하고(`camera_image`, `camera_box` 등) join하는 예제  
-  https://github.com/waymo-research/waymo-open-dataset/blob/master/tutorial/tutorial_v2.ipynb  
-  https://raw.githubusercontent.com/waymo-research/waymo-open-dataset/refs/heads/master/tutorial/tutorial_v2.ipynb
-
-운영 메모:
-- 현재 우리 컨버터는 위 v2 tutorial의 접근 방식과 동일하게 parquet를 직접 읽어서 key(`context`, `timestamp`, `camera`) 기준으로 결합한다.
-- 공식 사이트의 기본 `/open/...` 경로는 환경에 따라 로그인 리다이렉트가 걸릴 수 있어, 접근 가능한 로케일 경로를 함께 기록했다.
+1. Is the provisional 7-class OD taxonomy sufficient after reviewing all raw source inventories?
+2. Does any dataset require an extra class beyond the draft 7?
+3. Should `train`, `trailer`, `caravan`, `other vehicle`, and unknown construction-like labels be merged into `vehicle` or `obstacle`?
+4. Can any current source supply `traffic_light` OD reliably enough to justify keeping it separate?
+5. Does any source besides BDD provide trustworthy `traffic_cone` or cone-equivalent OD?
+6. Once the target taxonomy is locked, converters, labels, loss, eval, and checkpoint metrics must be updated together.

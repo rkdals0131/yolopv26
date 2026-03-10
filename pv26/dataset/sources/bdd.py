@@ -8,15 +8,15 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .constants import DET_NAME_TO_ID
-from .masks import (
+from ..labels import DET_NAME_TO_ID
+from ..masks import (
     LANE_SUBCLASS_WHITE_DASHED,
     LANE_SUBCLASS_WHITE_SOLID,
     LANE_SUBCLASS_YELLOW_DASHED,
     LANE_SUBCLASS_YELLOW_SOLID,
     make_all_ignore_mask,
 )
-from .yolo import BoxXYXY, format_yolo_line, xyxy_to_yolo_normalized
+from ..yolo import BoxXYXY, format_yolo_line, xyxy_to_yolo_normalized
 
 
 BDD_TO_CANONICAL_DET: Dict[str, str] = {

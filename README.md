@@ -6,6 +6,7 @@
 - `docs/PV26_DATASET_CONVERSION_SPEC.md`
 - `docs/PV26_DATASET_SOURCES_AND_MAPPING.md`
 - `docs/PV26_IMPLEMENTATION_STATUS.md`
+- `docs/ARCHITECTURE_MAP.md`
 - (Archive) `docs/legacy/README.md`
 
 ## BDD100K 변환 가이드 (현재 구현 스크립트 기준)

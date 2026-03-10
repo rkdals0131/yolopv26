@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .masks import (
+from ..masks import (
     IGNORE_VALUE,
     LANE_SUBCLASS_WHITE_DASHED,
     LANE_SUBCLASS_WHITE_SOLID,

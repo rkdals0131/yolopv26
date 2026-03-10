@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from pv26.masks import IGNORE_VALUE
-from pv26.etri import rasterize_etri_type_a_masks
+from pv26.dataset.masks import IGNORE_VALUE
+from pv26.dataset.sources.etri import rasterize_etri_type_a_masks
 
 
 class TestEtriRasterize(unittest.TestCase):

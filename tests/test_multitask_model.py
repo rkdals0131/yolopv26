@@ -5,14 +5,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from pv26.multitask_model import (
-    DrivableAreaHeadP3,
-    PV26DetBackendOutput,
+from pv26.model.backends.ultralytics_yolo26 import UltralyticsYOLO26DetBackend
+from pv26.model.contracts import PV26DetBackendOutput
+from pv26.model.heads.drivable import DrivableAreaHeadP3
+from pv26.model.heads.road_marking import RoadMarkingHeadDeconv
+from pv26.model.multitask_stub import PV26MultiHead
+from pv26.model.multitask_yolo26 import (
     PV26LegacyMultiHeadYOLO26,
-    PV26MultiHead,
     PV26MultiHeadYOLO26,
-    RoadMarkingHeadDeconv,
-    UltralyticsYOLO26DetBackend,
     build_pv26_inference_model_from_state_dict,
     infer_pv26_checkpoint_layout,
 )
@@ -156,7 +156,6 @@ class TestPV26MultiHead(unittest.TestCase):
 
         self.assertIs(model.det_backend, backend)
         self.assertIs(model.det_model, backend.det_model)
-        self.assertIs(model.build_det_loss_adapter(), backend.det_loss_adapter)
         self.assertEqual(y.det, {"backend": "fake"})
         self.assertEqual(tuple(y.da.shape), (2, 1, 128, 192))
         self.assertEqual(tuple(y.rm.shape), (2, 3, 128, 192))
@@ -273,7 +272,7 @@ class TestPV26MultiHead(unittest.TestCase):
         head = DrivableAreaHeadP3(in_ch=128)
         x = torch.randn(2, 128, 32, 48)
 
-        with mock.patch("pv26.multitask_model.F.interpolate", wraps=F.interpolate) as interp:
+        with mock.patch("pv26.model.multitask_impl.F.interpolate", wraps=F.interpolate) as interp:
             y = head(x, out_size=(256, 384))
 
         self.assertEqual(tuple(y.shape), (2, 1, 256, 384))
@@ -283,7 +282,7 @@ class TestPV26MultiHead(unittest.TestCase):
         head = DrivableAreaHeadP3(in_ch=128)
         x = torch.randn(2, 128, 32, 48)
 
-        with mock.patch("pv26.multitask_model.F.interpolate", wraps=F.interpolate) as interp:
+        with mock.patch("pv26.model.multitask_impl.F.interpolate", wraps=F.interpolate) as interp:
             y = head(x, out_size=(255, 383))
 
         self.assertEqual(tuple(y.shape), (2, 1, 255, 383))
@@ -293,7 +292,7 @@ class TestPV26MultiHead(unittest.TestCase):
         head = RoadMarkingHeadDeconv(in_ch=160, out_ch=3)
         x = torch.randn(2, 160, 32, 48)
 
-        with mock.patch("pv26.multitask_model.F.interpolate", wraps=F.interpolate) as interp:
+        with mock.patch("pv26.model.multitask_impl.F.interpolate", wraps=F.interpolate) as interp:
             y = head(x, out_size=(256, 384))
 
         self.assertEqual(tuple(y.shape), (2, 3, 256, 384))
@@ -303,7 +302,7 @@ class TestPV26MultiHead(unittest.TestCase):
         head = RoadMarkingHeadDeconv(in_ch=160, out_ch=3)
         x = torch.randn(2, 160, 32, 48)
 
-        with mock.patch("pv26.multitask_model.F.interpolate", wraps=F.interpolate) as interp:
+        with mock.patch("pv26.model.multitask_impl.F.interpolate", wraps=F.interpolate) as interp:
             y = head(x, out_size=(255, 383))
 
         self.assertEqual(tuple(y.shape), (2, 3, 255, 383))

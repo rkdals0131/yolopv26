@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from .constants import (
+from .labels import (
     CLASSMAP_VERSION_V2,
     CLASSMAP_VERSION_V3,
     DEFAULT_CLASSMAP_VERSION,

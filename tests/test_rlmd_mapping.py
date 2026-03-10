@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from pv26.masks import IGNORE_VALUE
-from pv26.rlmd import RlmdRgbClass, rlmd_code_mask_to_pv26_rm_masks
+from pv26.dataset.masks import IGNORE_VALUE
+from pv26.dataset.sources.rlmd import RlmdRgbClass, rlmd_code_mask_to_pv26_rm_masks
 
 
 class TestRlmdMapping(unittest.TestCase):

@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from pv26.torch_dataset import AugmentSpec, LetterboxSpec, Pv26ManifestDataset
+from pv26.dataset.loading.manifest_dataset import Pv26ManifestDataset
+from pv26.dataset.loading.sample_types import AugmentSpec, LetterboxSpec
 
 
 class TestPv26ManifestDataset(unittest.TestCase):
@@ -143,7 +144,7 @@ class TestPv26ManifestDataset(unittest.TestCase):
             self.assertEqual(tuple(s.rm_lane_subclass_mask.shape), (6, 6))
             self.assertEqual(tuple(s.det_yolo.shape), (1, 5))
 
-            # Check bbox transforms roughly (see letterbox math in pv26.torch_dataset)
+            # Check bbox transforms roughly (see letterbox math in pv26.dataset.loading.manifest_dataset)
             _, cx, cy, w, h = s.det_yolo[0].tolist()
             self.assertAlmostEqual(cx, 0.5, places=5)
             self.assertAlmostEqual(cy, 2.5 / 6.0, places=5)  # 0.416666...
