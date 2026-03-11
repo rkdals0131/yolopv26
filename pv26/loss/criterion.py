@@ -193,7 +193,9 @@ class PV26Criterion(nn.Module):
         )
         rm_lane_subclass = self._rm_lane_subclass_loss(
             rm_lane_subclass_logits=preds.rm_lane_subclass,
+            rm_lane_marker_mask=t.rm_mask[:, 0],
             rm_lane_subclass_mask=t.rm_lane_subclass_mask,
+            has_rm_lane_marker=t.has_rm[:, 0],
             has_rm_lane_subclass=t.has_rm_lane_subclass,
         )
 
@@ -216,9 +218,8 @@ class PV26Criterion(nn.Module):
         Ultralytics YOLO26 detection loss (E2E loss wrapper over v8DetectionLoss).
 
         Notes:
-        - This path currently supports only per-sample gating for `has_det` and `det_label_scope=none` by filtering the
-          batch. `det_label_scope=subset` is conservatively excluded from OD loss until class-aware negative masking is
-          implemented.
+        - This path supports the coarse 7-class manifest contract where detection labels are either
+          full supervision or absent (`none`).
         """
         if self.det_loss_adapter is None:
             raise RuntimeError("det loss adapter is not initialized")
@@ -292,8 +293,8 @@ class PV26Criterion(nn.Module):
         cls_losses: List[Tensor] = []
 
         for b in range(bsz):
-            scope = str(det_label_scope[b])
-            if scope not in {"full", "subset", "none"}:
+            scope = str(det_label_scope[b]).strip().lower()
+            if scope not in {"full", "none"}:
                 raise ValueError(f"invalid det_label_scope: {scope}")
             if int(has_det[b].item()) == 0 or scope == "none":
                 continue
@@ -323,12 +324,7 @@ class PV26Criterion(nn.Module):
                 box_target[gy, gx] = torch.tensor([cx, cy, bw, bh], dtype=det_logits.dtype, device=det_logits.device)
                 cls_target[gy, gx] = cls_idx
 
-            if scope == "full":
-                obj_losses.append(F.binary_cross_entropy_with_logits(pred_obj[b], obj_target, reduction="mean"))
-            elif pos_mask.any():
-                obj_losses.append(
-                    F.binary_cross_entropy_with_logits(pred_obj[b][pos_mask], obj_target[pos_mask], reduction="mean")
-                )
+            obj_losses.append(F.binary_cross_entropy_with_logits(pred_obj[b], obj_target, reduction="mean"))
 
             if pos_mask.any():
                 box_losses.append(F.smooth_l1_loss(pred_box[b].permute(1, 2, 0)[pos_mask], box_target[pos_mask], reduction="mean"))
@@ -359,7 +355,9 @@ class PV26Criterion(nn.Module):
         self,
         *,
         rm_lane_subclass_logits: Tensor,
+        rm_lane_marker_mask: Tensor,
         rm_lane_subclass_mask: Tensor,
+        has_rm_lane_marker: Tensor,
         has_rm_lane_subclass: Tensor,
     ) -> Tensor:
         bsz, ch, h, w = rm_lane_subclass_logits.shape
@@ -374,11 +372,23 @@ class PV26Criterion(nn.Module):
                 "rm lane-subclass batch shape mismatch: "
                 f"logits={(bsz, ch, h, w)} mask={tuple(rm_lane_subclass_mask.shape)}"
             )
+        if rm_lane_marker_mask.shape != (bsz, h, w):
+            raise ValueError(
+                "rm lane-marker batch shape mismatch: "
+                f"logits={(bsz, ch, h, w)} lane_mask={tuple(rm_lane_marker_mask.shape)}"
+            )
 
-        supervised = has_rm_lane_subclass.view(bsz, 1, 1).bool()
-        # Lane subclasses are very sparse; training over all background pixels tends to dominate.
-        # We supervise subclass CE only on positive pixels (1..K), masking out background(0) and ignore(255).
-        valid = (rm_lane_subclass_mask != 255) & (rm_lane_subclass_mask != 0) & supervised
+        supervised_lane = has_rm_lane_marker.view(bsz, 1, 1).bool()
+        supervised_subclass = has_rm_lane_subclass.view(bsz, 1, 1).bool()
+        # Lane-subclass is a conditional task. We supervise only positive subclass labels
+        # on GT lane-marker pixels, masking out background(0), ignore(255), and off-lane regions.
+        valid = (
+            (rm_lane_marker_mask == 1)
+            & (rm_lane_subclass_mask != 255)
+            & (rm_lane_subclass_mask != 0)
+            & supervised_lane
+            & supervised_subclass
+        )
         valid_count = valid.to(dtype=rm_lane_subclass_logits.dtype).sum(dim=(1, 2))
         keep_f = valid_count.gt(0).to(dtype=rm_lane_subclass_logits.dtype)
         if not bool(keep_f.any()):

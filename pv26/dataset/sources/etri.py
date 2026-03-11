@@ -91,14 +91,14 @@ def iter_etri_objects(data: Mapping[str, Any]) -> Iterable[EtriPolygonObject]:
         yield EtriPolygonObject(label=label.strip(), polygon=poly, deleted=deleted)
 
 
-def rasterize_etri_type_a_masks(
+def rasterize_etri_pv26_masks(
     data: Mapping[str, Any],
     *,
     width: int,
     height: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Rasterize a Cityscapes-like ETRI polygon JSON into PV26 Type-A masks.
+    Rasterize a Cityscapes-like ETRI polygon JSON into PV26 masks.
 
     Returns:
       da_mask, rm_lane_marker, rm_road_marker_non_lane, rm_stop_line, rm_lane_subclass

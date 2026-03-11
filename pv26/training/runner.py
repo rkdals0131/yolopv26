@@ -31,6 +31,7 @@ from pv26.eval.detection import (
     cxcywh_to_xyxy,
     decode_det_predictions,
 )
+from pv26.eval.segmentation import lane_subclass_eval_valid_mask
 from pv26.loss.criterion import PV26Criterion
 from pv26.loss.det_ultralytics_e2e import UltralyticsE2EDetLossAdapter
 from pv26.model.multitask_stub import PV26MultiHead
@@ -42,7 +43,8 @@ from pv26.training.runtime import (
     seed_everything,
 )
 
-DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_merged_all")
+# DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_bdd_full")
+DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_all_merged")
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,9 @@ class TrainPv26ScriptDefaults:
     aug_brightness: float       = 0.2                  # brightness jitter 강도
     aug_contrast: float         = 0.2                  # contrast jitter 강도
     aug_saturation: float       = 0.2                  # saturation jitter 강도
+    aug_scale_min: float        = 0.9                  # fixed-canvas zoom-out minimum
+    aug_scale_max: float        = 1.1                  # fixed-canvas zoom-in maximum
+    aug_translate: float        = 0.1                  # max translation as fraction of canvas size
 
 
 SCRIPT_DEFAULTS = TrainPv26ScriptDefaults()
@@ -310,6 +315,24 @@ def build_argparser() -> argparse.ArgumentParser:
         type=float,
         default=SCRIPT_DEFAULTS.aug_saturation,
         help="Saturation jitter delta (0 disables)",
+    )
+    p.add_argument(
+        "--aug-scale-min",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_scale_min,
+        help="Minimum fixed-canvas multi-scale factor (<1 zooms out with ignore padding).",
+    )
+    p.add_argument(
+        "--aug-scale-max",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_scale_max,
+        help="Maximum fixed-canvas multi-scale factor (>1 zooms in / crops).",
+    )
+    p.add_argument(
+        "--aug-translate",
+        type=float,
+        default=SCRIPT_DEFAULTS.aug_translate,
+        help="Maximum synchronized translation as a fraction of canvas size.",
     )
     p.set_defaults(
         persistent_workers=SCRIPT_DEFAULTS.persistent_workers,
@@ -1113,8 +1136,12 @@ def validate(
                 (4, "rm_lane_subclass_yellow_dashed"),
             ]
             pred_lane_subclass = torch.argmax(pred_lane_subclass_logits, dim=1)
-            valid_lane_subclass = (rm_lane_subclass_mask_dev != 255) & has_rm_lane_subclass_dev[:, None, None]
-            supervised_lane_subclass = valid_lane_subclass.reshape(valid_lane_subclass.shape[0], -1).any(dim=1)
+            valid_lane_subclass, supervised_lane_subclass = lane_subclass_eval_valid_mask(
+                rm_mask=rm_mask_dev,
+                rm_lane_subclass_mask=rm_lane_subclass_mask_dev,
+                has_rm=target_batch.has_rm,
+                has_rm_lane_subclass=target_batch.has_rm_lane_subclass,
+            )
             for cls_id, cls_name in lane_subclass_specs:
                 pred_c = pred_lane_subclass == int(cls_id)
                 tgt_c = rm_lane_subclass_mask_dev == int(cls_id)
@@ -1258,6 +1285,9 @@ def main() -> int:
             brightness=max(0.0, float(args.aug_brightness)),
             contrast=max(0.0, float(args.aug_contrast)),
             saturation=max(0.0, float(args.aug_saturation)),
+            scale_min=max(1e-6, float(min(args.aug_scale_min, args.aug_scale_max))),
+            scale_max=max(1e-6, float(max(args.aug_scale_min, args.aug_scale_max))),
+            translate=max(0.0, float(args.aug_translate)),
         )
 
     train_ds = Pv26ManifestDataset(

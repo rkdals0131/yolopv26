@@ -9,7 +9,7 @@ from torch import Tensor
 from ..dataset.loading.sample_types import Pv26Sample
 from ..model.contracts import validate_seg_output_stride
 
-_SCOPE_TO_CODE = {"full": 0, "subset": 1, "none": 2}
+_SCOPE_TO_CODE = {"full": 0, "none": 1}
 
 
 def _downsample_binary_mask_u8(mask: Tensor, *, seg_output_stride: int) -> Tensor:
@@ -336,4 +336,3 @@ class PV26PreparedBatch:
             det_tgt_cls=None if self.det_tgt_cls is None else _pin(self.det_tgt_cls),
             det_tgt_bboxes=None if self.det_tgt_bboxes is None else _pin(self.det_tgt_bboxes),
         )
-

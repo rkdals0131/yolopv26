@@ -12,7 +12,7 @@ class UltralyticsE2EDetLossAdapter:
 
     This adapter encapsulates:
     - Ultralytics `E2ELoss` construction
-    - filtering of subset/none detection supervision
+    - filtering of full/none detection supervision
     - prediction schema handling
     - full-batch fast path for pre-flattened detection targets
     """
@@ -45,6 +45,13 @@ class UltralyticsE2EDetLossAdapter:
             raise TypeError("det_out must be an ultralytics Detect output (dict or (y, preds))")
 
         bsz = int(has_det.shape[0])
+        if len(det_label_scope) != bsz:
+            raise ValueError("det_label_scope length mismatch")
+        det_label_scope_norm = tuple(str(scope).strip().lower() for scope in det_label_scope)
+        for scope in det_label_scope_norm:
+            if scope not in {"full", "none"}:
+                raise ValueError(f"invalid det_label_scope: {scope}")
+
         keep_idx: Tensor
         if det_scope_code is not None:
             if det_scope_code.shape[0] != bsz:
@@ -54,14 +61,10 @@ class UltralyticsE2EDetLossAdapter:
             keep_mask = keep_mask & (scope_code == 0)
             keep_idx = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
         else:
-            if len(det_label_scope) != bsz:
-                raise ValueError("det_label_scope length mismatch")
             has_det_cpu = has_det.to(device="cpu", dtype=torch.long).tolist()
             keep: List[int] = []
             for i in range(bsz):
-                scope = str(det_label_scope[i]).strip().lower()
-                if scope not in {"full", "subset", "none"}:
-                    raise ValueError(f"invalid det_label_scope: {scope}")
+                scope = det_label_scope_norm[i]
                 if int(has_det_cpu[i]) == 0 or scope != "full":
                     continue
                 keep.append(i)

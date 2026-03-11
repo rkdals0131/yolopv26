@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from pv26.dataset.masks import IGNORE_VALUE
-from pv26.dataset.sources.etri import rasterize_etri_type_a_masks
+from pv26.dataset.sources.etri import rasterize_etri_pv26_masks
 
 
 class TestEtriRasterize(unittest.TestCase):
@@ -40,7 +40,7 @@ class TestEtriRasterize(unittest.TestCase):
             ],
         }
 
-        da, rm_lane, rm_road, rm_stop, rm_lane_sub = rasterize_etri_type_a_masks(data, width=10, height=10)
+        da, rm_lane, rm_road, rm_stop, rm_lane_sub = rasterize_etri_pv26_masks(data, width=10, height=10)
 
         # out-of-roi must be ignored across all masks
         self.assertEqual(int(da[0, 0]), IGNORE_VALUE)
@@ -71,4 +71,3 @@ class TestEtriRasterize(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

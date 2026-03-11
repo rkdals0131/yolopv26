@@ -85,7 +85,7 @@ def rlmd_code_mask_to_pv26_rm_masks(
     code_u32: np.ndarray, *, palette: Dict[int, RlmdRgbClass]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
-    Convert RLMD RGB-code mask into PV26 Type-A road-marking masks.
+    Convert RLMD RGB-code mask into PV26 road-marking masks.
 
     Returns:
       rm_lane_marker, rm_road_marker_non_lane, rm_stop_line, rm_lane_subclass, unknown_pixels

@@ -11,11 +11,9 @@ class Split(str, Enum):
 
 class DetLabelScope(str, Enum):
     FULL = "full"
-    SUBSET = "subset"
     NONE = "none"
 
 
 class ClassmapVersion(str, Enum):
     V2 = "classmap-v2"
     V3 = "classmap-v3"
-

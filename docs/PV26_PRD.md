@@ -129,15 +129,15 @@ flowchart LR
 2. 라벨 부재 태스크/채널은 `ignore index=255`로 저장하고, `has_*` 플래그로 명시한다.
    - 예: `has_det/has_da/has_rm_lane_marker/has_rm_road_marker_non_lane/has_rm_stop_line/has_rm_lane_subclass`
 3. 학습 시 `has_*` 플래그와 `ignore(255)`를 이용해 task별 loss masking을 적용한다.
-4. Detection 부분 라벨 처리를 위해 `det_label_scope(full|subset|none)`와 `det_annotated_class_ids`를 manifest에 포함한다.
-5. `det_label_scope=subset` 샘플은 미주석 클래스에 대해 OD negative loss를 적용하지 않는다.
+4. Detection manifest는 스키마 호환성을 위해 `det_label_scope`와 `det_annotated_class_ids`를 유지한다.
+5. 다만 active coarse 7-class runtime은 `full|none`만 허용하며, 부분 coverage 이슈는 converter 단계의 class remap/skip 정책으로 해결한다. `det_annotated_class_ids`는 active build에서 비워 둔다.
 
 ### FR-06. 대회 상세미션 대응 정책 (Provisional)
 
 1. `40kmph` 급제동 시나리오 대응을 위해 전방 장애물 OD 추론 안정성을 별도 리포트한다.
 2. 고속 차선 유지 시나리오 대응을 위해 lane/drivable의 프레임 연속 안정성 지표를 별도 리포트한다.
-3. 실제 신호등 인지 요구가 확정되면 차기 classmap 버전(`classmap-vX`)에서 `traffic_light` 클래스를 분리해 활성화한다.
-4. 정적 장애물 요구가 확정되면 `road_obstacle` 분리 또는 `static_obstacle` 추가를 클래스맵 변경으로 적용한다.
+3. `traffic_light`는 coarse 7-class OD에서 독립 클래스로 유지한다.
+4. 정적 장애물은 coarse OD에서 `obstacle`로 우선 통합하고, 필요 시 차기 classmap / detector taxonomy에서 세분화한다.
 
 ## 6. 클래스 정책
 
@@ -185,21 +185,17 @@ flowchart LR
 
 | det_id | class_name | 설명 |
 |---|---|---|
-| 0 | car | 승용차 |
-| 1 | bus | 버스 |
-| 2 | truck | 트럭/대형차 |
-| 3 | motorcycle | 이륜차 |
-| 4 | bicycle | 자전거 |
-| 5 | pedestrian | 보행자 |
-| 6 | traffic_cone | 라바콘 |
-| 7 | barrier | 바리케이드/가드레일형 장애물 |
-| 8 | bollard | 볼라드/기둥형 기물 |
-| 9 | road_obstacle | 낙하물/예측불가 도로 장애물 |
-| 10 | sign_pole | 표지판/폴 계열 기물 |
+| 0 | vehicle | 승용차/버스/트럭 등 차량 전체 |
+| 1 | bike | 자전거/오토바이/라이더 계열 |
+| 2 | pedestrian | 보행자 |
+| 3 | traffic_cone | 라바콘/공사콘 |
+| 4 | obstacle | barrier/bollard/낙하물 등 일반 장애물 |
+| 5 | traffic_light | 신호등 |
+| 6 | sign_pole | 표지판/폴 계열 기물 |
 
 참고:
-1. 현재 `traffic light`는 독립 클래스가 아니라 기존 탐지 체계 내에서 운영한다.
-2. 대회 최종 규정에서 신호등 인지가 명시되면 `traffic_light` 분리 클래스를 차기 classmap 버전(`classmap-vX`)으로 반영한다.
+1. 세부 vehicle subtype(`car/bus/truck`)와 obstacle subtype(`barrier/bollard/road_obstacle`)는 coarse OD에서 통합한다.
+2. lane / road-marker 세분화는 detection이 아니라 segmentation contract에서 유지한다.
 
 ## 7. 데이터 전략
 
@@ -291,8 +287,8 @@ dataset/
    - `has_rm_* = 0`인 채널은 해당 마스크를 전 픽셀 `255`
    - `has_semantic_id=0`이면 semantic 파일 미존재를 허용
 6. Detection 부분 라벨 검사:
-   - `det_label_scope=subset`이면 `det_annotated_class_ids`가 비어 있으면 안 됨
-   - subset 샘플의 det 라벨은 `det_annotated_class_ids` 범위를 벗어나면 안 됨
+   - active runtime contract에서는 `det_label_scope`가 `full|none`만 허용됨
+   - `det_annotated_class_ids`는 active build에서 비어 있어야 함
 7. split 누수 검사:
    - grouping key는 `{source, sequence}`를 사용
    - 동일 `{source, sequence}`는 단일 split에만 존재
@@ -313,7 +309,7 @@ dataset/
    - Drivable: CE(`ignore=255`)
    - RoadMarking: Focal + Dice (`ignore=255`)
 6. 기본 손실 가중치 초기값: `w_od=1.0`, `w_da=1.0`, `w_rm=2.0`
-7. `det_label_scope=subset` 샘플은 미주석 클래스에 대한 OD 분류/객체성 negative loss를 마스킹한다.
+7. OD coverage 차이는 runtime subset masking이 아니라 source별 exhaustive remap 또는 sample skip으로 해결한다.
 
 ### 8.2 입력 전처리
 

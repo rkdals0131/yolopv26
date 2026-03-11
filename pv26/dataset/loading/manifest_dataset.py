@@ -68,6 +68,9 @@ class AugmentSpec:
     brightness: float = 0.2
     contrast: float = 0.2
     saturation: float = 0.2
+    scale_min: float = 1.0
+    scale_max: float = 1.0
+    translate: float = 0.0
 
 
 def _parse_bool01(v: str) -> int:
@@ -216,6 +219,209 @@ def _sample_jitter_factor(delta: float) -> float:
         return 1.0
     r = float(torch.rand((), dtype=torch.float32).item())  # [0,1)
     return 1.0 + (2.0 * r - 1.0) * d
+
+
+def _sample_scale(spec: AugmentSpec) -> float:
+    lo = max(1e-6, float(spec.scale_min))
+    hi = max(lo, float(spec.scale_max))
+    if abs(hi - lo) <= 1e-6:
+        return lo
+    r = float(torch.rand((), dtype=torch.float32).item())
+    return lo + (hi - lo) * r
+
+
+def _sample_translate_offset(limit_px: int) -> int:
+    if limit_px <= 0:
+        return 0
+    r = float(torch.rand((), dtype=torch.float32).item())
+    return int(round((2.0 * r - 1.0) * float(limit_px)))
+
+
+def _place_resized_image(
+    image: Image.Image,
+    *,
+    out_w: int,
+    out_h: int,
+    scaled_w: int,
+    scaled_h: int,
+    offset_x: int,
+    offset_y: int,
+    pad_value: int,
+) -> Image.Image:
+    resized = image.resize((scaled_w, scaled_h), resample=Image.BILINEAR)
+    canvas = Image.new("RGB", (out_w, out_h), color=(pad_value, pad_value, pad_value))
+    src_x1 = max(0, -offset_x)
+    src_y1 = max(0, -offset_y)
+    src_x2 = min(scaled_w, out_w - offset_x)
+    src_y2 = min(scaled_h, out_h - offset_y)
+    if src_x1 < src_x2 and src_y1 < src_y2:
+        patch = resized.crop((src_x1, src_y1, src_x2, src_y2))
+        canvas.paste(patch, (max(0, offset_x), max(0, offset_y)))
+    return canvas
+
+
+def _place_resized_mask_u8(
+    mask_u8: np.ndarray,
+    *,
+    out_w: int,
+    out_h: int,
+    scaled_w: int,
+    scaled_h: int,
+    offset_x: int,
+    offset_y: int,
+    pad_value: int,
+) -> np.ndarray:
+    resized = Image.fromarray(mask_u8, mode="L").resize((scaled_w, scaled_h), resample=Image.NEAREST)
+    canvas = Image.new("L", (out_w, out_h), color=int(pad_value))
+    src_x1 = max(0, -offset_x)
+    src_y1 = max(0, -offset_y)
+    src_x2 = min(scaled_w, out_w - offset_x)
+    src_y2 = min(scaled_h, out_h - offset_y)
+    if src_x1 < src_x2 and src_y1 < src_y2:
+        patch = resized.crop((src_x1, src_y1, src_x2, src_y2))
+        canvas.paste(patch, (max(0, offset_x), max(0, offset_y)))
+    return np.array(canvas, dtype=np.uint8)
+
+
+def _apply_scale_translate_yolo(
+    det_yolo: np.ndarray,
+    *,
+    out_w: int,
+    out_h: int,
+    scale: float,
+    offset_x: int,
+    offset_y: int,
+) -> np.ndarray:
+    if det_yolo.size == 0:
+        return det_yolo.astype(np.float32, copy=False)
+
+    out = det_yolo.copy().astype(np.float32, copy=False)
+    x1 = (out[:, 1] - 0.5 * out[:, 3]) * float(out_w)
+    y1 = (out[:, 2] - 0.5 * out[:, 4]) * float(out_h)
+    x2 = (out[:, 1] + 0.5 * out[:, 3]) * float(out_w)
+    y2 = (out[:, 2] + 0.5 * out[:, 4]) * float(out_h)
+
+    x1 = x1 * float(scale) + float(offset_x)
+    y1 = y1 * float(scale) + float(offset_y)
+    x2 = x2 * float(scale) + float(offset_x)
+    y2 = y2 * float(scale) + float(offset_y)
+
+    x1 = np.clip(x1, 0.0, float(out_w))
+    y1 = np.clip(y1, 0.0, float(out_h))
+    x2 = np.clip(x2, 0.0, float(out_w))
+    y2 = np.clip(y2, 0.0, float(out_h))
+
+    bw = x2 - x1
+    bh = y2 - y1
+    keep = (bw > 0.0) & (bh > 0.0)
+    if not bool(np.any(keep)):
+        return np.zeros((0, 5), dtype=np.float32)
+
+    out = out[keep]
+    x1 = x1[keep]
+    y1 = y1[keep]
+    x2 = x2[keep]
+    y2 = y2[keep]
+    out[:, 1] = ((x1 + x2) * 0.5) / float(out_w)
+    out[:, 2] = ((y1 + y2) * 0.5) / float(out_h)
+    out[:, 3] = (x2 - x1) / float(out_w)
+    out[:, 4] = (y2 - y1) / float(out_h)
+    return out
+
+
+def _apply_scale_translate_augmentation(
+    image: Image.Image,
+    *,
+    det_yolo: np.ndarray,
+    da_u8: np.ndarray,
+    rm_lane_u8: np.ndarray,
+    rm_road_u8: np.ndarray,
+    rm_stop_u8: np.ndarray,
+    rm_lane_subclass_u8: np.ndarray,
+    spec: AugmentSpec,
+    image_pad_value: int,
+    mask_pad_value: int,
+) -> Tuple[Image.Image, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    out_w, out_h = image.size
+    scale = _sample_scale(spec)
+    scaled_w = max(1, int(round(float(out_w) * scale)))
+    scaled_h = max(1, int(round(float(out_h) * scale)))
+    base_x = (out_w - scaled_w) // 2
+    base_y = (out_h - scaled_h) // 2
+    max_dx = int(round(max(0.0, float(spec.translate)) * float(out_w)))
+    max_dy = int(round(max(0.0, float(spec.translate)) * float(out_h)))
+    offset_x = base_x + _sample_translate_offset(max_dx)
+    offset_y = base_y + _sample_translate_offset(max_dy)
+
+    image = _place_resized_image(
+        image,
+        out_w=out_w,
+        out_h=out_h,
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        pad_value=image_pad_value,
+    )
+    da_u8 = _place_resized_mask_u8(
+        da_u8,
+        out_w=out_w,
+        out_h=out_h,
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        pad_value=mask_pad_value,
+    )
+    rm_lane_u8 = _place_resized_mask_u8(
+        rm_lane_u8,
+        out_w=out_w,
+        out_h=out_h,
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        pad_value=mask_pad_value,
+    )
+    rm_road_u8 = _place_resized_mask_u8(
+        rm_road_u8,
+        out_w=out_w,
+        out_h=out_h,
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        pad_value=mask_pad_value,
+    )
+    rm_stop_u8 = _place_resized_mask_u8(
+        rm_stop_u8,
+        out_w=out_w,
+        out_h=out_h,
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        pad_value=mask_pad_value,
+    )
+    rm_lane_subclass_u8 = _place_resized_mask_u8(
+        rm_lane_subclass_u8,
+        out_w=out_w,
+        out_h=out_h,
+        scaled_w=scaled_w,
+        scaled_h=scaled_h,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        pad_value=mask_pad_value,
+    )
+    det_yolo = _apply_scale_translate_yolo(
+        det_yolo,
+        out_w=out_w,
+        out_h=out_h,
+        scale=scale,
+        offset_x=offset_x,
+        offset_y=offset_y,
+    )
+    return image, det_yolo, da_u8, rm_lane_u8, rm_road_u8, rm_stop_u8, rm_lane_subclass_u8
 
 
 def _apply_color_jitter(image: Image.Image, *, spec: AugmentSpec) -> Image.Image:
@@ -407,6 +613,18 @@ class Pv26ManifestDataset(Dataset[Pv26Sample]):
             det_yolo = _letterbox_det_yolo(det_yolo, in_w=in_w, in_h=in_h, out_w=lb.out_width, out_h=lb.out_height)
 
         if self.augment is not None:
+            image, det_yolo, da_u8, rm_lane_u8, rm_road_u8, rm_stop_u8, rm_lane_subclass_u8 = _apply_scale_translate_augmentation(
+                image,
+                det_yolo=det_yolo,
+                da_u8=da_u8,
+                rm_lane_u8=rm_lane_u8,
+                rm_road_u8=rm_road_u8,
+                rm_stop_u8=rm_stop_u8,
+                rm_lane_subclass_u8=rm_lane_subclass_u8,
+                spec=self.augment,
+                image_pad_value=int(lb.image_pad_value) if lb is not None else 114,
+                mask_pad_value=int(lb.mask_pad_value) if lb is not None else IGNORE_VALUE,
+            )
             image = _apply_color_jitter(image, spec=self.augment)
 
             do_hflip = float(torch.rand((), dtype=torch.float32).item()) < float(self.augment.hflip_prob)

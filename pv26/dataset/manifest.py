@@ -121,13 +121,10 @@ def validate_manifest_row_basic(row: Dict[str, str]) -> List[str]:
             errs.append(f"invalid_flag:{k}={v}")
 
     scope = row.get("det_label_scope", "")
-    if scope not in {"full", "subset", "none"}:
+    if scope not in {"full", "none"}:
         errs.append(f"invalid_det_label_scope:{scope}")
 
-    if scope == "subset" and not row.get("det_annotated_class_ids", "").strip():
-        errs.append("subset_missing_det_annotated_class_ids")
-
-    if scope in {"full", "none"} and row.get("det_annotated_class_ids", "").strip():
-        errs.append("det_annotated_class_ids_must_be_empty_for_full_or_none")
+    if row.get("det_annotated_class_ids", "").strip():
+        errs.append("det_annotated_class_ids_must_be_empty")
 
     return errs

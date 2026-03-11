@@ -128,13 +128,13 @@ YOLO text format per line:
 `<class_id> <cx> <cy> <w> <h>`
 
 Rules:
-1. `class_id`: integer in `[0, 10]`
+1. `class_id`: integer in `[0, 6]`
 2. `cx, cy, w, h`: normalized float in `[0.0, 1.0]`
 3. Float precision: 6 decimal places
 4. Empty file is allowed when no objects exist
 5. `min_box_area_px` is a configurable conversion parameter
 6. MVP default is `min_box_area_px=0` (no box drop by size)
-7. Small-object-critical classes (`traffic_cone`, `bollard`, `road_obstacle`) must never be dropped by area threshold
+7. Small-object-critical classes (`traffic_cone`, `traffic_light`, `sign_pole`) must never be dropped by area threshold
 8. Boxes clipped to image bounds before normalization
 
 ## 3.6 Segmentation Mask Format
@@ -187,8 +187,8 @@ Notes:
 12. `has_rm_stop_line` (`0|1`)
 13. `has_rm_lane_subclass` (`0|1`)
 14. `has_semantic_id` (`0|1`)
-15. `det_label_scope` (`full|subset|none`)
-16. `det_annotated_class_ids` (comma-separated canonical det IDs; empty when `full` or `none`)
+15. `det_label_scope` (`full|none`)
+16. `det_annotated_class_ids` (reserved for schema compatibility; must be empty in active coarse-7class builds)
 17. `image_relpath`
 18. `det_relpath`
 19. `da_relpath`
@@ -203,6 +203,10 @@ Notes:
 28. `time_tag` (`day|night|dawn_dusk|unknown`)
 29. `scene_tag` (`open|tunnel|shadow|unknown`)
 30. `source_group_key`
+
+Active policy note:
+1. Active coarse-7class converters must emit `det_label_scope=full` or `none`.
+2. Partial OD coverage must be resolved upstream by class remap, sample skip, or `has_det=0`; runtime `subset` masking is not part of the active contract.
 
 ## 3.8 RoadMarking Label Normalization Policy
 
@@ -229,17 +233,13 @@ Notes:
 
 | det_id | class_name |
 |---|---|
-| 0 | car |
-| 1 | bus |
-| 2 | truck |
-| 3 | motorcycle |
-| 4 | bicycle |
-| 5 | pedestrian |
-| 6 | traffic_cone |
-| 7 | barrier |
-| 8 | bollard |
-| 9 | road_obstacle |
-| 10 | sign_pole |
+| 0 | vehicle |
+| 1 | bike |
+| 2 | pedestrian |
+| 3 | traffic_cone |
+| 4 | obstacle |
+| 5 | traffic_light |
+| 6 | sign_pole |
 
 ## 4.2 Segmentation Classes
 
@@ -268,14 +268,13 @@ Inputs:
 3. Road marking annotations (lane markers and other road markers when available)
 
 Mapping:
-1. `car -> car`
-2. `bus -> bus`
-3. `truck -> truck`
-4. `motorcycle -> motorcycle`
-5. `bicycle -> bicycle`
-6. `person -> pedestrian`
-7. `traffic sign|traffic light|pole-like roadside fixture -> sign_pole`
-8. Unmapped movable road hazards -> `road_obstacle`
+1. `car|bus|truck|other vehicle -> vehicle`
+2. `motorcycle|bicycle|bike -> bike`
+3. `person|pedestrian|rider -> pedestrian`
+4. `traffic light|light -> traffic_light`
+5. `traffic sign|pole|pole-like roadside fixture|sign -> sign_pole`
+6. `traffic cone|construction cone|cone -> traffic_cone`
+7. `barrier|bollard|train|road obstacle -> obstacle`
 
 Segmentation:
 1. Drivable labels (`direct`, `alternative`) -> `drivable=1`
@@ -293,13 +292,12 @@ Inputs:
 Mapping:
 1. `person -> pedestrian`
 2. `rider -> pedestrian`
-3. `car -> car`
-4. `truck -> truck`
-5. `bus -> bus`
-6. `motorcycle -> motorcycle`
-7. `bicycle -> bicycle`
-8. `train -> road_obstacle`
-9. Set `det_label_scope=subset` and record actual annotated canonical det IDs in `det_annotated_class_ids`.
+3. `car|truck|bus -> vehicle`
+4. `motorcycle|bicycle -> bike`
+5. `traffic light -> traffic_light` when explicit external OD source is available
+6. `traffic sign|pole -> sign_pole` when explicit external OD source is available
+7. `train -> obstacle`
+8. Cityscapes OD export is allowed only when the source inventory can be exhaustively remapped into the 7-class target. Otherwise export `has_det=0` and `det_label_scope=none`.
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
@@ -315,10 +313,10 @@ Inputs:
 1. 2D/3D semantic and instance annotations
 
 Mapping policy:
-1. Apply Cityscapes-equivalent class mapping where labels overlap
-2. Vehicle/person/cycle classes map to PV26 detection IDs
-3. Static unknown obstacles map to `road_obstacle` only if confidently labeled
-4. Set `det_label_scope=subset` and fill `det_annotated_class_ids` based on available labels.
+1. Apply Cityscapes-equivalent coarse mapping where labels overlap
+2. Vehicle/person/cycle classes map to `vehicle|pedestrian|bike`
+3. Static unknown obstacles map to `obstacle` only if confidently labeled
+4. KITTI-360 OD export is allowed only when the source inventory can be exhaustively remapped into the 7-class target. Otherwise export `has_det=0` and `det_label_scope=none`.
 
 Segmentation:
 1. `road` and `parking` -> `drivable=1`
@@ -331,13 +329,16 @@ Inputs:
 2. Panoptic/semantic labels when available
 
 Detection mapping:
-1. `vehicle -> car` (default)
-2. `pedestrian -> pedestrian`
-3. `cyclist -> bicycle`
-4. `motorcyclist -> motorcycle` (if explicitly available)
-5. `sign -> sign_pole`
-6. Unknown movable hazards -> `road_obstacle`
-7. Set `det_label_scope=subset` unless all canonical classes are explicitly covered.
+1. Active 7-class export is segmentation-backed only.
+2. `TYPE_CAR|TYPE_TRUCK|TYPE_BUS|TYPE_OTHER_LARGE_VEHICLE|TYPE_TRAILER -> vehicle`
+3. `TYPE_BICYCLE|TYPE_MOTORCYCLE|TYPE_CYCLIST|TYPE_MOTORCYCLIST -> bike`
+4. `TYPE_PEDESTRIAN -> pedestrian`
+5. `TYPE_CONSTRUCTION_CONE_POLE -> traffic_cone`
+6. `TYPE_PEDESTRIAN_OBJECT -> obstacle`
+7. `TYPE_TRAFFIC_LIGHT -> traffic_light`
+8. `TYPE_SIGN|TYPE_POLE -> sign_pole`
+9. Rows without `camera_segmentation` are skipped for OD export instead of falling back to coarse `camera_box` subset labels.
+10. Active generated WOD rows use `det_label_scope=full`.
 
 Segmentation:
 1. Road surface classes -> `drivable=1`
@@ -367,7 +368,7 @@ If RLMD is explicitly enabled (experimental):
 ## 5.6 Self-Collected Adapter
 
 Mandatory annotation targets:
-1. Detection classes `0..10`
+1. Detection classes `0..6`
 2. Drivable binary mask
 3. Road-marking multi-channel masks (`rm_lane_marker`, `rm_road_marker_non_lane`, `rm_stop_line`)
 
@@ -396,7 +397,7 @@ Step definitions:
 2. Convert raw annotation schemas (`json/polygon/polyline`) into canonical label artifacts (`YOLO txt`, `PNG masks`)
 3. Generate canonical `sample_id` and file names
 4. Convert and clamp detection boxes with `min_box_area_px` policy
-5. Populate detection coverage metadata (`det_label_scope`, `det_annotated_class_ids`)
+5. Populate detection coverage metadata using the active contract (`det_label_scope=full|none`, empty `det_annotated_class_ids`)
 6. Convert drivable and road-marking masks with `ignore(255)` and `has_*` flags
 7. Normalize road-marking labels using Section `3.8` policy (mask pass-through or vector rasterization)
 8. Compose semantic ID mask (classmap-defined IDs) only for samples with valid semantic export (`has_semantic_id=1`)
@@ -443,9 +444,9 @@ Step definitions:
 10. `has_semantic_id=1` and semantic mask contains values outside `class_map.yaml` IDs
 11. Dimension mismatch among image/da/road-marking/semantic files
 12. Leakage detected: same `{source, sequence}` exists in multiple splits
-13. `det_label_scope=subset` but `det_annotated_class_ids` is empty
-14. `det_label_scope=none` with non-empty detection label file
-15. Detection class IDs outside `det_annotated_class_ids` for subset samples
+13. `det_label_scope` is not one of `full|none`
+14. `det_annotated_class_ids` is non-empty in an active coarse-7class build
+15. `det_label_scope=none` with non-empty detection label file
 16. MVP dataset contains samples outside `weather_tag=dry` or `time_tag=day`
 
 ## 8.2 Warning Rules
@@ -486,7 +487,7 @@ This repo currently uses dataset-specific converter scripts (adapters).
 
 Convert:
 ```bash
-python tools/data_analysis/bdd/convert_bdd_type_a.py \
+python tools/data_analysis/bdd/convert_bdd_pv26.py \
   --images-root <BDD_IMAGES_DIR> \
   --labels <BDD_LABELS_DIR_OR_JSON> \
   --drivable-root <BDD_DRIVABLE_MASK_DIR> \
@@ -511,7 +512,7 @@ python tools/data_analysis/bdd/pv26_qc_report.py --dataset-root <OUT_ROOT> --out
 
 ### 10.2 Adding a new dataset adapter (ETRI/RLMD/WOD/…)
 
-When implementing `tools/data_analysis/<dataset>/convert_<dataset>_type_a.py`, enforce:
+When implementing `tools/data_analysis/<dataset>/convert_<dataset>_pv26.py`, enforce:
 1. Output directory layout matches Section 3.2.
 2. `meta/split_manifest.csv` is the source-of-truth for loaders and validators.
 3. Partial-label policy is strict:

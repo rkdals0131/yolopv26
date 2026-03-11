@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert BDD100K assets into PV26 Type-A dataset layout (BDD-only, BDD adapter).
+Convert BDD100K assets into the PV26 unified dataset layout.
 
 Implements the first executable slice described in:
 - docs/PV26_PRD.md
@@ -782,7 +782,7 @@ def main() -> int:
     )
 
     report = {
-        "converter": "convert_bdd_type_a.py",
+        "converter": "convert_bdd_pv26.py",
         "converter_version": "0.2.0",
         "spec": "docs/PV26_DATASET_CONVERSION_SPEC.md v1.5",
         "timestamp_utc": utc_now_iso(),
@@ -806,7 +806,7 @@ def main() -> int:
         "counts": dict(counts),
         "skipped": dict(skipped),
         "notes": [
-            "Type-A BDD-only slice: lane/non-lane RM masks are rasterized from BDD lane/* poly2d labels.",
+            "BDD adapter: lane/non-lane RM masks are rasterized from BDD lane/* poly2d labels.",
             "rm_lane_subclass mono8 mask is exported: "
             "0=background, 1=white_solid, 2=white_dashed, 3=yellow_solid, 4=yellow_dashed, 255=ignore.",
             "stop_line channel defaults to ignore(255) unless explicit stop-line category is present.",

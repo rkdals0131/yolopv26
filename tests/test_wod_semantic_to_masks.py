@@ -83,13 +83,13 @@ class TestWodSemanticMapping(unittest.TestCase):
             lines,
             [
                 "0 0.416667 0.333333 0.500000 0.333333",
-                "10 0.833333 0.166667 0.333333 0.333333",
+                "5 0.833333 0.166667 0.333333 0.333333",
             ],
         )
 
     def test_wod_annotated_class_ids_contracts(self):
-        self.assertEqual(WAYMO_CAMERA_BOX_DET_ANNOTATED_CLASS_IDS_CSV, "0,4,5,10")
-        self.assertEqual(WAYMO_PANOPTIC_DET_ANNOTATED_CLASS_IDS_CSV, "0,1,2,3,4,5,6,9,10")
+        self.assertEqual(WAYMO_CAMERA_BOX_DET_ANNOTATED_CLASS_IDS_CSV, "0,1,2,6")
+        self.assertEqual(WAYMO_PANOPTIC_DET_ANNOTATED_CLASS_IDS_CSV, "0,1,2,3,4,5,6")
 
 
 if __name__ == "__main__":

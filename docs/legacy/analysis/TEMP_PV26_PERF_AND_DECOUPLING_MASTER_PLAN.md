@@ -10,6 +10,7 @@
 추가 전제:
 
 - 최종 학습 대상 데이터는 **BDD + ETRI + RLMD + WOD(Waymo)**를 모두 포함하는 PV26 v1 멀티소스 셋이다.
+- 다만 일반 멀티데이터셋 normalize interactive 경로는 **BDD + ETRI + RLMD**까지만 다루고, WOD는 별도 전용 파이프라인으로 준비한다.
 - 현재 로컬에 존재하는 PV26 v1 루트는 분리되어 있다.
   - `/home/user1/Storage/seg_dataset/pv26_v1_bdd_full`
   - `/home/user1/Storage/seg_dataset/pv26_v1_etri`
@@ -105,7 +106,7 @@
 
 ### 4.1 목적
 
-최종 학습은 BDD-only가 아니라 BDD + ETRI + RLMD + WOD를 모두 쓰므로, 먼저 trainer가 소비할 **단일 입력 경로**를 정의해야 한다.
+최종 학습은 BDD-only가 아니라 BDD + ETRI + RLMD + WOD를 모두 쓰므로, 먼저 trainer가 소비할 **단일 입력 경로**를 정의해야 한다. 이때 BDD/ETRI/RLMD는 일반 멀티데이터셋 interactive normalize 경로로 만들고, WOD는 dedicated Waymo tooling으로 별도 준비한 뒤 병합한다.
 
 ### 4.2 현재 상태
 
@@ -126,7 +127,7 @@
 
 ### 4.4 수용 기준
 
-- 최종 학습이 BDD/ETRI/RLMD/WOD를 함께 consume 가능
+- 최종 학습이 BDD/ETRI/RLMD를 일반 normalize 경로로, WOD를 dedicated 경로로 준비한 뒤 함께 consume 가능
 - 실험 로그에 source mix를 기록 가능
 - Phase 0 baseline이 “최종 데이터 구성” 위에서 다시 측정 가능
 

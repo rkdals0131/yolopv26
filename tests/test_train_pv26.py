@@ -1,7 +1,6 @@
 import argparse
 import unittest
 
-import torch
 from torch import nn
 
 from pv26.training.optimizer_factory import build_optimizer
@@ -61,6 +60,9 @@ class TestTrainPv26ScriptDefaults(unittest.TestCase):
         self.assertEqual(args.compile_seg_loss, SCRIPT_DEFAULTS.compile_seg_loss)
         self.assertEqual(args.progress, SCRIPT_DEFAULTS.progress)
         self.assertEqual(args.tensorboard, SCRIPT_DEFAULTS.tensorboard)
+        self.assertEqual(args.aug_scale_min, SCRIPT_DEFAULTS.aug_scale_min)
+        self.assertEqual(args.aug_scale_max, SCRIPT_DEFAULTS.aug_scale_max)
+        self.assertEqual(args.aug_translate, SCRIPT_DEFAULTS.aug_translate)
 
     def test_cli_arguments_override_script_default_block(self):
         args = build_argparser().parse_args(
@@ -75,6 +77,12 @@ class TestTrainPv26ScriptDefaults(unittest.TestCase):
                 "--no-compile-seg-loss",
                 "--no-progress",
                 "--no-tensorboard",
+                "--aug-scale-min",
+                "0.8",
+                "--aug-scale-max",
+                "1.2",
+                "--aug-translate",
+                "0.15",
             ]
         )
 
@@ -85,7 +93,9 @@ class TestTrainPv26ScriptDefaults(unittest.TestCase):
         self.assertFalse(args.compile_seg_loss)
         self.assertFalse(args.progress)
         self.assertFalse(args.tensorboard)
-
+        self.assertAlmostEqual(args.aug_scale_min, 0.8)
+        self.assertAlmostEqual(args.aug_scale_max, 1.2)
+        self.assertAlmostEqual(args.aug_translate, 0.15)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Merge multiple PV26 Type-A dataset roots into one manifest-compatible root.
+Merge multiple PV26 dataset roots into one manifest-compatible root.
 
 The merged dataset keeps the standard PV26 directory layout and writes:
   - meta/split_manifest.csv
@@ -444,7 +444,7 @@ def merge_pv26_datasets(
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Merge multiple PV26 Type-A dataset roots into one merged root.")
+    p = argparse.ArgumentParser(description="Merge multiple PV26 dataset roots into one merged root.")
     p.add_argument(
         "--input-roots",
         type=Path,

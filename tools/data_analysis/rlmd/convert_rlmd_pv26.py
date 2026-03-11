@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert RLMD (1080p + RLMD-AC labeled splits) into PV26 Type-A dataset layout.
+Convert RLMD (1080p + RLMD-AC labeled splits) into the PV26 unified dataset layout.
 
 Implements the adapter contract described in:
 - docs/PV26_PRD.md
@@ -448,7 +448,7 @@ def main() -> int:
     _write_checksums_parallel(out_root=out_root, files=exported_files, workers=workers, out_path=layout.checksums_path())
 
     report = {
-        "converter": "convert_rlmd_type_a.py",
+        "converter": "convert_rlmd_pv26.py",
         "converter_version": "0.1.0",
         "spec": "docs/PV26_DATASET_CONVERSION_SPEC.md v1.5",
         "timestamp_utc": utc_now_iso(),
