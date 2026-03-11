@@ -43,7 +43,8 @@ from pv26.training.runtime import (
     seed_everything,
 )
 
-DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_merged_all")
+# DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_v1_bdd_full")
+DEFAULT_DATASET_ROOT = Path("/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_all_merged")
 
 
 @dataclass(frozen=True)
