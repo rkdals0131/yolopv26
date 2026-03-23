@@ -58,6 +58,7 @@ rosbags/
 *.bag
 *.mcap
 *.db3
+*.pt
 
 # Paper PDFs (keep Markdown docs trackable)
 *.pdf
