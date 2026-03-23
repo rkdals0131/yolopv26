@@ -64,6 +64,9 @@
 - [x] no-positive batch 안전 처리
 - [x] final detector assignment runtime
 - [x] synthetic fallback runtime
+- [x] lane Hungarian matching runtime
+- [x] stop-line Hungarian matching runtime
+- [x] crosswalk Hungarian matching runtime
 
 ## smoke test 체크리스트
 

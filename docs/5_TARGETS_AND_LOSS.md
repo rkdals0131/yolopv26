@@ -43,7 +43,8 @@
   - real trunk path에서는 feature-shape metadata를 이용해 anchor grid를 만들고 assignment를 계산한다.
   - synthetic unit smoke는 metadata가 없을 때만 `prefix positive fallback`을 사용한다.
 - lane family
-  - Hungarian matching
+  - Hungarian matching runtime 통합 완료
+  - lane, stop-line, crosswalk 모두 query-to-GT assignment를 cost matrix 기반으로 계산한다.
 
 ## loss summary
 
@@ -127,13 +128,14 @@ L_total = λ_det * L_det
 - current runtime은 finite loss와 backward smoke를 목표로 한다.
 - detector matching은 task-aligned assigner 기준으로 동작한다.
 - TL attr supervision은 matched detector positive의 GT index를 재사용한다.
+- lane family는 Hungarian matching 기준으로 objectness와 geometry target을 query에 재배치한다.
 
 ## 구현 우선순위
 
-1. Hungarian matcher 통합
-2. trainer loop 확장
-3. checkpoint / sampler / logging 확장
-4. eval metrics 확장
+1. trainer loop 확장
+2. checkpoint / sampler / logging 확장
+3. eval metrics 확장
+4. export / postprocess 정교화
 
 ## raw model output contract
 

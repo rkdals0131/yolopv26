@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 9 detector-assignment`
-- current focus: `final detector assignment 통합 완료, lane family Hungarian matching 진입`
+- phase: `phase 10 lane-hungarian`
+- current focus: `lane family Hungarian matching 통합 완료, sampler/checkpoint/logging 확장 진입`
 
 ## 완료된 항목
 
@@ -49,13 +49,13 @@
 - [x] tiny overfit smoke command 구현
 - [x] tiny overfit loss 감소 확인
 - [x] final detector assignment integration
+- [x] lane family Hungarian matching integration
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] lane family Hungarian matching integration
 - [ ] dataset-balanced sampler / checkpoint / logging 확장
 
 ## 최근 검증
@@ -75,6 +75,7 @@
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
 - [x] detector assignment 통합 후 targeted tests 재통과
+- [x] lane Hungarian 통합 후 targeted tests 재통과
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
@@ -100,6 +101,7 @@
 - current trunk feature extractor returns detect-source pyramid directly from Ultralytics graph using indices `[16, 19, 22]`
 - current detector loss runtime uses task-aligned assignment on real trunk/head outputs
 - current synthetic `q_det != canonical` tests keep a `prefix positive fallback`
+- current lane/stop-line/crosswalk loss runtime uses Hungarian matching against valid GT rows
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current evaluator skeleton returns batch loss summary and GT count summary only
