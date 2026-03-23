@@ -12,6 +12,10 @@ __all__ = [
     "PV26Heads",
     "build_yolo26n_trunk",
     "load_matching_state_dict",
+    "PV26Trainer",
+    "build_pv26_optimizer",
+    "configure_pv26_train_stage",
+    "PV26Evaluator",
     "run_standardization",
 ]
 
@@ -35,4 +39,9 @@ def __getattr__(name: str):
     if name in {"build_yolo26n_trunk", "load_matching_state_dict"}:
         module = import_module(".trunk", __name__)
         return getattr(module, name)
+    if name in {"PV26Trainer", "build_pv26_optimizer", "configure_pv26_train_stage"}:
+        module = import_module(".training", __name__)
+        return getattr(module, name)
+    if name == "PV26Evaluator":
+        return import_module(".eval", __name__).PV26Evaluator
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

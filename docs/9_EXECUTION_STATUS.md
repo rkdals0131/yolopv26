@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 6 loss-runtime`
-- current focus: `multitask loss + backward smoke 완료, trainer/evaluator skeleton 진입`
+- phase: `phase 7 trainer-eval-skeleton`
+- current focus: `trainer/evaluator skeleton 완료, tiny overfit 또는 final assignment 통합 진입`
 
 ## 완료된 항목
 
@@ -44,16 +44,18 @@
 - [x] multitask loss runtime 구현
 - [x] trunk + custom heads + loss backward smoke 확인
 - [x] trunk adapter default trainable 상태 regression 고정
+- [x] trainer skeleton runtime 구현
+- [x] evaluator skeleton runtime 구현
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] trainer/evaluator skeleton 구현
 - [ ] final detector assignment integration
 - [ ] lane family Hungarian matching integration
 - [ ] tiny overfit smoke
+- [ ] dataset-balanced sampler / checkpoint / logging 확장
 
 ## 최근 검증
 
@@ -66,6 +68,8 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trunk_features.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
@@ -92,3 +96,5 @@
 - current trunk feature extractor returns detect-source pyramid directly from Ultralytics graph using indices `[16, 19, 22]`
 - current smoke loss runtime uses a `prefix positive baseline` for detector matching until final YOLO assigner is integrated
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
+- current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
+- current evaluator skeleton returns batch loss summary and GT count summary only

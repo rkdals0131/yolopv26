@@ -8,6 +8,8 @@ This repository is scoped to 2D perception training and export work for YOLOPV26
 model/
   encoding/
     pv26_target_encoder.py
+  eval/
+    pv26_evaluator.py
   loading/
     pv26_loader.py
     transform.py
@@ -24,6 +26,8 @@ model/
   loss/
     spec.py
     runtime.py
+  training/
+    pv26_trainer.py
 tools/
 test/
 docs/
@@ -33,10 +37,12 @@ docs/
 - `model/preprocess/` holds source parsing and standardization code.
 - `model/loading/` holds canonical dataset loading and shared online transforms.
 - `model/encoding/` holds fixed-shape target encoding from collated samples.
+- `model/eval/` holds batch-level evaluation skeletons and summary helpers.
 - `model/heads/` holds PV26 custom multitask head modules.
 - `model/trunk/` holds pretrained trunk adapters and partial weight-loading helpers.
 - `model/viz/` holds human QA visualization utilities.
 - `model/loss/` holds training-loss specifications and smoke/runtime loss code.
+- `model/training/` holds stage configuration, optimizer wiring, and train-step skeletons.
 
 ## Docs
 

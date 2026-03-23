@@ -75,3 +75,9 @@
 - pretrained partial load 성공
 - lane/TL/OD multitask loss가 동시에 finite
 - mini smoke에서 명백한 shape bug가 없음
+
+## current runtime status
+
+- trainer skeleton은 `encoded batch -> trunk -> heads -> loss -> backward -> optimizer.step`까지 지원한다.
+- evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
+- final detector assignment와 lane family Hungarian matching은 아직 baseline/skeleton 단계다.

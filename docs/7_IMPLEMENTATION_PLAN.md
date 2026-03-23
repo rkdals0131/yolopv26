@@ -57,12 +57,19 @@
 - stage-wise freeze policy
 - optimizer group 분리
 - logging / checkpoint
+- 현재 skeleton 완료
+  - stage config
+  - optimizer groups
+  - 1-step train runtime
 
 ### 8. evaluator skeleton
 
 - detector metrics
 - TL bit metrics
 - lane family metrics
+- 현재 skeleton 완료
+  - batch loss summary
+  - GT count summary
 
 ## implementation order
 
@@ -74,6 +81,7 @@
 6. loss
 7. trainer
 8. evaluator
+9. tiny overfit
 
 ## 문서 업데이트 규칙
 

@@ -6,6 +6,8 @@
 model/
   encoding/
     pv26_target_encoder.py
+  eval/
+    pv26_evaluator.py
   loading/
     pv26_loader.py
     transform.py
@@ -22,6 +24,8 @@ model/
   loss/
     spec.py
     runtime.py
+  training/
+    pv26_trainer.py
 tools/
 test/
 docs/
@@ -75,6 +79,8 @@ AIHUB raw
 - trunk pyramid feature extractor runtime
 - PV26 custom heads skeleton
 - multitask loss runtime
+- trainer skeleton runtime
+- evaluator skeleton runtime
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -84,7 +90,7 @@ AIHUB raw
 
 - final detector assignment integration
 - lane family Hungarian matching runtime
-- trainer/evaluator
+- tiny overfit loop
 
 ## 운영 규칙
 

@@ -71,6 +71,14 @@
 - [ ] tiny overfit 통과
 - [ ] debug sample 시각화 확인
 
+## trainer / evaluator 체크리스트
+
+- [x] stage-wise freeze policy skeleton
+- [x] optimizer group 분리
+- [x] 1-step train runtime
+- [x] batch loss summary evaluator
+- [x] GT count summary evaluator
+
 ## 명령 체크리스트
 
 - [x] `python3 -m unittest discover -s test -v`
@@ -82,6 +90,8 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trunk_features.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [ ] loader smoke command
 - [x] model smoke command
