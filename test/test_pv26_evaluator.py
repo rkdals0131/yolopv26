@@ -4,6 +4,7 @@ import unittest
 
 import torch.nn as nn
 import torch
+from test_pv26_eval_metrics import make_raw_sample_batch
 
 
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
@@ -108,6 +109,10 @@ class _StaticHeads(nn.Module):
         det[0, 1020, 10] = 6.0
         tl_attr[0, 1020] = torch.tensor([5.0, -5.0, -5.0, 5.0], dtype=torch.float32)
 
+        det[0, 1600, :4] = torch.tensor([1.6, 1.2, 1.6, 1.2], dtype=torch.float32)
+        det[0, 1600, 4] = 7.0
+        det[0, 1600, 11] = 6.0
+
         lane[0, 0, 0] = 8.0
         lane[0, 0, 2] = 6.0
         lane[0, 0, 5] = 6.0
@@ -162,14 +167,29 @@ class PV26EvaluatorTests(unittest.TestCase):
         predictions = evaluator.predict_batch(_make_encoded_batch(batch_size=1, q_det=9975))
 
         self.assertEqual(len(predictions), 1)
-        self.assertEqual(len(predictions[0]["detections"]), 1)
+        self.assertEqual(len(predictions[0]["detections"]), 2)
         self.assertEqual(predictions[0]["detections"][0]["class_name"], "traffic_light")
         self.assertGreater(predictions[0]["detections"][0]["tl_attr_scores"]["red"], 0.9)
+        self.assertEqual(predictions[0]["detections"][1]["class_name"], "sign")
         self.assertEqual(len(predictions[0]["lanes"]), 1)
         self.assertEqual(predictions[0]["lanes"][0]["class_name"], "yellow_lane")
         self.assertEqual(predictions[0]["lanes"][0]["lane_type"], "dotted")
         self.assertEqual(len(predictions[0]["stop_lines"]), 1)
         self.assertEqual(len(predictions[0]["crosswalks"]), 1)
+
+    def test_evaluate_batch_on_raw_sample_batch_includes_metrics(self) -> None:
+        from model.eval.pv26_evaluator import PV26Evaluator
+
+        evaluator = PV26Evaluator(_StaticAdapter(), _StaticHeads(), stage="stage_0_smoke")
+        evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
+
+        summary = evaluator.evaluate_batch(make_raw_sample_batch())
+
+        self.assertIn("metrics", summary)
+        self.assertIn("detector", summary["metrics"])
+        self.assertIn("traffic_light", summary["metrics"])
+        self.assertIn("lane", summary["metrics"])
+        self.assertIn("map50", summary["metrics"]["detector"])
 
 
 if __name__ == "__main__":

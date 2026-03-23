@@ -84,6 +84,7 @@
 - trainer는 checkpoint save/load를 지원한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
 - evaluator는 raw model output을 postprocess prediction bundle로 decode하는 `predict_batch` runtime을 지원한다.
+- evaluator는 batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, lane family matching metrics를 지원한다.
 - tiny overfit smoke는 canonical train batch 2개 기준으로 실제 loss 감소를 확인했다.
 - detector assignment는 task-aligned assigner 기준으로 통합 완료다.
 - lane family Hungarian matching도 통합 완료다.

@@ -74,6 +74,7 @@
   - batch loss summary
   - GT count summary
   - raw output -> prediction bundle postprocess decode
+  - batch-level detector/TL/lane family metric summary
 
 ## implementation order
 

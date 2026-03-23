@@ -88,6 +88,7 @@
 - [x] GT count summary evaluator
 - [x] inference postprocess decode
 - [x] evaluator predict-batch runtime
+- [x] detector/TL/lane family metric runtime
 
 ## 명령 체크리스트
 
@@ -103,6 +104,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_balanced_sampler.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_eval_metrics.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`

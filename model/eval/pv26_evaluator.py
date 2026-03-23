@@ -7,6 +7,7 @@ import torch
 from ..encoding import encode_pv26_batch
 from ..loss import PV26MultiTaskLoss
 from ..trunk import forward_pyramid_features
+from .metrics import PV26MetricConfig, summarize_pv26_metrics
 from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
 
 
@@ -61,10 +62,12 @@ class PV26Evaluator:
     def evaluate_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         self.adapter.raw_model.eval()
         self.heads.eval()
+        raw_batch = batch if "det_targets" in batch else None
         encoded = self.prepare_batch(batch)
         with torch.no_grad():
             predictions = self.forward_encoded_batch(encoded)
             losses = self.criterion(predictions, encoded)
+            metric_predictions = postprocess_pv26_batch(predictions, encoded["meta"]) if raw_batch is not None else None
         return {
             "stage": self.stage,
             "batch_size": int(encoded["image"].shape[0]),
@@ -76,6 +79,9 @@ class PV26Evaluator:
             "prediction_shapes": {
                 name: list(value.shape) for name, value in predictions.items() if isinstance(value, torch.Tensor)
             },
+            "metrics": summarize_pv26_metrics(metric_predictions, raw_batch, config=PV26MetricConfig())
+            if raw_batch is not None and metric_predictions is not None
+            else {},
         }
 
     def predict_batch(

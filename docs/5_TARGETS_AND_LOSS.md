@@ -133,9 +133,9 @@ L_total = λ_det * L_det
 
 ## 구현 우선순위
 
-1. eval metrics 확장
-2. full-epoch trainer wiring
-3. export / ROS 정교화
+1. full-epoch trainer wiring
+2. export / ROS 정교화
+3. dataset-level metric aggregation 정교화
 
 ## raw model output contract
 
