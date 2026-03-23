@@ -11,6 +11,8 @@ model/
   loading/
     pv26_loader.py
     transform.py
+  heads/
+    pv26_heads.py
   trunk/
     ultralytics_yolo26.py
   preprocess/
@@ -30,6 +32,7 @@ docs/
 - `model/preprocess/` holds source parsing and standardization code.
 - `model/loading/` holds canonical dataset loading and shared online transforms.
 - `model/encoding/` holds fixed-shape target encoding from collated samples.
+- `model/heads/` holds PV26 custom multitask head modules.
 - `model/trunk/` holds pretrained trunk adapters and partial weight-loading helpers.
 - `model/viz/` holds human QA visualization utilities.
 - `model/loss/` holds training-loss specifications.

@@ -9,6 +9,8 @@ model/
   loading/
     pv26_loader.py
     transform.py
+  heads/
+    pv26_heads.py
   trunk/
     ultralytics_yolo26.py
   preprocess/
@@ -69,6 +71,7 @@ AIHUB raw
 - shared online letterbox transform runtime
 - target encoder runtime
 - Ultralytics YOLO26 trunk adapter baseline
+- PV26 custom heads skeleton
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -76,7 +79,6 @@ AIHUB raw
 
 ## 아직 구현되지 않은 것
 
-- PV26 custom heads
 - real multitask loss implementation
 - trainer/evaluator
 

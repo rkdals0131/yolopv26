@@ -47,6 +47,11 @@ input image
   - `Q_det` detector slot별 7-class logits
 - detector class는 generic `traffic_light`를 유지한다.
 - `Q_det`는 prediction slot 수를 의미하고, GT row 수와 다르다.
+- 현재 `800x608` 입력 기준 head 입력 pyramid는 아래로 고정돼 있다.
+  - P3: `64 x 76 x 100`
+  - P4: `128 x 38 x 50`
+  - P5: `256 x 19 x 25`
+- 현재 custom head skeleton의 raw slot count는 `9975`다.
 
 ## traffic light attr head
 
@@ -79,6 +84,7 @@ input image
 - crosswalk head
   - fixed query count `4`
   - 8-point polygon
+- 현재 skeleton 구현은 pooled pyramid embedding 위의 query MLP head다.
 
 ## 구현 규칙
 

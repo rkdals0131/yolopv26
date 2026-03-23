@@ -45,6 +45,15 @@
 - [ ] custom head random init 확인
 - [ ] freeze/unfreeze stage 확인
 
+## custom head 체크리스트
+
+- [x] det raw head skeleton
+- [x] TL attr raw head skeleton
+- [x] lane query head skeleton
+- [x] stop-line query head skeleton
+- [x] crosswalk query head skeleton
+- [x] documented raw output shape 일치
+
 ## loss 체크리스트
 
 - [ ] det loss finite
@@ -70,6 +79,7 @@
 - [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [ ] loader smoke command
 - [ ] model smoke command
