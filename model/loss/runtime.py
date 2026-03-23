@@ -14,6 +14,13 @@ TL_BITS = tuple(SPEC["model_contract"]["tl_bits"])
 STAGE_LOSS_WEIGHTS = {
     stage["name"]: dict(stage["loss_weights"]) for stage in SPEC["training_schedule"]
 }
+STAGE_ALIASES = {
+    "stage_1_head_warmup": "stage_1_frozen_trunk_warmup",
+}
+
+
+def _canonical_stage(stage: str) -> str:
+    return STAGE_ALIASES.get(stage, stage)
 
 
 def _zero_graph(*tensors: torch.Tensor) -> torch.Tensor:
@@ -50,6 +57,7 @@ def _polygon_shape_regularizer(points: torch.Tensor) -> torch.Tensor:
 class PV26MultiTaskLoss(nn.Module):
     def __init__(self, stage: str = "stage_0_smoke") -> None:
         super().__init__()
+        stage = _canonical_stage(stage)
         try:
             self.loss_weights = STAGE_LOSS_WEIGHTS[stage]
         except KeyError as exc:

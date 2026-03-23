@@ -68,7 +68,7 @@
 - [x] unit test 통과
 - [x] forward smoke 통과
 - [x] backward smoke 통과
-- [ ] tiny overfit 통과
+- [x] tiny overfit 통과
 - [ ] debug sample 시각화 확인
 
 ## trainer / evaluator 체크리스트
@@ -92,7 +92,8 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [ ] loader smoke command
 - [x] model smoke command
-- [ ] training smoke command
+- [x] training smoke command

@@ -95,8 +95,8 @@ class PV26TrainerTests(unittest.TestCase):
         adapter = _DummyAdapter()
         heads = nn.Sequential(nn.Linear(8, 8), nn.Linear(8, 4))
 
-        stage1 = configure_pv26_train_stage(adapter, heads, "stage_1_head_warmup")
-        self.assertEqual(stage1["stage"], "stage_1_head_warmup")
+        stage1 = configure_pv26_train_stage(adapter, heads, "stage_1_frozen_trunk_warmup")
+        self.assertEqual(stage1["stage"], "stage_1_frozen_trunk_warmup")
         self.assertEqual(stage1["trainable_trunk_params"], 0)
         self.assertGreater(stage1["trainable_head_params"], 0)
 

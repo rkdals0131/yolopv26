@@ -153,3 +153,11 @@ python3 tools/run_yolo26_trunk_smoke.py
 ```
 
 This command performs a real `YOLO("yolo26n.pt")` load and prints trunk/detect-head split metadata as JSON.
+
+## Tiny Overfit Smoke
+
+```bash
+python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4
+```
+
+This command builds a mixed tiny batch from canonical train samples, runs repeated train steps, and prints the loss history as JSON.

@@ -11,10 +11,17 @@ from ..trunk import forward_pyramid_features
 
 STAGE_NAMES = (
     "stage_0_smoke",
-    "stage_1_head_warmup",
+    "stage_1_frozen_trunk_warmup",
     "stage_2_partial_unfreeze",
     "stage_3_end_to_end_finetune",
 )
+STAGE_ALIASES = {
+    "stage_1_head_warmup": "stage_1_frozen_trunk_warmup",
+}
+
+
+def _canonical_stage(stage: str) -> str:
+    return STAGE_ALIASES.get(stage, stage)
 
 
 def _move_to_device(item: Any, device: torch.device) -> Any:
@@ -38,6 +45,7 @@ def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
 
 
 def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str) -> dict[str, int | str]:
+    stage = _canonical_stage(stage)
     if stage not in STAGE_NAMES:
         raise KeyError(f"unsupported PV26 train stage: {stage}")
 
@@ -45,7 +53,7 @@ def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str)
         parameter.requires_grad = True
 
     trunk_layers = list(adapter.trunk.children())
-    if stage == "stage_1_head_warmup":
+    if stage == "stage_1_frozen_trunk_warmup":
         adapter.freeze_trunk()
     elif stage == "stage_2_partial_unfreeze":
         adapter.freeze_trunk()
@@ -117,11 +125,11 @@ class PV26Trainer:
         self.adapter = adapter
         self.heads = heads
         self.device = torch.device(device)
-        self.stage = stage
-        self.stage_summary = configure_pv26_train_stage(adapter, heads, stage)
+        self.stage = _canonical_stage(stage)
+        self.stage_summary = configure_pv26_train_stage(adapter, heads, self.stage)
         self.adapter.raw_model.to(self.device)
         self.heads.to(self.device)
-        self.criterion = (criterion or PV26MultiTaskLoss(stage=stage)).to(self.device)
+        self.criterion = (criterion or PV26MultiTaskLoss(stage=self.stage)).to(self.device)
         self.optimizer = optimizer or build_pv26_optimizer(
             adapter,
             heads,
@@ -165,4 +173,43 @@ class PV26Trainer:
         }
 
 
-__all__ = ["PV26Trainer", "STAGE_NAMES", "build_pv26_optimizer", "configure_pv26_train_stage"]
+def run_pv26_tiny_overfit(
+    trainer: PV26Trainer,
+    batch: dict[str, Any],
+    *,
+    steps: int = 8,
+) -> dict[str, Any]:
+    if steps <= 0:
+        raise ValueError("tiny overfit smoke requires steps > 0")
+
+    sample_ids = [str(item.get("sample_id", "unknown")) for item in batch.get("meta", [])]
+    history: list[dict[str, Any]] = []
+    for _ in range(steps):
+        history.append(trainer.train_step(batch))
+
+    total_history = [float(item["losses"]["total"]) for item in history]
+    first_total = total_history[0]
+    final_total = total_history[-1]
+    best_total = min(total_history)
+    best_step = total_history.index(best_total) + 1
+    return {
+        "stage": trainer.stage,
+        "steps": steps,
+        "sample_ids": sample_ids,
+        "history": history,
+        "first_total": first_total,
+        "final_total": final_total,
+        "best_total": best_total,
+        "best_step": best_step,
+        "improvement": first_total - best_total,
+        "improvement_ratio": (first_total - best_total) / max(first_total, 1e-12),
+    }
+
+
+__all__ = [
+    "PV26Trainer",
+    "STAGE_NAMES",
+    "build_pv26_optimizer",
+    "configure_pv26_train_stage",
+    "run_pv26_tiny_overfit",
+]

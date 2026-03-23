@@ -15,6 +15,7 @@ __all__ = [
     "PV26Trainer",
     "build_pv26_optimizer",
     "configure_pv26_train_stage",
+    "run_pv26_tiny_overfit",
     "PV26Evaluator",
     "run_standardization",
 ]
@@ -39,7 +40,7 @@ def __getattr__(name: str):
     if name in {"build_yolo26n_trunk", "load_matching_state_dict"}:
         module = import_module(".trunk", __name__)
         return getattr(module, name)
-    if name in {"PV26Trainer", "build_pv26_optimizer", "configure_pv26_train_stage"}:
+    if name in {"PV26Trainer", "build_pv26_optimizer", "configure_pv26_train_stage", "run_pv26_tiny_overfit"}:
         module = import_module(".training", __name__)
         return getattr(module, name)
     if name == "PV26Evaluator":

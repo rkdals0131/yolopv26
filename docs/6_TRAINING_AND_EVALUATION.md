@@ -80,4 +80,5 @@
 
 - trainer skeleton은 `encoded batch -> trunk -> heads -> loss -> backward -> optimizer.step`까지 지원한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
+- tiny overfit smoke는 canonical train batch 2개 기준으로 실제 loss 감소를 확인했다.
 - final detector assignment와 lane family Hungarian matching은 아직 baseline/skeleton 단계다.

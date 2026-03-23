@@ -83,6 +83,13 @@
 8. evaluator
 9. tiny overfit
 
+## tiny overfit status
+
+- 완료
+  - canonical loader batch 2-sample mixed overfit
+  - repeated train-step loss 감소 확인
+  - smoke command 추가
+
 ## 문서 업데이트 규칙
 
 - 각 phase 시작 시 `9_EXECUTION_STATUS.md`를 먼저 갱신

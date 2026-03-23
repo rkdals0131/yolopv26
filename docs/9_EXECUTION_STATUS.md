@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 7 trainer-eval-skeleton`
-- current focus: `trainer/evaluator skeleton 완료, tiny overfit 또는 final assignment 통합 진입`
+- phase: `phase 8 tiny-overfit`
+- current focus: `tiny overfit smoke 완료, final detector assignment 통합 진입`
 
 ## 완료된 항목
 
@@ -46,6 +46,8 @@
 - [x] trunk adapter default trainable 상태 regression 고정
 - [x] trainer skeleton runtime 구현
 - [x] evaluator skeleton runtime 구현
+- [x] tiny overfit smoke command 구현
+- [x] tiny overfit loss 감소 확인
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -54,7 +56,6 @@
 
 - [ ] final detector assignment integration
 - [ ] lane family Hungarian matching integration
-- [ ] tiny overfit smoke
 - [ ] dataset-balanced sampler / checkpoint / logging 확장
 
 ## 최근 검증
@@ -70,7 +71,9 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
+- [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
@@ -98,3 +101,4 @@
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current evaluator skeleton returns batch loss summary and GT count summary only
+- current tiny overfit smoke uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
