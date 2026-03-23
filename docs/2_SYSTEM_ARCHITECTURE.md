@@ -4,6 +4,8 @@
 
 ```text
 model/
+  encoding/
+    pv26_target_encoder.py
   loading/
     pv26_loader.py
     transform.py
@@ -63,6 +65,7 @@ AIHUB raw
 - BDD100K detection-only standardization pipeline
 - canonical dataset loader runtime
 - shared online letterbox transform runtime
+- target encoder runtime
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -70,8 +73,6 @@ AIHUB raw
 
 ## 아직 구현되지 않은 것
 
-- standardized dataset loader
-- target encoder runtime
 - YOLOv26n trunk adapter
 - PV26 custom heads
 - real multitask loss implementation

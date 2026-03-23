@@ -7,6 +7,7 @@ __all__ = [
     "render_loss_spec_markdown",
     "PV26CanonicalDataset",
     "collate_pv26_samples",
+    "encode_pv26_batch",
     "run_standardization",
 ]
 
@@ -21,4 +22,6 @@ def __getattr__(name: str):
     if name in {"PV26CanonicalDataset", "collate_pv26_samples"}:
         module = import_module(".loading", __name__)
         return getattr(module, name)
+    if name == "encode_pv26_batch":
+        return import_module(".encoding", __name__).encode_pv26_batch
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

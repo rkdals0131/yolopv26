@@ -6,6 +6,8 @@ This repository is scoped to 2D perception training and export work for YOLOPV26
 
 ```text
 model/
+  encoding/
+    pv26_target_encoder.py
   loading/
     pv26_loader.py
     transform.py
@@ -25,6 +27,7 @@ docs/
 - `model/` is the project package root.
 - `model/preprocess/` holds source parsing and standardization code.
 - `model/loading/` holds canonical dataset loading and shared online transforms.
+- `model/encoding/` holds fixed-shape target encoding from collated samples.
 - `model/viz/` holds human QA visualization utilities.
 - `model/loss/` holds training-loss specifications.
 

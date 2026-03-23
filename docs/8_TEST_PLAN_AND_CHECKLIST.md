@@ -22,19 +22,19 @@
 
 ## loader 체크리스트
 
-- [ ] standardized scene/det를 모두 읽는다
-- [ ] online resize/pad를 공통 처리한다
-- [ ] partial label source를 구분한다
-- [ ] tiny subset iteration이 돈다
+- [x] standardized scene/det를 모두 읽는다
+- [x] online resize/pad를 공통 처리한다
+- [x] partial label source를 구분한다
+- [x] tiny subset iteration이 돈다
 
 ## target encoder 체크리스트
 
-- [ ] det target
-- [ ] TL bit target
-- [ ] lane vector target
-- [ ] stop-line target
-- [ ] crosswalk target
-- [ ] transformed-space consistency
+- [x] det target
+- [x] TL bit target
+- [x] lane vector target
+- [x] stop-line target
+- [x] crosswalk target
+- [x] transformed-space consistency
 
 ## pretrained trunk 체크리스트
 
@@ -67,6 +67,7 @@
 - [x] `python3 -m model.preprocess.aihub_standardize --max-samples-per-dataset 4 --debug-vis-count 2`
 - [x] `python3 -m model.preprocess.bdd100k_standardize --max-samples-per-split 2 --debug-vis-count 2`
 - [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [ ] loader smoke command
 - [ ] model smoke command
 - [ ] training smoke command

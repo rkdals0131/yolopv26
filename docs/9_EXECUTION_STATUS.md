@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-23`
-- phase: `phase 2 loader-runtime`
-- current focus: `loader runtime 완료, target encoder 구현 진입`
+- phase: `phase 3 target-encoder`
+- current focus: `target encoder 완료, trunk adapter 설계/구현 진입`
 
 ## 완료된 항목
 
@@ -36,17 +36,17 @@
 - [x] canonical dataset loader runtime 구현
 - [x] shared online letterbox transform 구현
 - [x] ragged sample collate 구현
+- [x] target encoder runtime 구현
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] standardized dataset loader 구현
-- [ ] target encoder 구현
 - [ ] pretrained YOLOv26n trunk adapter 구현
 - [ ] custom heads 구현
 - [ ] multitask loss runtime 구현
+- [ ] trainer/evaluator skeleton 구현
 
 ## 최근 검증
 
@@ -54,6 +54,7 @@
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 2 --max-samples-per-dataset 4 --debug-vis-count 2`
 - [x] `python3 -m model.preprocess.bdd100k_standardize --workers 8 --max-samples-per-split 2 --debug-vis-count 2`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loader.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
 ## 최근 결정
@@ -71,3 +72,4 @@
 - loader 전에 BDD100K도 canonical standardization 레이어로 맞춘다
 - BDD100K는 `det only` source로 쓰고 `trafficLightColor`는 scene hint로만 보존한다
 - loader collate는 image만 stack하고 ragged target은 list 형태로 유지한다
+- target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
