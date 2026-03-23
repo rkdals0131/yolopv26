@@ -59,7 +59,7 @@
 - [x] full-epoch trainer wiring 구현
 - [x] epoch-level val loop 구현
 - [x] best / last checkpoint write 구현
-- [x] fit smoke command 구현
+- [x] pilot training command으로 epoch-level smoke 경로 통합
 - [x] AIHUB/BDD resume scan 구현
 - [x] AIHUB/BDD failure manifest 구현
 - [x] AIHUB/BDD QA summary 구현
@@ -106,10 +106,9 @@
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
-- [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] `python3 tools/check_env.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
-- [x] `python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1`
+- [x] `python3 tools/check_env.py --check-yolo-runtime`
 - [x] `python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke`
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1`
 - [x] `python3 -m model.preprocess.bdd100k_standardize --workers 1 --max-samples-per-split 1 --debug-vis-count 1`
@@ -154,3 +153,4 @@
 - current defaults no longer depend on host-specific absolute repo paths
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
 - current postprocess tolerates missing `torchvision.ops.nms` through pure PyTorch fallback
+- redundant smoke runners were removed in favor of `check_env.py` and `run_pv26_pilot_train.py`

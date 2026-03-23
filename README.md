@@ -158,15 +158,15 @@ Current smoke/runtime loss lives in [model/loss/runtime.py](model/loss/runtime.p
 - `stop_line`
 - `crosswalk`
 
-## YOLO26 Trunk Smoke
+## YOLO26 Preflight
 
 Current supported smoke environment is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`.
 
 ```bash
-python3 tools/run_yolo26_trunk_smoke.py
+python3 tools/check_env.py --check-yolo-runtime
 ```
 
-This command performs a real `YOLO("yolo26n.pt")` load and prints trunk/detect-head split metadata as JSON.
+This command performs environment preflight and can also run a real `YOLO("yolo26n.pt")` load when `--check-yolo-runtime` is enabled.
 
 ## Preflight
 
@@ -188,10 +188,9 @@ This command builds a mixed tiny batch from canonical train samples, runs repeat
 ## Fit And Pilot Smoke
 
 ```bash
-python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1
 python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke
 ```
 
-These commands exercise the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, and runtime hardening paths.
+This command exercises the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, and runtime hardening paths.
 
-Validation loaders in these commands are sequential eval loaders, not balanced train samplers.
+Validation loaders in this command are sequential eval loaders, not balanced train samplers.

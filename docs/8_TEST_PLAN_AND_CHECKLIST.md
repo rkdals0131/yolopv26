@@ -123,11 +123,11 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
-- [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] `python3 tools/check_env.py`
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [ ] loader smoke command
 - [x] model smoke command
 - [x] training smoke command
-- [x] `python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1`
+- [x] `python3 tools/check_env.py --check-yolo-runtime`
+- [x] `python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke`
