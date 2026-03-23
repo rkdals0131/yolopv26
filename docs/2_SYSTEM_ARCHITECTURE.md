@@ -1,0 +1,78 @@
+# PV26 System Architecture
+
+## 저장소 구조
+
+```text
+model/
+  preprocess/
+    aihub_common.py
+    aihub_standardize.py
+  viz/
+    overlay.py
+  loss/
+    spec.py
+tools/
+test/
+docs/
+```
+
+## 아키텍처 레이어
+
+1. source dataset layer
+   - AIHUB raw dataset
+   - BDD100K raw dataset
+2. standardization layer
+   - AIHUB raw -> canonical scene JSON / det label / meta report
+3. loading layer
+   - canonical outputs -> training sample
+   - online resize/pad -> `800x608`
+4. target encoding layer
+   - detector target
+   - TL 4-bit target
+   - lane/stop-line/crosswalk vector target
+5. model layer
+   - pretrained YOLOv26n backbone/neck
+   - PV26 custom heads
+6. loss layer
+   - multitask loss and partial-label masking
+7. training/eval layer
+   - sampler, schedule, logging, checkpoint, metrics
+
+## 데이터 흐름
+
+```text
+AIHUB raw
+  -> aihub_standardize
+  -> standardized scene/det/meta
+  -> dataset loader
+  -> online resize/pad
+  -> target encoder
+  -> PV26 model
+  -> multitask loss
+  -> trainer / evaluator
+```
+
+## 현재 구현된 것
+
+- AIHUB standardization pipeline
+- source README generation
+- source inventory / conversion report
+- debug overlay generation
+- loss design spec document + code mirror
+
+## 아직 구현되지 않은 것
+
+- standardized dataset loader
+- training sample contract
+- YOLOv26n trunk adapter
+- PV26 custom heads
+- real target encoder
+- real multitask loss implementation
+- trainer/evaluator
+
+## 운영 규칙
+
+- `preprocess/`는 raw data와 canonical data 사이 계약만 다룬다.
+- `viz/`는 human QA를 위한 오버레이와 리포트만 다룬다.
+- `loss/`는 target/loss contract를 다룬다.
+- model trunk/head, training loop, evaluation 코드는 이후 새 모듈로 추가한다.

@@ -1,0 +1,77 @@
+# PV26 PRD
+
+## 문서 목적
+
+이 문서는 현재 `YOLOPv26` 저장소의 최상위 제품 요구사항 문서다. 이 문서와 같은 번호 체계의 문서들이 이전 pivot 문서 세트를 완전히 대체한다.
+
+## 프로젝트 목표
+
+- PV26의 V1 목표는 단일 모델 학습 저장소를 만드는 것이다.
+- 모델은 다음을 동시에 다룬다.
+  - 7-class object detection
+  - traffic light 4-bit attribute prediction
+  - lane polyline prediction
+  - stop-line polyline prediction
+  - crosswalk polygon prediction
+- 실제 구현은 `Ultralytics YOLO v26 nano`의 공식 pretrained backbone/neck를 최대한 유지하면서, PV26 전용 head와 loss를 붙이는 방향으로 간다.
+
+## 제품 범위
+
+- 입력
+  - 학습 canonical raw image는 다양한 원본 해상도를 허용한다.
+  - 학습/추론 network input은 `800x608`으로 고정한다.
+  - runtime raw contract는 `800x600`, network input contract는 `800x608` pad-only다.
+- 출력
+  - detector class: `vehicle / bike / pedestrian / traffic_cone / obstacle / traffic_light / sign`
+  - traffic light attribute: `red / yellow / green / arrow`
+  - lane geometry: `white_lane / yellow_lane / blue_lane`
+  - lane subtype metadata: `solid / dotted`
+  - extra geometry: `stop_line`, `crosswalk`
+
+## 데이터 범위
+
+- OD
+  - 기본 7-class OD는 BDD100K와 AIHUB traffic 계열을 함께 사용한다.
+  - future AIHUB OD source가 추가될 수 있다.
+- traffic light
+  - detection은 generic `traffic_light` bbox다.
+  - 상태는 bbox에 종속된 4-bit attribute로 예측한다.
+  - AIHUB traffic source가 핵심 supervision source다.
+- lane
+  - lane 학습과 추론은 AIHUB 기준 포맷을 중심으로 설계한다.
+  - AIHUB의 색상, 타입, 정지선, 횡단보도 richness를 유지한다.
+
+## 비목표
+
+- V1에서 차선을 segmentation mask나 dense row-anchor task로 다시 바꾸지 않는다.
+- V1에서 traffic light를 class explosion 방식으로 `tl_red_arrow`, `tl_green_arrow`처럼 detector class에 다 넣지 않는다.
+- V1에서 raw dataset 자체를 오프라인 리사이즈하여 새 canonical image set으로 다시 굽지 않는다.
+- V1에서 backbone/neck를 scratch로 처음부터 재학습하는 것을 기본 경로로 삼지 않는다.
+
+## 핵심 결정
+
+- backbone/neck는 `yolo26n` pretrained trunk reuse가 기본이다.
+- custom task head는 PV26 쪽에서 새로 만든다.
+- AIHUB standardization은 raw-space canonical dataset을 만든다.
+- `800x608` letterbox/pad transform은 loader 단계에서 온라인으로 적용한다.
+- 구현 전에 문서를 먼저 고정하고, 문서와 상태 tracker를 계속 갱신하면서 개발한다.
+
+## 성공 조건
+
+- AIHUB standardized scene/det dataset에서 loader가 안정적으로 sample을 뽑는다.
+- pretrained trunk를 부분 로드한 PV26 model이 forward/backward를 통과한다.
+- target encoder와 loss가 lane/TL/OD/stop-line/crosswalk를 동시에 처리한다.
+- small smoke dataset에서 loss가 정상적으로 감소한다.
+- 문서와 구현 상태가 일치한다.
+
+## 문서 맵
+
+- [1_DEVELOPMENT_PHILOSOPHY.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/1_DEVELOPMENT_PHILOSOPHY.md)
+- [2_SYSTEM_ARCHITECTURE.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/2_SYSTEM_ARCHITECTURE.md)
+- [3_DATA_AND_STANDARDIZATION.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/3_DATA_AND_STANDARDIZATION.md)
+- [4_MODEL_ARCHITECTURE.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/4_MODEL_ARCHITECTURE.md)
+- [5_TARGETS_AND_LOSS.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/5_TARGETS_AND_LOSS.md)
+- [6_TRAINING_AND_EVALUATION.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/6_TRAINING_AND_EVALUATION.md)
+- [7_IMPLEMENTATION_PLAN.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/7_IMPLEMENTATION_PLAN.md)
+- [8_TEST_PLAN_AND_CHECKLIST.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/8_TEST_PLAN_AND_CHECKLIST.md)
+- [9_EXECUTION_STATUS.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/9_EXECUTION_STATUS.md)

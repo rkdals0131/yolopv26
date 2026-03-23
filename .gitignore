@@ -1,74 +1,56 @@
-# OS / editor noise
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*~
+# ----- Datasets -----
+seg_dataset/
+data/
+datasets/
+seg_dataset
 
-# Python
+# ----- Model weights & checkpoints -----
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+*.weights
+checkpoints/
+runs/
+weights/
+
+# ----- Python -----
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.ipynb_checkpoints/
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
 
-# Virtual environments
-.venv/
+# ----- Virtual environments -----
 venv/
+.venv/
 env/
 
-# Build / packaging
-build/
-dist/
-*.egg-info/
-pip-wheel-metadata/
+# ----- Jupyter Notebook -----
+.ipynb_checkpoints/
 
-# Training / experiment outputs
-runs/
-outputs/
+# ----- IDE / Editor -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----- OS generated -----
+.DS_Store
+Thumbs.db
+
+# ----- Logs & outputs -----
+*.log
 logs/
-checkpoints/
-weights/
-wandb/
-mlruns/
-tensorboard/
-events.out.tfevents.*
+output/
+results/
 
-# Local datasets and large raw assets
-datasets
-data/
-raw/
-raw_data/
-original/
-originals/
-pointcloud/
-pointclouds/
-lidar/
-velodyne/
-rosbags/
-*.pcd
-*.ply
-*.las
-*.laz
-*.e57
-*.bag
-*.mcap
-*.db3
-
-# Paper PDFs (keep Markdown docs trackable)
-*.pdf
-
-# Common local clone roots for external repos
-external/
-third_party/
-repos/
-
-AGENTS.md
-
-.omx/
-.env
-.envrc
+# ----- ROS 2 build artifacts -----
+build/
+install/
+log/

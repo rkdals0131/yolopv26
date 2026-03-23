@@ -1,2 +1,0 @@
-"""Detection backend adapters."""
-

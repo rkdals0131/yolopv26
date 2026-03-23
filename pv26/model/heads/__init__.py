@@ -1,2 +1,0 @@
-"""Segmentation head modules."""
-

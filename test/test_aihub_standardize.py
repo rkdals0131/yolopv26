@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from model.preprocess.aihub_standardize import TL_BITS, run_standardization
+
+
+def _make_image(path: Path, width: int, height: int, color: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["convert", "-size", f"{width}x{height}", f"xc:{color}", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
+def _write_dummy_pdf(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"%PDF-1.4\n%stub\n")
+
+
+class AIHubStandardizationTests(unittest.TestCase):
+    def test_standardization_generates_readmes_reports_and_tl_bits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_traffic_fixture(traffic_root)
+
+            outputs = run_standardization(
+                lane_root=lane_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+            )
+
+            lane_readme = (lane_root / "README.md").read_text(encoding="utf-8")
+            traffic_readme = (traffic_root / "README.md").read_text(encoding="utf-8")
+            self.assertIn("# 차선-횡단보도 인지 영상(수도권)", lane_readme)
+            self.assertIn("문서 기준 수도권 json 수량", lane_readme)
+            self.assertIn("# 신호등-도로표지판 인지 영상(수도권)", traffic_readme)
+            self.assertIn("4-bit supervision", traffic_readme)
+
+            conversion_report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            source_inventory = json.loads(outputs["inventory_json"].read_text(encoding="utf-8"))
+
+            self.assertEqual(source_inventory["datasets"][0]["local_inventory"]["splits"]["Training"]["images"], 1)
+            traffic_inventory = source_inventory["datasets"][1]["local_inventory"]["splits"]
+            self.assertEqual(traffic_inventory["Training"]["raw_images"], 1)
+            self.assertEqual(traffic_inventory["Training"]["crop_images"], 1)
+
+            datasets = {item["dataset_key"]: item for item in conversion_report["datasets"]}
+            lane_dataset = datasets["aihub_lane_seoul"]
+            traffic_dataset = datasets["aihub_traffic_seoul"]
+
+            self.assertEqual(lane_dataset["lane_class_counts"]["blue_lane"], 1)
+            self.assertEqual(lane_dataset["lane_class_counts"]["white_lane"], 1)
+            self.assertEqual(lane_dataset["stop_line_count"], 1)
+            self.assertEqual(lane_dataset["crosswalk_count"], 1)
+
+            self.assertEqual(traffic_dataset["det_class_counts"]["sign"], 1)
+            self.assertEqual(traffic_dataset["det_class_counts"]["traffic_light"], 5)
+            self.assertEqual(traffic_dataset["tl_attr_valid_count"], 3)
+            self.assertEqual(traffic_dataset["tl_attr_invalid_count"], 2)
+            self.assertEqual(traffic_dataset["tl_combo_counts"]["red+arrow"], 1)
+            self.assertEqual(traffic_dataset["tl_combo_counts"]["arrow"], 1)
+            self.assertEqual(traffic_dataset["tl_combo_counts"]["off"], 1)
+            self.assertEqual(traffic_dataset["tl_invalid_reason_counts"]["multi_color_active"], 1)
+            self.assertEqual(traffic_dataset["tl_invalid_reason_counts"]["non_car_traffic_light"], 1)
+
+            lane_scenes = sorted((output_root / "labels_scene").rglob("aihub_lane_seoul*.json"))
+            traffic_scenes = sorted((output_root / "labels_scene").rglob("aihub_traffic_seoul*.json"))
+            det_labels = sorted((output_root / "labels_det").rglob("*.txt"))
+            debug_vis = sorted((output_root / "meta" / "debug_vis").rglob("*.png"))
+            self.assertEqual(len(lane_scenes), 1)
+            self.assertEqual(len(traffic_scenes), 2)
+            self.assertEqual(len(det_labels), 2)
+            self.assertEqual(len(debug_vis), 3)
+
+            lane_scene = json.loads(lane_scenes[0].read_text(encoding="utf-8"))
+            self.assertEqual(lane_scene["tasks"]["has_lane"], 1)
+            self.assertEqual(lane_scene["tasks"]["has_stop_line"], 1)
+            self.assertEqual(lane_scene["tasks"]["has_crosswalk"], 1)
+            self.assertIn("blue_lane", {item["class_name"] for item in lane_scene["lanes"]})
+
+            traffic_bits = []
+            for traffic_scene_path in traffic_scenes:
+                traffic_scene = json.loads(traffic_scene_path.read_text(encoding="utf-8"))
+                traffic_bits.extend(traffic_scene["traffic_lights"])
+            combo_to_valid = {
+                "+".join(bit for bit in TL_BITS if item["tl_bits"].get(bit)) or "off": item["tl_attr_valid"]
+                for item in traffic_bits
+            }
+            self.assertEqual(combo_to_valid["red+arrow"], 1)
+            self.assertEqual(combo_to_valid["arrow"], 1)
+            self.assertEqual(combo_to_valid["off"], 1)
+
+            det_map_yaml = outputs["det_map_yaml"].read_text(encoding="utf-8")
+            self.assertIn("traffic_light", det_map_yaml)
+            self.assertNotIn("yellow_arrow_not_supported", det_map_yaml)
+
+            debug_vis_index = json.loads(outputs["debug_vis_index"].read_text(encoding="utf-8"))
+            self.assertEqual(debug_vis_index["selection_count"], 3)
+
+    def _create_docs_fixture(self, docs_root: Path) -> None:
+        _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")
+        _write_dummy_pdf(docs_root / "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf")
+
+    def _create_lane_fixture(self, lane_root: Path) -> None:
+        image_path = lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / "lane_train_001.jpg"
+        label_path = lane_root / "Training" / "[라벨]c_lane_train_1" / "lane_train_001.json"
+
+        _make_image(image_path, 1280, 720, "#202020")
+        _write_json(
+            label_path,
+            {
+                "image": {"file_name": "lane_train_001.jpg", "image_size": [720, 1280]},
+                "annotations": [
+                    {
+                        "class": "traffic_lane",
+                        "attributes": [
+                            {"code": "lane_color", "value": "white"},
+                            {"code": "lane_type", "value": "solid"},
+                        ],
+                        "category": "polyline",
+                        "data": [{"x": 220, "y": 690}, {"x": 240, "y": 520}, {"x": 260, "y": 360}],
+                    },
+                    {
+                        "class": "traffic_lane",
+                        "attributes": [
+                            {"code": "lane_color", "value": "blue"},
+                            {"code": "lane_type", "value": "dotted"},
+                        ],
+                        "category": "polyline",
+                        "data": [{"x": 980, "y": 700}, {"x": 960, "y": 540}, {"x": 940, "y": 380}],
+                    },
+                    {
+                        "class": "stop_line",
+                        "attributes": [],
+                        "category": "polyline",
+                        "data": [{"x": 260, "y": 620}, {"x": 1000, "y": 620}],
+                    },
+                    {
+                        "class": "crosswalk",
+                        "attributes": [],
+                        "category": "polygon",
+                        "data": [
+                            {"x": 330, "y": 650},
+                            {"x": 470, "y": 650},
+                            {"x": 500, "y": 710},
+                            {"x": 300, "y": 710},
+                        ],
+                    },
+                ],
+            },
+        )
+
+    def _create_traffic_fixture(self, traffic_root: Path) -> None:
+        train_image = traffic_root / "Training" / "[원천]c_train_1" / "traffic_train_001.jpg"
+        train_label = traffic_root / "Training" / "[라벨]c_train_1" / "c_train_1" / "traffic_train_001.json"
+        val_image = traffic_root / "Validation" / "[원천]c_val_1" / "traffic_val_001.jpg"
+        val_label = traffic_root / "Validation" / "[라벨]c_val_1" / "c_val_1" / "traffic_val_001.json"
+        crop_image = traffic_root / "Training" / "표지판코드분류crop데이터1" / "result_1" / "crop_only.jpg"
+
+        _make_image(train_image, 1920, 1080, "#101010")
+        _make_image(val_image, 1920, 1080, "#404040")
+        _make_image(crop_image, 80, 80, "#808080")
+
+        _write_json(
+            train_label,
+            {
+                "image": {"filename": "traffic_train_001.jpg", "imsize": {"width": 1920, "height": 1080}},
+                "annotation": [
+                    {
+                        "class": "traffic_light",
+                        "box": [120, 80, 180, 240],
+                        "light_count": 3,
+                        "attribute": [{"red": "on", "green": "off", "yellow": "off", "left_arrow": "on"}],
+                        "type": "car",
+                        "direction": "horizontal",
+                    },
+                    {
+                        "class": "traffic_light",
+                        "box": [240, 90, 300, 250],
+                        "light_count": 1,
+                        "attribute": [{"red": "off", "green": "off", "yellow": "off", "others_arrow": "on"}],
+                        "type": "car",
+                        "direction": "vertical",
+                    },
+                    {
+                        "class": "traffic_light",
+                        "box": [360, 90, 420, 250],
+                        "light_count": 2,
+                        "attribute": [{"red": "on", "green": "off", "yellow": "off"}],
+                        "type": "pedestrian",
+                    },
+                    {
+                        "class": "traffic_sign",
+                        "box": {"x1": 480, "y1": 240, "x2": 560, "y2": 320},
+                        "shape": "triangle",
+                        "color": "yellow",
+                        "kind": "normal",
+                        "type": "warning",
+                        "text": 30,
+                    },
+                    {
+                        "class": "traffic_information",
+                        "box": [900, 400, 980, 480],
+                        "type": "construction",
+                    },
+                ],
+            },
+        )
+        _write_json(
+            val_label,
+            {
+                "image": {"filename": "traffic_val_001.jpg", "imsize": {"width": 1920, "height": 1080}},
+                "annotation": [
+                    {
+                        "class": "traffic_light",
+                        "box": [120, 80, 180, 240],
+                        "light_count": 3,
+                        "attribute": [{"red": "off", "green": "off", "yellow": "off"}],
+                        "type": "car",
+                    },
+                    {
+                        "class": "traffic_light",
+                        "box": [240, 90, 300, 250],
+                        "light_count": 3,
+                        "attribute": [{"red": "on", "green": "off", "yellow": "on"}],
+                        "type": "car",
+                    },
+                ],
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
