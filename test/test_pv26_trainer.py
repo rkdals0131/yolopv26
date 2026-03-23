@@ -91,6 +91,27 @@ class _DummyAdapter:
             parameter.requires_grad = True
 
 
+class _NaNCriterion(nn.Module):
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        del predictions, encoded
+        nan_value = torch.tensor(float("nan"), requires_grad=True)
+        zero_value = torch.tensor(0.0)
+        return {
+            "total": nan_value,
+            "det": zero_value,
+            "tl_attr": zero_value,
+            "lane": zero_value,
+            "stop_line": zero_value,
+            "crosswalk": zero_value,
+        }
+
+
+class _OOMCriterion(nn.Module):
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        del predictions, encoded
+        raise RuntimeError("CUDA out of memory. simulated for test")
+
+
 class PV26TrainerTests(unittest.TestCase):
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.training import configure_pv26_train_stage
@@ -211,6 +232,87 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(summary_payload["completed_epochs"], 1)
             self.assertEqual(summary_payload["last_epoch"]["train"]["batches"], 2)
             self.assertEqual(summary_payload["last_epoch"]["val"]["batches"], 1)
+
+    def test_train_step_supports_grad_accumulation(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+
+        trainer = PV26Trainer(
+            build_yolo26n_trunk(),
+            PV26Heads(in_channels=(64, 128, 256)),
+            stage="stage_0_smoke",
+            accumulate_steps=2,
+            grad_clip_norm=1.0,
+        )
+        batch = _make_encoded_batch(batch_size=1, q_det=9975)
+
+        first = trainer.train_step(batch)
+        second = trainer.train_step(batch)
+
+        self.assertFalse(first["optimizer_step"])
+        self.assertEqual(first["global_step"], 0)
+        self.assertEqual(first["micro_step"], 1)
+        self.assertTrue(second["optimizer_step"])
+        self.assertEqual(second["global_step"], 1)
+        self.assertEqual(second["micro_step"], 0)
+
+    def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+
+        trainer = PV26Trainer(
+            build_yolo26n_trunk(),
+            PV26Heads(in_channels=(64, 128, 256)),
+            criterion=_NaNCriterion(),
+            skip_non_finite_loss=True,
+        )
+
+        summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=8))
+
+        self.assertEqual(summary["skipped_reason"], "non_finite_loss")
+        self.assertEqual(summary["global_step"], 0)
+        self.assertEqual(trainer.skipped_steps, 1)
+
+    def test_train_step_recovers_from_oom_guard(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+
+        trainer = PV26Trainer(
+            build_yolo26n_trunk(),
+            PV26Heads(in_channels=(64, 128, 256)),
+            criterion=_OOMCriterion(),
+            oom_guard=True,
+        )
+
+        summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=8))
+
+        self.assertEqual(summary["skipped_reason"], "oom_recovered")
+        self.assertEqual(summary["global_step"], 0)
+        self.assertEqual(trainer.skipped_steps, 1)
+
+    def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+
+        batch = _make_encoded_batch(batch_size=1, q_det=9975)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "resume_fit"
+
+            trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+            first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir)
+            self.assertEqual(first["completed_epochs"], 1)
+
+            resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+            second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True)
+
+            self.assertTrue(second["auto_resumed"])
+            self.assertEqual(second["resume_start_epoch"], 2)
+            self.assertEqual(second["completed_epochs"], 2)
+            self.assertEqual(resumed.global_step, 2)
 
 
 if __name__ == "__main__":

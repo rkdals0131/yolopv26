@@ -19,6 +19,9 @@
 - [x] lane / traffic source 모두 처리
 - [x] 원본 dataset intact 유지
 - [x] BDD100K det-only canonical source 처리
+- [x] resume scan / skip-existing 처리
+- [x] failure manifest 생성
+- [x] QA summary 생성
 
 ## loader 체크리스트
 
@@ -87,6 +90,11 @@
 - [x] full epoch fit loop
 - [x] val loop
 - [x] best / last checkpoint write
+- [x] AMP option
+- [x] grad accumulation
+- [x] grad clip
+- [x] auto resume
+- [x] non-finite / OOM guard
 - [x] batch loss summary evaluator
 - [x] GT count summary evaluator
 - [x] inference postprocess decode
@@ -111,6 +119,8 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
+- [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [ ] loader smoke command
 - [x] model smoke command
 - [x] training smoke command

@@ -535,6 +535,71 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
         "raw_category_counts": _counter_to_dict(raw_category_counts),
         "tl_state_hint_counts": _counter_to_dict(tl_state_hint_counts),
         "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "resume_skipped": 0,
+    }
+
+
+def _reason_counts_from_held_annotations(held_annotations: Any) -> dict[str, int]:
+    counter = Counter()
+    if not isinstance(held_annotations, list):
+        return {}
+    for item in held_annotations:
+        if not isinstance(item, dict):
+            continue
+        counter[str(item.get("reason") or "unknown").strip().lower()] += 1
+    return _counter_to_dict(counter)
+
+
+def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
+    pair = task.pair
+    sample_id = _sample_id(pair)
+    output_root = Path(task.output_root)
+    image_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
+    scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
+    det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
+    if not image_path.is_file() or not scene_path.is_file():
+        return None
+
+    try:
+        scene = _load_json(scene_path)
+    except Exception:
+        return None
+
+    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
+    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
+    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+    if detections and not det_path.is_file():
+        return None
+
+    det_class_counts = Counter()
+    raw_category_counts = Counter()
+    tl_state_hint_counts = Counter()
+    for item in detections:
+        if not isinstance(item, dict):
+            continue
+        det_class_counts[str(item.get("class_name") or "unknown").strip().lower()] += 1
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        raw_category_counts[str(meta.get("dataset_label") or "unknown").strip().lower()] += 1
+    for item in traffic_lights:
+        if not isinstance(item, dict):
+            continue
+        tl_state_hint_counts[str(item.get("state_hint") or "unknown").strip().lower()] += 1
+
+    return {
+        "dataset_key": OUTPUT_DATASET_KEY,
+        "split": pair.split,
+        "sample_id": sample_id,
+        "scene_path": str(scene_path),
+        "image_path": str(image_path),
+        "image_materialization": "resume_existing",
+        "det_count": len(detections),
+        "traffic_light_count": len(traffic_lights),
+        "traffic_sign_count": len(traffic_signs),
+        "det_class_counts": _counter_to_dict(det_class_counts),
+        "raw_category_counts": _counter_to_dict(raw_category_counts),
+        "tl_state_hint_counts": _counter_to_dict(tl_state_hint_counts),
+        "held_reason_counts": _reason_counts_from_held_annotations(scene.get("held_annotations")),
+        "resume_skipped": 1,
     }
 
 
@@ -550,6 +615,7 @@ def _aggregate_results(
     source_inventory: dict[str, Any],
     discovery: dict[str, Any],
     summaries: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
 ) -> dict[str, Any]:
     split_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     det_class_counts = Counter()
@@ -560,6 +626,8 @@ def _aggregate_results(
     total_detections = 0
     total_lights = 0
     total_signs = 0
+    total_resume_skipped = 0
+    empty_scene_count = 0
 
     for item in summaries:
         split = item["split"]
@@ -570,11 +638,14 @@ def _aggregate_results(
         total_detections += item["det_count"]
         total_lights += item["traffic_light_count"]
         total_signs += item["traffic_sign_count"]
+        total_resume_skipped += int(item.get("resume_skipped", 0))
         materialization_counts[item["image_materialization"]] += 1
         det_class_counts.update(item["det_class_counts"])
         raw_category_counts.update(item["raw_category_counts"])
         tl_state_hint_counts.update(item["tl_state_hint_counts"])
         held_reason_counts.update(item["held_reason_counts"])
+        if item["det_count"] == 0:
+            empty_scene_count += 1
 
     return {
         "version": PIPELINE_VERSION,
@@ -588,12 +659,17 @@ def _aggregate_results(
             "images_root": str(images_root),
             "labels_root": str(labels_root),
             "output_root": str(output_root),
+            "failure_count": len(failures),
         },
         "det_class_map": {str(index): class_name for index, class_name in enumerate(OD_CLASSES)},
         "tl_bits": TL_BITS,
         "dataset": {
             "dataset_key": OUTPUT_DATASET_KEY,
             "processed_samples": len(summaries),
+            "fresh_processed_count": len(summaries) - total_resume_skipped,
+            "resume_skipped_count": total_resume_skipped,
+            "failure_count": len(failures),
+            "empty_scene_count": empty_scene_count,
             "pair_discovery": discovery["per_split_counts"],
             "missing_images": discovery["missing_images"],
             "missing_labels": discovery["missing_labels"],
@@ -610,6 +686,7 @@ def _aggregate_results(
             "held_reason_counts": _counter_to_dict(held_reason_counts),
             "image_materialization": _counter_to_dict(materialization_counts),
         },
+        "failures": failures,
         "source_inventory_snapshot": source_inventory,
     }
 
@@ -628,6 +705,9 @@ def _conversion_report_markdown(report: dict[str, Any]) -> str:
         f"## {dataset['dataset_key']}",
         "",
         f"- Processed samples: `{dataset['processed_samples']}`",
+        f"- Fresh processed samples: `{dataset['fresh_processed_count']}`",
+        f"- Resume skipped samples: `{dataset['resume_skipped_count']}`",
+        f"- Failure count: `{dataset['failure_count']}`",
         f"- Detection count: `{dataset['detection_count']}`",
         f"- Traffic light count: `{dataset['traffic_light_count']}`",
         f"- Traffic sign count: `{dataset['traffic_sign_count']}`",
@@ -660,6 +740,100 @@ def _conversion_report_markdown(report: dict[str, Any]) -> str:
         lines.extend(["", "### Missing Labels", ""])
         for item in dataset["missing_labels"][:20]:
             lines.append(f"- split=`{item['split']}` image=`{item['image_path']}`")
+    if report["failures"]:
+        lines.extend(["", "### Failure Manifest", ""])
+        for item in report["failures"][:32]:
+            lines.append(
+                f"- split=`{item['split']}` raw_id=`{item['raw_id']}` error=`{item['error_type']}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _failure_manifest_markdown(manifest: dict[str, Any]) -> str:
+    lines = [
+        "# PV26 BDD100K Failure Manifest",
+        "",
+        f"- Generated: `{manifest['generated_at']}`",
+        f"- Version: `{manifest['version']}`",
+        f"- Failure count: `{manifest['failure_count']}`",
+        "",
+    ]
+    for item in manifest["items"]:
+        lines.extend(
+            [
+                f"## {item['split']} / {item['raw_id']}",
+                "",
+                f"- Error type: `{item['error_type']}`",
+                f"- Error message: `{item['error_message']}`",
+                f"- Image path: `{item['image_path']}`",
+                f"- Label path: `{item['label_path']}`",
+                "",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> dict[str, Any]:
+    dataset = report["dataset"]
+    return {
+        "version": PIPELINE_VERSION,
+        "generated_at": _now_iso(),
+        "output_root": report["settings"]["output_root"],
+        "debug_vis": {
+            "selection_count": int(debug_vis_index.get("selection_count", 0)),
+            "seed": int(debug_vis_index.get("seed", 0)),
+        },
+        "failure_count": int(failure_manifest["failure_count"]),
+        "dataset": {
+            "dataset_key": dataset["dataset_key"],
+            "processed_samples": dataset["processed_samples"],
+            "fresh_processed_count": dataset["fresh_processed_count"],
+            "resume_skipped_count": dataset["resume_skipped_count"],
+            "failure_count": dataset["failure_count"],
+            "empty_scene_count": dataset["empty_scene_count"],
+            "detection_count": dataset["detection_count"],
+            "traffic_light_count": dataset["traffic_light_count"],
+            "traffic_sign_count": dataset["traffic_sign_count"],
+            "top_held_reasons": list(dataset["held_reason_counts"].items())[:5],
+            "top_state_hints": list(dataset["tl_state_hint_counts"].items())[:5],
+        },
+    }
+
+
+def _qa_summary_markdown(summary: dict[str, Any]) -> str:
+    dataset = summary["dataset"]
+    lines = [
+        "# PV26 BDD100K QA Summary",
+        "",
+        f"- Generated: `{summary['generated_at']}`",
+        f"- Output root: `{summary['output_root']}`",
+        f"- Debug vis selections: `{summary['debug_vis']['selection_count']}`",
+        f"- Failure count: `{summary['failure_count']}`",
+        "",
+        f"## {dataset['dataset_key']}",
+        "",
+        f"- Processed samples: `{dataset['processed_samples']}`",
+        f"- Fresh processed samples: `{dataset['fresh_processed_count']}`",
+        f"- Resume skipped samples: `{dataset['resume_skipped_count']}`",
+        f"- Failure count: `{dataset['failure_count']}`",
+        f"- Empty scenes: `{dataset['empty_scene_count']}`",
+        f"- Detection count: `{dataset['detection_count']}`",
+        f"- Traffic lights: `{dataset['traffic_light_count']}`",
+        f"- Traffic signs: `{dataset['traffic_sign_count']}`",
+        "",
+    ]
+    if dataset["top_held_reasons"]:
+        lines.append("### Top Held Reasons")
+        lines.append("")
+        for key, value in dataset["top_held_reasons"]:
+            lines.append(f"- `{key}`: {value}")
+        lines.append("")
+    if dataset["top_state_hints"]:
+        lines.append("### Top Traffic Light State Hints")
+        lines.append("")
+        for key, value in dataset["top_state_hints"]:
+            lines.append(f"- `{key}`: {value}")
+        lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -692,6 +866,8 @@ def run_standardization(
     debug_vis_count: int = DEFAULT_DEBUG_VIS_COUNT,
     debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
     write_dataset_readme: bool = True,
+    force_reprocess: bool = False,
+    fail_on_error: bool = False,
     log_stream: TextIO | None = None,
 ) -> dict[str, Path]:
     bdd_root = bdd_root.resolve()
@@ -707,7 +883,8 @@ def run_standardization(
     logger.info(f"labels_root={labels_root}")
     logger.info(f"output_root={output_root}")
     logger.info(
-        f"workers={workers} max_samples_per_split={max_samples_per_split} debug_vis_count={debug_vis_count}"
+        f"workers={workers} max_samples_per_split={max_samples_per_split} debug_vis_count={debug_vis_count} "
+        f"force_reprocess={force_reprocess} fail_on_error={fail_on_error}"
     )
 
     if not bdd_root.is_dir():
@@ -764,26 +941,62 @@ def run_standardization(
     )
     tasks = [BDDTask(pair=pair, output_root=str(output_root)) for pair in pairs]
 
+    summaries: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    pending_tasks: list[BDDTask] = []
+    logger.stage(
+        "resume_scan",
+        "기존 standardized outputs가 있으면 재처리하지 않고 summary만 재구성해 full run을 이어갑니다.",
+        total=len(tasks),
+    )
+    resume_progress = Counter()
+    if tasks:
+        for index, task in enumerate(tasks, start=1):
+            existing = None if force_reprocess else _existing_output_summary(task)
+            if existing is not None:
+                summaries.append(existing)
+                resume_progress["reused"] += 1
+            else:
+                pending_tasks.append(task)
+                resume_progress["pending"] += 1
+            logger.progress(index, dict(resume_progress))
+        logger.progress(len(tasks), dict(resume_progress), force=True)
+    else:
+        logger.progress(0, {"pending": 0, "reused": 0}, force=True)
+
     logger.stage(
         "parallel_standardize",
         "BDD JSON 파싱, 7-class remap, YOLO txt 직렬화, image materialization을 프로세스 풀로 병렬 실행합니다.",
-        total=len(tasks),
+        total=len(pending_tasks),
     )
-    summaries: list[dict[str, Any]] = []
     progress = Counter()
     completed = 0
-    if tasks:
+    if pending_tasks:
         with ProcessPoolExecutor(max_workers=workers) as executor:
-            future_map = {executor.submit(_worker_entry, task): task for task in tasks}
+            future_map = {executor.submit(_worker_entry, task): task for task in pending_tasks}
             for future in as_completed(future_map):
                 task = future_map[future]
                 try:
                     summary = future.result()
                 except Exception as exc:
+                    failures.append(
+                        {
+                            "dataset_key": OUTPUT_DATASET_KEY,
+                            "split": task.pair.split,
+                            "raw_id": task.pair.relative_id,
+                            "image_path": str(task.pair.image_path),
+                            "label_path": str(task.pair.label_path),
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc),
+                        }
+                    )
                     logger.info(
                         f"stage=parallel_standardize error split={task.pair.split} sample={task.pair.relative_id} error={exc}"
                     )
-                    raise
+                    completed += 1
+                    progress["failed"] += 1
+                    logger.progress(completed, dict(progress), force=True)
+                    continue
                 summaries.append(summary)
                 completed += 1
                 progress["samples"] = completed
@@ -799,7 +1012,7 @@ def run_standardization(
     logger.stage(
         "report_write",
         "클래스 맵, 변환 리포트, source inventory를 기록해 loader가 동일 계약을 읽을 수 있게 만듭니다.",
-        total=6,
+        total=8,
     )
     report = _aggregate_results(
         bdd_root=bdd_root,
@@ -812,6 +1025,7 @@ def run_standardization(
         source_inventory=source_inventory,
         discovery=discovery,
         summaries=summaries,
+        failures=failures,
     )
     meta_root = output_root / "meta"
     conversion_json = meta_root / "conversion_report.json"
@@ -820,6 +1034,8 @@ def run_standardization(
     inventory_md = meta_root / "source_inventory.md"
     det_map_yaml = meta_root / "class_map_det.yaml"
     scene_map_yaml = meta_root / "class_map_scene.yaml"
+    failure_json = meta_root / "failure_manifest.json"
+    failure_md = meta_root / "failure_manifest.md"
 
     _write_json(conversion_json, report)
     logger.progress(1, {"files_written": 1}, force=True)
@@ -833,6 +1049,16 @@ def run_standardization(
     logger.progress(5, {"files_written": 5}, force=True)
     _write_text(scene_map_yaml, _scene_class_map_yaml())
     logger.progress(6, {"files_written": 6}, force=True)
+    failure_manifest = {
+        "version": PIPELINE_VERSION,
+        "generated_at": _now_iso(),
+        "failure_count": len(failures),
+        "items": failures,
+    }
+    _write_json(failure_json, failure_manifest)
+    logger.progress(7, {"files_written": 7}, force=True)
+    _write_text(failure_md, _failure_manifest_markdown(failure_manifest))
+    logger.progress(8, {"files_written": 8}, force=True)
 
     debug_vis_outputs = _generate_debug_vis(
         output_root,
@@ -842,7 +1068,23 @@ def run_standardization(
         logger=logger,
     )
 
+    logger.stage(
+        "qa_write",
+        "resume/실패/debug-vis 결과를 묶어 BDD canonical QA summary를 남깁니다.",
+        total=2,
+    )
+    debug_vis_index = _load_json(debug_vis_outputs["debug_vis_index"])
+    qa_json = meta_root / "qa_summary.json"
+    qa_md = meta_root / "qa_summary.md"
+    qa_summary = _qa_summary(report, debug_vis_index, failure_manifest)
+    _write_json(qa_json, qa_summary)
+    logger.progress(1, {"files_written": 1}, force=True)
+    _write_text(qa_md, _qa_summary_markdown(qa_summary))
+    logger.progress(2, {"files_written": 2}, force=True)
+
     logger.info("standardization complete")
+    if failures and fail_on_error:
+        raise RuntimeError(f"BDD100K standardization completed with failures: {len(failures)}")
     return {
         "output_root": output_root,
         "conversion_json": conversion_json,
@@ -851,6 +1093,10 @@ def run_standardization(
         "inventory_md": inventory_md,
         "det_map_yaml": det_map_yaml,
         "scene_map_yaml": scene_map_yaml,
+        "failure_json": failure_json,
+        "failure_md": failure_md,
+        "qa_json": qa_json,
+        "qa_md": qa_md,
         "debug_vis_dir": debug_vis_outputs["debug_vis_dir"],
         "debug_vis_index": debug_vis_outputs["debug_vis_index"],
     }
@@ -881,6 +1127,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip dataset-local README generation under the BDD100K source root.",
     )
+    parser.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Ignore existing standardized outputs and rebuild every discovered sample from source.",
+    )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Exit non-zero after writing failure manifests if any sample conversion fails.",
+    )
     return parser
 
 
@@ -892,10 +1148,14 @@ def main(argv: list[str] | None = None) -> int:
         max_samples_per_split=args.max_samples_per_split,
         debug_vis_count=args.debug_vis_count,
         write_dataset_readme=not args.skip_readme,
+        force_reprocess=args.force_reprocess,
+        fail_on_error=args.fail_on_error,
     )
     print(f"output_root={outputs['output_root']}")
     print(f"conversion_json={outputs['conversion_json']}")
     print(f"inventory_json={outputs['inventory_json']}")
+    print(f"failure_json={outputs['failure_json']}")
+    print(f"qa_json={outputs['qa_json']}")
     print(f"debug_vis_dir={outputs['debug_vis_dir']}")
     return 0
 

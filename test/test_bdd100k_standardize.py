@@ -91,6 +91,81 @@ class BDD100KStandardizationTests(unittest.TestCase):
 
             debug_vis_index = json.loads(outputs["debug_vis_index"].read_text(encoding="utf-8"))
             self.assertEqual(debug_vis_index["selection_count"], 3)
+            failure_manifest = json.loads(outputs["failure_json"].read_text(encoding="utf-8"))
+            qa_summary = json.loads(outputs["qa_json"].read_text(encoding="utf-8"))
+            self.assertEqual(failure_manifest["failure_count"], 0)
+            self.assertEqual(qa_summary["dataset"]["failure_count"], 0)
+            self.assertEqual(qa_summary["debug_vis"]["selection_count"], 3)
+
+    def test_standardization_supports_resume_and_failure_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+
+            self._create_bdd_fixture(images_root, labels_root)
+            broken_stem = "broken-train-sample"
+            _make_image(images_root / "train" / f"{broken_stem}.jpg", 1280, 720, "#777777")
+            broken_label = labels_root / "train" / f"{broken_stem}.json"
+            broken_label.write_text("{invalid json\n", encoding="utf-8")
+
+            first_outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            first_report = json.loads(first_outputs["conversion_json"].read_text(encoding="utf-8"))
+            first_failures = json.loads(first_outputs["failure_json"].read_text(encoding="utf-8"))
+
+            self.assertEqual(first_failures["failure_count"], 1)
+            self.assertEqual(first_report["dataset"]["resume_skipped_count"], 0)
+            self.assertEqual(first_report["dataset"]["fresh_processed_count"], 3)
+
+            broken_label.write_text(
+                json.dumps(
+                    {
+                        "name": f"{broken_stem}.jpg",
+                        "attributes": {"weather": "clear", "scene": "city street", "timeofday": "daytime"},
+                        "frames": [
+                            {
+                                "timestamp": 4000,
+                                "objects": [
+                                    {
+                                        "id": 1,
+                                        "category": "car",
+                                        "box2d": {"x1": 50, "y1": 80, "x2": 180, "y2": 220},
+                                        "attributes": {},
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            second_outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            second_report = json.loads(second_outputs["conversion_json"].read_text(encoding="utf-8"))
+            second_failures = json.loads(second_outputs["failure_json"].read_text(encoding="utf-8"))
+
+            self.assertEqual(second_failures["failure_count"], 0)
+            self.assertEqual(second_report["dataset"]["resume_skipped_count"], 3)
+            self.assertEqual(second_report["dataset"]["fresh_processed_count"], 1)
 
     def _create_bdd_fixture(self, images_root: Path, labels_root: Path) -> None:
         samples = {

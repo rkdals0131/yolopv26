@@ -11,32 +11,34 @@ if str(REPO_ROOT) not in sys.path:
 
 from model.heads import PV26Heads
 from model.loading import PV26CanonicalDataset, build_pv26_train_dataloader
-from model.training import PV26Trainer, build_pv26_optimizer, build_pv26_scheduler, configure_pv26_train_stage
+from model.training import PV26Trainer, build_pv26_optimizer, build_pv26_scheduler
 from model.trunk import build_yolo26n_trunk
 
 DEFAULT_AIHUB_ROOT = REPO_ROOT / "seg_dataset" / "pv26_aihub_standardized"
 DEFAULT_BDD_ROOT = REPO_ROOT / "seg_dataset" / "pv26_bdd100k_standardized"
-DEFAULT_RUN_DIR = REPO_ROOT / "runs" / "pv26_train" / "fit_smoke"
+DEFAULT_RUN_DIR = REPO_ROOT / "runs" / "pv26_train" / "pilot"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a PV26 epoch-level training smoke loop.")
+    parser = argparse.ArgumentParser(description="Run a PV26 pilot training loop on canonical datasets.")
     parser.add_argument("--aihub-root", type=Path, default=DEFAULT_AIHUB_ROOT)
     parser.add_argument("--bdd-root", type=Path, default=DEFAULT_BDD_ROOT)
     parser.add_argument("--include-bdd", action="store_true")
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--train-batches", type=int, default=2)
-    parser.add_argument("--val-batches", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--train-batches", type=int, default=50)
+    parser.add_argument("--val-batches", type=int, default=10)
     parser.add_argument("--stage", type=str, default="stage_1_frozen_trunk_warmup")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--trunk-lr", type=float, default=1e-4)
     parser.add_argument("--head-lr", type=float, default=5e-3)
-    parser.add_argument("--schedule", type=str, default="none", choices=("none", "cosine"))
+    parser.add_argument("--schedule", type=str, default="cosine", choices=("none", "cosine"))
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--accumulate-steps", type=int, default=1)
-    parser.add_argument("--grad-clip-norm", type=float, default=None)
+    parser.add_argument("--grad-clip-norm", type=float, default=5.0)
     parser.add_argument("--auto-resume", action="store_true")
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
     return parser.parse_args()
 
@@ -57,6 +59,8 @@ def main() -> None:
         num_batches=args.train_batches,
         split="train",
         seed=26,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
     )
     val_loader = None
     if args.val_batches > 0:
@@ -67,13 +71,14 @@ def main() -> None:
                 num_batches=args.val_batches,
                 split="val",
                 seed=52,
+                num_workers=args.num_workers,
+                pin_memory=args.pin_memory,
             )
         except ValueError:
             val_loader = None
 
     adapter = build_yolo26n_trunk()
     heads = PV26Heads(in_channels=(64, 128, 256))
-    stage_summary = configure_pv26_train_stage(adapter, heads, args.stage)
     optimizer = build_pv26_optimizer(
         adapter,
         heads,
@@ -101,7 +106,6 @@ def main() -> None:
         max_val_batches=args.val_batches,
         auto_resume=args.auto_resume,
     )
-    summary["stage_summary"] = stage_summary
     print(json.dumps(summary, indent=2, ensure_ascii=True))
 
 

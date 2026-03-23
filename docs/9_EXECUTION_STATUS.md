@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 14 full-train-loop`
-- current focus: `full-epoch trainer wiring 완료, 오프라인 표준화 -> loader -> 학습 -> 추론 -> 평가 루프 완결`
+- phase: `phase 15 full-run-hardening`
+- current focus: `preprocess/trainer hardening 완료, full-dataset 본학습 진입 전 마지막 운영 판단 단계`
 
 ## 완료된 항목
 
@@ -60,14 +60,22 @@
 - [x] epoch-level val loop 구현
 - [x] best / last checkpoint write 구현
 - [x] fit smoke command 구현
+- [x] AIHUB/BDD resume scan 구현
+- [x] AIHUB/BDD failure manifest 구현
+- [x] AIHUB/BDD QA summary 구현
+- [x] trainer AMP / grad accumulation / grad clip 구현
+- [x] trainer auto resume 구현
+- [x] trainer non-finite / OOM guard 구현
+- [x] pilot training command 구현
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
+- [ ] full-dataset 전처리 실제 실행 계획 확정
+- [ ] pilot subset 본학습과 metric 해석
 - [ ] export / ROS 정교화
-- [ ] dataset-level report / run artifact 정교화
 
 ## 최근 검증
 
@@ -86,9 +94,14 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_eval_metrics.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
 - [x] `python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1`
+- [x] `python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke`
+- [x] `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1`
+- [x] `python3 -m model.preprocess.bdd100k_standardize --workers 1 --max-samples-per-split 1 --debug-vis-count 1`
 - [x] detector assignment 통합 후 targeted tests 재통과
 - [x] lane Hungarian 통합 후 targeted tests 재통과
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
@@ -121,7 +134,9 @@
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current trainer runtime includes balanced sampler helper, checkpoint save/load, and history JSONL logging
 - current trainer runtime also includes epoch fit loop, val loop, best / last checkpoint write, and run summary output
+- current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard
 - current evaluator runtime returns batch loss summary / GT count summary and supports postprocessed prediction bundles
 - current evaluator runtime also returns batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, and lane family matching metrics
 - current tiny overfit smoke uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
 - current loop is closed end-to-end from offline standardization through loader / train / loss / inference / evaluation
+- current standardization runtime writes `failure_manifest` and `qa_summary`, and reuses existing outputs through resume scan

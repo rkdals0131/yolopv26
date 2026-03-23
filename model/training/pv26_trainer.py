@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import nullcontext
 from datetime import datetime
 import json
 from pathlib import Path
@@ -169,6 +170,33 @@ def _is_better(candidate: float, current_best: float | None, mode: str) -> bool:
     raise KeyError(f"unsupported comparison mode: {mode}")
 
 
+def _is_oom_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda error: out of memory" in message
+
+
+def build_pv26_scheduler(
+    optimizer: torch.optim.Optimizer,
+    *,
+    epochs: int,
+    schedule: str = "cosine",
+    min_lr_ratio: float = 0.1,
+):
+    if epochs <= 0:
+        raise ValueError("scheduler epochs must be > 0")
+    if schedule == "none":
+        return None
+    if schedule == "cosine":
+        base_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups]
+        eta_min = min(base_lrs) * float(min_lr_ratio) if base_lrs else 0.0
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, epochs),
+            eta_min=eta_min,
+        )
+    raise KeyError(f"unsupported PV26 scheduler: {schedule}")
+
+
 def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str) -> dict[str, int | str]:
     stage = _canonical_stage(stage)
     if stage not in STAGE_NAMES:
@@ -247,7 +275,14 @@ class PV26Trainer:
         trunk_lr: float = 1e-4,
         head_lr: float = 1e-3,
         weight_decay: float = 1e-4,
+        amp: bool = False,
+        accumulate_steps: int = 1,
+        grad_clip_norm: float | None = None,
+        skip_non_finite_loss: bool = True,
+        oom_guard: bool = True,
     ) -> None:
+        if accumulate_steps <= 0:
+            raise ValueError("accumulate_steps must be > 0")
         self.adapter = adapter
         self.heads = heads
         self.device = torch.device(device)
@@ -264,6 +299,14 @@ class PV26Trainer:
             weight_decay=weight_decay,
         )
         self.scheduler = scheduler
+        self.accumulate_steps = int(accumulate_steps)
+        self.grad_clip_norm = float(grad_clip_norm) if grad_clip_norm is not None else None
+        self.skip_non_finite_loss = bool(skip_non_finite_loss)
+        self.oom_guard = bool(oom_guard)
+        self.amp_enabled = bool(amp) and self.device.type == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
+        self.micro_step = 0
+        self.skipped_steps = 0
         self.global_step = 0
         self.history: list[dict[str, Any]] = []
         self.epoch_history: list[dict[str, Any]] = []
@@ -276,16 +319,74 @@ class PV26Trainer:
         features = forward_pyramid_features(self.adapter, encoded["image"])
         return self.heads(features)
 
+    def _autocast_context(self):
+        if not self.amp_enabled:
+            return nullcontext()
+        return torch.autocast(device_type=self.device.type, dtype=torch.float16)
+
     def train_step(self, batch: dict[str, Any]) -> dict[str, Any]:
         self.adapter.raw_model.train()
         self.heads.train()
         encoded = self.prepare_batch(batch)
-        self.optimizer.zero_grad(set_to_none=True)
-        predictions = self.forward_encoded_batch(encoded)
-        losses = self.criterion(predictions, encoded)
-        losses["total"].backward()
-        self.optimizer.step()
-        self.global_step += 1
+        if self.micro_step == 0:
+            self.optimizer.zero_grad(set_to_none=True)
+
+        skipped_reason: str | None = None
+        optimizer_step = False
+        losses: dict[str, torch.Tensor]
+        try:
+            with self._autocast_context():
+                predictions = self.forward_encoded_batch(encoded)
+                losses = self.criterion(predictions, encoded)
+            total_loss = losses["total"]
+            if not torch.isfinite(total_loss):
+                skipped_reason = "non_finite_loss"
+                if not self.skip_non_finite_loss:
+                    raise FloatingPointError("non-finite PV26 total loss encountered")
+                self.optimizer.zero_grad(set_to_none=True)
+                self.micro_step = 0
+                self.skipped_steps += 1
+            else:
+                scaled_total = total_loss / float(self.accumulate_steps)
+                if self.amp_enabled:
+                    self.scaler.scale(scaled_total).backward()
+                else:
+                    scaled_total.backward()
+                self.micro_step += 1
+                if self.micro_step >= self.accumulate_steps:
+                    if self.grad_clip_norm is not None:
+                        if self.amp_enabled:
+                            self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            list(self.adapter.raw_model.parameters()) + list(self.heads.parameters()),
+                            max_norm=self.grad_clip_norm,
+                        )
+                    if self.amp_enabled:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.global_step += 1
+                    self.micro_step = 0
+                    optimizer_step = True
+        except RuntimeError as exc:
+            if not self.oom_guard or not _is_oom_error(exc):
+                raise
+            skipped_reason = "oom_recovered"
+            self.optimizer.zero_grad(set_to_none=True)
+            self.micro_step = 0
+            self.skipped_steps += 1
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            losses = {
+                "total": torch.full((), float("nan"), device=self.device),
+                "det": torch.full((), float("nan"), device=self.device),
+                "tl_attr": torch.full((), float("nan"), device=self.device),
+                "lane": torch.full((), float("nan"), device=self.device),
+                "stop_line": torch.full((), float("nan"), device=self.device),
+                "crosswalk": torch.full((), float("nan"), device=self.device),
+            }
         summary = {
             "global_step": self.global_step,
             "stage": self.stage,
@@ -294,6 +395,13 @@ class PV26Trainer:
                 name: float(value.detach().cpu())
                 for name, value in losses.items()
             },
+            "optimizer_step": optimizer_step,
+            "micro_step": int(self.micro_step),
+            "accumulate_steps": int(self.accumulate_steps),
+            "skipped_reason": skipped_reason,
+            "skipped_steps": int(self.skipped_steps),
+            "amp_enabled": bool(self.amp_enabled),
+            "gradient_scale": float(self.scaler.get_scale()) if self.amp_enabled else 1.0,
             "optimizer_lrs": {
                 str(group.get("group_name", f"group_{index}")): float(group["lr"])
                 for index, group in enumerate(self.optimizer.param_groups)
@@ -350,9 +458,16 @@ class PV26Trainer:
             "criterion_stage": str(getattr(self.criterion, "stage", self.stage)),
             "history": list(self.history),
             "epoch_history": list(self.epoch_history),
+            "micro_step": int(self.micro_step),
+            "skipped_steps": int(self.skipped_steps),
+            "accumulate_steps": int(self.accumulate_steps),
+            "grad_clip_norm": self.grad_clip_norm,
+            "amp_enabled": bool(self.amp_enabled),
         }
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        if self.amp_enabled:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
         return checkpoint
 
     def save_checkpoint(self, path: str | Path, *, extra_state: dict[str, Any] | None = None) -> Path:
@@ -389,10 +504,14 @@ class PV26Trainer:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if self.amp_enabled and "scaler_state_dict" in checkpoint:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
         self.global_step = int(checkpoint.get("global_step", 0))
         self.stage_summary = dict(checkpoint.get("stage_summary", self.stage_summary))
         self.history = list(checkpoint.get("history", []))
         self.epoch_history = list(checkpoint.get("epoch_history", []))
+        self.micro_step = int(checkpoint.get("micro_step", 0))
+        self.skipped_steps = int(checkpoint.get("skipped_steps", 0))
         return checkpoint
 
     def build_evaluator(self):
@@ -486,6 +605,8 @@ class PV26Trainer:
         max_val_batches: int | None = None,
         best_metric: str | None = None,
         best_mode: str = "min",
+        auto_resume: bool = False,
+        resume_path: str | Path | None = None,
     ) -> dict[str, Any]:
         if epochs <= 0:
             raise ValueError("fit requires epochs > 0")
@@ -505,8 +626,56 @@ class PV26Trainer:
         best_checkpoint_path: Path | None = None
         run_started_at = time.perf_counter()
         run_summary: dict[str, Any] = {}
+        start_epoch = 1
+        if auto_resume:
+            resume_candidate = Path(resume_path) if resume_path is not None else checkpoint_dir / "last.pt"
+            if resume_candidate.is_file():
+                checkpoint = self.load_checkpoint(resume_candidate, map_location=self.device)
+                extra_state = checkpoint.get("extra_state", {}) if isinstance(checkpoint.get("extra_state"), dict) else {}
+                restored_epoch = int(extra_state.get("epoch", len(self.epoch_history)))
+                start_epoch = restored_epoch + 1
+                summary_path = output_dir / "summary.json"
+                if summary_path.is_file():
+                    prior_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    if prior_summary.get("best_metric_value") is not None:
+                        best_metric_value = float(prior_summary["best_metric_value"])
+                    if prior_summary.get("best_epoch") is not None:
+                        best_epoch = int(prior_summary["best_epoch"])
+                if best_metric_value is None and self.epoch_history:
+                    best_metric_value = _resolve_summary_path(
+                        self.epoch_history[-1],
+                        best_metric or ("val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"),
+                    )
+                    best_epoch = int(self.epoch_history[-1]["epoch"])
+                if (checkpoint_dir / "best.pt").is_file():
+                    best_checkpoint_path = checkpoint_dir / "best.pt"
+        if start_epoch > epochs:
+            return {
+                "stage": self.stage,
+                "epochs": int(epochs),
+                "completed_epochs": len(self.epoch_history),
+                "global_step": int(self.global_step),
+                "run_dir": str(output_dir),
+                "best_metric_path": best_metric or (
+                    "val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"
+                ),
+                "best_metric_value": best_metric_value,
+                "best_epoch": best_epoch,
+                "last_epoch": self.epoch_history[-1] if self.epoch_history else None,
+                "history_paths": {
+                    "train_steps": str(history_dir / "train_steps.jsonl"),
+                    "epochs": str(history_dir / "epochs.jsonl"),
+                },
+                "checkpoint_paths": {
+                    "last": str(checkpoint_dir / "last.pt"),
+                    "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
+                },
+                "duration_sec": time.perf_counter() - run_started_at,
+                "auto_resumed": True,
+                "resume_start_epoch": int(start_epoch),
+            }
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(start_epoch, epochs + 1):
             epoch_summary: dict[str, Any] = {
                 "epoch": int(epoch),
                 "stage": self.stage,
@@ -536,6 +705,7 @@ class PV26Trainer:
                 best_metric_value = metric_value
                 best_epoch = epoch
 
+            self.epoch_history.append(epoch_summary)
             last_checkpoint_path = self.save_checkpoint(
                 checkpoint_dir / "last.pt",
                 extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
@@ -554,7 +724,6 @@ class PV26Trainer:
                 )
                 epoch_summary["checkpoint_best"] = str(best_checkpoint_path)
 
-            self.epoch_history.append(epoch_summary)
             self.save_history_jsonl(history_dir / "train_steps.jsonl")
             self.save_epoch_history_jsonl(history_dir / "epochs.jsonl")
 
@@ -568,6 +737,7 @@ class PV26Trainer:
                 "best_metric_value": best_metric_value,
                 "best_epoch": best_epoch,
                 "last_epoch": self.epoch_history[-1],
+                "skipped_steps": int(self.skipped_steps),
                 "history_paths": {
                     "train_steps": str(history_dir / "train_steps.jsonl"),
                     "epochs": str(history_dir / "epochs.jsonl"),
@@ -577,6 +747,8 @@ class PV26Trainer:
                     "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
                 },
                 "duration_sec": time.perf_counter() - run_started_at,
+                "auto_resumed": bool(auto_resume and start_epoch > 1),
+                "resume_start_epoch": int(start_epoch),
             }
             (output_dir / "summary.json").write_text(
                 json.dumps(run_summary, indent=2, ensure_ascii=True) + "\n",

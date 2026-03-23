@@ -117,6 +117,102 @@ class AIHubStandardizationTests(unittest.TestCase):
 
             debug_vis_index = json.loads(outputs["debug_vis_index"].read_text(encoding="utf-8"))
             self.assertEqual(debug_vis_index["selection_count"], 3)
+            failure_manifest = json.loads(outputs["failure_json"].read_text(encoding="utf-8"))
+            qa_summary = json.loads(outputs["qa_json"].read_text(encoding="utf-8"))
+            self.assertEqual(failure_manifest["failure_count"], 0)
+            self.assertEqual(qa_summary["debug_vis"]["selection_count"], 3)
+            self.assertEqual(qa_summary["datasets"][0]["failure_count"], 0)
+
+    def test_standardization_supports_resume_and_failure_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_traffic_fixture(traffic_root)
+            broken_image = traffic_root / "Validation" / "[원천]c_val_1" / "traffic_val_001.jpg"
+            broken_label = traffic_root / "Validation" / "[라벨]c_val_1" / "c_val_1" / "traffic_val_001.json"
+            broken_image.write_text("not an image", encoding="utf-8")
+            broken_label.write_text(
+                json.dumps(
+                    {
+                        "image": {"filename": "traffic_val_001.jpg"},
+                        "annotation": [
+                            {
+                                "class": "traffic_light",
+                                "box": [120, 80, 180, 240],
+                                "attribute": [{"red": "off", "green": "off", "yellow": "off"}],
+                                "type": "car",
+                            }
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            first_outputs = run_standardization(
+                lane_root=lane_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            first_report = json.loads(first_outputs["conversion_json"].read_text(encoding="utf-8"))
+            first_failures = json.loads(first_outputs["failure_json"].read_text(encoding="utf-8"))
+            first_datasets = {item["dataset_key"]: item for item in first_report["datasets"]}
+
+            self.assertEqual(first_failures["failure_count"], 1)
+            self.assertEqual(first_datasets["aihub_lane_seoul"]["fresh_processed_count"], 1)
+            self.assertEqual(first_datasets["aihub_lane_seoul"]["resume_skipped_count"], 0)
+            self.assertEqual(first_datasets["aihub_traffic_seoul"]["failure_count"], 1)
+            self.assertEqual(first_datasets["aihub_traffic_seoul"]["processed_samples"], 1)
+
+            _make_image(broken_image, 1920, 1080, "#505050")
+            broken_label.write_text(
+                json.dumps(
+                    {
+                        "image": {"filename": "traffic_val_001.jpg", "imsize": {"width": 1920, "height": 1080}},
+                        "annotation": [
+                            {
+                                "class": "traffic_light",
+                                "box": [32, 40, 80, 120],
+                                "attribute": [{"green": "on"}],
+                                "type": "car",
+                            }
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            second_outputs = run_standardization(
+                lane_root=lane_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            second_report = json.loads(second_outputs["conversion_json"].read_text(encoding="utf-8"))
+            second_failures = json.loads(second_outputs["failure_json"].read_text(encoding="utf-8"))
+            second_datasets = {item["dataset_key"]: item for item in second_report["datasets"]}
+
+            self.assertEqual(second_failures["failure_count"], 0)
+            self.assertEqual(second_datasets["aihub_lane_seoul"]["resume_skipped_count"], 1)
+            self.assertEqual(second_datasets["aihub_lane_seoul"]["fresh_processed_count"], 0)
+            self.assertEqual(second_datasets["aihub_traffic_seoul"]["resume_skipped_count"], 1)
+            self.assertEqual(second_datasets["aihub_traffic_seoul"]["fresh_processed_count"], 1)
 
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")

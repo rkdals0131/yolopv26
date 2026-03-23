@@ -10,6 +10,14 @@
 
 ## phase 1 next
 
+### 0. full-run hardening
+
+- AIHUB / BDD standardization resume scan
+- failure manifest / QA summary
+- trainer AMP / grad accumulation / grad clip
+- trainer auto resume / non-finite / OOM guard
+- pilot training command
+
 ### 1. training sample runtime
 
 - 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
@@ -68,6 +76,11 @@
   - val loop
   - best / last checkpoint write
   - run summary output
+  - AMP
+  - grad accumulation
+  - grad clip
+  - auto resume
+  - non-finite / OOM guard
 
 ### 8. evaluator skeleton
 
@@ -98,6 +111,14 @@
   - canonical loader batch 2-sample mixed overfit
   - repeated train-step loss 감소 확인
   - smoke command 추가
+  - epoch fit smoke command 추가
+
+## pilot status
+
+- 완료
+  - pilot train command 추가
+  - fit resume path 지원
+  - canonical subset 기준 hardening regression test 추가
 
 ## 문서 업데이트 규칙
 

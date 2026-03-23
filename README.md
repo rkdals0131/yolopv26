@@ -56,6 +56,8 @@ The current AIHUB preprocessing deliverable is a hardcoded standardization pipel
 - writes source-dataset README files back into the original AIHUB directories
 - preserves the source dataset intact and materializes converted outputs under `seg_dataset/pv26_aihub_standardized`
 - emits real-time stage logs, progress, throughput, and ETA
+- supports resume scan on existing standardized outputs and `--force-reprocess` when a clean rebuild is needed
+- writes failure manifest and QA summary artifacts for long-running full-dataset conversion
 - normalizes traffic scenes into `7-class OD + traffic_light 4-bit attributes`
 - preserves AIHUB lane, stop-line, and crosswalk geometry in scene JSON for later target encoding
 
@@ -83,6 +85,10 @@ seg_dataset/pv26_aihub_standardized/
     class_map_scene.yaml
     conversion_report.json
     conversion_report.md
+    failure_manifest.json
+    failure_manifest.md
+    qa_summary.json
+    qa_summary.md
     source_inventory.json
     source_inventory.md
     debug_vis/
@@ -98,6 +104,8 @@ The current BDD100K preprocessing deliverable is a hardcoded detection-only stan
 - writes a source-dataset README back into the BDD100K root
 - preserves the source dataset intact and materializes converted outputs under `seg_dataset/pv26_bdd100k_standardized`
 - emits real-time stage logs, progress, throughput, and ETA
+- supports resume scan on existing standardized outputs and `--force-reprocess` when a clean rebuild is needed
+- writes failure manifest and QA summary artifacts for long-running full-dataset conversion
 - collapses BDD categories into the PV26 7-class OD taxonomy
 - preserves BDD weather/scene/timeofday metadata and traffic-light color hints in scene JSON while keeping TL supervision disabled for this source
 
@@ -125,6 +133,10 @@ seg_dataset/pv26_bdd100k_standardized/
     class_map_scene.yaml
     conversion_report.json
     conversion_report.md
+    failure_manifest.json
+    failure_manifest.md
+    qa_summary.json
+    qa_summary.md
     source_inventory.json
     source_inventory.md
     debug_vis/
@@ -161,3 +173,12 @@ python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4
 ```
 
 This command builds a mixed tiny batch from canonical train samples, runs repeated train steps, and prints the loss history as JSON.
+
+## Fit And Pilot Smoke
+
+```bash
+python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1
+python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke
+```
+
+These commands exercise the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, and runtime hardening paths.

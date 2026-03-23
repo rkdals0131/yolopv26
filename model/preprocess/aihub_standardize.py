@@ -469,6 +469,7 @@ def _lane_worker(task: StandardizeTask) -> dict[str, Any]:
         "tl_combo_counts": {},
         "tl_invalid_reason_counts": {},
         "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "resume_skipped": 0,
     }
 
 
@@ -639,6 +640,7 @@ def _traffic_worker(task: StandardizeTask) -> dict[str, Any]:
         "tl_combo_counts": _counter_to_dict(tl_combo_counts),
         "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
         "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "resume_skipped": 0,
     }
 
 
@@ -648,6 +650,98 @@ def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
     if task.dataset_kind == "traffic":
         return _traffic_worker(task)
     raise ValueError(f"unsupported dataset kind: {task.dataset_kind}")
+
+
+def _reason_counts_from_held_annotations(held_annotations: Any) -> dict[str, int]:
+    counter = Counter()
+    if not isinstance(held_annotations, list):
+        return {}
+    for item in held_annotations:
+        if not isinstance(item, dict):
+            continue
+        reason = _normalize_text(item.get("reason")) or "unknown"
+        counter[reason] += 1
+    return _counter_to_dict(counter)
+
+
+def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
+    sample_id = _sample_id(task.output_dataset_key, task.pair)
+    output_root = Path(task.output_root)
+    image_output_path = output_root / "images" / task.pair.split / f"{sample_id}{task.pair.image_path.suffix.lower()}"
+    scene_path = output_root / "labels_scene" / task.pair.split / f"{sample_id}.json"
+    det_path = output_root / "labels_det" / task.pair.split / f"{sample_id}.txt"
+    if not image_output_path.is_file() or not scene_path.is_file():
+        return None
+
+    try:
+        scene = _load_json(scene_path)
+    except Exception:
+        return None
+
+    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
+    lanes = scene.get("lanes") if isinstance(scene.get("lanes"), list) else []
+    stop_lines = scene.get("stop_lines") if isinstance(scene.get("stop_lines"), list) else []
+    crosswalks = scene.get("crosswalks") if isinstance(scene.get("crosswalks"), list) else []
+    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
+    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+
+    if detections and not det_path.is_file():
+        return None
+
+    det_class_counts = Counter()
+    for item in detections:
+        if isinstance(item, dict):
+            det_class_counts[_normalize_text(item.get("class_name")) or "unknown"] += 1
+
+    lane_class_counts = Counter()
+    lane_type_counts = Counter()
+    for item in lanes:
+        if not isinstance(item, dict):
+            continue
+        lane_class_counts[_normalize_text(item.get("class_name")) or "unknown"] += 1
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        lane_type = _normalize_text(meta.get("raw_type") or item.get("source_style")) or "missing"
+        lane_type_counts[lane_type] += 1
+
+    tl_combo_counts = Counter()
+    tl_invalid_reason_counts = Counter()
+    tl_attr_valid_count = 0
+    for item in traffic_lights:
+        if not isinstance(item, dict):
+            continue
+        bits_raw = item.get("tl_bits") if isinstance(item.get("tl_bits"), dict) else {}
+        bits = {bit: int(bits_raw.get(bit, 0)) for bit in TL_BITS}
+        valid = int(item.get("tl_attr_valid", 0))
+        reason = _normalize_text(item.get("collapse_reason")) or "unknown"
+        if valid:
+            tl_combo_counts[_combo_name(bits)] += 1
+            tl_attr_valid_count += 1
+        else:
+            tl_invalid_reason_counts[reason] += 1
+
+    return {
+        "dataset_key": task.output_dataset_key,
+        "split": task.pair.split,
+        "sample_id": sample_id,
+        "scene_path": str(scene_path),
+        "image_path": str(image_output_path),
+        "image_materialization": "resume_existing",
+        "lane_count": len(lanes),
+        "stop_line_count": len(stop_lines),
+        "crosswalk_count": len(crosswalks),
+        "det_count": len(detections),
+        "traffic_light_count": len(traffic_lights),
+        "traffic_sign_count": len(traffic_signs),
+        "tl_attr_valid_count": tl_attr_valid_count,
+        "tl_attr_invalid_count": len(traffic_lights) - tl_attr_valid_count,
+        "lane_class_counts": _counter_to_dict(lane_class_counts),
+        "lane_type_counts": _counter_to_dict(lane_type_counts),
+        "det_class_counts": _counter_to_dict(det_class_counts),
+        "tl_combo_counts": _counter_to_dict(tl_combo_counts),
+        "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
+        "held_reason_counts": _reason_counts_from_held_annotations(scene.get("held_annotations")),
+        "resume_skipped": 1,
+    }
 
 
 def _inventory_lane_root(dataset_root: Path) -> dict[str, Any]:
@@ -962,6 +1056,7 @@ def _aggregate_results(
     debug_vis_count: int,
     source_inventory: dict[str, Any],
     summaries: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
 ) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in summaries:
@@ -984,6 +1079,8 @@ def _aggregate_results(
         total_lights = 0
         total_signs = 0
         total_dets = 0
+        total_resume_skipped = 0
+        empty_scene_count = 0
         for item in items:
             split = item["split"]
             split_counts[split]["samples"] += 1
@@ -1000,6 +1097,7 @@ def _aggregate_results(
             total_lights += item["traffic_light_count"]
             total_signs += item["traffic_sign_count"]
             total_dets += item["det_count"]
+            total_resume_skipped += int(item.get("resume_skipped", 0))
             materialization_counts[item["image_materialization"]] += 1
             det_class_counts.update(item["det_class_counts"])
             lane_class_counts.update(item["lane_class_counts"])
@@ -1007,12 +1105,19 @@ def _aggregate_results(
             tl_combo_counts.update(item["tl_combo_counts"])
             tl_invalid_reason_counts.update(item["tl_invalid_reason_counts"])
             held_reason_counts.update(item["held_reason_counts"])
+            if item["det_count"] == 0 and item["lane_count"] == 0 and item["stop_line_count"] == 0 and item["crosswalk_count"] == 0:
+                empty_scene_count += 1
+
+        dataset_failures = [item for item in failures if item["dataset_key"] == dataset_key]
 
         datasets.append(
             {
                 "dataset_key": dataset_key,
                 "source_root": str(lane_root if dataset_key == OUTPUT_LANE_KEY else traffic_root),
                 "processed_samples": len(items),
+                "fresh_processed_count": len(items) - total_resume_skipped,
+                "resume_skipped_count": total_resume_skipped,
+                "failure_count": len(dataset_failures),
                 "per_split_counts": {
                     split: {key: value for key, value in sorted(counts.items())}
                     for split, counts in sorted(split_counts.items())
@@ -1031,6 +1136,7 @@ def _aggregate_results(
                 "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
                 "held_reason_counts": _counter_to_dict(held_reason_counts),
                 "image_materialization": _counter_to_dict(materialization_counts),
+                "empty_scene_count": empty_scene_count,
             }
         )
 
@@ -1043,11 +1149,13 @@ def _aggregate_results(
             "max_samples_per_dataset": max_samples_per_dataset,
             "debug_vis_count": debug_vis_count,
             "output_root": str(output_root),
+            "failure_count": len(failures),
         },
         "det_class_map": {str(index): class_name for index, class_name in enumerate(OD_CLASSES)},
         "lane_class_map": {str(index): class_name for index, class_name in enumerate(LANE_CLASSES)},
         "tl_bits": TL_BITS,
         "datasets": datasets,
+        "failures": failures,
         "source_inventory_snapshot": source_inventory,
     }
 
@@ -1069,6 +1177,9 @@ def _conversion_report_markdown(report: dict[str, Any]) -> str:
                 f"## {dataset['dataset_key']}",
                 "",
                 f"- Processed samples: `{dataset['processed_samples']}`",
+                f"- Fresh processed samples: `{dataset['fresh_processed_count']}`",
+                f"- Resume skipped samples: `{dataset['resume_skipped_count']}`",
+                f"- Failure count: `{dataset['failure_count']}`",
                 f"- Detection count: `{dataset['detection_count']}`",
                 f"- Lane count: `{sum(item['lanes'] for item in dataset['per_split_counts'].values()) if dataset['per_split_counts'] else 0}`",
                 f"- Stop line count: `{dataset['stop_line_count']}`",
@@ -1107,6 +1218,108 @@ def _conversion_report_markdown(report: dict[str, Any]) -> str:
             for key, value in dataset["held_reason_counts"].items():
                 lines.append(f"- `{key}`: {value}")
         lines.append("")
+    if report["failures"]:
+        lines.extend(["## Failure Manifest", ""])
+        for item in report["failures"][:32]:
+            lines.append(
+                f"- dataset=`{item['dataset_key']}` split=`{item['split']}` raw_id=`{item['raw_id']}` error=`{item['error_type']}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _failure_manifest_markdown(manifest: dict[str, Any]) -> str:
+    lines = [
+        "# PV26 AIHUB Failure Manifest",
+        "",
+        f"- Generated: `{manifest['generated_at']}`",
+        f"- Version: `{manifest['version']}`",
+        f"- Failure count: `{manifest['failure_count']}`",
+        "",
+    ]
+    for item in manifest["items"]:
+        lines.extend(
+            [
+                f"## {item['dataset_key']} / {item['split']} / {item['raw_id']}",
+                "",
+                f"- Error type: `{item['error_type']}`",
+                f"- Error message: `{item['error_message']}`",
+                f"- Image path: `{item['image_path']}`",
+                f"- Label path: `{item['label_path']}`",
+                "",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": PIPELINE_VERSION,
+        "generated_at": _now_iso(),
+        "output_root": report["settings"]["output_root"],
+        "debug_vis": {
+            "selection_count": int(debug_vis_index.get("selection_count", 0)),
+            "seed": int(debug_vis_index.get("seed", 0)),
+        },
+        "failure_count": int(failure_manifest["failure_count"]),
+        "datasets": [
+            {
+                "dataset_key": item["dataset_key"],
+                "processed_samples": item["processed_samples"],
+                "fresh_processed_count": item["fresh_processed_count"],
+                "resume_skipped_count": item["resume_skipped_count"],
+                "failure_count": item["failure_count"],
+                "empty_scene_count": item["empty_scene_count"],
+                "traffic_light_count": item["traffic_light_count"],
+                "traffic_sign_count": item["traffic_sign_count"],
+                "detection_count": item["detection_count"],
+                "lane_count": sum(split.get("lanes", 0) for split in item["per_split_counts"].values()),
+                "top_held_reasons": list(item["held_reason_counts"].items())[:5],
+                "top_tl_invalid_reasons": list(item["tl_invalid_reason_counts"].items())[:5],
+            }
+            for item in report["datasets"]
+        ],
+    }
+
+
+def _qa_summary_markdown(summary: dict[str, Any]) -> str:
+    lines = [
+        "# PV26 AIHUB QA Summary",
+        "",
+        f"- Generated: `{summary['generated_at']}`",
+        f"- Output root: `{summary['output_root']}`",
+        f"- Debug vis selections: `{summary['debug_vis']['selection_count']}`",
+        f"- Failure count: `{summary['failure_count']}`",
+        "",
+    ]
+    for item in summary["datasets"]:
+        lines.extend(
+            [
+                f"## {item['dataset_key']}",
+                "",
+                f"- Processed samples: `{item['processed_samples']}`",
+                f"- Fresh processed samples: `{item['fresh_processed_count']}`",
+                f"- Resume skipped samples: `{item['resume_skipped_count']}`",
+                f"- Failure count: `{item['failure_count']}`",
+                f"- Empty scenes: `{item['empty_scene_count']}`",
+                f"- Detection count: `{item['detection_count']}`",
+                f"- Lane count: `{item['lane_count']}`",
+                f"- Traffic lights: `{item['traffic_light_count']}`",
+                f"- Traffic signs: `{item['traffic_sign_count']}`",
+                "",
+            ]
+        )
+        if item["top_held_reasons"]:
+            lines.append("### Top Held Reasons")
+            lines.append("")
+            for key, value in item["top_held_reasons"]:
+                lines.append(f"- `{key}`: {value}")
+            lines.append("")
+        if item["top_tl_invalid_reasons"]:
+            lines.append("### Top TL Invalid Reasons")
+            lines.append("")
+            for key, value in item["top_tl_invalid_reasons"]:
+                lines.append(f"- `{key}`: {value}")
+            lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -1297,6 +1510,8 @@ def run_standardization(
     debug_vis_count: int = DEFAULT_DEBUG_VIS_COUNT,
     debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
     write_dataset_readmes: bool = True,
+    force_reprocess: bool = False,
+    fail_on_error: bool = False,
     log_stream: TextIO | None = None,
 ) -> dict[str, Path]:
     lane_root = lane_root.resolve()
@@ -1311,7 +1526,8 @@ def run_standardization(
     logger.info(f"traffic_root={traffic_root}")
     logger.info(f"output_root={output_root}")
     logger.info(
-        f"workers={workers} max_samples_per_dataset={max_samples_per_dataset} debug_vis_count={debug_vis_count}"
+        f"workers={workers} max_samples_per_dataset={max_samples_per_dataset} debug_vis_count={debug_vis_count} "
+        f"force_reprocess={force_reprocess} fail_on_error={fail_on_error}"
     )
 
     if not lane_root.is_dir():
@@ -1364,39 +1580,82 @@ def run_standardization(
         for pair in traffic_pairs
     ]
 
+    failures: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    pending_tasks: list[StandardizeTask] = []
+
+    logger.stage(
+        "resume_scan",
+        "기존 표준화 결과가 있으면 재처리하지 않고 기존 산출물을 summary로 재사용해 장시간 작업을 이어갑니다.",
+        total=len(tasks),
+    )
+    resume_progress = Counter()
+    if tasks:
+        for index, task in enumerate(tasks, start=1):
+            existing = None if force_reprocess else _existing_output_summary(task)
+            if existing is not None:
+                summaries.append(existing)
+                resume_progress["reused"] += 1
+            else:
+                pending_tasks.append(task)
+                resume_progress["pending"] += 1
+            logger.progress(index, dict(resume_progress))
+        logger.progress(len(tasks), dict(resume_progress), force=True)
+    else:
+        logger.progress(0, {"pending": 0, "reused": 0}, force=True)
+
     logger.stage(
         "parallel_standardize",
         "JSON 파싱, class remap, scene/det 직렬화, 이미지 materialization을 프로세스 풀로 병렬 실행합니다.",
-        total=len(tasks),
+        total=len(pending_tasks),
     )
-    summaries: list[dict[str, Any]] = []
     completed = 0
     progress_counters = Counter()
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(_worker_entry, task): task for task in tasks}
-        for future in as_completed(future_map):
-            task = future_map[future]
-            try:
-                summary = future.result()
-            except Exception as exc:
-                logger.info(f"stage=parallel_standardize error dataset={task.dataset_kind} sample={task.pair.relative_id} error={exc}")
-                raise
-            summaries.append(summary)
-            completed += 1
-            progress_counters["samples"] = completed
-            progress_counters["detections"] += summary["det_count"]
-            progress_counters["lanes"] += summary["lane_count"]
-            progress_counters["stop_lines"] += summary["stop_line_count"]
-            progress_counters["crosswalks"] += summary["crosswalk_count"]
-            progress_counters["tl_valid"] += summary["tl_attr_valid_count"]
-            progress_counters["held"] += sum(summary["held_reason_counts"].values())
-            logger.progress(completed, dict(progress_counters))
-    logger.progress(completed, dict(progress_counters), force=True)
+    if pending_tasks:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(_worker_entry, task): task for task in pending_tasks}
+            for future in as_completed(future_map):
+                task = future_map[future]
+                try:
+                    summary = future.result()
+                except Exception as exc:
+                    failures.append(
+                        {
+                            "dataset_kind": task.dataset_kind,
+                            "dataset_key": task.output_dataset_key,
+                            "split": task.pair.split,
+                            "raw_id": task.pair.relative_id,
+                            "image_path": str(task.pair.image_path),
+                            "label_path": str(task.pair.label_path),
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc),
+                        }
+                    )
+                    logger.info(
+                        f"stage=parallel_standardize error dataset={task.dataset_kind} sample={task.pair.relative_id} error={exc}"
+                    )
+                    completed += 1
+                    progress_counters["failed"] += 1
+                    logger.progress(completed, dict(progress_counters), force=True)
+                    continue
+                summaries.append(summary)
+                completed += 1
+                progress_counters["samples"] = completed
+                progress_counters["detections"] += summary["det_count"]
+                progress_counters["lanes"] += summary["lane_count"]
+                progress_counters["stop_lines"] += summary["stop_line_count"]
+                progress_counters["crosswalks"] += summary["crosswalk_count"]
+                progress_counters["tl_valid"] += summary["tl_attr_valid_count"]
+                progress_counters["held"] += sum(summary["held_reason_counts"].values())
+                logger.progress(completed, dict(progress_counters))
+        logger.progress(completed, dict(progress_counters), force=True)
+    else:
+        logger.progress(0, {"samples": 0, "failed": 0}, force=True)
 
     logger.stage(
         "report_write",
         "클래스 맵, 변환 리포트, source inventory를 남겨 다음 모델 설계와 데이터 검증의 입력으로 사용합니다.",
-        total=6,
+        total=8,
     )
     conversion_report = _aggregate_results(
         lane_root=lane_root,
@@ -1407,6 +1666,7 @@ def run_standardization(
         debug_vis_count=debug_vis_count,
         source_inventory=source_inventory,
         summaries=summaries,
+        failures=failures,
     )
 
     meta_root = output_root / "meta"
@@ -1416,6 +1676,8 @@ def run_standardization(
     inventory_md = meta_root / "source_inventory.md"
     det_map_yaml = meta_root / "class_map_det.yaml"
     scene_map_yaml = meta_root / "class_map_scene.yaml"
+    failure_json = meta_root / "failure_manifest.json"
+    failure_md = meta_root / "failure_manifest.md"
 
     _write_json(conversion_json, conversion_report)
     logger.progress(1, {"files_written": 1}, force=True)
@@ -1429,6 +1691,16 @@ def run_standardization(
     logger.progress(5, {"files_written": 5}, force=True)
     _write_text(scene_map_yaml, _scene_class_map_yaml())
     logger.progress(6, {"files_written": 6}, force=True)
+    failure_manifest = {
+        "version": PIPELINE_VERSION,
+        "generated_at": _now_iso(),
+        "failure_count": len(failures),
+        "items": failures,
+    }
+    _write_json(failure_json, failure_manifest)
+    logger.progress(7, {"files_written": 7}, force=True)
+    _write_text(failure_md, _failure_manifest_markdown(failure_manifest))
+    logger.progress(8, {"files_written": 8}, force=True)
 
     debug_vis_outputs = _generate_debug_vis(
         output_root,
@@ -1438,7 +1710,23 @@ def run_standardization(
         logger=logger,
     )
 
+    logger.stage(
+        "qa_write",
+        "resume/실패/debug-vis 선택 결과를 묶어 full-dataset 전처리 전 QA summary를 남깁니다.",
+        total=2,
+    )
+    debug_vis_index = _load_json(debug_vis_outputs["debug_vis_index"])
+    qa_json = meta_root / "qa_summary.json"
+    qa_md = meta_root / "qa_summary.md"
+    qa_summary = _qa_summary(conversion_report, debug_vis_index, failure_manifest)
+    _write_json(qa_json, qa_summary)
+    logger.progress(1, {"files_written": 1}, force=True)
+    _write_text(qa_md, _qa_summary_markdown(qa_summary))
+    logger.progress(2, {"files_written": 2}, force=True)
+
     logger.info("standardization complete")
+    if failures and fail_on_error:
+        raise RuntimeError(f"AIHUB standardization completed with failures: {len(failures)}")
     return {
         "output_root": output_root,
         "conversion_json": conversion_json,
@@ -1447,6 +1735,10 @@ def run_standardization(
         "inventory_md": inventory_md,
         "det_map_yaml": det_map_yaml,
         "scene_map_yaml": scene_map_yaml,
+        "failure_json": failure_json,
+        "failure_md": failure_md,
+        "qa_json": qa_json,
+        "qa_md": qa_md,
         "debug_vis_dir": debug_vis_outputs["debug_vis_dir"],
         "debug_vis_index": debug_vis_outputs["debug_vis_index"],
     }
@@ -1477,6 +1769,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip dataset-local README generation under the AIHUB source roots.",
     )
+    parser.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Ignore existing standardized outputs and rebuild every discovered sample from source.",
+    )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Exit non-zero after writing failure manifests if any sample conversion fails.",
+    )
     return parser
 
 
@@ -1488,10 +1790,14 @@ def main(argv: list[str] | None = None) -> int:
         max_samples_per_dataset=args.max_samples_per_dataset,
         debug_vis_count=args.debug_vis_count,
         write_dataset_readmes=not args.skip_readmes,
+        force_reprocess=args.force_reprocess,
+        fail_on_error=args.fail_on_error,
     )
     print(f"output_root={outputs['output_root']}")
     print(f"conversion_json={outputs['conversion_json']}")
     print(f"inventory_json={outputs['inventory_json']}")
+    print(f"failure_json={outputs['failure_json']}")
+    print(f"qa_json={outputs['qa_json']}")
     print(f"debug_vis_dir={outputs['debug_vis_dir']}")
     return 0
 

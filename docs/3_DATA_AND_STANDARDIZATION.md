@@ -18,6 +18,8 @@
 - image는 hardlink 우선, 실패 시 copy
 - det label과 scene label을 분리 저장
 - meta 리포트를 함께 저장
+- 기존 output이 있으면 resume scan으로 재사용하고, 필요 시 `force_reprocess`로 전체 재생성한다
+- partial failure는 즉시 중단 대신 failure manifest와 QA summary로 남긴다
 
 ## BDD100K standardization 원칙
 
@@ -27,6 +29,8 @@
 - image는 hardlink 우선, 실패 시 copy
 - det label과 minimal scene label을 함께 저장
 - BDD context metadata와 traffic light color hint는 scene JSON에 보존하되 TL supervision은 끈다
+- 기존 output이 있으면 resume scan으로 재사용하고, 필요 시 `force_reprocess`로 전체 재생성한다
+- partial failure는 failure manifest와 QA summary로 남긴다
 
 ## 현재 canonical output
 
@@ -40,6 +44,10 @@ seg_dataset/pv26_aihub_standardized/
     class_map_scene.yaml
     conversion_report.json
     conversion_report.md
+    failure_manifest.json
+    failure_manifest.md
+    qa_summary.json
+    qa_summary.md
     source_inventory.json
     source_inventory.md
     debug_vis/
@@ -57,6 +65,10 @@ seg_dataset/pv26_bdd100k_standardized/
     class_map_scene.yaml
     conversion_report.json
     conversion_report.md
+    failure_manifest.json
+    failure_manifest.md
+    qa_summary.json
+    qa_summary.md
     source_inventory.json
     source_inventory.md
     debug_vis/
@@ -119,9 +131,11 @@ seg_dataset/pv26_bdd100k_standardized/
 - source dataset README는 각 원본 루트에 유지
 - standardization output meta가 dataset understanding의 1차 레퍼런스다
 - debug overlay는 사람이 conversion 품질을 빠르게 보는 QA 수단이다
+- full run 전에는 `failure_manifest`와 `qa_summary`를 먼저 보고, 이후 debug overlay를 눈으로 확인한다
 
 ## BDD100K 운영 규칙
 
 - source dataset README는 BDD100K 루트에 유지
 - 표준화는 `bdd100k_images_100k/100k`와 `bdd100k_labels/100k`만을 canonical source로 사용한다
 - `lane/*`, `area/*` 등은 detector canonical set에서 제외하고 held reason으로만 집계한다
+- full run 전에는 `failure_manifest`와 `qa_summary`를 먼저 보고, 이후 debug overlay를 눈으로 확인한다
