@@ -69,6 +69,28 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertTrue(torch.allclose(module[0].weight, torch.ones((4, 4))))
         self.assertTrue(torch.allclose(module[0].bias, torch.zeros(4)))
 
+    def test_summary_reports_trunk_and_detect_metadata(self) -> None:
+        from model.trunk.ultralytics_yolo26 import UltralyticsYOLO26TrunkAdapter, summarize_trunk_adapter
+
+        raw_model = _DummyCore()
+        adapter = UltralyticsYOLO26TrunkAdapter(
+            weights="yolo26n.pt",
+            ultralytics_version="8.4.25",
+            raw_model=raw_model,
+            trunk=nn.Sequential(*list(raw_model.model.children())[:-1]),
+            detect_head=raw_model.model[-1],
+            detect_head_index=2,
+        )
+
+        summary = summarize_trunk_adapter(adapter)
+
+        self.assertEqual(summary["weights"], "yolo26n.pt")
+        self.assertEqual(summary["raw_model_class"], "_DummyCore")
+        self.assertEqual(summary["raw_layer_count"], 3)
+        self.assertEqual(summary["trunk_layer_count"], 2)
+        self.assertEqual(summary["detect_head_class"], "_DummyDetect")
+        self.assertEqual(summary["detect_head_index"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

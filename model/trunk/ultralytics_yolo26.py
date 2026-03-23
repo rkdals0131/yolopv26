@@ -34,6 +34,29 @@ class UltralyticsYOLO26TrunkAdapter:
             parameter.requires_grad = True
 
 
+def summarize_trunk_adapter(adapter: UltralyticsYOLO26TrunkAdapter) -> dict[str, Any]:
+    trunk_layers = list(adapter.trunk.children())
+    trunk_parameter_count = sum(parameter.numel() for parameter in adapter.trunk.parameters())
+    detect_parameter_count = sum(parameter.numel() for parameter in adapter.detect_head.parameters())
+    raw_layer_container = getattr(adapter.raw_model, "model", None)
+    raw_layer_count = len(raw_layer_container) if raw_layer_container is not None else None
+    return {
+        "weights": adapter.weights,
+        "ultralytics_version": adapter.ultralytics_version,
+        "raw_model_class": adapter.raw_model.__class__.__name__,
+        "raw_layer_count": raw_layer_count,
+        "detect_head_index": adapter.detect_head_index,
+        "detect_head_class": adapter.detect_head.__class__.__name__,
+        "trunk_layer_count": len(trunk_layers),
+        "trunk_layer_classes": [layer.__class__.__name__ for layer in trunk_layers],
+        "trunk_parameter_count": trunk_parameter_count,
+        "detect_parameter_count": detect_parameter_count,
+        "yaml_file": getattr(adapter.raw_model, "yaml", {}).get("yaml_file")
+        if hasattr(adapter.raw_model, "yaml")
+        else None,
+    }
+
+
 def _parse_version(version: str) -> tuple[int, ...]:
     parts: list[int] = []
     for raw_part in version.split("."):
@@ -121,4 +144,5 @@ __all__ = [
     "build_yolo26n_trunk",
     "ensure_yolo26_support",
     "load_matching_state_dict",
+    "summarize_trunk_adapter",
 ]

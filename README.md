@@ -125,3 +125,13 @@ seg_dataset/pv26_bdd100k_standardized/
 ## Loss Spec
 
 The active sample contract is described in [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](docs/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md). The active loss design is described in [5_TARGETS_AND_LOSS.md](docs/5_TARGETS_AND_LOSS.md) and mirrored as code in [model/loss/spec.py](model/loss/spec.py).
+
+## YOLO26 Trunk Smoke
+
+Current supported smoke environment is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`.
+
+```bash
+python3 tools/run_yolo26_trunk_smoke.py
+```
+
+This command performs a real `YOLO("yolo26n.pt")` load and prints trunk/detect-head split metadata as JSON.

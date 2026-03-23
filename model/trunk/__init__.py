@@ -5,6 +5,7 @@ from .ultralytics_yolo26 import (
     UltralyticsYOLO26TrunkAdapter,
     build_yolo26n_trunk,
     load_matching_state_dict,
+    summarize_trunk_adapter,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "UltralyticsYOLO26TrunkAdapter",
     "build_yolo26n_trunk",
     "load_matching_state_dict",
+    "summarize_trunk_adapter",
 ]

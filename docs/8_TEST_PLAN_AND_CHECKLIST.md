@@ -39,7 +39,7 @@
 ## pretrained trunk 체크리스트
 
 - [x] adapter skeleton + version gate
-- [ ] official `yolo26n.pt` load 가능
+- [x] official `yolo26n.pt` load 가능
 - [ ] backbone load 성공
 - [ ] neck load 성공
 - [ ] custom head random init 확인
@@ -70,6 +70,7 @@
 - [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
+- [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [ ] loader smoke command
 - [ ] model smoke command
 - [ ] training smoke command

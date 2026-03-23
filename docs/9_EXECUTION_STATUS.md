@@ -8,9 +8,9 @@
 
 ## 현재 기준
 
-- 날짜: `2026-03-23`
+- 날짜: `2026-03-24`
 - phase: `phase 4 trunk-adapter`
-- current focus: `version-gated trunk adapter baseline 완료, real yolo26 smoke 가능한 환경 정리`
+- current focus: `real yolo26 smoke 확인 완료, custom heads 설계/구현 진입`
 
 ## 완료된 항목
 
@@ -38,13 +38,13 @@
 - [x] ragged sample collate 구현
 - [x] target encoder runtime 구현
 - [x] Ultralytics YOLO26 trunk adapter baseline 구현
+- [x] official `yolo26n.pt` real-load smoke 확인
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] official `yolo26n.pt` real-load smoke on supported ultralytics env
 - [ ] custom heads 구현
 - [ ] multitask loss runtime 구현
 - [ ] trainer/evaluator skeleton 구현
@@ -57,6 +57,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loader.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
+- [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
 ## 최근 결정
@@ -76,3 +77,4 @@
 - loader collate는 image만 stack하고 ragged target은 list 형태로 유지한다
 - target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다
+- current smoke env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
