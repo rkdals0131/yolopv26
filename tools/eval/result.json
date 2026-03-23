@@ -1,0 +1,245 @@
+{
+  "bdd_root": "/home/user1/Python_Workspace/YOLOPv26/datasets/BDD100K",
+  "pv26_dataset_root": "/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_all_merged",
+  "pv2": {
+    "model_type": "yolopv2_bdd_raw",
+    "weights_path": "/home/user1/Python_Workspace/YOLOPv26/tools/eval/yolopv2.pt",
+    "bdd_root": "/home/user1/Python_Workspace/YOLOPv26/datasets/BDD100K",
+    "num_samples": 10000,
+    "num_batches": 834,
+    "input_height": 544,
+    "input_width": 960,
+    "det_map50": 1.2759202828335783e-05,
+    "det_eval_images": 10000,
+    "det_gt_boxes": 185526,
+    "det_predictions": 253545,
+    "det_ap_by_class": {
+      "pedestrian": 0.0,
+      "rider": 0.0,
+      "car": 0.0,
+      "truck": 0.0,
+      "bus": 0.0,
+      "train": 0.0,
+      "motorcycle": 0.00012759202828335783,
+      "bicycle": 0.0,
+      "traffic light": 0.0,
+      "traffic sign": 0.0
+    },
+    "da": {
+      "supervised_samples": 10000,
+      "valid_pixels": 5184000000,
+      "true_positive": 847241506,
+      "false_positive": 90605670,
+      "false_negative": 29912847,
+      "true_negative": 4216239977,
+      "iou": 0.8754665266845808,
+      "precision": 0.9033897288186749,
+      "recall": 0.9658978526439577,
+      "f1": 0.9335986691612314
+    },
+    "lane": {
+      "supervised_samples": 10000,
+      "valid_pixels": 5184000000,
+      "true_positive": 32759183,
+      "false_positive": 87814849,
+      "false_negative": 23836698,
+      "true_negative": 5039589270,
+      "iou": 0.22684729174902724,
+      "precision": 0.27169351855132456,
+      "recall": 0.5788262753609225,
+      "f1": 0.3698052614610699
+    },
+    "detection_status": "best_effort(coco80_to_bdd10_remap; rider_unmapped; traffic_sign_partial_via_stop_sign)"
+  },
+  "pv26": {
+    "model_type": "pv26",
+    "weights_path": "/home/user1/Python_Workspace/YOLOPv26/tools/eval/yolopv26_epoch148.pt",
+    "dataset_root": "/home/user1/Python_Workspace/YOLOPv26/datasets/pv26_all_merged",
+    "checkpoint_layout": "current_shared_rm_decoder",
+    "num_samples": 18438,
+    "num_batches": 1537,
+    "input_height": 544,
+    "input_width": 960,
+    "det_map50": 0.44996864742148607,
+    "det_eval_images": 16405,
+    "det_gt_boxes": 245289,
+    "det_predictions": 1552881,
+    "da": {
+      "supervised_samples": 16884,
+      "valid_pixels": 8166331088,
+      "true_positive": 1194237766,
+      "false_positive": 256735933,
+      "false_negative": 267776632,
+      "true_negative": 6447580757,
+      "iou": 0.6948291118612736,
+      "precision": 0.823059554300026,
+      "recall": 0.8168440527218392,
+      "f1": 0.8199400246296304
+    },
+    "lane": {
+      "supervised_samples": 18438,
+      "valid_pixels": 8971924688,
+      "true_positive": 53065007,
+      "false_positive": 29995885,
+      "false_negative": 22448639,
+      "true_negative": 8866415157,
+      "iou": 0.5029404120846674,
+      "precision": 0.6388687349998601,
+      "recall": 0.7027207638735918,
+      "f1": 0.669275252752116
+    },
+    "rm_road_marker_non_lane": {
+      "supervised_samples": 18438,
+      "valid_pixels": 8971924688,
+      "true_positive": 40546369,
+      "false_positive": 33528798,
+      "false_negative": 24611367,
+      "true_negative": 8873238154,
+      "iou": 0.41086019902168214,
+      "precision": 0.5473679053602404,
+      "recall": 0.6222802001591953,
+      "f1": 0.5824251039282001
+    },
+    "rm_stop_line": {
+      "supervised_samples": 2033,
+      "valid_pixels": 992434256,
+      "true_positive": 231913,
+      "false_positive": 694914,
+      "false_negative": 277582,
+      "true_negative": 991229847,
+      "iou": 0.19255336019574745,
+      "precision": 0.25022253343935813,
+      "recall": 0.4551820920715611,
+      "f1": 0.32292619621505486
+    },
+    "lane_subclass_per_class": {
+      "white_solid": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 24267217,
+        "false_positive": 1958058,
+        "false_negative": 1994376,
+        "true_negative": 35347150,
+        "iou": 0.859940365669299,
+        "precision": 0.9253369888399645,
+        "recall": 0.9240573106132595,
+        "f1": 0.9246967069934522
+      },
+      "white_dashed": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 23127956,
+        "false_positive": 1394773,
+        "false_negative": 1512393,
+        "true_negative": 37531679,
+        "iou": 0.8883367629312434,
+        "precision": 0.943123255164627,
+        "recall": 0.9386212833267905,
+        "f1": 0.9408668838838772
+      },
+      "yellow_solid": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 11001134,
+        "false_positive": 1073648,
+        "false_negative": 822505,
+        "true_negative": 50669514,
+        "iou": 0.8529804756612767,
+        "precision": 0.9110834464754726,
+        "recall": 0.930435545266563,
+        "f1": 0.9206578124973194
+      },
+      "yellow_dashed": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 535257,
+        "false_positive": 208758,
+        "false_negative": 305963,
+        "true_negative": 62516823,
+        "iou": 0.5097792525176718,
+        "precision": 0.719416947238967,
+        "recall": 0.6362865837711895,
+        "f1": 0.6753030307809254
+      }
+    },
+    "lane_subclass_groups": {
+      "white_all": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 49858019,
+        "false_positive": 889985,
+        "false_negative": 1043923,
+        "true_negative": 11774874,
+        "iou": 0.9626600493161801,
+        "precision": 0.9824626600092489,
+        "recall": 0.9794914897353032,
+        "f1": 0.9809748251120567
+      },
+      "yellow_all": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 11774874,
+        "false_positive": 1043923,
+        "false_negative": 889985,
+        "true_negative": 49858019,
+        "iou": 0.8589292615492755,
+        "precision": 0.9185631069748589,
+        "recall": 0.9297279977613647,
+        "f1": 0.9241118307357469
+      },
+      "solid_all": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 36733396,
+        "false_positive": 1566661,
+        "false_negative": 1351836,
+        "true_negative": 23914908,
+        "iou": 0.9263970322930106,
+        "precision": 0.9590950739316132,
+        "recall": 0.9645049818785402,
+        "f1": 0.9617924205274657
+      },
+      "dashed_all": {
+        "supervised_samples": 10181,
+        "valid_pixels": 63566801,
+        "true_positive": 23914908,
+        "false_positive": 1351836,
+        "false_negative": 1566661,
+        "true_negative": 36733396,
+        "iou": 0.8912364271325238,
+        "precision": 0.9464974196912749,
+        "recall": 0.9385178754102622,
+        "f1": 0.9424907582642206
+      }
+    },
+    "lane_subclass_miou4": 0.7777592141948727,
+    "lane_subclass_miou4_present": 0.7777592141948727
+  },
+  "comparison": {
+    "note": "cross-dataset directional comparison only; not apples-to-apples",
+    "common_metrics": {
+      "da.iou": {
+        "pv2_bdd_raw": 0.8754665266845808,
+        "pv26_merged": 0.6948291118612736
+      },
+      "da.f1": {
+        "pv2_bdd_raw": 0.9335986691612314,
+        "pv26_merged": 0.8199400246296304
+      },
+      "lane.iou": {
+        "pv2_bdd_raw": 0.22684729174902724,
+        "pv26_merged": 0.5029404120846674
+      },
+      "lane.f1": {
+        "pv2_bdd_raw": 0.3698052614610699,
+        "pv26_merged": 0.669275252752116
+      }
+    },
+    "pv26_extra": {
+      "rm_road_marker_non_lane.iou": 0.41086019902168214,
+      "rm_stop_line.iou": 0.19255336019574745,
+      "lane_subclass_miou4": 0.7777592141948727,
+      "lane_subclass_miou4_present": 0.7777592141948727
+    }
+  }
+}
