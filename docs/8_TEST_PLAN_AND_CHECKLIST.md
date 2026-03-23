@@ -7,6 +7,8 @@
 - [ ] README가 현재 entrypoint를 가리킨다
 - [ ] docs 내부 링크가 상대경로 기준으로 유지된다
 - [ ] sample/transform contract 문서와 loss spec이 같은 query count를 사용한다
+- [ ] `N_gt_det`와 `Q_det`가 문서와 spec에서 분리돼 있다
+- [ ] interpolation, padding fill, float coordinate policy가 문서에 고정돼 있다
 
 ## standardization 체크리스트
 
@@ -16,6 +18,7 @@
 - [x] debug overlay 생성
 - [x] lane / traffic source 모두 처리
 - [x] 원본 dataset intact 유지
+- [x] BDD100K det-only canonical source 처리
 
 ## loader 체크리스트
 
@@ -62,6 +65,7 @@
 
 - [x] `python3 -m unittest discover -s test -v`
 - [x] `python3 -m model.preprocess.aihub_standardize --max-samples-per-dataset 4 --debug-vis-count 2`
+- [x] `python3 -m model.preprocess.bdd100k_standardize --max-samples-per-split 2 --debug-vis-count 2`
 - [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
 - [ ] loader smoke command
 - [ ] model smoke command

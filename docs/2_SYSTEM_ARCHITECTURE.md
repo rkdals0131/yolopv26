@@ -7,6 +7,7 @@ model/
   preprocess/
     aihub_common.py
     aihub_standardize.py
+    bdd100k_standardize.py
   viz/
     overlay.py
   loss/
@@ -23,9 +24,10 @@ docs/
    - BDD100K raw dataset
 2. standardization layer
    - AIHUB raw -> canonical scene JSON / det label / meta report
+   - BDD100K raw -> canonical scene JSON / det label / meta report
 3. loading layer
-   - canonical outputs -> training sample
-   - online resize/pad -> `800x608`
+   - canonical outputs -> training sample runtime
+   - variable dataset raw -> `800x608` online resize/pad
 4. target encoding layer
    - detector target
    - TL 4-bit target
@@ -55,6 +57,7 @@ AIHUB raw
 ## 현재 구현된 것
 
 - AIHUB standardization pipeline
+- BDD100K detection-only standardization pipeline
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -63,7 +66,7 @@ AIHUB raw
 ## 아직 구현되지 않은 것
 
 - standardized dataset loader
-- training sample contract
+- training sample runtime
 - YOLOv26n trunk adapter
 - PV26 custom heads
 - real target encoder

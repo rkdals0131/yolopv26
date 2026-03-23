@@ -19,10 +19,36 @@
 - det label과 scene label을 분리 저장
 - meta 리포트를 함께 저장
 
+## BDD100K standardization 원칙
+
+- 원본 dataset는 intact 유지
+- output은 `seg_dataset/pv26_bdd100k_standardized` 아래 별도 생성
+- detector-only canonical source로 사용
+- image는 hardlink 우선, 실패 시 copy
+- det label과 minimal scene label을 함께 저장
+- BDD context metadata와 traffic light color hint는 scene JSON에 보존하되 TL supervision은 끈다
+
 ## 현재 canonical output
 
 ```text
 seg_dataset/pv26_aihub_standardized/
+  images/<split>/*
+  labels_det/<split>/*.txt
+  labels_scene/<split>/*.json
+  meta/
+    class_map_det.yaml
+    class_map_scene.yaml
+    conversion_report.json
+    conversion_report.md
+    source_inventory.json
+    source_inventory.md
+    debug_vis/
+      <split>/*.png
+      index.json
+```
+
+```text
+seg_dataset/pv26_bdd100k_standardized/
   images/<split>/*
   labels_det/<split>/*.txt
   labels_scene/<split>/*.json
@@ -55,6 +81,7 @@ seg_dataset/pv26_aihub_standardized/
 - `left_arrow`, `others_arrow`는 `arrow=1`
 - `off`는 4 bit 모두 0
 - non-car, `x_light`, multi-color는 attr loss mask
+- BDD100K는 `trafficLightColor` raw hint를 scene JSON에 남기되 TL attr supervision source로는 쓰지 않는다
 
 ## lane geometry policy
 
@@ -80,9 +107,11 @@ seg_dataset/pv26_aihub_standardized/
 
 ## training input policy
 
-- runtime raw: `800x600`
+- dataset raw: variable resolution
+- vehicle camera reference raw: `800x600`
 - network input: `800x608`
-- online policy: resize + pad 또는 canonical pad-only policy를 일관되게 적용
+- online policy: standardized dataset raw에서 `800x608`으로 직접 resize + pad를 적용
+- vehicle camera가 이미 `800x600`이면 같은 contract가 `800x600 -> 800x608` pad-only로 축약된다
 - 학습과 추론은 같은 preprocessing contract를 공유해야 한다.
 
 ## AIHUB 문서/실데이터 운영 규칙
@@ -90,3 +119,9 @@ seg_dataset/pv26_aihub_standardized/
 - source dataset README는 각 원본 루트에 유지
 - standardization output meta가 dataset understanding의 1차 레퍼런스다
 - debug overlay는 사람이 conversion 품질을 빠르게 보는 QA 수단이다
+
+## BDD100K 운영 규칙
+
+- source dataset README는 BDD100K 루트에 유지
+- 표준화는 `bdd100k_images_100k/100k`와 `bdd100k_labels/100k`만을 canonical source로 사용한다
+- `lane/*`, `area/*` 등은 detector canonical set에서 제외하고 held reason으로만 집계한다

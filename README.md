@@ -9,6 +9,7 @@ model/
   preprocess/
     aihub_common.py
     aihub_standardize.py
+    bdd100k_standardize.py
   viz/
     overlay.py
   loss/
@@ -54,6 +55,48 @@ python3 tools/run_aihub_standardize.py --max-samples-per-dataset 64
 
 ```text
 seg_dataset/pv26_aihub_standardized/
+  images/<split>/*
+  labels_det/<split>/*.txt
+  labels_scene/<split>/*.json
+  meta/
+    class_map_det.yaml
+    class_map_scene.yaml
+    conversion_report.json
+    conversion_report.md
+    source_inventory.json
+    source_inventory.md
+    debug_vis/
+      <split>/*.png
+      index.json
+```
+
+## BDD100K Standardization
+
+The current BDD100K preprocessing deliverable is a hardcoded detection-only standardization pipeline for PV26. It:
+
+- scans `bdd100k_images_100k/100k/<split>` and `bdd100k_labels/100k/<split>`
+- writes a source-dataset README back into the BDD100K root
+- preserves the source dataset intact and materializes converted outputs under `seg_dataset/pv26_bdd100k_standardized`
+- emits real-time stage logs, progress, throughput, and ETA
+- collapses BDD categories into the PV26 7-class OD taxonomy
+- preserves BDD weather/scene/timeofday metadata and traffic-light color hints in scene JSON while keeping TL supervision disabled for this source
+
+### Run
+
+```bash
+python3 -m model.preprocess.bdd100k_standardize --max-samples-per-split 64
+```
+
+or
+
+```bash
+python3 tools/run_bdd100k_standardize.py --max-samples-per-split 64
+```
+
+### Outputs
+
+```text
+seg_dataset/pv26_bdd100k_standardized/
   images/<split>/*
   labels_det/<split>/*.txt
   labels_scene/<split>/*.json
