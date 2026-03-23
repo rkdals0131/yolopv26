@@ -73,6 +73,7 @@
 - 현재 skeleton 완료
   - batch loss summary
   - GT count summary
+  - raw output -> prediction bundle postprocess decode
 
 ## implementation order
 

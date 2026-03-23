@@ -67,6 +67,23 @@ def load_letterboxed_image(path: Path, transform: LetterboxTransform) -> torch.F
     return torch.from_numpy(array).permute(2, 0, 1).contiguous()
 
 
+def transform_from_meta(meta: dict[str, object]) -> LetterboxTransform:
+    raw_hw = tuple(int(value) for value in meta["raw_hw"])
+    network_hw = tuple(int(value) for value in meta["network_hw"])
+    payload = dict(meta["transform"])
+    resized_hw = tuple(int(value) for value in payload["resized_hw"])
+    return LetterboxTransform(
+        raw_hw=raw_hw,
+        network_hw=network_hw,
+        scale=float(payload["scale"]),
+        pad_left=int(payload["pad_left"]),
+        pad_top=int(payload["pad_top"]),
+        pad_right=int(payload["pad_right"]),
+        pad_bottom=int(payload["pad_bottom"]),
+        resized_hw=resized_hw,
+    )
+
+
 def transform_box_xyxy(box: Iterable[float], transform: LetterboxTransform) -> list[float]:
     x1, y1, x2, y2 = [float(value) for value in box]
     return [
@@ -87,6 +104,17 @@ def clip_box_xyxy(box: Iterable[float], network_hw: tuple[int, int] = NETWORK_HW
     if x2 - x1 <= 1.0 or y2 - y1 <= 1.0:
         return None
     return [x1, y1, x2, y2]
+
+
+def inverse_transform_box_xyxy(box: Iterable[float], transform: LetterboxTransform) -> list[float] | None:
+    x1, y1, x2, y2 = [float(value) for value in box]
+    raw_box = [
+        (x1 - transform.pad_left) / transform.scale,
+        (y1 - transform.pad_top) / transform.scale,
+        (x2 - transform.pad_left) / transform.scale,
+        (y2 - transform.pad_top) / transform.scale,
+    ]
+    return clip_box_xyxy(raw_box, transform.raw_hw)
 
 
 def transform_points(points: Iterable[Iterable[float]], transform: LetterboxTransform) -> list[list[float]]:
@@ -114,6 +142,19 @@ def clip_points(points: Iterable[Iterable[float]], network_hw: tuple[int, int] =
             ]
         )
     return clipped
+
+
+def inverse_transform_points(points: Iterable[Iterable[float]], transform: LetterboxTransform) -> list[list[float]]:
+    restored: list[list[float]] = []
+    for point in points:
+        x, y = [float(value) for value in point]
+        restored.append(
+            [
+                (x - transform.pad_left) / transform.scale,
+                (y - transform.pad_top) / transform.scale,
+            ]
+        )
+    return clip_points(restored, transform.raw_hw)
 
 
 def unique_point_count(points: Iterable[Iterable[float]]) -> int:

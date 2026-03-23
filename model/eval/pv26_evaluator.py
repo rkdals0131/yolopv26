@@ -7,6 +7,7 @@ import torch
 from ..encoding import encode_pv26_batch
 from ..loss import PV26MultiTaskLoss
 from ..trunk import forward_pyramid_features
+from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
 
 
 def _move_to_device(item: Any, device: torch.device) -> Any:
@@ -53,13 +54,16 @@ class PV26Evaluator:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
         return _move_to_device(encoded, self.device)
 
+    def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, Any]:
+        features = forward_pyramid_features(self.adapter, encoded["image"])
+        return self.heads(features)
+
     def evaluate_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         self.adapter.raw_model.eval()
         self.heads.eval()
         encoded = self.prepare_batch(batch)
         with torch.no_grad():
-            features = forward_pyramid_features(self.adapter, encoded["image"])
-            predictions = self.heads(features)
+            predictions = self.forward_encoded_batch(encoded)
             losses = self.criterion(predictions, encoded)
         return {
             "stage": self.stage,
@@ -73,6 +77,19 @@ class PV26Evaluator:
                 name: list(value.shape) for name, value in predictions.items() if isinstance(value, torch.Tensor)
             },
         }
+
+    def predict_batch(
+        self,
+        batch: dict[str, Any],
+        *,
+        config: PV26PostprocessConfig | None = None,
+    ) -> list[dict[str, Any]]:
+        self.adapter.raw_model.eval()
+        self.heads.eval()
+        encoded = self.prepare_batch(batch)
+        with torch.no_grad():
+            predictions = self.forward_encoded_batch(encoded)
+        return postprocess_pv26_batch(predictions, encoded["meta"], config=config)
 
 
 __all__ = ["PV26Evaluator"]

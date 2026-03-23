@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+import torch.nn as nn
 import torch
 
 
@@ -65,8 +66,71 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
             "stop_line_valid": stop_line_valid,
             "crosswalk_valid": crosswalk_valid,
         },
-        "meta": [{"sample_id": f"sample_{index}"} for index in range(batch_size)],
+        "meta": [
+            {
+                "sample_id": f"sample_{index}",
+                "dataset_key": "synthetic",
+                "split": "train",
+                "image_path": f"/tmp/sample_{index}.jpg",
+                "raw_hw": (608, 800),
+                "network_hw": (608, 800),
+                "transform": {
+                    "scale": 1.0,
+                    "pad_left": 0,
+                    "pad_top": 0,
+                    "pad_right": 0,
+                    "pad_bottom": 0,
+                    "resized_hw": (608, 800),
+                },
+            }
+            for index in range(batch_size)
+        ],
     }
+
+
+class _StaticAdapter:
+    def __init__(self) -> None:
+        self.raw_model = nn.Identity()
+
+
+class _StaticHeads(nn.Module):
+    def forward(self, features):
+        del features
+        q_det = 76 * 100 + 38 * 50 + 19 * 25
+        det = torch.zeros((1, q_det, 12), dtype=torch.float32)
+        tl_attr = torch.zeros((1, q_det, 4), dtype=torch.float32)
+        lane = torch.zeros((1, 12, 54), dtype=torch.float32)
+        stop_line = torch.zeros((1, 6, 9), dtype=torch.float32)
+        crosswalk = torch.zeros((1, 4, 17), dtype=torch.float32)
+
+        det[0, 1020, :4] = torch.tensor([1.8, 1.4, 1.8, 1.4], dtype=torch.float32)
+        det[0, 1020, 4] = 8.0
+        det[0, 1020, 10] = 6.0
+        tl_attr[0, 1020] = torch.tensor([5.0, -5.0, -5.0, 5.0], dtype=torch.float32)
+
+        lane[0, 0, 0] = 8.0
+        lane[0, 0, 2] = 6.0
+        lane[0, 0, 5] = 6.0
+        lane[0, 0, 6:38] = torch.linspace(120.0, 300.0, 32)
+        lane[0, 0, 38:54] = 8.0
+
+        stop_line[0, 0, 0] = 8.0
+        stop_line[0, 0, 1:9] = torch.tensor([100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0])
+
+        crosswalk[0, 0, 0] = 8.0
+        crosswalk[0, 0, 1:17] = torch.tensor(
+            [200.0, 400.0, 260.0, 400.0, 320.0, 400.0, 380.0, 400.0, 380.0, 480.0, 320.0, 480.0, 260.0, 480.0, 200.0, 480.0]
+        )
+
+        return {
+            "det": det,
+            "tl_attr": tl_attr,
+            "lane": lane,
+            "stop_line": stop_line,
+            "crosswalk": crosswalk,
+            "det_feature_shapes": [(76, 100), (38, 50), (19, 25)],
+            "det_feature_strides": [8, 16, 32],
+        }
 
 
 class PV26EvaluatorTests(unittest.TestCase):
@@ -88,6 +152,24 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertEqual(summary["counts"]["lane_rows"], 1)
         self.assertEqual(summary["prediction_shapes"]["det"], [1, 9975, 12])
         self.assertEqual(summary["prediction_shapes"]["tl_attr"], [1, 9975, 4])
+
+    def test_predict_batch_returns_postprocessed_prediction_bundle(self) -> None:
+        from model.eval.pv26_evaluator import PV26Evaluator
+
+        evaluator = PV26Evaluator(_StaticAdapter(), _StaticHeads(), stage="stage_0_smoke")
+        evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
+
+        predictions = evaluator.predict_batch(_make_encoded_batch(batch_size=1, q_det=9975))
+
+        self.assertEqual(len(predictions), 1)
+        self.assertEqual(len(predictions[0]["detections"]), 1)
+        self.assertEqual(predictions[0]["detections"][0]["class_name"], "traffic_light")
+        self.assertGreater(predictions[0]["detections"][0]["tl_attr_scores"]["red"], 0.9)
+        self.assertEqual(len(predictions[0]["lanes"]), 1)
+        self.assertEqual(predictions[0]["lanes"][0]["class_name"], "yellow_lane")
+        self.assertEqual(predictions[0]["lanes"][0]["lane_type"], "dotted")
+        self.assertEqual(len(predictions[0]["stop_lines"]), 1)
+        self.assertEqual(len(predictions[0]["crosswalks"]), 1)
 
 
 if __name__ == "__main__":

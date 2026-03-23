@@ -129,12 +129,13 @@ L_total = λ_det * L_det
 - detector matching은 task-aligned assigner 기준으로 동작한다.
 - TL attr supervision은 matched detector positive의 GT index를 재사용한다.
 - lane family는 Hungarian matching 기준으로 objectness와 geometry target을 query에 재배치한다.
+- inference postprocess는 raw detector slot output을 prediction bundle로 decode한다.
 
 ## 구현 우선순위
 
 1. eval metrics 확장
-2. export / postprocess 정교화
-3. full-epoch trainer wiring
+2. full-epoch trainer wiring
+3. export / ROS 정교화
 
 ## raw model output contract
 

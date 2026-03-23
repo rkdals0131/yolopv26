@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 11 trainer-runtime`
-- current focus: `sampler/checkpoint/logging 확장 완료, eval metrics 확장 진입`
+- phase: `phase 12 inference-postprocess`
+- current focus: `inference postprocess 완료, eval metrics 확장 진입`
 
 ## 완료된 항목
 
@@ -53,6 +53,8 @@
 - [x] dataset-balanced sampler helper 구현
 - [x] trainer checkpoint save/load 구현
 - [x] trainer history summary / JSONL logging 구현
+- [x] inference postprocess runtime 구현
+- [x] evaluator predict-batch runtime 구현
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -76,6 +78,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_balanced_sampler.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
@@ -110,5 +113,5 @@
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current trainer runtime includes balanced sampler helper, checkpoint save/load, and history JSONL logging
-- current evaluator skeleton returns batch loss summary and GT count summary only
+- current evaluator runtime returns batch loss summary / GT count summary and supports postprocessed prediction bundles
 - current tiny overfit smoke uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
