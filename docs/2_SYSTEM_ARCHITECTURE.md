@@ -21,6 +21,7 @@ model/
     overlay.py
   loss/
     spec.py
+    runtime.py
 tools/
 test/
 docs/
@@ -73,6 +74,7 @@ AIHUB raw
 - Ultralytics YOLO26 trunk adapter baseline
 - trunk pyramid feature extractor runtime
 - PV26 custom heads skeleton
+- multitask loss runtime
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -80,7 +82,8 @@ AIHUB raw
 
 ## 아직 구현되지 않은 것
 
-- real multitask loss implementation
+- final detector assignment integration
+- lane family Hungarian matching runtime
 - trainer/evaluator
 
 ## 운영 규칙

@@ -23,6 +23,7 @@ model/
     overlay.py
   loss/
     spec.py
+    runtime.py
 tools/
 test/
 docs/
@@ -35,7 +36,7 @@ docs/
 - `model/heads/` holds PV26 custom multitask head modules.
 - `model/trunk/` holds pretrained trunk adapters and partial weight-loading helpers.
 - `model/viz/` holds human QA visualization utilities.
-- `model/loss/` holds training-loss specifications.
+- `model/loss/` holds training-loss specifications and smoke/runtime loss code.
 
 ## Docs
 
@@ -125,9 +126,17 @@ seg_dataset/pv26_bdd100k_standardized/
       index.json
 ```
 
-## Loss Spec
+## Loss
 
 The active sample contract is described in [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](docs/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md). The active loss design is described in [5_TARGETS_AND_LOSS.md](docs/5_TARGETS_AND_LOSS.md) and mirrored as code in [model/loss/spec.py](model/loss/spec.py).
+
+Current smoke/runtime loss lives in [model/loss/runtime.py](model/loss/runtime.py). It supports finite multitask loss computation and backward smoke for:
+
+- `det`
+- `tl_attr`
+- `lane`
+- `stop_line`
+- `crosswalk`
 
 ## YOLO26 Trunk Smoke
 

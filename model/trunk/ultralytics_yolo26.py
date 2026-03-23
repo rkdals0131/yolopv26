@@ -104,6 +104,7 @@ def build_yolo26n_trunk(weights: str = "yolo26n.pt") -> UltralyticsYOLO26TrunkAd
     detect_head_index = len(layers) - 1
     trunk = nn.Sequential(*layers[:detect_head_index])
     detect_head = layers[detect_head_index]
+    trunk.requires_grad_(True)
     feature_source_indices = tuple(int(index) for index in getattr(detect_head, "f", ()))
     return UltralyticsYOLO26TrunkAdapter(
         weights=weights,

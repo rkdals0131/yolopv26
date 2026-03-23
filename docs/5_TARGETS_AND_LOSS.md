@@ -40,6 +40,7 @@
 
 - detector
   - upstream YOLO assignment
+  - current smoke runtime은 final assigner 대신 `prefix positive baseline`을 사용한다.
 - lane family
   - Hungarian matching
 
@@ -121,14 +122,16 @@ L_total = λ_det * L_det
 ## current status
 
 - spec는 [../model/loss/spec.py](../model/loss/spec.py)에 반영돼 있다.
-- 실제 runtime loss 구현은 아직 없다.
+- smoke/runtime loss는 [../model/loss/runtime.py](../model/loss/runtime.py)에 반영돼 있다.
+- current runtime은 finite loss와 backward smoke를 목표로 한다.
+- detector matching은 아직 최종 YOLO assigner가 아니라 smoke용 baseline이다.
 
 ## 구현 우선순위
 
-1. target encoder
-2. masked loss
-3. Hungarian matcher
-4. smoke backward
+1. final detector assignment 통합
+2. Hungarian matcher 통합
+3. trainer loop 연결
+4. tiny overfit
 
 ## raw model output contract
 

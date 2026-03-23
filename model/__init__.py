@@ -5,6 +5,7 @@ from importlib import import_module
 __all__ = [
     "build_loss_spec",
     "render_loss_spec_markdown",
+    "PV26MultiTaskLoss",
     "PV26CanonicalDataset",
     "collate_pv26_samples",
     "encode_pv26_batch",
@@ -22,6 +23,8 @@ def __getattr__(name: str):
         return import_module(".loss.spec", __name__).build_loss_spec
     if name == "render_loss_spec_markdown":
         return import_module(".loss.spec", __name__).render_loss_spec_markdown
+    if name == "PV26MultiTaskLoss":
+        return import_module(".loss", __name__).PV26MultiTaskLoss
     if name in {"PV26CanonicalDataset", "collate_pv26_samples"}:
         module = import_module(".loading", __name__)
         return getattr(module, name)

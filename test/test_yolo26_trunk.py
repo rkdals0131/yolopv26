@@ -50,6 +50,7 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertEqual(adapter.detect_head.__class__.__name__, "_DummyDetect")
         self.assertEqual(adapter.detect_head_index, 2)
         self.assertEqual(adapter.feature_source_indices, ())
+        self.assertTrue(all(parameter.requires_grad for parameter in adapter.trunk.parameters()))
 
     def test_partial_loader_only_applies_matching_shapes(self) -> None:
         from model.trunk.ultralytics_yolo26 import load_matching_state_dict

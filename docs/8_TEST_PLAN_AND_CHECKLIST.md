@@ -56,18 +56,18 @@
 
 ## loss 체크리스트
 
-- [ ] det loss finite
-- [ ] TL attr masked loss finite
-- [ ] lane loss finite
-- [ ] stop-line loss finite
-- [ ] crosswalk loss finite
-- [ ] no-positive batch 안전 처리
+- [x] det loss finite
+- [x] TL attr masked loss finite
+- [x] lane loss finite
+- [x] stop-line loss finite
+- [x] crosswalk loss finite
+- [x] no-positive batch 안전 처리
 
 ## smoke test 체크리스트
 
-- [ ] unit test 통과
+- [x] unit test 통과
 - [x] forward smoke 통과
-- [ ] backward smoke 통과
+- [x] backward smoke 통과
 - [ ] tiny overfit 통과
 - [ ] debug sample 시각화 확인
 
@@ -81,6 +81,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trunk_features.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [ ] loader smoke command
 - [x] model smoke command
