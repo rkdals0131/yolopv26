@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch.nn as nn
@@ -24,6 +24,7 @@ class UltralyticsYOLO26TrunkAdapter:
     trunk: nn.Sequential
     detect_head: nn.Module
     detect_head_index: int
+    feature_source_indices: tuple[int, ...] = field(default_factory=tuple)
 
     def freeze_trunk(self) -> None:
         for parameter in self.trunk.parameters():
@@ -47,6 +48,7 @@ def summarize_trunk_adapter(adapter: UltralyticsYOLO26TrunkAdapter) -> dict[str,
         "raw_layer_count": raw_layer_count,
         "detect_head_index": adapter.detect_head_index,
         "detect_head_class": adapter.detect_head.__class__.__name__,
+        "feature_source_indices": list(adapter.feature_source_indices),
         "trunk_layer_count": len(trunk_layers),
         "trunk_layer_classes": [layer.__class__.__name__ for layer in trunk_layers],
         "trunk_parameter_count": trunk_parameter_count,
@@ -102,6 +104,7 @@ def build_yolo26n_trunk(weights: str = "yolo26n.pt") -> UltralyticsYOLO26TrunkAd
     detect_head_index = len(layers) - 1
     trunk = nn.Sequential(*layers[:detect_head_index])
     detect_head = layers[detect_head_index]
+    feature_source_indices = tuple(int(index) for index in getattr(detect_head, "f", ()))
     return UltralyticsYOLO26TrunkAdapter(
         weights=weights,
         ultralytics_version=ULTRALYTICS_VERSION,
@@ -109,7 +112,30 @@ def build_yolo26n_trunk(weights: str = "yolo26n.pt") -> UltralyticsYOLO26TrunkAd
         trunk=trunk,
         detect_head=detect_head,
         detect_head_index=detect_head_index,
+        feature_source_indices=feature_source_indices,
     )
+
+
+def forward_pyramid_features(adapter: UltralyticsYOLO26TrunkAdapter, image: Any) -> list[Any]:
+    if not adapter.feature_source_indices:
+        raise ValueError("detect head does not expose source feature indices.")
+    layers = list(getattr(adapter.raw_model, "model"))
+    max_index = max(adapter.feature_source_indices)
+    outputs: list[Any] = []
+    current = image
+
+    for layer_index, layer in enumerate(layers[: max_index + 1]):
+        from_index = getattr(layer, "f", -1)
+        if from_index == -1:
+            layer_input = current
+        elif isinstance(from_index, int):
+            layer_input = outputs[from_index]
+        else:
+            layer_input = [current if int(index) == -1 else outputs[int(index)] for index in from_index]
+        current = layer(layer_input)
+        outputs.append(current)
+
+    return [outputs[index] for index in adapter.feature_source_indices]
 
 
 def load_matching_state_dict(target: nn.Module, source_state_dict: dict[str, Any]) -> dict[str, Any]:
@@ -143,6 +169,7 @@ __all__ = [
     "UltralyticsYOLO26TrunkAdapter",
     "build_yolo26n_trunk",
     "ensure_yolo26_support",
+    "forward_pyramid_features",
     "load_matching_state_dict",
     "summarize_trunk_adapter",
 ]

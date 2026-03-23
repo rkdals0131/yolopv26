@@ -10,7 +10,7 @@
 
 - 날짜: `2026-03-24`
 - phase: `phase 5 custom-heads`
-- current focus: `custom heads skeleton 완료, trunk+heads joint smoke 및 loss runtime 진입`
+- current focus: `trunk+heads joint smoke 완료, loss runtime 진입`
 
 ## 완료된 항목
 
@@ -40,6 +40,7 @@
 - [x] Ultralytics YOLO26 trunk adapter baseline 구현
 - [x] official `yolo26n.pt` real-load smoke 확인
 - [x] PV26 custom heads skeleton 구현
+- [x] trunk + custom heads forward smoke 확인
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -49,7 +50,8 @@
 - [ ] trunk + custom heads integration
 - [ ] multitask loss runtime 구현
 - [ ] trainer/evaluator skeleton 구현
-- [ ] trunk + custom heads forward smoke
+- [ ] backward smoke
+- [ ] tiny overfit smoke
 
 ## 최근 검증
 
@@ -60,6 +62,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_trunk_features.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
@@ -82,3 +85,4 @@
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다
 - current smoke env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
 - current custom heads skeleton uses `P3/P4/P5 = 64/128/256 channels` and `Q_det=9975` at `800x608`
+- current trunk feature extractor returns detect-source pyramid directly from Ultralytics graph using indices `[16, 19, 22]`

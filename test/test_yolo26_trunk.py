@@ -49,6 +49,7 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertEqual(len(adapter.trunk), 2)
         self.assertEqual(adapter.detect_head.__class__.__name__, "_DummyDetect")
         self.assertEqual(adapter.detect_head_index, 2)
+        self.assertEqual(adapter.feature_source_indices, ())
 
     def test_partial_loader_only_applies_matching_shapes(self) -> None:
         from model.trunk.ultralytics_yolo26 import load_matching_state_dict
@@ -90,6 +91,7 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertEqual(summary["trunk_layer_count"], 2)
         self.assertEqual(summary["detect_head_class"], "_DummyDetect")
         self.assertEqual(summary["detect_head_index"], 2)
+        self.assertEqual(summary["feature_source_indices"], [])
 
 
 if __name__ == "__main__":

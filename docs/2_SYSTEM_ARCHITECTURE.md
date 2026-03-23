@@ -71,6 +71,7 @@ AIHUB raw
 - shared online letterbox transform runtime
 - target encoder runtime
 - Ultralytics YOLO26 trunk adapter baseline
+- trunk pyramid feature extractor runtime
 - PV26 custom heads skeleton
 - source README generation
 - source inventory / conversion report
