@@ -11,6 +11,8 @@ model/
   loading/
     pv26_loader.py
     transform.py
+  trunk/
+    ultralytics_yolo26.py
   preprocess/
     aihub_common.py
     aihub_standardize.py
@@ -28,6 +30,7 @@ docs/
 - `model/preprocess/` holds source parsing and standardization code.
 - `model/loading/` holds canonical dataset loading and shared online transforms.
 - `model/encoding/` holds fixed-shape target encoding from collated samples.
+- `model/trunk/` holds pretrained trunk adapters and partial weight-loading helpers.
 - `model/viz/` holds human QA visualization utilities.
 - `model/loss/` holds training-loss specifications.
 

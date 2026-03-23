@@ -8,6 +8,8 @@ __all__ = [
     "PV26CanonicalDataset",
     "collate_pv26_samples",
     "encode_pv26_batch",
+    "build_yolo26n_trunk",
+    "load_matching_state_dict",
     "run_standardization",
 ]
 
@@ -24,4 +26,7 @@ def __getattr__(name: str):
         return getattr(module, name)
     if name == "encode_pv26_batch":
         return import_module(".encoding", __name__).encode_pv26_batch
+    if name in {"build_yolo26n_trunk", "load_matching_state_dict"}:
+        module = import_module(".trunk", __name__)
+        return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

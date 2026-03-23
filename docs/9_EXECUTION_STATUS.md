@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-23`
-- phase: `phase 3 target-encoder`
-- current focus: `target encoder 완료, trunk adapter 설계/구현 진입`
+- phase: `phase 4 trunk-adapter`
+- current focus: `version-gated trunk adapter baseline 완료, real yolo26 smoke 가능한 환경 정리`
 
 ## 완료된 항목
 
@@ -37,13 +37,14 @@
 - [x] shared online letterbox transform 구현
 - [x] ragged sample collate 구현
 - [x] target encoder runtime 구현
+- [x] Ultralytics YOLO26 trunk adapter baseline 구현
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] pretrained YOLOv26n trunk adapter 구현
+- [ ] official `yolo26n.pt` real-load smoke on supported ultralytics env
 - [ ] custom heads 구현
 - [ ] multitask loss runtime 구현
 - [ ] trainer/evaluator skeleton 구현
@@ -55,6 +56,7 @@
 - [x] `python3 -m model.preprocess.bdd100k_standardize --workers 8 --max-samples-per-split 2 --debug-vis-count 2`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loader.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
 ## 최근 결정
@@ -73,3 +75,4 @@
 - BDD100K는 `det only` source로 쓰고 `trafficLightColor`는 scene hint로만 보존한다
 - loader collate는 image만 stack하고 ragged target은 list 형태로 유지한다
 - target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
+- trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다

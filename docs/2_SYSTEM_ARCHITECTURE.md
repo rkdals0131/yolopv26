@@ -9,6 +9,8 @@ model/
   loading/
     pv26_loader.py
     transform.py
+  trunk/
+    ultralytics_yolo26.py
   preprocess/
     aihub_common.py
     aihub_standardize.py
@@ -66,6 +68,7 @@ AIHUB raw
 - canonical dataset loader runtime
 - shared online letterbox transform runtime
 - target encoder runtime
+- Ultralytics YOLO26 trunk adapter baseline
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -73,7 +76,6 @@ AIHUB raw
 
 ## 아직 구현되지 않은 것
 
-- YOLOv26n trunk adapter
 - PV26 custom heads
 - real multitask loss implementation
 - trainer/evaluator
