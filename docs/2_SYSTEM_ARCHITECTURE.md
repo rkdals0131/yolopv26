@@ -79,6 +79,7 @@ AIHUB raw
 - trunk pyramid feature extractor runtime
 - PV26 custom heads skeleton
 - multitask loss runtime
+- task-aligned detector assignment runtime
 - trainer skeleton runtime
 - evaluator skeleton runtime
 - source README generation
@@ -88,7 +89,6 @@ AIHUB raw
 
 ## 아직 구현되지 않은 것
 
-- final detector assignment integration
 - lane family Hungarian matching runtime
 - tiny overfit loop
 

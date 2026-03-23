@@ -70,7 +70,7 @@ class PV26Evaluator:
             },
             "counts": _summarize_counts(encoded),
             "prediction_shapes": {
-                name: list(value.shape) for name, value in predictions.items()
+                name: list(value.shape) for name, value in predictions.items() if isinstance(value, torch.Tensor)
             },
         }
 

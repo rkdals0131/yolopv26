@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 8 tiny-overfit`
-- current focus: `tiny overfit smoke 완료, final detector assignment 통합 진입`
+- phase: `phase 9 detector-assignment`
+- current focus: `final detector assignment 통합 완료, lane family Hungarian matching 진입`
 
 ## 완료된 항목
 
@@ -48,13 +48,13 @@
 - [x] evaluator skeleton runtime 구현
 - [x] tiny overfit smoke command 구현
 - [x] tiny overfit loss 감소 확인
+- [x] final detector assignment integration
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] final detector assignment integration
 - [ ] lane family Hungarian matching integration
 - [ ] dataset-balanced sampler / checkpoint / logging 확장
 
@@ -74,6 +74,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
+- [x] detector assignment 통합 후 targeted tests 재통과
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
@@ -97,7 +98,8 @@
 - current smoke env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
 - current custom heads skeleton uses `P3/P4/P5 = 64/128/256 channels` and `Q_det=9975` at `800x608`
 - current trunk feature extractor returns detect-source pyramid directly from Ultralytics graph using indices `[16, 19, 22]`
-- current smoke loss runtime uses a `prefix positive baseline` for detector matching until final YOLO assigner is integrated
+- current detector loss runtime uses task-aligned assignment on real trunk/head outputs
+- current synthetic `q_det != canonical` tests keep a `prefix positive fallback`
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current evaluator skeleton returns batch loss summary and GT count summary only

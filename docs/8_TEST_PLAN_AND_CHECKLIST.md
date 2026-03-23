@@ -62,6 +62,8 @@
 - [x] stop-line loss finite
 - [x] crosswalk loss finite
 - [x] no-positive batch 안전 처리
+- [x] final detector assignment runtime
+- [x] synthetic fallback runtime
 
 ## smoke test 체크리스트
 

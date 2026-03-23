@@ -23,6 +23,8 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(tuple(outputs["lane"].shape), (2, 12, 54))
         self.assertEqual(tuple(outputs["stop_line"].shape), (2, 6, 9))
         self.assertEqual(tuple(outputs["crosswalk"].shape), (2, 4, 17))
+        self.assertEqual(outputs["det_feature_shapes"], [(76, 100), (38, 50), (19, 25)])
+        self.assertEqual(outputs["det_feature_strides"], [8, 16, 32])
 
     def test_heads_expose_feature_contract_metadata(self) -> None:
         from model.heads import PV26Heads

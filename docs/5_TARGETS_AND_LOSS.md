@@ -39,8 +39,9 @@
 ## matching policy
 
 - detector
-  - upstream YOLO assignment
-  - current smoke runtime은 final assigner 대신 `prefix positive baseline`을 사용한다.
+  - task-aligned assigner runtime 통합 완료
+  - real trunk path에서는 feature-shape metadata를 이용해 anchor grid를 만들고 assignment를 계산한다.
+  - synthetic unit smoke는 metadata가 없을 때만 `prefix positive fallback`을 사용한다.
 - lane family
   - Hungarian matching
 
@@ -124,14 +125,15 @@ L_total = λ_det * L_det
 - spec는 [../model/loss/spec.py](../model/loss/spec.py)에 반영돼 있다.
 - smoke/runtime loss는 [../model/loss/runtime.py](../model/loss/runtime.py)에 반영돼 있다.
 - current runtime은 finite loss와 backward smoke를 목표로 한다.
-- detector matching은 아직 최종 YOLO assigner가 아니라 smoke용 baseline이다.
+- detector matching은 task-aligned assigner 기준으로 동작한다.
+- TL attr supervision은 matched detector positive의 GT index를 재사용한다.
 
 ## 구현 우선순위
 
-1. final detector assignment 통합
-2. Hungarian matcher 통합
-3. trainer loop 연결
-4. tiny overfit
+1. Hungarian matcher 통합
+2. trainer loop 확장
+3. checkpoint / sampler / logging 확장
+4. eval metrics 확장
 
 ## raw model output contract
 

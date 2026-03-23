@@ -84,6 +84,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
         losses = criterion(predictions, encoded)
+        self.assertEqual(criterion.last_det_assignment_mode, "prefix_smoke")
 
         self.assertTrue(torch.isfinite(losses["total"]))
         self.assertTrue(torch.isfinite(losses["det"]))
@@ -122,6 +123,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
         losses = criterion(predictions, encoded)
+        self.assertEqual(criterion.last_det_assignment_mode, "prefix_smoke")
 
         self.assertTrue(torch.isfinite(losses["total"]))
         self.assertEqual(float(losses["total"].detach().cpu()), 0.0)
@@ -143,6 +145,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         predictions = heads(features)
         criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
         losses = criterion(predictions, encoded)
+        self.assertEqual(criterion.last_det_assignment_mode, "task_aligned")
 
         self.assertTrue(torch.isfinite(losses["total"]))
         losses["total"].backward()

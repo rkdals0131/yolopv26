@@ -87,6 +87,7 @@ class PV26Heads(nn.Module):
         det_outputs: list[torch.Tensor] = []
         tl_attr_outputs: list[torch.Tensor] = []
         pooled_features: list[torch.Tensor] = []
+        feature_shapes: list[tuple[int, int]] = []
         for feature, channel_count, det_head, tl_attr_head in zip(
             features,
             self.in_channels,
@@ -98,6 +99,7 @@ class PV26Heads(nn.Module):
                     f"Expected feature map with shape [B, {channel_count}, H, W], "
                     f"but received {tuple(feature.shape)}."
                 )
+            feature_shapes.append((int(feature.shape[2]), int(feature.shape[3])))
             det_outputs.append(det_head(feature))
             tl_attr_outputs.append(tl_attr_head(feature))
             pooled_features.append(feature.mean(dim=(2, 3)))
@@ -109,6 +111,8 @@ class PV26Heads(nn.Module):
             "lane": self.lane_head(fused_embedding),
             "stop_line": self.stop_line_head(fused_embedding),
             "crosswalk": self.crosswalk_head(fused_embedding),
+            "det_feature_shapes": feature_shapes,
+            "det_feature_strides": list(self.feature_strides),
         }
 
 
