@@ -5,7 +5,6 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torchvision.ops import batched_nms
 
 from ..loading.transform import (
     clip_box_xyxy,
@@ -34,6 +33,63 @@ class PV26PostprocessConfig:
     stop_line_obj_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
     lane_visibility_threshold: float = 0.50
+
+
+def _nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
+    if boxes.numel() == 0:
+        return torch.empty(0, dtype=torch.long, device=boxes.device)
+    order = scores.argsort(descending=True)
+    keep: list[int] = []
+    while order.numel() > 0:
+        current = int(order[0].item())
+        keep.append(current)
+        if order.numel() == 1:
+            break
+        current_box = boxes[current].unsqueeze(0)
+        other_indices = order[1:]
+        other_boxes = boxes[other_indices]
+        x1 = torch.maximum(current_box[:, 0], other_boxes[:, 0])
+        y1 = torch.maximum(current_box[:, 1], other_boxes[:, 1])
+        x2 = torch.minimum(current_box[:, 2], other_boxes[:, 2])
+        y2 = torch.minimum(current_box[:, 3], other_boxes[:, 3])
+        inter_w = (x2 - x1).clamp(min=0.0)
+        inter_h = (y2 - y1).clamp(min=0.0)
+        inter = inter_w * inter_h
+        area_current = (current_box[:, 2] - current_box[:, 0]).clamp(min=0.0) * (
+            current_box[:, 3] - current_box[:, 1]
+        ).clamp(min=0.0)
+        area_other = (other_boxes[:, 2] - other_boxes[:, 0]).clamp(min=0.0) * (
+            other_boxes[:, 3] - other_boxes[:, 1]
+        ).clamp(min=0.0)
+        union = area_current + area_other - inter
+        iou = inter / union.clamp(min=1e-6)
+        order = other_indices[iou <= float(iou_threshold)]
+    return torch.tensor(keep, dtype=torch.long, device=boxes.device)
+
+
+def _run_batched_nms(
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
+    class_ids: torch.Tensor,
+    iou_threshold: float,
+) -> torch.Tensor:
+    try:
+        from torchvision.ops import batched_nms as torchvision_batched_nms
+
+        return torchvision_batched_nms(boxes, scores, class_ids, float(iou_threshold))
+    except Exception:
+        kept_indices: list[torch.Tensor] = []
+        for class_id in class_ids.unique(sorted=True):
+            class_mask = class_ids == class_id
+            class_indices = torch.nonzero(class_mask, as_tuple=False).flatten()
+            class_keep = _nms(boxes[class_mask], scores[class_mask], iou_threshold)
+            if class_keep.numel() > 0:
+                kept_indices.append(class_indices[class_keep])
+        if not kept_indices:
+            return torch.empty(0, dtype=torch.long, device=boxes.device)
+        keep = torch.cat(kept_indices, dim=0)
+        keep_scores = scores[keep]
+        return keep[keep_scores.argsort(descending=True)]
 
 
 def _make_anchor_grid(
@@ -107,7 +163,7 @@ def _decode_detection_rows(
     class_ids = class_ids[valid]
     tl_scores = tl_rows.sigmoid()[valid]
 
-    keep = batched_nms(boxes, scores, class_ids, float(config.det_iou_threshold))
+    keep = _run_batched_nms(boxes, scores, class_ids, float(config.det_iou_threshold))
     keep = keep[: int(config.max_detections)]
 
     detections: list[dict[str, Any]] = []

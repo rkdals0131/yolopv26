@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections import Counter, defaultdict
@@ -8,6 +9,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - depends on external environment.
+    Image = None
 
 LANE_DATASET_KEY = "aihub_lane_source"
 TRAFFIC_DATASET_KEY = "aihub_traffic_source"
@@ -53,7 +59,34 @@ def _normalize_text(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_").replace(" ", "_")
 
 
+def _repo_root() -> Path:
+    env_value = os.environ.get("PV26_REPO_ROOT")
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+    return Path(__file__).resolve().parents[2]
+
+
+def _seg_dataset_root(repo_root: Path | None = None) -> Path:
+    env_value = os.environ.get("PV26_SEG_DATASET_ROOT")
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+    return (repo_root or _repo_root()) / "seg_dataset"
+
+
+def _env_path(name: str, default: Path) -> Path:
+    env_value = os.environ.get(name)
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+    return default.resolve()
+
+
 def _probe_image_size(path: Path) -> tuple[int, int]:
+    if Image is not None:
+        try:
+            with Image.open(path) as image:
+                return int(image.width), int(image.height)
+        except Exception:
+            pass
     result = subprocess.run(
         ["identify", "-format", "%w %h", str(path)],
         check=True,
@@ -421,6 +454,7 @@ __all__ = [
     "LANE_DATASET_KEY",
     "PairRecord",
     "TRAFFIC_DATASET_KEY",
+    "_env_path",
     "_discover_pairs",
     "_extract_annotations",
     "_extract_attribute_map",
@@ -432,5 +466,7 @@ __all__ = [
     "_load_json",
     "_normalize_text",
     "_now_iso",
+    "_repo_root",
     "_safe_slug",
+    "_seg_dataset_root",
 ]

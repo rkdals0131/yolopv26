@@ -136,6 +136,37 @@ class PV26BalancedBatchSampler(BatchSampler):
             yield batch
 
 
+class PV26SequentialBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        dataset: PV26CanonicalDataset,
+        *,
+        batch_size: int,
+        num_batches: int | None = None,
+        split: str | None = "val",
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        self.batch_size = batch_size
+        self.indices = [
+            index
+            for index, record in enumerate(dataset.records)
+            if split is None or record.split == split
+        ]
+        if not self.indices:
+            raise ValueError("eval sampler found no eligible samples")
+        self.num_batches = num_batches or math.ceil(len(self.indices) / batch_size)
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    def __iter__(self):
+        max_items = min(len(self.indices), self.num_batches * self.batch_size)
+        selected = self.indices[:max_items]
+        for start in range(0, len(selected), self.batch_size):
+            yield selected[start : start + self.batch_size]
+
+
 def build_pv26_train_dataloader(
     dataset: PV26CanonicalDataset,
     *,
@@ -164,10 +195,36 @@ def build_pv26_train_dataloader(
     )
 
 
+def build_pv26_eval_dataloader(
+    dataset: PV26CanonicalDataset,
+    *,
+    batch_size: int,
+    num_batches: int | None = None,
+    split: str | None = "val",
+    num_workers: int = 0,
+    pin_memory: bool = False,
+) -> DataLoader:
+    sampler = PV26SequentialBatchSampler(
+        dataset,
+        batch_size=batch_size,
+        num_batches=num_batches,
+        split=split,
+    )
+    return DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=collate_pv26_samples,
+    )
+
+
 __all__ = [
     "DATASET_GROUP_BY_KEY",
     "DEFAULT_SAMPLER_RATIOS",
     "PV26BalancedBatchSampler",
+    "PV26SequentialBatchSampler",
+    "build_pv26_eval_dataloader",
     "build_pv26_train_dataloader",
     "dataset_group_for_key",
 ]

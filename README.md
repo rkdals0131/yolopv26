@@ -58,6 +58,7 @@ The current AIHUB preprocessing deliverable is a hardcoded standardization pipel
 - emits real-time stage logs, progress, throughput, and ETA
 - supports resume scan on existing standardized outputs and `--force-reprocess` when a clean rebuild is needed
 - writes failure manifest and QA summary artifacts for long-running full-dataset conversion
+- resolves dataset roots from repo-relative defaults or `PV26_*` environment overrides instead of host-only absolute paths
 - normalizes traffic scenes into `7-class OD + traffic_light 4-bit attributes`
 - preserves AIHUB lane, stop-line, and crosswalk geometry in scene JSON for later target encoding
 
@@ -106,6 +107,7 @@ The current BDD100K preprocessing deliverable is a hardcoded detection-only stan
 - emits real-time stage logs, progress, throughput, and ETA
 - supports resume scan on existing standardized outputs and `--force-reprocess` when a clean rebuild is needed
 - writes failure manifest and QA summary artifacts for long-running full-dataset conversion
+- resolves dataset roots from repo-relative defaults or `PV26_*` environment overrides instead of host-only absolute paths
 - collapses BDD categories into the PV26 7-class OD taxonomy
 - preserves BDD weather/scene/timeofday metadata and traffic-light color hints in scene JSON while keeping TL supervision disabled for this source
 
@@ -166,6 +168,15 @@ python3 tools/run_yolo26_trunk_smoke.py
 
 This command performs a real `YOLO("yolo26n.pt")` load and prints trunk/detect-head split metadata as JSON.
 
+## Preflight
+
+```bash
+python3 tools/check_env.py
+python3 tools/check_env.py --check-yolo-runtime --strict
+```
+
+This command reports the current runtime stack, checks YOLO26 support, and verifies whether `torchvision.ops.nms` is callable. PV26 postprocess now has a pure PyTorch NMS fallback, so missing torchvision NMS is no longer an import-time blocker.
+
 ## Tiny Overfit Smoke
 
 ```bash
@@ -182,3 +193,5 @@ python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches
 ```
 
 These commands exercise the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, and runtime hardening paths.
+
+Validation loaders in these commands are sequential eval loaders, not balanced train samplers.

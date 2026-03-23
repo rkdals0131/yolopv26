@@ -4,6 +4,8 @@ import unittest
 
 import torch
 
+from runtime_support import has_yolo26_runtime
+
 
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     det_boxes = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
@@ -136,6 +138,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["det"].grad)
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_real_trunk_heads_and_loss_support_backward_smoke(self) -> None:
         from model.heads import PV26Heads
         from model.loss import PV26MultiTaskLoss

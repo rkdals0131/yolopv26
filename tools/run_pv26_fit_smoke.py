@@ -10,7 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from model.heads import PV26Heads
-from model.loading import PV26CanonicalDataset, build_pv26_train_dataloader
+from model.loading import PV26CanonicalDataset, build_pv26_eval_dataloader, build_pv26_train_dataloader
 from model.training import PV26Trainer, build_pv26_optimizer, build_pv26_scheduler, configure_pv26_train_stage
 from model.trunk import build_yolo26n_trunk
 
@@ -61,12 +61,11 @@ def main() -> None:
     val_loader = None
     if args.val_batches > 0:
         try:
-            val_loader = build_pv26_train_dataloader(
+            val_loader = build_pv26_eval_dataloader(
                 dataset,
                 batch_size=args.batch_size,
                 num_batches=args.val_batches,
                 split="val",
-                seed=52,
             )
         except ValueError:
             val_loader = None

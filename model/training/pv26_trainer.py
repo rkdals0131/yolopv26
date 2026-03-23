@@ -570,10 +570,12 @@ class PV26Trainer:
         for batch_index, batch in enumerate(loader, start=1):
             if max_batches is not None and batch_index > max_batches:
                 break
-            batch_summaries.append(evaluator.evaluate_batch(batch))
-            if "det_targets" in batch:
+            needs_predictions = "det_targets" in batch
+            batch_summary = evaluator.evaluate_batch(batch, include_predictions=needs_predictions)
+            batch_summaries.append(batch_summary)
+            if needs_predictions:
                 raw_batches.append(batch)
-                epoch_predictions.extend(evaluator.predict_batch(batch))
+                epoch_predictions.extend(batch_summary.get("predictions", []))
         if not batch_summaries:
             raise ValueError("validate_epoch received zero batches")
         ended_at = time.perf_counter()
@@ -617,7 +619,6 @@ class PV26Trainer:
         history_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        evaluator = self.build_evaluator() if val_loader is not None else None
         best_metric_path = best_metric or (
             "val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"
         )
@@ -649,6 +650,7 @@ class PV26Trainer:
                     best_epoch = int(self.epoch_history[-1]["epoch"])
                 if (checkpoint_dir / "best.pt").is_file():
                     best_checkpoint_path = checkpoint_dir / "best.pt"
+        evaluator = self.build_evaluator() if val_loader is not None else None
         if start_epoch > epochs:
             return {
                 "stage": self.stage,

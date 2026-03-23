@@ -8,6 +8,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from runtime_support import has_yolo26_runtime
+
 
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     det_boxes = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
@@ -134,6 +136,7 @@ class PV26TrainerTests(unittest.TestCase):
             sum(parameter.numel() for parameter in adapter.trunk.parameters()),
         )
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_with_real_runtime_returns_finite_losses(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer
@@ -154,6 +157,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("assignment", summary)
         self.assertIn("det", summary["assignment"])
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_trainer_checkpoint_and_history_roundtrip(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer
@@ -198,6 +202,7 @@ class PV26TrainerTests(unittest.TestCase):
                 trainer.stage_summary["trainable_head_params"],
             )
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer
@@ -233,6 +238,7 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(summary_payload["last_epoch"]["train"]["batches"], 2)
             self.assertEqual(summary_payload["last_epoch"]["val"]["batches"], 1)
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_supports_grad_accumulation(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer
@@ -257,6 +263,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(second["global_step"], 1)
         self.assertEqual(second["micro_step"], 0)
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer
@@ -275,6 +282,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["global_step"], 0)
         self.assertEqual(trainer.skipped_steps, 1)
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_recovers_from_oom_guard(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer
@@ -293,6 +301,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["global_step"], 0)
         self.assertEqual(trainer.skipped_steps, 1)
 
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:
         from model.heads import PV26Heads
         from model.training import PV26Trainer

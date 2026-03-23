@@ -95,11 +95,15 @@
 - [x] grad clip
 - [x] auto resume
 - [x] non-finite / OOM guard
+- [x] validation sequential eval loader
 - [x] batch loss summary evaluator
 - [x] GT count summary evaluator
 - [x] inference postprocess decode
 - [x] evaluator predict-batch runtime
 - [x] detector/TL/lane family metric runtime
+- [x] evaluator single-forward validation path
+- [x] torchvision NMS fallback
+- [x] env preflight command
 
 ## 명령 체크리스트
 
@@ -118,7 +122,9 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_eval_metrics.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
+- [x] `python3 tools/check_env.py`
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [ ] loader smoke command

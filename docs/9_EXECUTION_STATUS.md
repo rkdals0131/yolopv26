@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-03-24`
-- phase: `phase 15 full-run-hardening`
-- current focus: `preprocess/trainer hardening 완료, full-dataset 본학습 진입 전 마지막 운영 판단 단계`
+- phase: `phase 16 portability-and-validation-hardening`
+- current focus: `portability/import boundary/validation runtime hardening 완료, full-dataset 본학습 전 pilot 실행 판단 단계`
 
 ## 완료된 항목
 
@@ -67,6 +67,14 @@
 - [x] trainer auto resume 구현
 - [x] trainer non-finite / OOM guard 구현
 - [x] pilot training command 구현
+- [x] repo-relative + env override dataset root 정리
+- [x] preprocess image-size probing에 PIL 우선 fallback 추가
+- [x] eval / training / trunk lazy import 정리
+- [x] torchvision NMS pure PyTorch fallback 구현
+- [x] validation sequential eval loader 구현
+- [x] evaluator single-forward validation path 구현
+- [x] env preflight command 구현
+- [x] ultralytics-missing 환경용 runtime skip test 정리
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -75,6 +83,7 @@
 
 - [ ] full-dataset 전처리 실제 실행 계획 확정
 - [ ] pilot subset 본학습과 metric 해석
+- [ ] preflight 결과를 기준으로 full-train 환경 lock 파일 정리
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -96,7 +105,9 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
 - [x] `python3 tools/run_yolo26_trunk_smoke.py`
+- [x] `python3 tools/check_env.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
 - [x] `python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1`
 - [x] `python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke`
@@ -140,3 +151,6 @@
 - current tiny overfit smoke uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
 - current loop is closed end-to-end from offline standardization through loader / train / loss / inference / evaluation
 - current standardization runtime writes `failure_manifest` and `qa_summary`, and reuses existing outputs through resume scan
+- current defaults no longer depend on host-specific absolute repo paths
+- current validation path uses sequential eval loader and avoids double-forward in epoch validation
+- current postprocess tolerates missing `torchvision.ops.nms` through pure PyTorch fallback

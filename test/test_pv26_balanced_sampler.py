@@ -5,7 +5,12 @@ from pathlib import Path
 
 import torch
 
-from model.loading import PV26BalancedBatchSampler, build_pv26_train_dataloader, dataset_group_for_key
+from model.loading import (
+    PV26BalancedBatchSampler,
+    build_pv26_eval_dataloader,
+    build_pv26_train_dataloader,
+    dataset_group_for_key,
+)
 from model.loading.pv26_loader import SampleRecord
 
 
@@ -117,6 +122,21 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         self.assertTrue(all(item["split"] == "val" for item in batch["meta"]))
         groups = {dataset_group_for_key(item["dataset_key"]) for item in batch["meta"]}
         self.assertEqual(groups, {"bdd100k", "aihub_traffic", "aihub_lane"})
+
+    def test_eval_dataloader_is_sequential_and_unbalanced(self) -> None:
+        dataset = _ToyCanonicalDataset()
+        loader = build_pv26_eval_dataloader(dataset, batch_size=5, num_batches=2, split="val")
+
+        batches = list(loader)
+
+        self.assertEqual(len(batches), 2)
+        flat_sample_ids = [item["sample_id"] for batch in batches for item in batch["meta"]]
+        expected = [
+            record.sample_id
+            for record in dataset.records
+            if record.split == "val"
+        ][:10]
+        self.assertEqual(flat_sample_ids, expected)
 
 
 if __name__ == "__main__":

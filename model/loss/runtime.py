@@ -6,8 +6,13 @@ from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ultralytics.utils.metrics import bbox_iou
-from ultralytics.utils.tal import TaskAlignedAssigner
+
+try:
+    from ultralytics.utils.metrics import bbox_iou as ultralytics_bbox_iou
+    from ultralytics.utils.tal import TaskAlignedAssigner
+except ImportError:  # pragma: no cover - depends on external environment.
+    ultralytics_bbox_iou = None
+    TaskAlignedAssigner = None
 
 from .spec import build_loss_spec
 
@@ -57,6 +62,43 @@ def _polygon_shape_regularizer(points: torch.Tensor) -> torch.Tensor:
     rolled = torch.roll(points, shifts=-1, dims=1)
     edge_lengths = torch.linalg.norm(rolled - points, dim=-1)
     return (edge_lengths - edge_lengths.mean(dim=1, keepdim=True)).abs().mean()
+
+
+def _bbox_iou(pred_boxes: torch.Tensor, target_boxes: torch.Tensor, *, ciou: bool = False) -> torch.Tensor:
+    if ultralytics_bbox_iou is not None:
+        return ultralytics_bbox_iou(pred_boxes, target_boxes, xywh=False, CIoU=ciou)
+
+    top_left = torch.maximum(pred_boxes[..., :2], target_boxes[..., :2])
+    bottom_right = torch.minimum(pred_boxes[..., 2:], target_boxes[..., 2:])
+    wh = (bottom_right - top_left).clamp(min=0.0)
+    inter = wh[..., 0] * wh[..., 1]
+
+    pred_wh = (pred_boxes[..., 2:] - pred_boxes[..., :2]).clamp(min=0.0)
+    target_wh = (target_boxes[..., 2:] - target_boxes[..., :2]).clamp(min=0.0)
+    pred_area = pred_wh[..., 0] * pred_wh[..., 1]
+    target_area = target_wh[..., 0] * target_wh[..., 1]
+    union = pred_area + target_area - inter
+    iou = inter / union.clamp(min=1e-6)
+    if not ciou:
+        return iou.unsqueeze(-1)
+
+    pred_center = (pred_boxes[..., :2] + pred_boxes[..., 2:]) / 2.0
+    target_center = (target_boxes[..., :2] + target_boxes[..., 2:]) / 2.0
+    center_dist = ((pred_center - target_center) ** 2).sum(dim=-1)
+
+    enclosure_top_left = torch.minimum(pred_boxes[..., :2], target_boxes[..., :2])
+    enclosure_bottom_right = torch.maximum(pred_boxes[..., 2:], target_boxes[..., 2:])
+    enclosure_wh = (enclosure_bottom_right - enclosure_top_left).clamp(min=0.0)
+    enclosure_diag = (enclosure_wh[..., 0] ** 2 + enclosure_wh[..., 1] ** 2).clamp(min=1e-6)
+
+    pred_w = pred_wh[..., 0].clamp(min=1e-6)
+    pred_h = pred_wh[..., 1].clamp(min=1e-6)
+    target_w = target_wh[..., 0].clamp(min=1e-6)
+    target_h = target_wh[..., 1].clamp(min=1e-6)
+    v = (4.0 / torch.pi**2) * (torch.atan(target_w / target_h) - torch.atan(pred_w / pred_h)) ** 2
+    alpha = v / (1.0 - iou + v).clamp(min=1e-6)
+    ciou_value = iou - (center_dist / enclosure_diag) - alpha * v
+    return ciou_value.unsqueeze(-1)
 
 
 def _make_anchor_grid(
@@ -149,7 +191,7 @@ def _crosswalk_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> to
     points_cost = (pred_points[:, None] - gt_points[None]).abs().mean(dim=(2, 3))
     pred_boxes = _batched_box_from_points(pred_points)
     gt_boxes = _batched_box_from_points(gt_points)
-    overlap = bbox_iou(pred_boxes[:, None, :], gt_boxes[None, :, :], xywh=False).squeeze(-1)
+    overlap = _bbox_iou(pred_boxes[:, None, :], gt_boxes[None, :, :]).squeeze(-1)
     return 3.0 * points_cost + (1.0 - overlap)
 
 
@@ -170,13 +212,15 @@ class PV26MultiTaskLoss(nn.Module):
             ),
             persistent=False,
         )
-        self.assigner = TaskAlignedAssigner(
-            topk=10,
-            num_classes=len(OD_CLASSES),
-            alpha=0.5,
-            beta=6.0,
-            stride=list(DEFAULT_DET_FEATURE_STRIDES),
-        )
+        self.assigner = None
+        if TaskAlignedAssigner is not None:
+            self.assigner = TaskAlignedAssigner(
+                topk=10,
+                num_classes=len(OD_CLASSES),
+                alpha=0.5,
+                beta=6.0,
+                stride=list(DEFAULT_DET_FEATURE_STRIDES),
+            )
         self.last_det_assignment_mode = "uninitialized"
         self.last_det_positive_count = 0
         self.last_lane_assignment_modes = {
@@ -234,10 +278,13 @@ class PV26MultiTaskLoss(nn.Module):
         feature_shapes = predictions.get("det_feature_shapes")
         feature_strides = predictions.get("det_feature_strides")
         if (
+            self.assigner is not None
+            and (
             isinstance(feature_shapes, list)
             and isinstance(feature_strides, list)
             and len(feature_shapes) == len(feature_strides)
             and sum(int(height) * int(width) for height, width in feature_shapes) == query_count
+            )
         ):
             anchor_points, stride_tensor = _make_anchor_grid(
                 [(int(height), int(width)) for height, width in feature_shapes],
@@ -342,7 +389,7 @@ class PV26MultiTaskLoss(nn.Module):
             return obj_loss + cls_loss
 
         weights = target_scores.sum(dim=-1)[fg_mask]
-        iou = bbox_iou(pred_boxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True).squeeze(-1)
+        iou = _bbox_iou(pred_boxes[fg_mask], target_bboxes[fg_mask], ciou=True).squeeze(-1)
         iou_loss = ((1.0 - iou) * weights).sum() / target_score_sum
         l1_loss = (
             F.l1_loss(pred_boxes[fg_mask], target_bboxes[fg_mask], reduction="none").mean(dim=-1) * weights

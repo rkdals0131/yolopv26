@@ -4,8 +4,11 @@ import unittest
 
 import torch
 
+from runtime_support import has_yolo26_runtime
+
 
 class PV26TrunkFeatureTests(unittest.TestCase):
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_real_trunk_feature_extractor_returns_p3_p4_p5(self) -> None:
         from model.heads import PV26Heads
         from model.trunk import build_yolo26n_trunk

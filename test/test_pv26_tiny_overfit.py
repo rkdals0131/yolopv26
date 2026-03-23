@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 
 from model.preprocess.aihub_standardize import run_standardization as run_aihub_standardization
+from runtime_support import has_yolo26_runtime
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
@@ -32,6 +33,7 @@ def _write_dummy_pdf(path: Path) -> None:
 
 
 class PV26TinyOverfitTests(unittest.TestCase):
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_tiny_overfit_smoke_reduces_best_loss_on_real_loader_batch(self) -> None:
         from model.heads import PV26Heads
         from model.loading import PV26CanonicalDataset, collate_pv26_samples

@@ -5,6 +5,7 @@ import unittest
 import torch.nn as nn
 import torch
 from test_pv26_eval_metrics import make_raw_sample_batch
+from runtime_support import has_yolo26_runtime
 
 
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
@@ -139,6 +140,7 @@ class _StaticHeads(nn.Module):
 
 
 class PV26EvaluatorTests(unittest.TestCase):
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_evaluator_returns_loss_and_count_summary(self) -> None:
         from model.eval import PV26Evaluator
         from model.heads import PV26Heads

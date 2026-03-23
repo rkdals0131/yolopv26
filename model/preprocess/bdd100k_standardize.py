@@ -5,10 +5,11 @@ import json
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from .aihub_common import IMAGE_EXTENSIONS, PairRecord, _now_iso, _safe_slug
+from .aihub_common import IMAGE_EXTENSIONS, PairRecord, _env_path, _now_iso, _repo_root, _safe_slug, _seg_dataset_root
 from .aihub_standardize import (
     LiveLogger,
     TL_BITS,
@@ -24,11 +25,12 @@ from .aihub_standardize import (
 
 PIPELINE_VERSION = "pv26-bdd100k-standardize-v1"
 SCENE_VERSION = "pv26-scene-bdd100k-v1"
-DEFAULT_REPO_ROOT = Path("/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26")
-DEFAULT_BDD_ROOT = DEFAULT_REPO_ROOT / "seg_dataset" / "BDD100K"
+DEFAULT_REPO_ROOT = _repo_root()
+DEFAULT_SEG_DATASET_ROOT = _seg_dataset_root(DEFAULT_REPO_ROOT)
+DEFAULT_BDD_ROOT = _env_path("PV26_BDD_ROOT", DEFAULT_SEG_DATASET_ROOT / "BDD100K")
 DEFAULT_IMAGES_ROOT = DEFAULT_BDD_ROOT / "bdd100k_images_100k" / "100k"
 DEFAULT_LABELS_ROOT = DEFAULT_BDD_ROOT / "bdd100k_labels" / "100k"
-DEFAULT_OUTPUT_ROOT = DEFAULT_BDD_ROOT.parent / "pv26_bdd100k_standardized"
+DEFAULT_OUTPUT_ROOT = _env_path("PV26_BDD_OUTPUT_ROOT", DEFAULT_BDD_ROOT.parent / "pv26_bdd100k_standardized")
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
 OUTPUT_DATASET_KEY = "bdd100k_det_100k"
@@ -972,7 +974,7 @@ def run_standardization(
     progress = Counter()
     completed = 0
     if pending_tasks:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
             future_map = {executor.submit(_worker_entry, task): task for task in pending_tasks}
             for future in as_completed(future_map):
                 task = future_map[future]

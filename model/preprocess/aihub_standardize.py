@@ -12,6 +12,7 @@ import zipfile
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -29,19 +30,23 @@ from .aihub_common import (
     _extract_tl_state,
     _extract_filename,
     _load_json,
+    _env_path,
     _normalize_text,
     _now_iso,
+    _repo_root,
     _safe_slug,
+    _seg_dataset_root,
 )
 
 PIPELINE_VERSION = "pv26-aihub-standardize-v1"
 SCENE_VERSION = "pv26-scene-aihub-v1"
-DEFAULT_REPO_ROOT = Path("/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26")
-DEFAULT_AIHUB_ROOT = DEFAULT_REPO_ROOT / "seg_dataset" / "AIHUB"
+DEFAULT_REPO_ROOT = _repo_root()
+DEFAULT_SEG_DATASET_ROOT = _seg_dataset_root(DEFAULT_REPO_ROOT)
+DEFAULT_AIHUB_ROOT = _env_path("PV26_AIHUB_ROOT", DEFAULT_SEG_DATASET_ROOT / "AIHUB")
 DEFAULT_DOCS_ROOT = DEFAULT_AIHUB_ROOT / "docs"
 DEFAULT_LANE_ROOT = DEFAULT_AIHUB_ROOT / "차선-횡단보도 인지 영상(수도권)"
 DEFAULT_TRAFFIC_ROOT = DEFAULT_AIHUB_ROOT / "신호등-도로표지판 인지 영상(수도권)"
-DEFAULT_OUTPUT_ROOT = DEFAULT_AIHUB_ROOT.parent / "pv26_aihub_standardized"
+DEFAULT_OUTPUT_ROOT = _env_path("PV26_AIHUB_OUTPUT_ROOT", DEFAULT_AIHUB_ROOT.parent / "pv26_aihub_standardized")
 CACHE_DIR_NAME = "_cache"
 DEBUG_VIS_DIRNAME = "debug_vis"
 DEFAULT_DEBUG_VIS_COUNT = 20
@@ -1612,7 +1617,7 @@ def run_standardization(
     completed = 0
     progress_counters = Counter()
     if pending_tasks:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
             future_map = {executor.submit(_worker_entry, task): task for task in pending_tasks}
             for future in as_completed(future_map):
                 task = future_map[future]

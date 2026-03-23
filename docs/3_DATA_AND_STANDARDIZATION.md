@@ -20,6 +20,8 @@
 - meta 리포트를 함께 저장
 - 기존 output이 있으면 resume scan으로 재사용하고, 필요 시 `force_reprocess`로 전체 재생성한다
 - partial failure는 즉시 중단 대신 failure manifest와 QA summary로 남긴다
+- 기본 경로는 repo-relative로 계산하고 `PV26_REPO_ROOT`, `PV26_SEG_DATASET_ROOT`, `PV26_AIHUB_ROOT`, `PV26_AIHUB_OUTPUT_ROOT` env override를 허용한다
+- image size probing은 PIL 우선, 실패 시 `identify` fallback을 사용한다
 
 ## BDD100K standardization 원칙
 
@@ -31,6 +33,8 @@
 - BDD context metadata와 traffic light color hint는 scene JSON에 보존하되 TL supervision은 끈다
 - 기존 output이 있으면 resume scan으로 재사용하고, 필요 시 `force_reprocess`로 전체 재생성한다
 - partial failure는 failure manifest와 QA summary로 남긴다
+- 기본 경로는 repo-relative로 계산하고 `PV26_REPO_ROOT`, `PV26_SEG_DATASET_ROOT`, `PV26_BDD_ROOT`, `PV26_BDD_OUTPUT_ROOT` env override를 허용한다
+- image size probing은 host tool 의존도를 줄이기 위해 PIL 우선 probing을 사용한다
 
 ## 현재 canonical output
 
