@@ -36,7 +36,8 @@ from .aihub_common import (
 
 PIPELINE_VERSION = "pv26-aihub-standardize-v1"
 SCENE_VERSION = "pv26-scene-aihub-v1"
-DEFAULT_AIHUB_ROOT = Path("/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/seg_dataset/AIHUB")
+DEFAULT_REPO_ROOT = Path("/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26")
+DEFAULT_AIHUB_ROOT = DEFAULT_REPO_ROOT / "seg_dataset" / "AIHUB"
 DEFAULT_DOCS_ROOT = DEFAULT_AIHUB_ROOT / "docs"
 DEFAULT_LANE_ROOT = DEFAULT_AIHUB_ROOT / "차선-횡단보도 인지 영상(수도권)"
 DEFAULT_TRAFFIC_ROOT = DEFAULT_AIHUB_ROOT / "신호등-도로표지판 인지 영상(수도권)"

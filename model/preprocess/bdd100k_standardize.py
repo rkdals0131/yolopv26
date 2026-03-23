@@ -24,7 +24,8 @@ from .aihub_standardize import (
 
 PIPELINE_VERSION = "pv26-bdd100k-standardize-v1"
 SCENE_VERSION = "pv26-scene-bdd100k-v1"
-DEFAULT_BDD_ROOT = Path("/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/seg_dataset/BDD100K")
+DEFAULT_REPO_ROOT = Path("/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26")
+DEFAULT_BDD_ROOT = DEFAULT_REPO_ROOT / "seg_dataset" / "BDD100K"
 DEFAULT_IMAGES_ROOT = DEFAULT_BDD_ROOT / "bdd100k_images_100k" / "100k"
 DEFAULT_LABELS_ROOT = DEFAULT_BDD_ROOT / "bdd100k_labels" / "100k"
 DEFAULT_OUTPUT_ROOT = DEFAULT_BDD_ROOT.parent / "pv26_bdd100k_standardized"
