@@ -22,6 +22,7 @@
 ## internal target encoding
 
 - encoded batch는 transformed network pixel space를 입력으로 받는다.
+- detector prediction slot 수는 `Q_det`, GT detection row 수는 `N_gt_det`로 분리한다.
 - lane
   - objectness
   - color logits 3
@@ -72,6 +73,7 @@ L_total = λ_det * L_det
   - detector positive가 가리키는 GT index에서 TL bits를 읽는다.
   - GT class가 `traffic_light`가 아니면 TL attr loss는 없다.
   - GT class가 `traffic_light`여도 `valid_mask["tl_attr"] = False`면 loss는 없다.
+  - `tl_attr_gt_bits`는 GT-aligned tensor고, prediction-aligned target은 assignment 이후 loss 내부에서 만들어진다.
 - bit weights
   - red `1.0`
   - yellow `2.5`
@@ -128,8 +130,14 @@ L_total = λ_det * L_det
 3. Hungarian matcher
 4. smoke backward
 
-## inference output contract
+## raw model output contract
 
-- detector output의 기본 묶음은 `bbox + det score + class logits`다.
-- `traffic_light` prediction에는 여기에 `red/yellow/green/arrow` score가 추가로 붙는다.
-- export와 ROS message는 이 묶음을 기준으로 설계한다.
+- detector raw output은 `B x Q_det x (4 bbox + 1 obj + 7 cls)`다.
+- TL attr raw output은 `B x Q_det x 4`다.
+- 두 raw output은 같은 detector slot index를 공유한다.
+
+## export / ROS prediction bundle
+
+- postprocess 이후 prediction bundle은 `box_xyxy + score + class_id + class_name + tl_attr_scores`다.
+- `traffic_light` prediction만 `tl_attr_scores`를 의미 있게 사용한다.
+- export와 ROS message는 이 bundle을 기준으로 설계한다.

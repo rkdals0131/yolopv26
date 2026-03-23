@@ -12,7 +12,7 @@ DOCS_ROOT = REPO_ROOT / "docs"
 
 class DocsSyncTests(unittest.TestCase):
     def test_no_absolute_repo_links_remain_in_active_docs(self) -> None:
-        targets = [REPO_ROOT / "README.md", DOCS_ROOT / "0_PRD.md", DOCS_ROOT / "5_TARGETS_AND_LOSS.md"]
+        targets = [REPO_ROOT / "README.md", *sorted(DOCS_ROOT.glob("*.md"))]
         for path in targets:
             content = path.read_text(encoding="utf-8")
             self.assertNotIn("/home/user1", content, msg=str(path))
@@ -33,6 +33,18 @@ class DocsSyncTests(unittest.TestCase):
         prd = (DOCS_ROOT / "0_PRD.md").read_text(encoding="utf-8")
         self.assertIn("[4A_SAMPLE_AND_TRANSFORM_CONTRACT.md]", prd)
 
+    def test_contract_terminology_is_locked(self) -> None:
+        sample_doc = (DOCS_ROOT / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md").read_text(encoding="utf-8")
+        self.assertIn("`N_gt_det`", sample_doc)
+        self.assertIn("`Q_det`", sample_doc)
+        self.assertIn("non_car_traffic_light", sample_doc)
+        self.assertIn("bilinear", sample_doc)
+        self.assertIn("114", sample_doc)
+
+        loss_doc = (DOCS_ROOT / "5_TARGETS_AND_LOSS.md").read_text(encoding="utf-8")
+        self.assertIn("## raw model output contract", loss_doc)
+        self.assertIn("## export / ROS prediction bundle", loss_doc)
+
     def test_query_counts_are_synced_between_docs_and_spec(self) -> None:
         spec = build_loss_spec()
         architecture_doc = (DOCS_ROOT / "4_MODEL_ARCHITECTURE.md").read_text(encoding="utf-8")
@@ -40,6 +52,11 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn(f"fixed query count `{spec['heads']['stop_line']['query_count']}`", architecture_doc)
         self.assertIn(f"fixed query count `{spec['heads']['crosswalk']['query_count']}`", architecture_doc)
         self.assertNotIn("query count 최종값", architecture_doc)
+
+    def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
+        architecture_doc = (DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md").read_text(encoding="utf-8")
+        self.assertIn("training sample runtime", architecture_doc)
+        self.assertNotIn("training sample contract", architecture_doc)
 
 
 if __name__ == "__main__":

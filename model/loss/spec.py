@@ -5,7 +5,7 @@ from typing import Any
 
 from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v2"
+SPEC_VERSION = "pv26-loss-v3"
 
 
 @dataclass(frozen=True)
@@ -77,14 +77,15 @@ def build_loss_spec() -> dict[str, Any]:
         },
         "heads": {
             "det": {
-                "shape": "B x N_det x (4 bbox + 1 obj + 7 cls)",
+                "shape": "B x Q_det x (4 bbox + 1 obj + 7 cls)",
                 "notes": [
                     "OD taxonomy is fixed to 7 classes.",
                     "traffic_light remains a generic detector class.",
+                    "Q_det means detector prediction slot count, not GT row count.",
                 ],
             },
             "tl_attr": {
-                "shape": "B x N_det x 4",
+                "shape": "B x Q_det x 4",
                 "bits": list(TL_BITS),
                 "notes": [
                     "Attached only to traffic_light predictions/matches.",
@@ -124,6 +125,10 @@ def build_loss_spec() -> dict[str, Any]:
             },
         },
         "sample_contract": {
+            "naming": {
+                "N_gt_det": "number of GT detection rows in one sample",
+                "Q_det": "number of detector prediction slots in one image",
+            },
             "image": {
                 "dtype": "float32",
                 "shape": [3, 608, 800],
@@ -131,12 +136,12 @@ def build_loss_spec() -> dict[str, Any]:
                 "color_order": "RGB",
             },
             "det_targets": {
-                "boxes_xyxy": "float32[N_det, 4] in network pixel space",
-                "classes": "int64[N_det]",
+                "boxes_xyxy": "float32[N_gt_det, 4] in network pixel space",
+                "classes": "int64[N_gt_det]",
             },
             "tl_attr_targets": {
-                "bits": "float32[N_det, 4] aligned 1:1 with det_targets",
-                "is_traffic_light": "bool[N_det]",
+                "bits": "float32[N_gt_det, 4] aligned 1:1 with det_targets",
+                "is_traffic_light": "bool[N_gt_det]",
                 "collapse_reason": "list[str] aligned 1:1 with det_targets",
             },
             "lane_targets": {
@@ -152,8 +157,8 @@ def build_loss_spec() -> dict[str, Any]:
                 "crosswalk": "bool",
             },
             "valid_mask": {
-                "det": "bool[N_det]",
-                "tl_attr": "bool[N_det]",
+                "det": "bool[N_gt_det]",
+                "tl_attr": "bool[N_gt_det]",
                 "lane": "bool[N_lane]",
                 "stop_line": "bool[N_stop]",
                 "crosswalk": "bool[N_cross]",
@@ -175,13 +180,24 @@ def build_loss_spec() -> dict[str, Any]:
                 },
             },
         },
+        "encoded_batch_contract": {
+            "image": "float32[B, 3, 608, 800]",
+            "det_gt": "detector-native GT batch derived from N_gt_det",
+            "tl_attr_gt_bits": "float32[B, N_gt_det_max, 4]",
+            "tl_attr_gt_mask": "bool[B, N_gt_det_max]",
+            "lane": "float32[B, 12, 54]",
+            "stop_line": "float32[B, 6, 9]",
+            "crosswalk": "float32[B, 4, 17]",
+            "det_assignment_binding": "computed inside loss and maps Q_det positives to N_gt_det indices",
+        },
         "transform_contract": {
-            "runtime_raw_hw": [600, 800],
+            "dataset_raw_hw": "variable",
+            "vehicle_camera_raw_hw": [600, 800],
             "network_hw": [608, 800],
-            "scale_formula": "r = min(W_net / W_raw, H_net / H_raw)",
+            "scale_formula": "r = min(W_net / W_src, H_net / H_src)",
             "resize_formula": [
-                "W_resize = round(W_raw * r)",
-                "H_resize = round(H_raw * r)",
+                "W_resize = round(W_src * r)",
+                "H_resize = round(H_src * r)",
             ],
             "padding_formula": [
                 "pad_w = W_net - W_resize",
@@ -196,14 +212,20 @@ def build_loss_spec() -> dict[str, Any]:
                 "y_prime": "y * r + pad_top",
             },
             "inverse_mapping": {
-                "x_raw": "(x_prime - pad_left) / r",
-                "y_raw": "(y_prime - pad_top) / r",
+                "x_src": "(x_prime - pad_left) / r",
+                "y_src": "(y_prime - pad_top) / r",
             },
+            "interpolation": "bilinear",
+            "padding_fill_uint8": 114,
+            "padding_fill_normalized": 114.0 / 255.0,
+            "coordinate_dtype": "float32 until visualization/export raster step",
             "clipping": {
                 "x_range": "[0, W_net - 1]",
                 "y_range": "[0, H_net - 1]",
-                "drop_small_bbox": "width <= 1 or height <= 1",
-                "invalid_polyline": "fewer than 2 unique points after clipping",
+                "det_row_policy": "drop row entirely when clipped width <= 1 or height <= 1",
+                "tl_attr_invalid_policy": "keep det row, zero bits, valid_mask false",
+                "lane_invalid_policy": "keep row, valid_mask false when fewer than 2 unique points after clipping",
+                "crosswalk_invalid_policy": "keep row, valid_mask false when fewer than 3 unique points after clipping",
             },
         },
         "canonical_target_rules": {
@@ -255,16 +277,6 @@ def build_loss_spec() -> dict[str, Any]:
                 "No TL attr loss is applied when the matched GT class is not traffic_light.",
                 "No TL attr loss is applied when the matched GT row is invalid-masked.",
             ],
-            "inference_output": {
-                "prediction_bundle": [
-                    "box_xyxy",
-                    "score",
-                    "class_id",
-                    "class_name",
-                    "tl_attr_scores",
-                ],
-                "ignore_non_tl_attr_scores": True,
-            },
             "valid_examples": [
                 "off -> [0,0,0,0]",
                 "red -> [1,0,0,0]",
@@ -289,6 +301,20 @@ def build_loss_spec() -> dict[str, Any]:
                     "arrow": 1.8,
                 },
             },
+        },
+        "inference_contract": {
+            "raw_model_output": {
+                "det": "float32[B, Q_det, 12]",
+                "tl_attr": "float32[B, Q_det, 4]",
+            },
+            "prediction_bundle": [
+                "box_xyxy",
+                "score",
+                "class_id",
+                "class_name",
+                "tl_attr_scores",
+            ],
+            "ignore_non_tl_attr_scores": True,
         },
         "losses": {
             "total": "L_total = det + tl_attr + lane + stop_line + crosswalk",
@@ -417,8 +443,11 @@ def render_loss_spec_markdown(spec: dict[str, Any] | None = None) -> str:
             "",
             "## Sample Contract",
             "",
+            f"- Naming: `N_gt_det={spec['sample_contract']['naming']['N_gt_det']}`",
+            f"- Naming: `Q_det={spec['sample_contract']['naming']['Q_det']}`",
             f"- Image shape: `{spec['sample_contract']['image']['shape']}`",
             f"- Network size: `{spec['transform_contract']['network_hw']}`",
+            f"- Vehicle camera reference: `{spec['transform_contract']['vehicle_camera_raw_hw']}`",
             f"- Lane query count: `{spec['heads']['lane']['query_count']}`",
             f"- Stop-line query count: `{spec['heads']['stop_line']['query_count']}`",
             f"- Crosswalk query count: `{spec['heads']['crosswalk']['query_count']}`",

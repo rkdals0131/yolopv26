@@ -18,9 +18,11 @@
 ## 제품 범위
 
 - 입력
-  - 학습 canonical raw image는 다양한 원본 해상도를 허용한다.
+  - standardized dataset raw image는 다양한 원본 해상도를 허용한다.
+  - vehicle camera reference frame은 `800x600`이다.
   - 학습/추론 network input은 `800x608`으로 고정한다.
-  - runtime raw contract는 `800x600`, network input contract는 `800x608` pad-only다.
+  - loader는 dataset raw에서 `800x608`으로 직접 변환한다.
+  - runtime camera가 이미 `800x600`이면 같은 transform은 `800x600 -> 800x608` pad-only로 축약된다.
 - 출력
   - detector class: `vehicle / bike / pedestrian / traffic_cone / obstacle / traffic_light / sign`
   - traffic light attribute: `red / yellow / green / arrow`

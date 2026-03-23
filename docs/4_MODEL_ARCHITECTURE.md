@@ -42,25 +42,28 @@ input image
 ## detector head
 
 - output
-  - bbox
-  - obj
-  - 7-class logits
+  - `Q_det` detector slot별 bbox
+  - `Q_det` detector slot별 obj
+  - `Q_det` detector slot별 7-class logits
 - detector class는 generic `traffic_light`를 유지한다.
+- `Q_det`는 prediction slot 수를 의미하고, GT row 수와 다르다.
 
 ## traffic light attr head
 
 - output
-  - `red`
-  - `yellow`
-  - `green`
-  - `arrow`
+  - `Q_det` detector slot별 `red`
+  - `Q_det` detector slot별 `yellow`
+  - `Q_det` detector slot별 `green`
+  - `Q_det` detector slot별 `arrow`
 - detector의 `traffic_light` positive에만 의미가 있다.
 - 표현은 4 independent sigmoid logits이다.
 - 학습 결합 기준은 detector assignment 결과다.
   - detector가 matched positive로 선택한 GT index를 그대로 TL attr supervision index로 사용한다.
   - matched GT class가 `traffic_light`가 아니면 TL attr loss는 적용하지 않는다.
   - matched GT가 `traffic_light`여도 AIHUB valid mask가 `false`면 TL attr loss는 적용하지 않는다.
-- 추론 출력은 `traffic_light bbox + det confidence + tl bit scores` 묶음이다.
+- raw model output과 export bundle은 분리해서 다룬다.
+  - raw output은 `Q_det` slot aligned logits다.
+  - export bundle은 `traffic_light bbox + det confidence + tl bit scores` 묶음이다.
 
 ## lane family heads
 

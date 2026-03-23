@@ -10,7 +10,7 @@
 
 ## phase 1 next
 
-### 1. training sample contract
+### 1. training sample runtime
 
 - 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
 - loader runtime은 이 sample dictionary schema를 정확히 구현
@@ -19,7 +19,8 @@
 ### 2. online transform
 
 - 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
-- `800x600 -> 800x608` preprocessing contract를 코드로 구현
+- variable dataset raw -> `800x608` preprocessing contract를 코드로 구현
+- `800x600 -> 800x608`은 vehicle camera reference 입력일 때의 특수 케이스로 취급
 - train/infer shared transform 작성
 - raw-space label를 transformed-space sample target으로 변환
 
@@ -83,6 +84,7 @@
 ## 이번 phase에서 이미 고정된 항목
 
 - loader sample dictionary key/shape/dtype
-- `800x600 -> 800x608` transform 수식
+- variable dataset raw -> `800x608` transform 수식
+- vehicle camera reference `800x600`은 pad-only 특수 케이스
 - lane/stop/crosswalk query count `12 / 6 / 4`
 - detector assignment 기반 TL attr binding
