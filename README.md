@@ -6,6 +6,9 @@ This repository is scoped to 2D perception training and export work for YOLOPV26
 
 ```text
 model/
+  loading/
+    pv26_loader.py
+    transform.py
   preprocess/
     aihub_common.py
     aihub_standardize.py
@@ -21,6 +24,7 @@ docs/
 
 - `model/` is the project package root.
 - `model/preprocess/` holds source parsing and standardization code.
+- `model/loading/` holds canonical dataset loading and shared online transforms.
 - `model/viz/` holds human QA visualization utilities.
 - `model/loss/` holds training-loss specifications.
 

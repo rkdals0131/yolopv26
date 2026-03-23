@@ -4,6 +4,9 @@
 
 ```text
 model/
+  loading/
+    pv26_loader.py
+    transform.py
   preprocess/
     aihub_common.py
     aihub_standardize.py
@@ -58,6 +61,8 @@ AIHUB raw
 
 - AIHUB standardization pipeline
 - BDD100K detection-only standardization pipeline
+- canonical dataset loader runtime
+- shared online letterbox transform runtime
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -66,10 +71,9 @@ AIHUB raw
 ## 아직 구현되지 않은 것
 
 - standardized dataset loader
-- training sample runtime
+- target encoder runtime
 - YOLOv26n trunk adapter
 - PV26 custom heads
-- real target encoder
 - real multitask loss implementation
 - trainer/evaluator
 
