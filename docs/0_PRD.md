@@ -2,7 +2,7 @@
 
 ## 문서 목적
 
-이 문서는 현재 `YOLOPv26` 저장소의 최상위 제품 요구사항 문서다. 이 문서와 같은 번호 체계의 문서들이 이전 pivot 문서 세트를 완전히 대체한다.
+이 문서는 현재 `yolopv26` 저장소의 최상위 제품 요구사항 문서다. 이 문서와 같은 번호 체계의 문서들이 이전 pivot 문서 세트를 완전히 대체한다.
 
 ## 프로젝트 목표
 
@@ -59,6 +59,7 @@
 ## 성공 조건
 
 - AIHUB standardized scene/det dataset에서 loader가 안정적으로 sample을 뽑는다.
+- loader sample contract와 transform contract가 문서와 코드에서 동일하다.
 - pretrained trunk를 부분 로드한 PV26 model이 forward/backward를 통과한다.
 - target encoder와 loss가 lane/TL/OD/stop-line/crosswalk를 동시에 처리한다.
 - small smoke dataset에서 loss가 정상적으로 감소한다.
@@ -66,12 +67,13 @@
 
 ## 문서 맵
 
-- [1_DEVELOPMENT_PHILOSOPHY.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/1_DEVELOPMENT_PHILOSOPHY.md)
-- [2_SYSTEM_ARCHITECTURE.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/2_SYSTEM_ARCHITECTURE.md)
-- [3_DATA_AND_STANDARDIZATION.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/3_DATA_AND_STANDARDIZATION.md)
-- [4_MODEL_ARCHITECTURE.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/4_MODEL_ARCHITECTURE.md)
-- [5_TARGETS_AND_LOSS.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/5_TARGETS_AND_LOSS.md)
-- [6_TRAINING_AND_EVALUATION.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/6_TRAINING_AND_EVALUATION.md)
-- [7_IMPLEMENTATION_PLAN.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/7_IMPLEMENTATION_PLAN.md)
-- [8_TEST_PLAN_AND_CHECKLIST.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/8_TEST_PLAN_AND_CHECKLIST.md)
-- [9_EXECUTION_STATUS.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/9_EXECUTION_STATUS.md)
+- [1_DEVELOPMENT_PHILOSOPHY.md](1_DEVELOPMENT_PHILOSOPHY.md)
+- [2_SYSTEM_ARCHITECTURE.md](2_SYSTEM_ARCHITECTURE.md)
+- [3_DATA_AND_STANDARDIZATION.md](3_DATA_AND_STANDARDIZATION.md)
+- [4_MODEL_ARCHITECTURE.md](4_MODEL_ARCHITECTURE.md)
+- [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)
+- [5_TARGETS_AND_LOSS.md](5_TARGETS_AND_LOSS.md)
+- [6_TRAINING_AND_EVALUATION.md](6_TRAINING_AND_EVALUATION.md)
+- [7_IMPLEMENTATION_PLAN.md](7_IMPLEMENTATION_PLAN.md)
+- [8_TEST_PLAN_AND_CHECKLIST.md](8_TEST_PLAN_AND_CHECKLIST.md)
+- [9_EXECUTION_STATUS.md](9_EXECUTION_STATUS.md)

@@ -4,6 +4,7 @@
 
 - detector, TL attr, lane, stop-line, crosswalk를 하나의 학습 파이프라인에서 다룬다.
 - partial label source를 손상시키지 않는다.
+- sample/transform contract는 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)를 기준으로 한다.
 
 ## task summary
 
@@ -20,6 +21,7 @@
 
 ## internal target encoding
 
+- encoded batch는 transformed network pixel space를 입력으로 받는다.
 - lane
   - objectness
   - color logits 3
@@ -64,8 +66,12 @@ L_total = λ_det * L_det
 - type
   - masked sigmoid focal BCE
 - 적용 대상
-  - matched `traffic_light` positive
+  - detector assignment 기준 matched `traffic_light` positive
   - valid AIHUB car signal only
+- 결합 규칙
+  - detector positive가 가리키는 GT index에서 TL bits를 읽는다.
+  - GT class가 `traffic_light`가 아니면 TL attr loss는 없다.
+  - GT class가 `traffic_light`여도 `valid_mask["tl_attr"] = False`면 loss는 없다.
 - bit weights
   - red `1.0`
   - yellow `2.5`
@@ -112,7 +118,7 @@ L_total = λ_det * L_det
 
 ## current status
 
-- spec는 [model/loss/spec.py](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/model/loss/spec.py)에 반영돼 있다.
+- spec는 [../model/loss/spec.py](../model/loss/spec.py)에 반영돼 있다.
 - 실제 runtime loss 구현은 아직 없다.
 
 ## 구현 우선순위
@@ -121,3 +127,9 @@ L_total = λ_det * L_det
 2. masked loss
 3. Hungarian matcher
 4. smoke backward
+
+## inference output contract
+
+- detector output의 기본 묶음은 `bbox + det score + class logits`다.
+- `traffic_light` prediction에는 여기에 `red/yellow/green/arrow` score가 추가로 붙는다.
+- export와 ROS message는 이 묶음을 기준으로 설계한다.

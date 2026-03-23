@@ -5,6 +5,8 @@
 - [ ] 문서와 코드가 일치한다
 - [ ] obsolete 파일이 남아 있지 않다
 - [ ] README가 현재 entrypoint를 가리킨다
+- [ ] docs 내부 링크가 상대경로 기준으로 유지된다
+- [ ] sample/transform contract 문서와 loss spec이 같은 query count를 사용한다
 
 ## standardization 체크리스트
 
@@ -60,6 +62,7 @@
 
 - [x] `python3 -m unittest discover -s test -v`
 - [x] `python3 -m model.preprocess.aihub_standardize --max-samples-per-dataset 4 --debug-vis-count 2`
+- [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
 - [ ] loader smoke command
 - [ ] model smoke command
 - [ ] training smoke command

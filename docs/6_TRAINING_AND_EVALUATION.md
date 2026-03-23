@@ -3,9 +3,9 @@
 ## training strategy
 
 - step 1
-  - standardized dataset loader 구현
+  - [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md) 기준 standardized dataset loader 구현
 - step 2
-  - target encoder 구현
+  - sample contract를 encoded batch contract로 바꾸는 target encoder 구현
 - step 3
   - pretrained trunk + custom heads 구성
 - step 4
@@ -66,6 +66,8 @@
 - loss finite
 - tiny subset overfit 가능
 - debug sample visualization 확인 가능
+- loader output이 sample contract와 정확히 일치
+- encoded batch가 loss spec shape와 정확히 일치
 
 ## full-train 진입 조건
 

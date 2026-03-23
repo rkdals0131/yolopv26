@@ -25,7 +25,7 @@ docs/
 
 ## Docs
 
-Start from [0_PRD.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/0_PRD.md). The numbered docs under `docs/` are the only active design documents for this repository.
+Start from [0_PRD.md](docs/0_PRD.md). The numbered docs under `docs/` are the only active design documents for this repository.
 
 ## AIHUB Standardization
 
@@ -71,4 +71,4 @@ seg_dataset/pv26_aihub_standardized/
 
 ## Loss Spec
 
-The active loss design is described in [5_TARGETS_AND_LOSS.md](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/docs/5_TARGETS_AND_LOSS.md) and mirrored as code in [model/loss/spec.py](/home/user1/ROS2_Workspace/ros2_ws/src/YOLOpv26/model/loss/spec.py).
+The active sample contract is described in [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](docs/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md). The active loss design is described in [5_TARGETS_AND_LOSS.md](docs/5_TARGETS_AND_LOSS.md) and mirrored as code in [model/loss/spec.py](model/loss/spec.py).

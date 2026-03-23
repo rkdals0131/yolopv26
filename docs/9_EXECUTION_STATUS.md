@@ -10,7 +10,7 @@
 
 - 날짜: `2026-03-23`
 - phase: `phase 1 pre-loader`
-- current focus: `loader + target encoder 설계 진입 전 문서 재정리 완료`
+- current focus: `sample/transform/TL binding contract 고정 완료, loader runtime 진입 준비`
 
 ## 완료된 항목
 
@@ -23,6 +23,11 @@
 - [x] source inventory / conversion report 구현
 - [x] debug overlay 구현
 - [x] loss spec 코드/문서 반영
+- [x] sample contract 문서 고정
+- [x] transform contract 문서 고정
+- [x] detector-TL attr binding 규약 고정
+- [x] query count 문서/코드 sync 정리
+- [x] docs 상대경로 링크 정리
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -40,6 +45,7 @@
 
 - [x] `python3 -m unittest discover -s test -v`
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 2 --max-samples-per-dataset 4 --debug-vis-count 2`
+- [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 
 ## 최근 결정
 
@@ -48,3 +54,6 @@
 - raw-space standardized dataset 유지
 - `800x608` transform은 loader 단계 온라인 적용
 - lane 학습/추론 계약은 AIHUB 기준 유지
+- loader sample contract는 `image / det_targets / tl_attr_targets / lane_targets / source_mask / valid_mask / meta`로 고정
+- lane/stop/crosswalk query count는 `12 / 6 / 4`로 고정
+- TL attr supervision은 detector assignment 결과를 재사용

@@ -12,15 +12,16 @@
 
 ### 1. training sample contract
 
-- standardized output를 읽는 loader contract 정의
-- sample dictionary schema 정의
-- image, det, tl bits, lane family fields를 통일
+- 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
+- loader runtime은 이 sample dictionary schema를 정확히 구현
+- image, det, tl bits, lane family fields를 contract에 맞춰 materialize
 
 ### 2. online transform
 
-- `800x600 -> 800x608` preprocessing contract 구현
+- 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
+- `800x600 -> 800x608` preprocessing contract를 코드로 구현
 - train/infer shared transform 작성
-- raw-space label를 transformed-space target으로 변환
+- raw-space label를 transformed-space sample target으로 변환
 
 ### 3. target encoder
 
@@ -78,3 +79,10 @@
 - 각 phase 시작 시 `9_EXECUTION_STATUS.md`를 먼저 갱신
 - phase 완료 후 test 결과를 status에 기록
 - 설계 변경이 생기면 해당 번호 문서를 먼저 수정
+
+## 이번 phase에서 이미 고정된 항목
+
+- loader sample dictionary key/shape/dtype
+- `800x600 -> 800x608` transform 수식
+- lane/stop/crosswalk query count `12 / 6 / 4`
+- detector assignment 기반 TL attr binding

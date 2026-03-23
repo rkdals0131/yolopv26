@@ -5,7 +5,7 @@ from typing import Any
 
 from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v1"
+SPEC_VERSION = "pv26-loss-v2"
 
 
 @dataclass(frozen=True)
@@ -88,6 +88,7 @@ def build_loss_spec() -> dict[str, Any]:
                 "bits": list(TL_BITS),
                 "notes": [
                     "Attached only to traffic_light predictions/matches.",
+                    "Training reads the same matched GT index produced by detector assignment.",
                     "Uses independent sigmoid logits, not softmax.",
                 ],
             },
@@ -120,6 +121,89 @@ def build_loss_spec() -> dict[str, Any]:
                     "polygon_points": 8,
                     "point_coordinates": 16,
                 },
+            },
+        },
+        "sample_contract": {
+            "image": {
+                "dtype": "float32",
+                "shape": [3, 608, 800],
+                "range": [0.0, 1.0],
+                "color_order": "RGB",
+            },
+            "det_targets": {
+                "boxes_xyxy": "float32[N_det, 4] in network pixel space",
+                "classes": "int64[N_det]",
+            },
+            "tl_attr_targets": {
+                "bits": "float32[N_det, 4] aligned 1:1 with det_targets",
+                "is_traffic_light": "bool[N_det]",
+                "collapse_reason": "list[str] aligned 1:1 with det_targets",
+            },
+            "lane_targets": {
+                "lanes": "list[{points_xy: float32[P,2], color: int, lane_type: int}]",
+                "stop_lines": "list[{points_xy: float32[P,2]}]",
+                "crosswalks": "list[{points_xy: float32[P,2]}]",
+            },
+            "source_mask": {
+                "det": "bool",
+                "tl_attr": "bool",
+                "lane": "bool",
+                "stop_line": "bool",
+                "crosswalk": "bool",
+            },
+            "valid_mask": {
+                "det": "bool[N_det]",
+                "tl_attr": "bool[N_det]",
+                "lane": "bool[N_lane]",
+                "stop_line": "bool[N_stop]",
+                "crosswalk": "bool[N_cross]",
+            },
+            "meta": {
+                "sample_id": "str",
+                "dataset_key": "str",
+                "split": "str",
+                "image_path": "str",
+                "raw_hw": "tuple[int, int]",
+                "network_hw": "tuple[int, int]",
+                "transform": {
+                    "scale": "float",
+                    "pad_left": "int",
+                    "pad_top": "int",
+                    "pad_right": "int",
+                    "pad_bottom": "int",
+                    "resized_hw": "tuple[int, int]",
+                },
+            },
+        },
+        "transform_contract": {
+            "runtime_raw_hw": [600, 800],
+            "network_hw": [608, 800],
+            "scale_formula": "r = min(W_net / W_raw, H_net / H_raw)",
+            "resize_formula": [
+                "W_resize = round(W_raw * r)",
+                "H_resize = round(H_raw * r)",
+            ],
+            "padding_formula": [
+                "pad_w = W_net - W_resize",
+                "pad_h = H_net - H_resize",
+                "pad_left = floor(pad_w / 2)",
+                "pad_right = pad_w - pad_left",
+                "pad_top = floor(pad_h / 2)",
+                "pad_bottom = pad_h - pad_top",
+            ],
+            "forward_mapping": {
+                "x_prime": "x * r + pad_left",
+                "y_prime": "y * r + pad_top",
+            },
+            "inverse_mapping": {
+                "x_raw": "(x_prime - pad_left) / r",
+                "y_raw": "(y_prime - pad_top) / r",
+            },
+            "clipping": {
+                "x_range": "[0, W_net - 1]",
+                "y_range": "[0, H_net - 1]",
+                "drop_small_bbox": "width <= 1 or height <= 1",
+                "invalid_polyline": "fewer than 2 unique points after clipping",
             },
         },
         "canonical_target_rules": {
@@ -165,6 +249,22 @@ def build_loss_spec() -> dict[str, Any]:
             "base_detector_class": "traffic_light",
             "valid_source_type": "car",
             "arrow_sources": ["left_arrow", "others_arrow"],
+            "training_binding": [
+                "Reuse the detector assignment result.",
+                "Each detector positive reads TL bits from its matched GT index.",
+                "No TL attr loss is applied when the matched GT class is not traffic_light.",
+                "No TL attr loss is applied when the matched GT row is invalid-masked.",
+            ],
+            "inference_output": {
+                "prediction_bundle": [
+                    "box_xyxy",
+                    "score",
+                    "class_id",
+                    "class_name",
+                    "tl_attr_scores",
+                ],
+                "ignore_non_tl_attr_scores": True,
+            },
             "valid_examples": [
                 "off -> [0,0,0,0]",
                 "red -> [1,0,0,0]",
@@ -312,7 +412,16 @@ def render_loss_spec_markdown(spec: dict[str, Any] | None = None) -> str:
             f"- Base detector class: `{spec['tl_attr_policy']['base_detector_class']}`",
             f"- Valid source type: `{spec['tl_attr_policy']['valid_source_type']}`",
             f"- Arrow sources: `{', '.join(spec['tl_attr_policy']['arrow_sources'])}`",
+            f"- Training binding: `{'; '.join(spec['tl_attr_policy']['training_binding'])}`",
             f"- Masked cases: `{', '.join(spec['tl_attr_policy']['masked_cases'])}`",
+            "",
+            "## Sample Contract",
+            "",
+            f"- Image shape: `{spec['sample_contract']['image']['shape']}`",
+            f"- Network size: `{spec['transform_contract']['network_hw']}`",
+            f"- Lane query count: `{spec['heads']['lane']['query_count']}`",
+            f"- Stop-line query count: `{spec['heads']['stop_line']['query_count']}`",
+            f"- Crosswalk query count: `{spec['heads']['crosswalk']['query_count']}`",
             "",
             "## Dataset Masking",
             "",
