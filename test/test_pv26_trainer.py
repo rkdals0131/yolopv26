@@ -177,6 +177,41 @@ class PV26TrainerTests(unittest.TestCase):
                 trainer.stage_summary["trainable_head_params"],
             )
 
+    def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+
+        adapter = build_yolo26n_trunk()
+        heads = PV26Heads(in_channels=(64, 128, 256))
+        trainer = PV26Trainer(adapter, heads, stage="stage_0_smoke")
+        batch = _make_encoded_batch(batch_size=1, q_det=9975)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "fit_smoke"
+            summary = trainer.fit(
+                [batch, batch],
+                epochs=1,
+                val_loader=[batch],
+                run_dir=run_dir,
+            )
+
+            self.assertEqual(summary["completed_epochs"], 1)
+            self.assertEqual(summary["best_epoch"], 1)
+            self.assertEqual(trainer.global_step, 2)
+            self.assertEqual(len(trainer.epoch_history), 1)
+            self.assertTrue((run_dir / "history" / "train_steps.jsonl").is_file())
+            self.assertTrue((run_dir / "history" / "epochs.jsonl").is_file())
+            self.assertTrue((run_dir / "checkpoints" / "last.pt").is_file())
+            self.assertTrue((run_dir / "checkpoints" / "best.pt").is_file())
+            self.assertTrue((run_dir / "checkpoints" / "epoch_001.pt").is_file())
+            self.assertTrue((run_dir / "summary.json").is_file())
+
+            summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary_payload["completed_epochs"], 1)
+            self.assertEqual(summary_payload["last_epoch"]["train"]["batches"], 2)
+            self.assertEqual(summary_payload["last_epoch"]["val"]["batches"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

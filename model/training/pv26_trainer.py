@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections import Counter
+from datetime import datetime
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import torch
@@ -71,6 +74,99 @@ def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, floa
             values["head_lr"] = float(group.get("lr", values["head_lr"]))
             values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
     return values
+
+
+def _default_run_dir() -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path("runs") / "pv26_train" / f"pv26_fit_{timestamp}"
+
+
+def _loss_stats_from_summaries(summaries: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    if not summaries:
+        return {}
+    names = list(summaries[0]["losses"].keys())
+    return {
+        name: {
+            "mean": sum(float(item["losses"][name]) for item in summaries) / len(summaries),
+            "min": min(float(item["losses"][name]) for item in summaries),
+            "max": max(float(item["losses"][name]) for item in summaries),
+            "last": float(summaries[-1]["losses"][name]),
+        }
+        for name in names
+    }
+
+
+def _sum_counts(summaries: list[dict[str, Any]]) -> dict[str, int]:
+    if not summaries:
+        return {}
+    keys = list(summaries[0]["counts"].keys())
+    return {
+        key: int(sum(int(item["counts"].get(key, 0)) for item in summaries))
+        for key in keys
+    }
+
+
+def _aggregate_assignment_modes(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    det_modes = Counter(str(item["assignment"]["det"]) for item in summaries)
+    lane_tasks = list(summaries[0]["assignment"]["lane"].keys()) if summaries else []
+    lane_modes = {
+        task: dict(Counter(str(item["assignment"]["lane"].get(task, "unknown")) for item in summaries))
+        for task in lane_tasks
+    }
+    return {
+        "det_modes": dict(det_modes),
+        "lane_modes": lane_modes,
+    }
+
+
+def _mean_metric_tree(metric_summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    if not metric_summaries:
+        return {}
+    first = metric_summaries[0]
+    output: dict[str, Any] = {}
+    count_keys = {"tp", "fp", "fn", "gt_count", "matched_pairs"}
+    for key, value in first.items():
+        values = [item[key] for item in metric_summaries if key in item]
+        if isinstance(value, dict):
+            output[key] = _mean_metric_tree(values)
+        elif key in count_keys:
+            output[key] = int(sum(int(item) for item in values))
+        else:
+            output[key] = sum(float(item) for item in values) / len(values)
+    return output
+
+
+def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
+    if not batches:
+        raise ValueError("cannot merge zero raw batches")
+    return {
+        "image": torch.cat([batch["image"] for batch in batches], dim=0),
+        "det_targets": [item for batch in batches for item in batch["det_targets"]],
+        "tl_attr_targets": [item for batch in batches for item in batch["tl_attr_targets"]],
+        "lane_targets": [item for batch in batches for item in batch["lane_targets"]],
+        "source_mask": [item for batch in batches for item in batch["source_mask"]],
+        "valid_mask": [item for batch in batches for item in batch["valid_mask"]],
+        "meta": [item for batch in batches for item in batch["meta"]],
+    }
+
+
+def _resolve_summary_path(summary: dict[str, Any], path: str) -> float:
+    current: Any = summary
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(f"summary path not found: {path}")
+        current = current[part]
+    return float(current)
+
+
+def _is_better(candidate: float, current_best: float | None, mode: str) -> bool:
+    if current_best is None:
+        return True
+    if mode == "min":
+        return candidate < current_best
+    if mode == "max":
+        return candidate > current_best
+    raise KeyError(f"unsupported comparison mode: {mode}")
 
 
 def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str) -> dict[str, int | str]:
@@ -147,6 +243,7 @@ class PV26Trainer:
         device: str | torch.device = "cpu",
         criterion: torch.nn.Module | None = None,
         optimizer: torch.optim.Optimizer | None = None,
+        scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         trunk_lr: float = 1e-4,
         head_lr: float = 1e-3,
         weight_decay: float = 1e-4,
@@ -166,8 +263,10 @@ class PV26Trainer:
             head_lr=head_lr,
             weight_decay=weight_decay,
         )
+        self.scheduler = scheduler
         self.global_step = 0
         self.history: list[dict[str, Any]] = []
+        self.epoch_history: list[dict[str, Any]] = []
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
@@ -226,6 +325,13 @@ class PV26Trainer:
             summary["losses"][name] = _loss_summary(window, name)
         return summary
 
+    def save_epoch_history_jsonl(self, path: str | Path) -> Path:
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = "".join(json.dumps(item, ensure_ascii=True, sort_keys=True) + "\n" for item in self.epoch_history)
+        output_path.write_text(payload, encoding="utf-8")
+        return output_path
+
     def save_history_jsonl(self, path: str | Path) -> Path:
         output_path = Path(path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +340,7 @@ class PV26Trainer:
         return output_path
 
     def checkpoint_state(self) -> dict[str, Any]:
-        return {
+        checkpoint = {
             "stage": self.stage,
             "global_step": self.global_step,
             "stage_summary": dict(self.stage_summary),
@@ -243,7 +349,11 @@ class PV26Trainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "criterion_stage": str(getattr(self.criterion, "stage", self.stage)),
             "history": list(self.history),
+            "epoch_history": list(self.epoch_history),
         }
+        if self.scheduler is not None:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        return checkpoint
 
     def save_checkpoint(self, path: str | Path, *, extra_state: dict[str, Any] | None = None) -> Path:
         output_path = Path(path)
@@ -277,10 +387,203 @@ class PV26Trainer:
         self.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
         self.heads.load_state_dict(checkpoint["heads_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         self.global_step = int(checkpoint.get("global_step", 0))
         self.stage_summary = dict(checkpoint.get("stage_summary", self.stage_summary))
         self.history = list(checkpoint.get("history", []))
+        self.epoch_history = list(checkpoint.get("epoch_history", []))
         return checkpoint
+
+    def build_evaluator(self):
+        from ..eval import PV26Evaluator
+
+        return PV26Evaluator(
+            self.adapter,
+            self.heads,
+            stage=self.stage,
+            device=self.device,
+        )
+
+    def train_epoch(
+        self,
+        loader,
+        *,
+        epoch: int,
+        max_batches: int | None = None,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        step_summaries: list[dict[str, Any]] = []
+        start_step = self.global_step
+        for batch_index, batch in enumerate(loader, start=1):
+            if max_batches is not None and batch_index > max_batches:
+                break
+            step_summaries.append(self.train_step(batch))
+        if not step_summaries:
+            raise ValueError("train_epoch received zero batches")
+        ended_at = time.perf_counter()
+        return {
+            "epoch": int(epoch),
+            "batches": len(step_summaries),
+            "global_step_start": int(start_step),
+            "global_step_end": int(self.global_step),
+            "duration_sec": ended_at - started_at,
+            "losses": _loss_stats_from_summaries(step_summaries),
+            "optimizer_lrs": dict(step_summaries[-1]["optimizer_lrs"]),
+            "assignment": _aggregate_assignment_modes(step_summaries),
+        }
+
+    def validate_epoch(
+        self,
+        loader,
+        *,
+        epoch: int,
+        evaluator=None,
+        max_batches: int | None = None,
+    ) -> dict[str, Any]:
+        from ..eval import summarize_pv26_metrics
+
+        evaluator = evaluator or self.build_evaluator()
+        started_at = time.perf_counter()
+        batch_summaries: list[dict[str, Any]] = []
+        raw_batches: list[dict[str, Any]] = []
+        epoch_predictions: list[dict[str, Any]] = []
+        for batch_index, batch in enumerate(loader, start=1):
+            if max_batches is not None and batch_index > max_batches:
+                break
+            batch_summaries.append(evaluator.evaluate_batch(batch))
+            if "det_targets" in batch:
+                raw_batches.append(batch)
+                epoch_predictions.extend(evaluator.predict_batch(batch))
+        if not batch_summaries:
+            raise ValueError("validate_epoch received zero batches")
+        ended_at = time.perf_counter()
+        metrics = {}
+        if raw_batches:
+            metrics = summarize_pv26_metrics(epoch_predictions, _merge_raw_batches(raw_batches))
+        else:
+            metric_summaries = [item["metrics"] for item in batch_summaries if item.get("metrics")]
+            metrics = _mean_metric_tree(metric_summaries) if metric_summaries else {}
+        return {
+            "epoch": int(epoch),
+            "batches": len(batch_summaries),
+            "duration_sec": ended_at - started_at,
+            "losses": _loss_stats_from_summaries(batch_summaries),
+            "counts": _sum_counts(batch_summaries),
+            "metrics": metrics,
+        }
+
+    def fit(
+        self,
+        train_loader,
+        *,
+        epochs: int,
+        val_loader=None,
+        run_dir: str | Path | None = None,
+        val_every: int = 1,
+        checkpoint_every: int = 1,
+        max_train_batches: int | None = None,
+        max_val_batches: int | None = None,
+        best_metric: str | None = None,
+        best_mode: str = "min",
+    ) -> dict[str, Any]:
+        if epochs <= 0:
+            raise ValueError("fit requires epochs > 0")
+
+        output_dir = Path(run_dir) if run_dir is not None else _default_run_dir()
+        history_dir = output_dir / "history"
+        checkpoint_dir = output_dir / "checkpoints"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        evaluator = self.build_evaluator() if val_loader is not None else None
+        best_metric_path = best_metric or (
+            "val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"
+        )
+        best_metric_value: float | None = None
+        best_epoch: int | None = None
+        best_checkpoint_path: Path | None = None
+        run_started_at = time.perf_counter()
+        run_summary: dict[str, Any] = {}
+
+        for epoch in range(1, epochs + 1):
+            epoch_summary: dict[str, Any] = {
+                "epoch": int(epoch),
+                "stage": self.stage,
+                "train": self.train_epoch(train_loader, epoch=epoch, max_batches=max_train_batches),
+            }
+            if val_loader is not None and epoch % val_every == 0:
+                epoch_summary["val"] = self.validate_epoch(
+                    val_loader,
+                    epoch=epoch,
+                    evaluator=evaluator,
+                    max_batches=max_val_batches,
+                )
+            if self.scheduler is not None:
+                self.scheduler.step()
+                epoch_summary["scheduler_lrs"] = [
+                    float(group["lr"]) for group in self.optimizer.param_groups
+                ]
+
+            metric_value = _resolve_summary_path(epoch_summary, best_metric_path)
+            epoch_summary["selection"] = {
+                "best_metric_path": best_metric_path,
+                "best_metric_value": metric_value,
+                "best_mode": best_mode,
+            }
+            is_best = _is_better(metric_value, best_metric_value, best_mode)
+            if is_best:
+                best_metric_value = metric_value
+                best_epoch = epoch
+
+            last_checkpoint_path = self.save_checkpoint(
+                checkpoint_dir / "last.pt",
+                extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
+            )
+            epoch_summary["checkpoint_last"] = str(last_checkpoint_path)
+            if epoch % checkpoint_every == 0:
+                epoch_checkpoint_path = self.save_checkpoint(
+                    checkpoint_dir / f"epoch_{epoch:03d}.pt",
+                    extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
+                )
+                epoch_summary["checkpoint_epoch"] = str(epoch_checkpoint_path)
+            if is_best:
+                best_checkpoint_path = self.save_checkpoint(
+                    checkpoint_dir / "best.pt",
+                    extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
+                )
+                epoch_summary["checkpoint_best"] = str(best_checkpoint_path)
+
+            self.epoch_history.append(epoch_summary)
+            self.save_history_jsonl(history_dir / "train_steps.jsonl")
+            self.save_epoch_history_jsonl(history_dir / "epochs.jsonl")
+
+            run_summary = {
+                "stage": self.stage,
+                "epochs": int(epochs),
+                "completed_epochs": len(self.epoch_history),
+                "global_step": int(self.global_step),
+                "run_dir": str(output_dir),
+                "best_metric_path": best_metric_path,
+                "best_metric_value": best_metric_value,
+                "best_epoch": best_epoch,
+                "last_epoch": self.epoch_history[-1],
+                "history_paths": {
+                    "train_steps": str(history_dir / "train_steps.jsonl"),
+                    "epochs": str(history_dir / "epochs.jsonl"),
+                },
+                "checkpoint_paths": {
+                    "last": str(checkpoint_dir / "last.pt"),
+                    "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
+                },
+                "duration_sec": time.perf_counter() - run_started_at,
+            }
+            (output_dir / "summary.json").write_text(
+                json.dumps(run_summary, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+            )
+
+        return run_summary
 
 
 def run_pv26_tiny_overfit(

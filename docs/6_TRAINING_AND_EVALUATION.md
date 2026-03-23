@@ -82,6 +82,7 @@
 - trainer는 dataset-balanced batch sampler helper를 지원한다.
 - trainer는 step history 요약과 JSONL logging을 지원한다.
 - trainer는 checkpoint save/load를 지원한다.
+- trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
 - evaluator는 raw model output을 postprocess prediction bundle로 decode하는 `predict_batch` runtime을 지원한다.
 - evaluator는 batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, lane family matching metrics를 지원한다.

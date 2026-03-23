@@ -84,6 +84,9 @@
 - [x] dataset-balanced sampler helper
 - [x] checkpoint save/load
 - [x] history summary / JSONL logging
+- [x] full epoch fit loop
+- [x] val loop
+- [x] best / last checkpoint write
 - [x] batch loss summary evaluator
 - [x] GT count summary evaluator
 - [x] inference postprocess decode
@@ -111,3 +114,4 @@
 - [ ] loader smoke command
 - [x] model smoke command
 - [x] training smoke command
+- [x] `python3 tools/run_pv26_fit_smoke.py --epochs 1 --train-batches 1 --val-batches 1`

@@ -64,6 +64,10 @@
   - dataset-balanced batch sampler helper
   - checkpoint save/load
   - history summary / JSONL logging
+  - full epoch fit loop
+  - val loop
+  - best / last checkpoint write
+  - run summary output
 
 ### 8. evaluator skeleton
 
