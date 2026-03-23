@@ -79,6 +79,9 @@
 ## current runtime status
 
 - trainer skeleton은 `encoded batch -> trunk -> heads -> loss -> backward -> optimizer.step`까지 지원한다.
+- trainer는 dataset-balanced batch sampler helper를 지원한다.
+- trainer는 step history 요약과 JSONL logging을 지원한다.
+- trainer는 checkpoint save/load를 지원한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
 - tiny overfit smoke는 canonical train batch 2개 기준으로 실제 loss 감소를 확인했다.
 - detector assignment는 task-aligned assigner 기준으로 통합 완료다.

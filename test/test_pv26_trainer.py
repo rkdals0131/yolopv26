@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -127,6 +130,52 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("heads", summary["optimizer_lrs"])
         self.assertGreater(summary["losses"]["total"], 0.0)
         self.assertTrue(torch.isfinite(torch.tensor(summary["losses"]["total"])))
+        self.assertIn("assignment", summary)
+        self.assertIn("det", summary["assignment"])
+
+    def test_trainer_checkpoint_and_history_roundtrip(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+
+        adapter = build_yolo26n_trunk()
+        heads = PV26Heads(in_channels=(64, 128, 256))
+        trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup")
+        batch = _make_encoded_batch(batch_size=1, q_det=9975)
+
+        trainer.train_step(batch)
+        trainer.train_step(batch)
+        history_summary = trainer.summarize_history()
+
+        self.assertEqual(history_summary["steps"], 2)
+        self.assertEqual(history_summary["stage"], "stage_1_frozen_trunk_warmup")
+        self.assertIn("total", history_summary["losses"])
+        self.assertIn("lane", history_summary["assignment"]["lane"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            history_path = trainer.save_history_jsonl(root / "history.jsonl")
+            checkpoint_path = trainer.save_checkpoint(root / "checkpoints" / "trainer.pt", extra_state={"tag": "smoke"})
+
+            history_lines = history_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(history_lines), 2)
+            self.assertEqual(json.loads(history_lines[-1])["global_step"], 2)
+
+            reloaded_trainer = PV26Trainer(
+                build_yolo26n_trunk(),
+                PV26Heads(in_channels=(64, 128, 256)),
+                stage="stage_0_smoke",
+            )
+            checkpoint = reloaded_trainer.load_checkpoint(checkpoint_path, map_location="cpu")
+
+            self.assertEqual(reloaded_trainer.stage, "stage_1_frozen_trunk_warmup")
+            self.assertEqual(reloaded_trainer.global_step, 2)
+            self.assertEqual(len(reloaded_trainer.history), 2)
+            self.assertEqual(checkpoint["extra_state"]["tag"], "smoke")
+            self.assertEqual(
+                reloaded_trainer.stage_summary["trainable_head_params"],
+                trainer.stage_summary["trainable_head_params"],
+            )
 
 
 if __name__ == "__main__":

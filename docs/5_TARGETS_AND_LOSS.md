@@ -132,10 +132,9 @@ L_total = λ_det * L_det
 
 ## 구현 우선순위
 
-1. trainer loop 확장
-2. checkpoint / sampler / logging 확장
-3. eval metrics 확장
-4. export / postprocess 정교화
+1. eval metrics 확장
+2. export / postprocess 정교화
+3. full-epoch trainer wiring
 
 ## raw model output contract
 

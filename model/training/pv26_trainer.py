@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -42,6 +44,33 @@ def _count_parameters(parameters: list[torch.nn.Parameter]) -> int:
 
 def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
+
+
+def _loss_summary(history: list[dict[str, Any]], name: str) -> dict[str, float]:
+    values = [float(item["losses"][name]) for item in history]
+    return {
+        "last": values[-1],
+        "min": min(values),
+        "max": max(values),
+        "mean": sum(values) / len(values),
+    }
+
+
+def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, float]:
+    values = {
+        "trunk_lr": 1e-4,
+        "head_lr": 1e-3,
+        "weight_decay": 1e-4,
+    }
+    for index, group in enumerate(optimizer.param_groups):
+        group_name = str(group.get("group_name", f"group_{index}"))
+        if group_name == "trunk":
+            values["trunk_lr"] = float(group.get("lr", values["trunk_lr"]))
+            values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
+        if group_name == "heads":
+            values["head_lr"] = float(group.get("lr", values["head_lr"]))
+            values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
+    return values
 
 
 def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str) -> dict[str, int | str]:
@@ -138,6 +167,7 @@ class PV26Trainer:
             weight_decay=weight_decay,
         )
         self.global_step = 0
+        self.history: list[dict[str, Any]] = []
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
@@ -157,7 +187,7 @@ class PV26Trainer:
         losses["total"].backward()
         self.optimizer.step()
         self.global_step += 1
-        return {
+        summary = {
             "global_step": self.global_step,
             "stage": self.stage,
             "batch_size": int(encoded["image"].shape[0]),
@@ -170,7 +200,87 @@ class PV26Trainer:
                 for index, group in enumerate(self.optimizer.param_groups)
             },
             "trainable": dict(self.stage_summary),
+            "assignment": {
+                "det": str(getattr(self.criterion, "last_det_assignment_mode", "unknown")),
+                "lane": dict(getattr(self.criterion, "last_lane_assignment_modes", {})),
+            },
         }
+        self.history.append(summary)
+        return summary
+
+    def summarize_history(self, *, last_n: int | None = None) -> dict[str, Any]:
+        if not self.history:
+            raise ValueError("trainer history is empty")
+        window = self.history[-last_n:] if last_n is not None else self.history
+        summary: dict[str, Any] = {
+            "steps": len(window),
+            "global_step": int(window[-1]["global_step"]),
+            "stage": str(window[-1]["stage"]),
+            "assignment": {
+                "det": str(window[-1]["assignment"]["det"]),
+                "lane": dict(window[-1]["assignment"]["lane"]),
+            },
+            "losses": {},
+        }
+        for name in window[-1]["losses"]:
+            summary["losses"][name] = _loss_summary(window, name)
+        return summary
+
+    def save_history_jsonl(self, path: str | Path) -> Path:
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = "".join(json.dumps(item, ensure_ascii=True, sort_keys=True) + "\n" for item in self.history)
+        output_path.write_text(payload, encoding="utf-8")
+        return output_path
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "global_step": self.global_step,
+            "stage_summary": dict(self.stage_summary),
+            "adapter_state_dict": self.adapter.raw_model.state_dict(),
+            "heads_state_dict": self.heads.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "criterion_stage": str(getattr(self.criterion, "stage", self.stage)),
+            "history": list(self.history),
+        }
+
+    def save_checkpoint(self, path: str | Path, *, extra_state: dict[str, Any] | None = None) -> Path:
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint = self.checkpoint_state()
+        if extra_state:
+            checkpoint["extra_state"] = dict(extra_state)
+        torch.save(checkpoint, output_path)
+        return output_path
+
+    def load_checkpoint(
+        self,
+        path: str | Path,
+        *,
+        map_location: str | torch.device | None = None,
+    ) -> dict[str, Any]:
+        checkpoint = torch.load(path, map_location=map_location or self.device)
+        checkpoint_stage = _canonical_stage(str(checkpoint.get("stage", self.stage)))
+        if checkpoint_stage != self.stage:
+            optimizer_hparams = _optimizer_group_hparams(self.optimizer)
+            self.stage = checkpoint_stage
+            self.stage_summary = configure_pv26_train_stage(self.adapter, self.heads, self.stage)
+            self.criterion = PV26MultiTaskLoss(stage=self.stage).to(self.device)
+            self.optimizer = build_pv26_optimizer(
+                self.adapter,
+                self.heads,
+                trunk_lr=optimizer_hparams["trunk_lr"],
+                head_lr=optimizer_hparams["head_lr"],
+                weight_decay=optimizer_hparams["weight_decay"],
+            )
+        self.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
+        self.heads.load_state_dict(checkpoint["heads_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.global_step = int(checkpoint.get("global_step", 0))
+        self.stage_summary = dict(checkpoint.get("stage_summary", self.stage_summary))
+        self.history = list(checkpoint.get("history", []))
+        return checkpoint
 
 
 def run_pv26_tiny_overfit(

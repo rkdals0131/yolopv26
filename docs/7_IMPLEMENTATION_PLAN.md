@@ -61,6 +61,9 @@
   - stage config
   - optimizer groups
   - 1-step train runtime
+  - dataset-balanced batch sampler helper
+  - checkpoint save/load
+  - history summary / JSONL logging
 
 ### 8. evaluator skeleton
 

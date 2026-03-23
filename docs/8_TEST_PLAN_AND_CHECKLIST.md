@@ -81,6 +81,9 @@
 - [x] stage-wise freeze policy skeleton
 - [x] optimizer group 분리
 - [x] 1-step train runtime
+- [x] dataset-balanced sampler helper
+- [x] checkpoint save/load
+- [x] history summary / JSONL logging
 - [x] batch loss summary evaluator
 - [x] GT count summary evaluator
 
@@ -95,6 +98,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trunk_features.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_balanced_sampler.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
