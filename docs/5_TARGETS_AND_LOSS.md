@@ -147,7 +147,7 @@ L_total = λ_det * L_det
 
 - spec는 [../model/loss/spec.py](../model/loss/spec.py)에 반영돼 있다.
 - smoke/runtime loss는 [../model/loss/runtime.py](../model/loss/runtime.py)에 반영돼 있다.
-- current runtime은 pilot train/eval 경로에서 finite loss, backward, validation, prediction bundle decode를 모두 지원한다.
+- current runtime은 full train/eval 경로에서 finite loss, backward, validation, prediction bundle decode를 모두 지원한다.
 - detector matching은 task-aligned assigner 기준으로 동작한다.
 - TL attr supervision은 matched detector positive의 GT index를 재사용한다.
 - lane family는 Hungarian matching 기준으로 objectness와 geometry target을 query에 재배치한다.
@@ -157,7 +157,7 @@ L_total = λ_det * L_det
 
 ## 구현 우선순위
 
-1. pilot subset 본학습과 metric 해석
+1. full-train metric 해석
 2. export / ROS 정교화
 3. dataset-level metric aggregation 정교화
 

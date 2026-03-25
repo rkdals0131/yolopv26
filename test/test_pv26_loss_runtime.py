@@ -4,6 +4,7 @@ import unittest
 import warnings
 
 import torch
+import torch.nn as nn
 
 from model.loss.spec import build_loss_spec
 from runtime_support import has_yolo26_runtime
@@ -93,6 +94,58 @@ def _zero_predictions(batch_size: int, q_det: int) -> dict[str, torch.Tensor]:
 
 
 class PV26LossRuntimeTests(unittest.TestCase):
+    def test_task_aligned_assignment_promotes_amp_inputs_to_float32(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions["det"] = predictions["det"].detach().to(dtype=torch.float16).requires_grad_(True)
+        predictions["det_feature_shapes"] = [(1, 2)]
+        predictions["det_feature_strides"] = [8]
+
+        observed: dict[str, torch.dtype] = {}
+
+        class FakeTaskAlignedAssigner(nn.Module):
+            def forward(
+                self,
+                pred_scores: torch.Tensor,
+                pred_bboxes: torch.Tensor,
+                anchor_points: torch.Tensor,
+                gt_labels: torch.Tensor,
+                gt_bboxes: torch.Tensor,
+                mask_gt: torch.Tensor,
+            ):
+                observed["pred_scores"] = pred_scores.dtype
+                observed["pred_bboxes"] = pred_bboxes.dtype
+                observed["anchor_points"] = anchor_points.dtype
+                batch_size, query_count, num_classes = pred_scores.shape
+                assigned_labels = torch.zeros((batch_size, query_count), device=pred_scores.device, dtype=torch.long)
+                assigned_bboxes = torch.zeros((batch_size, query_count, 4), device=pred_scores.device, dtype=torch.float32)
+                assigned_scores = torch.zeros(
+                    (batch_size, query_count, num_classes),
+                    device=pred_scores.device,
+                    dtype=torch.float32,
+                )
+                assigned_fg = torch.zeros((batch_size, query_count), device=pred_scores.device, dtype=torch.bool)
+                assigned_gt_idx = torch.full((batch_size, query_count), -1, device=pred_scores.device, dtype=torch.long)
+                assigned_fg[0, 0] = True
+                assigned_gt_idx[0, 0] = 0
+                assigned_bboxes[0, 0] = gt_bboxes[0, 0]
+                assigned_scores[0, 0, int(gt_labels[0, 0, 0].item())] = 1.0
+                return assigned_labels, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx
+
+        criterion = PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup")
+        criterion.assigner = FakeTaskAlignedAssigner()
+
+        assignment = criterion._build_det_assignment(predictions, encoded)
+
+        self.assertEqual(str(assignment["mode"]), "task_aligned")
+        self.assertEqual(observed["pred_scores"], torch.float32)
+        self.assertEqual(observed["pred_bboxes"], torch.float32)
+        self.assertEqual(observed["anchor_points"], torch.float32)
+        self.assertEqual(tuple(assignment["target_bboxes"].shape), (1, 2, 4))
+        self.assertTrue(bool(assignment["fg_mask"][0, 0]))
+
     def test_loss_returns_finite_components_and_supports_backward(self) -> None:
         from model.loss import PV26MultiTaskLoss
 

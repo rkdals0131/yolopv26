@@ -10,7 +10,7 @@
 
 - 날짜: `2026-03-25`
 - phase: `phase 16 portability-and-validation-hardening`
-- current focus: `portability/import boundary/validation runtime hardening 완료, full-dataset 본학습 전 pilot 실행 판단 단계`
+- current focus: `portability/import boundary/validation runtime hardening 완료, full-dataset 본학습 진입 단계`
 
 ## 완료된 항목
 
@@ -59,14 +59,14 @@
 - [x] full-epoch trainer wiring 구현
 - [x] epoch-level val loop 구현
 - [x] best / last checkpoint write 구현
-- [x] pilot training command으로 epoch-level smoke 경로 통합
+- [x] train command으로 epoch-level fit 경로 통합
 - [x] AIHUB/BDD resume scan 구현
 - [x] AIHUB/BDD failure manifest 구현
 - [x] AIHUB/BDD QA summary 구현
 - [x] trainer AMP / grad accumulation / grad clip 구현
 - [x] trainer auto resume 구현
 - [x] trainer non-finite / OOM guard 구현
-- [x] pilot training command 구현
+- [x] train command 구현
 - [x] repo-relative + env override dataset root 정리
 - [x] preprocess image-size probing에 PIL 우선 fallback 추가
 - [x] eval / training / trunk lazy import 정리
@@ -87,7 +87,7 @@
 ## 다음 작업
 
 - [ ] full-dataset 전처리 실제 실행 계획 확정
-- [ ] pilot subset 본학습과 metric 해석
+- [ ] full-train metric 해석
 - [ ] preflight 결과를 기준으로 full-train 환경 lock 파일 정리
 - [ ] export / ROS 정교화
 
@@ -114,7 +114,7 @@
 - [x] `python3 tools/check_env.py`
 - [x] `python3 tools/run_pv26_tiny_overfit_smoke.py`
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
-- [x] `python3 tools/run_pv26_pilot_train.py`
+- [x] `python3 tools/run_pv26_train.py`
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1`
 - [x] `python3 -m model.preprocess.bdd100k_standardize --workers 1 --max-samples-per-split 1 --debug-vis-count 1`
 - [x] detector assignment 통합 후 targeted tests 재통과
@@ -163,4 +163,4 @@
 - current defaults no longer depend on host-specific absolute repo paths
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
 - current postprocess tolerates missing `torchvision.ops.nms` through pure PyTorch fallback
-- redundant smoke runners were removed in favor of `check_env.py` and config-first `run_pv26_pilot_train.py`
+- redundant smoke runners were removed in favor of `check_env.py` and config-first `run_pv26_train.py`

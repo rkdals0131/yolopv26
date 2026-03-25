@@ -112,6 +112,11 @@ OBSTACLE_EXCLUDED_REASONS = {
     "pothole_on_road": "excluded_obstacle_pothole_policy",
     "filled_pothole": "excluded_obstacle_filled_pothole_policy",
 }
+DEBUG_VIS_REASON_COLORS = {
+    "excluded": "#00e5ff",
+    "unrecognized": "#ffe066",
+    "invalid_bbox": "#ff5a5f",
+}
 
 
 @dataclass(frozen=True)
@@ -381,6 +386,97 @@ def _obstacle_bbox(annotation: dict[str, Any], width: int, height: int) -> list[
     if x2 <= x1 or y2 <= y1:
         return None
     return [round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3)]
+
+
+def _debug_vis_priority(item: dict[str, Any]) -> tuple[int, int, int]:
+    annotation_score = (
+        int(item.get("det_count", 0))
+        + int(item.get("traffic_light_count", 0))
+        + int(item.get("traffic_sign_count", 0))
+        + int(item.get("lane_count", 0))
+        + int(item.get("stop_line_count", 0))
+        + int(item.get("crosswalk_count", 0))
+    )
+    obstacle_positive = int(item.get("dataset_key") == OUTPUT_OBSTACLE_KEY and int(item.get("det_count", 0)) > 0)
+    non_empty = int(annotation_score > 0)
+    return obstacle_positive, non_empty, annotation_score
+
+
+def _debug_vis_color_for_reason(reason: str) -> str:
+    if reason.startswith("excluded_obstacle_"):
+        return DEBUG_VIS_REASON_COLORS["excluded"]
+    if reason == "unrecognized_obstacle_annotation":
+        return DEBUG_VIS_REASON_COLORS["unrecognized"]
+    if reason.endswith("_invalid_bbox"):
+        return DEBUG_VIS_REASON_COLORS["invalid_bbox"]
+    return DEBUG_VIS_REASON_COLORS["excluded"]
+
+
+def _obstacle_debug_rectangles(scene: dict[str, Any]) -> list[dict[str, Any]]:
+    label_path_text = scene.get("source", {}).get("label_path")
+    if not label_path_text:
+        return []
+
+    raw = _load_json(Path(label_path_text))
+    width = int(scene.get("image", {}).get("width") or 0)
+    height = int(scene.get("image", {}).get("height") or 0)
+    if width <= 0 or height <= 0:
+        return []
+
+    category_lookup = _obstacle_category_lookup(raw)
+    rectangles: list[dict[str, Any]] = []
+    for annotation in _extract_annotations(raw):
+        raw_category_id = annotation.get("category_id")
+        raw_category = None
+        if raw_category_id is not None:
+            try:
+                raw_category = category_lookup.get(int(raw_category_id))
+            except (TypeError, ValueError):
+                raw_category = None
+        if raw_category is None:
+            raw_category = _normalize_text(annotation.get("class")) or "unknown"
+
+        excluded_reason = OBSTACLE_EXCLUDED_REASONS.get(raw_category)
+        if excluded_reason is not None:
+            bbox = _obstacle_bbox(annotation, width, height)
+            if bbox is None:
+                continue
+            rectangles.append(
+                {
+                    "bbox": bbox,
+                    "color": _debug_vis_color_for_reason(excluded_reason),
+                    "label": f"excluded:{raw_category}",
+                }
+            )
+            continue
+
+        mapped_class = OBSTACLE_CLASS_REMAP.get(raw_category)
+        if mapped_class is None:
+            bbox = _obstacle_bbox(annotation, width, height)
+            if bbox is None:
+                continue
+            rectangles.append(
+                {
+                    "bbox": bbox,
+                    "color": _debug_vis_color_for_reason("unrecognized_obstacle_annotation"),
+                    "label": f"unrecognized:{raw_category}",
+                }
+            )
+
+    return rectangles
+
+
+def _prepare_debug_scene_for_overlay(scene: dict[str, Any]) -> dict[str, Any]:
+    if scene.get("source", {}).get("dataset") != OUTPUT_OBSTACLE_KEY:
+        return scene
+
+    debug_rectangles = _obstacle_debug_rectangles(scene)
+    if not debug_rectangles:
+        return scene
+
+    overlay_scene = dict(scene)
+    overlay_scene["debug_rectangles"] = debug_rectangles
+    return overlay_scene
 
 
 def _lane_worker(task: StandardizeTask) -> dict[str, Any]:
@@ -1702,6 +1798,7 @@ def _select_debug_vis_summaries(
     dataset_keys = sorted(grouped)
     for dataset_key in dataset_keys:
         rng.shuffle(grouped[dataset_key])
+        grouped[dataset_key].sort(key=_debug_vis_priority)
 
     selected: list[dict[str, Any]] = []
     remaining = min(count, len(summaries))
@@ -1724,7 +1821,7 @@ def _select_debug_vis_summaries(
 
 def _render_debug_vis_entry(scene_path: str, output_path: str) -> dict[str, str]:
     scene = _load_json(Path(scene_path))
-    render_overlay(scene, Path(output_path))
+    render_overlay(_prepare_debug_scene_for_overlay(scene), Path(output_path))
     return {
         "scene_path": scene_path,
         "output_path": output_path,

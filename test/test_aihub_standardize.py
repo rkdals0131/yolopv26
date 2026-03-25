@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from model.preprocess.aihub_standardize import TL_BITS, run_standardization
+from model.preprocess.aihub_standardize import (
+    TL_BITS,
+    _prepare_debug_scene_for_overlay,
+    _select_debug_vis_summaries,
+    run_standardization,
+)
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
@@ -30,6 +35,77 @@ def _write_dummy_pdf(path: Path) -> None:
 
 
 class AIHubStandardizationTests(unittest.TestCase):
+    def test_debug_vis_prefers_positive_obstacle_samples(self) -> None:
+        selected = _select_debug_vis_summaries(
+            [
+                {
+                    "dataset_key": "aihub_obstacle_seoul",
+                    "split": "train",
+                    "sample_id": "empty",
+                    "scene_path": "empty.json",
+                    "image_path": "empty.png",
+                    "det_count": 0,
+                    "traffic_light_count": 0,
+                    "traffic_sign_count": 0,
+                    "lane_count": 0,
+                    "stop_line_count": 0,
+                    "crosswalk_count": 0,
+                },
+                {
+                    "dataset_key": "aihub_obstacle_seoul",
+                    "split": "train",
+                    "sample_id": "positive",
+                    "scene_path": "positive.json",
+                    "image_path": "positive.png",
+                    "det_count": 2,
+                    "traffic_light_count": 0,
+                    "traffic_sign_count": 0,
+                    "lane_count": 0,
+                    "stop_line_count": 0,
+                    "crosswalk_count": 0,
+                },
+            ],
+            count=1,
+            seed=26,
+        )
+
+        self.assertEqual([item["sample_id"] for item in selected], ["positive"])
+
+    def test_debug_overlay_marks_excluded_obstacle_boxes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+
+            run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            obstacle_scene_path = sorted((output_root / "labels_scene").rglob("aihub_obstacle_seoul*.json"))[0]
+            obstacle_scene = json.loads(obstacle_scene_path.read_text(encoding="utf-8"))
+            overlay_scene = _prepare_debug_scene_for_overlay(obstacle_scene)
+
+            self.assertEqual(overlay_scene["detections"][0]["class_name"], "traffic_cone")
+            self.assertIn("debug_rectangles", overlay_scene)
+            self.assertEqual(len(overlay_scene["debug_rectangles"]), 1)
+            self.assertEqual(overlay_scene["debug_rectangles"][0]["bbox"], [420.0, 250.0, 468.0, 380.0])
+            self.assertEqual(overlay_scene["debug_rectangles"][0]["color"], "#00e5ff")
+            self.assertEqual(overlay_scene["debug_rectangles"][0]["label"], "excluded:person")
+
     def test_standardization_generates_readmes_reports_and_tl_bits(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

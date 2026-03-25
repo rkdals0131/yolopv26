@@ -466,10 +466,12 @@ class PV26MultiTaskLoss(nn.Module):
             gt_bboxes = det_gt["boxes_xyxy"].to(device=det_pred.device, dtype=torch.float32)
             mask_gt = det_valid.unsqueeze(-1) & det_source[:, None, None]
             try:
+                # Ultralytics task-aligned assigner is not consistently AMP-safe.
+                # Keep the training graph in the model dtype, but run assigner inputs in float32.
                 _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self.assigner(
-                    cls_logits.detach().sigmoid(),
-                    pred_boxes.detach(),
-                    anchor_points,
+                    cls_logits.detach().to(dtype=torch.float32).sigmoid(),
+                    pred_boxes.detach().to(dtype=torch.float32),
+                    anchor_points.to(dtype=torch.float32),
                     gt_labels,
                     gt_bboxes,
                     mask_gt,

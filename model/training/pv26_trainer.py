@@ -986,14 +986,14 @@ class PV26Trainer:
                     f"epoch_start={epoch_started_at_iso} "
                     f"elapsed={_format_duration(elapsed_sec)} "
                     f"eta={_format_duration(eta_sec)} "
-                    f"iter_mean={profile_iteration['mean']:.3f}s "
-                    f"iter_p50={profile_iteration['p50']:.3f}s "
-                    f"iter_p99={profile_iteration['p99']:.3f}s "
-                    f"wait={step_summary['profile']['wait_sec']['mean']:.3f}s "
-                    f"load={step_summary['profile']['load_sec']['mean']:.3f}s "
-                    f"fwd={step_summary['profile']['forward_sec']['mean']:.3f}s "
-                    f"loss={step_summary['profile']['loss_sec']['mean']:.3f}s "
-                    f"bwd={step_summary['profile']['backward_sec']['mean']:.3f}s",
+                    f"iter_mean={profile_iteration['mean'] * 1000.0:.3f}ms "
+                    f"iter_p50={profile_iteration['p50'] * 1000.0:.3f}ms "
+                    f"iter_p99={profile_iteration['p99'] * 1000.0:.3f}ms "
+                    f"wait={step_summary['profile']['wait_sec']['mean'] * 1000.0:.3f}ms "
+                    f"load={step_summary['profile']['load_sec']['mean'] * 1000.0:.3f}ms "
+                    f"fwd={step_summary['profile']['forward_sec']['mean'] * 1000.0:.3f}ms "
+                    f"loss={step_summary['profile']['loss_sec']['mean'] * 1000.0:.3f}ms "
+                    f"bwd={step_summary['profile']['backward_sec']['mean'] * 1000.0:.3f}ms",
                     flush=True,
                 )
         if not step_summaries:

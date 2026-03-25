@@ -16,7 +16,7 @@
 - failure manifest / QA summary
 - trainer AMP / grad accumulation / grad clip
 - trainer auto resume / non-finite / OOM guard
-- pilot training command
+- train command
 - AIHUB `도로장애물·표면 인지 영상(수도권)` det-only source 통합 완료
   - scope는 `traffic_cone / obstacle` only
   - `Person / Manhole / Pothole on road / Filled pothole`는 표준화 output에서 제외
@@ -117,10 +117,10 @@
   - smoke command 추가
   - epoch fit smoke command 추가
 
-## pilot status
+## train status
 
 - 완료
-  - pilot train command 추가
+  - train command 추가
   - fit resume path 지원
   - canonical subset 기준 hardening regression test 추가
 

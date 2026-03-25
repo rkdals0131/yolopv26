@@ -87,7 +87,7 @@
 - trainer는 checkpoint save/load를 지원한다.
 - trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
-- `tools/run_pv26_pilot_train.py`, `tools/run_pv26_tiny_overfit_smoke.py`는 CLI 옵션 대신 파일 상단 config block을 직접 수정하는 방식으로 실행한다.
+- `tools/run_pv26_train.py`, `tools/run_pv26_tiny_overfit_smoke.py`는 CLI 옵션 대신 파일 상단 config block을 직접 수정하는 방식으로 실행한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
 - evaluator는 raw model output을 postprocess prediction bundle로 decode하는 `predict_batch` runtime을 지원한다.
 - evaluator는 validation에서 loss/metrics/prediction bundle을 single forward path로 묶어 사용한다.

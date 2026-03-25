@@ -131,4 +131,4 @@
 - [x] model smoke command
 - [x] training smoke command
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
-- [x] `python3 tools/run_pv26_pilot_train.py`
+- [x] `python3 tools/run_pv26_train.py`

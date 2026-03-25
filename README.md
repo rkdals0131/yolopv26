@@ -186,12 +186,12 @@ python3 tools/run_pv26_tiny_overfit_smoke.py
 
 Edit the config block at the top of `tools/run_pv26_tiny_overfit_smoke.py`, then run the script. It builds a mixed tiny batch from canonical train samples, runs repeated train steps, and prints the loss history as JSON.
 
-## Fit And Pilot Smoke
+## Train
 
 ```bash
-python3 tools/run_pv26_pilot_train.py
+python3 tools/run_pv26_train.py
 ```
 
-Edit the config block at the top of `tools/run_pv26_pilot_train.py`, then run the script. It exercises the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, live epoch/iteration logging, rolling timing profiles (`wait/load/fwd/loss/bwd`, mean/p50/p99, ETA), `run_manifest.json`, JSONL history logs, and TensorBoard scalar logging.
+Edit the config block at the top of `tools/run_pv26_train.py`, then run the script. It runs the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, live epoch/iteration logging, rolling timing profiles (`wait/load/fwd/loss/bwd`, mean/p50/p99, ETA), `run_manifest.json`, JSONL history logs, and TensorBoard scalar logging.
 
 Validation loaders in this command are sequential eval loaders, not balanced train samplers.
