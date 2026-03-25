@@ -87,6 +87,7 @@
 - [x] dataset-balanced sampler helper
 - [x] checkpoint save/load
 - [x] history summary / JSONL logging
+- [x] training live/profiling log: epoch/iteration/ETA/elapsed/epoch start + n-iter avg wait/load/fwd/loss/bwd and p50/p99
 - [x] full epoch fit loop
 - [x] val loop
 - [x] best / last checkpoint write
@@ -130,4 +131,4 @@
 - [x] model smoke command
 - [x] training smoke command
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
-- [x] `python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke`
+- [x] `python3 tools/run_pv26_pilot_train.py`

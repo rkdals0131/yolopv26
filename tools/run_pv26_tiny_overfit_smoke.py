@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 
@@ -14,8 +14,38 @@ from model.loading import PV26CanonicalDataset, collate_pv26_samples
 from model.training import PV26Trainer, run_pv26_tiny_overfit
 from model.trunk import build_yolo26n_trunk
 
+
 DEFAULT_AIHUB_ROOT = REPO_ROOT / "seg_dataset" / "pv26_aihub_standardized"
 DEFAULT_BDD_ROOT = REPO_ROOT / "seg_dataset" / "pv26_bdd100k_standardized"
+HEAD_CHANNELS = (64, 128, 256)
+
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    # AIHUB canonical root. Must exist before training.
+    aihub_root: Path = DEFAULT_AIHUB_ROOT
+    # Turn on when BDD canonical root should be mixed into the smoke batch.
+    include_bdd: bool = True
+    # BDD canonical root. Used only when include_bdd is True.
+    bdd_root: Path = DEFAULT_BDD_ROOT
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    # Number of repeated updates on the same tiny batch.
+    steps: int = 8
+    # Stage name from the documented training schedule.
+    stage: str = "stage_1_frozen_trunk_warmup"
+    # Device string passed to torch.
+    device: str = "cpu"
+    # Optimizer hyperparameters for the tiny overfit check.
+    trunk_lr: float = 1e-4
+    head_lr: float = 5e-3
+
+
+# Edit this block directly before running `python3 tools/run_pv26_tiny_overfit_smoke.py`.
+DATASET_CONFIG = DatasetConfig()
+TRAIN_CONFIG = TrainConfig()
 
 
 def _select_samples(dataset: PV26CanonicalDataset, include_bdd: bool) -> list[dict]:
@@ -40,43 +70,29 @@ def _select_samples(dataset: PV26CanonicalDataset, include_bdd: bool) -> list[di
     return selected
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a PV26 tiny overfit smoke loop.")
-    parser.add_argument("--aihub-root", type=Path, default=DEFAULT_AIHUB_ROOT)
-    parser.add_argument("--bdd-root", type=Path, default=DEFAULT_BDD_ROOT)
-    parser.add_argument("--include-bdd", action="store_true")
-    parser.add_argument("--steps", type=int, default=8)
-    parser.add_argument("--stage", type=str, default="stage_1_frozen_trunk_warmup")
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--trunk-lr", type=float, default=1e-4)
-    parser.add_argument("--head-lr", type=float, default=5e-3)
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    dataset_roots = [args.aihub_root]
-    if args.include_bdd:
-        dataset_roots.append(args.bdd_root)
+    dataset_roots = [DATASET_CONFIG.aihub_root]
+    if DATASET_CONFIG.include_bdd:
+        dataset_roots.append(DATASET_CONFIG.bdd_root)
     missing_roots = [str(path) for path in dataset_roots if not path.is_dir()]
     if missing_roots:
         raise SystemExit(f"canonical dataset roots not found: {missing_roots}")
 
     dataset = PV26CanonicalDataset(dataset_roots)
-    samples = _select_samples(dataset, include_bdd=args.include_bdd)
+    samples = _select_samples(dataset, include_bdd=DATASET_CONFIG.include_bdd)
     batch = collate_pv26_samples(samples)
 
     adapter = build_yolo26n_trunk()
-    heads = PV26Heads(in_channels=(64, 128, 256))
+    heads = PV26Heads(in_channels=HEAD_CHANNELS)
     trainer = PV26Trainer(
         adapter,
         heads,
-        stage=args.stage,
-        device=args.device,
-        trunk_lr=args.trunk_lr,
-        head_lr=args.head_lr,
+        stage=TRAIN_CONFIG.stage,
+        device=TRAIN_CONFIG.device,
+        trunk_lr=TRAIN_CONFIG.trunk_lr,
+        head_lr=TRAIN_CONFIG.head_lr,
     )
-    summary = run_pv26_tiny_overfit(trainer, batch, steps=args.steps)
+    summary = run_pv26_tiny_overfit(trainer, batch, steps=TRAIN_CONFIG.steps)
     print(json.dumps(summary, indent=2, ensure_ascii=True))
 
 

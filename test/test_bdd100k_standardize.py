@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from model.preprocess.bdd100k_standardize import TL_BITS, run_standardization
+from model.preprocess.bdd100k_standardize import run_standardization
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
@@ -57,10 +57,12 @@ class BDD100KStandardizationTests(unittest.TestCase):
             self.assertEqual(dataset["det_class_counts"]["vehicle"], 3)
             self.assertEqual(dataset["det_class_counts"]["pedestrian"], 2)
             self.assertEqual(dataset["det_class_counts"]["bike"], 2)
-            self.assertEqual(dataset["det_class_counts"]["traffic_light"], 1)
-            self.assertEqual(dataset["det_class_counts"]["sign"], 1)
-            self.assertEqual(dataset["tl_state_hint_counts"]["red"], 1)
+            self.assertNotIn("traffic_light", dataset["det_class_counts"])
+            self.assertNotIn("sign", dataset["det_class_counts"])
+            self.assertEqual(dataset["tl_state_hint_counts"], {})
             self.assertEqual(dataset["held_reason_counts"]["ignored_non_pv26_category"], 3)
+            self.assertEqual(dataset["held_reason_counts"]["excluded_bdd_traffic_light_policy"], 1)
+            self.assertEqual(dataset["held_reason_counts"]["excluded_bdd_sign_policy"], 1)
 
             det_labels = sorted((output_root / "labels_det").rglob("*.txt"))
             scene_labels = sorted((output_root / "labels_scene").rglob("*.json"))
@@ -79,10 +81,9 @@ class BDD100KStandardizationTests(unittest.TestCase):
             self.assertEqual(train_scene["context"]["weather"], "clear")
             self.assertEqual(train_scene["context"]["scene"], "city street")
             self.assertEqual(train_scene["context"]["timeofday"], "daytime")
-            self.assertEqual(train_scene["traffic_lights"][0]["state_hint"], "red")
-            self.assertEqual(train_scene["traffic_lights"][0]["tl_attr_valid"], 0)
-            self.assertEqual(train_scene["traffic_lights"][0]["collapse_reason"], "bdd_det_only_source")
-            self.assertEqual(train_scene["traffic_lights"][0]["tl_bits"], {bit: 0 for bit in TL_BITS})
+            self.assertEqual([item["class_name"] for item in train_scene["detections"]], ["vehicle"])
+            self.assertEqual(train_scene["traffic_lights"], [])
+            self.assertEqual(train_scene["traffic_signs"], [])
 
             det_map_yaml = outputs["det_map_yaml"].read_text(encoding="utf-8")
             scene_map_yaml = outputs["scene_map_yaml"].read_text(encoding="utf-8")

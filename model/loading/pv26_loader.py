@@ -8,7 +8,7 @@ from typing import Any, Iterable
 import torch
 from torch.utils.data import Dataset
 
-from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, TL_BITS
+from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 from .transform import (
     NETWORK_HW,
     LetterboxTransform,
@@ -56,6 +56,21 @@ SOURCE_MASK_BY_DATASET = {
         "crosswalk": False,
     },
 }
+DET_SUPERVISION_BY_DATASET = {
+    "aihub_traffic_seoul": {
+        "class_names": ("traffic_light", "sign"),
+        "allow_background_negatives": False,
+    },
+    "aihub_lane_seoul": {
+        "class_names": (),
+        "allow_background_negatives": False,
+    },
+    "bdd100k_det_100k": {
+        "class_names": ("vehicle", "bike", "pedestrian"),
+        "allow_background_negatives": False,
+    },
+}
+OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -166,6 +181,19 @@ def _build_source_mask(dataset_key: str) -> dict[str, bool]:
         raise KeyError(f"unsupported dataset key for loader: {dataset_key}") from exc
 
 
+def _build_det_supervision_policy(dataset_key: str) -> dict[str, Any]:
+    try:
+        policy = DET_SUPERVISION_BY_DATASET[dataset_key]
+    except KeyError as exc:
+        raise KeyError(f"unsupported dataset key for det supervision policy: {dataset_key}") from exc
+    class_names = [str(item) for item in policy["class_names"]]
+    return {
+        "class_names": class_names,
+        "class_ids": [OD_CLASS_TO_ID[item] for item in class_names],
+        "allow_background_negatives": bool(policy["allow_background_negatives"]),
+    }
+
+
 class PV26CanonicalDataset(Dataset):
     def __init__(self, dataset_roots: Iterable[Path | str]) -> None:
         roots = [Path(root).resolve() for root in dataset_roots]
@@ -187,6 +215,7 @@ class PV26CanonicalDataset(Dataset):
         image = load_letterboxed_image(record.image_path, transform)
 
         source_mask = _build_source_mask(record.dataset_key)
+        det_policy = _build_det_supervision_policy(record.dataset_key)
         tl_lookup = _traffic_light_lookup(scene)
         det_rows = _load_det_rows(record.det_path, raw_hw)
 
@@ -267,6 +296,9 @@ class PV26CanonicalDataset(Dataset):
                 "raw_hw": raw_hw,
                 "network_hw": NETWORK_HW,
                 "transform": transform.as_meta(),
+                "det_supervised_classes": list(det_policy["class_names"]),
+                "det_supervised_class_ids": list(det_policy["class_ids"]),
+                "det_allow_background_negatives": bool(det_policy["allow_background_negatives"]),
             },
         }
 

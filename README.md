@@ -180,17 +180,17 @@ This command reports the current runtime stack, checks YOLO26 support, and verif
 ## Tiny Overfit Smoke
 
 ```bash
-python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4
+python3 tools/run_pv26_tiny_overfit_smoke.py
 ```
 
-This command builds a mixed tiny batch from canonical train samples, runs repeated train steps, and prints the loss history as JSON.
+Edit the config block at the top of `tools/run_pv26_tiny_overfit_smoke.py`, then run the script. It builds a mixed tiny batch from canonical train samples, runs repeated train steps, and prints the loss history as JSON.
 
 ## Fit And Pilot Smoke
 
 ```bash
-python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke
+python3 tools/run_pv26_pilot_train.py
 ```
 
-This command exercises the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, and runtime hardening paths.
+Edit the config block at the top of `tools/run_pv26_pilot_train.py`, then run the script. It exercises the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, live epoch/iteration logging, rolling timing profiles (`wait/load/fwd/loss/bwd`, mean/p50/p99, ETA), `run_manifest.json`, JSONL history logs, and TensorBoard scalar logging.
 
 Validation loaders in this command are sequential eval loaders, not balanced train samplers.

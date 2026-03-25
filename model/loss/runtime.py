@@ -361,6 +361,28 @@ class PV26MultiTaskLoss(nn.Module):
             "det_source": det_source,
         }
 
+    def _det_supervision_masks(
+        self,
+        encoded: dict[str, Any],
+        *,
+        device: torch.device,
+        batch_size: int,
+        num_classes: int,
+    ) -> tuple[torch.BoolTensor, torch.BoolTensor]:
+        mask_payload = encoded.get("mask", {})
+        class_mask = mask_payload.get("det_supervised_class_mask")
+        if class_mask is None:
+            class_mask = torch.ones((batch_size, num_classes), dtype=torch.bool, device=device)
+        else:
+            class_mask = class_mask.to(device=device, dtype=torch.bool)
+
+        allow_background = mask_payload.get("det_allow_background_negatives")
+        if allow_background is None:
+            allow_background = torch.ones(batch_size, dtype=torch.bool, device=device)
+        else:
+            allow_background = allow_background.to(device=device, dtype=torch.bool)
+        return class_mask, allow_background
+
     def _det_loss(
         self,
         det_pred: torch.Tensor,
@@ -376,12 +398,26 @@ class PV26MultiTaskLoss(nn.Module):
         obj_target = assignment["obj_target"]
         target_score_sum = assignment["target_score_sum"]
         det_source = assignment["det_source"]
+        det_class_mask, det_allow_background = self._det_supervision_masks(
+            encoded,
+            device=det_pred.device,
+            batch_size=det_pred.shape[0],
+            num_classes=cls_logits.shape[-1],
+        )
 
-        obj_mask = det_source[:, None].expand_as(obj_logits)
+        obj_mask = torch.where(
+            det_allow_background[:, None],
+            det_source[:, None].expand_as(obj_logits),
+            fg_mask & det_source[:, None],
+        )
         obj_loss = F.binary_cross_entropy_with_logits(obj_logits, obj_target, reduction="none")
         obj_loss = (obj_loss * obj_mask.to(dtype=det_pred.dtype)).sum() / obj_mask.sum().clamp(min=1)
 
-        cls_mask = det_source[:, None, None].expand_as(cls_logits)
+        cls_mask = torch.where(
+            det_allow_background[:, None, None],
+            det_source[:, None, None] & det_class_mask[:, None, :],
+            fg_mask[:, :, None] & det_class_mask[:, None, :],
+        )
         cls_loss = F.binary_cross_entropy_with_logits(cls_logits, target_scores, reduction="none")
         cls_loss = (cls_loss * cls_mask.to(dtype=det_pred.dtype)).sum() / target_score_sum
 

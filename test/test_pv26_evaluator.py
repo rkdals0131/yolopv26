@@ -60,6 +60,8 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         "crosswalk": crosswalk,
         "mask": {
             "det_source": torch.ones(batch_size, dtype=torch.bool),
+            "det_supervised_class_mask": torch.ones((batch_size, 7), dtype=torch.bool),
+            "det_allow_background_negatives": torch.ones(batch_size, dtype=torch.bool),
             "tl_attr_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_source": torch.ones(batch_size, dtype=torch.bool),
             "stop_line_source": torch.ones(batch_size, dtype=torch.bool),

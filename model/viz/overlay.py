@@ -10,6 +10,13 @@ LANE_COLOR_MAP = {
     "yellow_lane": "#ffd400",
     "blue_lane": "#3aa5ff",
 }
+DETECTION_COLOR_MAP = {
+    "vehicle": "#ffb000",
+    "bike": "#ff7a00",
+    "pedestrian": "#ff4040",
+    "traffic_cone": "#ff66b3",
+    "obstacle": "#c84dff",
+}
 
 
 def _format_points(points: list[list[float]]) -> str:
@@ -91,6 +98,12 @@ def render_overlay(scene: dict[str, Any], output_path: Path) -> None:
 
     for ignored in scene.get("ignored_regions", []):
         _append_polygon(command, ignored.get("points", []), "#ff66ff")
+
+    for detection in scene.get("detections", []):
+        class_name = str(detection.get("class_name") or "").strip().lower()
+        if class_name in {"traffic_light", "sign"}:
+            continue
+        _append_rectangle(command, detection.get("bbox", []), DETECTION_COLOR_MAP.get(class_name, "#ffaa00"))
 
     for light in scene.get("traffic_lights", []):
         _append_rectangle(command, light.get("bbox", []), "#00ff99")

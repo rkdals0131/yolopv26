@@ -75,6 +75,9 @@
 - [x] evaluator single-forward validation path 구현
 - [x] env preflight command 구현
 - [x] ultralytics-missing 환경용 runtime skip test 정리
+- [x] BDD sign/light exclusion 정책과 generic det debug overlay sync
+- [x] partial-det detector negative/class masking 구현
+- [x] trainer run manifest / TensorBoard logging / config-first train entry 정리
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -82,6 +85,7 @@
 ## 다음 작업
 
 - [ ] full-dataset 전처리 실제 실행 계획 확정
+- [ ] AIHUB `도로장애물·표면 인지 영상(수도권)` source를 `traffic_cone / obstacle` only 범위로 canonical standardization에 추가
 - [ ] pilot subset 본학습과 metric 해석
 - [ ] preflight 결과를 기준으로 full-train 환경 lock 파일 정리
 - [ ] export / ROS 정교화
@@ -107,9 +111,9 @@
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
 - [x] `python3 tools/check_env.py`
-- [x] `python3 tools/run_pv26_tiny_overfit_smoke.py --steps 4`
+- [x] `python3 tools/run_pv26_tiny_overfit_smoke.py`
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
-- [x] `python3 tools/run_pv26_pilot_train.py --epochs 1 --train-batches 1 --val-batches 1 --run-dir /tmp/pv26_pilot_smoke`
+- [x] `python3 tools/run_pv26_pilot_train.py`
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1`
 - [x] `python3 -m model.preprocess.bdd100k_standardize --workers 1 --max-samples-per-split 1 --debug-vis-count 1`
 - [x] detector assignment 통합 후 targeted tests 재통과
@@ -130,7 +134,8 @@
 - `N_gt_det`는 GT row count, `Q_det`는 detector prediction slot count로 고정
 - standardized dataset loader는 variable dataset raw에서 `800x608`으로 직접 transform한다
 - loader 전에 BDD100K도 canonical standardization 레이어로 맞춘다
-- BDD100K는 `det only` source로 쓰고 `trafficLightColor`는 scene hint로만 보존한다
+- BDD100K는 `vehicle / bike / pedestrian` 보강 source로 쓰고 `traffic_light / sign`는 canonical output에서 제외한다
+- planned AIHUB obstacle source는 `traffic_cone / obstacle` only로 쓰고 `Person / Manhole / Pothole on road / Filled pothole`는 제외한다
 - loader collate는 image만 stack하고 ragged target은 list 형태로 유지한다
 - target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다
@@ -143,6 +148,8 @@
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current trainer runtime includes balanced sampler helper, checkpoint save/load, and history JSONL logging
+- current trainer runtime also writes `run_manifest.json`, step/epoch JSONL logs, and TensorBoard scalars under `runs/.../tensorboard`
+- current trainer runtime also prints live epoch/iteration progress with elapsed/ETA and rolling timing profiles for wait/load/fwd/loss/bwd including mean/p50/p99
 - current trainer runtime also includes epoch fit loop, val loop, best / last checkpoint write, and run summary output
 - current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard
 - current evaluator runtime returns batch loss summary / GT count summary and supports postprocessed prediction bundles
@@ -153,4 +160,4 @@
 - current defaults no longer depend on host-specific absolute repo paths
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
 - current postprocess tolerates missing `torchvision.ops.nms` through pure PyTorch fallback
-- redundant smoke runners were removed in favor of `check_env.py` and `run_pv26_pilot_train.py`
+- redundant smoke runners were removed in favor of `check_env.py` and config-first `run_pv26_pilot_train.py`

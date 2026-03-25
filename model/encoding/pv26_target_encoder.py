@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 
+from ..preprocess.aihub_standardize import OD_CLASSES
 from ..loss.spec import build_loss_spec
 
 
@@ -215,12 +216,28 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
     lane_source = torch.tensor([bool(mask["lane"]) for mask in source_masks], dtype=torch.bool)
     stop_line_source = torch.tensor([bool(mask["stop_line"]) for mask in source_masks], dtype=torch.bool)
     crosswalk_source = torch.tensor([bool(mask["crosswalk"]) for mask in source_masks], dtype=torch.bool)
+    det_supervised_class_mask = torch.zeros((batch_size, len(OD_CLASSES)), dtype=torch.bool)
+    det_allow_background_negatives = torch.zeros(batch_size, dtype=torch.bool)
 
     for batch_index in range(batch_size):
         sample_det = det_targets[batch_index]
         sample_tl = tl_attr_targets[batch_index]
         sample_lane = lane_targets[batch_index]
         sample_valid = valid_masks[batch_index]
+        sample_meta = meta[batch_index] if batch_index < len(meta) else {}
+        class_ids = sample_meta.get("det_supervised_class_ids")
+        if isinstance(class_ids, (list, tuple)):
+            for class_id in class_ids:
+                index = int(class_id)
+                if 0 <= index < len(OD_CLASSES):
+                    det_supervised_class_mask[batch_index, index] = True
+        elif bool(det_source[batch_index]):
+            det_supervised_class_mask[batch_index] = True
+
+        if "det_allow_background_negatives" in sample_meta:
+            det_allow_background_negatives[batch_index] = bool(sample_meta["det_allow_background_negatives"])
+        else:
+            det_allow_background_negatives[batch_index] = bool(det_source[batch_index])
 
         det_count = int(sample_det["boxes_xyxy"].shape[0])
         if det_count > 0:
@@ -268,6 +285,8 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
         "crosswalk": crosswalk_encoded,
         "mask": {
             "det_source": det_source,
+            "det_supervised_class_mask": det_supervised_class_mask,
+            "det_allow_background_negatives": det_allow_background_negatives,
             "tl_attr_source": tl_attr_source,
             "lane_source": lane_source,
             "stop_line_source": stop_line_source,

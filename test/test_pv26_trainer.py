@@ -63,6 +63,8 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         "crosswalk": crosswalk,
         "mask": {
             "det_source": torch.ones(batch_size, dtype=torch.bool),
+            "det_supervised_class_mask": torch.ones((batch_size, 7), dtype=torch.bool),
+            "det_allow_background_negatives": torch.ones(batch_size, dtype=torch.bool),
             "tl_attr_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_source": torch.ones(batch_size, dtype=torch.bool),
             "stop_line_source": torch.ones(batch_size, dtype=torch.bool),
@@ -156,6 +158,10 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(torch.tensor(summary["losses"]["total"])))
         self.assertIn("assignment", summary)
         self.assertIn("det", summary["assignment"])
+        self.assertIn("timing", summary)
+        self.assertIn("iteration_sec", summary["timing"])
+        self.assertIn("source_counts", summary)
+        self.assertIn("det_supervision", summary)
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_trainer_checkpoint_and_history_roundtrip(self) -> None:
@@ -220,6 +226,7 @@ class PV26TrainerTests(unittest.TestCase):
                 epochs=1,
                 val_loader=[batch],
                 run_dir=run_dir,
+                run_manifest_extra={"tag": "fit_smoke"},
             )
 
             self.assertEqual(summary["completed_epochs"], 1)
@@ -232,11 +239,31 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertTrue((run_dir / "checkpoints" / "best.pt").is_file())
             self.assertTrue((run_dir / "checkpoints" / "epoch_001.pt").is_file())
             self.assertTrue((run_dir / "summary.json").is_file())
+            self.assertTrue((run_dir / "run_manifest.json").is_file())
+
+            step_lines = (run_dir / "history" / "train_steps.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(step_lines), 2)
+            step_payload = json.loads(step_lines[-1])
+            self.assertIn("timing", step_payload)
+            self.assertIn("profile", step_payload)
+            self.assertIn("progress", step_payload)
+            self.assertIn("iteration_sec", step_payload["timing"])
+            self.assertIn("iteration_sec", step_payload["profile"])
+            self.assertEqual(step_payload["progress"]["iteration"], 2)
 
             summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary_payload["completed_epochs"], 1)
             self.assertEqual(summary_payload["last_epoch"]["train"]["batches"], 2)
             self.assertEqual(summary_payload["last_epoch"]["val"]["batches"], 1)
+            self.assertEqual(summary_payload["manifest_path"], str(run_dir / "run_manifest.json"))
+            self.assertIn("timing_profile", summary_payload["last_epoch"]["train"])
+            manifest_payload = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest_payload["extra"]["tag"], "fit_smoke")
+            self.assertEqual(manifest_payload["artifacts"]["summary"], str(run_dir / "summary.json"))
+            self.assertEqual(manifest_payload["trainer"]["log_every_n_steps"], 1)
+            self.assertEqual(manifest_payload["trainer"]["profile_window"], 20)
+            if manifest_payload["artifacts"]["tensorboard"]["enabled"]:
+                self.assertTrue(any((run_dir / "tensorboard").glob("events.out.tfevents.*")))
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_supports_grad_accumulation(self) -> None:

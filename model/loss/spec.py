@@ -170,6 +170,9 @@ def build_loss_spec() -> dict[str, Any]:
                 "image_path": "str",
                 "raw_hw": "tuple[int, int]",
                 "network_hw": "tuple[int, int]",
+                "det_supervised_classes": "list[str]",
+                "det_supervised_class_ids": "list[int]",
+                "det_allow_background_negatives": "bool",
                 "transform": {
                     "scale": "float",
                     "pad_left": "int",
@@ -188,6 +191,10 @@ def build_loss_spec() -> dict[str, Any]:
             "lane": "float32[B, 12, 54]",
             "stop_line": "float32[B, 6, 9]",
             "crosswalk": "float32[B, 4, 17]",
+            "det_supervision": {
+                "det_supervised_class_mask": "bool[B, C_det]",
+                "det_allow_background_negatives": "bool[B]",
+            },
             "det_assignment_binding": "computed inside loss and maps Q_det positives to N_gt_det indices",
         },
         "transform_contract": {

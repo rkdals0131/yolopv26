@@ -23,8 +23,8 @@ from .aihub_standardize import (
     _write_text,
 )
 
-PIPELINE_VERSION = "pv26-bdd100k-standardize-v1"
-SCENE_VERSION = "pv26-scene-bdd100k-v1"
+PIPELINE_VERSION = "pv26-bdd100k-standardize-v2"
+SCENE_VERSION = "pv26-scene-bdd100k-v2"
 DEFAULT_REPO_ROOT = _repo_root()
 DEFAULT_SEG_DATASET_ROOT = _seg_dataset_root(DEFAULT_REPO_ROOT)
 DEFAULT_BDD_ROOT = _env_path("PV26_BDD_ROOT", DEFAULT_SEG_DATASET_ROOT / "BDD100K")
@@ -72,8 +72,10 @@ BDD_TO_PV26_CLASS = {
     "motorcycle": "bike",
     "pedestrian": "pedestrian",
     "rider": "pedestrian",
-    "traffic light": "traffic_light",
-    "traffic sign": "sign",
+}
+BDD_EXCLUDED_REASON = {
+    "traffic light": "excluded_bdd_traffic_light_policy",
+    "traffic sign": "excluded_bdd_sign_policy",
 }
 
 
@@ -156,10 +158,12 @@ def _bdd_readme(bdd_root: Path, inventory: dict[str, Any]) -> str:
         "",
         "## PV26 사용 범위",
         "",
-        "- 사용 목적: `7-class object detection` 보강",
+        "- 사용 목적: `7-class object detection` 중 non-signal class 보강",
         "- 사용 원천: `bdd100k_images_100k/100k/<split>` + `bdd100k_labels/100k/<split>/*.json`",
         "- 비사용 원천: drivable map, segmentation map, det_20 preview asset",
-        "- TL 4-bit supervision은 BDD source에서 사용하지 않는다. BDD traffic light는 generic bbox만 detector supervision에 사용한다.",
+        "- BDD canonical output은 `vehicle / bike / pedestrian`만 detector supervision으로 남긴다.",
+        "- `traffic light`, `traffic sign`는 AIHUB signal source가 담당하므로 BDD canonical output에서 제외한다.",
+        "- TL 4-bit supervision은 BDD source에서 사용하지 않는다.",
         "",
         "## 공식 split 크기",
         "",
@@ -193,8 +197,8 @@ def _bdd_readme(bdd_root: Path, inventory: dict[str, Any]) -> str:
             "- `car/truck/bus/train/(other vehicle, van, caravan, trailer alias)` -> `vehicle`",
             "- `bike/motor/(bicycle, motorcycle alias)` -> `bike`",
             "- `person/rider/(other person alias)` -> `pedestrian`",
-            "- `traffic light` -> `traffic_light`",
-            "- `traffic sign` -> `sign`",
+            "- `traffic light` -> excluded (`AIHUB-owned signal class`)",
+            "- `traffic sign` -> excluded (`AIHUB-owned signal class`)",
             "- `lane/*`, `area/*` 등 non-box driving map 계열은 detector 표준화에서 제외",
             "",
             "## 로컬 디렉터리 구조",
@@ -401,6 +405,16 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
         raw_category = str(obj.get("category") or "").strip()
         canonical_category = _normalize_bdd_category(raw_category)
         raw_category_counts[canonical_category or "missing_category"] += 1
+        excluded_reason = BDD_EXCLUDED_REASON.get(canonical_category)
+        if excluded_reason is not None:
+            held_reason_counts[excluded_reason] += 1
+            _maybe_append_held(
+                held_annotations,
+                raw_category=canonical_category or "missing_category",
+                reason=excluded_reason,
+                bbox_present=obj.get("box2d") is not None,
+            )
+            continue
         mapped_class = BDD_TO_PV26_CLASS.get(canonical_category)
         box2d = obj.get("box2d")
         bbox = _extract_bbox(box2d, width, height) if box2d is not None else None
@@ -440,37 +454,6 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
         )
         det_class_counts[mapped_class] += 1
         det_lines.append(_bbox_to_yolo_line(OD_CLASS_TO_ID[mapped_class], bbox, width, height))
-
-        if mapped_class == "traffic_light":
-            state_hint = str(obj.get("attributes", {}).get("trafficLightColor") or "unknown").strip().lower()
-            tl_state_hint_counts[state_hint or "unknown"] += 1
-            traffic_lights.append(
-                {
-                    "id": len(traffic_lights),
-                    "detection_id": detection_id,
-                    "bbox": bbox,
-                    "tl_bits": {bit: 0 for bit in TL_BITS},
-                    "tl_attr_valid": 0,
-                    "collapse_reason": "bdd_det_only_source",
-                    "state_hint": state_hint or "unknown",
-                    "raw_attributes": obj.get("attributes"),
-                    "meta": {
-                        "dataset_label": canonical_category,
-                    },
-                }
-            )
-        elif mapped_class == "sign":
-            traffic_signs.append(
-                {
-                    "id": len(traffic_signs),
-                    "detection_id": detection_id,
-                    "bbox": bbox,
-                    "raw_attributes": obj.get("attributes"),
-                    "meta": {
-                        "dataset_label": canonical_category,
-                    },
-                }
-            )
 
     scene = {
         "version": SCENE_VERSION,
@@ -512,7 +495,7 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
         "held_annotations": held_annotations,
         "notes": [
             "BDD100K is standardized as a detector-only source for PV26.",
-            "Traffic-light raw color hints are preserved as state_hint but do not enable TL attribute supervision.",
+            "BDD canonical output intentionally excludes traffic-light and sign supervision.",
             "Lane and area categories are intentionally excluded from the detector canonical set.",
         ],
     }
@@ -566,10 +549,14 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
         scene = _load_json(scene_path)
     except Exception:
         return None
+    if str(scene.get("version") or "").strip() != SCENE_VERSION:
+        return None
 
     detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
     traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
     traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+    if traffic_lights or traffic_signs:
+        return None
     if detections and not det_path.is_file():
         return None
 
@@ -579,7 +566,10 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
     for item in detections:
         if not isinstance(item, dict):
             continue
-        det_class_counts[str(item.get("class_name") or "unknown").strip().lower()] += 1
+        class_name = str(item.get("class_name") or "unknown").strip().lower()
+        if class_name in {"traffic_light", "sign"}:
+            return None
+        det_class_counts[class_name] += 1
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
         raw_category_counts[str(meta.get("dataset_label") or "unknown").strip().lower()] += 1
     for item in traffic_lights:
