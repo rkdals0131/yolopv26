@@ -20,6 +20,7 @@ from .spec import build_loss_spec
 SPEC = build_loss_spec()
 TL_BITS = tuple(SPEC["model_contract"]["tl_bits"])
 OD_CLASSES = tuple(SPEC["model_contract"]["od_classes"])
+TL_CLASS_ID = OD_CLASSES.index("traffic_light")
 STAGE_LOSS_WEIGHTS = {
     stage["name"]: dict(stage["loss_weights"]) for stage in SPEC["training_schedule"]
 }
@@ -27,6 +28,10 @@ STAGE_ALIASES = {
     "stage_1_head_warmup": "stage_1_frozen_trunk_warmup",
 }
 DEFAULT_DET_FEATURE_STRIDES = (8, 16, 32)
+
+
+class PV26DetAssignmentUnavailable(RuntimeError):
+    pass
 
 
 def _canonical_stage(stage: str) -> str:
@@ -196,7 +201,13 @@ def _crosswalk_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> to
 
 
 class PV26MultiTaskLoss(nn.Module):
-    def __init__(self, stage: str = "stage_0_smoke") -> None:
+    def __init__(
+        self,
+        stage: str = "stage_0_smoke",
+        *,
+        allow_test_det_fallback: bool = False,
+        det_cls_negative_weight: float = 0.1,
+    ) -> None:
         super().__init__()
         stage = _canonical_stage(stage)
         try:
@@ -204,6 +215,8 @@ class PV26MultiTaskLoss(nn.Module):
         except KeyError as exc:
             raise KeyError(f"unsupported PV26 loss stage: {stage}") from exc
         self.stage = stage
+        self.allow_test_det_fallback = bool(allow_test_det_fallback)
+        self.det_cls_negative_weight = float(det_cls_negative_weight)
         self.register_buffer(
             "tl_bit_weights",
             torch.tensor(
@@ -228,8 +241,26 @@ class PV26MultiTaskLoss(nn.Module):
             "stop_line": "uninitialized",
             "crosswalk": "uninitialized",
         }
+        self.last_det_loss_breakdown = {
+            "det_obj_loss": 0.0,
+            "det_cls_matched_loss": 0.0,
+            "det_cls_unmatched_neg_loss": 0.0,
+            "det_iou_loss": 0.0,
+            "det_l1_loss": 0.0,
+            "det_cls_matched_count": 0,
+            "det_cls_unmatched_neg_count": 0,
+        }
 
     def forward(self, predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
+        self.last_det_loss_breakdown = {
+            "det_obj_loss": 0.0,
+            "det_cls_matched_loss": 0.0,
+            "det_cls_unmatched_neg_loss": 0.0,
+            "det_iou_loss": 0.0,
+            "det_l1_loss": 0.0,
+            "det_cls_matched_count": 0,
+            "det_cls_unmatched_neg_count": 0,
+        }
         det_assignment = self._build_det_assignment(predictions, encoded)
         self.last_det_assignment_mode = str(det_assignment["mode"])
         self.last_det_positive_count = int(det_assignment["fg_mask"].sum().item())
@@ -264,10 +295,12 @@ class PV26MultiTaskLoss(nn.Module):
         det_gt = encoded["det_gt"]
         det_pred = predictions["det"]
         det_source = encoded["mask"]["det_source"].to(device=det_pred.device, dtype=torch.bool)
+        det_valid = det_gt["valid_mask"].to(device=det_pred.device, dtype=torch.bool)
         obj_logits = det_pred[..., 4]
         cls_logits = det_pred[..., 5:]
         batch_size, query_count, _ = det_pred.shape
         num_classes = cls_logits.shape[-1]
+        positive_required = det_source & det_valid.any(dim=1)
 
         target_bboxes = torch.zeros((batch_size, query_count, 4), device=det_pred.device, dtype=torch.float32)
         target_scores = torch.zeros((batch_size, query_count, num_classes), device=det_pred.device, dtype=torch.float32)
@@ -275,17 +308,57 @@ class PV26MultiTaskLoss(nn.Module):
         fg_mask = torch.zeros((batch_size, query_count), device=det_pred.device, dtype=torch.bool)
         obj_target = torch.zeros((batch_size, query_count), device=det_pred.device, dtype=torch.float32)
 
+        def _empty_assignment(mode: str) -> dict[str, torch.Tensor | str]:
+            return {
+                "mode": mode,
+                "pred_boxes": det_pred[..., :4],
+                "obj_logits": obj_logits,
+                "cls_logits": cls_logits,
+                "target_bboxes": target_bboxes,
+                "target_scores": target_scores,
+                "target_gt_idx": target_gt_idx,
+                "fg_mask": fg_mask,
+                "obj_target": obj_target,
+                "target_score_sum": target_scores.sum().clamp(min=1.0),
+                "anchor_points": torch.zeros((query_count, 2), device=det_pred.device, dtype=det_pred.dtype),
+                "stride_tensor": torch.ones((query_count, 1), device=det_pred.device, dtype=det_pred.dtype),
+                "det_source": det_source,
+            }
+
+        def _prefix_fallback() -> dict[str, torch.Tensor | str]:
+            fallback = _empty_assignment("prefix_smoke")
+            for batch_index in range(batch_size):
+                if not bool(det_source[batch_index]):
+                    continue
+                valid_indices = torch.nonzero(det_valid[batch_index], as_tuple=False).flatten()
+                if valid_indices.numel() == 0:
+                    continue
+                positive_count = min(int(valid_indices.numel()), int(query_count))
+                positive_indices = valid_indices[:positive_count]
+                fg_mask[batch_index, :positive_count] = True
+                obj_target[batch_index, :positive_count] = 1.0
+                target_gt_idx[batch_index, :positive_count] = positive_indices
+                target_bboxes[batch_index, :positive_count] = det_gt["boxes_xyxy"][batch_index, positive_indices].to(
+                    device=det_pred.device,
+                    dtype=torch.float32,
+                )
+                classes = det_gt["classes"][batch_index, positive_indices].to(device=det_pred.device, dtype=torch.long)
+                target_scores[batch_index, torch.arange(positive_count, device=det_pred.device), classes] = 1.0
+            fallback["target_score_sum"] = target_scores.sum().clamp(min=1.0)
+            return fallback
+
+        if not bool(positive_required.any()):
+            return _empty_assignment("zero_positive")
+
         feature_shapes = predictions.get("det_feature_shapes")
         feature_strides = predictions.get("det_feature_strides")
-        if (
-            self.assigner is not None
-            and (
+        feature_meta_valid = (
             isinstance(feature_shapes, list)
             and isinstance(feature_strides, list)
             and len(feature_shapes) == len(feature_strides)
             and sum(int(height) * int(width) for height, width in feature_shapes) == query_count
-            )
-        ):
+        )
+        if self.assigner is not None and feature_meta_valid:
             anchor_points, stride_tensor = _make_anchor_grid(
                 [(int(height), int(width)) for height, width in feature_shapes],
                 [int(value) for value in feature_strides],
@@ -295,17 +368,20 @@ class PV26MultiTaskLoss(nn.Module):
             pred_boxes = _decode_anchor_relative_boxes(det_pred[..., :4], anchor_points, stride_tensor)
             gt_labels = det_gt["classes"].to(device=det_pred.device, dtype=torch.long).clamp(min=0).unsqueeze(-1)
             gt_bboxes = det_gt["boxes_xyxy"].to(device=det_pred.device, dtype=torch.float32)
-            mask_gt = det_gt["valid_mask"].to(device=det_pred.device, dtype=torch.bool).unsqueeze(-1)
-            mask_gt = mask_gt & det_source[:, None, None]
-
-            _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self.assigner(
-                cls_logits.detach().sigmoid(),
-                pred_boxes.detach(),
-                anchor_points,
-                gt_labels,
-                gt_bboxes,
-                mask_gt,
-            )
+            mask_gt = det_valid.unsqueeze(-1) & det_source[:, None, None]
+            try:
+                _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self.assigner(
+                    cls_logits.detach().sigmoid(),
+                    pred_boxes.detach(),
+                    anchor_points,
+                    gt_labels,
+                    gt_bboxes,
+                    mask_gt,
+                )
+            except Exception as exc:
+                if not self.allow_test_det_fallback:
+                    raise PV26DetAssignmentUnavailable(f"task_aligned_assigner_failed: {exc}") from exc
+                return _prefix_fallback()
             assigned_fg = assigned_fg.to(dtype=torch.bool)
             assigned_scores = assigned_scores * det_source[:, None, None].to(dtype=det_pred.dtype)
             assigned_fg = assigned_fg & det_source[:, None]
@@ -320,46 +396,31 @@ class PV26MultiTaskLoss(nn.Module):
                 torch.full_like(assigned_gt_idx, -1),
             )
             obj_target = target_scores.max(dim=-1).values
-            mode = "task_aligned"
-        else:
-            pred_boxes = det_pred[..., :4]
-            anchor_points = torch.zeros((query_count, 2), device=det_pred.device, dtype=det_pred.dtype)
-            stride_tensor = torch.ones((query_count, 1), device=det_pred.device, dtype=det_pred.dtype)
-            for batch_index in range(batch_size):
-                if not bool(det_source[batch_index]):
-                    continue
-                valid = det_gt["valid_mask"][batch_index].to(device=det_pred.device, dtype=torch.bool)
-                valid_indices = torch.nonzero(valid, as_tuple=False).flatten()
-                if valid_indices.numel() == 0:
-                    continue
-                positive_count = min(int(valid_indices.numel()), int(query_count))
-                positive_indices = valid_indices[:positive_count]
-                fg_mask[batch_index, :positive_count] = True
-                obj_target[batch_index, :positive_count] = 1.0
-                target_gt_idx[batch_index, :positive_count] = positive_indices
-                target_bboxes[batch_index, :positive_count] = det_gt["boxes_xyxy"][batch_index, positive_indices].to(
-                    device=det_pred.device, dtype=torch.float32
-                )
-                classes = det_gt["classes"][batch_index, positive_indices].to(device=det_pred.device, dtype=torch.long)
-                target_scores[batch_index, torch.arange(positive_count, device=det_pred.device), classes] = 1.0
-            mode = "prefix_smoke"
+            return {
+                "mode": "task_aligned",
+                "pred_boxes": pred_boxes,
+                "obj_logits": obj_logits,
+                "cls_logits": cls_logits,
+                "target_bboxes": target_bboxes,
+                "target_scores": target_scores,
+                "target_gt_idx": target_gt_idx,
+                "fg_mask": fg_mask,
+                "obj_target": obj_target,
+                "target_score_sum": target_scores.sum().clamp(min=1.0),
+                "anchor_points": anchor_points,
+                "stride_tensor": stride_tensor,
+                "det_source": det_source,
+            }
 
-        target_score_sum = target_scores.sum().clamp(min=1.0)
-        return {
-            "mode": mode,
-            "pred_boxes": pred_boxes,
-            "obj_logits": obj_logits,
-            "cls_logits": cls_logits,
-            "target_bboxes": target_bboxes,
-            "target_scores": target_scores,
-            "target_gt_idx": target_gt_idx,
-            "fg_mask": fg_mask,
-            "obj_target": obj_target,
-            "target_score_sum": target_score_sum,
-            "anchor_points": anchor_points,
-            "stride_tensor": stride_tensor,
-            "det_source": det_source,
-        }
+        if self.allow_test_det_fallback:
+            return _prefix_fallback()
+
+        missing: list[str] = []
+        if self.assigner is None:
+            missing.append("task_aligned_assigner_unavailable")
+        if not feature_meta_valid:
+            missing.append("det_feature_metadata_invalid")
+        raise PV26DetAssignmentUnavailable(", ".join(missing) or "task_aligned_assigner_unavailable")
 
     def _det_supervision_masks(
         self,
@@ -368,7 +429,7 @@ class PV26MultiTaskLoss(nn.Module):
         device: torch.device,
         batch_size: int,
         num_classes: int,
-    ) -> tuple[torch.BoolTensor, torch.BoolTensor]:
+    ) -> tuple[torch.BoolTensor, torch.BoolTensor, torch.BoolTensor]:
         mask_payload = encoded.get("mask", {})
         class_mask = mask_payload.get("det_supervised_class_mask")
         if class_mask is None:
@@ -376,12 +437,18 @@ class PV26MultiTaskLoss(nn.Module):
         else:
             class_mask = class_mask.to(device=device, dtype=torch.bool)
 
-        allow_background = mask_payload.get("det_allow_background_negatives")
-        if allow_background is None:
-            allow_background = torch.ones(batch_size, dtype=torch.bool, device=device)
+        allow_objectness = mask_payload.get("det_allow_objectness_negatives")
+        if allow_objectness is None:
+            allow_objectness = torch.ones(batch_size, dtype=torch.bool, device=device)
         else:
-            allow_background = allow_background.to(device=device, dtype=torch.bool)
-        return class_mask, allow_background
+            allow_objectness = allow_objectness.to(device=device, dtype=torch.bool)
+
+        allow_unmatched_class = mask_payload.get("det_allow_unmatched_class_negatives")
+        if allow_unmatched_class is None:
+            allow_unmatched_class = torch.ones(batch_size, dtype=torch.bool, device=device)
+        else:
+            allow_unmatched_class = allow_unmatched_class.to(device=device, dtype=torch.bool)
+        return class_mask, allow_objectness, allow_unmatched_class
 
     def _det_loss(
         self,
@@ -396,9 +463,8 @@ class PV26MultiTaskLoss(nn.Module):
         target_scores = assignment["target_scores"]
         fg_mask = assignment["fg_mask"]
         obj_target = assignment["obj_target"]
-        target_score_sum = assignment["target_score_sum"]
         det_source = assignment["det_source"]
-        det_class_mask, det_allow_background = self._det_supervision_masks(
+        det_class_mask, det_allow_objectness, det_allow_unmatched_class = self._det_supervision_masks(
             encoded,
             device=det_pred.device,
             batch_size=det_pred.shape[0],
@@ -406,30 +472,45 @@ class PV26MultiTaskLoss(nn.Module):
         )
 
         obj_mask = torch.where(
-            det_allow_background[:, None],
+            det_allow_objectness[:, None],
             det_source[:, None].expand_as(obj_logits),
             fg_mask & det_source[:, None],
         )
         obj_loss = F.binary_cross_entropy_with_logits(obj_logits, obj_target, reduction="none")
         obj_loss = (obj_loss * obj_mask.to(dtype=det_pred.dtype)).sum() / obj_mask.sum().clamp(min=1)
 
-        cls_mask = torch.where(
-            det_allow_background[:, None, None],
-            det_source[:, None, None] & det_class_mask[:, None, :],
-            fg_mask[:, :, None] & det_class_mask[:, None, :],
+        cls_bce = F.binary_cross_entropy_with_logits(cls_logits, target_scores, reduction="none")
+        cls_pos_mask = fg_mask[:, :, None] & det_class_mask[:, None, :]
+        cls_neg_mask = (
+            (~fg_mask)[:, :, None]
+            & det_source[:, None, None]
+            & det_allow_unmatched_class[:, None, None]
+            & det_class_mask[:, None, :]
         )
-        cls_loss = F.binary_cross_entropy_with_logits(cls_logits, target_scores, reduction="none")
-        cls_loss = (cls_loss * cls_mask.to(dtype=det_pred.dtype)).sum() / target_score_sum
+        cls_pos_loss = (cls_bce * cls_pos_mask.to(dtype=det_pred.dtype)).sum() / cls_pos_mask.sum().clamp(min=1)
+        cls_neg_loss = (cls_bce * cls_neg_mask.to(dtype=det_pred.dtype)).sum() / cls_neg_mask.sum().clamp(min=1)
+        cls_loss = cls_pos_loss + self.det_cls_negative_weight * cls_neg_loss
 
-        if not bool(fg_mask.any()):
-            return obj_loss + cls_loss
+        iou_loss = _zero_graph(det_pred)
+        l1_loss = _zero_graph(det_pred)
+        if bool(fg_mask.any()):
+            target_score_sum = target_scores.sum().clamp(min=1.0)
+            weights = target_scores.sum(dim=-1)[fg_mask]
+            iou = _bbox_iou(pred_boxes[fg_mask], target_bboxes[fg_mask], ciou=True).squeeze(-1)
+            iou_loss = ((1.0 - iou) * weights).sum() / target_score_sum
+            l1_loss = (
+                F.l1_loss(pred_boxes[fg_mask], target_bboxes[fg_mask], reduction="none").mean(dim=-1) * weights
+            ).sum() / target_score_sum
 
-        weights = target_scores.sum(dim=-1)[fg_mask]
-        iou = _bbox_iou(pred_boxes[fg_mask], target_bboxes[fg_mask], ciou=True).squeeze(-1)
-        iou_loss = ((1.0 - iou) * weights).sum() / target_score_sum
-        l1_loss = (
-            F.l1_loss(pred_boxes[fg_mask], target_bboxes[fg_mask], reduction="none").mean(dim=-1) * weights
-        ).sum() / target_score_sum
+        self.last_det_loss_breakdown = {
+            "det_obj_loss": float(obj_loss.detach().cpu()),
+            "det_cls_matched_loss": float(cls_pos_loss.detach().cpu()),
+            "det_cls_unmatched_neg_loss": float(cls_neg_loss.detach().cpu()),
+            "det_iou_loss": float(iou_loss.detach().cpu()),
+            "det_l1_loss": float(l1_loss.detach().cpu()),
+            "det_cls_matched_count": int(cls_pos_mask.sum().item()),
+            "det_cls_unmatched_neg_count": int(cls_neg_mask.sum().item()),
+        }
         return obj_loss + cls_loss + iou_loss + l1_loss
 
     def _tl_attr_loss(
@@ -453,7 +534,7 @@ class PV26MultiTaskLoss(nn.Module):
             if not bool(assigned.any()):
                 continue
             matched_gt = target_gt_idx[batch_index, assigned]
-            valid = tl_mask[batch_index, matched_gt] & det_classes[batch_index, matched_gt].eq(len(OD_CLASSES) - 1)
+            valid = tl_mask[batch_index, matched_gt] & det_classes[batch_index, matched_gt].eq(TL_CLASS_ID)
             if not bool(valid.any()):
                 continue
             logits = tl_pred[batch_index, assigned][valid]
@@ -611,4 +692,4 @@ class PV26MultiTaskLoss(nn.Module):
         }
 
 
-__all__ = ["PV26MultiTaskLoss"]
+__all__ = ["PV26DetAssignmentUnavailable", "PV26MultiTaskLoss"]

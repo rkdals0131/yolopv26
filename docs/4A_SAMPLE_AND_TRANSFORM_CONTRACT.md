@@ -68,7 +68,8 @@ sample = {
         "network_hw": tuple[int, int],
         "det_supervised_classes": list[str],
         "det_supervised_class_ids": list[int],
-        "det_allow_background_negatives": bool,
+        "det_allow_objectness_negatives": bool,
+        "det_allow_unmatched_class_negatives": bool,
         "transform": dict,
     },
 }
@@ -109,10 +110,11 @@ sample = {
   - AIHUB traffic은 `traffic_light`, `sign`만 포함한다.
   - AIHUB obstacle은 `traffic_cone`, `obstacle`만 포함한다.
   - BDD100K는 `vehicle`, `bike`, `pedestrian`만 포함한다.
-- `meta["det_allow_background_negatives"]`
-  - `False`면 partial-det sample로 취급한다.
-  - 이 경우 detector loss는 unmatched query를 background negative로 사용하지 않는다.
-  - classification loss도 supervised class subset에 대해서만 계산한다.
+- `meta["det_allow_objectness_negatives"]`
+  - `False`면 unmatched query를 objectness background negative로 사용하지 않는다.
+- `meta["det_allow_unmatched_class_negatives"]`
+  - `True`면 unmatched query에서도 supervised class subset의 zero-target BCE를 계산한다.
+  - unsupervised class channel은 계속 완전히 masking한다.
 - `valid_mask`
   - source가 task를 제공해도 샘플별 invalid case는 여기서 끊는다.
   - TL invalid case 예시는 `non_car_traffic_light`, `x_light_active`, `multi_color_active`다.
@@ -160,7 +162,7 @@ encoded_batch = {
 - `encoded_batch`는 GT-aligned target container다.
 - detector assignment는 loss 단계에서 계산된다.
 - detector assignment 결과는 `Q_det -> N_gt_det` index mapping으로 TL attr supervision에 재사용된다.
-- encoded mask에는 `det_supervised_class_mask: Bool[B, C_det]`와 `det_allow_background_negatives: Bool[B]`가 포함된다.
+- encoded mask에는 `det_supervised_class_mask: Bool[B, C_det]`, `det_allow_objectness_negatives: Bool[B]`, `det_allow_unmatched_class_negatives: Bool[B]`가 포함된다.
 
 ## transform contract
 

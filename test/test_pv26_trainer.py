@@ -8,10 +8,28 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from model.loss.spec import build_loss_spec
 from runtime_support import has_yolo26_runtime
 
 
+OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
+TL_CLASS_ID = OD_CLASSES.index("traffic_light")
+
+
+def _default_components_for_test(matched_count: int, unmatched_count: int) -> dict[str, float | int]:
+    return {
+        "det_obj_loss": 0.2,
+        "det_cls_matched_loss": 0.3,
+        "det_cls_unmatched_neg_loss": 0.1,
+        "det_iou_loss": 0.15,
+        "det_l1_loss": 0.25,
+        "det_cls_matched_count": int(matched_count),
+        "det_cls_unmatched_neg_count": int(unmatched_count),
+    }
+
+
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
+    del q_det
     det_boxes = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
     det_classes = torch.full((batch_size, 3), -1, dtype=torch.long)
     det_valid = torch.zeros((batch_size, 3), dtype=torch.bool)
@@ -28,7 +46,7 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     for batch_index in range(batch_size):
         det_boxes[batch_index, 0] = torch.tensor([40.0, 50.0, 120.0, 180.0])
         det_boxes[batch_index, 1] = torch.tensor([220.0, 80.0, 280.0, 160.0])
-        det_classes[batch_index, 0] = 6
+        det_classes[batch_index, 0] = TL_CLASS_ID
         det_classes[batch_index, 1] = 0
         det_valid[batch_index, :2] = True
         tl_bits[batch_index, 0] = torch.tensor([1.0, 0.0, 0.0, 1.0])
@@ -63,8 +81,9 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         "crosswalk": crosswalk,
         "mask": {
             "det_source": torch.ones(batch_size, dtype=torch.bool),
-            "det_supervised_class_mask": torch.ones((batch_size, 7), dtype=torch.bool),
-            "det_allow_background_negatives": torch.ones(batch_size, dtype=torch.bool),
+            "det_supervised_class_mask": torch.ones((batch_size, len(OD_CLASSES)), dtype=torch.bool),
+            "det_allow_objectness_negatives": torch.ones(batch_size, dtype=torch.bool),
+            "det_allow_unmatched_class_negatives": torch.ones(batch_size, dtype=torch.bool),
             "tl_attr_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_source": torch.ones(batch_size, dtype=torch.bool),
             "stop_line_source": torch.ones(batch_size, dtype=torch.bool),
@@ -116,6 +135,48 @@ class _OOMCriterion(nn.Module):
         raise RuntimeError("CUDA out of memory. simulated for test")
 
 
+class _AssignmentFailureCriterion(nn.Module):
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        del predictions, encoded
+        from model.loss import PV26DetAssignmentUnavailable
+
+        raise PV26DetAssignmentUnavailable("det_feature_metadata_invalid")
+
+
+class _FiniteCriterion(nn.Module):
+    def __init__(self, total: float = 1.0) -> None:
+        super().__init__()
+        self.total = float(total)
+        self.last_det_assignment_mode = "task_aligned"
+        self.last_lane_assignment_modes = {
+            "lane": "hungarian",
+            "stop_line": "hungarian",
+            "crosswalk": "hungarian",
+        }
+        self.last_det_loss_breakdown = {
+            "det_obj_loss": 0.2,
+            "det_cls_matched_loss": 0.3,
+            "det_cls_unmatched_neg_loss": 0.1,
+            "det_iou_loss": 0.15,
+            "det_l1_loss": 0.25,
+            "det_cls_matched_count": 2,
+            "det_cls_unmatched_neg_count": 4,
+        }
+
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        del encoded
+        total = predictions["det"].sum() * 0.0 + self.total
+        zero = predictions["det"].sum() * 0.0
+        return {
+            "total": total,
+            "det": zero + 0.5,
+            "tl_attr": zero + 0.1,
+            "lane": zero + 0.2,
+            "stop_line": zero + 0.1,
+            "crosswalk": zero + 0.1,
+        }
+
+
 class PV26TrainerTests(unittest.TestCase):
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.training import configure_pv26_train_stage
@@ -152,12 +213,15 @@ class PV26TrainerTests(unittest.TestCase):
 
         self.assertEqual(summary["global_step"], 1)
         self.assertEqual(summary["batch_size"], 1)
+        self.assertTrue(summary["successful"])
         self.assertIn("trunk", summary["optimizer_lrs"])
         self.assertIn("heads", summary["optimizer_lrs"])
         self.assertGreater(summary["losses"]["total"], 0.0)
         self.assertTrue(torch.isfinite(torch.tensor(summary["losses"]["total"])))
         self.assertIn("assignment", summary)
         self.assertIn("det", summary["assignment"])
+        self.assertIn("det_components", summary)
+        self.assertIn("det_cls_unmatched_neg_loss", summary["det_components"])
         self.assertIn("timing", summary)
         self.assertIn("iteration_sec", summary["timing"])
         self.assertIn("source_counts", summary)
@@ -254,9 +318,13 @@ class PV26TrainerTests(unittest.TestCase):
             summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary_payload["completed_epochs"], 1)
             self.assertEqual(summary_payload["last_epoch"]["train"]["batches"], 2)
+            self.assertEqual(summary_payload["last_epoch"]["train"]["attempted_batches"], 2)
+            self.assertEqual(summary_payload["last_epoch"]["train"]["successful_batches"], 2)
+            self.assertEqual(summary_payload["last_epoch"]["train"]["skipped_batches"], 0)
             self.assertEqual(summary_payload["last_epoch"]["val"]["batches"], 1)
             self.assertEqual(summary_payload["manifest_path"], str(run_dir / "run_manifest.json"))
             self.assertIn("timing_profile", summary_payload["last_epoch"]["train"])
+            self.assertIn("det_components", summary_payload["last_epoch"]["train"])
             manifest_payload = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["extra"]["tag"], "fit_smoke")
             self.assertEqual(manifest_payload["artifacts"]["summary"], str(run_dir / "summary.json"))
@@ -283,9 +351,11 @@ class PV26TrainerTests(unittest.TestCase):
         first = trainer.train_step(batch)
         second = trainer.train_step(batch)
 
+        self.assertTrue(first["successful"])
         self.assertFalse(first["optimizer_step"])
         self.assertEqual(first["global_step"], 0)
         self.assertEqual(first["micro_step"], 1)
+        self.assertTrue(second["successful"])
         self.assertTrue(second["optimizer_step"])
         self.assertEqual(second["global_step"], 1)
         self.assertEqual(second["micro_step"], 0)
@@ -306,6 +376,7 @@ class PV26TrainerTests(unittest.TestCase):
         summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=8))
 
         self.assertEqual(summary["skipped_reason"], "non_finite_loss")
+        self.assertFalse(summary["successful"])
         self.assertEqual(summary["global_step"], 0)
         self.assertEqual(trainer.skipped_steps, 1)
 
@@ -325,8 +396,157 @@ class PV26TrainerTests(unittest.TestCase):
         summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=8))
 
         self.assertEqual(summary["skipped_reason"], "oom_recovered")
+        self.assertFalse(summary["successful"])
         self.assertEqual(summary["global_step"], 0)
         self.assertEqual(trainer.skipped_steps, 1)
+
+    def test_train_step_skips_assignment_failure_without_advancing_counters(self) -> None:
+        from model.training import PV26Trainer
+
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            nn.Identity(),
+            criterion=_AssignmentFailureCriterion(),
+            accumulate_steps=2,
+        )
+        trainer.forward_encoded_batch = lambda encoded: {  # type: ignore[method-assign]
+            "det": torch.zeros((1, 2, 12), requires_grad=True),
+            "tl_attr": torch.zeros((1, 2, 4), requires_grad=True),
+            "lane": torch.zeros((1, 12, 54), requires_grad=True),
+            "stop_line": torch.zeros((1, 6, 9), requires_grad=True),
+            "crosswalk": torch.zeros((1, 4, 17), requires_grad=True),
+        }
+
+        summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=2))
+
+        self.assertFalse(summary["successful"])
+        self.assertEqual(summary["skipped_reason"], "det_assignment_unavailable")
+        self.assertEqual(summary["assignment"]["det"], "det_assignment_unavailable")
+        self.assertEqual(summary["global_step"], 0)
+        self.assertEqual(summary["micro_step"], 0)
+        self.assertEqual(trainer.skipped_steps, 1)
+        self.assertIn("det_feature_metadata_invalid", summary["skipped_reason_detail"])
+
+    def test_train_epoch_aggregates_only_successful_batches(self) -> None:
+        from model.training import PV26Trainer
+
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0))
+
+        outcomes = iter(
+            [
+                {
+                    "history_index": 1,
+                    "global_step": 1,
+                    "stage": trainer.stage,
+                    "batch_size": 1,
+                    "successful": True,
+                    "losses": {"total": 2.0, "det": 1.0, "tl_attr": 0.0, "lane": 0.5, "stop_line": 0.25, "crosswalk": 0.25},
+                    "det_components": _default_components_for_test(2, 8),
+                    "optimizer_step": True,
+                    "micro_step": 0,
+                    "accumulate_steps": 1,
+                    "skipped_reason": None,
+                    "skipped_reason_detail": None,
+                    "skipped_steps": 0,
+                    "amp_enabled": False,
+                    "gradient_scale": 1.0,
+                    "optimizer_lrs": {"trunk": 1e-4},
+                    "trainable": dict(trainer.stage_summary),
+                    "assignment": {"det": "task_aligned", "lane": {"lane": "hungarian", "stop_line": "hungarian", "crosswalk": "hungarian"}},
+                    "timing": {key: 0.01 for key in ("wait_sec", "load_sec", "forward_sec", "loss_sec", "backward_sec", "iteration_sec")},
+                    "source_counts": {"det_source_samples": 1, "tl_attr_source_samples": 0, "lane_source_samples": 0, "stop_line_source_samples": 0, "crosswalk_source_samples": 0},
+                    "det_supervision": {
+                        "det_source_samples": 1,
+                        "partial_det_samples": 1,
+                        "objectness_negative_enabled_samples": 0,
+                        "class_negative_enabled_samples": 1,
+                        "partial_det_ratio": 1.0,
+                        "supervised_class_sample_counts": {class_name: 0 for class_name in OD_CLASSES},
+                        "gt_class_counts": {class_name: 0 for class_name in OD_CLASSES},
+                    },
+                },
+                {
+                    "history_index": 2,
+                    "global_step": 1,
+                    "stage": trainer.stage,
+                    "batch_size": 1,
+                    "successful": False,
+                    "losses": {"total": float("nan"), "det": float("nan"), "tl_attr": float("nan"), "lane": float("nan"), "stop_line": float("nan"), "crosswalk": float("nan")},
+                    "det_components": _default_components_for_test(0, 0),
+                    "optimizer_step": False,
+                    "micro_step": 0,
+                    "accumulate_steps": 1,
+                    "skipped_reason": "det_assignment_unavailable",
+                    "skipped_reason_detail": "det_feature_metadata_invalid",
+                    "skipped_steps": 1,
+                    "amp_enabled": False,
+                    "gradient_scale": 1.0,
+                    "optimizer_lrs": {"trunk": 1e-4},
+                    "trainable": dict(trainer.stage_summary),
+                    "assignment": {"det": "det_assignment_unavailable", "lane": {}},
+                    "timing": {key: 0.01 for key in ("wait_sec", "load_sec", "forward_sec", "loss_sec", "backward_sec", "iteration_sec")},
+                    "source_counts": {"det_source_samples": 1, "tl_attr_source_samples": 0, "lane_source_samples": 0, "stop_line_source_samples": 0, "crosswalk_source_samples": 0},
+                    "det_supervision": {
+                        "det_source_samples": 1,
+                        "partial_det_samples": 1,
+                        "objectness_negative_enabled_samples": 0,
+                        "class_negative_enabled_samples": 1,
+                        "partial_det_ratio": 1.0,
+                        "supervised_class_sample_counts": {class_name: 0 for class_name in OD_CLASSES},
+                        "gt_class_counts": {class_name: 0 for class_name in OD_CLASSES},
+                    },
+                },
+            ]
+        )
+        trainer.train_step = lambda batch, **kwargs: next(outcomes)  # type: ignore[method-assign]
+
+        summary = trainer.train_epoch([_make_encoded_batch(batch_size=1, q_det=2), _make_encoded_batch(batch_size=1, q_det=2)], epoch=1)
+
+        self.assertEqual(summary["attempted_batches"], 2)
+        self.assertEqual(summary["successful_batches"], 1)
+        self.assertEqual(summary["skipped_batches"], 1)
+        self.assertEqual(summary["skipped_reasons"]["det_assignment_unavailable"], 1)
+        self.assertEqual(summary["losses"]["total"]["mean"], 2.0)
+        self.assertEqual(summary["det_components"]["det_cls_unmatched_neg_count"], 8)
+
+    def test_train_epoch_fails_when_every_batch_is_skipped(self) -> None:
+        from model.training import PV26Trainer
+
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0))
+        trainer.train_step = lambda batch, **kwargs: {  # type: ignore[method-assign]
+            "history_index": 1,
+            "global_step": 0,
+            "stage": trainer.stage,
+            "batch_size": 1,
+            "successful": False,
+            "losses": {"total": float("nan"), "det": float("nan"), "tl_attr": float("nan"), "lane": float("nan"), "stop_line": float("nan"), "crosswalk": float("nan")},
+            "det_components": _default_components_for_test(0, 0),
+            "optimizer_step": False,
+            "micro_step": 0,
+            "accumulate_steps": 1,
+            "skipped_reason": "det_assignment_unavailable",
+            "skipped_reason_detail": "det_feature_metadata_invalid",
+            "skipped_steps": 1,
+            "amp_enabled": False,
+            "gradient_scale": 1.0,
+            "optimizer_lrs": {"trunk": 1e-4},
+            "trainable": dict(trainer.stage_summary),
+            "assignment": {"det": "det_assignment_unavailable", "lane": {}},
+            "timing": {key: 0.01 for key in ("wait_sec", "load_sec", "forward_sec", "loss_sec", "backward_sec", "iteration_sec")},
+            "source_counts": {"det_source_samples": 1, "tl_attr_source_samples": 0, "lane_source_samples": 0, "stop_line_source_samples": 0, "crosswalk_source_samples": 0},
+            "det_supervision": {
+                "det_source_samples": 1,
+                "partial_det_samples": 1,
+                "objectness_negative_enabled_samples": 0,
+                "class_negative_enabled_samples": 1,
+                "partial_det_ratio": 1.0,
+                "supervised_class_sample_counts": {class_name: 0 for class_name in OD_CLASSES},
+                "gt_class_counts": {class_name: 0 for class_name in OD_CLASSES},
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "zero successful batches"):
+            trainer.train_epoch([_make_encoded_batch(batch_size=1, q_det=2)], epoch=1)
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:

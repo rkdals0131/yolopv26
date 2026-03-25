@@ -217,7 +217,8 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
     stop_line_source = torch.tensor([bool(mask["stop_line"]) for mask in source_masks], dtype=torch.bool)
     crosswalk_source = torch.tensor([bool(mask["crosswalk"]) for mask in source_masks], dtype=torch.bool)
     det_supervised_class_mask = torch.zeros((batch_size, len(OD_CLASSES)), dtype=torch.bool)
-    det_allow_background_negatives = torch.zeros(batch_size, dtype=torch.bool)
+    det_allow_objectness_negatives = torch.zeros(batch_size, dtype=torch.bool)
+    det_allow_unmatched_class_negatives = torch.zeros(batch_size, dtype=torch.bool)
 
     for batch_index in range(batch_size):
         sample_det = det_targets[batch_index]
@@ -234,10 +235,14 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
         elif bool(det_source[batch_index]):
             det_supervised_class_mask[batch_index] = True
 
-        if "det_allow_background_negatives" in sample_meta:
-            det_allow_background_negatives[batch_index] = bool(sample_meta["det_allow_background_negatives"])
+        if "det_allow_objectness_negatives" in sample_meta:
+            det_allow_objectness_negatives[batch_index] = bool(sample_meta["det_allow_objectness_negatives"])
         else:
-            det_allow_background_negatives[batch_index] = bool(det_source[batch_index])
+            det_allow_objectness_negatives[batch_index] = bool(det_source[batch_index])
+        if "det_allow_unmatched_class_negatives" in sample_meta:
+            det_allow_unmatched_class_negatives[batch_index] = bool(sample_meta["det_allow_unmatched_class_negatives"])
+        else:
+            det_allow_unmatched_class_negatives[batch_index] = bool(det_source[batch_index])
 
         det_count = int(sample_det["boxes_xyxy"].shape[0])
         if det_count > 0:
@@ -286,7 +291,8 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
         "mask": {
             "det_source": det_source,
             "det_supervised_class_mask": det_supervised_class_mask,
-            "det_allow_background_negatives": det_allow_background_negatives,
+            "det_allow_objectness_negatives": det_allow_objectness_negatives,
+            "det_allow_unmatched_class_negatives": det_allow_unmatched_class_negatives,
             "tl_attr_source": tl_attr_source,
             "lane_source": lane_source,
             "stop_line_source": stop_line_source,

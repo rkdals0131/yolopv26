@@ -4,10 +4,17 @@ import unittest
 
 import torch
 
+from model.loss.spec import build_loss_spec
 from runtime_support import has_yolo26_runtime
 
 
+OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
+TL_CLASS_ID = OD_CLASSES.index("traffic_light")
+SIGN_CLASS_ID = OD_CLASSES.index("sign")
+
+
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
+    del q_det
     det_boxes = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
     det_classes = torch.full((batch_size, 3), -1, dtype=torch.long)
     det_valid = torch.zeros((batch_size, 3), dtype=torch.bool)
@@ -24,7 +31,7 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     for batch_index in range(batch_size):
         det_boxes[batch_index, 0] = torch.tensor([40.0, 50.0, 120.0, 180.0])
         det_boxes[batch_index, 1] = torch.tensor([220.0, 80.0, 280.0, 160.0])
-        det_classes[batch_index, 0] = 6
+        det_classes[batch_index, 0] = TL_CLASS_ID
         det_classes[batch_index, 1] = 0
         det_valid[batch_index, :2] = True
         tl_bits[batch_index, 0] = torch.tensor([1.0, 0.0, 0.0, 1.0])
@@ -59,8 +66,9 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         "crosswalk": crosswalk,
         "mask": {
             "det_source": torch.ones(batch_size, dtype=torch.bool),
-            "det_supervised_class_mask": torch.ones((batch_size, 7), dtype=torch.bool),
-            "det_allow_background_negatives": torch.ones(batch_size, dtype=torch.bool),
+            "det_supervised_class_mask": torch.ones((batch_size, len(OD_CLASSES)), dtype=torch.bool),
+            "det_allow_objectness_negatives": torch.ones(batch_size, dtype=torch.bool),
+            "det_allow_unmatched_class_negatives": torch.ones(batch_size, dtype=torch.bool),
             "tl_attr_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_source": torch.ones(batch_size, dtype=torch.bool),
             "stop_line_source": torch.ones(batch_size, dtype=torch.bool),
@@ -70,6 +78,16 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
             "crosswalk_valid": crosswalk_valid,
         },
         "meta": [{"sample_id": f"sample_{index}"} for index in range(batch_size)],
+    }
+
+
+def _zero_predictions(batch_size: int, q_det: int) -> dict[str, torch.Tensor]:
+    return {
+        "det": torch.zeros((batch_size, q_det, 12), dtype=torch.float32, requires_grad=True),
+        "tl_attr": torch.zeros((batch_size, q_det, 4), dtype=torch.float32, requires_grad=True),
+        "lane": torch.zeros((batch_size, 12, 54), dtype=torch.float32, requires_grad=True),
+        "stop_line": torch.zeros((batch_size, 6, 9), dtype=torch.float32, requires_grad=True),
+        "crosswalk": torch.zeros((batch_size, 4, 17), dtype=torch.float32, requires_grad=True),
     }
 
 
@@ -86,7 +104,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
             "crosswalk": torch.randn(2, 4, 17, requires_grad=True),
         }
 
-        criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke", allow_test_det_fallback=True)
         losses = criterion(predictions, encoded)
         self.assertEqual(criterion.last_det_assignment_mode, "prefix_smoke")
         self.assertEqual(criterion.last_lane_assignment_modes["lane"], "hungarian")
@@ -130,7 +148,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
         losses = criterion(predictions, encoded)
-        self.assertEqual(criterion.last_det_assignment_mode, "prefix_smoke")
+        self.assertEqual(criterion.last_det_assignment_mode, "zero_positive")
         self.assertEqual(criterion.last_lane_assignment_modes["lane"], "hungarian")
         self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
         self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "hungarian")
@@ -140,14 +158,60 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["det"].grad)
 
-    def test_partial_det_samples_ignore_unmatched_negatives_and_unsupervised_classes(self) -> None:
+    def test_tl_attr_loss_only_binds_to_traffic_light_matches(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        for class_id, expected_non_zero in ((TL_CLASS_ID, True), (SIGN_CLASS_ID, False)):
+            encoded = {
+                "image": torch.randn(1, 3, 608, 800),
+                "det_gt": {
+                    "boxes_xyxy": torch.tensor([[[40.0, 50.0, 120.0, 180.0]]], dtype=torch.float32),
+                    "classes": torch.tensor([[class_id]], dtype=torch.long),
+                    "valid_mask": torch.tensor([[True]], dtype=torch.bool),
+                },
+                "tl_attr_gt_bits": torch.tensor([[[1.0, 0.0, 0.0, 1.0]]], dtype=torch.float32),
+                "tl_attr_gt_mask": torch.tensor([[True]], dtype=torch.bool),
+                "lane": torch.zeros((1, 12, 54), dtype=torch.float32),
+                "stop_line": torch.zeros((1, 6, 9), dtype=torch.float32),
+                "crosswalk": torch.zeros((1, 4, 17), dtype=torch.float32),
+                "mask": {
+                    "det_source": torch.tensor([True], dtype=torch.bool),
+                    "det_supervised_class_mask": torch.ones((1, len(OD_CLASSES)), dtype=torch.bool),
+                    "det_allow_objectness_negatives": torch.tensor([False], dtype=torch.bool),
+                    "det_allow_unmatched_class_negatives": torch.tensor([True], dtype=torch.bool),
+                    "tl_attr_source": torch.tensor([True], dtype=torch.bool),
+                    "lane_source": torch.tensor([False], dtype=torch.bool),
+                    "stop_line_source": torch.tensor([False], dtype=torch.bool),
+                    "crosswalk_source": torch.tensor([False], dtype=torch.bool),
+                    "lane_valid": torch.zeros((1, 12), dtype=torch.bool),
+                    "stop_line_valid": torch.zeros((1, 6), dtype=torch.bool),
+                    "crosswalk_valid": torch.zeros((1, 4), dtype=torch.bool),
+                },
+                "meta": [{"sample_id": f"class_{class_id}"}],
+            }
+            predictions = _zero_predictions(batch_size=1, q_det=2)
+            criterion = PV26MultiTaskLoss(stage="stage_0_smoke", allow_test_det_fallback=True)
+
+            losses = criterion(predictions, encoded)
+            losses["tl_attr"].backward()
+            tl_grad_sum = float(predictions["tl_attr"].grad.abs().sum().item())
+
+            with self.subTest(class_id=class_id):
+                if expected_non_zero:
+                    self.assertGreater(float(losses["tl_attr"].detach().cpu()), 0.0)
+                    self.assertGreater(tl_grad_sum, 0.0)
+                else:
+                    self.assertEqual(float(losses["tl_attr"].detach().cpu()), 0.0)
+                    self.assertEqual(tl_grad_sum, 0.0)
+
+    def test_partial_det_samples_enable_class_negatives_without_objectness_negatives(self) -> None:
         from model.loss import PV26MultiTaskLoss
 
         encoded = {
             "image": torch.randn(1, 3, 608, 800),
             "det_gt": {
                 "boxes_xyxy": torch.tensor([[[40.0, 50.0, 120.0, 180.0]]], dtype=torch.float32),
-                "classes": torch.tensor([[6]], dtype=torch.long),
+                "classes": torch.tensor([[TL_CLASS_ID]], dtype=torch.long),
                 "valid_mask": torch.tensor([[True]], dtype=torch.bool),
             },
             "tl_attr_gt_bits": torch.zeros((1, 1, 4), dtype=torch.float32),
@@ -158,7 +222,8 @@ class PV26LossRuntimeTests(unittest.TestCase):
             "mask": {
                 "det_source": torch.tensor([True], dtype=torch.bool),
                 "det_supervised_class_mask": torch.tensor([[False, False, False, False, False, True, True]], dtype=torch.bool),
-                "det_allow_background_negatives": torch.tensor([False], dtype=torch.bool),
+                "det_allow_objectness_negatives": torch.tensor([False], dtype=torch.bool),
+                "det_allow_unmatched_class_negatives": torch.tensor([True], dtype=torch.bool),
                 "tl_attr_source": torch.tensor([False], dtype=torch.bool),
                 "lane_source": torch.tensor([False], dtype=torch.bool),
                 "stop_line_source": torch.tensor([False], dtype=torch.bool),
@@ -169,26 +234,71 @@ class PV26LossRuntimeTests(unittest.TestCase):
             },
             "meta": [{"sample_id": "partial_det"}],
         }
-        predictions = {
-            "det": torch.zeros((1, 2, 12), dtype=torch.float32, requires_grad=True),
-            "tl_attr": torch.zeros((1, 2, 4), dtype=torch.float32, requires_grad=True),
-            "lane": torch.zeros((1, 12, 54), dtype=torch.float32, requires_grad=True),
-            "stop_line": torch.zeros((1, 6, 9), dtype=torch.float32, requires_grad=True),
-            "crosswalk": torch.zeros((1, 4, 17), dtype=torch.float32, requires_grad=True),
-        }
+        predictions = _zero_predictions(batch_size=1, q_det=2)
 
-        criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke", allow_test_det_fallback=True)
         losses = criterion(predictions, encoded)
         losses["det"].backward()
 
         det_grad = predictions["det"].grad[0]
         self.assertNotEqual(float(det_grad[0, 4]), 0.0)
         self.assertEqual(float(det_grad[1, 4]), 0.0)
-        self.assertEqual(float(det_grad[1, 5:12].abs().sum()), 0.0)
-        self.assertEqual(float(det_grad[0, 5].abs()), 0.0)
-        self.assertEqual(float(det_grad[0, 6].abs()), 0.0)
+        self.assertEqual(float(det_grad[1, 5:10].abs().sum()), 0.0)
+        self.assertGreater(float(det_grad[1, 10].abs()), 0.0)
+        self.assertGreater(float(det_grad[1, 11].abs()), 0.0)
         self.assertGreater(float(det_grad[0, 10].abs()), 0.0)
         self.assertGreater(float(det_grad[0, 11].abs()), 0.0)
+
+    def test_large_query_class_negative_scaling_stays_finite(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        encoded = {
+            "image": torch.randn(1, 3, 608, 800),
+            "det_gt": {
+                "boxes_xyxy": torch.tensor([[[40.0, 50.0, 120.0, 180.0]]], dtype=torch.float32),
+                "classes": torch.tensor([[TL_CLASS_ID]], dtype=torch.long),
+                "valid_mask": torch.tensor([[True]], dtype=torch.bool),
+            },
+            "tl_attr_gt_bits": torch.zeros((1, 1, 4), dtype=torch.float32),
+            "tl_attr_gt_mask": torch.zeros((1, 1), dtype=torch.bool),
+            "lane": torch.zeros((1, 12, 54), dtype=torch.float32),
+            "stop_line": torch.zeros((1, 6, 9), dtype=torch.float32),
+            "crosswalk": torch.zeros((1, 4, 17), dtype=torch.float32),
+            "mask": {
+                "det_source": torch.tensor([True], dtype=torch.bool),
+                "det_supervised_class_mask": torch.tensor([[False, False, False, False, False, True, True]], dtype=torch.bool),
+                "det_allow_objectness_negatives": torch.tensor([False], dtype=torch.bool),
+                "det_allow_unmatched_class_negatives": torch.tensor([True], dtype=torch.bool),
+                "tl_attr_source": torch.tensor([False], dtype=torch.bool),
+                "lane_source": torch.tensor([False], dtype=torch.bool),
+                "stop_line_source": torch.tensor([False], dtype=torch.bool),
+                "crosswalk_source": torch.tensor([False], dtype=torch.bool),
+                "lane_valid": torch.zeros((1, 12), dtype=torch.bool),
+                "stop_line_valid": torch.zeros((1, 6), dtype=torch.bool),
+                "crosswalk_valid": torch.zeros((1, 4), dtype=torch.bool),
+            },
+            "meta": [{"sample_id": "stress_det"}],
+        }
+        predictions = _zero_predictions(batch_size=1, q_det=9975)
+
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke", allow_test_det_fallback=True)
+        losses = criterion(predictions, encoded)
+        losses["det"].backward()
+
+        det_grad = predictions["det"].grad[0]
+        self.assertEqual(float(det_grad[100, 4]), 0.0)
+        self.assertEqual(float(det_grad[100, 5:10].abs().sum()), 0.0)
+        self.assertGreater(float(det_grad[100, 10].abs()), 0.0)
+        self.assertGreater(float(det_grad[100, 11].abs()), 0.0)
+        self.assertTrue(torch.isfinite(losses["det"]))
+        self.assertTrue(torch.isfinite(torch.tensor(float(criterion.last_det_loss_breakdown["det_cls_matched_loss"]))))
+        self.assertTrue(torch.isfinite(torch.tensor(float(criterion.last_det_loss_breakdown["det_cls_unmatched_neg_loss"]))))
+        self.assertGreater(int(criterion.last_det_loss_breakdown["det_cls_unmatched_neg_count"]), 1000)
+        self.assertGreater(int(criterion.last_det_loss_breakdown["det_cls_unmatched_neg_count"]), int(criterion.last_det_loss_breakdown["det_cls_matched_count"]))
+        self.assertLessEqual(
+            float(criterion.last_det_loss_breakdown["det_cls_unmatched_neg_loss"]),
+            float(criterion.last_det_loss_breakdown["det_cls_matched_loss"]) * 2.0 + 1e-6,
+        )
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_real_trunk_heads_and_loss_support_backward_smoke(self) -> None:

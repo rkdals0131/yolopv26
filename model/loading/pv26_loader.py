@@ -66,19 +66,23 @@ SOURCE_MASK_BY_DATASET = {
 DET_SUPERVISION_BY_DATASET = {
     "aihub_traffic_seoul": {
         "class_names": ("traffic_light", "sign"),
-        "allow_background_negatives": False,
+        "allow_objectness_negatives": False,
+        "allow_unmatched_class_negatives": True,
     },
     "aihub_obstacle_seoul": {
         "class_names": ("traffic_cone", "obstacle"),
-        "allow_background_negatives": False,
+        "allow_objectness_negatives": False,
+        "allow_unmatched_class_negatives": True,
     },
     "aihub_lane_seoul": {
         "class_names": (),
-        "allow_background_negatives": False,
+        "allow_objectness_negatives": False,
+        "allow_unmatched_class_negatives": False,
     },
     "bdd100k_det_100k": {
         "class_names": ("vehicle", "bike", "pedestrian"),
-        "allow_background_negatives": False,
+        "allow_objectness_negatives": False,
+        "allow_unmatched_class_negatives": True,
     },
 }
 OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
@@ -201,7 +205,8 @@ def _build_det_supervision_policy(dataset_key: str) -> dict[str, Any]:
     return {
         "class_names": class_names,
         "class_ids": [OD_CLASS_TO_ID[item] for item in class_names],
-        "allow_background_negatives": bool(policy["allow_background_negatives"]),
+        "allow_objectness_negatives": bool(policy["allow_objectness_negatives"]),
+        "allow_unmatched_class_negatives": bool(policy["allow_unmatched_class_negatives"]),
     }
 
 
@@ -309,7 +314,8 @@ class PV26CanonicalDataset(Dataset):
                 "transform": transform.as_meta(),
                 "det_supervised_classes": list(det_policy["class_names"]),
                 "det_supervised_class_ids": list(det_policy["class_ids"]),
-                "det_allow_background_negatives": bool(det_policy["allow_background_negatives"]),
+                "det_allow_objectness_negatives": bool(det_policy["allow_objectness_negatives"]),
+                "det_allow_unmatched_class_negatives": bool(det_policy["allow_unmatched_class_negatives"]),
             },
         }
 

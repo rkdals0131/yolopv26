@@ -172,7 +172,8 @@ def build_loss_spec() -> dict[str, Any]:
                 "network_hw": "tuple[int, int]",
                 "det_supervised_classes": "list[str]",
                 "det_supervised_class_ids": "list[int]",
-                "det_allow_background_negatives": "bool",
+                "det_allow_objectness_negatives": "bool",
+                "det_allow_unmatched_class_negatives": "bool",
                 "transform": {
                     "scale": "float",
                     "pad_left": "int",
@@ -193,7 +194,8 @@ def build_loss_spec() -> dict[str, Any]:
             "crosswalk": "float32[B, 4, 17]",
             "det_supervision": {
                 "det_supervised_class_mask": "bool[B, C_det]",
-                "det_allow_background_negatives": "bool[B]",
+                "det_allow_objectness_negatives": "bool[B]",
+                "det_allow_unmatched_class_negatives": "bool[B]",
             },
             "det_assignment_binding": "computed inside loss and maps Q_det positives to N_gt_det indices",
         },

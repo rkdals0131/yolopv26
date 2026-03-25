@@ -12,7 +12,7 @@ from typing import Any
 import torch
 
 from ..encoding import encode_pv26_batch
-from ..loss import PV26MultiTaskLoss
+from ..loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
 from ..loss.spec import build_loss_spec
 from ..trunk import forward_pyramid_features
 
@@ -62,8 +62,31 @@ def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
 
 
+def _is_successful_summary(summary: dict[str, Any]) -> bool:
+    return bool(summary.get("successful", summary.get("skipped_reason") is None))
+
+
+def _successful_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in summaries if _is_successful_summary(item)]
+
+
+def _default_det_components() -> dict[str, float | int]:
+    return {
+        "det_obj_loss": 0.0,
+        "det_cls_matched_loss": 0.0,
+        "det_cls_unmatched_neg_loss": 0.0,
+        "det_iou_loss": 0.0,
+        "det_l1_loss": 0.0,
+        "det_cls_matched_count": 0,
+        "det_cls_unmatched_neg_count": 0,
+    }
+
+
 def _loss_summary(history: list[dict[str, Any]], name: str) -> dict[str, float]:
-    values = [float(item["losses"][name]) for item in history]
+    successful = _successful_summaries(history)
+    if not successful:
+        raise ValueError("loss summary requires at least one successful step")
+    values = [float(item["losses"][name]) for item in successful]
     return {
         "last": values[-1],
         "min": min(values),
@@ -173,19 +196,23 @@ def _source_counts(encoded: dict[str, Any]) -> dict[str, int]:
 
 def _det_supervision_summary(encoded: dict[str, Any]) -> dict[str, Any]:
     det_source = encoded["mask"]["det_source"].to(dtype=torch.bool)
-    allow_background = encoded["mask"].get("det_allow_background_negatives")
-    if allow_background is None:
-        allow_background = torch.ones_like(det_source)
+    allow_objectness = encoded["mask"].get("det_allow_objectness_negatives")
+    if allow_objectness is None:
+        allow_objectness = torch.ones_like(det_source)
     else:
-        allow_background = allow_background.to(dtype=torch.bool)
+        allow_objectness = allow_objectness.to(dtype=torch.bool)
+    allow_unmatched_class = encoded["mask"].get("det_allow_unmatched_class_negatives")
+    if allow_unmatched_class is None:
+        allow_unmatched_class = torch.ones_like(det_source)
+    else:
+        allow_unmatched_class = allow_unmatched_class.to(dtype=torch.bool)
     class_mask = encoded["mask"].get("det_supervised_class_mask")
     if class_mask is None:
         class_mask = torch.ones((det_source.shape[0], len(OD_CLASSES)), dtype=torch.bool, device=det_source.device)
     else:
         class_mask = class_mask.to(dtype=torch.bool)
 
-    partial_det = det_source & ~allow_background
-    full_det = det_source & allow_background
+    partial_det = det_source & (~allow_objectness | ~allow_unmatched_class)
     det_valid = encoded["det_gt"]["valid_mask"].to(dtype=torch.bool)
     det_classes = encoded["det_gt"]["classes"].to(dtype=torch.long)
     batch_size = max(1, int(det_source.shape[0]))
@@ -199,8 +226,8 @@ def _det_supervision_summary(encoded: dict[str, Any]) -> dict[str, Any]:
     return {
         "det_source_samples": _true_count(det_source),
         "partial_det_samples": _true_count(partial_det),
-        "full_det_samples": _true_count(full_det),
-        "background_negative_enabled_samples": _true_count(full_det),
+        "objectness_negative_enabled_samples": _true_count(det_source & allow_objectness),
+        "class_negative_enabled_samples": _true_count(det_source & allow_unmatched_class),
         "partial_det_ratio": float(_true_count(partial_det)) / float(batch_size),
         "supervised_class_sample_counts": supervised_class_sample_counts,
         "gt_class_counts": gt_class_counts,
@@ -549,9 +576,37 @@ class PV26Trainer:
         if self.micro_step == 0:
             self.optimizer.zero_grad(set_to_none=True)
 
+        def _nan_losses() -> dict[str, torch.Tensor]:
+            return {
+                "total": torch.full((), float("nan"), device=self.device),
+                "det": torch.full((), float("nan"), device=self.device),
+                "tl_attr": torch.full((), float("nan"), device=self.device),
+                "lane": torch.full((), float("nan"), device=self.device),
+                "stop_line": torch.full((), float("nan"), device=self.device),
+                "crosswalk": torch.full((), float("nan"), device=self.device),
+            }
+
+        def _summary_det_components(payload: Any) -> dict[str, float | int]:
+            raw = payload if isinstance(payload, dict) else {}
+            summary = dict(_default_det_components())
+            for key in summary:
+                value = raw.get(key, summary[key])
+                if isinstance(value, torch.Tensor):
+                    value = float(value.detach().cpu())
+                if key.endswith("_count"):
+                    summary[key] = int(value)
+                else:
+                    summary[key] = float(value)
+            return summary
+
         skipped_reason: str | None = None
+        skipped_reason_detail: str | None = None
         optimizer_step = False
-        losses: dict[str, torch.Tensor]
+        successful = False
+        losses: dict[str, torch.Tensor] = _nan_losses()
+        det_components = _summary_det_components({})
+        assignment_det_mode = "unknown"
+        assignment_lane_modes = dict(getattr(self.criterion, "last_lane_assignment_modes", {}))
         forward_started_at = load_ended_at
         forward_ended_at = load_ended_at
         loss_started_at = load_ended_at
@@ -567,6 +622,9 @@ class PV26Trainer:
             forward_ended_at = time.perf_counter()
             loss_started_at = forward_ended_at
             losses = self.criterion(predictions, encoded)
+            assignment_det_mode = str(getattr(self.criterion, "last_det_assignment_mode", "unknown"))
+            assignment_lane_modes = dict(getattr(self.criterion, "last_lane_assignment_modes", {}))
+            det_components = _summary_det_components(getattr(self.criterion, "last_det_loss_breakdown", {}))
             _sync_timing_device(self.device, profile_device_sync)
             loss_ended_at = time.perf_counter()
             total_loss = losses["total"]
@@ -602,25 +660,35 @@ class PV26Trainer:
                     self.global_step += 1
                     self.micro_step = 0
                     optimizer_step = True
+                successful = True
+            _sync_timing_device(self.device, profile_device_sync)
+            backward_ended_at = time.perf_counter()
+        except PV26DetAssignmentUnavailable as exc:
+            skipped_reason = "det_assignment_unavailable"
+            skipped_reason_detail = str(exc)
+            self.optimizer.zero_grad(set_to_none=True)
+            self.micro_step = 0
+            self.skipped_steps += 1
+            losses = _nan_losses()
+            det_components = _summary_det_components({})
+            assignment_det_mode = "det_assignment_unavailable"
+            assignment_lane_modes = {}
             _sync_timing_device(self.device, profile_device_sync)
             backward_ended_at = time.perf_counter()
         except RuntimeError as exc:
             if not self.oom_guard or not _is_oom_error(exc):
                 raise
             skipped_reason = "oom_recovered"
+            skipped_reason_detail = str(exc)
             self.optimizer.zero_grad(set_to_none=True)
             self.micro_step = 0
             self.skipped_steps += 1
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
-            losses = {
-                "total": torch.full((), float("nan"), device=self.device),
-                "det": torch.full((), float("nan"), device=self.device),
-                "tl_attr": torch.full((), float("nan"), device=self.device),
-                "lane": torch.full((), float("nan"), device=self.device),
-                "stop_line": torch.full((), float("nan"), device=self.device),
-                "crosswalk": torch.full((), float("nan"), device=self.device),
-            }
+            losses = _nan_losses()
+            det_components = _summary_det_components({})
+            assignment_det_mode = "oom_recovered"
+            assignment_lane_modes = {}
             _sync_timing_device(self.device, profile_device_sync)
             backward_ended_at = time.perf_counter()
         timing = {
@@ -636,14 +704,17 @@ class PV26Trainer:
             "global_step": self.global_step,
             "stage": self.stage,
             "batch_size": int(encoded["image"].shape[0]),
+            "successful": successful,
             "losses": {
                 name: float(value.detach().cpu())
                 for name, value in losses.items()
             },
+            "det_components": det_components,
             "optimizer_step": optimizer_step,
             "micro_step": int(self.micro_step),
             "accumulate_steps": int(self.accumulate_steps),
             "skipped_reason": skipped_reason,
+            "skipped_reason_detail": skipped_reason_detail,
             "skipped_steps": int(self.skipped_steps),
             "amp_enabled": bool(self.amp_enabled),
             "gradient_scale": float(self.scaler.get_scale()) if self.amp_enabled else 1.0,
@@ -653,8 +724,8 @@ class PV26Trainer:
             },
             "trainable": dict(self.stage_summary),
             "assignment": {
-                "det": str(getattr(self.criterion, "last_det_assignment_mode", "unknown")),
-                "lane": dict(getattr(self.criterion, "last_lane_assignment_modes", {})),
+                "det": assignment_det_mode,
+                "lane": assignment_lane_modes,
             },
             "timing": timing,
             "source_counts": _source_counts(encoded),
@@ -663,23 +734,30 @@ class PV26Trainer:
         self.history.append(summary)
         if self.tensorboard_writer is not None:
             self._tensorboard_train_step += 1
+            tensorboard_payload = {
+                "lr": summary["optimizer_lrs"],
+                "timing": summary["timing"],
+                "source": summary["source_counts"],
+                "det_supervision": summary["det_supervision"],
+                "state": {
+                    "optimizer_step": summary["optimizer_step"],
+                    "micro_step": summary["micro_step"],
+                    "skipped_steps": summary["skipped_steps"],
+                    "amp_enabled": summary["amp_enabled"],
+                    "gradient_scale": summary["gradient_scale"],
+                    "successful": summary["successful"],
+                    "skipped_non_finite_loss": summary["skipped_reason"] == "non_finite_loss",
+                    "skipped_oom_recovered": summary["skipped_reason"] == "oom_recovered",
+                    "skipped_det_assignment_unavailable": summary["skipped_reason"] == "det_assignment_unavailable",
+                },
+            }
+            if summary["successful"]:
+                tensorboard_payload["loss"] = summary["losses"]
+                tensorboard_payload["det_components"] = summary["det_components"]
             _write_tensorboard_scalars(
                 self.tensorboard_writer,
                 "train_step",
-                {
-                    "loss": summary["losses"],
-                    "lr": summary["optimizer_lrs"],
-                    "timing": summary["timing"],
-                    "source": summary["source_counts"],
-                    "det_supervision": summary["det_supervision"],
-                    "state": {
-                        "optimizer_step": summary["optimizer_step"],
-                        "micro_step": summary["micro_step"],
-                        "skipped_steps": summary["skipped_steps"],
-                        "amp_enabled": summary["amp_enabled"],
-                        "gradient_scale": summary["gradient_scale"],
-                    },
-                },
+                tensorboard_payload,
                 self._tensorboard_train_step,
             )
         return summary
@@ -688,17 +766,22 @@ class PV26Trainer:
         if not self.history:
             raise ValueError("trainer history is empty")
         window = self.history[-last_n:] if last_n is not None else self.history
+        successful_window = _successful_summaries(window)
+        anchor = successful_window[-1] if successful_window else window[-1]
         summary: dict[str, Any] = {
             "steps": len(window),
-            "global_step": int(window[-1]["global_step"]),
-            "stage": str(window[-1]["stage"]),
+            "successful_steps": len(successful_window),
+            "global_step": int(anchor["global_step"]),
+            "stage": str(anchor["stage"]),
             "assignment": {
-                "det": str(window[-1]["assignment"]["det"]),
-                "lane": dict(window[-1]["assignment"]["lane"]),
+                "det": str(anchor["assignment"]["det"]),
+                "lane": dict(anchor["assignment"]["lane"]),
             },
             "losses": {},
         }
-        for name in window[-1]["losses"]:
+        if not successful_window:
+            return summary
+        for name in anchor["losses"]:
             summary["losses"][name] = _loss_summary(window, name)
         return summary
 
@@ -886,21 +969,32 @@ class PV26Trainer:
                 )
         if not step_summaries:
             raise ValueError("train_epoch received zero batches")
+        successful_summaries = _successful_summaries(step_summaries)
+        if not successful_summaries:
+            raise ValueError("train_epoch completed with zero successful batches")
+        skipped_summaries = [item for item in step_summaries if not _is_successful_summary(item)]
         ended_at = time.perf_counter()
         return {
             "epoch": int(epoch),
             "epoch_started_at": epoch_started_at_iso,
             "epoch_ended_at": _now_iso(),
-            "batches": len(step_summaries),
+            "batches": len(successful_summaries),
+            "attempted_batches": len(step_summaries),
+            "successful_batches": len(successful_summaries),
+            "skipped_batches": len(skipped_summaries),
+            "skipped_reasons": dict(
+                Counter(str(item.get("skipped_reason") or "unknown") for item in skipped_summaries)
+            ),
             "global_step_start": int(start_step),
             "global_step_end": int(self.global_step),
             "duration_sec": ended_at - started_at,
             "timing_profile": _timing_profile(step_summaries),
-            "losses": _loss_stats_from_summaries(step_summaries),
-            "optimizer_lrs": dict(step_summaries[-1]["optimizer_lrs"]),
-            "assignment": _aggregate_assignment_modes(step_summaries),
-            "source_counts": _aggregate_count_tree(step_summaries, "source_counts"),
-            "det_supervision": _aggregate_count_tree(step_summaries, "det_supervision"),
+            "losses": _loss_stats_from_summaries(successful_summaries),
+            "optimizer_lrs": dict(successful_summaries[-1]["optimizer_lrs"]),
+            "assignment": _aggregate_assignment_modes(successful_summaries),
+            "source_counts": _aggregate_count_tree(successful_summaries, "source_counts"),
+            "det_supervision": _aggregate_count_tree(successful_summaries, "det_supervision"),
+            "det_components": _aggregate_count_tree(successful_summaries, "det_components"),
         }
 
     def validate_epoch(
@@ -1160,6 +1254,7 @@ class PV26Trainer:
                                 "loss": epoch_summary["train"]["losses"],
                                 "source": epoch_summary["train"]["source_counts"],
                                 "det_supervision": epoch_summary["train"]["det_supervision"],
+                                "det_components": epoch_summary["train"].get("det_components", {}),
                             },
                             "val": epoch_summary.get("val", {}),
                             "scheduler": {"lr": epoch_summary.get("scheduler_lrs", [])},

@@ -76,14 +76,29 @@ class BDD100KStandardizationTests(unittest.TestCase):
                 for path in scene_labels
             }
             train_scene = scene_by_split["train"]
+            val_scene = scene_by_split["val"]
+            test_scene = scene_by_split["test"]
             self.assertEqual(train_scene["tasks"]["has_det"], 1)
             self.assertEqual(train_scene["tasks"]["has_tl_attr"], 0)
             self.assertEqual(train_scene["context"]["weather"], "clear")
             self.assertEqual(train_scene["context"]["scene"], "city street")
             self.assertEqual(train_scene["context"]["timeofday"], "daytime")
             self.assertEqual([item["class_name"] for item in train_scene["detections"]], ["vehicle"])
+            self.assertEqual(val_scene["image"]["width"], 960)
+            self.assertEqual(val_scene["image"]["height"], 540)
+            self.assertEqual(test_scene["image"]["width"], 640)
+            self.assertEqual(test_scene["image"]["height"], 480)
             self.assertEqual(train_scene["traffic_lights"], [])
             self.assertEqual(train_scene["traffic_signs"], [])
+
+            val_det_lines = (output_root / "labels_det" / "val").glob("*.txt")
+            val_det_path = sorted(val_det_lines)[0]
+            val_det_row = val_det_path.read_text(encoding="utf-8").splitlines()[0].split()
+            self.assertEqual(val_det_row[0], "0")
+            self.assertAlmostEqual(float(val_det_row[1]), 280.0 / 960.0, places=6)
+            self.assertAlmostEqual(float(val_det_row[2]), 380.0 / 540.0, places=6)
+            self.assertAlmostEqual(float(val_det_row[3]), 280.0 / 960.0, places=6)
+            self.assertAlmostEqual(float(val_det_row[4]), 280.0 / 540.0, places=6)
 
             det_map_yaml = outputs["det_map_yaml"].read_text(encoding="utf-8")
             scene_map_yaml = outputs["scene_map_yaml"].read_text(encoding="utf-8")
@@ -170,12 +185,12 @@ class BDD100KStandardizationTests(unittest.TestCase):
 
     def _create_bdd_fixture(self, images_root: Path, labels_root: Path) -> None:
         samples = {
-            "train": ("5bf43587-94432457", "#222222"),
-            "val": ("c4dbd719-26df8369", "#444444"),
-            "test": ("e301d643-216af5d9", "#666666"),
+            "train": ("5bf43587-94432457", "#222222", 1280, 720),
+            "val": ("c4dbd719-26df8369", "#444444", 960, 540),
+            "test": ("e301d643-216af5d9", "#666666", 640, 480),
         }
-        for split, (stem, color) in samples.items():
-            _make_image(images_root / split / f"{stem}.jpg", 1280, 720, color)
+        for split, (stem, color, width, height) in samples.items():
+            _make_image(images_root / split / f"{stem}.jpg", width, height, color)
 
         _write_json(
             labels_root / "train" / "5bf43587-94432457.json",
@@ -269,13 +284,13 @@ class BDD100KStandardizationTests(unittest.TestCase):
                             {
                                 "id": 2,
                                 "category": "rider",
-                                "box2d": {"x1": 840, "y1": 280, "x2": 900, "y2": 430},
+                                "box2d": {"x1": 420, "y1": 280, "x2": 470, "y2": 430},
                                 "attributes": {"occluded": False},
                             },
                             {
                                 "id": 3,
                                 "category": "motor",
-                                "box2d": {"x1": 920, "y1": 330, "x2": 1040, "y2": 470},
+                                "box2d": {"x1": 500, "y1": 300, "x2": 620, "y2": 470},
                                 "attributes": {"occluded": False},
                             },
                             {

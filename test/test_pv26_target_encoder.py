@@ -96,9 +96,12 @@ class PV26TargetEncoderTests(unittest.TestCase):
                 encoded["mask"]["det_supervised_class_mask"][bdd_index].tolist(),
                 [True, True, True, False, False, False, False],
             )
-            self.assertFalse(bool(encoded["mask"]["det_allow_background_negatives"][obstacle_index]))
-            self.assertFalse(bool(encoded["mask"]["det_allow_background_negatives"][traffic_index]))
-            self.assertFalse(bool(encoded["mask"]["det_allow_background_negatives"][bdd_index]))
+            self.assertFalse(bool(encoded["mask"]["det_allow_objectness_negatives"][obstacle_index]))
+            self.assertFalse(bool(encoded["mask"]["det_allow_objectness_negatives"][traffic_index]))
+            self.assertFalse(bool(encoded["mask"]["det_allow_objectness_negatives"][bdd_index]))
+            self.assertTrue(bool(encoded["mask"]["det_allow_unmatched_class_negatives"][obstacle_index]))
+            self.assertTrue(bool(encoded["mask"]["det_allow_unmatched_class_negatives"][traffic_index]))
+            self.assertTrue(bool(encoded["mask"]["det_allow_unmatched_class_negatives"][bdd_index]))
 
             first_lane = encoded["lane"][lane_index, 0]
             self.assertEqual(float(first_lane[0]), 1.0)

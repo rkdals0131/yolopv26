@@ -4,11 +4,17 @@ import unittest
 
 import torch.nn as nn
 import torch
+from model.loss.spec import build_loss_spec
 from test_pv26_eval_metrics import make_raw_sample_batch
 from runtime_support import has_yolo26_runtime
 
 
+OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
+TL_CLASS_ID = OD_CLASSES.index("traffic_light")
+
+
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
+    del q_det
     det_boxes = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
     det_classes = torch.full((batch_size, 3), -1, dtype=torch.long)
     det_valid = torch.zeros((batch_size, 3), dtype=torch.bool)
@@ -25,7 +31,7 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     for batch_index in range(batch_size):
         det_boxes[batch_index, 0] = torch.tensor([40.0, 50.0, 120.0, 180.0])
         det_boxes[batch_index, 1] = torch.tensor([220.0, 80.0, 280.0, 160.0])
-        det_classes[batch_index, 0] = 6
+        det_classes[batch_index, 0] = TL_CLASS_ID
         det_classes[batch_index, 1] = 0
         det_valid[batch_index, :2] = True
         tl_bits[batch_index, 0] = torch.tensor([1.0, 0.0, 0.0, 1.0])
@@ -60,8 +66,9 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         "crosswalk": crosswalk,
         "mask": {
             "det_source": torch.ones(batch_size, dtype=torch.bool),
-            "det_supervised_class_mask": torch.ones((batch_size, 7), dtype=torch.bool),
-            "det_allow_background_negatives": torch.ones(batch_size, dtype=torch.bool),
+            "det_supervised_class_mask": torch.ones((batch_size, len(OD_CLASSES)), dtype=torch.bool),
+            "det_allow_objectness_negatives": torch.ones(batch_size, dtype=torch.bool),
+            "det_allow_unmatched_class_negatives": torch.ones(batch_size, dtype=torch.bool),
             "tl_attr_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_source": torch.ones(batch_size, dtype=torch.bool),
             "stop_line_source": torch.ones(batch_size, dtype=torch.bool),

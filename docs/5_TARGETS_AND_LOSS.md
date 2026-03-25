@@ -41,7 +41,7 @@
 - detector
   - task-aligned assigner runtime 통합 완료
   - real trunk path에서는 feature-shape metadata를 이용해 anchor grid를 만들고 assignment를 계산한다.
-  - synthetic unit smoke는 metadata가 없을 때만 `prefix positive fallback`을 사용한다.
+  - synthetic unit smoke는 `allow_test_det_fallback=True`일 때만 metadata 없는 `prefix positive fallback`을 사용한다.
 - lane family
   - Hungarian matching runtime 통합 완료
   - lane, stop-line, crosswalk 모두 query-to-GT assignment를 cost matrix 기반으로 계산한다.
@@ -66,8 +66,10 @@ L_total = λ_det * L_det
   - cls
 - partial-det policy
   - sample별 `det_supervised_class_mask`를 따른다.
-  - `det_allow_background_negatives=False`인 sample은 unmatched query를 background negative로 쓰지 않는다.
+  - `det_allow_objectness_negatives=False`인 sample은 unmatched query를 objectness background negative로 쓰지 않는다.
+  - `det_allow_unmatched_class_negatives=True`인 sample은 unmatched query에서도 source-owned class channel의 zero-target BCE를 계산한다.
   - cls BCE는 source가 담당하는 class channel에 대해서만 계산한다.
+  - matched cls BCE와 unmatched negative cls BCE는 분리 정규화하고, unmatched negative term에는 `0.1` weight를 적용한다.
   - 즉 AIHUB traffic은 `traffic_light/sign`만, AIHUB obstacle은 `traffic_cone/obstacle`만, BDD100K는 `vehicle/bike/pedestrian`만 detector class supervision에 관여한다.
 
 ## TL attr loss
@@ -113,7 +115,8 @@ L_total = λ_det * L_det
 
 - BDD100K
   - det on
-  - detector unmatched negative off
+  - detector objectness negative off
+  - detector unmatched class negative on
   - detector class supervision은 `vehicle / bike / pedestrian` only
   - tl attr off
   - lane off
@@ -121,13 +124,15 @@ L_total = λ_det * L_det
   - crosswalk off
 - AIHUB traffic
   - det on
-  - detector unmatched negative off
+  - detector objectness negative off
+  - detector unmatched class negative on
   - detector class supervision은 `traffic_light / sign` only
   - tl attr valid-mask only
   - lane family off
 - AIHUB obstacle
   - det on
-  - detector unmatched negative off
+  - detector objectness negative off
+  - detector unmatched class negative on
   - detector class supervision은 `traffic_cone / obstacle` only
   - tl attr off
   - lane family off

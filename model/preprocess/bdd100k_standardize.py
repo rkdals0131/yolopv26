@@ -9,7 +9,16 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from .aihub_common import IMAGE_EXTENSIONS, PairRecord, _env_path, _now_iso, _repo_root, _safe_slug, _seg_dataset_root
+from .aihub_common import (
+    IMAGE_EXTENSIONS,
+    PairRecord,
+    _env_path,
+    _now_iso,
+    _probe_image_size,
+    _repo_root,
+    _safe_slug,
+    _seg_dataset_root,
+)
 from .aihub_standardize import (
     LiveLogger,
     TL_BITS,
@@ -35,8 +44,6 @@ DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
 OUTPUT_DATASET_KEY = "bdd100k_det_100k"
 BDD_SPLITS = ("train", "val", "test")
-BDD_IMAGE_WIDTH = 1280
-BDD_IMAGE_HEIGHT = 720
 HELD_ANNOTATION_LIMIT = 32
 OFFICIAL_SPLIT_SIZES = {
     "train": 70_000,
@@ -190,6 +197,7 @@ def _bdd_readme(bdd_root: Path, inventory: dict[str, Any]) -> str:
             "- top-level: `name`, `attributes`, `frames[]`",
             "- detection 객체: `frames[0].objects[]`",
             "- detection box: `box2d = {x1, y1, x2, y2}`",
+            "- scene width/height와 YOLO normalization은 실제 image file size probe 기준으로 계산한다.",
             "- 문맥 메타: `attributes.weather`, `attributes.scene`, `attributes.timeofday`",
             "",
             "## PV26 클래스 collapse 규칙",
@@ -384,8 +392,7 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
     output_image_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
     image_materialization = _link_or_copy(pair.image_path, output_image_path)
 
-    width = BDD_IMAGE_WIDTH
-    height = BDD_IMAGE_HEIGHT
+    width, height = _probe_image_size(pair.image_path)
     top_attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
     frames = raw.get("frames") if isinstance(raw.get("frames"), list) else []
     frame = frames[0] if frames else {}
