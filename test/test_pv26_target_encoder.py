@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from model.loading import PV26CanonicalDataset, collate_pv26_samples
+from model.loading import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
 from model.preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES
 from model.preprocess.aihub_standardize import run_standardization as run_aihub_standardization
 from model.preprocess.bdd100k_standardize import run_standardization as run_bdd_standardization
@@ -156,6 +156,25 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(encoded["mask"]["crosswalk_valid"][lane_index].tolist(), [True, False, False, False])
             self.assertTrue(torch.all(encoded["stop_line"][lane_index, 1:, :] == 0.0))
             self.assertTrue(torch.all(encoded["crosswalk"][lane_index, 1:, :] == 0.0))
+
+    def test_encoded_collate_matches_manual_encode(self) -> None:
+        from model.encoding import encode_pv26_batch
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset = self._build_dataset(Path(temp_dir))
+            selected = self._select_mixed_task_samples(dataset)
+
+            encoded_direct = collate_pv26_encoded_batch(selected)
+            encoded_manual = encode_pv26_batch(collate_pv26_samples(selected))
+
+            self.assertTrue(torch.equal(encoded_direct["image"], encoded_manual["image"]))
+            self.assertTrue(torch.equal(encoded_direct["det_gt"]["boxes_xyxy"], encoded_manual["det_gt"]["boxes_xyxy"]))
+            self.assertTrue(torch.equal(encoded_direct["det_gt"]["classes"], encoded_manual["det_gt"]["classes"]))
+            self.assertTrue(torch.equal(encoded_direct["det_gt"]["valid_mask"], encoded_manual["det_gt"]["valid_mask"]))
+            self.assertTrue(torch.equal(encoded_direct["lane"], encoded_manual["lane"]))
+            self.assertTrue(torch.equal(encoded_direct["stop_line"], encoded_manual["stop_line"]))
+            self.assertTrue(torch.equal(encoded_direct["crosswalk"], encoded_manual["crosswalk"]))
+            self.assertEqual(encoded_direct["meta"], encoded_manual["meta"])
 
     def test_encode_batch_requires_det_supervision_meta_for_det_sources(self) -> None:
         from model.encoding import encode_pv26_batch

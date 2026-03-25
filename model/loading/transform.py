@@ -59,7 +59,8 @@ def compute_letterbox_transform(
 
 
 def load_letterboxed_image(path: Path, transform: LetterboxTransform) -> torch.FloatTensor:
-    image = Image.open(path).convert("RGB")
+    with Image.open(path) as raw_image:
+        image = raw_image.convert("RGB")
     resized = image.resize((transform.resized_hw[1], transform.resized_hw[0]), Image.Resampling.BILINEAR)
     canvas = Image.new("RGB", (transform.network_hw[1], transform.network_hw[0]), (PADDING_FILL_UINT8,) * 3)
     canvas.paste(resized, (transform.pad_left, transform.pad_top))

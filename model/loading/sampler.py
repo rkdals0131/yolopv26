@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from torch.utils.data import BatchSampler, DataLoader
 
-from .pv26_loader import PV26CanonicalDataset, collate_pv26_samples
+from .pv26_loader import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
 
 
 DEFAULT_SAMPLER_RATIOS = {
@@ -179,6 +179,9 @@ def build_pv26_train_dataloader(
     seed: int = 26,
     num_workers: int = 0,
     pin_memory: bool = False,
+    encode_batches: bool = False,
+    persistent_workers: bool = False,
+    prefetch_factor: int | None = None,
 ) -> DataLoader:
     sampler = PV26BalancedBatchSampler(
         dataset,
@@ -188,13 +191,17 @@ def build_pv26_train_dataloader(
         split=split,
         seed=seed,
     )
-    return DataLoader(
-        dataset,
-        batch_sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        collate_fn=collate_pv26_samples,
-    )
+    loader_kwargs: dict[str, object] = {
+        "batch_sampler": sampler,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "collate_fn": collate_pv26_encoded_batch if encode_batches else collate_pv26_samples,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = bool(persistent_workers)
+        if prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+    return DataLoader(dataset, **loader_kwargs)
 
 
 def build_pv26_eval_dataloader(
@@ -205,6 +212,9 @@ def build_pv26_eval_dataloader(
     split: str | None = "val",
     num_workers: int = 0,
     pin_memory: bool = False,
+    encode_batches: bool = False,
+    persistent_workers: bool = False,
+    prefetch_factor: int | None = None,
 ) -> DataLoader:
     sampler = PV26SequentialBatchSampler(
         dataset,
@@ -212,13 +222,17 @@ def build_pv26_eval_dataloader(
         num_batches=num_batches,
         split=split,
     )
-    return DataLoader(
-        dataset,
-        batch_sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        collate_fn=collate_pv26_samples,
-    )
+    loader_kwargs: dict[str, object] = {
+        "batch_sampler": sampler,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "collate_fn": collate_pv26_encoded_batch if encode_batches else collate_pv26_samples,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = bool(persistent_workers)
+        if prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+    return DataLoader(dataset, **loader_kwargs)
 
 
 __all__ = [

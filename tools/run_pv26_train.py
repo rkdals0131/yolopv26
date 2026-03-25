@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 import sys
 
+import torch
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -59,6 +61,10 @@ class TrainConfig:
     profile_window: int      # rolling timing profile window 크기
     profile_device_sync: bool  # CUDA timing 정확도를 위해 sync할지
 
+    encode_batches_in_loader: bool  # True면 worker에서 fixed-shape encoded batch를 미리 생성
+    persistent_workers: bool  # True면 epoch 사이에 DataLoader worker를 유지
+    prefetch_factor: int      # worker당 미리 가져올 batch 수
+
     run_name_prefix: str     # 자동 생성 run 폴더 앞에 붙일 문자열
     run_root: Path           # 자동 생성 run 폴더들이 쌓일 상위 디렉터리
     run_dir: Path | None     # 직접 경로를 고정하고 싶을 때만 사용, None이면 prefix+timestamp 자동 생성
@@ -94,12 +100,16 @@ TRAIN_CONFIG = TrainConfig(
     val_every           = 1,
     checkpoint_every    = 10,
 
-    num_workers         = 4,
+    num_workers         = 6,
     pin_memory          = True,
 
     log_every_n_steps   = 20,
     profile_window      = 20,
     profile_device_sync = True,
+
+    encode_batches_in_loader = True,
+    persistent_workers    = True,
+    prefetch_factor       = 2,
 
     run_name_prefix     = "train",
     run_root            = DEFAULT_RUN_ROOT,
@@ -151,7 +161,18 @@ def _resolve_run_dir(config: TrainConfig) -> Path:
     return candidate
 
 
+def _configure_torch_multiprocessing() -> None:
+    # This environment's torch_shm_manager is not reliable under `file_system`.
+    # Keep the default descriptor-backed strategy and reduce storage count via encoded collate instead.
+    try:
+        if torch.multiprocessing.get_sharing_strategy() != "file_descriptor":
+            torch.multiprocessing.set_sharing_strategy("file_descriptor")
+    except RuntimeError:
+        pass
+
+
 def main() -> None:
+    _configure_torch_multiprocessing()
     train_batches = _resolve_train_batch_limit(TRAIN_CONFIG.train_batches)
     val_batches = _resolve_val_batch_limit(TRAIN_CONFIG.val_batches)
     run_dir = _resolve_run_dir(TRAIN_CONFIG)
@@ -171,6 +192,9 @@ def main() -> None:
         seed=26,
         num_workers=TRAIN_CONFIG.num_workers,
         pin_memory=TRAIN_CONFIG.pin_memory,
+        encode_batches=TRAIN_CONFIG.encode_batches_in_loader,
+        persistent_workers=TRAIN_CONFIG.persistent_workers,
+        prefetch_factor=TRAIN_CONFIG.prefetch_factor,
     )
     val_loader = None
     if val_batches != 0:
@@ -182,6 +206,9 @@ def main() -> None:
                 split="val",
                 num_workers=TRAIN_CONFIG.num_workers,
                 pin_memory=TRAIN_CONFIG.pin_memory,
+                encode_batches=TRAIN_CONFIG.encode_batches_in_loader,
+                persistent_workers=TRAIN_CONFIG.persistent_workers,
+                prefetch_factor=TRAIN_CONFIG.prefetch_factor,
             )
         except ValueError:
             val_loader = None

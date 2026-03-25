@@ -330,3 +330,9 @@ def collate_pv26_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "valid_mask": [sample["valid_mask"] for sample in samples],
         "meta": [sample["meta"] for sample in samples],
     }
+
+
+def collate_pv26_encoded_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    from ..encoding import encode_pv26_batch
+
+    return encode_pv26_batch(collate_pv26_samples(samples))

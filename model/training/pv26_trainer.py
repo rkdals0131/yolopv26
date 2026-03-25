@@ -42,15 +42,15 @@ def _canonical_stage(stage: str) -> str:
     return STAGE_ALIASES.get(stage, stage)
 
 
-def _move_to_device(item: Any, device: torch.device) -> Any:
+def _move_to_device(item: Any, device: torch.device, *, non_blocking: bool = False) -> Any:
     if isinstance(item, torch.Tensor):
-        return item.to(device)
+        return item.to(device, non_blocking=non_blocking)
     if isinstance(item, dict):
-        return {key: _move_to_device(value, device) for key, value in item.items()}
+        return {key: _move_to_device(value, device, non_blocking=non_blocking) for key, value in item.items()}
     if isinstance(item, list):
-        return [_move_to_device(value, device) for value in item]
+        return [_move_to_device(value, device, non_blocking=non_blocking) for value in item]
     if isinstance(item, tuple):
-        return tuple(_move_to_device(value, device) for value in item)
+        return tuple(_move_to_device(value, device, non_blocking=non_blocking) for value in item)
     return item
 
 
@@ -558,7 +558,7 @@ class PV26Trainer:
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
-        return _move_to_device(encoded, self.device)
+        return _move_to_device(encoded, self.device, non_blocking=self.device.type == "cuda")
 
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         features = forward_pyramid_features(self.adapter, encoded["image"])

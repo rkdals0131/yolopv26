@@ -11,6 +11,7 @@ from model.loading import (
     build_pv26_train_dataloader,
     dataset_group_for_key,
 )
+from model.preprocess.aihub_standardize import OD_CLASSES
 from model.loading.pv26_loader import SampleRecord
 
 
@@ -84,6 +85,10 @@ class _ToyCanonicalDataset:
                                     "pad_bottom": 79,
                                     "resized_hw": (450, 800),
                                 },
+                                "det_supervised_classes": self._det_supervised_classes(dataset_key),
+                                "det_supervised_class_ids": self._det_supervised_class_ids(dataset_key),
+                                "det_allow_objectness_negatives": False,
+                                "det_allow_unmatched_class_negatives": dataset_key != "aihub_lane_seoul",
                             },
                         }
                     )
@@ -93,6 +98,20 @@ class _ToyCanonicalDataset:
 
     def __getitem__(self, index: int) -> dict:
         return self.samples[index]
+
+    @staticmethod
+    def _det_supervised_classes(dataset_key: str) -> list[str]:
+        mapping = {
+            "bdd100k_det_100k": ["vehicle", "bike", "pedestrian"],
+            "aihub_traffic_seoul": ["traffic_light", "sign"],
+            "aihub_obstacle_seoul": ["traffic_cone", "obstacle"],
+            "aihub_lane_seoul": [],
+        }
+        return list(mapping[dataset_key])
+
+    @classmethod
+    def _det_supervised_class_ids(cls, dataset_key: str) -> list[int]:
+        return [OD_CLASSES.index(class_name) for class_name in cls._det_supervised_classes(dataset_key)]
 
 
 class PV26BalancedSamplerTests(unittest.TestCase):
@@ -139,6 +158,24 @@ class PV26BalancedSamplerTests(unittest.TestCase):
             if record.split == "val"
         ][:10]
         self.assertEqual(flat_sample_ids, expected)
+
+    def test_balanced_dataloader_can_encode_batches_in_worker_collate(self) -> None:
+        dataset = _ToyCanonicalDataset()
+        loader = build_pv26_train_dataloader(
+            dataset,
+            batch_size=20,
+            num_batches=1,
+            split="val",
+            seed=11,
+            encode_batches=True,
+        )
+
+        batch = next(iter(loader))
+
+        self.assertEqual(tuple(batch["image"].shape), (20, 3, 608, 800))
+        self.assertIn("det_gt", batch)
+        self.assertIn("mask", batch)
+        self.assertTrue(all(item["split"] == "val" for item in batch["meta"]))
 
 
 if __name__ == "__main__":
