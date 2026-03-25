@@ -15,6 +15,10 @@ def _identity_meta() -> dict:
         "image_path": "/tmp/sample_0.jpg",
         "raw_hw": (608, 800),
         "network_hw": (608, 800),
+        "det_supervised_classes": ["traffic_light", "sign"],
+        "det_supervised_class_ids": [5, 6],
+        "det_allow_objectness_negatives": False,
+        "det_allow_unmatched_class_negatives": True,
         "transform": {
             "scale": 1.0,
             "pad_left": 0,

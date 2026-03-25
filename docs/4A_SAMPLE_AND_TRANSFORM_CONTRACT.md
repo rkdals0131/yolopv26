@@ -110,11 +110,15 @@ sample = {
   - AIHUB traffic은 `traffic_light`, `sign`만 포함한다.
   - AIHUB obstacle은 `traffic_cone`, `obstacle`만 포함한다.
   - BDD100K는 `vehicle`, `bike`, `pedestrian`만 포함한다.
+  - `source_mask["det"] = True`인 sample에서는 필수다.
+  - 비어 있으면 안 된다.
 - `meta["det_allow_objectness_negatives"]`
   - `False`면 unmatched query를 objectness background negative로 사용하지 않는다.
+  - `source_mask["det"] = True`인 sample에서는 필수다.
 - `meta["det_allow_unmatched_class_negatives"]`
   - `True`면 unmatched query에서도 supervised class subset의 zero-target BCE를 계산한다.
   - unsupervised class channel은 계속 완전히 masking한다.
+  - `source_mask["det"] = True`인 sample에서는 필수다.
 - `valid_mask`
   - source가 task를 제공해도 샘플별 invalid case는 여기서 끊는다.
   - TL invalid case 예시는 `non_car_traffic_light`, `x_light_active`, `multi_color_active`다.
@@ -163,6 +167,8 @@ encoded_batch = {
 - detector assignment는 loss 단계에서 계산된다.
 - detector assignment 결과는 `Q_det -> N_gt_det` index mapping으로 TL attr supervision에 재사용된다.
 - encoded mask에는 `det_supervised_class_mask: Bool[B, C_det]`, `det_allow_objectness_negatives: Bool[B]`, `det_allow_unmatched_class_negatives: Bool[B]`가 포함된다.
+- 이 세 field는 silent default 없이 contract로 취급한다.
+- `det_source=True`인 row는 `det_supervised_class_mask[row].any() == True`여야 한다.
 
 ## transform contract
 

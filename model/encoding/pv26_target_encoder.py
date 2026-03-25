@@ -113,6 +113,18 @@ def _crosswalk_sort_key(row: dict[str, Any]) -> tuple[float, float]:
     return (-float(center[1]), float(center[0]))
 
 
+def _sample_label(sample_meta: Any, batch_index: int) -> str:
+    if isinstance(sample_meta, dict):
+        dataset_key = str(sample_meta.get("dataset_key") or "unknown_dataset")
+        sample_id = str(sample_meta.get("sample_id") or f"batch_{batch_index}")
+        return f"dataset={dataset_key} sample_id={sample_id}"
+    return f"batch_index={batch_index}"
+
+
+def _raise_det_contract_error(sample_meta: Any, batch_index: int, detail: str) -> None:
+    raise ValueError(f"det supervision contract violation for {_sample_label(sample_meta, batch_index)}: {detail}")
+
+
 def _encode_lane_rows(
     rows: list[dict[str, Any]],
     valid_mask: torch.BoolTensor,
@@ -226,23 +238,30 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
         sample_lane = lane_targets[batch_index]
         sample_valid = valid_masks[batch_index]
         sample_meta = meta[batch_index] if batch_index < len(meta) else {}
-        class_ids = sample_meta.get("det_supervised_class_ids")
-        if isinstance(class_ids, (list, tuple)):
+        if not isinstance(sample_meta, dict):
+            sample_meta = {}
+        if bool(det_source[batch_index]):
+            class_ids = sample_meta.get("det_supervised_class_ids")
+            if not isinstance(class_ids, (list, tuple)):
+                _raise_det_contract_error(sample_meta, batch_index, "missing meta.det_supervised_class_ids")
+            if not class_ids:
+                _raise_det_contract_error(sample_meta, batch_index, "meta.det_supervised_class_ids must not be empty")
             for class_id in class_ids:
-                index = int(class_id)
-                if 0 <= index < len(OD_CLASSES):
-                    det_supervised_class_mask[batch_index, index] = True
-        elif bool(det_source[batch_index]):
-            det_supervised_class_mask[batch_index] = True
-
-        if "det_allow_objectness_negatives" in sample_meta:
+                try:
+                    index = int(class_id)
+                except (TypeError, ValueError):
+                    _raise_det_contract_error(sample_meta, batch_index, f"invalid class id: {class_id!r}")
+                if not 0 <= index < len(OD_CLASSES):
+                    _raise_det_contract_error(sample_meta, batch_index, f"class id out of range: {index}")
+                det_supervised_class_mask[batch_index, index] = True
+            if not bool(det_supervised_class_mask[batch_index].any()):
+                _raise_det_contract_error(sample_meta, batch_index, "at least one detector class must be supervised")
+            if "det_allow_objectness_negatives" not in sample_meta:
+                _raise_det_contract_error(sample_meta, batch_index, "missing meta.det_allow_objectness_negatives")
+            if "det_allow_unmatched_class_negatives" not in sample_meta:
+                _raise_det_contract_error(sample_meta, batch_index, "missing meta.det_allow_unmatched_class_negatives")
             det_allow_objectness_negatives[batch_index] = bool(sample_meta["det_allow_objectness_negatives"])
-        else:
-            det_allow_objectness_negatives[batch_index] = bool(det_source[batch_index])
-        if "det_allow_unmatched_class_negatives" in sample_meta:
             det_allow_unmatched_class_negatives[batch_index] = bool(sample_meta["det_allow_unmatched_class_negatives"])
-        else:
-            det_allow_unmatched_class_negatives[batch_index] = bool(det_source[batch_index])
 
         det_count = int(sample_det["boxes_xyxy"].shape[0])
         if det_count > 0:

@@ -148,6 +148,12 @@ class _StaticHeads(nn.Module):
         }
 
 
+class _ExplodingCriterion(nn.Module):
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        del predictions, encoded
+        raise AssertionError("criterion should not be called")
+
+
 class PV26EvaluatorTests(unittest.TestCase):
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_evaluator_returns_loss_and_count_summary(self) -> None:
@@ -172,7 +178,12 @@ class PV26EvaluatorTests(unittest.TestCase):
     def test_predict_batch_returns_postprocessed_prediction_bundle(self) -> None:
         from model.eval.pv26_evaluator import PV26Evaluator
 
-        evaluator = PV26Evaluator(_StaticAdapter(), _StaticHeads(), stage="stage_0_smoke")
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_0_smoke",
+            criterion=_ExplodingCriterion(),
+        )
         evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
 
         predictions = evaluator.predict_batch(_make_encoded_batch(batch_size=1, q_det=9975))
@@ -188,13 +199,36 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertEqual(len(predictions[0]["stop_lines"]), 1)
         self.assertEqual(len(predictions[0]["crosswalks"]), 1)
 
+    def test_evaluate_batch_without_loss_still_returns_metrics(self) -> None:
+        from model.eval.pv26_evaluator import PV26Evaluator
+
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_0_smoke",
+            criterion=_ExplodingCriterion(),
+        )
+        evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
+
+        summary = evaluator.evaluate_batch(make_raw_sample_batch(), compute_loss=False)
+
+        self.assertEqual(summary["losses"], {})
+        self.assertIn("metrics", summary)
+        self.assertIn("detector", summary["metrics"])
+        self.assertIn("traffic_light", summary["metrics"])
+
     def test_evaluate_batch_on_raw_sample_batch_includes_metrics(self) -> None:
         from model.eval.pv26_evaluator import PV26Evaluator
 
-        evaluator = PV26Evaluator(_StaticAdapter(), _StaticHeads(), stage="stage_0_smoke")
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_0_smoke",
+            criterion=_ExplodingCriterion(),
+        )
         evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
 
-        summary = evaluator.evaluate_batch(make_raw_sample_batch())
+        summary = evaluator.evaluate_batch(make_raw_sample_batch(), compute_loss=False)
 
         self.assertIn("metrics", summary)
         self.assertIn("detector", summary["metrics"])

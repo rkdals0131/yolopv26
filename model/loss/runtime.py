@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import warnings
 
 from scipy.optimize import linear_sum_assignment
 import torch
@@ -216,6 +217,8 @@ class PV26MultiTaskLoss(nn.Module):
             raise KeyError(f"unsupported PV26 loss stage: {stage}") from exc
         self.stage = stage
         self.allow_test_det_fallback = bool(allow_test_det_fallback)
+        if self.allow_test_det_fallback and self.stage != "stage_0_smoke":
+            raise ValueError("allow_test_det_fallback is restricted to stage_0_smoke")
         self.det_cls_negative_weight = float(det_cls_negative_weight)
         self.register_buffer(
             "tl_bit_weights",
@@ -241,6 +244,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stop_line": "uninitialized",
             "crosswalk": "uninitialized",
         }
+        self._det_fallback_warned = False
         self.last_det_loss_breakdown = {
             "det_obj_loss": 0.0,
             "det_cls_matched_loss": 0.0,
@@ -250,6 +254,93 @@ class PV26MultiTaskLoss(nn.Module):
             "det_cls_matched_count": 0,
             "det_cls_unmatched_neg_count": 0,
         }
+
+    def export_config(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "allow_test_det_fallback": bool(self.allow_test_det_fallback),
+            "det_cls_negative_weight": float(self.det_cls_negative_weight),
+        }
+
+    def _warn_test_det_fallback(self, reason: str) -> None:
+        if self._det_fallback_warned:
+            return
+        warnings.warn(
+            f"using test-only detector assignment fallback ({reason}) in {self.stage}",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        self._det_fallback_warned = True
+
+    def _det_contract_label(self, encoded: dict[str, Any], batch_index: int) -> str:
+        meta = encoded.get("meta", [])
+        if isinstance(meta, list) and batch_index < len(meta) and isinstance(meta[batch_index], dict):
+            dataset_key = str(meta[batch_index].get("dataset_key") or "unknown_dataset")
+            sample_id = str(meta[batch_index].get("sample_id") or f"batch_{batch_index}")
+            return f"dataset={dataset_key} sample_id={sample_id}"
+        return f"batch_index={batch_index}"
+
+    def _validate_det_supervision_contract(
+        self,
+        encoded: dict[str, Any],
+        *,
+        device: torch.device,
+        batch_size: int,
+        num_classes: int,
+    ) -> tuple[torch.BoolTensor, torch.BoolTensor, torch.BoolTensor, torch.BoolTensor]:
+        mask_payload = encoded.get("mask")
+        if not isinstance(mask_payload, dict):
+            raise ValueError("encoded det supervision contract violation: mask payload must be a dict")
+
+        det_source = mask_payload.get("det_source")
+        class_mask = mask_payload.get("det_supervised_class_mask")
+        allow_objectness = mask_payload.get("det_allow_objectness_negatives")
+        allow_unmatched_class = mask_payload.get("det_allow_unmatched_class_negatives")
+        missing = [
+            name
+            for name, value in (
+                ("det_source", det_source),
+                ("det_supervised_class_mask", class_mask),
+                ("det_allow_objectness_negatives", allow_objectness),
+                ("det_allow_unmatched_class_negatives", allow_unmatched_class),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                "encoded det supervision contract violation: missing mask fields "
+                + ", ".join(missing)
+            )
+
+        det_source = det_source.to(device=device, dtype=torch.bool)
+        class_mask = class_mask.to(device=device, dtype=torch.bool)
+        allow_objectness = allow_objectness.to(device=device, dtype=torch.bool)
+        allow_unmatched_class = allow_unmatched_class.to(device=device, dtype=torch.bool)
+        expected_shapes = {
+            "det_source": (batch_size,),
+            "det_supervised_class_mask": (batch_size, num_classes),
+            "det_allow_objectness_negatives": (batch_size,),
+            "det_allow_unmatched_class_negatives": (batch_size,),
+        }
+        actual_shapes = {
+            "det_source": tuple(det_source.shape),
+            "det_supervised_class_mask": tuple(class_mask.shape),
+            "det_allow_objectness_negatives": tuple(allow_objectness.shape),
+            "det_allow_unmatched_class_negatives": tuple(allow_unmatched_class.shape),
+        }
+        for name, expected in expected_shapes.items():
+            if actual_shapes[name] != expected:
+                raise ValueError(
+                    f"encoded det supervision contract violation: {name} shape {actual_shapes[name]} != {expected}"
+                )
+        invalid_rows = torch.nonzero(det_source & ~class_mask.any(dim=1), as_tuple=False).flatten()
+        if invalid_rows.numel() > 0:
+            label = self._det_contract_label(encoded, int(invalid_rows[0].item()))
+            raise ValueError(
+                f"encoded det supervision contract violation for {label}: "
+                "det_source rows require at least one supervised detector class"
+            )
+        return det_source, class_mask, allow_objectness, allow_unmatched_class
 
     def forward(self, predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         self.last_det_loss_breakdown = {
@@ -294,12 +385,17 @@ class PV26MultiTaskLoss(nn.Module):
     ) -> dict[str, torch.Tensor | str]:
         det_gt = encoded["det_gt"]
         det_pred = predictions["det"]
-        det_source = encoded["mask"]["det_source"].to(device=det_pred.device, dtype=torch.bool)
         det_valid = det_gt["valid_mask"].to(device=det_pred.device, dtype=torch.bool)
         obj_logits = det_pred[..., 4]
         cls_logits = det_pred[..., 5:]
         batch_size, query_count, _ = det_pred.shape
         num_classes = cls_logits.shape[-1]
+        det_source, _, _, _ = self._validate_det_supervision_contract(
+            encoded,
+            device=det_pred.device,
+            batch_size=batch_size,
+            num_classes=num_classes,
+        )
         positive_required = det_source & det_valid.any(dim=1)
 
         target_bboxes = torch.zeros((batch_size, query_count, 4), device=det_pred.device, dtype=torch.float32)
@@ -381,6 +477,7 @@ class PV26MultiTaskLoss(nn.Module):
             except Exception as exc:
                 if not self.allow_test_det_fallback:
                     raise PV26DetAssignmentUnavailable(f"task_aligned_assigner_failed: {exc}") from exc
+                self._warn_test_det_fallback("task_aligned_assigner_failed")
                 return _prefix_fallback()
             assigned_fg = assigned_fg.to(dtype=torch.bool)
             assigned_scores = assigned_scores * det_source[:, None, None].to(dtype=det_pred.dtype)
@@ -412,14 +509,14 @@ class PV26MultiTaskLoss(nn.Module):
                 "det_source": det_source,
             }
 
-        if self.allow_test_det_fallback:
-            return _prefix_fallback()
-
         missing: list[str] = []
         if self.assigner is None:
             missing.append("task_aligned_assigner_unavailable")
         if not feature_meta_valid:
             missing.append("det_feature_metadata_invalid")
+        if self.allow_test_det_fallback:
+            self._warn_test_det_fallback(", ".join(missing) or "task_aligned_assigner_unavailable")
+            return _prefix_fallback()
         raise PV26DetAssignmentUnavailable(", ".join(missing) or "task_aligned_assigner_unavailable")
 
     def _det_supervision_masks(
@@ -430,24 +527,12 @@ class PV26MultiTaskLoss(nn.Module):
         batch_size: int,
         num_classes: int,
     ) -> tuple[torch.BoolTensor, torch.BoolTensor, torch.BoolTensor]:
-        mask_payload = encoded.get("mask", {})
-        class_mask = mask_payload.get("det_supervised_class_mask")
-        if class_mask is None:
-            class_mask = torch.ones((batch_size, num_classes), dtype=torch.bool, device=device)
-        else:
-            class_mask = class_mask.to(device=device, dtype=torch.bool)
-
-        allow_objectness = mask_payload.get("det_allow_objectness_negatives")
-        if allow_objectness is None:
-            allow_objectness = torch.ones(batch_size, dtype=torch.bool, device=device)
-        else:
-            allow_objectness = allow_objectness.to(device=device, dtype=torch.bool)
-
-        allow_unmatched_class = mask_payload.get("det_allow_unmatched_class_negatives")
-        if allow_unmatched_class is None:
-            allow_unmatched_class = torch.ones(batch_size, dtype=torch.bool, device=device)
-        else:
-            allow_unmatched_class = allow_unmatched_class.to(device=device, dtype=torch.bool)
+        _, class_mask, allow_objectness, allow_unmatched_class = self._validate_det_supervision_contract(
+            encoded,
+            device=device,
+            batch_size=batch_size,
+            num_classes=num_classes,
+        )
         return class_mask, allow_objectness, allow_unmatched_class
 
     def _det_loss(

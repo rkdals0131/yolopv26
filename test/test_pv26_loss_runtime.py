@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import warnings
 
 import torch
 
@@ -299,6 +300,59 @@ class PV26LossRuntimeTests(unittest.TestCase):
             float(criterion.last_det_loss_breakdown["det_cls_unmatched_neg_loss"]),
             float(criterion.last_det_loss_breakdown["det_cls_matched_loss"]) * 2.0 + 1e-6,
         )
+
+    def test_encoded_det_supervision_contract_requires_explicit_masks(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        encoded["mask"].pop("det_allow_objectness_negatives")
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
+
+        with self.assertRaisesRegex(ValueError, "missing mask fields det_allow_objectness_negatives"):
+            criterion(predictions, encoded)
+
+    def test_encoded_det_supervision_contract_rejects_shape_mismatch(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        encoded["mask"]["det_allow_objectness_negatives"] = torch.ones((1, 1), dtype=torch.bool)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
+
+        with self.assertRaisesRegex(ValueError, "det_allow_objectness_negatives shape"):
+            criterion(predictions, encoded)
+
+    def test_encoded_det_supervision_contract_rejects_empty_supervised_rows(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        encoded["mask"]["det_supervised_class_mask"].zero_()
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke")
+
+        with self.assertRaisesRegex(ValueError, "require at least one supervised detector class"):
+            criterion(predictions, encoded)
+
+    def test_test_only_det_fallback_is_smoke_only_and_warns_once(self) -> None:
+        from model.loss import PV26MultiTaskLoss
+
+        with self.assertRaisesRegex(ValueError, "stage_0_smoke"):
+            PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup", allow_test_det_fallback=True)
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke", allow_test_det_fallback=True)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            criterion(predictions, encoded)
+            criterion(predictions, encoded)
+
+        runtime_warnings = [item for item in caught if issubclass(item.category, RuntimeWarning)]
+        self.assertEqual(len(runtime_warnings), 1)
+        self.assertIn("test-only detector assignment fallback", str(runtime_warnings[0].message))
+        self.assertEqual(criterion.last_det_assignment_mode, "prefix_smoke")
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_real_trunk_heads_and_loss_support_backward_smoke(self) -> None:

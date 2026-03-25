@@ -82,6 +82,15 @@ def _default_det_components() -> dict[str, float | int]:
     }
 
 
+def _criterion_config_from_instance(criterion: torch.nn.Module, stage: str) -> dict[str, Any] | None:
+    export_config = getattr(criterion, "export_config", None)
+    if not callable(export_config):
+        return None
+    config = dict(export_config())
+    config["stage"] = _canonical_stage(str(config.get("stage", stage)))
+    return config
+
+
 def _loss_summary(history: list[dict[str, Any]], name: str) -> dict[str, float]:
     successful = _successful_summaries(history)
     if not successful:
@@ -816,6 +825,9 @@ class PV26Trainer:
             "grad_clip_norm": self.grad_clip_norm,
             "amp_enabled": bool(self.amp_enabled),
         }
+        criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
+        if criterion_config is not None:
+            checkpoint["criterion_config"] = criterion_config
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
         if self.amp_enabled:
@@ -839,11 +851,21 @@ class PV26Trainer:
     ) -> dict[str, Any]:
         checkpoint = torch.load(path, map_location=map_location or self.device)
         checkpoint_stage = _canonical_stage(str(checkpoint.get("stage", self.stage)))
+        optimizer_hparams = _optimizer_group_hparams(self.optimizer)
+        current_criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
+        checkpoint_criterion_config = checkpoint.get("criterion_config")
+        if isinstance(checkpoint_criterion_config, dict):
+            criterion_config = dict(checkpoint_criterion_config)
+            criterion_config["stage"] = checkpoint_stage
+        elif current_criterion_config is not None:
+            criterion_config = dict(current_criterion_config)
+            criterion_config["stage"] = checkpoint_stage
+        else:
+            criterion_config = None
+
         if checkpoint_stage != self.stage:
-            optimizer_hparams = _optimizer_group_hparams(self.optimizer)
             self.stage = checkpoint_stage
             self.stage_summary = configure_pv26_train_stage(self.adapter, self.heads, self.stage)
-            self.criterion = PV26MultiTaskLoss(stage=self.stage).to(self.device)
             self.optimizer = build_pv26_optimizer(
                 self.adapter,
                 self.heads,
@@ -851,6 +873,8 @@ class PV26Trainer:
                 head_lr=optimizer_hparams["head_lr"],
                 weight_decay=optimizer_hparams["weight_decay"],
             )
+        if criterion_config is not None:
+            self.criterion = PV26MultiTaskLoss(**criterion_config).to(self.device)
         self.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
         self.heads.load_state_dict(checkpoint["heads_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -869,11 +893,16 @@ class PV26Trainer:
     def build_evaluator(self):
         from ..eval import PV26Evaluator
 
+        criterion = self.criterion
+        criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
+        if criterion_config is not None:
+            criterion = PV26MultiTaskLoss(**criterion_config).to(self.device)
         return PV26Evaluator(
             self.adapter,
             self.heads,
             stage=self.stage,
             device=self.device,
+            criterion=criterion,
         )
 
     def train_epoch(
@@ -992,6 +1021,8 @@ class PV26Trainer:
             "losses": _loss_stats_from_summaries(successful_summaries),
             "optimizer_lrs": dict(successful_summaries[-1]["optimizer_lrs"]),
             "assignment": _aggregate_assignment_modes(successful_summaries),
+            "attempted_source_counts": _aggregate_count_tree(step_summaries, "source_counts"),
+            "skipped_source_counts": _aggregate_count_tree(skipped_summaries, "source_counts"),
             "source_counts": _aggregate_count_tree(successful_summaries, "source_counts"),
             "det_supervision": _aggregate_count_tree(successful_summaries, "det_supervision"),
             "det_components": _aggregate_count_tree(successful_summaries, "det_components"),

@@ -34,6 +34,27 @@ def _write_dummy_pdf(path: Path) -> None:
     path.write_bytes(b"%PDF-1.4\n%stub\n")
 
 
+def _minimal_raw_batch(*, det_source: bool, meta: dict | None = None) -> dict:
+    empty_det = torch.zeros((0, 4), dtype=torch.float32)
+    empty_classes = torch.zeros((0,), dtype=torch.long)
+    empty_bool = torch.zeros((0,), dtype=torch.bool)
+    sample_meta = {
+        "sample_id": "synthetic_sample",
+        "dataset_key": "synthetic",
+    }
+    if meta is not None:
+        sample_meta.update(meta)
+    return {
+        "image": torch.randn(1, 3, 608, 800),
+        "det_targets": [{"boxes_xyxy": empty_det, "classes": empty_classes}],
+        "tl_attr_targets": [{"bits": torch.zeros((0, 4), dtype=torch.float32), "is_traffic_light": empty_bool, "collapse_reason": []}],
+        "lane_targets": [{"lanes": [], "stop_lines": [], "crosswalks": []}],
+        "source_mask": [{"det": det_source, "tl_attr": False, "lane": False, "stop_line": False, "crosswalk": False}],
+        "valid_mask": [{"det": empty_bool, "tl_attr": empty_bool, "lane": empty_bool, "stop_line": empty_bool, "crosswalk": empty_bool}],
+        "meta": [sample_meta],
+    }
+
+
 class PV26TargetEncoderTests(unittest.TestCase):
     def test_encode_batch_builds_fixed_shape_targets(self) -> None:
         from model.encoding import encode_pv26_batch
@@ -135,6 +156,22 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(encoded["mask"]["crosswalk_valid"][lane_index].tolist(), [True, False, False, False])
             self.assertTrue(torch.all(encoded["stop_line"][lane_index, 1:, :] == 0.0))
             self.assertTrue(torch.all(encoded["crosswalk"][lane_index, 1:, :] == 0.0))
+
+    def test_encode_batch_requires_det_supervision_meta_for_det_sources(self) -> None:
+        from model.encoding import encode_pv26_batch
+
+        with self.assertRaisesRegex(ValueError, "missing meta.det_supervised_class_ids"):
+            encode_pv26_batch(_minimal_raw_batch(det_source=True))
+
+    def test_encode_batch_accepts_det_source_false_without_det_supervision_meta(self) -> None:
+        from model.encoding import encode_pv26_batch
+
+        encoded = encode_pv26_batch(_minimal_raw_batch(det_source=False))
+
+        self.assertFalse(bool(encoded["mask"]["det_source"][0]))
+        self.assertFalse(bool(encoded["mask"]["det_supervised_class_mask"][0].any()))
+        self.assertFalse(bool(encoded["mask"]["det_allow_objectness_negatives"][0]))
+        self.assertFalse(bool(encoded["mask"]["det_allow_unmatched_class_negatives"][0]))
 
     def _build_dataset(self, root: Path) -> PV26CanonicalDataset:
         docs_root = root / "docs"

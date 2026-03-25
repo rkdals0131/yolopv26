@@ -171,9 +171,9 @@ def build_loss_spec() -> dict[str, Any]:
                 "raw_hw": "tuple[int, int]",
                 "network_hw": "tuple[int, int]",
                 "det_supervised_classes": "list[str]",
-                "det_supervised_class_ids": "list[int]",
-                "det_allow_objectness_negatives": "bool",
-                "det_allow_unmatched_class_negatives": "bool",
+                "det_supervised_class_ids": "list[int] required when source_mask.det is true",
+                "det_allow_objectness_negatives": "bool required when source_mask.det is true",
+                "det_allow_unmatched_class_negatives": "bool required when source_mask.det is true",
                 "transform": {
                     "scale": "float",
                     "pad_left": "int",
@@ -193,7 +193,7 @@ def build_loss_spec() -> dict[str, Any]:
             "stop_line": "float32[B, 6, 9]",
             "crosswalk": "float32[B, 4, 17]",
             "det_supervision": {
-                "det_supervised_class_mask": "bool[B, C_det]",
+                "det_supervised_class_mask": "bool[B, C_det] with at least one true class for det_source rows",
                 "det_allow_objectness_negatives": "bool[B]",
                 "det_allow_unmatched_class_negatives": "bool[B]",
             },

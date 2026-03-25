@@ -41,7 +41,8 @@
 - detector
   - task-aligned assigner runtime 통합 완료
   - real trunk path에서는 feature-shape metadata를 이용해 anchor grid를 만들고 assignment를 계산한다.
-  - synthetic unit smoke는 `allow_test_det_fallback=True`일 때만 metadata 없는 `prefix positive fallback`을 사용한다.
+  - synthetic unit smoke는 `stage_0_smoke`에서 `allow_test_det_fallback=True`일 때만 metadata 없는 `prefix positive fallback`을 사용한다.
+  - fallback이 실제로 사용되면 runtime warning을 남긴다.
 - lane family
   - Hungarian matching runtime 통합 완료
   - lane, stop-line, crosswalk 모두 query-to-GT assignment를 cost matrix 기반으로 계산한다.
@@ -66,6 +67,7 @@ L_total = λ_det * L_det
   - cls
 - partial-det policy
   - sample별 `det_supervised_class_mask`를 따른다.
+  - 이 supervision mask와 negative policy mask는 encoded batch에서 필수 contract다.
   - `det_allow_objectness_negatives=False`인 sample은 unmatched query를 objectness background negative로 쓰지 않는다.
   - `det_allow_unmatched_class_negatives=True`인 sample은 unmatched query에서도 source-owned class channel의 zero-target BCE를 계산한다.
   - cls BCE는 source가 담당하는 class channel에 대해서만 계산한다.
@@ -145,15 +147,17 @@ L_total = λ_det * L_det
 
 - spec는 [../model/loss/spec.py](../model/loss/spec.py)에 반영돼 있다.
 - smoke/runtime loss는 [../model/loss/runtime.py](../model/loss/runtime.py)에 반영돼 있다.
-- current runtime은 finite loss와 backward smoke를 목표로 한다.
+- current runtime은 pilot train/eval 경로에서 finite loss, backward, validation, prediction bundle decode를 모두 지원한다.
 - detector matching은 task-aligned assigner 기준으로 동작한다.
 - TL attr supervision은 matched detector positive의 GT index를 재사용한다.
 - lane family는 Hungarian matching 기준으로 objectness와 geometry target을 query에 재배치한다.
 - inference postprocess는 raw detector slot output을 prediction bundle로 decode한다.
+- evaluator의 `predict_batch()`는 postprocess-only 경계고, loss/assigner를 호출하지 않는다.
+- evaluator의 `evaluate_batch(compute_loss=False)`는 metrics/predictions만 계산하고 loss는 비운다.
 
 ## 구현 우선순위
 
-1. full-epoch trainer wiring
+1. pilot subset 본학습과 metric 해석
 2. export / ROS 정교화
 3. dataset-level metric aggregation 정교화
 

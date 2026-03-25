@@ -64,6 +64,7 @@ class PV26Evaluator:
         batch: dict[str, Any],
         *,
         include_predictions: bool = False,
+        compute_loss: bool = True,
         config: PV26PostprocessConfig | None = None,
     ) -> dict[str, Any]:
         self.adapter.raw_model.eval()
@@ -72,7 +73,9 @@ class PV26Evaluator:
         encoded = self.prepare_batch(batch)
         with torch.no_grad():
             predictions = self.forward_encoded_batch(encoded)
-            losses = self.criterion(predictions, encoded)
+            losses = {}
+            if compute_loss:
+                losses = self.criterion(predictions, encoded)
             postprocessed = (
                 postprocess_pv26_batch(predictions, encoded["meta"], config=config)
                 if include_predictions or raw_batch is not None
@@ -102,9 +105,15 @@ class PV26Evaluator:
         batch: dict[str, Any],
         *,
         include_predictions: bool = False,
+        compute_loss: bool = True,
         config: PV26PostprocessConfig | None = None,
     ) -> dict[str, Any]:
-        return self._run_batch(batch, include_predictions=include_predictions, config=config)
+        return self._run_batch(
+            batch,
+            include_predictions=include_predictions,
+            compute_loss=compute_loss,
+            config=config,
+        )
 
     def predict_batch(
         self,
@@ -112,7 +121,14 @@ class PV26Evaluator:
         *,
         config: PV26PostprocessConfig | None = None,
     ) -> list[dict[str, Any]]:
-        return list(self._run_batch(batch, include_predictions=True, config=config)["predictions"])
+        return list(
+            self._run_batch(
+                batch,
+                include_predictions=True,
+                compute_loss=False,
+                config=config,
+            )["predictions"]
+        )
 
 
 __all__ = ["PV26Evaluator"]

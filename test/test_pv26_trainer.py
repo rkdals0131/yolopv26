@@ -230,12 +230,17 @@ class PV26TrainerTests(unittest.TestCase):
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_trainer_checkpoint_and_history_roundtrip(self) -> None:
         from model.heads import PV26Heads
+        from model.loss import PV26MultiTaskLoss
         from model.training import PV26Trainer
         from model.trunk import build_yolo26n_trunk
 
         adapter = build_yolo26n_trunk()
         heads = PV26Heads(in_channels=(64, 128, 256))
-        trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup")
+        criterion = PV26MultiTaskLoss(
+            stage="stage_1_frozen_trunk_warmup",
+            det_cls_negative_weight=0.2,
+        )
+        trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup", criterion=criterion)
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
 
         trainer.train_step(batch)
@@ -271,6 +276,9 @@ class PV26TrainerTests(unittest.TestCase):
                 reloaded_trainer.stage_summary["trainable_head_params"],
                 trainer.stage_summary["trainable_head_params"],
             )
+            self.assertEqual(checkpoint["criterion_config"]["stage"], "stage_1_frozen_trunk_warmup")
+            self.assertAlmostEqual(float(reloaded_trainer.criterion.det_cls_negative_weight), 0.2)
+            self.assertFalse(bool(reloaded_trainer.criterion.allow_test_det_fallback))
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
@@ -508,6 +516,23 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["skipped_reasons"]["det_assignment_unavailable"], 1)
         self.assertEqual(summary["losses"]["total"]["mean"], 2.0)
         self.assertEqual(summary["det_components"]["det_cls_unmatched_neg_count"], 8)
+        self.assertEqual(summary["attempted_source_counts"]["det_source_samples"], 2)
+        self.assertEqual(summary["skipped_source_counts"]["det_source_samples"], 1)
+        self.assertEqual(summary["source_counts"]["det_source_samples"], 1)
+
+    def test_build_evaluator_clones_pv26_criterion_config(self) -> None:
+        from model.eval import PV26Evaluator
+        from model.loss import PV26MultiTaskLoss
+        from model.training import PV26Trainer
+
+        criterion = PV26MultiTaskLoss(stage="stage_0_smoke", det_cls_negative_weight=0.2)
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=criterion)
+
+        evaluator = trainer.build_evaluator()
+
+        self.assertIsInstance(evaluator, PV26Evaluator)
+        self.assertIsNot(evaluator.criterion, trainer.criterion)
+        self.assertEqual(evaluator.criterion.export_config(), trainer.criterion.export_config())
 
     def test_train_epoch_fails_when_every_batch_is_skipped(self) -> None:
         from model.training import PV26Trainer
