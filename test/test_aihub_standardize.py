@@ -35,15 +35,18 @@ class AIHubStandardizationTests(unittest.TestCase):
             root = Path(temp_dir)
             docs_root = root / "docs"
             lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
             traffic_root = root / "traffic"
             output_root = root / "standardized"
 
             self._create_docs_fixture(docs_root)
             self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
             self._create_traffic_fixture(traffic_root)
 
             outputs = run_standardization(
                 lane_root=lane_root,
+                obstacle_root=obstacle_root,
                 traffic_root=traffic_root,
                 docs_root=docs_root,
                 output_root=output_root,
@@ -51,28 +54,43 @@ class AIHubStandardizationTests(unittest.TestCase):
             )
 
             lane_readme = (lane_root / "README.md").read_text(encoding="utf-8")
+            obstacle_readme = (obstacle_root / "README.md").read_text(encoding="utf-8")
             traffic_readme = (traffic_root / "README.md").read_text(encoding="utf-8")
             self.assertIn("# 차선-횡단보도 인지 영상(수도권)", lane_readme)
             self.assertIn("문서 기준 수도권 json 수량", lane_readme)
+            self.assertIn("# 도로장애물·표면 인지 영상(수도권)", obstacle_readme)
+            self.assertIn("traffic_cone", obstacle_readme)
             self.assertIn("# 신호등-도로표지판 인지 영상(수도권)", traffic_readme)
             self.assertIn("4-bit supervision", traffic_readme)
 
             conversion_report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
             source_inventory = json.loads(outputs["inventory_json"].read_text(encoding="utf-8"))
 
-            self.assertEqual(source_inventory["datasets"][0]["local_inventory"]["splits"]["Training"]["images"], 1)
-            traffic_inventory = source_inventory["datasets"][1]["local_inventory"]["splits"]
+            inventory_by_key = {item["dataset_key"]: item for item in source_inventory["datasets"]}
+            self.assertEqual(inventory_by_key["aihub_lane_seoul"]["local_inventory"]["splits"]["Training"]["images"], 1)
+            self.assertEqual(inventory_by_key["aihub_obstacle_seoul"]["local_inventory"]["splits"]["Training"]["images"], 1)
+            self.assertEqual(inventory_by_key["aihub_obstacle_seoul"]["local_inventory"]["splits"]["Training"]["json_files"], 1)
+            traffic_inventory = inventory_by_key["aihub_traffic_seoul"]["local_inventory"]["splits"]
             self.assertEqual(traffic_inventory["Training"]["raw_images"], 1)
             self.assertEqual(traffic_inventory["Training"]["crop_images"], 1)
 
             datasets = {item["dataset_key"]: item for item in conversion_report["datasets"]}
             lane_dataset = datasets["aihub_lane_seoul"]
+            obstacle_dataset = datasets["aihub_obstacle_seoul"]
             traffic_dataset = datasets["aihub_traffic_seoul"]
 
             self.assertEqual(lane_dataset["lane_class_counts"]["blue_lane"], 1)
             self.assertEqual(lane_dataset["lane_class_counts"]["white_lane"], 1)
             self.assertEqual(lane_dataset["stop_line_count"], 1)
             self.assertEqual(lane_dataset["crosswalk_count"], 1)
+
+            self.assertEqual(obstacle_dataset["det_class_counts"]["traffic_cone"], 1)
+            self.assertEqual(obstacle_dataset["det_class_counts"]["obstacle"], 3)
+            self.assertEqual(obstacle_dataset["detection_count"], 4)
+            self.assertEqual(obstacle_dataset["held_reason_counts"]["excluded_obstacle_person_policy"], 1)
+            self.assertEqual(obstacle_dataset["held_reason_counts"]["excluded_obstacle_filled_pothole_policy"], 1)
+            self.assertEqual(obstacle_dataset["traffic_light_count"], 0)
+            self.assertEqual(obstacle_dataset["traffic_sign_count"], 0)
 
             self.assertEqual(traffic_dataset["det_class_counts"]["sign"], 1)
             self.assertEqual(traffic_dataset["det_class_counts"]["traffic_light"], 5)
@@ -85,19 +103,28 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(traffic_dataset["tl_invalid_reason_counts"]["non_car_traffic_light"], 1)
 
             lane_scenes = sorted((output_root / "labels_scene").rglob("aihub_lane_seoul*.json"))
+            obstacle_scenes = sorted((output_root / "labels_scene").rglob("aihub_obstacle_seoul*.json"))
             traffic_scenes = sorted((output_root / "labels_scene").rglob("aihub_traffic_seoul*.json"))
             det_labels = sorted((output_root / "labels_det").rglob("*.txt"))
             debug_vis = sorted((output_root / "meta" / "debug_vis").rglob("*.png"))
             self.assertEqual(len(lane_scenes), 1)
+            self.assertEqual(len(obstacle_scenes), 2)
             self.assertEqual(len(traffic_scenes), 2)
-            self.assertEqual(len(det_labels), 2)
-            self.assertEqual(len(debug_vis), 3)
+            self.assertEqual(len(det_labels), 4)
+            self.assertEqual(len(debug_vis), 5)
 
             lane_scene = json.loads(lane_scenes[0].read_text(encoding="utf-8"))
             self.assertEqual(lane_scene["tasks"]["has_lane"], 1)
             self.assertEqual(lane_scene["tasks"]["has_stop_line"], 1)
             self.assertEqual(lane_scene["tasks"]["has_crosswalk"], 1)
             self.assertIn("blue_lane", {item["class_name"] for item in lane_scene["lanes"]})
+
+            obstacle_scene = json.loads(obstacle_scenes[0].read_text(encoding="utf-8"))
+            self.assertEqual(obstacle_scene["tasks"]["has_det"], 1)
+            self.assertEqual(obstacle_scene["tasks"]["has_tl_attr"], 0)
+            self.assertEqual(obstacle_scene["traffic_lights"], [])
+            self.assertEqual(obstacle_scene["traffic_signs"], [])
+            self.assertEqual([item["class_name"] for item in obstacle_scene["detections"]], ["traffic_cone", "obstacle"])
 
             traffic_bits = []
             for traffic_scene_path in traffic_scenes:
@@ -116,23 +143,25 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertNotIn("yellow_arrow_not_supported", det_map_yaml)
 
             debug_vis_index = json.loads(outputs["debug_vis_index"].read_text(encoding="utf-8"))
-            self.assertEqual(debug_vis_index["selection_count"], 3)
+            self.assertEqual(debug_vis_index["selection_count"], 5)
             failure_manifest = json.loads(outputs["failure_json"].read_text(encoding="utf-8"))
             qa_summary = json.loads(outputs["qa_json"].read_text(encoding="utf-8"))
             self.assertEqual(failure_manifest["failure_count"], 0)
-            self.assertEqual(qa_summary["debug_vis"]["selection_count"], 3)
-            self.assertEqual(qa_summary["datasets"][0]["failure_count"], 0)
+            self.assertEqual(qa_summary["debug_vis"]["selection_count"], 5)
+            self.assertEqual({item["dataset_key"] for item in qa_summary["datasets"]}, {"aihub_lane_seoul", "aihub_obstacle_seoul", "aihub_traffic_seoul"})
 
     def test_standardization_supports_resume_and_failure_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             docs_root = root / "docs"
             lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
             traffic_root = root / "traffic"
             output_root = root / "standardized"
 
             self._create_docs_fixture(docs_root)
             self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
             self._create_traffic_fixture(traffic_root)
             broken_image = traffic_root / "Validation" / "[원천]c_val_1" / "traffic_val_001.jpg"
             broken_label = traffic_root / "Validation" / "[라벨]c_val_1" / "c_val_1" / "traffic_val_001.json"
@@ -159,6 +188,7 @@ class AIHubStandardizationTests(unittest.TestCase):
 
             first_outputs = run_standardization(
                 lane_root=lane_root,
+                obstacle_root=obstacle_root,
                 traffic_root=traffic_root,
                 docs_root=docs_root,
                 output_root=output_root,
@@ -172,6 +202,8 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(first_failures["failure_count"], 1)
             self.assertEqual(first_datasets["aihub_lane_seoul"]["fresh_processed_count"], 1)
             self.assertEqual(first_datasets["aihub_lane_seoul"]["resume_skipped_count"], 0)
+            self.assertEqual(first_datasets["aihub_obstacle_seoul"]["fresh_processed_count"], 2)
+            self.assertEqual(first_datasets["aihub_obstacle_seoul"]["failure_count"], 0)
             self.assertEqual(first_datasets["aihub_traffic_seoul"]["failure_count"], 1)
             self.assertEqual(first_datasets["aihub_traffic_seoul"]["processed_samples"], 1)
 
@@ -198,6 +230,7 @@ class AIHubStandardizationTests(unittest.TestCase):
 
             second_outputs = run_standardization(
                 lane_root=lane_root,
+                obstacle_root=obstacle_root,
                 traffic_root=traffic_root,
                 docs_root=docs_root,
                 output_root=output_root,
@@ -211,12 +244,61 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(second_failures["failure_count"], 0)
             self.assertEqual(second_datasets["aihub_lane_seoul"]["resume_skipped_count"], 1)
             self.assertEqual(second_datasets["aihub_lane_seoul"]["fresh_processed_count"], 0)
+            self.assertEqual(second_datasets["aihub_obstacle_seoul"]["resume_skipped_count"], 2)
+            self.assertEqual(second_datasets["aihub_obstacle_seoul"]["fresh_processed_count"], 0)
             self.assertEqual(second_datasets["aihub_traffic_seoul"]["resume_skipped_count"], 1)
             self.assertEqual(second_datasets["aihub_traffic_seoul"]["fresh_processed_count"], 1)
 
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")
         _write_dummy_pdf(docs_root / "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf")
+
+    def _create_obstacle_fixture(self, obstacle_root: Path) -> None:
+        train_image = obstacle_root / "Training" / "Images" / "TOA" / "1.Frontback_A01" / "obstacle_train_001.png"
+        train_label = obstacle_root / "Training" / "Annotations" / "TOA" / "1.Frontback_A01" / "obstacle_train_001_BBOX.json"
+        val_image = obstacle_root / "Validation" / "Images" / "TOA" / "1.Frontback_F01" / "obstacle_val_001.png"
+        val_label = obstacle_root / "Validation" / "Annotations" / "TOA" / "1.Frontback_F01" / "obstacle_val_001_BBOX.json"
+
+        _write_dummy_pdf(obstacle_root / "061.도로장애물_표면_인지_영상(수도권)_데이터_구축_가이드라인.pdf")
+        _make_image(train_image, 1280, 720, "#303030")
+        _make_image(val_image, 1280, 720, "#505050")
+
+        categories = [
+            {"id": 1, "name": "Animals(Dolls)"},
+            {"id": 2, "name": "Person"},
+            {"id": 3, "name": "Garbage bag & sacks"},
+            {"id": 4, "name": "Construction signs & Parking prohibited board"},
+            {"id": 5, "name": "Traffic cone"},
+            {"id": 6, "name": "Box"},
+            {"id": 7, "name": "Stones on road"},
+            {"id": 8, "name": "Pothole on road"},
+            {"id": 9, "name": "Filled pothole"},
+            {"id": 10, "name": "Manhole"},
+        ]
+        _write_json(
+            train_label,
+            {
+                "images": {"file_name": "obstacle_train_001.png", "width": 1280, "height": 720, "id": 1},
+                "annotations": [
+                    {"id": 1, "image_id": 1, "bbox": [70.0, 98.0, 91.0, 187.0], "category_id": 5, "area": 17017.0, "is_crowd": 0},
+                    {"id": 2, "image_id": 1, "bbox": [802.0, 181.0, 21.0, 46.0], "category_id": 6, "area": 966.0, "is_crowd": 0},
+                    {"id": 3, "image_id": 1, "bbox": [420.0, 250.0, 48.0, 130.0], "category_id": 2, "area": 6240.0, "is_crowd": 0},
+                ],
+                "categories": categories,
+            },
+        )
+        _write_json(
+            val_label,
+            {
+                "images": {"file_name": "obstacle_val_001.png", "width": 1280, "height": 720, "id": 2},
+                "annotations": [
+                    {"id": 1, "image_id": 2, "bbox": [180.0, 220.0, 60.0, 80.0], "category_id": 3, "area": 4800.0, "is_crowd": 0},
+                    {"id": 2, "image_id": 2, "bbox": [620.0, 260.0, 120.0, 90.0], "category_id": 4, "area": 10800.0, "is_crowd": 0},
+                    {"id": 3, "image_id": 2, "bbox": [920.0, 310.0, 100.0, 70.0], "category_id": 9, "area": 7000.0, "is_crowd": 0},
+                ],
+                "categories": categories,
+            },
+        )
 
     def _create_lane_fixture(self, lane_root: Path) -> None:
         image_path = lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / "lane_train_001.jpg"

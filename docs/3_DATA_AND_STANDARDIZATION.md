@@ -5,7 +5,7 @@
 - AIHUB
   - `차선-횡단보도 인지 영상(수도권)`
   - `신호등-도로표지판 인지 영상(수도권)`
-  - planned: `도로장애물·표면 인지 영상(수도권)` for `traffic_cone / obstacle` only
+  - `도로장애물·표면 인지 영상(수도권)` for `traffic_cone / obstacle` only
 - BDD100K
   - 7-class OD 보강용
 - future sources
@@ -24,7 +24,7 @@
 - 기본 경로는 repo-relative로 계산하고 `PV26_REPO_ROOT`, `PV26_SEG_DATASET_ROOT`, `PV26_AIHUB_ROOT`, `PV26_AIHUB_OUTPUT_ROOT` env override를 허용한다
 - image size probing은 PIL 우선, 실패 시 `identify` fallback을 사용한다
 
-## planned AIHUB obstacle source policy
+## AIHUB obstacle source policy
 
 - source: `도로장애물·표면 인지 영상(수도권)`
 - V1 목적은 `traffic_cone / obstacle` supervision 보강이다.

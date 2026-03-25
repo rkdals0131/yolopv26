@@ -49,7 +49,7 @@ TRAIN_CONFIG = TrainConfig()
 
 
 def _select_samples(dataset: PV26CanonicalDataset, include_bdd: bool) -> list[dict]:
-    wanted = ["aihub_traffic_seoul", "aihub_lane_seoul"]
+    wanted = ["aihub_traffic_seoul", "aihub_obstacle_seoul", "aihub_lane_seoul"]
     if include_bdd:
         wanted.append("bdd100k_det_100k")
 

@@ -41,6 +41,13 @@ SOURCE_MASK_BY_DATASET = {
         "stop_line": False,
         "crosswalk": False,
     },
+    "aihub_obstacle_seoul": {
+        "det": True,
+        "tl_attr": False,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
     "aihub_lane_seoul": {
         "det": False,
         "tl_attr": False,
@@ -59,6 +66,10 @@ SOURCE_MASK_BY_DATASET = {
 DET_SUPERVISION_BY_DATASET = {
     "aihub_traffic_seoul": {
         "class_names": ("traffic_light", "sign"),
+        "allow_background_negatives": False,
+    },
+    "aihub_obstacle_seoul": {
+        "class_names": ("traffic_cone", "obstacle"),
         "allow_background_negatives": False,
     },
     "aihub_lane_seoul": {

@@ -45,21 +45,22 @@ class PV26TargetEncoderTests(unittest.TestCase):
             batch = collate_pv26_samples(selected)
             encoded = encode_pv26_batch(batch)
 
-            self.assertEqual(tuple(encoded["image"].shape), (3, 3, 608, 800))
-            self.assertEqual(tuple(encoded["det_gt"]["boxes_xyxy"].shape), (3, 4, 4))
-            self.assertEqual(tuple(encoded["det_gt"]["classes"].shape), (3, 4))
-            self.assertEqual(tuple(encoded["det_gt"]["valid_mask"].shape), (3, 4))
-            self.assertEqual(tuple(encoded["tl_attr_gt_bits"].shape), (3, 4, 4))
-            self.assertEqual(tuple(encoded["tl_attr_gt_mask"].shape), (3, 4))
-            self.assertEqual(tuple(encoded["lane"].shape), (3, 12, 54))
-            self.assertEqual(tuple(encoded["stop_line"].shape), (3, 6, 9))
-            self.assertEqual(tuple(encoded["crosswalk"].shape), (3, 4, 17))
+            self.assertEqual(tuple(encoded["image"].shape), (4, 3, 608, 800))
+            self.assertEqual(tuple(encoded["det_gt"]["boxes_xyxy"].shape), (4, 4, 4))
+            self.assertEqual(tuple(encoded["det_gt"]["classes"].shape), (4, 4))
+            self.assertEqual(tuple(encoded["det_gt"]["valid_mask"].shape), (4, 4))
+            self.assertEqual(tuple(encoded["tl_attr_gt_bits"].shape), (4, 4, 4))
+            self.assertEqual(tuple(encoded["tl_attr_gt_mask"].shape), (4, 4))
+            self.assertEqual(tuple(encoded["lane"].shape), (4, 12, 54))
+            self.assertEqual(tuple(encoded["stop_line"].shape), (4, 6, 9))
+            self.assertEqual(tuple(encoded["crosswalk"].shape), (4, 4, 17))
 
             keyed_index = {
                 (item["dataset_key"], item["split"]): index
                 for index, item in enumerate(encoded["meta"])
             }
             traffic_index = keyed_index[("aihub_traffic_seoul", "train")]
+            obstacle_index = keyed_index[("aihub_obstacle_seoul", "train")]
             lane_index = keyed_index[("aihub_lane_seoul", "train")]
             bdd_index = keyed_index[("bdd100k_det_100k", "train")]
 
@@ -80,13 +81,22 @@ class PV26TargetEncoderTests(unittest.TestCase):
                 [False, False, False, False],
             )
             self.assertEqual(
+                encoded["tl_attr_gt_mask"][obstacle_index].tolist(),
+                [False, False, False, False],
+            )
+            self.assertEqual(
                 encoded["mask"]["det_supervised_class_mask"][traffic_index].tolist(),
                 [False, False, False, False, False, True, True],
+            )
+            self.assertEqual(
+                encoded["mask"]["det_supervised_class_mask"][obstacle_index].tolist(),
+                [False, False, False, True, True, False, False],
             )
             self.assertEqual(
                 encoded["mask"]["det_supervised_class_mask"][bdd_index].tolist(),
                 [True, True, True, False, False, False, False],
             )
+            self.assertFalse(bool(encoded["mask"]["det_allow_background_negatives"][obstacle_index]))
             self.assertFalse(bool(encoded["mask"]["det_allow_background_negatives"][traffic_index]))
             self.assertFalse(bool(encoded["mask"]["det_allow_background_negatives"][bdd_index]))
 
@@ -98,8 +108,8 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(float(encoded["stop_line"][lane_index, 0, 0]), 1.0)
             self.assertEqual(float(encoded["crosswalk"][lane_index, 0, 0]), 1.0)
 
-            self.assertEqual(encoded["mask"]["det_source"].tolist(), [False, True, True])
-            self.assertEqual(encoded["mask"]["lane_source"].tolist(), [True, False, False])
+            self.assertEqual(encoded["mask"]["det_source"].tolist(), [False, True, True, True])
+            self.assertEqual(encoded["mask"]["lane_source"].tolist(), [True, False, False, False])
 
     def test_encode_batch_pads_unused_queries_with_zeros(self) -> None:
         from model.encoding import encode_pv26_batch
@@ -126,6 +136,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
     def _build_dataset(self, root: Path) -> PV26CanonicalDataset:
         docs_root = root / "docs"
         lane_root = root / "lane"
+        obstacle_root = root / "obstacle"
         traffic_root = root / "traffic"
         bdd_root = root / "BDD100K"
         aihub_output = root / "pv26_aihub_standardized"
@@ -133,6 +144,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
 
         self._create_docs_fixture(docs_root)
         self._create_lane_fixture(lane_root)
+        self._create_obstacle_fixture(obstacle_root)
         self._create_traffic_fixture(traffic_root)
         self._create_bdd_fixture(
             bdd_root / "bdd100k_images_100k" / "100k",
@@ -141,6 +153,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
 
         run_aihub_standardization(
             lane_root=lane_root,
+            obstacle_root=obstacle_root,
             traffic_root=traffic_root,
             docs_root=docs_root,
             output_root=aihub_output,
@@ -162,6 +175,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
         keyed = {(item["meta"]["dataset_key"], item["meta"]["split"]): item for item in samples}
         return [
             keyed[("aihub_lane_seoul", "train")],
+            keyed[("aihub_obstacle_seoul", "train")],
             keyed[("aihub_traffic_seoul", "train")],
             keyed[("bdd100k_det_100k", "train")],
         ]
@@ -169,6 +183,51 @@ class PV26TargetEncoderTests(unittest.TestCase):
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")
         _write_dummy_pdf(docs_root / "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf")
+
+    def _create_obstacle_fixture(self, obstacle_root: Path) -> None:
+        train_image = obstacle_root / "Training" / "Images" / "TOA" / "1.Frontback_A01" / "obstacle_train_001.png"
+        val_image = obstacle_root / "Validation" / "Images" / "TOA" / "1.Frontback_F01" / "obstacle_val_001.png"
+        train_label = obstacle_root / "Training" / "Annotations" / "TOA" / "1.Frontback_A01" / "obstacle_train_001_BBOX.json"
+        val_label = obstacle_root / "Validation" / "Annotations" / "TOA" / "1.Frontback_F01" / "obstacle_val_001_BBOX.json"
+
+        _make_image(train_image, 1280, 720, "#303030")
+        _make_image(val_image, 1280, 720, "#505050")
+        categories = [
+            {"id": 1, "name": "Animals(Dolls)"},
+            {"id": 2, "name": "Person"},
+            {"id": 3, "name": "Garbage bag & sacks"},
+            {"id": 4, "name": "Construction signs & Parking prohibited board"},
+            {"id": 5, "name": "Traffic cone"},
+            {"id": 6, "name": "Box"},
+            {"id": 7, "name": "Stones on road"},
+            {"id": 8, "name": "Pothole on road"},
+            {"id": 9, "name": "Filled pothole"},
+            {"id": 10, "name": "Manhole"},
+        ]
+        _write_json(
+            train_label,
+            {
+                "images": {"file_name": "obstacle_train_001.png", "width": 1280, "height": 720, "id": 1},
+                "annotations": [
+                    {"id": 1, "image_id": 1, "bbox": [70.0, 98.0, 91.0, 187.0], "category_id": 5},
+                    {"id": 2, "image_id": 1, "bbox": [802.0, 181.0, 21.0, 46.0], "category_id": 6},
+                    {"id": 3, "image_id": 1, "bbox": [420.0, 250.0, 48.0, 130.0], "category_id": 2},
+                ],
+                "categories": categories,
+            },
+        )
+        _write_json(
+            val_label,
+            {
+                "images": {"file_name": "obstacle_val_001.png", "width": 1280, "height": 720, "id": 2},
+                "annotations": [
+                    {"id": 1, "image_id": 2, "bbox": [180.0, 220.0, 60.0, 80.0], "category_id": 3},
+                    {"id": 2, "image_id": 2, "bbox": [620.0, 260.0, 120.0, 90.0], "category_id": 4},
+                    {"id": 3, "image_id": 2, "bbox": [920.0, 310.0, 100.0, 70.0], "category_id": 9},
+                ],
+                "categories": categories,
+            },
+        )
 
     def _create_lane_fixture(self, lane_root: Path) -> None:
         image_path = lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / "lane_train_001.jpg"

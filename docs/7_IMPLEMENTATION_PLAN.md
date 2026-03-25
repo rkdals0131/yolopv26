@@ -17,7 +17,7 @@
 - trainer AMP / grad accumulation / grad clip
 - trainer auto resume / non-finite / OOM guard
 - pilot training command
-- AIHUB `도로장애물·표면 인지 영상(수도권)` det-only source 추가
+- AIHUB `도로장애물·표면 인지 영상(수도권)` det-only source 통합 완료
   - scope는 `traffic_cone / obstacle` only
   - `Person / Manhole / Pothole on road / Filled pothole`는 표준화 output에서 제외
   - loader det supervision도 같은 범위로 고정

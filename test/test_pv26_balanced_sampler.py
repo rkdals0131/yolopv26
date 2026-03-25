@@ -21,6 +21,7 @@ class _ToyCanonicalDataset:
         dataset_keys = (
             ("bdd100k_det_100k", 4),
             ("aihub_traffic_seoul", 4),
+            ("aihub_obstacle_seoul", 4),
             ("aihub_lane_seoul", 4),
         )
         for split in ("train", "val"):
@@ -98,6 +99,7 @@ class PV26BalancedSamplerTests(unittest.TestCase):
     def test_dataset_group_mapping_is_stable(self) -> None:
         self.assertEqual(dataset_group_for_key("bdd100k_det_100k"), "bdd100k")
         self.assertEqual(dataset_group_for_key("aihub_traffic_seoul"), "aihub_traffic")
+        self.assertEqual(dataset_group_for_key("aihub_obstacle_seoul"), "aihub_obstacle")
         self.assertEqual(dataset_group_for_key("aihub_lane_seoul"), "aihub_lane")
 
     def test_balanced_batch_sampler_uses_expected_per_batch_counts(self) -> None:
@@ -105,12 +107,12 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         sampler = PV26BalancedBatchSampler(dataset, batch_size=20, num_batches=2, split="train", seed=7)
 
         for batch_indices in sampler:
-            counts = {"bdd100k": 0, "aihub_traffic": 0, "aihub_lane": 0}
+            counts = {"bdd100k": 0, "aihub_traffic": 0, "aihub_obstacle": 0, "aihub_lane": 0}
             for index in batch_indices:
                 group = dataset_group_for_key(dataset.records[index].dataset_key)
                 counts[group] += 1
                 self.assertEqual(dataset.records[index].split, "train")
-            self.assertEqual(counts, {"bdd100k": 7, "aihub_traffic": 7, "aihub_lane": 6})
+            self.assertEqual(counts, {"bdd100k": 6, "aihub_traffic": 6, "aihub_obstacle": 3, "aihub_lane": 5})
 
     def test_balanced_dataloader_respects_split_filter(self) -> None:
         dataset = _ToyCanonicalDataset()
@@ -121,7 +123,7 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         self.assertEqual(tuple(batch["image"].shape), (20, 3, 608, 800))
         self.assertTrue(all(item["split"] == "val" for item in batch["meta"]))
         groups = {dataset_group_for_key(item["dataset_key"]) for item in batch["meta"]}
-        self.assertEqual(groups, {"bdd100k", "aihub_traffic", "aihub_lane"})
+        self.assertEqual(groups, {"bdd100k", "aihub_traffic", "aihub_obstacle", "aihub_lane"})
 
     def test_eval_dataloader_is_sequential_and_unbalanced(self) -> None:
         dataset = _ToyCanonicalDataset()

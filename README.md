@@ -52,13 +52,14 @@ Start from [0_PRD.md](docs/0_PRD.md). The numbered docs under `docs/` are the on
 
 The current AIHUB preprocessing deliverable is a hardcoded standardization pipeline for PV26 training preparation. It:
 
-- scans the local AIHUB lane and traffic roots
+- scans the local AIHUB lane, obstacle, and traffic roots
 - writes source-dataset README files back into the original AIHUB directories
 - preserves the source dataset intact and materializes converted outputs under `seg_dataset/pv26_aihub_standardized`
 - emits real-time stage logs, progress, throughput, and ETA
 - supports resume scan on existing standardized outputs and `--force-reprocess` when a clean rebuild is needed
 - writes failure manifest and QA summary artifacts for long-running full-dataset conversion
 - resolves dataset roots from repo-relative defaults or `PV26_*` environment overrides instead of host-only absolute paths
+- normalizes obstacle scenes into detector-only `traffic_cone / obstacle` canonical outputs
 - normalizes traffic scenes into `7-class OD + traffic_light 4-bit attributes`
 - preserves AIHUB lane, stop-line, and crosswalk geometry in scene JSON for later target encoding
 

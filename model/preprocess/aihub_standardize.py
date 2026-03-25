@@ -19,6 +19,7 @@ from typing import Any, TextIO
 from ..viz.overlay import render_overlay
 from .aihub_common import (
     LANE_DATASET_KEY as DISCOVERY_LANE_KEY,
+    OBSTACLE_DATASET_KEY as DISCOVERY_OBSTACLE_KEY,
     TRAFFIC_DATASET_KEY as DISCOVERY_TRAFFIC_KEY,
     PairRecord,
     _discover_pairs,
@@ -45,6 +46,7 @@ DEFAULT_SEG_DATASET_ROOT = _seg_dataset_root(DEFAULT_REPO_ROOT)
 DEFAULT_AIHUB_ROOT = _env_path("PV26_AIHUB_ROOT", DEFAULT_SEG_DATASET_ROOT / "AIHUB")
 DEFAULT_DOCS_ROOT = DEFAULT_AIHUB_ROOT / "docs"
 DEFAULT_LANE_ROOT = DEFAULT_AIHUB_ROOT / "차선-횡단보도 인지 영상(수도권)"
+DEFAULT_OBSTACLE_ROOT = DEFAULT_AIHUB_ROOT / "도로장애물·표면 인지 영상(수도권)"
 DEFAULT_TRAFFIC_ROOT = DEFAULT_AIHUB_ROOT / "신호등-도로표지판 인지 영상(수도권)"
 DEFAULT_OUTPUT_ROOT = _env_path("PV26_AIHUB_OUTPUT_ROOT", DEFAULT_AIHUB_ROOT.parent / "pv26_aihub_standardized")
 CACHE_DIR_NAME = "_cache"
@@ -52,6 +54,7 @@ DEBUG_VIS_DIRNAME = "debug_vis"
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
 OUTPUT_LANE_KEY = "aihub_lane_seoul"
+OUTPUT_OBSTACLE_KEY = "aihub_obstacle_seoul"
 OUTPUT_TRAFFIC_KEY = "aihub_traffic_seoul"
 OD_CLASSES = [
     "vehicle",
@@ -94,6 +97,20 @@ DOCUMENTED_STATS = {
         "traffic_sign_restriction_seoul": 800_992,
         "doc_reference": "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf",
     },
+}
+OBSTACLE_CLASS_REMAP = {
+    "traffic_cone": "traffic_cone",
+    "animals(dolls)": "obstacle",
+    "garbage_bag_&_sacks": "obstacle",
+    "construction_signs_&_parking_prohibited_board": "obstacle",
+    "box": "obstacle",
+    "stones_on_road": "obstacle",
+}
+OBSTACLE_EXCLUDED_REASONS = {
+    "person": "excluded_obstacle_person_policy",
+    "manhole": "excluded_obstacle_manhole_policy",
+    "pothole_on_road": "excluded_obstacle_pothole_policy",
+    "filled_pothole": "excluded_obstacle_filled_pothole_policy",
 }
 
 
@@ -332,6 +349,40 @@ def _combo_name(bits: dict[str, int]) -> str:
     return "+".join(active) if active else "off"
 
 
+def _obstacle_category_lookup(raw: dict[str, Any]) -> dict[int, str]:
+    lookup: dict[int, str] = {}
+    categories = raw.get("categories")
+    if not isinstance(categories, list):
+        return lookup
+    for item in categories:
+        if not isinstance(item, dict):
+            continue
+        category_id = item.get("id")
+        if category_id is None:
+            continue
+        lookup[int(category_id)] = _normalize_text(item.get("name"))
+    return lookup
+
+
+def _obstacle_bbox(annotation: dict[str, Any], width: int, height: int) -> list[float] | None:
+    box = annotation.get("bbox")
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    x_value = float(box[0])
+    y_value = float(box[1])
+    w_value = float(box[2])
+    h_value = float(box[3])
+    if w_value <= 0.0 or h_value <= 0.0:
+        return None
+    x1 = max(0.0, min(x_value, float(width)))
+    y1 = max(0.0, min(y_value, float(height)))
+    x2 = max(0.0, min(x_value + w_value, float(width)))
+    y2 = max(0.0, min(y_value + h_value, float(height)))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3)]
+
+
 def _lane_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
@@ -471,6 +522,121 @@ def _lane_worker(task: StandardizeTask) -> dict[str, Any]:
         "lane_class_counts": _counter_to_dict(lane_class_counts),
         "lane_type_counts": _counter_to_dict(lane_type_counts),
         "det_class_counts": {},
+        "tl_combo_counts": {},
+        "tl_invalid_reason_counts": {},
+        "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "resume_skipped": 0,
+    }
+
+
+def _obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
+    pair = task.pair
+    assert pair.image_path is not None
+    output_root = Path(task.output_root)
+    raw = _load_json(pair.label_path)
+    sample_id = _sample_id(task.output_dataset_key, pair)
+    image_output_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
+    image_materialization = _link_or_copy(pair.image_path, image_output_path)
+    width, height, scene = _base_scene(task.output_dataset_key, pair, raw, image_output_path)
+
+    category_lookup = _obstacle_category_lookup(raw)
+    detections: list[dict[str, Any]] = []
+    held_annotations: list[dict[str, Any]] = []
+    det_lines: list[str] = []
+    det_class_counts = Counter()
+    held_reason_counts = Counter()
+
+    for annotation in _extract_annotations(raw):
+        raw_category_id = annotation.get("category_id")
+        raw_category = None
+        if raw_category_id is not None:
+            try:
+                raw_category = category_lookup.get(int(raw_category_id))
+            except (TypeError, ValueError):
+                raw_category = None
+        if raw_category is None:
+            raw_category = _normalize_text(annotation.get("class")) or "unknown"
+        excluded_reason = OBSTACLE_EXCLUDED_REASONS.get(raw_category)
+        if excluded_reason is not None:
+            held_reason_counts[excluded_reason] += 1
+            held_annotations.append({"raw_class": raw_category, "reason": excluded_reason})
+            continue
+
+        mapped_class = OBSTACLE_CLASS_REMAP.get(raw_category)
+        if mapped_class is None:
+            held_reason_counts["unrecognized_obstacle_annotation"] += 1
+            held_annotations.append({"raw_class": raw_category, "reason": "unrecognized_obstacle_annotation"})
+            continue
+
+        bbox = _obstacle_bbox(annotation, width, height)
+        if bbox is None:
+            reason = f"{mapped_class}_invalid_bbox"
+            held_reason_counts[reason] += 1
+            held_annotations.append({"raw_class": raw_category, "reason": reason})
+            continue
+
+        detection_id = len(detections)
+        detections.append(
+            {
+                "id": detection_id,
+                "class_name": mapped_class,
+                "bbox": bbox,
+                "score": None,
+                "meta": {"dataset_label": raw_category},
+            }
+        )
+        det_class_counts[mapped_class] += 1
+        det_lines.append(_bbox_to_yolo_line(OD_CLASS_TO_ID[mapped_class], bbox, width, height))
+
+    scene.update(
+        {
+            "tasks": {
+                "has_det": int(bool(detections)),
+                "has_lane": 0,
+                "has_stop_line": 0,
+                "has_crosswalk": 0,
+                "has_tl_attr": 0,
+            },
+            "detections": detections,
+            "traffic_lights": [],
+            "traffic_signs": [],
+            "auxiliary_annotations": [],
+            "lanes": [],
+            "stop_lines": [],
+            "crosswalks": [],
+            "held_annotations": held_annotations,
+            "notes": [
+                "Obstacle source is standardized as a detector-only AIHUB source for PV26.",
+                "Only traffic_cone and obstacle detector classes are retained from this source.",
+            ],
+        }
+    )
+
+    scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
+    _write_json(scene_path, scene)
+
+    if det_lines:
+        det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
+        _write_text(det_path, "\n".join(det_lines) + "\n")
+
+    return {
+        "dataset_key": task.output_dataset_key,
+        "split": pair.split,
+        "sample_id": sample_id,
+        "scene_path": str(scene_path),
+        "image_path": str(image_output_path),
+        "image_materialization": image_materialization,
+        "lane_count": 0,
+        "stop_line_count": 0,
+        "crosswalk_count": 0,
+        "det_count": len(detections),
+        "traffic_light_count": 0,
+        "traffic_sign_count": 0,
+        "tl_attr_valid_count": 0,
+        "tl_attr_invalid_count": 0,
+        "lane_class_counts": {},
+        "lane_type_counts": {},
+        "det_class_counts": _counter_to_dict(det_class_counts),
         "tl_combo_counts": {},
         "tl_invalid_reason_counts": {},
         "held_reason_counts": _counter_to_dict(held_reason_counts),
@@ -652,6 +818,8 @@ def _traffic_worker(task: StandardizeTask) -> dict[str, Any]:
 def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
     if task.dataset_kind == "lane":
         return _lane_worker(task)
+    if task.dataset_kind == "obstacle":
+        return _obstacle_worker(task)
     if task.dataset_kind == "traffic":
         return _traffic_worker(task)
     raise ValueError(f"unsupported dataset kind: {task.dataset_kind}")
@@ -806,6 +974,32 @@ def _inventory_traffic_root(dataset_root: Path) -> dict[str, Any]:
     return inventory
 
 
+def _inventory_obstacle_root(dataset_root: Path) -> dict[str, Any]:
+    inventory: dict[str, Any] = {
+        "root": str(dataset_root),
+        "splits": {},
+    }
+    for split in ("Training", "Validation", "Test"):
+        split_root = dataset_root / split
+        if not split_root.exists():
+            inventory["splits"][split] = {"present": False}
+            continue
+        images = sum(
+            1
+            for path in split_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        )
+        json_files = sum(1 for path in split_root.rglob("*.json") if path.is_file())
+        archives = Counter(path.suffix.lower() for path in split_root.rglob("*") if path.is_file() and path.suffix.lower() in {".zip", ".tar"})
+        inventory["splits"][split] = {
+            "present": True,
+            "images": images,
+            "json_files": json_files,
+            "archives": _counter_to_dict(archives),
+        }
+    return inventory
+
+
 def _docs_inventory(docs_root: Path) -> list[dict[str, Any]]:
     return [
         {
@@ -814,6 +1008,18 @@ def _docs_inventory(docs_root: Path) -> list[dict[str, Any]]:
             "size_bytes": path.stat().st_size,
         }
         for path in sorted(docs_root.glob("*.pdf"))
+        if path.is_file()
+    ]
+
+
+def _source_pdf_inventory(dataset_root: Path) -> list[dict[str, Any]]:
+    return [
+        {
+            "file_name": path.name,
+            "path": str(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in sorted(dataset_root.glob("*.pdf"))
         if path.is_file()
     ]
 
@@ -963,29 +1169,94 @@ def _traffic_readme(dataset_root: Path, docs_root: Path, inventory: dict[str, An
     return "\n".join(lines) + "\n"
 
 
-def _write_source_readmes(lane_root: Path, traffic_root: Path, docs_root: Path, logger: LiveLogger) -> dict[str, str]:
+def _obstacle_readme(dataset_root: Path, inventory: dict[str, Any]) -> str:
+    local_docs = _source_pdf_inventory(dataset_root)
+    lines = [
+        "# 도로장애물·표면 인지 영상(수도권)",
+        "",
+        "AIHUB 원본 데이터셋의 로컬 구조와 detector-only 표준화 규칙을 정리한 원본용 README다.",
+        "",
+        "## 현재 로컬 보유 상태",
+        "",
+        "| Split | Present | Images | JSON | Archives |",
+        "| --- | --- | ---: | ---: | --- |",
+    ]
+    for split, split_info in inventory["splits"].items():
+        if not split_info["present"]:
+            lines.append(f"| {split} | no | 0 | 0 | - |")
+            continue
+        archives = ", ".join(f"{key}:{value}" for key, value in split_info["archives"].items()) or "-"
+        lines.append(
+            f"| {split} | yes | {split_info['images']:,} | {split_info['json_files']:,} | {archives} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## 로컬 디렉터리 구조",
+            "",
+            "```text",
+            _tree_markdown(dataset_root),
+            "```",
+            "",
+            "## 원본 어노테이션 스키마 요약",
+            "",
+            "- 이미지 메타: `images.file_name`, `images.width`, `images.height`",
+            "- 라벨 객체 리스트: `annotations[]`",
+            "- 카테고리 정의: `categories[{id, name}]`",
+            "- 박스 포맷: `bbox=[x, y, w, h]`",
+            "",
+            "## 표준화 관점 메모",
+            "",
+            "- detector class는 `traffic_cone`와 `obstacle`만 유지한다.",
+            "- remap: `Traffic cone -> traffic_cone`",
+            "- remap: `Animals(Dolls) / Garbage bag & sacks / Construction signs & Parking prohibited board / Box / Stones on road -> obstacle`",
+            "- exclusion: `Person / Manhole / Pothole on road / Filled pothole`는 detector canonical output에서 제외한다.",
+            "- lane, stop-line, crosswalk, traffic-light attribute supervision은 이 source에서 제공하지 않는다.",
+            "",
+            "## 참조 문서",
+            "",
+        ]
+    )
+    for item in local_docs:
+        lines.append(f"- `{item['file_name']}`")
+    return "\n".join(lines) + "\n"
+
+
+def _write_source_readmes(
+    lane_root: Path,
+    traffic_root: Path,
+    obstacle_root: Path,
+    docs_root: Path,
+    logger: LiveLogger,
+) -> dict[str, str]:
     logger.stage(
         "source_readme",
         "원본 데이터셋을 다시 열지 않고도 구조와 스키마를 확인할 수 있게 dataset-local README를 생성합니다.",
-        total=2,
+        total=3,
     )
     lane_inventory = _inventory_lane_root(lane_root)
     traffic_inventory = _inventory_traffic_root(traffic_root)
+    obstacle_inventory = _inventory_obstacle_root(obstacle_root)
     lane_readme_path = lane_root / "README.md"
     traffic_readme_path = traffic_root / "README.md"
+    obstacle_readme_path = obstacle_root / "README.md"
     _write_text(lane_readme_path, _lane_readme(lane_root, docs_root, lane_inventory))
     logger.progress(1, {"written": 1}, force=True)
     _write_text(traffic_readme_path, _traffic_readme(traffic_root, docs_root, traffic_inventory))
     logger.progress(2, {"written": 2}, force=True)
+    _write_text(obstacle_readme_path, _obstacle_readme(obstacle_root, obstacle_inventory))
+    logger.progress(3, {"written": 3}, force=True)
     return {
         "lane_readme": str(lane_readme_path),
         "traffic_readme": str(traffic_readme_path),
+        "obstacle_readme": str(obstacle_readme_path),
     }
 
 
 def _build_source_inventory(
     lane_root: Path,
     traffic_root: Path,
+    obstacle_root: Path,
     docs_root: Path,
     readme_paths: dict[str, str],
 ) -> dict[str, Any]:
@@ -1006,8 +1277,32 @@ def _build_source_inventory(
                 "local_inventory": _inventory_traffic_root(traffic_root),
                 "readme_path": readme_paths["traffic_readme"],
             },
+            {
+                "dataset_key": OUTPUT_OBSTACLE_KEY,
+                "documented_stats": {
+                    "doc_references": [item["file_name"] for item in _source_pdf_inventory(obstacle_root)],
+                },
+                "local_inventory": _inventory_obstacle_root(obstacle_root),
+                "readme_path": readme_paths["obstacle_readme"],
+            },
         ],
     }
+
+
+def _source_root_for_dataset(
+    dataset_key: str,
+    *,
+    lane_root: Path,
+    traffic_root: Path,
+    obstacle_root: Path,
+) -> Path:
+    if dataset_key == OUTPUT_LANE_KEY:
+        return lane_root
+    if dataset_key == OUTPUT_TRAFFIC_KEY:
+        return traffic_root
+    if dataset_key == OUTPUT_OBSTACLE_KEY:
+        return obstacle_root
+    raise KeyError(f"unsupported AIHUB dataset key: {dataset_key}")
 
 
 def _source_inventory_markdown(source_inventory: dict[str, Any]) -> str:
@@ -1055,6 +1350,7 @@ def _source_inventory_markdown(source_inventory: dict[str, Any]) -> str:
 def _aggregate_results(
     lane_root: Path,
     traffic_root: Path,
+    obstacle_root: Path,
     output_root: Path,
     workers: int,
     max_samples_per_dataset: int | None,
@@ -1118,7 +1414,14 @@ def _aggregate_results(
         datasets.append(
             {
                 "dataset_key": dataset_key,
-                "source_root": str(lane_root if dataset_key == OUTPUT_LANE_KEY else traffic_root),
+                "source_root": str(
+                    _source_root_for_dataset(
+                        dataset_key,
+                        lane_root=lane_root,
+                        traffic_root=traffic_root,
+                        obstacle_root=obstacle_root,
+                    )
+                ),
                 "processed_samples": len(items),
                 "fresh_processed_count": len(items) - total_resume_skipped,
                 "resume_skipped_count": total_resume_skipped,
@@ -1507,6 +1810,7 @@ def _generate_debug_vis(
 def run_standardization(
     *,
     lane_root: Path = DEFAULT_LANE_ROOT,
+    obstacle_root: Path = DEFAULT_OBSTACLE_ROOT,
     traffic_root: Path = DEFAULT_TRAFFIC_ROOT,
     docs_root: Path = DEFAULT_DOCS_ROOT,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
@@ -1520,6 +1824,7 @@ def run_standardization(
     log_stream: TextIO | None = None,
 ) -> dict[str, Path]:
     lane_root = lane_root.resolve()
+    obstacle_root = obstacle_root.resolve()
     traffic_root = traffic_root.resolve()
     docs_root = docs_root.resolve()
     output_root = output_root.resolve()
@@ -1528,6 +1833,7 @@ def run_standardization(
     logger = LiveLogger(log_stream)
     logger.info(f"pv26_aihub_standardize version={PIPELINE_VERSION}")
     logger.info(f"lane_root={lane_root}")
+    logger.info(f"obstacle_root={obstacle_root}")
     logger.info(f"traffic_root={traffic_root}")
     logger.info(f"output_root={output_root}")
     logger.info(
@@ -1537,6 +1843,8 @@ def run_standardization(
 
     if not lane_root.is_dir():
         raise FileNotFoundError(f"lane root does not exist: {lane_root}")
+    if not obstacle_root.is_dir():
+        raise FileNotFoundError(f"obstacle root does not exist: {obstacle_root}")
     if not traffic_root.is_dir():
         raise FileNotFoundError(f"traffic root does not exist: {traffic_root}")
     if not docs_root.is_dir():
@@ -1546,40 +1854,60 @@ def run_standardization(
     cache_root = output_root / CACHE_DIR_NAME
     cache_root.mkdir(parents=True, exist_ok=True)
 
-    readme_paths = {"lane_readme": "", "traffic_readme": ""}
+    readme_paths = {"lane_readme": "", "traffic_readme": "", "obstacle_readme": ""}
     if write_dataset_readmes:
-        readme_paths = _write_source_readmes(lane_root, traffic_root, docs_root, logger)
+        readme_paths = _write_source_readmes(lane_root, traffic_root, obstacle_root, docs_root, logger)
 
     logger.stage(
         "source_inventory",
         "원본 데이터셋의 현재 추출 상태와 문서 참조 상태를 메타데이터로 남겨 나중에 재현성을 보장합니다.",
         total=1,
     )
-    source_inventory = _build_source_inventory(lane_root, traffic_root, docs_root, readme_paths)
+    source_inventory = _build_source_inventory(lane_root, traffic_root, obstacle_root, docs_root, readme_paths)
     logger.progress(1, {"docs": len(source_inventory["docs"]), "datasets": len(source_inventory["datasets"])}, force=True)
 
     working_lane_root = _extract_archives_if_needed(lane_root, cache_root, logger)
+    working_obstacle_root = _extract_archives_if_needed(obstacle_root, cache_root, logger)
     working_traffic_root = _extract_archives_if_needed(traffic_root, cache_root, logger)
 
     logger.stage(
         "pair_discovery",
         "AIHUB 디렉터리 구조가 split/subfolder/archive 혼합이라 실제 image-label 짝을 먼저 확정해야 합니다.",
-        total=2,
+        total=3,
     )
     lane_discovery = _discover_pairs(DISCOVERY_LANE_KEY, working_lane_root)
     logger.progress(1, {"lane_pairs": len(lane_discovery.pairs)}, force=True)
+    obstacle_discovery = _discover_pairs(DISCOVERY_OBSTACLE_KEY, working_obstacle_root)
+    logger.progress(
+        2,
+        {"lane_pairs": len(lane_discovery.pairs), "obstacle_pairs": len(obstacle_discovery.pairs)},
+        force=True,
+    )
     traffic_discovery = _discover_pairs(DISCOVERY_TRAFFIC_KEY, working_traffic_root)
-    logger.progress(2, {"lane_pairs": len(lane_discovery.pairs), "traffic_pairs": len(traffic_discovery.pairs)}, force=True)
+    logger.progress(
+        3,
+        {
+            "lane_pairs": len(lane_discovery.pairs),
+            "obstacle_pairs": len(obstacle_discovery.pairs),
+            "traffic_pairs": len(traffic_discovery.pairs),
+        },
+        force=True,
+    )
 
     lane_pairs = sorted(lane_discovery.pairs, key=lambda item: (item.split, item.relative_id))
+    obstacle_pairs = sorted(obstacle_discovery.pairs, key=lambda item: (item.split, item.relative_id))
     traffic_pairs = sorted(traffic_discovery.pairs, key=lambda item: (item.split, item.relative_id))
     if max_samples_per_dataset is not None:
         lane_pairs = lane_pairs[:max_samples_per_dataset]
+        obstacle_pairs = obstacle_pairs[:max_samples_per_dataset]
         traffic_pairs = traffic_pairs[:max_samples_per_dataset]
 
     tasks = [
         StandardizeTask("lane", OUTPUT_LANE_KEY, pair, str(output_root))
         for pair in lane_pairs
+    ] + [
+        StandardizeTask("obstacle", OUTPUT_OBSTACLE_KEY, pair, str(output_root))
+        for pair in obstacle_pairs
     ] + [
         StandardizeTask("traffic", OUTPUT_TRAFFIC_KEY, pair, str(output_root))
         for pair in traffic_pairs
@@ -1665,6 +1993,7 @@ def run_standardization(
     conversion_report = _aggregate_results(
         lane_root=lane_root,
         traffic_root=traffic_root,
+        obstacle_root=obstacle_root,
         output_root=output_root,
         workers=workers,
         max_samples_per_dataset=max_samples_per_dataset,

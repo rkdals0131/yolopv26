@@ -9,7 +9,7 @@ class PV26LossSpecTests(unittest.TestCase):
     def test_loss_spec_matches_approved_multitask_design(self) -> None:
         spec = build_loss_spec()
 
-        self.assertEqual(spec["version"], "pv26-loss-v3")
+        self.assertEqual(spec["version"], "pv26-loss-v4")
         self.assertEqual(
             spec["model_contract"]["od_classes"],
             ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
@@ -32,7 +32,9 @@ class PV26LossSpecTests(unittest.TestCase):
         self.assertEqual(spec["transform_contract"]["interpolation"], "bilinear")
         self.assertEqual(spec["transform_contract"]["padding_fill_uint8"], 114)
         self.assertEqual(spec["dataset_masking"]["bdd100k"]["det"], 1)
+        self.assertEqual(spec["dataset_masking"]["aihub_obstacle"]["det"], 1)
         self.assertEqual(spec["dataset_masking"]["aihub_lane"]["crosswalk"], 1)
+        self.assertEqual(spec["sampler"]["ratios"]["aihub_obstacle"], 0.15)
         self.assertIn("arrow_only -> [0,0,0,1]", spec["tl_attr_policy"]["valid_examples"])
         self.assertIn("non_car_traffic_light", spec["tl_attr_policy"]["masked_cases"])
         self.assertNotIn("arrow_without_base_color", spec["tl_attr_policy"]["masked_cases"])

@@ -36,9 +36,10 @@
 
 - dataset-balanced sampler 사용
 - initial ratio
-  - BDD100K `35%`
-  - AIHUB traffic `35%`
-  - AIHUB lane `30%`
+  - BDD100K `30%`
+  - AIHUB traffic `30%`
+  - AIHUB obstacle `15%`
+  - AIHUB lane `25%`
 - validation은 balanced sampler를 재사용하지 않고 sequential eval loader를 사용한다.
 
 ## eval metrics

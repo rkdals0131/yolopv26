@@ -12,8 +12,10 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertEqual(aihub_standardize.DEFAULT_REPO_ROOT, repo_root)
         self.assertEqual(bdd100k_standardize.DEFAULT_REPO_ROOT, repo_root)
         self.assertTrue(aihub_standardize.DEFAULT_AIHUB_ROOT.is_absolute())
+        self.assertTrue(aihub_standardize.DEFAULT_OBSTACLE_ROOT.is_absolute())
         self.assertTrue(bdd100k_standardize.DEFAULT_BDD_ROOT.is_absolute())
         self.assertEqual(aihub_standardize.DEFAULT_AIHUB_ROOT.name, "AIHUB")
+        self.assertEqual(aihub_standardize.DEFAULT_OBSTACLE_ROOT.name, "도로장애물·표면 인지 영상(수도권)")
         self.assertEqual(bdd100k_standardize.DEFAULT_BDD_ROOT.name, "BDD100K")
 
     def test_preflight_report_is_available_without_runtime_side_effects(self) -> None:

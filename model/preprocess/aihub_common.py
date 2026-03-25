@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - depends on external environment.
 
 LANE_DATASET_KEY = "aihub_lane_source"
 TRAFFIC_DATASET_KEY = "aihub_traffic_source"
+OBSTACLE_DATASET_KEY = "aihub_obstacle_source"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".ppm"}
 VALID_TL_STATES = {"red", "yellow", "green", "off", "unknown"}
 
@@ -127,6 +128,8 @@ def _primary_image_path(dataset_key: str, path: Path) -> bool:
 
 def _extract_filename(raw: dict[str, Any], fallback_name: str) -> str:
     image_section = raw.get("image")
+    if not isinstance(image_section, dict):
+        image_section = raw.get("images")
     if isinstance(image_section, dict):
         for key in ("filename", "file_name", "name"):
             if image_section.get(key):
@@ -139,6 +142,8 @@ def _extract_filename(raw: dict[str, Any], fallback_name: str) -> str:
 
 def _extract_image_size(raw: dict[str, Any], image_path: Path) -> tuple[int, int]:
     image_section = raw.get("image")
+    if not isinstance(image_section, dict):
+        image_section = raw.get("images")
     parsed_size = None
     if isinstance(image_section, dict):
         for key in ("imsize", "image_size"):

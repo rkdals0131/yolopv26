@@ -40,6 +40,7 @@ class PV26LoaderTests(unittest.TestCase):
             root = Path(temp_dir)
             docs_root = root / "docs"
             lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
             traffic_root = root / "traffic"
             bdd_root = root / "BDD100K"
             aihub_output = root / "pv26_aihub_standardized"
@@ -47,6 +48,7 @@ class PV26LoaderTests(unittest.TestCase):
 
             self._create_docs_fixture(docs_root)
             self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
             self._create_traffic_fixture(traffic_root)
             self._create_bdd_fixture(
                 bdd_root / "bdd100k_images_100k" / "100k",
@@ -55,6 +57,7 @@ class PV26LoaderTests(unittest.TestCase):
 
             run_aihub_standardization(
                 lane_root=lane_root,
+                obstacle_root=obstacle_root,
                 traffic_root=traffic_root,
                 docs_root=docs_root,
                 output_root=aihub_output,
@@ -71,7 +74,7 @@ class PV26LoaderTests(unittest.TestCase):
             )
 
             dataset = PV26CanonicalDataset([aihub_output, bdd_output])
-            self.assertEqual(len(dataset), 6)
+            self.assertEqual(len(dataset), 8)
 
             samples = [dataset[index] for index in range(len(dataset))]
             keyed = {(item["meta"]["dataset_key"], item["meta"]["split"]): item for item in samples}
@@ -113,6 +116,21 @@ class PV26LoaderTests(unittest.TestCase):
             self.assertEqual(lane_sample["valid_mask"]["stop_line"].tolist(), [True])
             self.assertEqual(lane_sample["valid_mask"]["crosswalk"].tolist(), [True])
 
+            obstacle_sample = keyed[("aihub_obstacle_seoul", "train")]
+            self.assertEqual(obstacle_sample["source_mask"]["det"], True)
+            self.assertEqual(obstacle_sample["source_mask"]["tl_attr"], False)
+            self.assertEqual(obstacle_sample["source_mask"]["lane"], False)
+            self.assertEqual(obstacle_sample["meta"]["det_supervised_classes"], ["traffic_cone", "obstacle"])
+            self.assertEqual(obstacle_sample["meta"]["det_supervised_class_ids"], [3, 4])
+            self.assertFalse(obstacle_sample["meta"]["det_allow_background_negatives"])
+            self.assertEqual(tuple(obstacle_sample["det_targets"]["boxes_xyxy"].shape), (2, 4))
+            self.assertEqual(obstacle_sample["valid_mask"]["tl_attr"].tolist(), [False, False])
+            obstacle_first_box = obstacle_sample["det_targets"]["boxes_xyxy"][0].tolist()
+            self.assertAlmostEqual(obstacle_first_box[0], 43.75, places=3)
+            self.assertAlmostEqual(obstacle_first_box[1], 140.25, places=2)
+            self.assertAlmostEqual(obstacle_first_box[2], 100.625, places=3)
+            self.assertAlmostEqual(obstacle_first_box[3], 257.125, places=3)
+
             bdd_sample = keyed[("bdd100k_det_100k", "train")]
             self.assertEqual(bdd_sample["source_mask"]["det"], True)
             self.assertEqual(bdd_sample["source_mask"]["tl_attr"], False)
@@ -133,6 +151,7 @@ class PV26LoaderTests(unittest.TestCase):
             root = Path(temp_dir)
             docs_root = root / "docs"
             lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
             traffic_root = root / "traffic"
             bdd_root = root / "BDD100K"
             aihub_output = root / "pv26_aihub_standardized"
@@ -140,6 +159,7 @@ class PV26LoaderTests(unittest.TestCase):
 
             self._create_docs_fixture(docs_root)
             self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
             self._create_traffic_fixture(traffic_root)
             self._create_bdd_fixture(
                 bdd_root / "bdd100k_images_100k" / "100k",
@@ -148,6 +168,7 @@ class PV26LoaderTests(unittest.TestCase):
 
             run_aihub_standardization(
                 lane_root=lane_root,
+                obstacle_root=obstacle_root,
                 traffic_root=traffic_root,
                 docs_root=docs_root,
                 output_root=aihub_output,
@@ -177,6 +198,51 @@ class PV26LoaderTests(unittest.TestCase):
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")
         _write_dummy_pdf(docs_root / "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf")
+
+    def _create_obstacle_fixture(self, obstacle_root: Path) -> None:
+        train_image = obstacle_root / "Training" / "Images" / "TOA" / "1.Frontback_A01" / "obstacle_train_001.png"
+        val_image = obstacle_root / "Validation" / "Images" / "TOA" / "1.Frontback_F01" / "obstacle_val_001.png"
+        train_label = obstacle_root / "Training" / "Annotations" / "TOA" / "1.Frontback_A01" / "obstacle_train_001_BBOX.json"
+        val_label = obstacle_root / "Validation" / "Annotations" / "TOA" / "1.Frontback_F01" / "obstacle_val_001_BBOX.json"
+
+        _make_image(train_image, 1280, 720, "#303030")
+        _make_image(val_image, 1280, 720, "#505050")
+        categories = [
+            {"id": 1, "name": "Animals(Dolls)"},
+            {"id": 2, "name": "Person"},
+            {"id": 3, "name": "Garbage bag & sacks"},
+            {"id": 4, "name": "Construction signs & Parking prohibited board"},
+            {"id": 5, "name": "Traffic cone"},
+            {"id": 6, "name": "Box"},
+            {"id": 7, "name": "Stones on road"},
+            {"id": 8, "name": "Pothole on road"},
+            {"id": 9, "name": "Filled pothole"},
+            {"id": 10, "name": "Manhole"},
+        ]
+        _write_json(
+            train_label,
+            {
+                "images": {"file_name": "obstacle_train_001.png", "width": 1280, "height": 720, "id": 1},
+                "annotations": [
+                    {"id": 1, "image_id": 1, "bbox": [70.0, 98.0, 91.0, 187.0], "category_id": 5},
+                    {"id": 2, "image_id": 1, "bbox": [802.0, 181.0, 21.0, 46.0], "category_id": 6},
+                    {"id": 3, "image_id": 1, "bbox": [420.0, 250.0, 48.0, 130.0], "category_id": 2},
+                ],
+                "categories": categories,
+            },
+        )
+        _write_json(
+            val_label,
+            {
+                "images": {"file_name": "obstacle_val_001.png", "width": 1280, "height": 720, "id": 2},
+                "annotations": [
+                    {"id": 1, "image_id": 2, "bbox": [180.0, 220.0, 60.0, 80.0], "category_id": 3},
+                    {"id": 2, "image_id": 2, "bbox": [620.0, 260.0, 120.0, 90.0], "category_id": 4},
+                    {"id": 3, "image_id": 2, "bbox": [920.0, 310.0, 100.0, 70.0], "category_id": 9},
+                ],
+                "categories": categories,
+            },
+        )
 
     def _create_lane_fixture(self, lane_root: Path) -> None:
         image_path = lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / "lane_train_001.jpg"

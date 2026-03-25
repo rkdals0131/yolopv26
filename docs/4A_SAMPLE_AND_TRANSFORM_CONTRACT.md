@@ -102,10 +102,12 @@ sample = {
   - dataset source가 해당 task supervision을 제공하는지 나타낸다.
   - BDD100K는 `det=True`만 켠다.
   - AIHUB traffic은 `det=True`, `tl_attr=True`만 켠다.
+  - AIHUB obstacle은 `det=True`만 켠다.
   - AIHUB lane은 `lane=True`, `stop_line=True`, `crosswalk=True`만 켠다.
 - `meta["det_supervised_classes"]`, `meta["det_supervised_class_ids"]`
   - detector가 이 sample에서 실제 supervision으로 신뢰할 class subset이다.
   - AIHUB traffic은 `traffic_light`, `sign`만 포함한다.
+  - AIHUB obstacle은 `traffic_cone`, `obstacle`만 포함한다.
   - BDD100K는 `vehicle`, `bike`, `pedestrian`만 포함한다.
 - `meta["det_allow_background_negatives"]`
   - `False`면 partial-det sample로 취급한다.

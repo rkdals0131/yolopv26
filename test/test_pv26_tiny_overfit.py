@@ -44,15 +44,18 @@ class PV26TinyOverfitTests(unittest.TestCase):
             root = Path(temp_dir)
             docs_root = root / "docs"
             lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
             traffic_root = root / "traffic"
             output_root = root / "pv26_aihub_standardized"
 
             self._create_docs_fixture(docs_root)
             self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
             self._create_traffic_fixture(traffic_root)
 
             run_aihub_standardization(
                 lane_root=lane_root,
+                obstacle_root=obstacle_root,
                 traffic_root=traffic_root,
                 docs_root=docs_root,
                 output_root=output_root,
@@ -66,10 +69,10 @@ class PV26TinyOverfitTests(unittest.TestCase):
             for sample in dataset:
                 dataset_key = str(sample["meta"]["dataset_key"])
                 split = str(sample["meta"]["split"])
-                if dataset_key in {"aihub_traffic_seoul", "aihub_lane_seoul"} and split == "train" and dataset_key not in seen:
+                if dataset_key in {"aihub_traffic_seoul", "aihub_obstacle_seoul", "aihub_lane_seoul"} and split == "train" and dataset_key not in seen:
                     selected.append(sample)
                     seen.add(dataset_key)
-            self.assertEqual(seen, {"aihub_traffic_seoul", "aihub_lane_seoul"})
+            self.assertEqual(seen, {"aihub_traffic_seoul", "aihub_obstacle_seoul", "aihub_lane_seoul"})
 
             batch = collate_pv26_samples(selected)
             adapter = build_yolo26n_trunk()
@@ -85,8 +88,9 @@ class PV26TinyOverfitTests(unittest.TestCase):
 
             self.assertEqual(summary["steps"], 6)
             self.assertEqual(len(summary["history"]), 6)
-            self.assertEqual(len(summary["sample_ids"]), 2)
+            self.assertEqual(len(summary["sample_ids"]), 3)
             self.assertTrue(any(sample_id.startswith("aihub_lane_seoul_train_") for sample_id in summary["sample_ids"]))
+            self.assertTrue(any(sample_id.startswith("aihub_obstacle_seoul_train_") for sample_id in summary["sample_ids"]))
             self.assertTrue(any(sample_id.startswith("aihub_traffic_seoul_train_") for sample_id in summary["sample_ids"]))
             self.assertGreater(summary["first_total"], summary["best_total"])
             self.assertGreater(summary["improvement"], 0.0)
@@ -95,6 +99,48 @@ class PV26TinyOverfitTests(unittest.TestCase):
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")
         _write_dummy_pdf(docs_root / "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf")
+
+    def _create_obstacle_fixture(self, obstacle_root: Path) -> None:
+        train_image = obstacle_root / "Training" / "Images" / "TOA" / "1.Frontback_A01" / "obstacle_train_001.png"
+        val_image = obstacle_root / "Validation" / "Images" / "TOA" / "1.Frontback_F01" / "obstacle_val_001.png"
+        train_label = obstacle_root / "Training" / "Annotations" / "TOA" / "1.Frontback_A01" / "obstacle_train_001_BBOX.json"
+        val_label = obstacle_root / "Validation" / "Annotations" / "TOA" / "1.Frontback_F01" / "obstacle_val_001_BBOX.json"
+
+        _make_image(train_image, 1280, 720, "#303030")
+        _make_image(val_image, 1280, 720, "#505050")
+        categories = [
+            {"id": 1, "name": "Animals(Dolls)"},
+            {"id": 2, "name": "Person"},
+            {"id": 3, "name": "Garbage bag & sacks"},
+            {"id": 4, "name": "Construction signs & Parking prohibited board"},
+            {"id": 5, "name": "Traffic cone"},
+            {"id": 6, "name": "Box"},
+            {"id": 7, "name": "Stones on road"},
+            {"id": 8, "name": "Pothole on road"},
+            {"id": 9, "name": "Filled pothole"},
+            {"id": 10, "name": "Manhole"},
+        ]
+        _write_json(
+            train_label,
+            {
+                "images": {"file_name": "obstacle_train_001.png", "width": 1280, "height": 720, "id": 1},
+                "annotations": [
+                    {"id": 1, "image_id": 1, "bbox": [70.0, 98.0, 91.0, 187.0], "category_id": 5},
+                    {"id": 2, "image_id": 1, "bbox": [802.0, 181.0, 21.0, 46.0], "category_id": 6},
+                ],
+                "categories": categories,
+            },
+        )
+        _write_json(
+            val_label,
+            {
+                "images": {"file_name": "obstacle_val_001.png", "width": 1280, "height": 720, "id": 2},
+                "annotations": [
+                    {"id": 1, "image_id": 2, "bbox": [180.0, 220.0, 60.0, 80.0], "category_id": 3},
+                ],
+                "categories": categories,
+            },
+        )
 
     def _create_lane_fixture(self, lane_root: Path) -> None:
         image_path = lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / "lane_train_001.jpg"

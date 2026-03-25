@@ -68,7 +68,7 @@ L_total = λ_det * L_det
   - sample별 `det_supervised_class_mask`를 따른다.
   - `det_allow_background_negatives=False`인 sample은 unmatched query를 background negative로 쓰지 않는다.
   - cls BCE는 source가 담당하는 class channel에 대해서만 계산한다.
-  - 즉 AIHUB traffic은 `traffic_light/sign`만, BDD100K는 `vehicle/bike/pedestrian`만 detector class supervision에 관여한다.
+  - 즉 AIHUB traffic은 `traffic_light/sign`만, AIHUB obstacle은 `traffic_cone/obstacle`만, BDD100K는 `vehicle/bike/pedestrian`만 detector class supervision에 관여한다.
 
 ## TL attr loss
 
@@ -124,6 +124,12 @@ L_total = λ_det * L_det
   - detector unmatched negative off
   - detector class supervision은 `traffic_light / sign` only
   - tl attr valid-mask only
+  - lane family off
+- AIHUB obstacle
+  - det on
+  - detector unmatched negative off
+  - detector class supervision은 `traffic_cone / obstacle` only
+  - tl attr off
   - lane family off
 - AIHUB lane
   - det off

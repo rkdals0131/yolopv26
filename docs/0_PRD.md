@@ -34,8 +34,8 @@
 
 - OD
   - 기본 7-class OD는 BDD100K와 AIHUB traffic 계열을 함께 사용한다.
-  - planned AIHUB OD source는 `도로장애물·표면 인지 영상(수도권)`을 추가 대상으로 본다.
-  - 이 planned source는 V1에서 `traffic_cone / obstacle` 보강만 담당한다.
+  - AIHUB OD source로 `도로장애물·표면 인지 영상(수도권)`을 함께 사용한다.
+  - 이 source는 V1에서 `traffic_cone / obstacle` 보강만 담당한다.
   - `Person / Manhole / Pothole on road / Filled pothole`는 V1 detector supervision 범위에서 제외한다.
 - traffic light
   - detection은 generic `traffic_light` bbox다.

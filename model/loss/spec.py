@@ -5,7 +5,7 @@ from typing import Any
 
 from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v3"
+SPEC_VERSION = "pv26-loss-v4"
 
 
 @dataclass(frozen=True)
@@ -266,6 +266,13 @@ def build_loss_spec() -> dict[str, Any]:
                 "stop_line": 0,
                 "crosswalk": 0,
             },
+            "aihub_obstacle": {
+                "det": 1,
+                "tl_attr": 0,
+                "lane": 0,
+                "stop_line": 0,
+                "crosswalk": 0,
+            },
             "aihub_lane": {
                 "det": 0,
                 "tl_attr": 0,
@@ -390,9 +397,10 @@ def build_loss_spec() -> dict[str, Any]:
         "sampler": {
             "type": "dataset_balanced",
             "ratios": {
-                "bdd100k": 0.35,
-                "aihub_traffic": 0.35,
-                "aihub_lane": 0.30,
+                "bdd100k": 0.30,
+                "aihub_traffic": 0.30,
+                "aihub_lane": 0.25,
+                "aihub_obstacle": 0.15,
             },
         },
         "validation": {

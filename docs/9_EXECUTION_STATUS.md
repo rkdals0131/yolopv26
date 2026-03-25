@@ -8,7 +8,7 @@
 
 ## 현재 기준
 
-- 날짜: `2026-03-24`
+- 날짜: `2026-03-25`
 - phase: `phase 16 portability-and-validation-hardening`
 - current focus: `portability/import boundary/validation runtime hardening 완료, full-dataset 본학습 전 pilot 실행 판단 단계`
 
@@ -78,6 +78,8 @@
 - [x] BDD sign/light exclusion 정책과 generic det debug overlay sync
 - [x] partial-det detector negative/class masking 구현
 - [x] trainer run manifest / TensorBoard logging / config-first train entry 정리
+- [x] AIHUB obstacle det-only canonical standardization 구현
+- [x] obstacle source loader/sampler/loss masking 연동
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -85,7 +87,6 @@
 ## 다음 작업
 
 - [ ] full-dataset 전처리 실제 실행 계획 확정
-- [ ] AIHUB `도로장애물·표면 인지 영상(수도권)` source를 `traffic_cone / obstacle` only 범위로 canonical standardization에 추가
 - [ ] pilot subset 본학습과 metric 해석
 - [ ] preflight 결과를 기준으로 full-train 환경 lock 파일 정리
 - [ ] export / ROS 정교화
@@ -120,6 +121,8 @@
 - [x] lane Hungarian 통합 후 targeted tests 재통과
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
+- [x] obstacle source 통합 후 `python3 -m unittest discover -s test -v` 재통과
+- [x] obstacle source 통합 후 `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1` 실데이터 smoke 통과
 
 ## 최근 결정
 
@@ -135,7 +138,7 @@
 - standardized dataset loader는 variable dataset raw에서 `800x608`으로 직접 transform한다
 - loader 전에 BDD100K도 canonical standardization 레이어로 맞춘다
 - BDD100K는 `vehicle / bike / pedestrian` 보강 source로 쓰고 `traffic_light / sign`는 canonical output에서 제외한다
-- planned AIHUB obstacle source는 `traffic_cone / obstacle` only로 쓰고 `Person / Manhole / Pothole on road / Filled pothole`는 제외한다
+- AIHUB obstacle source는 `traffic_cone / obstacle` only로 쓰고 `Person / Manhole / Pothole on road / Filled pothole`는 제외한다
 - loader collate는 image만 stack하고 ragged target은 list 형태로 유지한다
 - target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다

@@ -10,14 +10,16 @@ from .pv26_loader import PV26CanonicalDataset, collate_pv26_samples
 
 
 DEFAULT_SAMPLER_RATIOS = {
-    "bdd100k": 0.35,
-    "aihub_traffic": 0.35,
-    "aihub_lane": 0.30,
+    "bdd100k": 0.30,
+    "aihub_traffic": 0.30,
+    "aihub_lane": 0.25,
+    "aihub_obstacle": 0.15,
 }
 
 DATASET_GROUP_BY_KEY = {
     "bdd100k_det_100k": "bdd100k",
     "aihub_traffic_seoul": "aihub_traffic",
+    "aihub_obstacle_seoul": "aihub_obstacle",
     "aihub_lane_seoul": "aihub_lane",
 }
 
