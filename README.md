@@ -192,6 +192,65 @@ Edit the config block at the top of `tools/run_pv26_tiny_overfit_smoke.py`, then
 python3 tools/run_pv26_train.py
 ```
 
-Edit the config block at the top of `tools/run_pv26_train.py`, then run the script. It runs the epoch-level trainer with checkpointing, auto-resume support, scheduler wiring, grad accumulation, live epoch/iteration logging, rolling timing profiles (`wait/load/fwd/loss/bwd`, mean/p50/p99, ETA), `run_manifest.json`, JSONL history logs, and TensorBoard scalar logging.
+`tools/run_pv26_train.py` is now a meta-train scenario runner. Edit the scenario YAML at [config/pv26_meta_train.default.yaml](config/pv26_meta_train.default.yaml), or point the top-level `ENTRY_CONFIG.scenario_path` in [tools/run_pv26_train.py](tools/run_pv26_train.py) at another YAML, then run the script.
+
+The runner executes the fixed 3-phase curriculum automatically:
+
+- `stage_1_frozen_trunk_warmup`
+- `stage_2_partial_unfreeze`
+- `stage_3_end_to_end_finetune`
+
+Each phase uses the YAML policy for:
+
+- `min_epochs`
+- `max_epochs`
+- `patience`
+- `min_improvement_pct`
+- per-phase optimizer and runtime overrides
+
+Phase promotion is hybrid:
+
+- the phase cannot advance before `min_epochs`
+- after that, it keeps tracking `selection.metric_path`
+- if relative improvement stays below `min_improvement_pct` for `patience` validation epochs, the next phase starts
+- `max_epochs` is always the hard cap
+
+Phase-internal crash recovery still uses `auto_resume`, but phase-to-phase handoff is now weights-only from the previous phase `best.pt`. That removes the old ambiguity where `stage` and `auto_resume` were mixed together.
+
+Artifacts are written under `runs/pv26_meta_train/<meta_run_name>/`:
+
+- `meta_manifest.json`
+- `summary.json`
+- `phase_1/`, `phase_2/`, `phase_3/`
+- `preview/phase_1/`, `preview/phase_2/`, `preview/phase_3/`
+
+Each phase keeps its own checkpoints, JSONL histories, TensorBoard logs, and `run_manifest.json`. The meta-run summary tracks completed phases, best checkpoints, and promotion reasons.
 
 Validation loaders in this command are sequential eval loaders, not balanced train samplers.
+
+### Preview Bundles
+
+When `preview.enabled=true`, the runner also exports fixed-sample inference previews for each phase:
+
+- `best`: the best checkpoint selected by `selection.metric_path`
+- `last`: the phase-end checkpoint
+
+Each preview bundle writes:
+
+- prediction JSON per sample
+- overlay PNG per sample
+- `index.json`
+
+### TensorBoard
+
+`tools/run_pv26_train.py` now defaults to `tensorboard_mode="curated"`. This keeps the Scalars tab focused on the tags that are useful every day, while `tensorboard_mode="full"` preserves the old verbose debug dump.
+
+Recommended cards for routine monitoring:
+
+- `epoch/train/loss_mean/total` and `epoch/val/loss_mean/total`
+- `epoch/train/loss_mean/det`, `epoch/train/loss_mean/lane`, `epoch/train/loss_mean/crosswalk`
+- `epoch/scheduler/lr/0` and `epoch/scheduler/lr/1`
+- `train_progress/profile_mean/iteration_sec`, `train_progress/profile_mean/load_sec`, `train_progress/profile_mean/forward_sec`
+- `train_step/health/skipped_steps` and `train_step/health/gradient_scale`
+
+Use `train_step/*` to inspect noisy batch-level behavior, `train_progress/*` to inspect throughput and ETA, and `epoch/*` to judge whether training quality is improving.

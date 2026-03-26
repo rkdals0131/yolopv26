@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 import torch.nn as nn
@@ -177,7 +178,121 @@ class _FiniteCriterion(nn.Module):
         }
 
 
+class _FakeSummaryWriter:
+    def __init__(self, log_dir: str) -> None:
+        self.log_dir = log_dir
+        self.scalars: list[tuple[str, float, int]] = []
+        self.flushed = False
+        self.closed = False
+        self.layouts: list[dict] = []
+
+    def add_scalar(self, name: str, value: float, global_step: int) -> None:
+        self.scalars.append((name, float(value), int(global_step)))
+
+    def add_custom_scalars(self, layout: dict) -> None:
+        self.layouts.append(layout)
+
+    def flush(self) -> None:
+        self.flushed = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class PV26TrainerTests(unittest.TestCase):
+    def test_format_train_progress_log_includes_phase_epoch_and_multiline_groups(self) -> None:
+        from model.training.pv26_trainer import _format_train_progress_log
+
+        message = _format_train_progress_log(
+            stage="stage_2_partial_unfreeze",
+            phase_index=2,
+            phase_count=3,
+            phase_name="partial_unfreeze",
+            epoch=4,
+            epoch_total=8,
+            batch_index=120,
+            total_batches=1650,
+            global_step=3420,
+            epoch_started_at_iso="2026-03-26T12:34:56",
+            elapsed_sec=125.0,
+            eta_sec=333.0,
+            losses={
+                "total": 1.25,
+                "det": 0.5,
+                "tl_attr": 0.1,
+                "lane": 0.3,
+                "stop_line": 0.2,
+                "crosswalk": 0.15,
+            },
+            profile_summary={
+                "iteration_sec": {"mean": 0.25, "p50": 0.2, "p99": 0.4},
+                "wait_sec": {"mean": 0.01, "p50": 0.01, "p99": 0.01},
+                "load_sec": {"mean": 0.02, "p50": 0.02, "p99": 0.02},
+                "forward_sec": {"mean": 0.03, "p50": 0.03, "p99": 0.03},
+                "loss_sec": {"mean": 0.04, "p50": 0.04, "p99": 0.04},
+                "backward_sec": {"mean": 0.05, "p50": 0.05, "p99": 0.05},
+            },
+        )
+
+        self.assertIn("phase=2/3", message)
+        self.assertIn("epoch=4/8", message)
+        self.assertIn("iter=120/1650", message)
+        self.assertIn("phase_name=partial_unfreeze", message)
+        self.assertGreaterEqual(message.count("\n"), 3)
+        self.assertIn("  progress: ", message)
+        self.assertIn("  loss: ", message)
+        self.assertIn("  iter_ms: ", message)
+        self.assertIn("  timing_ms: ", message)
+
+    def test_curated_tensorboard_train_step_payload_keeps_recommended_scalars_only(self) -> None:
+        from model.training import pv26_trainer
+
+        summary = {
+            "successful": True,
+            "losses": {
+                "total": 10.0,
+                "det": 1.0,
+                "tl_attr": 0.5,
+                "lane": 2.0,
+                "stop_line": 3.0,
+                "crosswalk": 4.0,
+            },
+            "optimizer_lrs": {"trunk": 1e-4, "heads": 5e-3, "aux": 1e-3},
+            "timing": {key: 0.1 for key in pv26_trainer.TIMING_KEYS},
+            "source_counts": {
+                "det_source_samples": 8,
+                "tl_attr_source_samples": 4,
+                "lane_source_samples": 2,
+                "stop_line_source_samples": 2,
+                "crosswalk_source_samples": 2,
+            },
+            "det_supervision": {
+                "partial_det_ratio": 0.75,
+                "det_source_samples": 8,
+            },
+            "det_components": {
+                "det_obj_loss": 0.2,
+                "det_cls_matched_loss": 0.3,
+            },
+            "optimizer_step": True,
+            "micro_step": 0,
+            "skipped_steps": 0,
+            "amp_enabled": True,
+            "gradient_scale": 1024.0,
+            "skipped_reason": None,
+        }
+
+        curated = pv26_trainer._tensorboard_train_step_payload(summary, "curated")
+        curated_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("train_step", curated)}
+
+        self.assertIn("train_step/loss/total", curated_names)
+        self.assertIn("train_step/lr/trunk", curated_names)
+        self.assertIn("train_step/timing/iteration_sec", curated_names)
+        self.assertIn("train_step/health/gradient_scale", curated_names)
+        self.assertNotIn("train_step/source/det_source_samples", curated_names)
+        self.assertNotIn("train_step/det_supervision/partial_det_ratio", curated_names)
+        self.assertNotIn("train_step/det_components/det_obj_loss", curated_names)
+
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.training import configure_pv26_train_stage
 
@@ -338,6 +453,7 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(manifest_payload["artifacts"]["summary"], str(run_dir / "summary.json"))
             self.assertEqual(manifest_payload["trainer"]["log_every_n_steps"], 1)
             self.assertEqual(manifest_payload["trainer"]["profile_window"], 20)
+            self.assertEqual(manifest_payload["trainer"]["tensorboard_mode"], "curated")
             if manifest_payload["artifacts"]["tensorboard"]["enabled"]:
                 self.assertTrue(any((run_dir / "tensorboard").glob("events.out.tfevents.*")))
 
@@ -594,6 +710,49 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(second["resume_start_epoch"], 2)
             self.assertEqual(second["completed_epochs"], 2)
             self.assertEqual(resumed.global_step, 2)
+
+    @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
+    def test_fit_auto_resume_purges_stale_tensorboard_steps_and_continues_step_index(self) -> None:
+        from model.heads import PV26Heads
+        from model.training import PV26Trainer
+        from model.trunk import build_yolo26n_trunk
+        from model.training import pv26_trainer
+
+        batch = _make_encoded_batch(batch_size=1, q_det=9975)
+        writer_calls: list[tuple[Path, int | None, _FakeSummaryWriter]] = []
+
+        def _fake_build_summary_writer(log_dir: Path, *, purge_step: int | None = None):
+            writer = _FakeSummaryWriter(str(log_dir))
+            writer_calls.append((Path(log_dir), purge_step, writer))
+            return writer, {
+                "enabled": True,
+                "status": "active",
+                "error": None,
+                "log_dir": str(log_dir),
+                "purge_step": purge_step,
+                "mode": "curated",
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "resume_fit_tb"
+            with mock.patch.object(pv26_trainer, "_maybe_build_summary_writer", side_effect=_fake_build_summary_writer):
+                trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+                first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, enable_tensorboard=True)
+
+                resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+                second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True, enable_tensorboard=True)
+
+        self.assertEqual(first["completed_epochs"], 1)
+        self.assertEqual(second["completed_epochs"], 2)
+        self.assertEqual(len(writer_calls), 2)
+        self.assertIsNone(writer_calls[0][1])
+        self.assertEqual(writer_calls[1][1], 2)
+        first_train_steps = [step for name, _, step in writer_calls[0][2].scalars if name == "train_step/loss/total"]
+        second_train_steps = [step for name, _, step in writer_calls[1][2].scalars if name == "train_step/loss/total"]
+        self.assertEqual(first_train_steps, [1])
+        self.assertEqual(second_train_steps, [2])
+        self.assertEqual(second["tensorboard"]["purge_step"], 2)
+        self.assertEqual(second["tensorboard"]["mode"], "curated")
 
 
 if __name__ == "__main__":

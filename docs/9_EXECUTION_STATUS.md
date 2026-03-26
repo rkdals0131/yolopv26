@@ -151,7 +151,7 @@
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current trainer runtime includes balanced sampler helper, checkpoint save/load, and history JSONL logging
-- current trainer runtime also writes `run_manifest.json`, step/epoch JSONL logs, and TensorBoard scalars under `runs/.../tensorboard`
+- current trainer runtime also writes `run_manifest.json`, step/epoch JSONL logs, and TensorBoard scalars under `runs/.../tensorboard` with default `curated` / optional `full` verbosity
 - current trainer runtime also prints live epoch/iteration progress with elapsed/ETA and rolling timing profiles for wait/load/fwd/loss/bwd including mean/p50/p99
 - current trainer runtime also includes epoch fit loop, val loop, best / last checkpoint write, and run summary output
 - current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard

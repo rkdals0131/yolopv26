@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import torch
 from torch.utils.data import Dataset
@@ -92,13 +92,18 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _discover_records(dataset_root: Path) -> list[SampleRecord]:
+def _discover_records(
+    dataset_root: Path,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+    progress_every: int = 2000,
+) -> list[SampleRecord]:
     records: list[SampleRecord] = []
     labels_scene_root = dataset_root / "labels_scene"
     if not labels_scene_root.is_dir():
         return records
 
-    for scene_path in sorted(labels_scene_root.rglob("*.json")):
+    for scene_index, scene_path in enumerate(labels_scene_root.rglob("*.json"), start=1):
         split = scene_path.parent.name
         scene = _load_json(scene_path)
         dataset_key = str(scene.get("source", {}).get("dataset") or "unknown_dataset")
@@ -117,6 +122,10 @@ def _discover_records(dataset_root: Path) -> list[SampleRecord]:
                 det_path=det_path if det_path.is_file() else None,
             )
         )
+        if progress_callback is not None and scene_index % max(1, int(progress_every)) == 0:
+            progress_callback(
+                f"indexed {scene_index} scene labels under {dataset_root}"
+            )
     return sorted(records, key=lambda item: (item.dataset_key, item.split, item.sample_id))
 
 
@@ -211,12 +220,31 @@ def _build_det_supervision_policy(dataset_key: str) -> dict[str, Any]:
 
 
 class PV26CanonicalDataset(Dataset):
-    def __init__(self, dataset_roots: Iterable[Path | str]) -> None:
+    def __init__(
+        self,
+        dataset_roots: Iterable[Path | str],
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+        progress_every: int = 2000,
+    ) -> None:
         roots = [Path(root).resolve() for root in dataset_roots]
         self.records: list[SampleRecord] = []
         for root in roots:
-            self.records.extend(_discover_records(root))
+            if progress_callback is not None:
+                progress_callback(f"scanning canonical dataset root: {root}")
+            root_records = _discover_records(
+                root,
+                progress_callback=progress_callback,
+                progress_every=progress_every,
+            )
+            self.records.extend(root_records)
+            if progress_callback is not None:
+                progress_callback(f"discovered {len(root_records)} records under {root}")
         self.records.sort(key=lambda item: (item.dataset_key, item.split, item.sample_id))
+        if progress_callback is not None:
+            progress_callback(
+                f"loaded {len(self.records)} canonical records from {len(roots)} dataset roots"
+            )
 
     def __len__(self) -> int:
         return len(self.records)
