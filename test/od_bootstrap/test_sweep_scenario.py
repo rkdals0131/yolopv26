@@ -5,10 +5,28 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import yaml
+
 from tools.od_bootstrap.sweep.scenario import REQUIRED_TEACHER_ORDER, load_sweep_scenario
 
 
 class ODBootstrapScenarioTests(unittest.TestCase):
+    def test_shipped_sweep_default_and_dryrun_configs_have_expected_dry_run_values(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        default_payload = yaml.safe_load(
+            (repo_root / "tools" / "od_bootstrap" / "config" / "sweep" / "model_centric.default.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        dryrun_payload = yaml.safe_load(
+            (repo_root / "tools" / "od_bootstrap" / "config" / "sweep" / "model_centric.dryrun.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertFalse(bool(default_payload["run"]["dry_run"]))
+        self.assertTrue(bool(dryrun_payload["run"]["dry_run"]))
+
     def test_load_sweep_scenario_resolves_paths_and_keeps_teacher_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

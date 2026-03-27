@@ -51,6 +51,18 @@ class _FakeYOLO:
 
 
 class CheckpointEvalTests(unittest.TestCase):
+    def test_shipped_eval_default_uses_teacher_name_checkpoint_path(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        scenario_path = repo_root / "tools" / "od_bootstrap" / "config" / "eval" / "mobility_checkpoint_eval.default.yaml"
+
+        scenario = load_teacher_checkpoint_eval_scenario(scenario_path)
+
+        self.assertEqual(scenario.teacher_name, "mobility")
+        self.assertEqual(
+            scenario.model.checkpoint_path,
+            (repo_root / "runs" / "od_bootstrap" / "train" / "mobility" / "weights" / "best.pt").resolve(),
+        )
+
     def test_eval_teacher_checkpoint_writes_summary_and_predictions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -48,6 +48,8 @@ docs/
 
 Start from [0_PRD.md](docs/0_PRD.md). The numbered docs under `docs/` are the only active design documents for this repository.
 
+For raw AIHUB/BDD layout, current local subset shape, and canonical/bootstrapped ID contracts, see [3A_RAW_DATASET_LAYOUTS.md](docs/3A_RAW_DATASET_LAYOUTS.md).
+
 ## AIHUB Standardization
 
 The current AIHUB preprocessing deliverable is a hardcoded standardization pipeline for PV26 training preparation. It:

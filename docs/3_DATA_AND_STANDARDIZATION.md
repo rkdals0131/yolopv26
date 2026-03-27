@@ -1,5 +1,7 @@
 # Data And Standardization
 
+원본 AIHUB/BDD 디렉터리 구조, 현재 로컬 subset, 파일명 규약은 [3A_RAW_DATASET_LAYOUTS.md](3A_RAW_DATASET_LAYOUTS.md)를 먼저 본다.
+
 ## 데이터 소스
 
 - AIHUB
