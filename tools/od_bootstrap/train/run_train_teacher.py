@@ -24,7 +24,16 @@ class EntryConfig:
     scenario_path: Path = DEFAULT_SCENARIO_PATH
 
 
-ENTRY_CONFIG = EntryConfig()
+# =============================================================================
+# Edit this block directly before running `python3 tools/od_bootstrap/train/run_train_teacher.py`.
+# Set exactly one teacher scenario here. Fine-grained train parameters live in the selected YAML.
+# =============================================================================
+ENTRY_CONFIG = EntryConfig(
+    scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26n.default.yaml",
+    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "signal_yolo26n.default.yaml",
+    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "obstacle_yolo26n.default.yaml",
+)
+# =============================================================================
 
 
 def _log_teacher_train(message: str) -> None:
@@ -47,6 +56,18 @@ def _build_train_params(scenario: TeacherTrainScenario) -> dict[str, Any]:
         "resume": train.resume,
         "val": train.val,
         "save_period": train.save_period,
+    }
+
+
+def _build_runtime_params(scenario: TeacherTrainScenario) -> dict[str, Any]:
+    train = scenario.train
+    return {
+        "pin_memory": train.pin_memory,
+        "persistent_workers": train.persistent_workers,
+        "prefetch_factor": train.prefetch_factor,
+        "log_every_n_steps": train.log_every_n_steps,
+        "profile_window": train.profile_window,
+        "profile_device_sync": train.profile_device_sync,
     }
 
 
@@ -76,6 +97,7 @@ def run_teacher_train_scenario(scenario: TeacherTrainScenario, *, scenario_path:
         model_size=scenario.model.model_size,
         weights=scenario.model.weights,
         train_params=_build_train_params(scenario),
+        runtime_params=_build_runtime_params(scenario),
         exist_ok=scenario.run.exist_ok,
     )
     summary = {

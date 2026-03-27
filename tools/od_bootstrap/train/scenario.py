@@ -38,6 +38,9 @@ class TeacherTrainParams:
     batch: int = 16
     device: str = "cuda:0"
     workers: int = 8
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int | None = 4
     patience: int = 50
     cache: bool = False
     amp: bool = True
@@ -46,6 +49,9 @@ class TeacherTrainParams:
     resume: bool = False
     val: bool = True
     save_period: int = 10
+    log_every_n_steps: int = 20
+    profile_window: int = 20
+    profile_device_sync: bool = True
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,12 @@ def _coerce_int(value: Any, *, field_name: str) -> int:
     return int(value)
 
 
+def _coerce_optional_int(value: Any, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _coerce_int(value, field_name=field_name)
+
+
 def _run_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> TeacherRunConfig:
     data = _coerce_mapping(payload, field_name="run")
     return TeacherRunConfig(
@@ -144,6 +156,15 @@ def _train_config_from_mapping(payload: dict[str, Any]) -> TeacherTrainParams:
         batch=_coerce_int(data.get("batch", defaults.batch), field_name="train.batch"),
         device=_coerce_str(data.get("device", defaults.device), field_name="train.device"),
         workers=_coerce_int(data.get("workers", defaults.workers), field_name="train.workers"),
+        pin_memory=_coerce_bool(data.get("pin_memory", defaults.pin_memory), field_name="train.pin_memory"),
+        persistent_workers=_coerce_bool(
+            data.get("persistent_workers", defaults.persistent_workers),
+            field_name="train.persistent_workers",
+        ),
+        prefetch_factor=_coerce_optional_int(
+            data.get("prefetch_factor", defaults.prefetch_factor),
+            field_name="train.prefetch_factor",
+        ),
         patience=_coerce_int(data.get("patience", defaults.patience), field_name="train.patience"),
         cache=_coerce_bool(data.get("cache", defaults.cache), field_name="train.cache"),
         amp=_coerce_bool(data.get("amp", defaults.amp), field_name="train.amp"),
@@ -152,6 +173,18 @@ def _train_config_from_mapping(payload: dict[str, Any]) -> TeacherTrainParams:
         resume=_coerce_bool(data.get("resume", defaults.resume), field_name="train.resume"),
         val=_coerce_bool(data.get("val", defaults.val), field_name="train.val"),
         save_period=_coerce_int(data.get("save_period", defaults.save_period), field_name="train.save_period"),
+        log_every_n_steps=_coerce_int(
+            data.get("log_every_n_steps", defaults.log_every_n_steps),
+            field_name="train.log_every_n_steps",
+        ),
+        profile_window=_coerce_int(
+            data.get("profile_window", defaults.profile_window),
+            field_name="train.profile_window",
+        ),
+        profile_device_sync=_coerce_bool(
+            data.get("profile_device_sync", defaults.profile_device_sync),
+            field_name="train.profile_device_sync",
+        ),
     )
 
 

@@ -20,6 +20,9 @@ train:
   batch: 16
   device: cuda:0
   workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
   patience: 50
   cache: false
   amp: true
@@ -28,3 +31,6 @@ train:
   resume: false
   val: true
   save_period: 10
+  log_every_n_steps: 20
+  profile_window: 20
+  profile_device_sync: true

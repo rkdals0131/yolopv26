@@ -19,10 +19,13 @@ def _write_text(path: Path, text: str) -> None:
 
 
 class _FakeYOLO:
+    last_instance: "_FakeYOLO | None" = None
+
     def __init__(self, weights: str) -> None:
         self.weights = weights
         self.trainer = None
         self.last_train_kwargs: dict | None = None
+        _FakeYOLO.last_instance = self
 
     def train(self, **kwargs):
         self.last_train_kwargs = dict(kwargs)
@@ -93,6 +96,9 @@ class TeacherTrainTests(unittest.TestCase):
                       batch: 2
                       device: cpu
                       workers: 1
+                      pin_memory: true
+                      persistent_workers: true
+                      prefetch_factor: 3
                       patience: 1
                       cache: false
                       amp: false
@@ -101,6 +107,9 @@ class TeacherTrainTests(unittest.TestCase):
                       resume: false
                       val: true
                       save_period: 1
+                      log_every_n_steps: 5
+                      profile_window: 7
+                      profile_device_sync: false
                     """
                 ).strip()
                 + "\n",
@@ -113,7 +122,12 @@ class TeacherTrainTests(unittest.TestCase):
 
             self.assertEqual(summary["teacher_name"], "mobility")
             self.assertEqual(summary["train_summary"]["weights"], "yolo26n.pt")
+            self.assertEqual(summary["train"]["prefetch_factor"], 3)
+            self.assertEqual(summary["train_summary"]["runtime"]["prefetch_factor"], 3)
+            self.assertEqual(summary["train_summary"]["runtime"]["profile_window"], 7)
             self.assertTrue(Path(summary["train_summary"]["best_checkpoint"]).is_file())
             self.assertTrue(Path(summary["data_yaml_path"]).is_file())
             self.assertTrue((root / "runs" / "mobility" / "run_summary.json").is_file())
             self.assertTrue((root / "runs" / "mobility" / "train_summary.json").is_file())
+            self.assertNotIn("pin_memory", _FakeYOLO.last_instance.last_train_kwargs)
+            self.assertNotIn("prefetch_factor", _FakeYOLO.last_instance.last_train_kwargs)
