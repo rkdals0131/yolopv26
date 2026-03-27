@@ -19,18 +19,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.od_bootstrap.common import nms_rows
-from tools.od_bootstrap.sweep.image_list import ImageListEntry, load_image_list
-from tools.od_bootstrap.sweep.materialize import materialize_exhaustive_od_dataset
-from tools.od_bootstrap.sweep.policy import row_passes_policy
-from tools.od_bootstrap.sweep.scenario import BootstrapSweepScenario, ClassPolicy, TeacherConfig, load_sweep_scenario
-from tools.od_bootstrap.sweep.schema import RunManifest, TeacherJobManifest
-from tools.od_bootstrap.sweep.writer import (
+from tools.od_bootstrap.sweep.artifacts import (
+    RunManifest,
+    TeacherJobManifest,
     teacher_output_dir,
     write_image_list_snapshot,
     write_run_manifest,
     write_teacher_job_manifest,
     write_teacher_predictions,
 )
+from tools.od_bootstrap.sweep.image_list import ImageListEntry, load_image_list
+from tools.od_bootstrap.sweep.materialize import materialize_exhaustive_od_dataset
+from tools.od_bootstrap.sweep.policy import row_passes_policy
+from tools.od_bootstrap.sweep.scenario import BootstrapSweepScenario, ClassPolicy, TeacherConfig, load_sweep_scenario
 
 
 DEFAULT_SCENARIO_PATH = REPO_ROOT / "tools" / "od_bootstrap" / "config" / "sweep" / "model_centric.default.yaml"

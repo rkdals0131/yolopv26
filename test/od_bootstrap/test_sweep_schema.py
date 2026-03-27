@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tools.od_bootstrap.sweep.schema import BoxProvenance, RunManifest, TeacherJobManifest
+from tools.od_bootstrap.sweep.artifacts import BoxProvenance, RunManifest, TeacherJobManifest
 
 
 class ODBootstrapSchemaTests(unittest.TestCase):

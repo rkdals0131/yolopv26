@@ -12,9 +12,9 @@ import yaml
 
 from model.preprocess.aihub_standardize import OD_CLASS_TO_ID, OD_CLASSES
 
+from .artifacts import BoxProvenance
 from .image_list import ImageListEntry
 from .policy import apply_policy_to_predictions
-from .schema import BoxProvenance
 
 
 EXHAUSTIVE_DATASET_KEY_BY_SOURCE = {
