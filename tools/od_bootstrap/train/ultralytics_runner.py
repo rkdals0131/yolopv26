@@ -24,11 +24,13 @@ try:
     from ultralytics import YOLO
     from ultralytics.cfg import DEFAULT_CFG
     from ultralytics.data.build import ContiguousDistributedSampler, InfiniteDataLoader, RANK, seed_worker
+    from ultralytics.engine import trainer as ultra_trainer
     from ultralytics.models.yolo.detect.train import DetectionTrainer
     from ultralytics.utils.torch_utils import torch_distributed_zero_first
 except ImportError:  # pragma: no cover - dependency absence handled in tests with patching.
     YOLO = None
     DEFAULT_CFG = None
+    ultra_trainer = None
     DetectionTrainer = None
     InfiniteDataLoader = None
     ContiguousDistributedSampler = None
@@ -182,6 +184,23 @@ def _emit_log(message: str) -> None:
     print(message, flush=True)
 
 
+def _build_live_postfix(
+    *,
+    elapsed_sec: float,
+    eta_sec: float | None,
+    profile_summary: dict[str, Any],
+) -> str:
+    return " ".join(
+        [
+            f"elapsed={_format_duration(elapsed_sec)}",
+            f"eta={_format_duration(eta_sec)}",
+            f"iter={profile_summary['iteration_sec']['mean'] * 1000.0:.1f}ms",
+            f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.1f}ms",
+            f"compute={profile_summary['compute_sec']['mean'] * 1000.0:.1f}ms",
+        ]
+    )
+
+
 def _loader_profile_payload(loader: Any) -> dict[str, Any]:
     return {
         "batch_size": int(getattr(loader, "batch_size", 0) or 0),
@@ -244,7 +263,7 @@ def _make_teacher_trainer(
     runtime_params: dict[str, Any],
     log_fn: Callable[[str], None],
 ):
-    if DetectionTrainer is None or torch_distributed_zero_first is None:
+    if DetectionTrainer is None or torch_distributed_zero_first is None or ultra_trainer is None:
         raise RuntimeError("ultralytics trainer dependencies are not available")
 
     class TeacherDetectionTrainer(DetectionTrainer):
@@ -272,6 +291,7 @@ def _make_teacher_trainer(
             self.od_pending_wait_sec = 0.0
             self.od_epoch_step = 0
             self.od_global_step = 0
+            self.od_pbar = None
 
         def get_dataloader(self, dataset_path: str, batch_size: int = 16, rank: int = 0, mode: str = "train"):
             assert mode in {"train", "val"}, f"Mode must be 'train' or 'val', not {mode}."
@@ -292,6 +312,205 @@ def _make_teacher_trainer(
                 persistent_workers=bool(runtime_params["persistent_workers"]),
                 prefetch_factor=runtime_params["prefetch_factor"],
             )
+
+        def _do_train(self):
+            if self.world_size > 1:
+                self._setup_ddp()
+            self._setup_train()
+
+            nb = len(self.train_loader)
+            nw = max(round(self.args.warmup_epochs * nb), 100) if self.args.warmup_epochs > 0 else -1
+            last_opt_step = -1
+            self.epoch_time = None
+            self.epoch_time_start = ultra_trainer.time.time()
+            self.train_time_start = ultra_trainer.time.time()
+            self.run_callbacks("on_train_start")
+            ultra_trainer.LOGGER.info(
+                f"Image sizes {self.args.imgsz} train, {self.args.imgsz} val\n"
+                f"Using {self.train_loader.num_workers * (self.world_size or 1)} dataloader workers\n"
+                f"Logging results to {ultra_trainer.colorstr('bold', self.save_dir)}\n"
+                f"Starting training for "
+                + (f"{self.args.time} hours..." if self.args.time else f"{self.epochs} epochs...")
+            )
+            if self.args.close_mosaic:
+                base_idx = (self.epochs - self.args.close_mosaic) * nb
+                self.plot_idx.extend([base_idx, base_idx + 1, base_idx + 2])
+            epoch = self.start_epoch
+            self.optimizer.zero_grad()
+            self._oom_retries = 0
+            while True:
+                self.epoch = epoch
+                self.run_callbacks("on_train_epoch_start")
+                with ultra_trainer.warnings.catch_warnings():
+                    ultra_trainer.warnings.simplefilter("ignore")
+                    self.scheduler.step()
+
+                self._model_train()
+                if ultra_trainer.RANK != -1:
+                    self.train_loader.sampler.set_epoch(epoch)
+                pbar = enumerate(self.train_loader)
+                if epoch == (self.epochs - self.args.close_mosaic):
+                    self._close_dataloader_mosaic()
+                    self.train_loader.reset()
+
+                self.od_pbar = None
+                if ultra_trainer.RANK in {-1, 0}:
+                    ultra_trainer.LOGGER.info(self.progress_string())
+                    pbar = ultra_trainer.TQDM(enumerate(self.train_loader), total=nb)
+                    self.od_pbar = pbar
+                self.tloss = None
+                for i, batch in pbar:
+                    self.run_callbacks("on_train_batch_start")
+                    ni = i + nb * epoch
+                    if ni <= nw:
+                        xi = [0, nw]
+                        self.accumulate = max(
+                            1,
+                            int(ultra_trainer.np.interp(ni, xi, [1, self.args.nbs / self.batch_size]).round()),
+                        )
+                        for x in self.optimizer.param_groups:
+                            x["lr"] = ultra_trainer.np.interp(
+                                ni,
+                                xi,
+                                [
+                                    self.args.warmup_bias_lr if x.get("param_group") == "bias" else 0.0,
+                                    x["initial_lr"] * self.lf(epoch),
+                                ],
+                            )
+                            if "momentum" in x:
+                                x["momentum"] = ultra_trainer.np.interp(
+                                    ni,
+                                    xi,
+                                    [self.args.warmup_momentum, self.args.momentum],
+                                )
+
+                    try:
+                        with ultra_trainer.autocast(self.amp):
+                            batch = self.preprocess_batch(batch)
+                            if self.args.compile:
+                                preds = self.model(batch["img"])
+                                loss, self.loss_items = ultra_trainer.unwrap_model(self.model).loss(batch, preds)
+                            else:
+                                loss, self.loss_items = self.model(batch)
+                            self.loss = loss.sum()
+                            if ultra_trainer.RANK != -1:
+                                self.loss *= self.world_size
+                            self.tloss = (
+                                self.loss_items if self.tloss is None else (self.tloss * i + self.loss_items) / (i + 1)
+                            )
+                        self.scaler.scale(self.loss).backward()
+                    except torch.cuda.OutOfMemoryError:
+                        if epoch > self.start_epoch or self._oom_retries >= 3 or ultra_trainer.RANK != -1:
+                            raise
+                        self._oom_retries += 1
+                        old_batch = self.batch_size
+                        self.args.batch = self.batch_size = max(self.batch_size // 2, 1)
+                        ultra_trainer.LOGGER.warning(
+                            f"CUDA out of memory with batch={old_batch}. "
+                            f"Reducing to batch={self.batch_size} and retrying ({self._oom_retries}/3)."
+                        )
+                        self._clear_memory()
+                        self._build_train_pipeline()
+                        self.scheduler.last_epoch = self.start_epoch - 1
+                        nb = len(self.train_loader)
+                        nw = max(round(self.args.warmup_epochs * nb), 100) if self.args.warmup_epochs > 0 else -1
+                        last_opt_step = -1
+                        self.optimizer.zero_grad()
+                        break
+                    if ni - last_opt_step >= self.accumulate:
+                        self.optimizer_step()
+                        last_opt_step = ni
+                        if self.args.time:
+                            self.stop = (ultra_trainer.time.time() - self.train_time_start) > (self.args.time * 3600)
+                            if ultra_trainer.RANK != -1:
+                                broadcast_list = [self.stop if ultra_trainer.RANK == 0 else None]
+                                ultra_trainer.dist.broadcast_object_list(broadcast_list, 0)
+                                self.stop = broadcast_list[0]
+                            if self.stop:
+                                break
+
+                    if ultra_trainer.RANK in {-1, 0}:
+                        loss_length = self.tloss.shape[0] if len(self.tloss.shape) else 1
+                        pbar.set_description(
+                            ("%11s" * 2 + "%11.4g" * (2 + loss_length))
+                            % (
+                                f"{epoch + 1}/{self.epochs}",
+                                f"{self._get_memory():.3g}G",
+                                *(self.tloss if loss_length > 1 else torch.unsqueeze(self.tloss, 0)),
+                                batch["cls"].shape[0],
+                                batch["img"].shape[-1],
+                            )
+                        )
+                        self.run_callbacks("on_batch_end")
+                        if self.args.plots and ni in self.plot_idx:
+                            self.plot_training_samples(batch, ni)
+
+                    self.run_callbacks("on_train_batch_end")
+                    if self.stop:
+                        break
+                else:
+                    self._oom_retries = 0
+
+                self.od_pbar = None
+                if self._oom_retries and not self.stop:
+                    continue
+
+                if hasattr(ultra_trainer.unwrap_model(self.model).criterion, "update"):
+                    ultra_trainer.unwrap_model(self.model).criterion.update()
+
+                self.lr = {f"lr/pg{ir}": x["lr"] for ir, x in enumerate(self.optimizer.param_groups)}
+                self.run_callbacks("on_train_epoch_end")
+                if ultra_trainer.RANK in {-1, 0}:
+                    self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
+
+                final_epoch = epoch + 1 >= self.epochs
+                if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
+                    self._clear_memory(threshold=0.5)
+                    self.metrics, self.fitness = self.validate()
+
+                if self._handle_nan_recovery(epoch):
+                    continue
+
+                self.nan_recovery_attempts = 0
+                if ultra_trainer.RANK in {-1, 0}:
+                    self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+                    self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
+                    if self.args.time:
+                        self.stop |= (ultra_trainer.time.time() - self.train_time_start) > (self.args.time * 3600)
+                    if self.args.save or final_epoch:
+                        self.save_model()
+                        self.run_callbacks("on_model_save")
+
+                t = ultra_trainer.time.time()
+                self.epoch_time = t - self.epoch_time_start
+                self.epoch_time_start = t
+                if self.args.time:
+                    mean_epoch_time = (t - self.train_time_start) / (epoch - self.start_epoch + 1)
+                    self.epochs = self.args.epochs = ultra_trainer.math.ceil(self.args.time * 3600 / mean_epoch_time)
+                    self._setup_scheduler()
+                    self.scheduler.last_epoch = self.epoch
+                    self.stop |= epoch >= self.epochs
+                self.run_callbacks("on_fit_epoch_end")
+                self._clear_memory(0.5)
+
+                if ultra_trainer.RANK != -1:
+                    broadcast_list = [self.stop if ultra_trainer.RANK == 0 else None]
+                    ultra_trainer.dist.broadcast_object_list(broadcast_list, 0)
+                    self.stop = broadcast_list[0]
+                if self.stop:
+                    break
+                epoch += 1
+
+            seconds = ultra_trainer.time.time() - self.train_time_start
+            ultra_trainer.LOGGER.info(f"\n{epoch - self.start_epoch + 1} epochs completed in {seconds / 3600:.3f} hours.")
+            self.final_eval()
+            if ultra_trainer.RANK in {-1, 0}:
+                if self.args.plots:
+                    self.plot_metrics()
+                self.run_callbacks("on_train_end")
+            self._clear_memory()
+            ultra_trainer.unset_deterministic()
+            self.run_callbacks("teardown")
 
     try:
         import numpy as np
@@ -422,33 +641,21 @@ def _make_teacher_trainer(
             },
             step=trainer.od_global_step,
         )
-        loss_items = " ".join(f"{key.split('/', 1)[-1]}={float(value):.4f}" for key, value in losses.items())
-        trainer.od_log(
-            "\n".join(
-                [
-                    (
-                        f"[od_bootstrap.train] profile epoch={payload['epoch']}/{payload['epoch_total']} "
-                        f"step={step_index}/{total_steps}"
-                    ),
-                    (
-                        f"  progress: elapsed={_format_duration(elapsed_sec)} "
-                        f"eta={_format_duration(eta_sec)}"
-                    ),
-                    f"  losses: {loss_items}",
-                    (
-                        "  iter_ms: "
-                        f"mean={profile_summary['iteration_sec']['mean'] * 1000.0:.3f} "
-                        f"p50={profile_summary['iteration_sec']['p50'] * 1000.0:.3f} "
-                        f"p99={profile_summary['iteration_sec']['p99'] * 1000.0:.3f}"
-                    ),
-                    (
-                        "  timing_ms: "
-                        f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.3f} "
-                        f"compute={profile_summary['compute_sec']['mean'] * 1000.0:.3f}"
-                    ),
-                ]
+        if trainer.od_pbar is not None and hasattr(trainer.od_pbar, "set_postfix_str"):
+            trainer.od_pbar.set_postfix_str(
+                _build_live_postfix(
+                    elapsed_sec=elapsed_sec,
+                    eta_sec=eta_sec,
+                    profile_summary=profile_summary,
+                ),
+                refresh=True,
             )
-        )
+        elif trainer.od_pbar is None:
+            trainer.od_log(
+                f"[od_bootstrap.train] profile epoch={payload['epoch']}/{payload['epoch_total']} "
+                f"step={step_index}/{total_steps} "
+                f"{_build_live_postfix(elapsed_sec=elapsed_sec, eta_sec=eta_sec, profile_summary=profile_summary)}"
+            )
 
     def on_train_epoch_end(trainer: Any) -> None:
         epoch_profile = {
