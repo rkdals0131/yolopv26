@@ -35,15 +35,42 @@ def _link_or_copy_tree(source: Path, destination: Path) -> None:
         shutil.copytree(source, destination)
 
 
-def stage_teacher_dataset_layout(layout: TeacherDatasetLayout) -> Path:
-    source_root = layout.source_root.resolve()
-    staging_root = layout.staging_root.resolve()
-    image_root = source_root / layout.image_dir
-    label_root = source_root / layout.label_dir
+def resolve_teacher_dataset_root(
+    *,
+    source_root: Path,
+    image_dir: str = "images",
+    label_dir: str = "labels",
+    train_split: str = "train",
+    val_split: str = "val",
+) -> Path:
+    resolved_root = source_root.resolve()
+    image_root = resolved_root / image_dir
+    label_root = resolved_root / label_dir
     if not image_root.is_dir():
         raise FileNotFoundError(f"teacher image root does not exist: {image_root}")
     if not label_root.is_dir():
         raise FileNotFoundError(f"teacher label root does not exist: {label_root}")
+    for split in (train_split, val_split):
+        image_split_root = image_root / split
+        label_split_root = label_root / split
+        if not image_split_root.is_dir():
+            raise FileNotFoundError(f"teacher image split does not exist: {image_split_root}")
+        if not label_split_root.is_dir():
+            raise FileNotFoundError(f"teacher label split does not exist: {label_split_root}")
+    return resolved_root
+
+
+def stage_teacher_dataset_layout(layout: TeacherDatasetLayout) -> Path:
+    source_root = resolve_teacher_dataset_root(
+        source_root=layout.source_root,
+        image_dir=layout.image_dir,
+        label_dir=layout.label_dir,
+        train_split=layout.train_split,
+        val_split=layout.val_split,
+    )
+    staging_root = layout.staging_root.resolve()
+    image_root = source_root / layout.image_dir
+    label_root = source_root / layout.label_dir
 
     for split in (layout.train_split, layout.val_split):
         _link_or_copy_tree(image_root / split, staging_root / "images" / split)

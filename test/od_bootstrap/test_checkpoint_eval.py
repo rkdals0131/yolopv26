@@ -69,7 +69,7 @@ class CheckpointEvalTests(unittest.TestCase):
             source_root = root / "teacher_source"
             for split in ("train", "val"):
                 _write_text(source_root / "images" / split / f"{split}.jpg", "img")
-                _write_text(source_root / "labels_det" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
+                _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
             checkpoint_path = root / "weights" / "best.pt"
             _write_text(checkpoint_path, "checkpoint")
             scenario_path = root / "eval.yaml"
@@ -83,10 +83,9 @@ class CheckpointEvalTests(unittest.TestCase):
                     dataset:
                       root: teacher_source
                       image_dir: images
-                      label_dir: labels_det
+                      label_dir: labels
                       split: val
                       sample_limit: 2
-                      stage_dataset: true
                     model:
                       checkpoint_path: weights/best.pt
                       model_size: n
@@ -117,4 +116,6 @@ class CheckpointEvalTests(unittest.TestCase):
             self.assertAlmostEqual(summary["prediction_summary"]["confidence"]["max"], 0.91, places=6)
             self.assertIn("box.map50", summary["val_summary"]["results_dict"])
             self.assertTrue(Path(summary["predictions_path"]).is_file())
+            self.assertEqual(summary["dataset_root"], str(source_root.resolve()))
+            self.assertFalse((root / "runs" / "mobility" / "dataset").exists())
             self.assertTrue((root / "runs" / "mobility" / "checkpoint_eval_summary.json").is_file())

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.od_bootstrap.train.data_yaml import TeacherDatasetLayout, build_teacher_data_yaml, stage_teacher_dataset_layout
+from tools.od_bootstrap.train.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
 from tools.od_bootstrap.train.run_train_teacher import run_teacher_train_scenario
 from tools.od_bootstrap.train.scenario import load_teacher_train_scenario
 
@@ -39,30 +39,28 @@ class _FakeYOLO:
 
 
 class TeacherTrainTests(unittest.TestCase):
-    def test_stage_teacher_dataset_layout_and_build_data_yaml(self) -> None:
+    def test_resolve_teacher_dataset_root_and_build_data_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "source"
             for split in ("train", "val"):
                 _write_text(source_root / "images" / split / f"{split}.jpg", "img")
-                _write_text(source_root / "labels_det" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
+                _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
 
-            staged_root = stage_teacher_dataset_layout(
-                TeacherDatasetLayout(
-                    source_root=source_root,
-                    staging_root=root / "staged",
-                    image_dir="images",
-                    label_dir="labels_det",
-                )
+            dataset_root = resolve_teacher_dataset_root(
+                source_root=source_root,
+                image_dir="images",
+                label_dir="labels",
             )
             data_yaml = build_teacher_data_yaml(
-                dataset_root=staged_root,
+                dataset_root=dataset_root,
                 class_names=("vehicle", "bike", "pedestrian"),
-                output_path=root / "staged" / "data.yaml",
+                output_path=root / "data.yaml",
             )
 
-            self.assertTrue((staged_root / "images" / "train").exists())
-            self.assertTrue((staged_root / "labels" / "train").exists())
+            self.assertEqual(dataset_root, source_root.resolve())
+            self.assertTrue((dataset_root / "images" / "train").exists())
+            self.assertTrue((dataset_root / "labels" / "train").exists())
             content = data_yaml.read_text(encoding="utf-8")
             self.assertIn("vehicle", content)
             self.assertIn("images/train", content)
@@ -74,7 +72,7 @@ class TeacherTrainTests(unittest.TestCase):
             source_root = root / "teacher_source"
             for split in ("train", "val"):
                 _write_text(source_root / "images" / split / f"{split}.jpg", "img")
-                _write_text(source_root / "labels_det" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
+                _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
             scenario_path.write_text(
                 textwrap.dedent(
                     """
@@ -85,7 +83,7 @@ class TeacherTrainTests(unittest.TestCase):
                     dataset:
                       root: teacher_source
                       image_dir: images
-                      label_dir: labels_det
+                      label_dir: labels
                     model:
                       model_size: n
                       weights: yolo26n.pt
@@ -121,6 +119,7 @@ class TeacherTrainTests(unittest.TestCase):
                 summary = run_teacher_train_scenario(scenario, scenario_path=scenario_path)
 
             self.assertEqual(summary["teacher_name"], "mobility")
+            self.assertEqual(summary["dataset_root"], str(source_root.resolve()))
             self.assertEqual(summary["train_summary"]["weights"], "yolo26n.pt")
             self.assertEqual(summary["train"]["prefetch_factor"], 3)
             self.assertEqual(summary["train_summary"]["runtime"]["prefetch_factor"], 3)
@@ -128,6 +127,7 @@ class TeacherTrainTests(unittest.TestCase):
             self.assertTrue(summary["train_summary"]["tensorboard_dir"].endswith("/runs/mobility/tensorboard"))
             self.assertTrue(Path(summary["train_summary"]["best_checkpoint"]).is_file())
             self.assertTrue(Path(summary["data_yaml_path"]).is_file())
+            self.assertFalse((root / "runs" / "mobility" / "dataset").exists())
             self.assertTrue((root / "runs" / "mobility" / "run_summary.json").is_file())
             self.assertTrue((root / "runs" / "mobility" / "train_summary.json").is_file())
             self.assertNotIn("pin_memory", _FakeYOLO.last_instance.last_train_kwargs)

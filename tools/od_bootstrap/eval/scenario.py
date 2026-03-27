@@ -22,7 +22,6 @@ class CheckpointEvalDatasetConfig:
     label_dir: str = "labels"
     split: str = "val"
     sample_limit: int = 8
-    stage_dataset: bool = True
 
 
 @dataclass(frozen=True)
@@ -112,7 +111,6 @@ def _dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> 
         label_dir=_coerce_str(data.get("label_dir", "labels"), field_name="dataset.label_dir"),
         split=_coerce_str(data.get("split", "val"), field_name="dataset.split"),
         sample_limit=_coerce_int(data.get("sample_limit", 8), field_name="dataset.sample_limit"),
-        stage_dataset=_coerce_bool(data.get("stage_dataset", True), field_name="dataset.stage_dataset"),
     )
 
 

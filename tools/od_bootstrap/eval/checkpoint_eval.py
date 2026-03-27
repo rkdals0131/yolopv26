@@ -13,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover - dependency absence handled in tests with patching.
     YOLO = None
 
-from ..train.data_yaml import TeacherDatasetLayout, build_teacher_data_yaml, stage_teacher_dataset_layout
+from ..train.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
 from .scenario import CheckpointEvalScenario, load_teacher_checkpoint_eval_scenario
 
 
@@ -96,18 +96,13 @@ def eval_teacher_checkpoint(
         raise FileNotFoundError(f"checkpoint not found: {checkpoint_path}")
 
     model = YOLO(str(checkpoint_path))
-    staging_root = scenario.run.output_root / scenario.teacher_name / "dataset"
-    dataset_root = scenario.dataset.root
-    if scenario.dataset.stage_dataset:
-        dataset_layout = TeacherDatasetLayout(
-            source_root=dataset_root,
-            staging_root=staging_root,
-            image_dir=scenario.dataset.image_dir,
-            label_dir=scenario.dataset.label_dir,
-            train_split="train",
-            val_split=scenario.dataset.split,
-        )
-        dataset_root = stage_teacher_dataset_layout(dataset_layout)
+    dataset_root = resolve_teacher_dataset_root(
+        source_root=scenario.dataset.root,
+        image_dir=scenario.dataset.image_dir,
+        label_dir=scenario.dataset.label_dir,
+        train_split="train",
+        val_split=scenario.dataset.split,
+    )
 
     data_yaml_path = build_teacher_data_yaml(
         dataset_root=dataset_root,

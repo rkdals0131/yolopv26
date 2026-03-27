@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.od_bootstrap.train.data_yaml import TeacherDatasetLayout, build_teacher_data_yaml, stage_teacher_dataset_layout
+from tools.od_bootstrap.train.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
 from tools.od_bootstrap.train.scenario import TeacherTrainScenario, load_teacher_train_scenario
 from tools.od_bootstrap.train.ultralytics_runner import train_teacher_with_ultralytics
 
@@ -72,18 +72,15 @@ def _build_runtime_params(scenario: TeacherTrainScenario) -> dict[str, Any]:
 
 
 def run_teacher_train_scenario(scenario: TeacherTrainScenario, *, scenario_path: Path) -> dict[str, Any]:
-    staging_root = scenario.run.output_root / scenario.teacher_name / "dataset"
-    dataset_layout = TeacherDatasetLayout(
+    dataset_root = resolve_teacher_dataset_root(
         source_root=scenario.dataset.root,
-        staging_root=staging_root,
         image_dir=scenario.dataset.image_dir,
         label_dir=scenario.dataset.label_dir,
         train_split=scenario.dataset.train_split,
         val_split=scenario.dataset.val_split,
     )
-    staged_root = stage_teacher_dataset_layout(dataset_layout)
     data_yaml_path = build_teacher_data_yaml(
-        dataset_root=staged_root,
+        dataset_root=dataset_root,
         class_names=scenario.model.class_names,
         output_path=scenario.run.output_root / scenario.teacher_name / "data.yaml",
         train_split=scenario.dataset.train_split,
@@ -103,7 +100,7 @@ def run_teacher_train_scenario(scenario: TeacherTrainScenario, *, scenario_path:
     summary = {
         "scenario_path": str(scenario_path),
         "teacher_name": scenario.teacher_name,
-        "staged_root": str(staged_root),
+        "dataset_root": str(dataset_root),
         "data_yaml_path": str(data_yaml_path),
         "class_names": list(scenario.model.class_names),
         "train": asdict(scenario.train),
