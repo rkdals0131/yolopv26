@@ -364,3 +364,19 @@ def collate_pv26_encoded_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
     from ..encoding import encode_pv26_batch
 
     return encode_pv26_batch(collate_pv26_samples(samples))
+
+
+def collate_pv26_encoded_eval_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    from ..encoding import encode_pv26_batch
+
+    raw_batch = collate_pv26_samples(samples)
+    encoded = encode_pv26_batch(raw_batch)
+    encoded["_raw_batch"] = {
+        "det_targets": list(raw_batch["det_targets"]),
+        "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+        "lane_targets": list(raw_batch["lane_targets"]),
+        "source_mask": list(raw_batch["source_mask"]),
+        "valid_mask": list(raw_batch["valid_mask"]),
+        "meta": list(raw_batch["meta"]),
+    }
+    return encoded

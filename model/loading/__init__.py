@@ -7,6 +7,7 @@ __all__ = [
     "build_pv26_eval_dataloader",
     "build_pv26_train_dataloader",
     "collate_pv26_encoded_batch",
+    "collate_pv26_encoded_eval_batch",
     "collate_pv26_samples",
     "compute_letterbox_transform",
     "dataset_group_for_key",
@@ -15,7 +16,12 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"PV26CanonicalDataset", "collate_pv26_encoded_batch", "collate_pv26_samples"}:
+    if name in {
+        "PV26CanonicalDataset",
+        "collate_pv26_encoded_batch",
+        "collate_pv26_encoded_eval_batch",
+        "collate_pv26_samples",
+    }:
         module = import_module(".pv26_loader", __name__)
         return getattr(module, name)
     if name in {

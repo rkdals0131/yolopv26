@@ -23,6 +23,15 @@ def _move_to_device(item: Any, device: torch.device) -> Any:
     return item
 
 
+def _raw_batch_for_metrics(batch: dict[str, Any]) -> dict[str, Any] | None:
+    raw_batch = batch.get("_raw_batch")
+    if isinstance(raw_batch, dict):
+        return raw_batch
+    if "det_targets" in batch:
+        return batch
+    return None
+
+
 def _summarize_counts(encoded: dict[str, Any]) -> dict[str, int]:
     return {
         "det_gt": int(encoded["det_gt"]["valid_mask"].sum().item()),
@@ -53,7 +62,12 @@ class PV26Evaluator:
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
-        return _move_to_device(encoded, self.device)
+        raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
+        encoded_payload = {key: value for key, value in encoded.items() if key != "_raw_batch"}
+        moved = _move_to_device(encoded_payload, self.device)
+        if raw_batch is not None:
+            moved["_raw_batch"] = raw_batch
+        return moved
 
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, Any]:
         features = forward_pyramid_features(self.adapter, encoded["image"])
@@ -69,7 +83,7 @@ class PV26Evaluator:
     ) -> dict[str, Any]:
         self.adapter.raw_model.eval()
         self.heads.eval()
-        raw_batch = batch if "det_targets" in batch else None
+        raw_batch = _raw_batch_for_metrics(batch)
         encoded = self.prepare_batch(batch)
         with torch.no_grad():
             predictions = self.forward_encoded_batch(encoded)

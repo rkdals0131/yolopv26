@@ -378,6 +378,31 @@ def _loss_mean_scalars(payload: dict[str, Any]) -> dict[str, float]:
     return output
 
 
+def _curated_val_metric_scalars(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "detector": _select_numeric_scalars(
+            metrics.get("detector", {}),
+            ("precision", "recall", "f1", "map50"),
+        ),
+        "traffic_light": _select_numeric_scalars(
+            metrics.get("traffic_light", {}),
+            ("combo_accuracy", "mean_f1"),
+        ),
+        "lane": _select_numeric_scalars(
+            metrics.get("lane", {}),
+            ("precision", "recall", "f1", "mean_point_distance", "color_accuracy", "type_accuracy"),
+        ),
+        "stop_line": _select_numeric_scalars(
+            metrics.get("stop_line", {}),
+            ("precision", "recall", "f1", "mean_point_distance", "mean_angle_error"),
+        ),
+        "crosswalk": _select_numeric_scalars(
+            metrics.get("crosswalk", {}),
+            ("precision", "recall", "f1", "mean_polygon_iou", "mean_vertex_distance"),
+        ),
+    }
+
+
 def _timing_profile_mean_scalars(profile: dict[str, Any]) -> dict[str, float]:
     output: dict[str, float] = {}
     for key in TIMING_KEYS:
@@ -500,6 +525,9 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any], mode: str) -> dict
             "loss_mean": _loss_mean_scalars(val_summary.get("losses", {})),
             "duration_sec": float(val_summary.get("duration_sec", 0.0)),
         }
+        val_metrics = _curated_val_metric_scalars(val_summary.get("metrics", {}))
+        if any(val_metrics.values()):
+            payload["val"]["metrics"] = val_metrics
     return payload
 
 
@@ -686,8 +714,7 @@ def _mean_metric_tree(metric_summaries: list[dict[str, Any]]) -> dict[str, Any]:
 def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
     if not batches:
         raise ValueError("cannot merge zero raw batches")
-    return {
-        "image": torch.cat([batch["image"] for batch in batches], dim=0),
+    merged = {
         "det_targets": [item for batch in batches for item in batch["det_targets"]],
         "tl_attr_targets": [item for batch in batches for item in batch["tl_attr_targets"]],
         "lane_targets": [item for batch in batches for item in batch["lane_targets"]],
@@ -695,6 +722,18 @@ def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
         "valid_mask": [item for batch in batches for item in batch["valid_mask"]],
         "meta": [item for batch in batches for item in batch["meta"]],
     }
+    if all("image" in batch for batch in batches):
+        merged["image"] = torch.cat([batch["image"] for batch in batches], dim=0)
+    return merged
+
+
+def _raw_batch_for_metrics(batch: dict[str, Any]) -> dict[str, Any] | None:
+    raw_batch = batch.get("_raw_batch")
+    if isinstance(raw_batch, dict):
+        return raw_batch
+    if "det_targets" in batch:
+        return batch
+    return None
 
 
 def _resolve_summary_path(summary: dict[str, Any], path: str) -> float:
@@ -1354,11 +1393,12 @@ class PV26Trainer:
         for batch_index, batch in enumerate(loader, start=1):
             if max_batches is not None and batch_index > max_batches:
                 break
-            needs_predictions = "det_targets" in batch
+            raw_batch = _raw_batch_for_metrics(batch)
+            needs_predictions = raw_batch is not None
             batch_summary = evaluator.evaluate_batch(batch, include_predictions=needs_predictions)
             batch_summaries.append(batch_summary)
-            if needs_predictions:
-                raw_batches.append(batch)
+            if raw_batch is not None:
+                raw_batches.append(raw_batch)
                 epoch_predictions.extend(batch_summary.get("predictions", []))
         if not batch_summaries:
             raise ValueError("validate_epoch received zero batches")
