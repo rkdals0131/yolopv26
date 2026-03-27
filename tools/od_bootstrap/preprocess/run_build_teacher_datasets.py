@@ -25,6 +25,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to a teacher dataset YAML file.")
     parser.add_argument("--canonical-root", type=Path, default=None, help="Override bootstrap canonical root.")
     parser.add_argument("--output-root", type=Path, default=None, help="Override teacher dataset output root.")
+    parser.add_argument("--workers", type=int, default=None, help="Override worker count.")
+    parser.add_argument("--log-every", type=int, default=None, help="Emit progress every N completed samples.")
     parser.add_argument("--copy-images", action="store_true", help="Override with copy_images=true.")
     return parser
 
@@ -34,6 +36,17 @@ def _load_payload(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError("teacher dataset config root must be a mapping")
     return payload
+
+
+def _coerce_positive_int(value: Any, *, field_name: str) -> int:
+    resolved = int(value)
+    if resolved < 1:
+        raise ValueError(f"{field_name} must be >= 1")
+    return resolved
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -48,13 +61,32 @@ def main(argv: list[str] | None = None) -> int:
     canonical_root = resolve_path(args.canonical_root or input_payload.get("canonical_root"), base_dir=base_dir)
     output_root = resolve_path(args.output_root or payload.get("output_root"), base_dir=base_dir)
     copy_images = bool(args.copy_images or runtime_payload.get("copy_images", False))
+    workers = _coerce_positive_int(
+        args.workers if args.workers is not None else runtime_payload.get("workers", 8),
+        field_name="runtime.workers",
+    )
+    log_every = _coerce_positive_int(
+        args.log_every if args.log_every is not None else runtime_payload.get("log_every", 250),
+        field_name="runtime.log_every",
+    )
 
     bundle = CanonicalSourceBundle(
         bdd_root=canonical_root / "canonical" / "bdd100k_det_100k",
         aihub_root=canonical_root / "canonical" / "aihub_standardized",
         output_root=canonical_root,
     )
-    results = build_teacher_datasets(bundle, output_root, copy_images=copy_images)
+    _log(
+        f"[teacher-datasets] canonical_root={canonical_root} output_root={output_root} "
+        f"workers={workers} copy_images={copy_images} log_every={log_every}"
+    )
+    results = build_teacher_datasets(
+        bundle,
+        output_root,
+        copy_images=copy_images,
+        workers=workers,
+        log_every=log_every,
+        log_fn=_log,
+    )
     print(
         json.dumps(
             {
@@ -63,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                     "manifest_path": str(result.manifest_path),
                     "sample_count": result.sample_count,
                     "detection_count": result.detection_count,
+                    "class_counts": result.class_counts,
                 }
                 for teacher_name, result in results.items()
             },

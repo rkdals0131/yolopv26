@@ -47,7 +47,14 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
                 aihub_root=aihub_root,
                 output_root=root / "pv26_od_bootstrap",
             )
-            results = build_teacher_datasets(bundle, root / "pv26_od_bootstrap" / "teacher_datasets")
+            logs: list[str] = []
+            results = build_teacher_datasets(
+                bundle,
+                root / "pv26_od_bootstrap" / "teacher_datasets",
+                workers=2,
+                log_every=1,
+                log_fn=logs.append,
+            )
 
             self.assertEqual(sorted(results), ["mobility", "obstacle", "signal"])
             mobility = results["mobility"]
@@ -72,6 +79,15 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
             self.assertEqual(obstacle.sample_count, 1)
             self.assertEqual(signal.detection_count, 2)
             self.assertEqual(obstacle.detection_count, 2)
+            self.assertIn("[teacher:mobility] progress 1/1 samples", " ".join(logs))
+            self.assertIn("[teacher:signal] done samples=1 detections=2", " ".join(logs))
+
+            signal_manifest = json.loads(
+                (signal.dataset_root / "meta" / "teacher_dataset_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(signal_manifest["workers"], 2)
+            self.assertEqual(signal_manifest["log_every"], 1)
+            self.assertEqual(signal_manifest["samples"][0]["image_action"], "hardlink")
 
             lane_labels = list((signal.dataset_root / "labels").rglob("aihub_lane_train_001.txt"))
             self.assertEqual(lane_labels, [])

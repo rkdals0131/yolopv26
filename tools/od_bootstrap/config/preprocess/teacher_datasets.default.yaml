@@ -5,3 +5,5 @@ output_root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets
 
 runtime:
   copy_images: false
+  workers: 8
+  log_every: 500

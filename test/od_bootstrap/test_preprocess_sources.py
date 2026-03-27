@@ -112,14 +112,22 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
                 aihub_outputs={"output_root": Path("/tmp/aihub")},
             )
 
-        def _fake_build(bundle, output_root, copy_images=False):
-            captured["build_call"] = {"bundle": bundle, "output_root": output_root, "copy_images": copy_images}
+        def _fake_build(bundle, output_root, copy_images=False, workers=1, log_every=250, log_fn=None):
+            captured["build_call"] = {
+                "bundle": bundle,
+                "output_root": output_root,
+                "copy_images": copy_images,
+                "workers": workers,
+                "log_every": log_every,
+                "log_fn": log_fn,
+            }
             return {
                 "mobility": SimpleNamespace(
                     dataset_root=Path("/tmp/mobility"),
                     manifest_path=Path("/tmp/mobility_manifest.json"),
                     sample_count=1,
                     detection_count=1,
+                    class_counts={"vehicle": 1},
                 )
             }
 
@@ -139,3 +147,6 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertEqual(prepare_config.output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
         self.assertEqual(build_call["bundle"].output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
         self.assertEqual(build_call["output_root"], (repo_root / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets").resolve())
+        self.assertEqual(build_call["workers"], 8)
+        self.assertEqual(build_call["log_every"], 500)
+        self.assertIsNotNone(build_call["log_fn"])

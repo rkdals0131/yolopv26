@@ -21,3 +21,7 @@ teacher dataset:
 - mobility: `vehicle`, `bike`, `pedestrian`
 - signal: `traffic_light`, `sign`
 - obstacle: `traffic_cone`, `obstacle`
+
+runtime:
+- `run_build_teacher_datasets.py`는 sample 단위 멀티스레드(`runtime.workers`)로 image/link copy와 label materialization을 병렬 처리한다
+- 진행 로그는 stderr로 출력되며 `runtime.log_every` 샘플마다 throughput과 detection 누계를 갱신한다
