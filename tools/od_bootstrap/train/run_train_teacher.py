@@ -134,8 +134,12 @@ def main(argv: list[str] | None = None) -> int:
     scenario_path = Path(args.config).resolve()
     if not scenario_path.is_file():
         raise SystemExit(f"teacher train scenario not found: {scenario_path}")
-    scenario = load_teacher_train_scenario(scenario_path)
-    run_teacher_train_scenario(scenario, scenario_path=scenario_path)
+    try:
+        scenario = load_teacher_train_scenario(scenario_path)
+        run_teacher_train_scenario(scenario, scenario_path=scenario_path)
+    except KeyboardInterrupt:
+        _log_teacher_train("interrupted by user")
+        return 130
     return 0
 
 

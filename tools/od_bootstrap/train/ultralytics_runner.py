@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import time
+from types import MethodType
 from typing import Any, Callable
 
 try:
@@ -210,6 +211,9 @@ def _build_live_postfix(
 def _set_progress_postfix(pbar: Any, postfix: str) -> bool:
     if pbar is None:
         return False
+    if hasattr(pbar, "set_bootstrap_postfix"):
+        pbar.set_bootstrap_postfix(postfix)
+        return True
     if hasattr(pbar, "set_postfix_str"):
         pbar.set_postfix_str(postfix, refresh=True)
         return True
@@ -223,6 +227,110 @@ def _set_progress_postfix(pbar: Any, postfix: str) -> bool:
         pbar.set_postfix(profile=postfix)
         return True
     return False
+
+
+def _render_progress_line(pbar: Any, *, final: bool = False) -> str | None:
+    if pbar.disable or (pbar.closed and not final):
+        return None
+
+    current_time = time.time()
+    dt = current_time - pbar.last_print_t
+    dn = pbar.n - pbar.last_print_n
+
+    if not final and not pbar._should_update(dt, dn):
+        return None
+
+    if dt > pbar.MIN_RATE_CALC_INTERVAL:
+        rate = dn / dt if dt else 0.0
+        if rate < pbar.MAX_SMOOTHED_RATE:
+            pbar.last_rate = pbar.RATE_SMOOTHING_FACTOR * rate + (1 - pbar.RATE_SMOOTHING_FACTOR) * pbar.last_rate
+            rate = pbar.last_rate
+    else:
+        rate = pbar.last_rate
+
+    if pbar.total and pbar.n >= pbar.total:
+        overall_elapsed = current_time - pbar.start_t
+        if overall_elapsed > 0:
+            rate = pbar.n / overall_elapsed
+
+    pbar.last_print_n = pbar.n
+    pbar.last_print_t = current_time
+    elapsed = current_time - pbar.start_t
+
+    remaining_str = ""
+    if pbar.total and 0 < pbar.n < pbar.total and elapsed > 0:
+        est_rate = rate or (pbar.n / elapsed)
+        remaining_str = f"<{pbar._format_time((pbar.total - pbar.n) / est_rate)}"
+
+    if pbar.total:
+        percent = (pbar.n / pbar.total) * 100
+        n_str = pbar._format_num(pbar.n)
+        t_str = pbar._format_num(pbar.total)
+        if pbar.is_bytes and len(n_str) >= 2 and len(t_str) >= 2 and n_str[-2] == t_str[-2]:
+            n_str = n_str.rstrip("KMGTPB")
+    else:
+        percent = 0.0
+        n_str, t_str = pbar._format_num(pbar.n), "?"
+
+    elapsed_str = pbar._format_time(elapsed)
+    rate_str = pbar._format_rate(rate) or (pbar._format_rate(pbar.n / elapsed) if elapsed > 0 else "")
+    bar = pbar._generate_bar()
+
+    if pbar.total:
+        if pbar.is_bytes and pbar.n >= pbar.total:
+            progress_str = f"{pbar.desc}: {percent:.0f}% {bar} {t_str} {rate_str} {elapsed_str}"
+        else:
+            progress_str = f"{pbar.desc}: {percent:.0f}% {bar} {n_str}/{t_str} {rate_str} {elapsed_str}{remaining_str}"
+    else:
+        progress_str = f"{pbar.desc}: {bar} {n_str} {rate_str} {elapsed_str}"
+
+    return progress_str
+
+
+def _install_ultralytics_postfix_renderer(pbar: Any) -> Any:
+    if pbar is None or getattr(pbar, "_od_bootstrap_renderer_installed", False):
+        return pbar
+    if not hasattr(pbar, "_display"):
+        return pbar
+
+    def _display_with_bootstrap_postfix(self: Any, final: bool = False) -> None:
+        progress_str = _render_progress_line(self, final=final)
+        if progress_str is None:
+            return
+        postfix = str(getattr(self, "_od_bootstrap_postfix", "") or "").strip()
+        try:
+            if self.noninteractive:
+                if postfix:
+                    self.file.write(f"{progress_str} | {postfix}")
+                else:
+                    self.file.write(progress_str)
+            else:
+                prior_line_count = int(getattr(self, "_od_bootstrap_rendered_lines", 1))
+                if prior_line_count > 1:
+                    self.file.write("\r\033[1A\r\033[K")
+                else:
+                    self.file.write("\r\033[K")
+                self.file.write(progress_str)
+                if postfix:
+                    self.file.write(f"\n\033[K{postfix}")
+                    self._od_bootstrap_rendered_lines = 2
+                else:
+                    self._od_bootstrap_rendered_lines = 1
+            self.file.flush()
+        except Exception:
+            pass
+
+    def _set_bootstrap_postfix(self: Any, postfix: str) -> None:
+        self._od_bootstrap_postfix = str(postfix)
+        if not self.disable:
+            self._display()
+
+    pbar._od_bootstrap_postfix = ""
+    pbar._od_bootstrap_renderer_installed = True
+    pbar._od_bootstrap_rendered_lines = 1
+    pbar._display = MethodType(_display_with_bootstrap_postfix, pbar)
+    pbar.set_bootstrap_postfix = MethodType(_set_bootstrap_postfix, pbar)
+    return pbar
 
 
 def _remove_path(path: Path) -> None:
@@ -441,6 +549,7 @@ def _make_teacher_trainer(
                 if ultra_trainer.RANK in {-1, 0}:
                     ultra_trainer.LOGGER.info(self.progress_string())
                     pbar = ultra_trainer.TQDM(enumerate(self.train_loader), total=nb)
+                    _install_ultralytics_postfix_renderer(pbar)
                     self.od_pbar = pbar
                 self.tloss = None
                 for i, batch in pbar:
