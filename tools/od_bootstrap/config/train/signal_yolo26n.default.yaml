@@ -1,7 +1,6 @@
 teacher_name: signal
 run:
   output_root: ../../../../runs/od_bootstrap/train
-  run_name: signal_yolo26n
   exist_ok: true
 dataset:
   root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/signal

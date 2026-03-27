@@ -78,7 +78,6 @@ class TeacherTrainTests(unittest.TestCase):
                     teacher_name: mobility
                     run:
                       output_root: runs
-                      run_name: mobility_yolo26n
                       exist_ok: true
                     dataset:
                       root: teacher_source

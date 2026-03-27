@@ -71,13 +71,6 @@ class SourcePrepResult:
     aihub_outputs: dict[str, Path]
 
 
-def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return path
-
-
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")

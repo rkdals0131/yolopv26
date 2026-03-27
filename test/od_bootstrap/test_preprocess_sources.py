@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
+from tools.od_bootstrap.preprocess.run_build_teacher_datasets import main as build_teacher_datasets_main
+from tools.od_bootstrap.preprocess.run_prepare_sources import DEFAULT_CONFIG_PATH, _resolve_config, main as prepare_sources_main
 from tools.od_bootstrap.preprocess.sources import (
     AIHUB_LANE_DIRNAME,
     AIHUB_OBSTACLE_DIRNAME,
@@ -74,3 +77,65 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             self.assertEqual(mock_aihub.call_args.kwargs["obstacle_root"], (aihub_root / AIHUB_OBSTACLE_DIRNAME).resolve())
             self.assertEqual(mock_aihub.call_args.kwargs["traffic_root"], (aihub_root / AIHUB_TRAFFIC_DIRNAME).resolve())
             self.assertFalse(mock_aihub.call_args.kwargs["write_dataset_readmes"])
+
+    def test_default_prepare_sources_config_resolves_repo_seg_dataset_paths(self) -> None:
+        args = SimpleNamespace(
+            config=DEFAULT_CONFIG_PATH,
+            bdd_root=None,
+            aihub_root=None,
+            output_root=None,
+            workers=None,
+            force_reprocess=False,
+        )
+        config = _resolve_config(args)
+        repo_root = Path(__file__).resolve().parents[2]
+        self.assertEqual(config.roots.bdd_root, (repo_root / "seg_dataset" / "BDD100K").resolve())
+        self.assertEqual(config.roots.aihub_root, (repo_root / "seg_dataset" / "AIHUB").resolve())
+        self.assertEqual(config.output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
+
+    def test_entrypoints_use_default_configs_without_overrides(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_prepare(config):
+            captured["prepare_config"] = config
+            return SimpleNamespace(
+                bundle=SimpleNamespace(
+                    bdd_root=Path("/tmp/bdd"),
+                    aihub_root=Path("/tmp/aihub"),
+                    output_root=Path("/tmp/out"),
+                    bootstrap_source_keys=("bdd100k_det_100k",),
+                    excluded_source_keys=("aihub_lane_seoul",),
+                ),
+                manifest_path=Path("/tmp/source_prep_manifest.json"),
+                image_list_manifest_path=Path("/tmp/bootstrap_image_list.jsonl"),
+                bdd_outputs={"output_root": Path("/tmp/bdd")},
+                aihub_outputs={"output_root": Path("/tmp/aihub")},
+            )
+
+        def _fake_build(bundle, output_root, copy_images=False):
+            captured["build_call"] = {"bundle": bundle, "output_root": output_root, "copy_images": copy_images}
+            return {
+                "mobility": SimpleNamespace(
+                    dataset_root=Path("/tmp/mobility"),
+                    manifest_path=Path("/tmp/mobility_manifest.json"),
+                    sample_count=1,
+                    detection_count=1,
+                )
+            }
+
+        with (
+            patch("tools.od_bootstrap.preprocess.run_prepare_sources.prepare_od_bootstrap_sources") as mock_prepare,
+            patch("tools.od_bootstrap.preprocess.run_build_teacher_datasets.build_teacher_datasets") as mock_build,
+        ):
+            mock_prepare.side_effect = _fake_prepare
+            mock_build.side_effect = _fake_build
+            prepare_sources_main([])
+            build_teacher_datasets_main([])
+
+        repo_root = Path(__file__).resolve().parents[2]
+        prepare_config = captured["prepare_config"]
+        build_call = captured["build_call"]
+        self.assertEqual(prepare_config.roots.bdd_root, (repo_root / "seg_dataset" / "BDD100K").resolve())
+        self.assertEqual(prepare_config.output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
+        self.assertEqual(build_call["bundle"].output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
+        self.assertEqual(build_call["output_root"], (repo_root / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets").resolve())

@@ -1,8 +1,8 @@
 raw:
-  bdd_root: ../seg_dataset/BDD100K
-  aihub_root: ../seg_dataset/AIHUB
+  bdd_root: ../../../../seg_dataset/BDD100K
+  aihub_root: ../../../../seg_dataset/AIHUB
 
-output_root: ../seg_dataset/pv26_od_bootstrap
+output_root: ../../../../seg_dataset/pv26_od_bootstrap
 
 runtime:
   workers: 1

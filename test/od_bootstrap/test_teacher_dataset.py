@@ -65,7 +65,7 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
             self.assertEqual(signal_label[1].split()[0], "1")
             self.assertEqual(obstacle_label[0].split()[0], "0")
             self.assertEqual(obstacle_label[1].split()[0], "1")
-            self.assertTrue((signal.dataset_root / "data.yaml").is_file())
+            self.assertFalse((signal.dataset_root / "data.yaml").exists())
             self.assertTrue((obstacle.dataset_root / "meta" / "teacher_dataset_manifest.json").is_file())
             self.assertEqual(mobility.sample_count, 1)
             self.assertEqual(signal.sample_count, 1)

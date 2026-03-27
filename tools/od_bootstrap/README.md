@@ -18,6 +18,8 @@
   - `mobility`, `signal`, `obstacle` teacher를 direct Ultralytics YOLO로 파인튜닝
 - `eval/`
   - teacher checkpoint에 대해 `predict`/`val` 기반 checkpoint evaluation 실행
+- `calibration/`
+  - teacher val split prediction을 기준으로 `class_policy.yaml`을 자동 보정
 - `sweep/`
   - 세 teacher를 `model-centric`으로 전체 OD image list에 순차 적용
   - raw source label 우선 정책으로 teacher prediction을 합쳐 `7-class exhaustive OD dataset` 생성
@@ -32,9 +34,10 @@
 4. `python3 tools/od_bootstrap/train/run_train_teacher.py --config tools/od_bootstrap/config/train/signal_yolo26n.default.yaml`
 5. `python3 tools/od_bootstrap/train/run_train_teacher.py --config tools/od_bootstrap/config/train/obstacle_yolo26n.default.yaml`
 6. `python3 tools/od_bootstrap/eval/run_teacher_checkpoint_eval.py --config tools/od_bootstrap/config/eval/mobility_checkpoint_eval.default.yaml`
-7. `python3 tools/od_bootstrap/sweep/run_model_centric_sweep.py --config tools/od_bootstrap/config/sweep/model_centric.default.yaml`
-8. `python3 tools/od_bootstrap/finalize/run_build_exhaustive_od_lane_dataset.py --config tools/od_bootstrap/config/finalize/pv26_exhaustive_od_lane.default.yaml`
-9. `python3 tools/run_pv26_train.py --config tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
+7. `python3 tools/od_bootstrap/calibration/run_calibrate_class_policy.py --config tools/od_bootstrap/config/calibration/class_policy.default.yaml`
+8. `python3 tools/od_bootstrap/sweep/run_model_centric_sweep.py --config tools/od_bootstrap/config/sweep/model_centric.default.yaml`
+9. `python3 tools/od_bootstrap/finalize/run_build_exhaustive_od_lane_dataset.py --config tools/od_bootstrap/config/finalize/pv26_exhaustive_od_lane.default.yaml`
+10. `python3 tools/run_pv26_train.py --config tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
 
 출력:
 - canonical intermediate: `seg_dataset/pv26_od_bootstrap/canonical/`
@@ -42,6 +45,8 @@
 - teacher datasets: `seg_dataset/pv26_od_bootstrap/teacher_datasets/`
 - teacher runs: `runs/od_bootstrap/train/<teacher>/`
 - teacher eval: `runs/od_bootstrap/eval/<teacher>/`
+- calibrated class policy: `runs/od_bootstrap/calibration/default/class_policy.yaml`
+- calibration report: `runs/od_bootstrap/calibration/default/calibration_report.json`
 - exhaustive OD dataset: `seg_dataset/pv26_od_bootstrap/exhaustive_od/<run_id>/`
 - final merged dataset: `seg_dataset/pv26_exhaustive_od_lane_dataset/`
 - PV26 final train scenario: `tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
@@ -58,3 +63,8 @@ provenance 필드:
 - final merged dataset root를 `run_pv26_train.py`의 dataset root로 넣고
 - exhaustive OD source key 3개와 `aihub_lane_seoul`을 같이 사용한다
 - 목표는 `PV26 7-class OD head`가 `allow_objectness_negatives=True` 조건의 exhaustive OD supervision을 받도록 만드는 것이다
+
+참고:
+- sweep 기본 config는 calibration 산출물인 `class_policy.yaml`을 읽는다
+- manifest-only 검증이 필요하면 `tools/od_bootstrap/config/sweep/model_centric.dryrun.yaml`을 사용한다
+- materialized exhaustive OD 산출물은 `sample_uid = <dataset_key>__<split>__<sample_id>` 기준으로 파일명을 만든다

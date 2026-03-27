@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
@@ -46,7 +46,6 @@ class TeacherDatasetBuildResult:
     output_root: Path
     dataset_root: Path
     manifest_path: Path
-    data_yaml_path: Path
     sample_count: int
     detection_count: int
     class_counts: dict[str, int]
@@ -60,12 +59,6 @@ def _now_iso() -> str:
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return path
-
-
-def _write_text(path: Path, contents: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(contents, encoding="utf-8")
     return path
 
 
@@ -101,19 +94,6 @@ def _global_class_name(class_id: int) -> str:
         return OD_CLASSES[class_id]
     except IndexError as exc:
         raise ValueError(f"unsupported OD class id: {class_id}") from exc
-
-
-def _build_data_yaml(dataset_root: Path, spec: TeacherDatasetSpec) -> str:
-    names_lines = "\n".join(f"  {index}: {name}" for index, name in enumerate(spec.class_names))
-    return (
-        f"path: {dataset_root}\n"
-        "train: images/train\n"
-        "val: images/val\n"
-        "test: images/test\n"
-        f"nc: {len(spec.class_names)}\n"
-        "names:\n"
-        f"{names_lines}\n"
-    )
 
 
 def _resolve_spec(spec: TeacherDatasetSpec | str) -> TeacherDatasetSpec:
@@ -209,7 +189,6 @@ def build_teacher_dataset(
                 }
             )
 
-    data_yaml_path = _write_text(dataset_root / "data.yaml", _build_data_yaml(dataset_root, resolved_spec))
     manifest_path = _write_json(
         dataset_root / "meta" / "teacher_dataset_manifest.json",
         {
@@ -234,7 +213,6 @@ def build_teacher_dataset(
         output_root=output_root,
         dataset_root=dataset_root,
         manifest_path=manifest_path,
-        data_yaml_path=data_yaml_path,
         sample_count=sample_count,
         detection_count=detection_count,
         class_counts=class_counts,

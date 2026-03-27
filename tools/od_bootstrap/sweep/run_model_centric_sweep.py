@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.od_bootstrap.common import box_size, nms_rows
 from tools.od_bootstrap.sweep.image_list import ImageListEntry, load_image_list
 from tools.od_bootstrap.sweep.materialize import materialize_exhaustive_od_dataset
 from tools.od_bootstrap.sweep.scenario import BootstrapSweepScenario, ClassPolicy, TeacherConfig, load_sweep_scenario
@@ -74,35 +75,6 @@ def _batched(items: Iterable[ImageListEntry], batch_size: int) -> Iterable[list[
         yield batch
 
 
-def _box_size(box: list[float]) -> tuple[float, float]:
-    return max(0.0, box[2] - box[0]), max(0.0, box[3] - box[1])
-
-
-def _nms_rows(rows: list[dict[str, Any]], *, iou_threshold: float) -> list[dict[str, Any]]:
-    def iou(box_a: list[float], box_b: list[float]) -> float:
-        x1 = max(box_a[0], box_b[0])
-        y1 = max(box_a[1], box_b[1])
-        x2 = min(box_a[2], box_b[2])
-        y2 = min(box_a[3], box_b[3])
-        inter_w = max(0.0, x2 - x1)
-        inter_h = max(0.0, y2 - y1)
-        if inter_w <= 0.0 or inter_h <= 0.0:
-            return 0.0
-        inter = inter_w * inter_h
-        area_a = max(0.0, box_a[2] - box_a[0]) * max(0.0, box_a[3] - box_a[1])
-        area_b = max(0.0, box_b[2] - box_b[0]) * max(0.0, box_b[3] - box_b[1])
-        denom = area_a + area_b - inter
-        return 0.0 if denom <= 0.0 else inter / denom
-
-    kept: list[dict[str, Any]] = []
-    for row in sorted(rows, key=lambda item: float(item["confidence"]), reverse=True):
-        candidate_box = [float(value) for value in row["xyxy"]]
-        if any(iou(candidate_box, [float(value) for value in kept_row["xyxy"]]) >= iou_threshold for kept_row in kept):
-            continue
-        kept.append(row)
-    return kept
-
-
 def _build_teacher_job_manifest(
     *,
     teacher: TeacherConfig,
@@ -153,14 +125,15 @@ def _extract_teacher_rows(
             if class_name not in teacher.classes:
                 continue
             policy = class_policy[class_name]
-            width_px, height_px = _box_size([float(value) for value in box])
+            width_px, height_px = box_size([float(value) for value in box])
             if float(confidence) < float(policy.score_threshold):
                 continue
             if min(width_px, height_px) < int(policy.min_box_size):
                 continue
             filtered.append(
                 {
-                    "image_id": entry.image_id,
+                    "sample_id": entry.sample_id,
+                    "sample_uid": entry.sample_uid,
                     "image_path": str(entry.image_path),
                     "scene_path": str(entry.scene_path),
                     "dataset_key": entry.dataset_key,
@@ -178,7 +151,7 @@ def _extract_teacher_rows(
         for row in filtered:
             by_class.setdefault(str(row["class_name"]), []).append(row)
         for class_name, class_rows in by_class.items():
-            rows.extend(_nms_rows(class_rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
+            rows.extend(nms_rows(class_rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
     return rows
 
 
@@ -199,6 +172,8 @@ def _run_teacher_inference(
             source=[str(entry.image_path) for entry in batch_entries],
             imgsz=scenario.run.imgsz,
             device=scenario.run.device,
+            conf=scenario.run.predict_conf,
+            iou=scenario.run.predict_iou,
             verbose=False,
             save=False,
             stream=False,
@@ -238,7 +213,7 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
     write_run_manifest(run_dir, run_manifest)
     write_image_list_snapshot(run_dir, entries)
 
-    predictions_by_image_id: dict[str, list[dict[str, Any]]] = {}
+    predictions_by_sample_uid: dict[str, list[dict[str, Any]]] = {}
     teacher_jobs: list[dict[str, Any]] = []
     for teacher in scenario.teachers:
         predictions_path = teacher_output_dir(run_dir, teacher.name) / "predictions.jsonl"
@@ -260,14 +235,14 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
         teacher_rows = _run_teacher_inference(teacher=teacher, entries=entries, scenario=scenario)
         write_teacher_predictions(run_dir, teacher.name, teacher_rows)
         for row in teacher_rows:
-            predictions_by_image_id.setdefault(str(row["image_id"]), []).append(row)
+            predictions_by_sample_uid.setdefault(str(row["sample_uid"]), []).append(row)
         _log_bootstrap(f"teacher={teacher.name} predictions={len(teacher_rows)}")
 
     materialization_summary = None
     if not scenario.run.dry_run:
         materialization_summary = materialize_exhaustive_od_dataset(
             image_entries=entries,
-            predictions_by_image_id=predictions_by_image_id,
+            predictions_by_sample_uid=predictions_by_sample_uid,
             class_policy=scenario.class_policy,
             output_root=scenario.materialization.output_root,
             run_id=run_id,
@@ -281,6 +256,7 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
         "image_count": len(entries),
         "teacher_names": list(teacher_names),
         "dry_run": scenario.run.dry_run,
+        "class_policy_path": str(scenario.class_policy_path),
         "teacher_jobs": teacher_jobs,
         "materialization": materialization_summary,
     }

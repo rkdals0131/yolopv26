@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from tools.od_bootstrap.common import resolve_path
+
 
 REQUIRED_TEACHER_ORDER = ("mobility", "signal", "obstacle")
 
@@ -14,10 +16,12 @@ REQUIRED_TEACHER_ORDER = ("mobility", "signal", "obstacle")
 class RunConfig:
     output_root: Path
     execution_mode: str = "model-centric"
-    dry_run: bool = True
+    dry_run: bool = False
     device: str = "cuda:0"
     imgsz: int = 640
     batch_size: int = 8
+    predict_conf: float = 0.001
+    predict_iou: float = 0.99
 
 
 @dataclass(frozen=True)
@@ -53,14 +57,8 @@ class BootstrapSweepScenario:
     image_list: ImageListConfig
     materialization: MaterializationConfig
     teachers: tuple[TeacherConfig, ...]
+    class_policy_path: Path
     class_policy: dict[str, ClassPolicy]
-
-
-def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return path
 
 
 def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
@@ -115,19 +113,21 @@ def _coerce_float(value: Any, *, field_name: str) -> float:
 def _load_run_config(data: Any, *, base_dir: Path) -> RunConfig:
     payload = _coerce_mapping(data, field_name="run")
     return RunConfig(
-        output_root=_resolve_path(payload.get("output_root", "../runs/od_bootstrap"), base_dir=base_dir),
+        output_root=resolve_path(payload.get("output_root", "../runs/od_bootstrap"), base_dir=base_dir),
         execution_mode=_coerce_str(payload.get("execution_mode", "model-centric"), field_name="run.execution_mode"),
-        dry_run=_coerce_bool(payload.get("dry_run", True), field_name="run.dry_run"),
+        dry_run=_coerce_bool(payload.get("dry_run", False), field_name="run.dry_run"),
         device=_coerce_str(payload.get("device", "cuda:0"), field_name="run.device"),
         imgsz=_coerce_int(payload.get("imgsz", 640), field_name="run.imgsz"),
         batch_size=_coerce_int(payload.get("batch_size", 8), field_name="run.batch_size"),
+        predict_conf=_coerce_float(payload.get("predict_conf", 0.001), field_name="run.predict_conf"),
+        predict_iou=_coerce_float(payload.get("predict_iou", 0.99), field_name="run.predict_iou"),
     )
 
 
 def _load_image_list_config(data: Any, *, base_dir: Path) -> ImageListConfig:
     payload = _coerce_mapping(data, field_name="image_list")
     return ImageListConfig(
-        manifest_path=_resolve_path(
+        manifest_path=resolve_path(
             _coerce_str(payload.get("manifest_path"), field_name="image_list.manifest_path"),
             base_dir=base_dir,
         )
@@ -137,7 +137,7 @@ def _load_image_list_config(data: Any, *, base_dir: Path) -> ImageListConfig:
 def _load_materialization_config(data: Any, *, base_dir: Path) -> MaterializationConfig:
     payload = _coerce_mapping(data, field_name="materialization")
     return MaterializationConfig(
-        output_root=_resolve_path(
+        output_root=resolve_path(
             payload.get("output_root", "../seg_dataset/pv26_od_bootstrap/exhaustive_od"),
             base_dir=base_dir,
         ),
@@ -156,7 +156,7 @@ def _load_teacher_config(data: Any, *, base_dir: Path, index: int) -> TeacherCon
     return TeacherConfig(
         name=_coerce_str(payload.get("name"), field_name=f"teachers[{index}].name"),
         base_model=_coerce_str(payload.get("base_model"), field_name=f"teachers[{index}].base_model"),
-        checkpoint_path=_resolve_path(
+        checkpoint_path=resolve_path(
             _coerce_str(payload.get("checkpoint_path"), field_name=f"teachers[{index}].checkpoint_path"),
             base_dir=base_dir,
         ),
@@ -165,7 +165,7 @@ def _load_teacher_config(data: Any, *, base_dir: Path, index: int) -> TeacherCon
     )
 
 
-def _load_class_policy(data: Any) -> dict[str, ClassPolicy]:
+def _load_class_policy_mapping(data: Any) -> dict[str, ClassPolicy]:
     payload = _coerce_mapping(data, field_name="class_policy")
     resolved: dict[str, ClassPolicy] = {}
     for class_name, raw_policy in payload.items():
@@ -180,6 +180,14 @@ def _load_class_policy(data: Any) -> dict[str, ClassPolicy]:
             min_box_size=_coerce_int(policy.get("min_box_size"), field_name=f"class_policy.{class_key}.min_box_size"),
         )
     return resolved
+
+
+def load_class_policy(path: str | Path) -> dict[str, ClassPolicy]:
+    policy_path = Path(path).resolve()
+    payload = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise TypeError("class policy file root must be a mapping")
+    return _load_class_policy_mapping(payload)
 
 
 def _validate_scenario(scenario: BootstrapSweepScenario) -> None:
@@ -210,6 +218,10 @@ def load_sweep_scenario(path: str | Path) -> BootstrapSweepScenario:
     if not isinstance(payload, dict):
         raise TypeError("scenario root must be a mapping")
     base_dir = scenario_path.parent
+    class_policy_path = resolve_path(
+        _coerce_str(payload.get("class_policy_path"), field_name="class_policy_path"),
+        base_dir=base_dir,
+    )
     scenario = BootstrapSweepScenario(
         run=_load_run_config(payload.get("run"), base_dir=base_dir),
         image_list=_load_image_list_config(payload.get("image_list"), base_dir=base_dir),
@@ -218,7 +230,8 @@ def load_sweep_scenario(path: str | Path) -> BootstrapSweepScenario:
             _load_teacher_config(item, base_dir=base_dir, index=index)
             for index, item in enumerate(_coerce_sequence(payload.get("teachers"), field_name="teachers"))
         ),
-        class_policy=_load_class_policy(payload.get("class_policy")),
+        class_policy_path=class_policy_path,
+        class_policy=load_class_policy(class_policy_path),
     )
     _validate_scenario(scenario)
     return scenario

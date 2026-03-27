@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.od_bootstrap.common import resolve_path
 from tools.od_bootstrap.preprocess.sources import CanonicalSourceBundle
 from tools.od_bootstrap.preprocess.teacher_dataset import build_teacher_datasets
 
@@ -26,13 +27,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, default=None, help="Override teacher dataset output root.")
     parser.add_argument("--copy-images", action="store_true", help="Override with copy_images=true.")
     return parser
-
-
-def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return path
 
 
 def _load_payload(path: Path) -> dict[str, Any]:
@@ -51,8 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     input_payload = dict(payload.get("input") or {})
     runtime_payload = dict(payload.get("runtime") or {})
 
-    canonical_root = _resolve_path(args.canonical_root or input_payload.get("canonical_root"), base_dir=base_dir)
-    output_root = _resolve_path(args.output_root or payload.get("output_root"), base_dir=base_dir)
+    canonical_root = resolve_path(args.canonical_root or input_payload.get("canonical_root"), base_dir=base_dir)
+    output_root = resolve_path(args.output_root or payload.get("output_root"), base_dir=base_dir)
     copy_images = bool(args.copy_images or runtime_payload.get("copy_images", False))
 
     bundle = CanonicalSourceBundle(
@@ -67,7 +61,6 @@ def main(argv: list[str] | None = None) -> int:
                 teacher_name: {
                     "dataset_root": str(result.dataset_root),
                     "manifest_path": str(result.manifest_path),
-                    "data_yaml_path": str(result.data_yaml_path),
                     "sample_count": result.sample_count,
                     "detection_count": result.detection_count,
                 }

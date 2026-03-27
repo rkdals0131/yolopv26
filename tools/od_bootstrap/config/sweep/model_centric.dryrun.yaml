@@ -1,7 +1,7 @@
 run:
   output_root: ../../../../runs/od_bootstrap
   execution_mode: model-centric
-  dry_run: false
+  dry_run: true
   device: cuda:0
   imgsz: 640
   batch_size: 8

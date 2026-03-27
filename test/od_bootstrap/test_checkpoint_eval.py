@@ -67,7 +67,6 @@ class CheckpointEvalTests(unittest.TestCase):
                     teacher_name: mobility
                     run:
                       output_root: runs
-                      run_name: mobility_checkpoint_eval
                       exist_ok: true
                     dataset:
                       root: teacher_source

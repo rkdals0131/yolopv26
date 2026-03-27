@@ -20,6 +20,22 @@ class ODBootstrapScenarioTests(unittest.TestCase):
             scenario_path = config_dir / "bootstrap.yaml"
             image_list_manifest = data_dir / "image_list.jsonl"
             image_list_manifest.write_text("", encoding="utf-8")
+            class_policy_path = data_dir / "class_policy.yaml"
+            class_policy_path.write_text(
+                textwrap.dedent(
+                    """
+                    vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
+                    bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
+                    pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
+                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6}
+                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8}
+                    traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8}
+                    obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12}
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
 
             scenario_path.write_text(
                 textwrap.dedent(
@@ -27,11 +43,14 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                     run:
                       output_root: ../runs/od_bootstrap
                       execution_mode: model-centric
-                      dry_run: true
+                      dry_run: false
+                      predict_conf: 0.001
+                      predict_iou: 0.99
                     image_list:
                       manifest_path: ../data/image_list.jsonl
                     materialization:
                       output_root: ../seg_dataset/pv26_od_bootstrap/exhaustive_od
+                    class_policy_path: ../data/class_policy.yaml
                     teachers:
                       - name: mobility
                         base_model: yolov26n
@@ -48,14 +67,6 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                         checkpoint_path: ../weights/obstacle.pt
                         model_version: obstacle_v1
                         classes: [traffic_cone, obstacle]
-                    class_policy:
-                      vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
-                      bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
-                      pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
-                      traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6}
-                      sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8}
-                      traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8}
-                      obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12}
                     """
                 ).strip()
                 + "\n",
@@ -66,9 +77,11 @@ class ODBootstrapScenarioTests(unittest.TestCase):
 
             self.assertEqual(scenario.run.output_root, (root / "runs" / "od_bootstrap").resolve())
             self.assertEqual(scenario.image_list.manifest_path, image_list_manifest.resolve())
+            self.assertEqual(scenario.class_policy_path, class_policy_path.resolve())
             self.assertEqual(tuple(teacher.name for teacher in scenario.teachers), REQUIRED_TEACHER_ORDER)
             self.assertEqual(scenario.teachers[0].checkpoint_path, (root / "weights" / "mobility.pt").resolve())
             self.assertEqual(scenario.class_policy["obstacle"].min_box_size, 12)
+            self.assertAlmostEqual(scenario.run.predict_conf, 0.001, places=6)
             self.assertEqual(
                 scenario.materialization.output_root,
                 (root / "seg_dataset" / "pv26_od_bootstrap" / "exhaustive_od").resolve(),
@@ -78,6 +91,22 @@ class ODBootstrapScenarioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             scenario_path = root / "bootstrap.yaml"
+            class_policy_path = root / "class_policy.yaml"
+            class_policy_path.write_text(
+                textwrap.dedent(
+                    """
+                    vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
+                    bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
+                    pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
+                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6}
+                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8}
+                    traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8}
+                    obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12}
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
             scenario_path.write_text(
                 textwrap.dedent(
                     """
@@ -85,6 +114,7 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                       manifest_path: image_list.jsonl
                     materialization:
                       output_root: exhaustive_od
+                    class_policy_path: class_policy.yaml
                     teachers:
                       - name: signal
                         base_model: yolov26n
@@ -101,14 +131,6 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                         checkpoint_path: obstacle.pt
                         model_version: obstacle_v1
                         classes: [traffic_cone, obstacle]
-                    class_policy:
-                      vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
-                      bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
-                      pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
-                      traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6}
-                      sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8}
-                      traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8}
-                      obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12}
                     """
                 ).strip()
                 + "\n",

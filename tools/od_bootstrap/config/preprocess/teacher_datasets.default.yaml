@@ -1,7 +1,7 @@
 input:
-  canonical_root: ../seg_dataset/pv26_od_bootstrap
+  canonical_root: ../../../../seg_dataset/pv26_od_bootstrap
 
-output_root: ../seg_dataset/pv26_od_bootstrap/teacher_datasets
+output_root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets
 
 runtime:
   copy_images: false

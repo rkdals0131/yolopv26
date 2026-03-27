@@ -11,6 +11,7 @@ from typing import Any, Iterable
 import yaml
 
 from model.preprocess.aihub_standardize import OD_CLASS_TO_ID, OD_CLASSES
+from tools.od_bootstrap.common import box_size, iou, nms_rows
 
 from .image_list import ImageListEntry
 from .schema import BoxProvenance
@@ -62,40 +63,6 @@ def _bbox_to_yolo_line(class_name: str, box: list[float], width: int, height: in
     box_h = max(0.0, y2 - y1) / float(height)
     return f"{class_id} {center_x:.6f} {center_y:.6f} {box_w:.6f} {box_h:.6f}"
 
-
-def _box_size(box: list[float]) -> tuple[float, float]:
-    return max(0.0, box[2] - box[0]), max(0.0, box[3] - box[1])
-
-
-def _iou(box_a: list[float], box_b: list[float]) -> float:
-    x1 = max(box_a[0], box_b[0])
-    y1 = max(box_a[1], box_b[1])
-    x2 = min(box_a[2], box_b[2])
-    y2 = min(box_a[3], box_b[3])
-    inter_w = max(0.0, x2 - x1)
-    inter_h = max(0.0, y2 - y1)
-    if inter_w <= 0.0 or inter_h <= 0.0:
-        return 0.0
-    inter_area = inter_w * inter_h
-    area_a = max(0.0, box_a[2] - box_a[0]) * max(0.0, box_a[3] - box_a[1])
-    area_b = max(0.0, box_b[2] - box_b[0]) * max(0.0, box_b[3] - box_b[1])
-    denom = area_a + area_b - inter_area
-    if denom <= 0.0:
-        return 0.0
-    return inter_area / denom
-
-
-def _nms_rows(rows: list[dict[str, Any]], *, iou_threshold: float) -> list[dict[str, Any]]:
-    sorted_rows = sorted(rows, key=lambda item: float(item["confidence"]), reverse=True)
-    kept: list[dict[str, Any]] = []
-    for row in sorted_rows:
-        box = [float(value) for value in row["xyxy"]]
-        if any(_iou(box, [float(value) for value in kept_row["xyxy"]]) >= iou_threshold for kept_row in kept):
-            continue
-        kept.append(row)
-    return kept
-
-
 def _materialize_image(source_path: Path, target_path: Path, *, copy_images: bool) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
@@ -123,7 +90,7 @@ def _raw_provenance(*, run_id: str, created_at: str) -> BoxProvenance:
 def materialize_exhaustive_od_dataset(
     *,
     image_entries: Iterable[ImageListEntry],
-    predictions_by_image_id: dict[str, list[dict[str, Any]]],
+    predictions_by_sample_uid: dict[str, list[dict[str, Any]]],
     class_policy: dict[str, Any],
     output_root: Path,
     run_id: str,
@@ -142,6 +109,8 @@ def materialize_exhaustive_od_dataset(
         source_dataset_key = str(scene.get("source", {}).get("dataset") or entry.dataset_key)
         exhaustive_dataset_key = EXHAUSTIVE_DATASET_KEY_BY_SOURCE[source_dataset_key]
         split = str(scene.get("source", {}).get("split") or entry.split)
+        original_image_name = str(scene.get("image", {}).get("file_name") or entry.image_path.name)
+        materialized_image_name = f"{entry.sample_uid}{entry.image_path.suffix.lower()}"
         raw_detections = list(scene.get("detections") or [])
 
         final_scene = deepcopy(scene)
@@ -149,6 +118,8 @@ def materialize_exhaustive_od_dataset(
         final_scene["source"]["bootstrap_run_id"] = run_id
         final_scene["source"]["bootstrap_created_at"] = created_at
         final_scene["source"]["bootstrap_original_dataset"] = source_dataset_key
+        final_scene["source"]["bootstrap_original_sample_id"] = entry.sample_id
+        final_scene["source"]["bootstrap_sample_uid"] = entry.sample_uid
         final_detections: list[dict[str, Any]] = []
         raw_boxes_by_class: dict[str, list[list[float]]] = defaultdict(list)
 
@@ -165,16 +136,16 @@ def materialize_exhaustive_od_dataset(
             class_counts[class_name] += 1
 
         filtered_predictions: list[dict[str, Any]] = []
-        for row in predictions_by_image_id.get(entry.image_id, []):
+        for row in predictions_by_sample_uid.get(entry.sample_uid, []):
             class_name = str(row["class_name"])
             policy = class_policy[class_name]
             box = [float(value) for value in row["xyxy"]]
-            width_px, height_px = _box_size(box)
+            width_px, height_px = box_size(box)
             if float(row["confidence"]) < float(policy.score_threshold):
                 continue
             if min(width_px, height_px) < int(policy.min_box_size):
                 continue
-            if any(_iou(box, raw_box) >= float(policy.nms_iou_threshold) for raw_box in raw_boxes_by_class.get(class_name, [])):
+            if any(iou(box, raw_box) >= float(policy.nms_iou_threshold) for raw_box in raw_boxes_by_class.get(class_name, [])):
                 continue
             filtered_predictions.append(row)
 
@@ -183,7 +154,7 @@ def materialize_exhaustive_od_dataset(
         for row in filtered_predictions:
             predictions_by_class[str(row["class_name"])].append(row)
         for class_name, rows in predictions_by_class.items():
-            kept_predictions.extend(_nms_rows(rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
+            kept_predictions.extend(nms_rows(rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
 
         next_detection_id = len(final_detections)
         for row in sorted(kept_predictions, key=lambda item: (str(item["class_name"]), -float(item["confidence"]))):
@@ -219,11 +190,12 @@ def materialize_exhaustive_od_dataset(
         final_scene.setdefault("tasks", {})
         final_scene["tasks"]["has_det"] = int(bool(final_detections))
 
-        scene_output_path = dataset_root / "labels_scene" / split / entry.scene_path.name
-        det_output_path = dataset_root / "labels_det" / split / f"{entry.image_id}.txt"
-        image_output_path = dataset_root / "images" / split / entry.image_path.name
+        scene_output_path = dataset_root / "labels_scene" / split / f"{entry.sample_uid}.json"
+        det_output_path = dataset_root / "labels_det" / split / f"{entry.sample_uid}.txt"
+        image_output_path = dataset_root / "images" / split / materialized_image_name
         scene_output_path.parent.mkdir(parents=True, exist_ok=True)
         det_output_path.parent.mkdir(parents=True, exist_ok=True)
+        final_scene["image"]["original_file_name"] = original_image_name
         final_scene["image"]["file_name"] = image_output_path.name
         scene_output_path.write_text(json.dumps(final_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
         det_lines = [
@@ -235,7 +207,7 @@ def materialize_exhaustive_od_dataset(
 
         materialized.append(
             MaterializedSample(
-                sample_id=entry.image_id,
+                sample_id=entry.sample_uid,
                 dataset_key=exhaustive_dataset_key,
                 scene_path=scene_output_path,
                 det_path=det_output_path,
@@ -246,7 +218,8 @@ def materialize_exhaustive_od_dataset(
         )
         sample_rows.append(
             {
-                "sample_id": entry.image_id,
+                "sample_id": entry.sample_id,
+                "sample_uid": entry.sample_uid,
                 "source_dataset_key": source_dataset_key,
                 "exhaustive_dataset_key": exhaustive_dataset_key,
                 "split": split,

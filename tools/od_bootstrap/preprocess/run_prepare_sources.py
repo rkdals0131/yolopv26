@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.od_bootstrap.common import resolve_path
 from tools.od_bootstrap.preprocess.sources import SourcePrepConfig, SourceRoots, prepare_od_bootstrap_sources
 
 
@@ -29,13 +30,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return path
-
-
 def _load_config(path: Path) -> dict[str, Any]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict):
@@ -50,9 +44,9 @@ def _resolve_config(args: argparse.Namespace) -> SourcePrepConfig:
     raw = dict(payload.get("raw") or {})
     runtime = dict(payload.get("runtime") or {})
 
-    bdd_root = _resolve_path(args.bdd_root or raw.get("bdd_root"), base_dir=base_dir)
-    aihub_root = _resolve_path(args.aihub_root or raw.get("aihub_root"), base_dir=base_dir)
-    output_root = _resolve_path(args.output_root or payload.get("output_root"), base_dir=base_dir)
+    bdd_root = resolve_path(args.bdd_root or raw.get("bdd_root"), base_dir=base_dir)
+    aihub_root = resolve_path(args.aihub_root or raw.get("aihub_root"), base_dir=base_dir)
+    output_root = resolve_path(args.output_root or payload.get("output_root"), base_dir=base_dir)
     workers = int(args.workers if args.workers is not None else runtime.get("workers", 1))
     force_reprocess = bool(args.force_reprocess or runtime.get("force_reprocess", False))
     return SourcePrepConfig(

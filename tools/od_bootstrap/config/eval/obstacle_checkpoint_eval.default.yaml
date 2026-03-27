@@ -1,7 +1,6 @@
 teacher_name: obstacle
 run:
   output_root: ../../../../runs/od_bootstrap/eval
-  run_name: obstacle_checkpoint_eval
   exist_ok: true
 dataset:
   root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/obstacle
@@ -11,7 +10,7 @@ dataset:
   sample_limit: 8
   stage_dataset: true
 model:
-  checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle_yolo26n/weights/best.pt
+  checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle/weights/best.pt
   model_size: n
   class_names:
     - traffic_cone

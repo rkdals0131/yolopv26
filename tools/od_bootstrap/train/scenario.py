@@ -6,11 +6,12 @@ from typing import Any
 
 import yaml
 
+from tools.od_bootstrap.common import resolve_path
+
 
 @dataclass(frozen=True)
 class TeacherRunConfig:
     output_root: Path
-    run_name: str
     exist_ok: bool = True
 
 
@@ -54,14 +55,6 @@ class TeacherTrainScenario:
     dataset: TeacherDatasetConfig
     model: TeacherModelConfig
     train: TeacherTrainParams
-
-
-def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return path
-
 
 def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     if value is None:
@@ -109,8 +102,7 @@ def _coerce_int(value: Any, *, field_name: str) -> int:
 def _run_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> TeacherRunConfig:
     data = _coerce_mapping(payload, field_name="run")
     return TeacherRunConfig(
-        output_root=_resolve_path(data.get("output_root", "../runs/od_bootstrap/train"), base_dir=base_dir),
-        run_name=_coerce_str(data.get("run_name", "teacher_train"), field_name="run.run_name"),
+        output_root=resolve_path(data.get("output_root", "../runs/od_bootstrap/train"), base_dir=base_dir),
         exist_ok=_coerce_bool(data.get("exist_ok", True), field_name="run.exist_ok"),
     )
 
@@ -118,7 +110,7 @@ def _run_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> Teac
 def _dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> TeacherDatasetConfig:
     data = _coerce_mapping(payload, field_name="dataset")
     return TeacherDatasetConfig(
-        root=_resolve_path(data.get("root"), base_dir=base_dir),
+        root=resolve_path(data.get("root"), base_dir=base_dir),
         image_dir=_coerce_str(data.get("image_dir", "images"), field_name="dataset.image_dir"),
         label_dir=_coerce_str(data.get("label_dir", "labels"), field_name="dataset.label_dir"),
         train_split=_coerce_str(data.get("train_split", "train"), field_name="dataset.train_split"),
