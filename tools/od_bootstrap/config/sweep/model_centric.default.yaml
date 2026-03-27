@@ -1,0 +1,70 @@
+run:
+  output_root: ../../../../runs/od_bootstrap
+  execution_mode: model-centric
+  dry_run: true
+  device: cuda:0
+  imgsz: 640
+  batch_size: 8
+
+image_list:
+  manifest_path: ../../../../seg_dataset/pv26_od_bootstrap/meta/bootstrap_image_list.jsonl
+
+materialization:
+  output_root: ../../../../seg_dataset/pv26_od_bootstrap/exhaustive_od
+  copy_images: false
+
+teachers:
+  - name: mobility
+    base_model: yolov26n
+    checkpoint_path: ../../../../runs/od_bootstrap/train/mobility/weights/best.pt
+    model_version: mobility_yolov26n_bootstrap_v1
+    classes:
+      - vehicle
+      - bike
+      - pedestrian
+
+  - name: signal
+    base_model: yolov26n
+    checkpoint_path: ../../../../runs/od_bootstrap/train/signal/weights/best.pt
+    model_version: signal_yolov26n_bootstrap_v1
+    classes:
+      - traffic_light
+      - sign
+
+  - name: obstacle
+    base_model: yolov26n
+    checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle/weights/best.pt
+    model_version: obstacle_yolov26n_bootstrap_v1
+    classes:
+      - traffic_cone
+      - obstacle
+
+class_policy:
+  vehicle:
+    score_threshold: 0.30
+    nms_iou_threshold: 0.55
+    min_box_size: 8
+  bike:
+    score_threshold: 0.30
+    nms_iou_threshold: 0.55
+    min_box_size: 8
+  pedestrian:
+    score_threshold: 0.35
+    nms_iou_threshold: 0.50
+    min_box_size: 8
+  traffic_light:
+    score_threshold: 0.40
+    nms_iou_threshold: 0.45
+    min_box_size: 6
+  sign:
+    score_threshold: 0.40
+    nms_iou_threshold: 0.50
+    min_box_size: 8
+  traffic_cone:
+    score_threshold: 0.45
+    nms_iou_threshold: 0.45
+    min_box_size: 8
+  obstacle:
+    score_threshold: 0.55
+    nms_iou_threshold: 0.40
+    min_box_size: 12

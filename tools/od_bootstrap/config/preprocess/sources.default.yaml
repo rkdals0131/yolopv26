@@ -1,0 +1,11 @@
+raw:
+  bdd_root: ../seg_dataset/BDD100K
+  aihub_root: ../seg_dataset/AIHUB
+
+output_root: ../seg_dataset/pv26_od_bootstrap
+
+runtime:
+  workers: 1
+  force_reprocess: false
+  write_source_readmes: false
+  debug_vis_count: 0

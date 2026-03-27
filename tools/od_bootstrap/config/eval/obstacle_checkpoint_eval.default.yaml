@@ -1,0 +1,28 @@
+teacher_name: obstacle
+run:
+  output_root: ../../../../runs/od_bootstrap/eval
+  run_name: obstacle_checkpoint_eval
+  exist_ok: true
+dataset:
+  root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/obstacle
+  image_dir: images
+  label_dir: labels
+  split: val
+  sample_limit: 8
+  stage_dataset: true
+model:
+  checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle_yolo26n/weights/best.pt
+  model_size: n
+  class_names:
+    - traffic_cone
+    - obstacle
+eval:
+  imgsz: 640
+  batch: 1
+  device: cuda:0
+  conf: 0.25
+  iou: 0.7
+  predict: true
+  val: true
+  save_conf: false
+  verbose: false

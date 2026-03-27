@@ -1,0 +1,7 @@
+input:
+  exhaustive_od_root: ../../../../seg_dataset/pv26_od_bootstrap/exhaustive_od/latest
+  aihub_canonical_root: ../../../../seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized
+
+output:
+  root: ../../../../seg_dataset/pv26_exhaustive_od_lane_dataset
+  copy_images: false

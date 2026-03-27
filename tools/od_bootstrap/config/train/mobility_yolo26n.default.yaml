@@ -1,0 +1,32 @@
+teacher_name: mobility
+run:
+  output_root: ../../../../runs/od_bootstrap/train
+  run_name: mobility_yolo26n
+  exist_ok: true
+dataset:
+  root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/mobility
+  image_dir: images
+  label_dir: labels
+  train_split: train
+  val_split: val
+model:
+  model_size: n
+  weights: yolo26n.pt
+  class_names:
+    - vehicle
+    - bike
+    - pedestrian
+train:
+  epochs: 100
+  imgsz: 640
+  batch: 16
+  device: cuda:0
+  workers: 8
+  patience: 50
+  cache: false
+  amp: true
+  optimizer: auto
+  seed: 0
+  resume: false
+  val: true
+  save_period: 10
