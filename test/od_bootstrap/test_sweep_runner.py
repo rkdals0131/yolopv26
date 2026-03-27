@@ -37,17 +37,17 @@ class _FakeYOLO:
                 )
             elif "signal" in checkpoint_name:
                 boxes = SimpleNamespace(
-                    xyxy=torch.tensor([[20.0, 20.0, 40.0, 60.0]]),
-                    cls=torch.tensor([0]),
-                    conf=torch.tensor([0.91]),
+                    xyxy=torch.tensor([[20.0, 20.0, 40.0, 60.0], [18.0, 18.0, 42.0, 62.0]]),
+                    cls=torch.tensor([0, 1]),
+                    conf=torch.tensor([0.91, 0.88]),
                 )
             else:
                 boxes = SimpleNamespace(
-                    xyxy=torch.tensor([[200.0, 200.0, 250.0, 250.0]]),
-                    cls=torch.tensor([1]),
-                    conf=torch.tensor([0.89]),
+                    xyxy=torch.tensor([[200.0, 200.0, 250.0, 250.0], [202.0, 202.0, 248.0, 248.0]]),
+                    cls=torch.tensor([1, 0]),
+                    conf=torch.tensor([0.89, 0.87]),
                 )
-            results.append(SimpleNamespace(path=str(image_path), names=names, boxes=boxes))
+            results.append(SimpleNamespace(path=str(image_path), names=names, boxes=boxes, orig_shape=(480, 640)))
         return results
 
 
@@ -211,10 +211,10 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                     vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
                     bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
                     pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
-                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6}
-                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8}
-                    traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8}
-                    obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12}
+                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6, allowed_source_datasets: [bdd100k_det_100k, aihub_traffic_seoul], suppress_with_classes: [sign], cross_class_iou_threshold: 0.35}
+                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8, allowed_source_datasets: [bdd100k_det_100k, aihub_traffic_seoul], suppress_with_classes: [traffic_light], cross_class_iou_threshold: 0.35}
+                    traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8, suppress_with_classes: [obstacle], cross_class_iou_threshold: 0.40}
+                    obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12, suppress_with_classes: [traffic_cone], cross_class_iou_threshold: 0.40}
                     """
                 ).strip()
                 + "\n",
@@ -254,5 +254,9 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertEqual(len(traffic_scene["detections"]), 3)
             self.assertEqual(bdd_scene["detections"][0]["provenance"]["label_origin"], "raw_source")
             self.assertEqual(bdd_scene["detections"][1]["provenance"]["label_origin"], "bootstrap")
+            self.assertEqual(
+                [item["class_name"] for item in traffic_scene["detections"]],
+                ["traffic_light", "obstacle", "vehicle"],
+            )
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{bdd_uid}.txt").is_file())
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{traffic_uid}.txt").is_file())

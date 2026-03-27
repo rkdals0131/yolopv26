@@ -49,6 +49,13 @@ class ClassPolicy:
     score_threshold: float
     nms_iou_threshold: float
     min_box_size: int
+    allowed_source_datasets: tuple[str, ...] = ()
+    suppress_with_classes: tuple[str, ...] = ()
+    cross_class_iou_threshold: float | None = None
+    center_x_range: tuple[float, float] | None = None
+    center_y_range: tuple[float, float] | None = None
+    aspect_ratio_range: tuple[float, float] | None = None
+    area_ratio_range: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,19 @@ def _coerce_float(value: Any, *, field_name: str) -> float:
     if isinstance(value, bool):
         raise TypeError(f"{field_name} must be a float")
     return float(value)
+
+
+def _coerce_float_range(value: Any, *, field_name: str) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    items = _coerce_sequence(value, field_name=field_name)
+    if len(items) != 2:
+        raise ValueError(f"{field_name} must contain exactly 2 items")
+    lower = _coerce_float(items[0], field_name=f"{field_name}[0]")
+    upper = _coerce_float(items[1], field_name=f"{field_name}[1]")
+    if lower > upper:
+        raise ValueError(f"{field_name} lower bound must be <= upper bound")
+    return (lower, upper)
 
 
 def _load_run_config(data: Any, *, base_dir: Path) -> RunConfig:
@@ -178,6 +198,33 @@ def _load_class_policy_mapping(data: Any) -> dict[str, ClassPolicy]:
                 field_name=f"class_policy.{class_key}.nms_iou_threshold",
             ),
             min_box_size=_coerce_int(policy.get("min_box_size"), field_name=f"class_policy.{class_key}.min_box_size"),
+            allowed_source_datasets=tuple(
+                _coerce_str(item, field_name=f"class_policy.{class_key}.allowed_source_datasets[{index}]")
+                for index, item in enumerate(
+                    _coerce_sequence(policy.get("allowed_source_datasets"), field_name=f"class_policy.{class_key}.allowed_source_datasets")
+                )
+            ),
+            suppress_with_classes=tuple(
+                _coerce_str(item, field_name=f"class_policy.{class_key}.suppress_with_classes[{index}]")
+                for index, item in enumerate(
+                    _coerce_sequence(policy.get("suppress_with_classes"), field_name=f"class_policy.{class_key}.suppress_with_classes")
+                )
+            ),
+            cross_class_iou_threshold=(
+                _coerce_float(
+                    policy.get("cross_class_iou_threshold"),
+                    field_name=f"class_policy.{class_key}.cross_class_iou_threshold",
+                )
+                if policy.get("cross_class_iou_threshold") is not None
+                else None
+            ),
+            center_x_range=_coerce_float_range(policy.get("center_x_range"), field_name=f"class_policy.{class_key}.center_x_range"),
+            center_y_range=_coerce_float_range(policy.get("center_y_range"), field_name=f"class_policy.{class_key}.center_y_range"),
+            aspect_ratio_range=_coerce_float_range(
+                policy.get("aspect_ratio_range"),
+                field_name=f"class_policy.{class_key}.aspect_ratio_range",
+            ),
+            area_ratio_range=_coerce_float_range(policy.get("area_ratio_range"), field_name=f"class_policy.{class_key}.area_ratio_range"),
         )
     return resolved
 

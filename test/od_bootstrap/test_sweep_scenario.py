@@ -27,8 +27,8 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                     vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
                     bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
                     pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
-                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6}
-                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8}
+                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6, allowed_source_datasets: [aihub_traffic_seoul], center_y_range: [0.0, 0.7]}
+                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8, suppress_with_classes: [traffic_light], cross_class_iou_threshold: 0.35}
                     traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8}
                     obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12}
                     """
@@ -81,6 +81,9 @@ class ODBootstrapScenarioTests(unittest.TestCase):
             self.assertEqual(tuple(teacher.name for teacher in scenario.teachers), REQUIRED_TEACHER_ORDER)
             self.assertEqual(scenario.teachers[0].checkpoint_path, (root / "weights" / "mobility.pt").resolve())
             self.assertEqual(scenario.class_policy["obstacle"].min_box_size, 12)
+            self.assertEqual(scenario.class_policy["traffic_light"].allowed_source_datasets, ("aihub_traffic_seoul",))
+            self.assertEqual(scenario.class_policy["sign"].suppress_with_classes, ("traffic_light",))
+            self.assertEqual(scenario.class_policy["traffic_light"].center_y_range, (0.0, 0.7))
             self.assertAlmostEqual(scenario.run.predict_conf, 0.001, places=6)
             self.assertEqual(
                 scenario.materialization.output_root,

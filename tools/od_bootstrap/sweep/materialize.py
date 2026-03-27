@@ -11,9 +11,9 @@ from typing import Any, Iterable
 import yaml
 
 from model.preprocess.aihub_standardize import OD_CLASS_TO_ID, OD_CLASSES
-from tools.od_bootstrap.common import box_size, iou, nms_rows
 
 from .image_list import ImageListEntry
+from .policy import apply_policy_to_predictions
 from .schema import BoxProvenance
 
 
@@ -135,26 +135,14 @@ def materialize_exhaustive_od_dataset(
             final_detections.append(detection_copy)
             class_counts[class_name] += 1
 
-        filtered_predictions: list[dict[str, Any]] = []
-        for row in predictions_by_sample_uid.get(entry.sample_uid, []):
-            class_name = str(row["class_name"])
-            policy = class_policy[class_name]
-            box = [float(value) for value in row["xyxy"]]
-            width_px, height_px = box_size(box)
-            if float(row["confidence"]) < float(policy.score_threshold):
-                continue
-            if min(width_px, height_px) < int(policy.min_box_size):
-                continue
-            if any(iou(box, raw_box) >= float(policy.nms_iou_threshold) for raw_box in raw_boxes_by_class.get(class_name, [])):
-                continue
-            filtered_predictions.append(row)
-
-        kept_predictions: list[dict[str, Any]] = []
-        predictions_by_class: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in filtered_predictions:
-            predictions_by_class[str(row["class_name"])].append(row)
-        for class_name, rows in predictions_by_class.items():
-            kept_predictions.extend(nms_rows(rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
+        kept_predictions = apply_policy_to_predictions(
+            rows=predictions_by_sample_uid.get(entry.sample_uid, []),
+            class_policy=class_policy,
+            dataset_key=source_dataset_key,
+            image_width=int(final_scene["image"]["width"]),
+            image_height=int(final_scene["image"]["height"]),
+            raw_boxes_by_class=raw_boxes_by_class,
+        )
 
         next_detection_id = len(final_detections)
         for row in sorted(kept_predictions, key=lambda item: (str(item["class_name"]), -float(item["confidence"]))):

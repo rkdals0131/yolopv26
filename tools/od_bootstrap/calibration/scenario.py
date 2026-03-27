@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 from tools.od_bootstrap.common import resolve_path
+from tools.od_bootstrap.sweep.scenario import ClassPolicy, load_class_policy
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class CalibrationSearchConfig:
 @dataclass(frozen=True)
 class CalibrationDatasetConfig:
     root: Path
+    source_dataset_key: str = ""
     image_dir: str = "images"
     label_dir: str = "labels"
     split: str = "val"
@@ -50,6 +52,8 @@ class CalibrationScenario:
     run: CalibrationRunConfig
     search: CalibrationSearchConfig
     teachers: tuple[CalibrationTeacherConfig, ...]
+    policy_template_path: Path | None = None
+    policy_template: dict[str, ClassPolicy] | None = None
 
 
 def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
@@ -130,6 +134,10 @@ def _load_dataset_config(data: Any, *, base_dir: Path, field_name: str) -> Calib
     payload = _coerce_mapping(data, field_name=field_name)
     return CalibrationDatasetConfig(
         root=resolve_path(_coerce_str(payload.get("root"), field_name=f"{field_name}.root"), base_dir=base_dir),
+        source_dataset_key=_coerce_str(
+            payload.get("source_dataset_key", Path(str(payload.get("root", ""))).name or "dataset"),
+            field_name=f"{field_name}.source_dataset_key",
+        ),
         image_dir=_coerce_str(payload.get("image_dir", "images"), field_name=f"{field_name}.image_dir"),
         label_dir=_coerce_str(payload.get("label_dir", "labels"), field_name=f"{field_name}.label_dir"),
         split=_coerce_str(payload.get("split", "val"), field_name=f"{field_name}.split"),
@@ -162,6 +170,11 @@ def load_calibration_scenario(path: str | Path) -> CalibrationScenario:
     if not isinstance(payload, dict):
         raise TypeError("scenario root must be a mapping")
     base_dir = scenario_path.parent
+    policy_template_path = (
+        resolve_path(_coerce_str(payload.get("policy_template_path"), field_name="policy_template_path"), base_dir=base_dir)
+        if payload.get("policy_template_path") is not None
+        else None
+    )
     scenario = CalibrationScenario(
         run=_load_run_config(payload.get("run"), base_dir=base_dir),
         search=_load_search_config(payload.get("search")),
@@ -169,6 +182,8 @@ def load_calibration_scenario(path: str | Path) -> CalibrationScenario:
             _load_teacher_config(item, base_dir=base_dir, index=index)
             for index, item in enumerate(_coerce_sequence(payload.get("teachers"), field_name="teachers"))
         ),
+        policy_template_path=policy_template_path,
+        policy_template=load_class_policy(policy_template_path) if policy_template_path is not None else None,
     )
     if not scenario.teachers:
         raise ValueError("teachers must not be empty")

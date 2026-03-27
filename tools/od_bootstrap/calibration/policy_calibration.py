@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -14,7 +14,9 @@ try:
 except ImportError:  # pragma: no cover
     YOLO = None
 
-from tools.od_bootstrap.common import box_size, greedy_match_boxes, nms_rows
+from tools.od_bootstrap.common import greedy_match_boxes
+from tools.od_bootstrap.sweep.policy import apply_policy_to_predictions, class_policy_to_dict
+from tools.od_bootstrap.sweep.scenario import ClassPolicy
 
 from .scenario import CalibrationScenario, CalibrationTeacherConfig
 
@@ -188,10 +190,10 @@ def _evaluate_candidate(
     *,
     samples: dict[str, dict[str, Any]],
     class_name: str,
-    score_threshold: float,
-    nms_iou_threshold: float,
-    min_box_size: int,
     match_iou: float,
+    class_policy: dict[str, ClassPolicy],
+    target_policy: ClassPolicy,
+    dataset_key: str,
 ) -> dict[str, Any]:
     tp = 0
     fp = 0
@@ -199,21 +201,22 @@ def _evaluate_candidate(
     raw_prediction_count = 0
     gt_count = 0
     for sample in samples.values():
+        sample_policy = dict(class_policy)
+        sample_policy[class_name] = target_policy
         gt_boxes = list(sample["ground_truth"].get(class_name, []))
         gt_count += len(gt_boxes)
-        filtered_rows: list[dict[str, Any]] = []
-        for row in sample.get("predictions", []):
-            if row["class_name"] != class_name:
-                continue
-            raw_prediction_count += 1
-            if float(row["confidence"]) < score_threshold:
-                continue
-            width_px, height_px = box_size(row["xyxy"])
-            if min(width_px, height_px) < int(min_box_size):
-                continue
-            filtered_rows.append(row)
-        kept_rows = nms_rows(filtered_rows, iou_threshold=nms_iou_threshold)
-        sample_tp, sample_fp, sample_fn = greedy_match_boxes(kept_rows, gt_boxes, match_iou=match_iou)
+        all_predictions = list(sample.get("predictions", []))
+        raw_prediction_count += sum(1 for row in all_predictions if row["class_name"] == class_name)
+        kept_rows = apply_policy_to_predictions(
+            rows=all_predictions,
+            class_policy=sample_policy,
+            dataset_key=dataset_key,
+            image_width=int(sample["width"]),
+            image_height=int(sample["height"]),
+            raw_boxes_by_class={},
+        )
+        class_rows = [row for row in kept_rows if row["class_name"] == class_name]
+        sample_tp, sample_fp, sample_fn = greedy_match_boxes(class_rows, gt_boxes, match_iou=match_iou)
         tp += sample_tp
         fp += sample_fp
         fn += sample_fn
@@ -221,9 +224,9 @@ def _evaluate_candidate(
     recall = tp / float(tp + fn) if tp + fn else 0.0
     f0_5 = _f_beta(precision=precision, recall=recall, beta=0.5)
     return {
-        "score_threshold": float(score_threshold),
-        "nms_iou_threshold": float(nms_iou_threshold),
-        "min_box_size": int(min_box_size),
+        "score_threshold": float(target_policy.score_threshold),
+        "nms_iou_threshold": float(target_policy.nms_iou_threshold),
+        "min_box_size": int(target_policy.min_box_size),
         "tp": int(tp),
         "fp": int(fp),
         "fn": int(fn),
@@ -270,6 +273,19 @@ def _select_best_candidate(
     return best
 
 
+def _build_default_policy_template(scenario: CalibrationScenario) -> dict[str, ClassPolicy]:
+    default_policy = ClassPolicy(
+        score_threshold=float(scenario.search.score_thresholds[0]),
+        nms_iou_threshold=float(scenario.search.nms_iou_thresholds[0]),
+        min_box_size=int(scenario.search.min_box_sizes[0]),
+    )
+    return {
+        class_name: default_policy
+        for teacher in scenario.teachers
+        for class_name in teacher.classes
+    }
+
+
 def calibrate_class_policy_scenario(
     scenario: CalibrationScenario,
     *,
@@ -280,7 +296,9 @@ def calibrate_class_policy_scenario(
     output_root.mkdir(parents=True, exist_ok=True)
 
     teacher_summaries: list[dict[str, Any]] = []
-    samples_by_class: dict[str, dict[str, dict[str, Any]]] = {}
+    samples_by_teacher: dict[str, dict[str, dict[str, Any]]] = {}
+    teacher_by_class: dict[str, CalibrationTeacherConfig] = {}
+    policy_template = dict(scenario.policy_template or _build_default_policy_template(scenario))
 
     for teacher in scenario.teachers:
         rows, samples = _run_teacher_predictions(teacher=teacher, scenario=scenario)
@@ -300,32 +318,45 @@ def calibrate_class_policy_scenario(
         }
         _write_json(teacher_dir / "summary.json", teacher_summary)
         teacher_summaries.append(teacher_summary)
+        samples_by_teacher[teacher.name] = samples
         for class_name in teacher.classes:
-            samples_by_class[class_name] = samples
+            teacher_by_class[class_name] = teacher
 
     report_classes: dict[str, Any] = {}
     class_policy_payload: dict[str, Any] = {}
-    for class_name in sorted(samples_by_class):
+    for class_name in sorted(teacher_by_class):
+        teacher = teacher_by_class[class_name]
+        teacher_samples = samples_by_teacher[teacher.name]
+        base_policy = policy_template[class_name]
         candidates: list[dict[str, Any]] = []
         for score_threshold in scenario.search.score_thresholds:
             for nms_iou_threshold in scenario.search.nms_iou_thresholds:
                 for min_box_size in scenario.search.min_box_sizes:
+                    candidate_policy = replace(
+                        base_policy,
+                        score_threshold=float(score_threshold),
+                        nms_iou_threshold=float(nms_iou_threshold),
+                        min_box_size=int(min_box_size),
+                    )
                     candidates.append(
                         _evaluate_candidate(
-                            samples=samples_by_class[class_name],
+                            samples=teacher_samples,
                             class_name=class_name,
-                            score_threshold=float(score_threshold),
-                            nms_iou_threshold=float(nms_iou_threshold),
-                            min_box_size=int(min_box_size),
                             match_iou=float(scenario.search.match_iou),
+                            class_policy=policy_template,
+                            target_policy=candidate_policy,
+                            dataset_key=teacher.dataset.source_dataset_key,
                         )
                     )
         best_candidate = _select_best_candidate(candidates=candidates, min_precision=float(scenario.search.min_precision))
-        class_policy_payload[class_name] = {
-            "score_threshold": best_candidate["score_threshold"],
-            "nms_iou_threshold": best_candidate["nms_iou_threshold"],
-            "min_box_size": best_candidate["min_box_size"],
-        }
+        selected_policy = replace(
+            base_policy,
+            score_threshold=float(best_candidate["score_threshold"]),
+            nms_iou_threshold=float(best_candidate["nms_iou_threshold"]),
+            min_box_size=int(best_candidate["min_box_size"]),
+        )
+        policy_template[class_name] = selected_policy
+        class_policy_payload[class_name] = class_policy_to_dict(selected_policy)
         report_classes[class_name] = {
             "selected_policy": class_policy_payload[class_name],
             "metrics": {

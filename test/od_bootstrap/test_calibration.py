@@ -71,6 +71,7 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
                       batch_size: 2
                       predict_conf: 0.001
                       predict_iou: 0.99
+                    policy_template_path: template.yaml
                     search:
                       match_iou: 0.5
                       min_precision: 0.90
@@ -83,10 +84,24 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
                         model_version: mobility_v1
                         dataset:
                           root: teacher_dataset
+                          source_dataset_key: bdd100k_det_100k
                           image_dir: images
                           label_dir: labels
                           split: val
                         classes: [vehicle]
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "template.yaml").write_text(
+                textwrap.dedent(
+                    """
+                    vehicle:
+                      score_threshold: 0.50
+                      nms_iou_threshold: 0.50
+                      min_box_size: 4
+                      center_y_range: [0.0, 0.8]
                     """
                 ).strip()
                 + "\n",
@@ -100,6 +115,7 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             class_policy = yaml.safe_load(Path(summary["class_policy_path"]).read_text(encoding="utf-8"))
             report = json.loads(Path(summary["report_path"]).read_text(encoding="utf-8"))
             self.assertEqual(class_policy["vehicle"]["score_threshold"], 0.9)
+            self.assertEqual(class_policy["vehicle"]["center_y_range"], [0.0, 0.8])
             self.assertTrue(report["classes"]["vehicle"]["meets_precision_floor"])
             self.assertAlmostEqual(report["classes"]["vehicle"]["metrics"]["precision"], 1.0, places=6)
             self.assertTrue((Path(summary["output_root"]) / "teachers" / "mobility" / "predictions.jsonl").is_file())

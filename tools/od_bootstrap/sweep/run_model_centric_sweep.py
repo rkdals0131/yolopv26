@@ -18,9 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.od_bootstrap.common import box_size, nms_rows
+from tools.od_bootstrap.common import nms_rows
 from tools.od_bootstrap.sweep.image_list import ImageListEntry, load_image_list
 from tools.od_bootstrap.sweep.materialize import materialize_exhaustive_od_dataset
+from tools.od_bootstrap.sweep.policy import row_passes_policy
 from tools.od_bootstrap.sweep.scenario import BootstrapSweepScenario, ClassPolicy, TeacherConfig, load_sweep_scenario
 from tools.od_bootstrap.sweep.schema import RunManifest, TeacherJobManifest
 from tools.od_bootstrap.sweep.writer import (
@@ -112,6 +113,11 @@ def _extract_teacher_rows(
         entry = entry_by_path.get(result_path)
         if entry is None:
             continue
+        orig_shape = getattr(result, "orig_shape", None)
+        if not isinstance(orig_shape, (list, tuple)) or len(orig_shape) < 2:
+            raise ValueError("teacher prediction result must expose orig_shape=(height, width)")
+        image_height = int(orig_shape[0])
+        image_width = int(orig_shape[1])
         names = getattr(result, "names", {}) or {}
         boxes = getattr(result, "boxes", None)
         if boxes is None:
@@ -125,27 +131,31 @@ def _extract_teacher_rows(
             if class_name not in teacher.classes:
                 continue
             policy = class_policy[class_name]
-            width_px, height_px = box_size([float(value) for value in box])
-            if float(confidence) < float(policy.score_threshold):
+            row = {
+                "sample_id": entry.sample_id,
+                "sample_uid": entry.sample_uid,
+                "image_path": str(entry.image_path),
+                "scene_path": str(entry.scene_path),
+                "dataset_key": entry.dataset_key,
+                "split": entry.split,
+                "teacher_name": teacher.name,
+                "model_version": teacher.model_version,
+                "class_name": class_name,
+                "confidence": float(confidence),
+                "xyxy": [float(value) for value in box],
+                "box_index": box_index,
+                "image_width": image_width,
+                "image_height": image_height,
+            }
+            if not row_passes_policy(
+                row=row,
+                policy=policy,
+                dataset_key=entry.dataset_key,
+                image_width=image_width,
+                image_height=image_height,
+            ):
                 continue
-            if min(width_px, height_px) < int(policy.min_box_size):
-                continue
-            filtered.append(
-                {
-                    "sample_id": entry.sample_id,
-                    "sample_uid": entry.sample_uid,
-                    "image_path": str(entry.image_path),
-                    "scene_path": str(entry.scene_path),
-                    "dataset_key": entry.dataset_key,
-                    "split": entry.split,
-                    "teacher_name": teacher.name,
-                    "model_version": teacher.model_version,
-                    "class_name": class_name,
-                    "confidence": float(confidence),
-                    "xyxy": [float(value) for value in box],
-                    "box_index": box_index,
-                }
-            )
+            filtered.append(row)
 
         by_class: dict[str, list[dict[str, Any]]] = {}
         for row in filtered:
