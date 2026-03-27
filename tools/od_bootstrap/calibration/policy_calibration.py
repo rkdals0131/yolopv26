@@ -14,11 +14,11 @@ try:
 except ImportError:  # pragma: no cover
     YOLO = None
 
-from tools.od_bootstrap.common import greedy_match_boxes
+from tools.od_bootstrap.common import iou
 from tools.od_bootstrap.sweep.policy import apply_policy_to_predictions, class_policy_to_dict
 from tools.od_bootstrap.sweep.scenario import ClassPolicy
 
-from .scenario import CalibrationScenario, CalibrationTeacherConfig
+from .scenario import CalibrationScenario, CalibrationTeacherConfig, HardNegativeConfig
 
 
 def _now_iso() -> str:
@@ -42,6 +42,81 @@ def _write_yaml(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
+
+
+def _prediction_sort_key(row: dict[str, Any]) -> float:
+    return float(row["confidence"])
+
+
+def _split_predictions_against_gt(
+    *,
+    predictions: list[dict[str, Any]],
+    ground_truth_boxes: list[list[float]],
+    match_iou: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    gt_rows = [[float(value) for value in box] for box in ground_truth_boxes]
+    matched_gt = [False] * len(gt_rows)
+    matched_predictions: list[dict[str, Any]] = []
+    false_positives: list[dict[str, Any]] = []
+    for row in sorted(predictions, key=_prediction_sort_key, reverse=True):
+        candidate_box = [float(value) for value in row["xyxy"]]
+        best_index = -1
+        best_iou = 0.0
+        for index, gt_box in enumerate(gt_rows):
+            if matched_gt[index]:
+                continue
+            overlap = iou(candidate_box, gt_box)
+            if overlap >= match_iou and overlap > best_iou:
+                best_index = index
+                best_iou = overlap
+        if best_index >= 0:
+            matched_gt[best_index] = True
+            matched_predictions.append(row)
+            continue
+        false_positives.append(row)
+    return matched_predictions, false_positives, len(gt_rows) - len(matched_predictions)
+
+
+def _resolve_hard_negative_config(scenario: CalibrationScenario) -> HardNegativeConfig:
+    return scenario.hard_negative or HardNegativeConfig()
+
+
+def _resolve_manifest_image_path(*, manifest_path: Path, raw_path: str) -> Path:
+    image_path = Path(raw_path)
+    if image_path.is_absolute():
+        return image_path.resolve()
+    return (manifest_path.parent / image_path).resolve()
+
+
+def _load_hard_negative_manifest(path: Path | None) -> dict[str, list[dict[str, Any]]]:
+    if path is None or not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    classes = payload.get("classes") or {}
+    if not isinstance(classes, dict):
+        raise TypeError("hard negative manifest classes must be a mapping")
+    resolved: dict[str, list[dict[str, Any]]] = {}
+    for class_name, raw_samples in classes.items():
+        if not isinstance(raw_samples, list):
+            raise TypeError(f"hard negative manifest class '{class_name}' must contain a list")
+        entries: list[dict[str, Any]] = []
+        for index, raw_sample in enumerate(raw_samples):
+            if not isinstance(raw_sample, dict):
+                raise TypeError(f"hard negative manifest class '{class_name}' sample[{index}] must be a mapping")
+            raw_image_path = str(raw_sample.get("image_path") or "").strip()
+            if not raw_image_path:
+                raise ValueError(f"hard negative manifest class '{class_name}' sample[{index}] missing image_path")
+            image_path = _resolve_manifest_image_path(manifest_path=path, raw_path=raw_image_path)
+            entries.append(
+                {
+                    "sample_id": str(raw_sample.get("sample_id") or image_path.stem),
+                    "image_path": str(image_path),
+                    "dataset_key": str(raw_sample.get("dataset_key") or "").strip(),
+                    "teacher_name": str(raw_sample.get("teacher_name") or "").strip(),
+                }
+            )
+        resolved[str(class_name)] = entries
+    return resolved
 
 
 def _collect_sample_images(teacher: CalibrationTeacherConfig) -> list[Path]:
@@ -98,7 +173,7 @@ def _load_ground_truth_by_class(
     return ground_truth
 
 
-def _extract_teacher_rows(
+def _extract_prediction_rows(
     *,
     teacher: CalibrationTeacherConfig,
     results: list[Any],
@@ -108,15 +183,15 @@ def _extract_teacher_rows(
     for result in results:
         image_path = Path(str(getattr(result, "path", ""))).resolve()
         sample_id = image_path.stem
+        sample_key = str(image_path)
         width, height = _coerce_shape(result)
         sample_record = samples.setdefault(
-            sample_id,
+            sample_key,
             {
                 "sample_id": sample_id,
                 "image_path": str(image_path),
                 "width": width,
                 "height": height,
-                "ground_truth": _load_ground_truth_by_class(teacher, sample_id=sample_id, width=width, height=height),
             },
         )
         names = getattr(result, "names", {}) or {}
@@ -143,24 +218,26 @@ def _extract_teacher_rows(
                 "box_index": box_index,
             }
             rows.append(row)
-        sample_record["raw_prediction_count"] = sum(1 for row in rows if row["sample_id"] == sample_id)
+        sample_record["predictions"] = [row for row in rows if row["image_path"] == str(image_path)]
+        sample_record["raw_prediction_count"] = len(sample_record["predictions"])
     return rows, samples
 
 
-def _run_teacher_predictions(
+def _run_teacher_predictions_for_images(
     *,
     teacher: CalibrationTeacherConfig,
     scenario: CalibrationScenario,
+    image_paths: list[Path],
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     if YOLO is None:  # pragma: no cover
         raise RuntimeError("ultralytics is not installed")
     if not teacher.checkpoint_path.is_file():
         raise FileNotFoundError(f"teacher checkpoint not found: {teacher.checkpoint_path}")
-    sample_images = _collect_sample_images(teacher)
     model = YOLO(str(teacher.checkpoint_path))
     results: list[Any] = []
-    for batch_start in range(0, len(sample_images), max(1, int(scenario.run.batch_size))):
-        batch = sample_images[batch_start : batch_start + max(1, int(scenario.run.batch_size))]
+    ordered_images = sorted({path.resolve() for path in image_paths})
+    for batch_start in range(0, len(ordered_images), max(1, int(scenario.run.batch_size))):
+        batch = ordered_images[batch_start : batch_start + max(1, int(scenario.run.batch_size))]
         results.extend(
             list(
                 model.predict(
@@ -175,7 +252,79 @@ def _run_teacher_predictions(
                 )
             )
         )
-    return _extract_teacher_rows(teacher=teacher, results=results)
+    return _extract_prediction_rows(teacher=teacher, results=results)
+
+
+def _run_teacher_predictions(
+    *,
+    teacher: CalibrationTeacherConfig,
+    scenario: CalibrationScenario,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    rows, samples = _run_teacher_predictions_for_images(
+        teacher=teacher,
+        scenario=scenario,
+        image_paths=_collect_sample_images(teacher),
+    )
+    for sample in samples.values():
+        sample["ground_truth"] = _load_ground_truth_by_class(
+            teacher,
+            sample_id=str(sample["sample_id"]),
+            width=int(sample["width"]),
+            height=int(sample["height"]),
+        )
+    return rows, samples
+
+
+def _collect_hard_negative_samples_by_class(
+    *,
+    scenario: CalibrationScenario,
+    teacher_by_class: dict[str, CalibrationTeacherConfig],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, dict[str, Any]]]]:
+    config = _resolve_hard_negative_config(scenario)
+    manifest = _load_hard_negative_manifest(config.manifest_path)
+    if not manifest:
+        return {}, {}
+
+    manifest_by_class_and_image: dict[str, dict[str, dict[str, Any]]] = {}
+    for class_name, samples in manifest.items():
+        if class_name not in teacher_by_class:
+            continue
+        manifest_by_class_and_image[class_name] = {
+            str(Path(str(item["image_path"])).resolve()): item for item in samples
+        }
+
+    samples_by_class: dict[str, dict[str, dict[str, Any]]] = {}
+    for teacher in {teacher_by_class[class_name] for class_name in manifest_by_class_and_image}:
+        teacher_classes = [class_name for class_name, owner in teacher_by_class.items() if owner == teacher and class_name in manifest_by_class_and_image]
+        teacher_image_paths = sorted(
+            {
+                Path(image_path)
+                for class_name in teacher_classes
+                for image_path in manifest_by_class_and_image[class_name]
+            }
+        )
+        rows, predicted_samples = _run_teacher_predictions_for_images(
+            teacher=teacher,
+            scenario=scenario,
+            image_paths=teacher_image_paths,
+        )
+        predictions_by_image = {
+            str(sample["image_path"]): [row for row in rows if row["image_path"] == str(sample["image_path"])]
+            for sample in predicted_samples.values()
+        }
+        for class_name in teacher_classes:
+            class_samples: dict[str, dict[str, Any]] = {}
+            for image_path, manifest_entry in manifest_by_class_and_image[class_name].items():
+                sample = predicted_samples.get(image_path)
+                if sample is None:
+                    continue
+                class_samples[image_path] = {
+                    **sample,
+                    "dataset_key": str(manifest_entry.get("dataset_key") or teacher.dataset.source_dataset_key),
+                    "predictions": list(predictions_by_image.get(image_path, [])),
+                }
+            samples_by_class[class_name] = class_samples
+    return manifest, samples_by_class
 
 
 def _f_beta(*, precision: float, recall: float, beta: float) -> float:
@@ -194,15 +343,16 @@ def _evaluate_candidate(
     class_policy: dict[str, ClassPolicy],
     target_policy: ClassPolicy,
     dataset_key: str,
+    hard_negative_samples: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     tp = 0
     fp = 0
     fn = 0
     raw_prediction_count = 0
     gt_count = 0
+    sample_policy = dict(class_policy)
+    sample_policy[class_name] = target_policy
     for sample in samples.values():
-        sample_policy = dict(class_policy)
-        sample_policy[class_name] = target_policy
         gt_boxes = list(sample["ground_truth"].get(class_name, []))
         gt_count += len(gt_boxes)
         all_predictions = list(sample.get("predictions", []))
@@ -216,10 +366,33 @@ def _evaluate_candidate(
             raw_boxes_by_class={},
         )
         class_rows = [row for row in kept_rows if row["class_name"] == class_name]
-        sample_tp, sample_fp, sample_fn = greedy_match_boxes(class_rows, gt_boxes, match_iou=match_iou)
-        tp += sample_tp
-        fp += sample_fp
+        matched_rows, false_positives, sample_fn = _split_predictions_against_gt(
+            predictions=class_rows,
+            ground_truth_boxes=gt_boxes,
+            match_iou=match_iou,
+        )
+        tp += len(matched_rows)
+        fp += len(false_positives)
         fn += sample_fn
+
+    hard_negative_sample_count = 0
+    hard_negative_failures = 0
+    hard_negative_prediction_count = 0
+    for sample in (hard_negative_samples or {}).values():
+        hard_negative_sample_count += 1
+        kept_rows = apply_policy_to_predictions(
+            rows=list(sample.get("predictions", [])),
+            class_policy=sample_policy,
+            dataset_key=str(sample.get("dataset_key") or dataset_key),
+            image_width=int(sample["width"]),
+            image_height=int(sample["height"]),
+            raw_boxes_by_class={},
+        )
+        class_rows = [row for row in kept_rows if row["class_name"] == class_name]
+        if not class_rows:
+            continue
+        hard_negative_failures += 1
+        hard_negative_prediction_count += len(class_rows)
     precision = tp / float(tp + fp) if tp + fp else 0.0
     recall = tp / float(tp + fn) if tp + fn else 0.0
     f0_5 = _f_beta(precision=precision, recall=recall, beta=0.5)
@@ -235,6 +408,9 @@ def _evaluate_candidate(
         "precision": precision,
         "recall": recall,
         "f0_5": f0_5,
+        "hard_negative_sample_count": int(hard_negative_sample_count),
+        "hard_negative_failures": int(hard_negative_failures),
+        "hard_negative_prediction_count": int(hard_negative_prediction_count),
     }
 
 
@@ -245,28 +421,32 @@ def _select_best_candidate(
 ) -> dict[str, Any]:
     meets_floor = [item for item in candidates if float(item["precision"]) >= float(min_precision)]
     if meets_floor:
-        best = max(
+        best = min(
             meets_floor,
             key=lambda item: (
-                float(item["recall"]),
-                float(item["f0_5"]),
-                float(item["precision"]),
-                -float(item["score_threshold"]),
-                -float(item["nms_iou_threshold"]),
-                -int(item["min_box_size"]),
+                int(item["hard_negative_failures"]),
+                int(item["hard_negative_prediction_count"]),
+                -float(item["recall"]),
+                -float(item["f0_5"]),
+                -float(item["precision"]),
+                float(item["score_threshold"]),
+                float(item["nms_iou_threshold"]),
+                int(item["min_box_size"]),
             ),
         )
         best["meets_precision_floor"] = True
         return best
-    best = max(
+    best = min(
         candidates,
         key=lambda item: (
-            float(item["precision"]),
-            float(item["recall"]),
-            float(item["f0_5"]),
-            -float(item["score_threshold"]),
-            -float(item["nms_iou_threshold"]),
-            -int(item["min_box_size"]),
+            -float(item["precision"]),
+            int(item["hard_negative_failures"]),
+            int(item["hard_negative_prediction_count"]),
+            -float(item["recall"]),
+            -float(item["f0_5"]),
+            float(item["score_threshold"]),
+            float(item["nms_iou_threshold"]),
+            int(item["min_box_size"]),
         ),
     )
     best["meets_precision_floor"] = False
@@ -286,6 +466,78 @@ def _build_default_policy_template(scenario: CalibrationScenario) -> dict[str, C
     }
 
 
+def _build_hard_negative_manifest_payload(
+    *,
+    scenario: CalibrationScenario,
+    class_policy: dict[str, ClassPolicy],
+    samples_by_teacher: dict[str, dict[str, dict[str, Any]]],
+    teacher_by_class: dict[str, CalibrationTeacherConfig],
+    source_manifest_path: Path | None,
+    created_at: str,
+    scenario_path: Path,
+) -> dict[str, Any]:
+    config = _resolve_hard_negative_config(scenario)
+    focus_classes = list(config.focus_classes or sorted(teacher_by_class))
+    classes_payload: dict[str, list[dict[str, Any]]] = {}
+    for class_name in focus_classes:
+        teacher = teacher_by_class[class_name]
+        sample_rows: list[dict[str, Any]] = []
+        for sample in samples_by_teacher[teacher.name].values():
+            kept_rows = apply_policy_to_predictions(
+                rows=list(sample.get("predictions", [])),
+                class_policy=class_policy,
+                dataset_key=teacher.dataset.source_dataset_key,
+                image_width=int(sample["width"]),
+                image_height=int(sample["height"]),
+                raw_boxes_by_class={},
+            )
+            class_rows = [row for row in kept_rows if row["class_name"] == class_name]
+            if not class_rows:
+                continue
+            _, false_positives, _ = _split_predictions_against_gt(
+                predictions=class_rows,
+                ground_truth_boxes=list(sample["ground_truth"].get(class_name, [])),
+                match_iou=float(scenario.search.match_iou),
+            )
+            if not false_positives:
+                continue
+            sample_rows.append(
+                {
+                    "sample_id": str(sample["sample_id"]),
+                    "image_path": str(sample["image_path"]),
+                    "dataset_key": teacher.dataset.source_dataset_key,
+                    "teacher_name": teacher.name,
+                    "false_positive_count": len(false_positives),
+                    "max_confidence": max(float(row["confidence"]) for row in false_positives),
+                    "predictions": [
+                        {
+                            "confidence": float(row["confidence"]),
+                            "xyxy": [float(value) for value in row["xyxy"]],
+                        }
+                        for row in sorted(false_positives, key=_prediction_sort_key, reverse=True)
+                    ],
+                }
+            )
+        classes_payload[class_name] = sorted(
+            sample_rows,
+            key=lambda item: (
+                -int(item["false_positive_count"]),
+                -float(item["max_confidence"]),
+                str(item["sample_id"]),
+            ),
+        )[: max(1, int(config.top_k_per_class))]
+
+    return {
+        "version": "od-bootstrap-hard-negative-v1",
+        "generated_at": created_at,
+        "scenario_path": str(scenario_path),
+        "source_manifest_path": str(source_manifest_path) if source_manifest_path is not None else None,
+        "top_k_per_class": int(config.top_k_per_class),
+        "focus_classes": focus_classes,
+        "classes": classes_payload,
+    }
+
+
 def calibrate_class_policy_scenario(
     scenario: CalibrationScenario,
     *,
@@ -302,8 +554,6 @@ def calibrate_class_policy_scenario(
 
     for teacher in scenario.teachers:
         rows, samples = _run_teacher_predictions(teacher=teacher, scenario=scenario)
-        for sample in samples.values():
-            sample["predictions"] = [row for row in rows if row["sample_id"] == sample["sample_id"]]
         teacher_dir = output_root / "teachers" / teacher.name
         predictions_path = _write_jsonl(teacher_dir / "predictions.jsonl", rows)
         teacher_summary = {
@@ -321,6 +571,12 @@ def calibrate_class_policy_scenario(
         samples_by_teacher[teacher.name] = samples
         for class_name in teacher.classes:
             teacher_by_class[class_name] = teacher
+
+    hard_negative_config = _resolve_hard_negative_config(scenario)
+    input_hard_negative_manifest, hard_negative_samples_by_class = _collect_hard_negative_samples_by_class(
+        scenario=scenario,
+        teacher_by_class=teacher_by_class,
+    )
 
     report_classes: dict[str, Any] = {}
     class_policy_payload: dict[str, Any] = {}
@@ -346,6 +602,7 @@ def calibrate_class_policy_scenario(
                             class_policy=policy_template,
                             target_policy=candidate_policy,
                             dataset_key=teacher.dataset.source_dataset_key,
+                            hard_negative_samples=hard_negative_samples_by_class.get(class_name, {}),
                         )
                     )
         best_candidate = _select_best_candidate(candidates=candidates, min_precision=float(scenario.search.min_precision))
@@ -368,17 +625,42 @@ def calibrate_class_policy_scenario(
                 "fn": best_candidate["fn"],
                 "ground_truth_count": best_candidate["ground_truth_count"],
                 "raw_prediction_count": best_candidate["raw_prediction_count"],
+                "hard_negative_sample_count": best_candidate["hard_negative_sample_count"],
+                "hard_negative_failures": best_candidate["hard_negative_failures"],
+                "hard_negative_prediction_count": best_candidate["hard_negative_prediction_count"],
             },
             "meets_precision_floor": bool(best_candidate["meets_precision_floor"]),
             "candidate_count": len(candidates),
         }
 
     class_policy_path = _write_yaml(output_root / "class_policy.yaml", class_policy_payload)
+    hard_negative_manifest_path = _write_json(
+        output_root / "hard_negative_manifest.json",
+        _build_hard_negative_manifest_payload(
+            scenario=scenario,
+            class_policy=policy_template,
+            samples_by_teacher=samples_by_teacher,
+            teacher_by_class=teacher_by_class,
+            source_manifest_path=hard_negative_config.manifest_path,
+            created_at=created_at,
+            scenario_path=scenario_path,
+        ),
+    )
     report = {
         "scenario_path": str(scenario_path),
         "generated_at": created_at,
         "output_root": str(output_root),
         "class_policy_path": str(class_policy_path),
+        "hard_negative": {
+            "input_manifest_path": str(hard_negative_config.manifest_path) if hard_negative_config.manifest_path is not None else None,
+            "input_sample_count_by_class": {
+                class_name: len(samples)
+                for class_name, samples in sorted(input_hard_negative_manifest.items())
+            },
+            "output_manifest_path": str(hard_negative_manifest_path),
+            "top_k_per_class": int(hard_negative_config.top_k_per_class),
+            "focus_classes": list(hard_negative_config.focus_classes or sorted(teacher_by_class)),
+        },
         "run": asdict(scenario.run),
         "search": asdict(scenario.search),
         "teachers": teacher_summaries,
@@ -388,6 +670,7 @@ def calibrate_class_policy_scenario(
     return {
         "output_root": str(output_root),
         "class_policy_path": str(class_policy_path),
+        "hard_negative_manifest_path": str(hard_negative_manifest_path),
         "report_path": str(report_path),
         "classes": report_classes,
     }

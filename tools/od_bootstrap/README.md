@@ -20,6 +20,7 @@
   - teacher checkpoint에 대해 `predict`/`val` 기반 checkpoint evaluation 실행
 - `calibration/`
   - teacher val split prediction을 기준으로 `class_policy.yaml`을 자동 보정
+  - class별 false positive 장면을 `hard_negative_manifest.json`으로 남겨 다음 calibration의 회귀 세트로 재사용
 - `sweep/`
   - 세 teacher를 `model-centric`으로 전체 OD image list에 순차 적용
   - raw source label 우선 정책으로 teacher prediction을 합쳐 `7-class exhaustive OD dataset` 생성
@@ -47,6 +48,7 @@
 - teacher eval: `runs/od_bootstrap/eval/<teacher>/`
 - calibrated class policy: `runs/od_bootstrap/calibration/default/class_policy.yaml`
 - calibration report: `runs/od_bootstrap/calibration/default/calibration_report.json`
+- hard-negative regression set: `runs/od_bootstrap/calibration/default/hard_negative_manifest.json`
 - exhaustive OD dataset: `seg_dataset/pv26_od_bootstrap/exhaustive_od/<run_id>/`
 - final merged dataset: `seg_dataset/pv26_exhaustive_od_lane_dataset/`
 - PV26 final train scenario: `tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
@@ -66,5 +68,6 @@ provenance 필드:
 
 참고:
 - sweep 기본 config는 calibration 산출물인 `class_policy.yaml`을 읽는다
+- calibration 기본 config는 이전 `hard_negative_manifest.json`이 있으면 같이 읽고, 없으면 이번 run 결과로 새로 만든다
 - manifest-only 검증이 필요하면 `tools/od_bootstrap/config/sweep/model_centric.dryrun.yaml`을 사용한다
 - materialized exhaustive OD 산출물은 `sample_uid = <dataset_key>__<split>__<sample_id>` 기준으로 파일명을 만든다

@@ -2,6 +2,7 @@ from .policy_calibration import calibrate_class_policy_scenario
 from .run_calibrate_class_policy import load_and_run_default_class_policy_calibration
 from .scenario import (
     CalibrationDatasetConfig,
+    HardNegativeConfig,
     CalibrationRunConfig,
     CalibrationScenario,
     CalibrationSearchConfig,
@@ -11,6 +12,7 @@ from .scenario import (
 
 __all__ = [
     "CalibrationDatasetConfig",
+    "HardNegativeConfig",
     "CalibrationRunConfig",
     "CalibrationScenario",
     "CalibrationSearchConfig",

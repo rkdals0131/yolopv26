@@ -8,6 +8,11 @@ run:
 
 policy_template_path: ../sweep/class_policy.template.yaml
 
+hard_negative:
+  manifest_path: ../../../../runs/od_bootstrap/calibration/default/hard_negative_manifest.json
+  top_k_per_class: 25
+  focus_classes: [traffic_cone, obstacle]
+
 search:
   match_iou: 0.5
   min_precision: 0.90

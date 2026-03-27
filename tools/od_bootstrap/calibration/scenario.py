@@ -48,12 +48,20 @@ class CalibrationTeacherConfig:
 
 
 @dataclass(frozen=True)
+class HardNegativeConfig:
+    manifest_path: Path | None = None
+    top_k_per_class: int = 25
+    focus_classes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CalibrationScenario:
     run: CalibrationRunConfig
     search: CalibrationSearchConfig
     teachers: tuple[CalibrationTeacherConfig, ...]
     policy_template_path: Path | None = None
     policy_template: dict[str, ClassPolicy] | None = None
+    hard_negative: HardNegativeConfig | None = None
 
 
 def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
@@ -164,6 +172,27 @@ def _load_teacher_config(data: Any, *, base_dir: Path, index: int) -> Calibratio
     )
 
 
+def _load_hard_negative_config(data: Any, *, base_dir: Path) -> HardNegativeConfig | None:
+    if data is None:
+        return None
+    payload = _coerce_mapping(data, field_name="hard_negative")
+    manifest_value = payload.get("manifest_path")
+    manifest_path = (
+        resolve_path(_coerce_str(manifest_value, field_name="hard_negative.manifest_path"), base_dir=base_dir)
+        if manifest_value is not None
+        else None
+    )
+    focus_classes = tuple(
+        _coerce_str(item, field_name=f"hard_negative.focus_classes[{index}]")
+        for index, item in enumerate(_coerce_sequence(payload.get("focus_classes"), field_name="hard_negative.focus_classes"))
+    )
+    return HardNegativeConfig(
+        manifest_path=manifest_path,
+        top_k_per_class=_coerce_int(payload.get("top_k_per_class", 25), field_name="hard_negative.top_k_per_class"),
+        focus_classes=focus_classes,
+    )
+
+
 def load_calibration_scenario(path: str | Path) -> CalibrationScenario:
     scenario_path = Path(path).resolve()
     payload = yaml.safe_load(scenario_path.read_text(encoding="utf-8")) or {}
@@ -184,7 +213,17 @@ def load_calibration_scenario(path: str | Path) -> CalibrationScenario:
         ),
         policy_template_path=policy_template_path,
         policy_template=load_class_policy(policy_template_path) if policy_template_path is not None else None,
+        hard_negative=_load_hard_negative_config(payload.get("hard_negative"), base_dir=base_dir),
     )
     if not scenario.teachers:
         raise ValueError("teachers must not be empty")
+    if scenario.hard_negative is not None:
+        known_classes = {
+            class_name
+            for teacher in scenario.teachers
+            for class_name in teacher.classes
+        }
+        invalid_focus = sorted(set(scenario.hard_negative.focus_classes).difference(known_classes))
+        if invalid_focus:
+            raise ValueError(f"hard_negative.focus_classes contain unknown classes: {', '.join(invalid_focus)}")
     return scenario
