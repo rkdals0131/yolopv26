@@ -236,6 +236,58 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertIn("lane", summary["metrics"])
         self.assertIn("map50", summary["metrics"]["detector"])
 
+    def test_evaluate_batch_on_encoded_eval_batch_with_raw_bundle_includes_metrics(self) -> None:
+        from model.encoding import encode_pv26_batch
+        from model.eval.pv26_evaluator import PV26Evaluator
+
+        raw_batch = make_raw_sample_batch()
+        encoded_batch = encode_pv26_batch(raw_batch)
+        encoded_batch["_raw_batch"] = {
+            "det_targets": list(raw_batch["det_targets"]),
+            "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+            "lane_targets": list(raw_batch["lane_targets"]),
+            "source_mask": list(raw_batch["source_mask"]),
+            "valid_mask": list(raw_batch["valid_mask"]),
+            "meta": list(raw_batch["meta"]),
+        }
+
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_0_smoke",
+            criterion=_ExplodingCriterion(),
+        )
+        evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
+
+        summary = evaluator.evaluate_batch(encoded_batch, compute_loss=False)
+
+        self.assertIn("metrics", summary)
+        self.assertIn("detector", summary["metrics"])
+        self.assertIn("lane", summary["metrics"])
+        self.assertGreaterEqual(summary["metrics"]["lane"]["f1"], 0.0)
+
+    def test_encoded_eval_collate_preserves_raw_supervision_for_metrics(self) -> None:
+        from model.loading import collate_pv26_encoded_eval_batch
+
+        raw_batch = make_raw_sample_batch()
+        sample = {
+            "image": raw_batch["image"][0],
+            "det_targets": raw_batch["det_targets"][0],
+            "tl_attr_targets": raw_batch["tl_attr_targets"][0],
+            "lane_targets": raw_batch["lane_targets"][0],
+            "source_mask": raw_batch["source_mask"][0],
+            "valid_mask": raw_batch["valid_mask"][0],
+            "meta": raw_batch["meta"][0],
+        }
+
+        encoded_batch = collate_pv26_encoded_eval_batch([sample])
+
+        self.assertIn("_raw_batch", encoded_batch)
+        self.assertIn("det_targets", encoded_batch["_raw_batch"])
+        self.assertIn("lane_targets", encoded_batch["_raw_batch"])
+        self.assertIn("meta", encoded_batch["_raw_batch"])
+        self.assertNotIn("image", encoded_batch["_raw_batch"])
+
 
 if __name__ == "__main__":
     unittest.main()

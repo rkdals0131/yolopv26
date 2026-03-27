@@ -457,6 +457,41 @@ class PV26TrainerTests(unittest.TestCase):
             if manifest_payload["artifacts"]["tensorboard"]["enabled"]:
                 self.assertTrue(any((run_dir / "tensorboard").glob("events.out.tfevents.*")))
 
+    def test_validate_epoch_aggregates_metrics_from_encoded_eval_batches(self) -> None:
+        from model.encoding import encode_pv26_batch
+        from model.training import PV26Trainer
+        from test_pv26_eval_metrics import make_prediction_bundle, make_raw_sample_batch
+
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            nn.Identity(),
+            criterion=_FiniteCriterion(),
+            stage="stage_0_smoke",
+        )
+        raw_batch = make_raw_sample_batch()
+        encoded_batch = encode_pv26_batch(raw_batch)
+        encoded_batch["_raw_batch"] = {
+            "det_targets": list(raw_batch["det_targets"]),
+            "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+            "lane_targets": list(raw_batch["lane_targets"]),
+            "source_mask": list(raw_batch["source_mask"]),
+            "valid_mask": list(raw_batch["valid_mask"]),
+            "meta": list(raw_batch["meta"]),
+        }
+        evaluator = mock.Mock()
+        evaluator.evaluate_batch.return_value = {
+            "losses": {"total": 1.0, "det": 0.2, "tl_attr": 0.1, "lane": 0.3, "stop_line": 0.2, "crosswalk": 0.2},
+            "counts": {"det_gt": 2, "tl_attr_gt": 1, "lane_rows": 1, "stop_line_rows": 1, "crosswalk_rows": 1},
+            "metrics": {},
+            "predictions": make_prediction_bundle(),
+        }
+
+        summary = trainer.validate_epoch([encoded_batch], epoch=1, evaluator=evaluator)
+
+        self.assertEqual(summary["metrics"]["lane"]["tp"], 1)
+        self.assertIn("detector", summary["metrics"])
+        evaluator.evaluate_batch.assert_called_once_with(encoded_batch, include_predictions=True)
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_supports_grad_accumulation(self) -> None:
         from model.heads import PV26Heads
@@ -686,7 +721,10 @@ class PV26TrainerTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(ValueError, "zero successful batches"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "zero successful batches.*det_assignment_unavailable.*det_feature_metadata_invalid",
+        ):
             trainer.train_epoch([_make_encoded_batch(batch_size=1, q_det=2)], epoch=1)
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")

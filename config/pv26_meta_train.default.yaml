@@ -4,13 +4,14 @@ dataset:
   bdd_root: ../seg_dataset/pv26_bdd100k_standardized
 
 run:
-  run_root: ../runs/pv26_meta_train
+  # run_root: ../runs/pv26_meta_train
+  run_dir: ../runs/pv26_meta_train/baseline_pv26_meta_train_default_20260327_125704  # resume from existing run
   run_name_prefix: baseline
   tensorboard_mode: curated
 
 train_defaults:
   device: cuda:0
-  batch_size: 80
+  batch_size: 32
   train_batches: -1
   val_batches: -1
   trunk_lr: 0.0001
