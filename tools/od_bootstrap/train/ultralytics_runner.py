@@ -598,14 +598,24 @@ def _make_teacher_trainer(
         step_index = int(trainer.od_epoch_step)
         total_steps = int(len(trainer.train_loader))
         log_every_n_steps = max(1, int(runtime_params["log_every_n_steps"]))
-        should_log = step_index % log_every_n_steps == 0 or step_index == total_steps
-        if not should_log:
-            return
-
         elapsed_sec = max(0.0, ended_at - trainer.od_epoch_started_at)
         profile_summary = _timing_profile(list(trainer.od_epoch_timing_window))
         remaining_steps = max(0, total_steps - step_index)
         eta_sec = float(profile_summary["iteration_sec"]["mean"]) * float(remaining_steps)
+        if trainer.od_pbar is not None and hasattr(trainer.od_pbar, "set_postfix_str"):
+            trainer.od_pbar.set_postfix_str(
+                _build_live_postfix(
+                    elapsed_sec=elapsed_sec,
+                    eta_sec=eta_sec,
+                    profile_summary=profile_summary,
+                ),
+                refresh=True,
+            )
+
+        should_log = step_index % log_every_n_steps == 0 or step_index == total_steps
+        if not should_log:
+            return
+
         losses = trainer.label_loss_items(trainer.tloss, prefix="train")
         payload = {
             "epoch": int(trainer.epoch) + 1,
@@ -641,16 +651,7 @@ def _make_teacher_trainer(
             },
             step=trainer.od_global_step,
         )
-        if trainer.od_pbar is not None and hasattr(trainer.od_pbar, "set_postfix_str"):
-            trainer.od_pbar.set_postfix_str(
-                _build_live_postfix(
-                    elapsed_sec=elapsed_sec,
-                    eta_sec=eta_sec,
-                    profile_summary=profile_summary,
-                ),
-                refresh=True,
-            )
-        elif trainer.od_pbar is None:
+        if trainer.od_pbar is None:
             trainer.od_log(
                 f"[od_bootstrap.train] profile epoch={payload['epoch']}/{payload['epoch_total']} "
                 f"step={step_index}/{total_steps} "
