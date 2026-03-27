@@ -100,6 +100,64 @@ def _timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
     }
 
 
+def _flatten_scalar_tree(prefix: str, payload: Any) -> list[tuple[str, float]]:
+    scalars: list[tuple[str, float]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            next_prefix = f"{prefix}/{key}" if prefix else str(key)
+            scalars.extend(_flatten_scalar_tree(next_prefix, value))
+        return scalars
+    if isinstance(payload, (list, tuple)):
+        for index, value in enumerate(payload):
+            next_prefix = f"{prefix}/{index}" if prefix else str(index)
+            scalars.extend(_flatten_scalar_tree(next_prefix, value))
+        return scalars
+    if isinstance(payload, bool):
+        return [(prefix, 1.0 if payload else 0.0)]
+    if isinstance(payload, (int, float)):
+        numeric = float(payload)
+        if math.isfinite(numeric):
+            return [(prefix, numeric)]
+    return scalars
+
+
+def _maybe_build_summary_writer(log_dir: Path):
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception as exc:  # pragma: no cover - optional dependency.
+        return None, {
+            "enabled": False,
+            "status": "unavailable",
+            "error": str(exc),
+            "log_dir": str(log_dir),
+        }
+    try:
+        writer = SummaryWriter(log_dir=str(log_dir))
+    except Exception as exc:  # pragma: no cover
+        return None, {
+            "enabled": False,
+            "status": "init_failed",
+            "error": str(exc),
+            "log_dir": str(log_dir),
+        }
+    return writer, {
+        "enabled": True,
+        "status": "active",
+        "error": None,
+        "log_dir": str(log_dir),
+    }
+
+
+def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
+    if writer is None:
+        return 0
+    count = 0
+    for name, value in _flatten_scalar_tree(prefix, payload):
+        writer.add_scalar(name, value, global_step=int(step))
+        count += 1
+    return count
+
+
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -196,6 +254,14 @@ def _make_teacher_trainer(
             self.od_log = log_fn
             self.od_profile_log_path: Path | None = None
             self.od_profile_summary_path: Path | None = None
+            self.od_tensorboard_dir: Path | None = None
+            self.od_tensorboard_writer = None
+            self.od_tensorboard_status: dict[str, Any] = {
+                "enabled": False,
+                "status": "not_initialized",
+                "error": None,
+                "log_dir": None,
+            }
             self.od_profile_history: list[dict[str, Any]] = []
             self.od_epoch_timing_window: deque[dict[str, float]] = deque(
                 maxlen=max(1, int(runtime_params["profile_window"]))
@@ -205,6 +271,7 @@ def _make_teacher_trainer(
             self.od_batch_started_at: float | None = None
             self.od_pending_wait_sec = 0.0
             self.od_epoch_step = 0
+            self.od_global_step = 0
 
         def get_dataloader(self, dataset_path: str, batch_size: int = 16, rank: int = 0, mode: str = "train"):
             assert mode in {"train", "val"}, f"Mode must be 'train' or 'val', not {mode}."
@@ -235,8 +302,15 @@ def _make_teacher_trainer(
     def on_train_start(trainer: Any) -> None:
         trainer.od_profile_log_path = Path(trainer.save_dir) / "profile_log.jsonl"
         trainer.od_profile_summary_path = Path(trainer.save_dir) / "profile_summary.json"
+        trainer.od_tensorboard_dir = Path(trainer.save_dir) / "tensorboard"
+        trainer.od_tensorboard_dir.mkdir(parents=True, exist_ok=True)
+        trainer.od_tensorboard_writer, trainer.od_tensorboard_status = _maybe_build_summary_writer(trainer.od_tensorboard_dir)
         train_loader_profile = _loader_profile_payload(trainer.train_loader)
         val_loader_profile = _loader_profile_payload(trainer.test_loader)
+        trainer.od_log(
+            f"[od_bootstrap.train] tensorboard status={trainer.od_tensorboard_status['status']} "
+            f"log_dir={trainer.od_tensorboard_status['log_dir']}"
+        )
         trainer.od_log(
             f"[od_bootstrap.train] loader train batch={train_loader_profile['batch_size']} "
             f"workers={train_loader_profile['num_workers']} pin_memory={train_loader_profile['pin_memory']} "
@@ -249,6 +323,26 @@ def _make_teacher_trainer(
             f"persistent_workers={val_loader_profile['persistent_workers']} "
             f"prefetch_factor={val_loader_profile['prefetch_factor']} batches={val_loader_profile['num_batches']}"
         )
+        _write_tensorboard_scalars(
+            trainer.od_tensorboard_writer,
+            "loader/train",
+            train_loader_profile,
+            step=0,
+        )
+        _write_tensorboard_scalars(
+            trainer.od_tensorboard_writer,
+            "loader/val",
+            val_loader_profile,
+            step=0,
+        )
+        _write_tensorboard_scalars(
+            trainer.od_tensorboard_writer,
+            "runtime",
+            {key: value for key, value in runtime_params.items() if key != "profile_device_sync"} | {"profile_device_sync": runtime_params["profile_device_sync"]},
+            step=0,
+        )
+        if trainer.od_tensorboard_writer is not None:
+            trainer.od_tensorboard_writer.flush()
 
     def on_train_epoch_start(trainer: Any) -> None:
         trainer.od_epoch_started_at = time.perf_counter()
@@ -274,6 +368,7 @@ def _make_teacher_trainer(
         compute_sec = max(0.0, iteration_sec)
         trainer.od_last_batch_end_at = ended_at
         trainer.od_epoch_step += 1
+        trainer.od_global_step += 1
         timing_row = {
             "iteration_sec": iteration_sec,
             "wait_sec": wait_sec,
@@ -305,6 +400,28 @@ def _make_teacher_trainer(
         }
         if trainer.od_profile_log_path is not None:
             _append_jsonl(trainer.od_profile_log_path, payload)
+        _write_tensorboard_scalars(
+            trainer.od_tensorboard_writer,
+            "train_step",
+            {
+                "progress": {
+                    "epoch": payload["epoch"],
+                    "step": step_index,
+                    "total_steps": total_steps,
+                    "elapsed_sec": elapsed_sec,
+                    "eta_sec": eta_sec,
+                },
+                "loss": {key.split("/", 1)[-1]: value for key, value in losses.items()},
+                "profile_sec": {
+                    "iteration_mean": profile_summary["iteration_sec"]["mean"],
+                    "iteration_p50": profile_summary["iteration_sec"]["p50"],
+                    "iteration_p99": profile_summary["iteration_sec"]["p99"],
+                    "wait_mean": profile_summary["wait_sec"]["mean"],
+                    "compute_mean": profile_summary["compute_sec"]["mean"],
+                },
+            },
+            step=trainer.od_global_step,
+        )
         loss_items = " ".join(f"{key.split('/', 1)[-1]}={float(value):.4f}" for key, value in losses.items())
         trainer.od_log(
             "\n".join(
@@ -341,9 +458,32 @@ def _make_teacher_trainer(
         }
         trainer.od_profile_history.append(epoch_profile)
 
+    def on_fit_epoch_end(trainer: Any) -> None:
+        epoch_index = int(trainer.epoch) + 1
+        epoch_payload = {
+            "train": {
+                "loss": {
+                    key.split("/", 1)[-1]: value
+                    for key, value in trainer.label_loss_items(trainer.tloss, prefix="train").items()
+                },
+                "profile_sec": trainer.od_profile_history[-1]["timing_profile"] if trainer.od_profile_history else {},
+            },
+            "lr": dict(getattr(trainer, "lr", {})),
+            "val": dict(getattr(trainer, "metrics", {})),
+        }
+        _write_tensorboard_scalars(
+            trainer.od_tensorboard_writer,
+            "epoch",
+            epoch_payload,
+            step=epoch_index,
+        )
+        if trainer.od_tensorboard_writer is not None:
+            trainer.od_tensorboard_writer.flush()
+
     def on_train_end(trainer: Any) -> None:
         payload = {
             "runtime": dict(runtime_params),
+            "tensorboard": dict(trainer.od_tensorboard_status),
             "train_loader": _loader_profile_payload(trainer.train_loader),
             "val_loader": _loader_profile_payload(trainer.test_loader),
             "epochs": trainer.od_profile_history,
@@ -354,6 +494,9 @@ def _make_teacher_trainer(
                 json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
                 encoding="utf-8",
             )
+        if trainer.od_tensorboard_writer is not None:
+            trainer.od_tensorboard_writer.flush()
+            trainer.od_tensorboard_writer.close()
 
     TeacherDetectionTrainer._od_bootstrap_runtime_params = dict(runtime_params)
     TeacherDetectionTrainer._od_bootstrap_log_fn = log_fn
@@ -363,6 +506,7 @@ def _make_teacher_trainer(
         "on_train_batch_start": on_train_batch_start,
         "on_train_batch_end": on_train_batch_end,
         "on_train_epoch_end": on_train_epoch_end,
+        "on_fit_epoch_end": on_fit_epoch_end,
         "on_train_end": on_train_end,
     }
     TeacherDetectionTrainer._od_bootstrap_callbacks = callbacks
@@ -401,10 +545,25 @@ def train_teacher_with_ultralytics(
     }
     train_result = model.train(trainer=trainer_cls, **train_kwargs)
     run_dir = _extract_run_dir(train_result, output_root / teacher_name)
+    trainer = getattr(model, "trainer", None)
     best_checkpoint = run_dir / "weights" / "best.pt"
     last_checkpoint = run_dir / "weights" / "last.pt"
     profile_log_path = run_dir / "profile_log.jsonl"
     profile_summary_path = run_dir / "profile_summary.json"
+    tensorboard_dir = run_dir / "tensorboard"
+    tensorboard_status = dict(
+        getattr(
+            trainer,
+            "od_tensorboard_status",
+            {
+                "enabled": False,
+                "status": "unknown_no_callbacks",
+                "error": None,
+                "log_dir": str(tensorboard_dir),
+            },
+        )
+    )
+    tensorboard_event_files = sorted(path.name for path in tensorboard_dir.glob("events.out.tfevents*")) if tensorboard_dir.is_dir() else []
 
     summary = {
         "teacher_name": teacher_name,
@@ -415,6 +574,9 @@ def train_teacher_with_ultralytics(
         "last_checkpoint": str(last_checkpoint),
         "profile_log_path": str(profile_log_path),
         "profile_summary_path": str(profile_summary_path),
+        "tensorboard_dir": str(tensorboard_dir),
+        "tensorboard_status": tensorboard_status,
+        "tensorboard_event_files": tensorboard_event_files,
         "runtime": dict(runtime_params),
         "train_kwargs": train_kwargs,
         "train_result_type": type(train_result).__name__,

@@ -125,6 +125,7 @@ class TeacherTrainTests(unittest.TestCase):
             self.assertEqual(summary["train"]["prefetch_factor"], 3)
             self.assertEqual(summary["train_summary"]["runtime"]["prefetch_factor"], 3)
             self.assertEqual(summary["train_summary"]["runtime"]["profile_window"], 7)
+            self.assertTrue(summary["train_summary"]["tensorboard_dir"].endswith("/runs/mobility/tensorboard"))
             self.assertTrue(Path(summary["train_summary"]["best_checkpoint"]).is_file())
             self.assertTrue(Path(summary["data_yaml_path"]).is_file())
             self.assertTrue((root / "runs" / "mobility" / "run_summary.json").is_file())
