@@ -89,6 +89,38 @@ def _successful_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any
     return [item for item in summaries if _is_successful_summary(item)]
 
 
+def _truncate_debug_text(value: Any, *, max_length: int = 240) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
+
+
+def _zero_successful_batches_error(step_summaries: list[dict[str, Any]]) -> str:
+    skipped_summaries = [item for item in step_summaries if not _is_successful_summary(item)]
+    skipped_reasons = Counter(str(item.get("skipped_reason") or "unknown") for item in skipped_summaries)
+    dominant_reason = skipped_reasons.most_common(1)[0][0] if skipped_reasons else "unknown"
+    dominant_detail = None
+    for item in reversed(skipped_summaries):
+        if str(item.get("skipped_reason") or "unknown") != dominant_reason:
+            continue
+        dominant_detail = _truncate_debug_text(item.get("skipped_reason_detail"))
+        if dominant_detail is not None:
+            break
+    message = (
+        "train_epoch completed with zero successful batches "
+        f"(attempted={len(step_summaries)}, skipped={len(skipped_summaries)}, "
+        f"dominant_reason={dominant_reason}, reasons={dict(skipped_reasons)})"
+    )
+    if dominant_detail is not None:
+        message += f"; dominant_detail={dominant_detail}"
+    return message
+
+
 def _default_det_components() -> dict[str, float | int]:
     return {
         "det_obj_loss": 0.0,
@@ -1276,7 +1308,7 @@ class PV26Trainer:
             raise ValueError("train_epoch received zero batches")
         successful_summaries = _successful_summaries(step_summaries)
         if not successful_summaries:
-            raise ValueError("train_epoch completed with zero successful batches")
+            raise ValueError(_zero_successful_batches_error(step_summaries))
         skipped_summaries = [item for item in step_summaries if not _is_successful_summary(item)]
         ended_at = time.perf_counter()
         return {

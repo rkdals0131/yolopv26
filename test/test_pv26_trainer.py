@@ -686,7 +686,10 @@ class PV26TrainerTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(ValueError, "zero successful batches"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "zero successful batches.*det_assignment_unavailable.*det_feature_metadata_invalid",
+        ):
             trainer.train_epoch([_make_encoded_batch(batch_size=1, q_det=2)], epoch=1)
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")

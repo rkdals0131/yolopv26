@@ -64,7 +64,7 @@ class RunConfig:
 @dataclass(frozen=True)
 class TrainDefaultsConfig:
     device: str = "cuda:0"
-    batch_size: int = 80
+    batch_size: int = 64
     train_batches: int = -1
     val_batches: int = -1
     trunk_lr: float = 1e-4
