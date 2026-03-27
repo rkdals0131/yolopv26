@@ -12,10 +12,11 @@ from tools.od_bootstrap.train.ultralytics_runner import _make_teacher_trainer
 
 class _FakePbar:
     def __init__(self) -> None:
+        self.desc = "1/100      2.71G      2.231      4.309   0.005974        400        640"
         self.values: list[str] = []
 
-    def set_postfix_str(self, value: str, refresh: bool = False) -> None:
-        del refresh
+    def set_description(self, value: str) -> None:
+        self.desc = value
         self.values.append(value)
 
 
@@ -66,6 +67,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertEqual(trainer.od_epoch_step, 1)
             self.assertEqual(trainer.od_global_step, 1)
             self.assertEqual(len(pbar.values), 1)
+            self.assertIn(" | elapsed=", pbar.values[0])
             self.assertIn("iter=", pbar.values[0])
             self.assertIn("wait=", pbar.values[0])
             self.assertIn("compute=", pbar.values[0])
