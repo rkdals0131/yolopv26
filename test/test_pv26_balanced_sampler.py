@@ -16,15 +16,18 @@ from model.loading.pv26_loader import SampleRecord
 
 
 class _ToyCanonicalDataset:
-    def __init__(self) -> None:
-        self.records: list[SampleRecord] = []
-        self.samples: list[dict] = []
-        dataset_keys = (
+    def __init__(
+        self,
+        *,
+        dataset_keys: tuple[tuple[str, int], ...] = (
             ("bdd100k_det_100k", 4),
             ("aihub_traffic_seoul", 4),
             ("aihub_obstacle_seoul", 4),
             ("aihub_lane_seoul", 4),
-        )
+        ),
+    ) -> None:
+        self.records: list[SampleRecord] = []
+        self.samples: list[dict] = []
         for split in ("train", "val"):
             for dataset_key, count in dataset_keys:
                 for index in range(count):
@@ -102,6 +105,9 @@ class _ToyCanonicalDataset:
     @staticmethod
     def _det_supervised_classes(dataset_key: str) -> list[str]:
         mapping = {
+            "pv26_exhaustive_bdd100k_det_100k": ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
+            "pv26_exhaustive_aihub_traffic_seoul": ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
+            "pv26_exhaustive_aihub_obstacle_seoul": ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
             "bdd100k_det_100k": ["vehicle", "bike", "pedestrian"],
             "aihub_traffic_seoul": ["traffic_light", "sign"],
             "aihub_obstacle_seoul": ["traffic_cone", "obstacle"],
@@ -120,6 +126,30 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         self.assertEqual(dataset_group_for_key("aihub_traffic_seoul"), "aihub_traffic")
         self.assertEqual(dataset_group_for_key("aihub_obstacle_seoul"), "aihub_obstacle")
         self.assertEqual(dataset_group_for_key("aihub_lane_seoul"), "aihub_lane")
+
+    def test_dataset_group_mapping_accepts_exhaustive_dataset_keys(self) -> None:
+        self.assertEqual(dataset_group_for_key("pv26_exhaustive_bdd100k_det_100k"), "bdd100k")
+        self.assertEqual(dataset_group_for_key("pv26_exhaustive_aihub_traffic_seoul"), "aihub_traffic")
+        self.assertEqual(dataset_group_for_key("pv26_exhaustive_aihub_obstacle_seoul"), "aihub_obstacle")
+
+    def test_balanced_batch_sampler_supports_exhaustive_dataset_keys(self) -> None:
+        dataset = _ToyCanonicalDataset(
+            dataset_keys=(
+                ("pv26_exhaustive_bdd100k_det_100k", 4),
+                ("pv26_exhaustive_aihub_traffic_seoul", 4),
+                ("pv26_exhaustive_aihub_obstacle_seoul", 4),
+                ("aihub_lane_seoul", 4),
+            ),
+        )
+        sampler = PV26BalancedBatchSampler(dataset, batch_size=20, num_batches=2, split="train", seed=7)
+
+        for batch_indices in sampler:
+            counts = {"bdd100k": 0, "aihub_traffic": 0, "aihub_obstacle": 0, "aihub_lane": 0}
+            for index in batch_indices:
+                group = dataset_group_for_key(dataset.records[index].dataset_key)
+                counts[group] += 1
+                self.assertEqual(dataset.records[index].split, "train")
+            self.assertEqual(counts, {"bdd100k": 6, "aihub_traffic": 6, "aihub_obstacle": 3, "aihub_lane": 5})
 
     def test_balanced_batch_sampler_uses_expected_per_batch_counts(self) -> None:
         dataset = _ToyCanonicalDataset()

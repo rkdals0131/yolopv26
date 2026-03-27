@@ -34,6 +34,27 @@ class SampleRecord:
 
 
 SOURCE_MASK_BY_DATASET = {
+    "pv26_exhaustive_bdd100k_det_100k": {
+        "det": True,
+        "tl_attr": False,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
+    "pv26_exhaustive_aihub_traffic_seoul": {
+        "det": True,
+        "tl_attr": True,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
+    "pv26_exhaustive_aihub_obstacle_seoul": {
+        "det": True,
+        "tl_attr": False,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
     "aihub_traffic_seoul": {
         "det": True,
         "tl_attr": True,
@@ -64,6 +85,21 @@ SOURCE_MASK_BY_DATASET = {
     },
 }
 DET_SUPERVISION_BY_DATASET = {
+    "pv26_exhaustive_bdd100k_det_100k": {
+        "class_names": ("vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"),
+        "allow_objectness_negatives": True,
+        "allow_unmatched_class_negatives": True,
+    },
+    "pv26_exhaustive_aihub_traffic_seoul": {
+        "class_names": ("vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"),
+        "allow_objectness_negatives": True,
+        "allow_unmatched_class_negatives": True,
+    },
+    "pv26_exhaustive_aihub_obstacle_seoul": {
+        "class_names": ("vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"),
+        "allow_objectness_negatives": True,
+        "allow_unmatched_class_negatives": True,
+    },
     "aihub_traffic_seoul": {
         "class_names": ("traffic_light", "sign"),
         "allow_objectness_negatives": False,

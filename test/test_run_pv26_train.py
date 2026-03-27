@@ -105,6 +105,25 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             self.assertAlmostEqual(phase_train.head_lr, 0.01)
             self.assertFalse(phase_train.encode_val_batches_in_loader)
 
+    def test_load_exhaustive_od_lane_scenario_uses_final_dataset_keys(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        scenario_path = repo_root / "tools" / "od_bootstrap" / "config" / "pv26_train" / "pv26_exhaustive_od_lane.default.yaml"
+
+        scenario = load_meta_train_scenario(scenario_path)
+
+        self.assertFalse(scenario.dataset.include_bdd)
+        self.assertEqual(scenario.dataset.aihub_root, (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset").resolve())
+        self.assertEqual(scenario.run.run_root, (repo_root / "runs" / "pv26_exhaustive_od_lane_train").resolve())
+        self.assertEqual(
+            scenario.preview.dataset_keys,
+            (
+                "pv26_exhaustive_bdd100k_det_100k",
+                "pv26_exhaustive_aihub_traffic_seoul",
+                "pv26_exhaustive_aihub_obstacle_seoul",
+                "aihub_lane_seoul",
+            ),
+        )
+
     def test_load_meta_train_scenario_rejects_invalid_stage_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             scenario_path = Path(temp_dir) / "invalid.yaml"

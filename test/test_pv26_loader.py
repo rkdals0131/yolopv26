@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -30,6 +31,16 @@ def _write_json(path: Path, payload: dict) -> None:
 def _write_dummy_pdf(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"%PDF-1.4\n%stub\n")
+
+
+def _rewrite_scene_dataset_keys(root: Path, mapping: dict[str, str]) -> None:
+    for scene_path in (root / "labels_scene").rglob("*.json"):
+        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+        source = scene.setdefault("source", {})
+        dataset_key = str(source.get("dataset") or "")
+        if dataset_key in mapping:
+            source["dataset"] = mapping[dataset_key]
+            scene_path.write_text(json.dumps(scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
 class PV26LoaderTests(unittest.TestCase):
@@ -147,6 +158,97 @@ class PV26LoaderTests(unittest.TestCase):
             self.assertEqual(bdd_sample["tl_attr_targets"]["collapse_reason"][0], "not_traffic_light")
             self.assertEqual(bdd_sample["meta"]["raw_hw"], (720, 1280))
             self.assertEqual(bdd_sample["meta"]["transform"]["pad_top"], 79)
+
+    def test_loader_supports_exhaustive_od_dataset_keys(self) -> None:
+        from model.loading.pv26_loader import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            bdd_root = root / "BDD100K"
+            aihub_output = root / "pv26_aihub_standardized"
+            bdd_output = root / "pv26_bdd100k_standardized"
+            exhaustive_aihub_output = root / "pv26_exhaustive_aihub_standardized"
+            exhaustive_bdd_output = root / "pv26_exhaustive_bdd100k_standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+            self._create_bdd_fixture(
+                bdd_root / "bdd100k_images_100k" / "100k",
+                bdd_root / "bdd100k_labels" / "100k",
+            )
+
+            run_aihub_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=aihub_output,
+                workers=1,
+                debug_vis_count=0,
+            )
+            run_bdd_standardization(
+                bdd_root=bdd_root,
+                images_root=bdd_root / "bdd100k_images_100k" / "100k",
+                labels_root=bdd_root / "bdd100k_labels" / "100k",
+                output_root=bdd_output,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            shutil.copytree(aihub_output, exhaustive_aihub_output)
+            shutil.copytree(bdd_output, exhaustive_bdd_output)
+            _rewrite_scene_dataset_keys(
+                exhaustive_aihub_output,
+                {
+                    "aihub_traffic_seoul": "pv26_exhaustive_aihub_traffic_seoul",
+                    "aihub_obstacle_seoul": "pv26_exhaustive_aihub_obstacle_seoul",
+                },
+            )
+            _rewrite_scene_dataset_keys(
+                exhaustive_bdd_output,
+                {"bdd100k_det_100k": "pv26_exhaustive_bdd100k_det_100k"},
+            )
+
+            dataset = PV26CanonicalDataset([exhaustive_aihub_output, exhaustive_bdd_output])
+            keyed = {(item["meta"]["dataset_key"], item["meta"]["split"]): item for item in (dataset[index] for index in range(len(dataset)))}
+
+            traffic_sample = keyed[("pv26_exhaustive_aihub_traffic_seoul", "train")]
+            self.assertEqual(traffic_sample["source_mask"]["det"], True)
+            self.assertEqual(traffic_sample["source_mask"]["tl_attr"], True)
+            self.assertEqual(traffic_sample["meta"]["det_supervised_classes"], ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"])
+            self.assertEqual(traffic_sample["meta"]["det_supervised_class_ids"], [0, 1, 2, 3, 4, 5, 6])
+            self.assertTrue(traffic_sample["meta"]["det_allow_objectness_negatives"])
+            self.assertTrue(traffic_sample["meta"]["det_allow_unmatched_class_negatives"])
+
+            obstacle_sample = keyed[("pv26_exhaustive_aihub_obstacle_seoul", "train")]
+            self.assertEqual(obstacle_sample["source_mask"]["det"], True)
+            self.assertEqual(obstacle_sample["source_mask"]["tl_attr"], False)
+            self.assertEqual(obstacle_sample["meta"]["det_supervised_classes"], ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"])
+            self.assertEqual(obstacle_sample["meta"]["det_supervised_class_ids"], [0, 1, 2, 3, 4, 5, 6])
+            self.assertTrue(obstacle_sample["meta"]["det_allow_objectness_negatives"])
+            self.assertTrue(obstacle_sample["meta"]["det_allow_unmatched_class_negatives"])
+
+            bdd_sample = keyed[("pv26_exhaustive_bdd100k_det_100k", "train")]
+            self.assertEqual(bdd_sample["source_mask"]["det"], True)
+            self.assertEqual(bdd_sample["source_mask"]["tl_attr"], False)
+            self.assertEqual(bdd_sample["meta"]["det_supervised_classes"], ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"])
+            self.assertEqual(bdd_sample["meta"]["det_supervised_class_ids"], [0, 1, 2, 3, 4, 5, 6])
+            self.assertTrue(bdd_sample["meta"]["det_allow_objectness_negatives"])
+            self.assertTrue(bdd_sample["meta"]["det_allow_unmatched_class_negatives"])
+
+            lane_sample = keyed[("aihub_lane_seoul", "train")]
+            self.assertEqual(lane_sample["source_mask"]["det"], False)
+            self.assertEqual(lane_sample["source_mask"]["lane"], True)
+            self.assertEqual(lane_sample["meta"]["det_supervised_classes"], [])
+            self.assertEqual(lane_sample["meta"]["det_supervised_class_ids"], [])
+            self.assertFalse(lane_sample["meta"]["det_allow_objectness_negatives"])
+            self.assertFalse(lane_sample["meta"]["det_allow_unmatched_class_negatives"])
 
     def test_collate_stacks_images_and_preserves_ragged_targets(self) -> None:
         from model.loading.pv26_loader import PV26CanonicalDataset, collate_pv26_samples

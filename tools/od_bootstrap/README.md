@@ -34,6 +34,7 @@
 6. `python3 tools/od_bootstrap/eval/run_teacher_checkpoint_eval.py --config tools/od_bootstrap/config/eval/mobility_checkpoint_eval.default.yaml`
 7. `python3 tools/od_bootstrap/sweep/run_model_centric_sweep.py --config tools/od_bootstrap/config/sweep/model_centric.default.yaml`
 8. `python3 tools/od_bootstrap/finalize/run_build_exhaustive_od_lane_dataset.py --config tools/od_bootstrap/config/finalize/pv26_exhaustive_od_lane.default.yaml`
+9. `python3 tools/run_pv26_train.py --config tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
 
 출력:
 - canonical intermediate: `seg_dataset/pv26_od_bootstrap/canonical/`
@@ -43,6 +44,7 @@
 - teacher eval: `runs/od_bootstrap/eval/<teacher>/`
 - exhaustive OD dataset: `seg_dataset/pv26_od_bootstrap/exhaustive_od/<run_id>/`
 - final merged dataset: `seg_dataset/pv26_exhaustive_od_lane_dataset/`
+- PV26 final train scenario: `tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
 
 provenance 필드:
 - `label_origin`

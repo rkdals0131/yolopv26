@@ -1,0 +1,79 @@
+dataset:
+  aihub_root: ../../../../seg_dataset/pv26_exhaustive_od_lane_dataset
+  include_bdd: false
+
+run:
+  run_root: ../../../../runs/pv26_exhaustive_od_lane_train
+  run_name_prefix: exhaustive_od_lane
+  tensorboard_mode: curated
+
+train_defaults:
+  device: cuda:0
+  batch_size: 32
+  train_batches: -1
+  val_batches: -1
+  trunk_lr: 0.0001
+  head_lr: 0.005
+  weight_decay: 0.0001
+  schedule: cosine
+  amp: true
+  accumulate_steps: 1
+  grad_clip_norm: 5.0
+  val_every: 1
+  checkpoint_every: 3
+  num_workers: 6
+  pin_memory: true
+  log_every_n_steps: 20
+  profile_window: 20
+  profile_device_sync: true
+  encode_train_batches_in_loader: true
+  encode_val_batches_in_loader: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+selection:
+  metric_path: val.losses.total.mean
+  mode: min
+  eps: 1.0e-8
+
+preview:
+  enabled: true
+  split: val
+  dataset_keys:
+    - pv26_exhaustive_bdd100k_det_100k
+    - pv26_exhaustive_aihub_traffic_seoul
+    - pv26_exhaustive_aihub_obstacle_seoul
+    - aihub_lane_seoul
+  max_samples_per_dataset: 1
+  write_overlay: true
+
+phases:
+  - name: head_warmup
+    stage: stage_1_frozen_trunk_warmup
+    min_epochs: 3
+    max_epochs: 8
+    patience: 2
+    min_improvement_pct: 2.0
+    overrides:
+      trunk_lr: 0.00005
+      head_lr: 0.003
+
+  - name: partial_unfreeze
+    stage: stage_2_partial_unfreeze
+    min_epochs: 2
+    max_epochs: 8
+    patience: 2
+    min_improvement_pct: 1.0
+    overrides:
+      trunk_lr: 0.00003
+      head_lr: 0.0008
+
+  - name: end_to_end_finetune
+    stage: stage_3_end_to_end_finetune
+    min_epochs: 2
+    max_epochs: 6
+    patience: 2
+    min_improvement_pct: 0.5
+    overrides:
+      trunk_lr: 0.00001
+      head_lr: 0.0004

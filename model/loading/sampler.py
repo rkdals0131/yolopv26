@@ -22,6 +22,9 @@ DEFAULT_SAMPLER_RATIOS = {
 }
 
 DATASET_GROUP_BY_KEY = {
+    "pv26_exhaustive_bdd100k_det_100k": "bdd100k",
+    "pv26_exhaustive_aihub_traffic_seoul": "aihub_traffic",
+    "pv26_exhaustive_aihub_obstacle_seoul": "aihub_obstacle",
     "bdd100k_det_100k": "bdd100k",
     "aihub_traffic_seoul": "aihub_traffic",
     "aihub_obstacle_seoul": "aihub_obstacle",
