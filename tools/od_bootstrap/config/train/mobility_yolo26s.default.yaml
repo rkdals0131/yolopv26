@@ -16,9 +16,9 @@ model:
     - bike
     - pedestrian
 train:
-  epochs: 30
+  epochs: 200
   imgsz: 640
-  batch: 16
+  batch: 20
   device: cuda:0
   workers: 8
   pin_memory: true
