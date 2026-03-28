@@ -8,7 +8,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.od_bootstrap.train.ultralytics_runner import _install_ultralytics_postfix_renderer, _make_teacher_trainer
+import torch
+
+from tools.od_bootstrap.train.ultralytics_runner import (
+    _install_ultralytics_postfix_renderer,
+    _make_teacher_trainer,
+    _resolve_resume_argument,
+)
 
 
 class _FakePbar:
@@ -63,6 +69,23 @@ class _FakeUltralyticsPbar:
 class _FakeTrainLoader:
     def __len__(self) -> int:
         return 100
+
+
+def _write_checkpoint(path: Path, *, epoch: int, total_epochs: int, resumable: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch if resumable else -1,
+            "optimizer": {"state": {}, "param_groups": []} if resumable else None,
+            "train_args": {
+                "data": "dataset.yaml",
+                "epochs": total_epochs,
+                "batch": 2,
+                "imgsz": 640,
+            },
+        },
+        path,
+    )
 
 
 class UltralyticsRunnerTests(unittest.TestCase):
@@ -122,6 +145,73 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertIn("wait=", pbar.values[0])
             self.assertIn("compute=", pbar.values[0])
             self.assertFalse(trainer.od_profile_log_path.exists())
+
+    def test_resolve_resume_argument_prefers_resumable_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            teacher_root = Path(temp_dir) / "signal"
+            stripped_last = teacher_root / "20260328_040148" / "weights" / "last.pt"
+            resumable_epoch = teacher_root / "20260328_040148" / "weights" / "epoch70.pt"
+            latest_run = teacher_root / "latest_run.json"
+            _write_checkpoint(stripped_last, epoch=71, total_epochs=72, resumable=False)
+            _write_checkpoint(resumable_epoch, epoch=70, total_epochs=72, resumable=True)
+            latest_run.parent.mkdir(parents=True, exist_ok=True)
+            latest_run.write_text("{}", encoding="utf-8")
+            resolved = _resolve_resume_argument(True, teacher_name="signal", teacher_root=teacher_root)
+            self.assertEqual(resolved, str(resumable_epoch))
+
+    def test_teacher_trainer_check_resume_allows_epoch_extension(self) -> None:
+        runtime_params = {
+            "pin_memory": True,
+            "persistent_workers": True,
+            "prefetch_factor": 4,
+            "log_every_n_steps": 20,
+            "profile_window": 20,
+            "profile_device_sync": False,
+        }
+        trainer_cls, _ = _make_teacher_trainer(runtime_params=runtime_params, log_fn=lambda message: None)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = root / "signal" / "20260328_040148" / "weights" / "epoch70.pt"
+            data_yaml = root / "dataset.yaml"
+            data_yaml.write_text("path: dataset\n", encoding="utf-8")
+            _write_checkpoint(checkpoint, epoch=70, total_epochs=72, resumable=True)
+
+            trainer = object.__new__(trainer_cls)
+            trainer.args = SimpleNamespace(resume=str(checkpoint), data=str(data_yaml))
+            trainer.resume = False
+
+            trainer.check_resume({"epochs": 150, "batch": 4, "device": "cpu"})
+
+            self.assertTrue(trainer.resume)
+            self.assertEqual(trainer.args.resume, str(checkpoint))
+            self.assertEqual(trainer.args.model, str(checkpoint))
+            self.assertEqual(trainer.args.epochs, 150)
+            self.assertEqual(trainer.args.batch, 4)
+            self.assertEqual(trainer.args.device, "cpu")
+
+    def test_extended_resume_scheduler_preserves_lr_continuity(self) -> None:
+        runtime_params = {
+            "pin_memory": True,
+            "persistent_workers": True,
+            "prefetch_factor": 4,
+            "log_every_n_steps": 20,
+            "profile_window": 20,
+            "profile_device_sync": False,
+        }
+        trainer_cls, _ = _make_teacher_trainer(runtime_params=runtime_params, log_fn=lambda message: None)
+        trainer = object.__new__(trainer_cls)
+        trainer.resume = True
+        trainer.od_resume_base_epochs = 72
+        trainer.od_resume_start_epoch = 71
+        trainer.epochs = 150
+        trainer.args = SimpleNamespace(cos_lr=False, lrf=0.01)
+
+        lf = trainer._build_extended_resume_lf()
+
+        self.assertIsNotNone(lf)
+        self.assertAlmostEqual(lf(71), 0.02375, places=8)
+        self.assertLess(lf(72), lf(71))
+        self.assertAlmostEqual(lf(150), 0.01, places=8)
 
 
 if __name__ == "__main__":

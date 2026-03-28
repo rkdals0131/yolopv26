@@ -15,7 +15,7 @@ model:
     - traffic_light
     - sign
 train:
-  epochs: 72
+  epochs: 150
   imgsz: 640
   batch: 32
   device: cuda:0

@@ -49,7 +49,82 @@ def _coerce_weights_name(model_size: str, weights: str | None) -> str:
     return f"yolo26{size}.pt"
 
 
+def _load_checkpoint_payload(checkpoint: Path) -> dict[str, Any] | None:
+    if torch is None or not checkpoint.is_file():
+        return None
+    try:
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _checkpoint_resume_metadata(checkpoint: Path) -> dict[str, Any]:
+    payload = _load_checkpoint_payload(checkpoint)
+    train_args = payload.get("train_args") if isinstance(payload, dict) else None
+    optimizer = payload.get("optimizer") if isinstance(payload, dict) else None
+    epoch = payload.get("epoch") if isinstance(payload, dict) else None
+    return {
+        "epoch": int(epoch) if isinstance(epoch, int) else -1,
+        "train_args": dict(train_args) if isinstance(train_args, dict) else {},
+        "resumable": isinstance(optimizer, dict) and isinstance(epoch, int) and int(epoch) >= 0,
+    }
+
+
+def _infer_teacher_root_from_checkpoint(checkpoint: Path) -> Path | None:
+    for parent in checkpoint.parents:
+        if (parent / "latest_run.json").is_file():
+            return parent
+    return None
+
+
+def _resume_candidate_sort_key(checkpoint: Path) -> tuple[int, int, int, int, str]:
+    metadata = _checkpoint_resume_metadata(checkpoint)
+    name = checkpoint.name
+    kind_priority = 2 if name.startswith("last_resume") else 1 if name.startswith("last") else 0
+    return (
+        int(metadata["resumable"]),
+        kind_priority,
+        int(checkpoint.stat().st_mtime_ns),
+        int(metadata["epoch"]),
+        str(checkpoint),
+    )
+
+
+def _find_latest_resumable_checkpoint(teacher_root: Path) -> Path | None:
+    candidates: set[Path] = set()
+    for pattern in ("**/last_resume*.pt", "**/last*.pt", "**/epoch*.pt"):
+        candidates.update(path for path in teacher_root.glob(pattern) if path.is_file())
+    resumable = [path for path in candidates if _checkpoint_resume_metadata(path)["resumable"]]
+    if not resumable:
+        return None
+    return max(resumable, key=_resume_candidate_sort_key)
+
+
+def _resolve_resume_checkpoint_path(checkpoint: Path, *, teacher_root: Path | None = None) -> Path | None:
+    if not checkpoint.is_file():
+        return None
+    if _checkpoint_resume_metadata(checkpoint)["resumable"]:
+        return checkpoint
+
+    search_root = teacher_root or _infer_teacher_root_from_checkpoint(checkpoint)
+    if search_root is not None:
+        fallback = _find_latest_resumable_checkpoint(search_root)
+        if fallback is not None:
+            return fallback
+
+    sibling_candidates = [path for path in checkpoint.parent.glob("last_resume*.pt") if path.is_file()]
+    sibling_candidates.extend(path for path in checkpoint.parent.glob("epoch*.pt") if path.is_file())
+    resumable = [path for path in sibling_candidates if _checkpoint_resume_metadata(path)["resumable"]]
+    if resumable:
+        return max(resumable, key=_resume_candidate_sort_key)
+    return checkpoint
+
+
 def _find_latest_teacher_checkpoint(teacher_root: Path) -> Path | None:
+    resumable = _find_latest_resumable_checkpoint(teacher_root)
+    if resumable is not None:
+        return resumable
     candidates = [path for path in teacher_root.glob("**/last*.pt") if path.is_file()]
     if not candidates:
         return None
@@ -60,10 +135,14 @@ def _resolve_resume_argument(resume: Any, *, teacher_name: str, teacher_root: Pa
     if not resume:
         return False
     if isinstance(resume, Path):
-        return str(resume)
+        resolved = _resolve_resume_checkpoint_path(resume, teacher_root=teacher_root)
+        return str(resolved) if resolved is not None else str(resume)
     if isinstance(resume, str):
         normalized = resume.strip()
-        return normalized or False
+        if not normalized:
+            return False
+        resolved = _resolve_resume_checkpoint_path(Path(normalized), teacher_root=teacher_root)
+        return str(resolved) if resolved is not None else normalized
 
     checkpoint = _find_latest_teacher_checkpoint(teacher_root)
     if checkpoint is None:
@@ -393,7 +472,7 @@ def _refresh_latest_teacher_artifacts(
 
     alias_weights_root = teacher_root / "weights"
     alias_actions: dict[str, str] = {}
-    for checkpoint_name in ("best.pt", "last.pt"):
+    for checkpoint_name in ("best.pt", "last.pt", "last_resume.pt"):
         source_path = run_dir / "weights" / checkpoint_name
         if not source_path.is_file():
             continue
@@ -483,6 +562,101 @@ def _make_teacher_trainer(
         raise RuntimeError("ultralytics trainer dependencies are not available")
 
     class TeacherDetectionTrainer(DetectionTrainer):
+        def check_resume(self, overrides):
+            self.od_resume_base_epochs = None
+            self.od_resume_start_epoch = None
+            resume = self.args.resume
+            if resume:
+                try:
+                    exists = isinstance(resume, (str, Path)) and Path(resume).exists()
+                    requested = Path(ultra_trainer.check_file(resume) if exists else ultra_trainer.get_latest_run())
+                    last = _resolve_resume_checkpoint_path(requested) or requested
+                    metadata = _checkpoint_resume_metadata(last)
+                    ckpt_args = dict(metadata["train_args"])
+                    if not ckpt_args:
+                        raise FileNotFoundError(f"resume checkpoint is missing train_args: {last}")
+                    if not metadata["resumable"]:
+                        raise FileNotFoundError(
+                            f"resume checkpoint is finalized and not resumable: {last}. "
+                            "Use a saved epoch*.pt or last_resume.pt checkpoint instead."
+                        )
+                    if not isinstance(ckpt_args["data"], dict) and not Path(ckpt_args["data"]).exists():
+                        ckpt_args["data"] = self.args.data
+
+                    resume = True
+                    self.od_resume_base_epochs = int(ckpt_args.get("epochs") or 0) or None
+                    self.od_resume_start_epoch = int(metadata["epoch"]) + 1
+                    self.args = ultra_trainer.get_cfg(ckpt_args)
+                    self.args.model = self.args.resume = str(last)
+                    for k in (
+                        "epochs",
+                        "imgsz",
+                        "batch",
+                        "device",
+                        "close_mosaic",
+                        "augmentations",
+                        "save_period",
+                        "workers",
+                        "cache",
+                        "patience",
+                        "time",
+                        "freeze",
+                        "val",
+                        "plots",
+                    ):
+                        if k in overrides:
+                            setattr(self.args, k, overrides[k])
+
+                    if ckpt_args.get("augmentations") is not None:
+                        ultra_trainer.LOGGER.warning(
+                            "Custom Albumentations transforms were used in the original training run but are not "
+                            "being restored. To preserve custom augmentations when resuming, you need to pass the "
+                            "'augmentations' parameter again to get expected results. Example: \n"
+                            f"model.train(resume=True, augmentations={ckpt_args['augmentations']})"
+                        )
+                except Exception as e:
+                    raise FileNotFoundError(
+                        "Resume checkpoint not found. Please pass a valid checkpoint to resume from, "
+                        "i.e. 'yolo train resume model=path/to/last.pt'"
+                    ) from e
+            self.resume = resume
+
+        def _build_extended_resume_lf(self):
+            base_epochs = getattr(self, "od_resume_base_epochs", None)
+            start_epoch = getattr(self, "od_resume_start_epoch", None)
+            if not self.resume or base_epochs is None or start_epoch is None or self.epochs <= base_epochs:
+                return None
+
+            lrf = float(self.args.lrf)
+            total_epochs = int(self.epochs)
+            resume_epoch = int(start_epoch)
+
+            def _base_linear(epoch_index: int) -> float:
+                return max(1.0 - float(epoch_index) / float(base_epochs), 0.0) * (1.0 - lrf) + lrf
+
+            def _base_cosine(epoch_index: int) -> float:
+                progress = max(float(epoch_index), 0.0) * math.pi / float(base_epochs)
+                return ((1.0 - math.cos(progress)) / 2.0) * (lrf - 1.0) + 1.0
+
+            base_fn = _base_cosine if self.args.cos_lr else _base_linear
+            start_factor = float(base_fn(resume_epoch))
+            remaining_epochs = max(total_epochs - resume_epoch, 1)
+
+            if self.args.cos_lr:
+                def _extended_lf(epoch_index: int) -> float:
+                    if epoch_index <= resume_epoch:
+                        return float(base_fn(epoch_index))
+                    progress = min(max(float(epoch_index - resume_epoch) / float(remaining_epochs), 0.0), 1.0)
+                    return ((1.0 - math.cos(progress * math.pi)) / 2.0) * (lrf - start_factor) + start_factor
+            else:
+                def _extended_lf(epoch_index: int) -> float:
+                    if epoch_index <= resume_epoch:
+                        return float(base_fn(epoch_index))
+                    progress = min(max(float(epoch_index - resume_epoch) / float(remaining_epochs), 0.0), 1.0)
+                    return (1.0 - progress) * start_factor + progress * lrf
+
+            return _extended_lf
+
         def __init__(self, cfg=DEFAULT_CFG, overrides: dict[str, Any] | None = None, _callbacks: dict | None = None):
             super().__init__(cfg=cfg, overrides=overrides, _callbacks=_callbacks)
             self.od_runtime_params = dict(runtime_params)
@@ -508,6 +682,20 @@ def _make_teacher_trainer(
             self.od_epoch_step = 0
             self.od_global_step = 0
             self.od_pbar = None
+
+        def _setup_scheduler(self):
+            extended_lf = self._build_extended_resume_lf()
+            if extended_lf is not None:
+                self.lf = extended_lf
+                self.scheduler = ultra_trainer.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self.lf)
+                return
+            super()._setup_scheduler()
+
+        def save_model(self):
+            super().save_model()
+            resume_last = self.wdir / "last_resume.pt"
+            if self.last.is_file():
+                shutil.copy2(self.last, resume_last)
 
         def get_dataloader(self, dataset_path: str, batch_size: int = 16, rank: int = 0, mode: str = "train"):
             assert mode in {"train", "val"}, f"Mode must be 'train' or 'val', not {mode}."
@@ -952,13 +1140,8 @@ def train_teacher_with_ultralytics(
         raise RuntimeError("ultralytics is not installed")
 
     resolved_weights = _coerce_weights_name(model_size, weights)
-    model = YOLO(resolved_weights)
     log_fn = _emit_log
     trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=log_fn)
-    if hasattr(model, "add_callback"):
-        for event_name, callback in callbacks.items():
-            model.add_callback(event_name, callback)
-
     teacher_root = output_root / teacher_name
     train_params = dict(train_params)
     train_params["resume"] = _resolve_resume_argument(
@@ -966,6 +1149,11 @@ def train_teacher_with_ultralytics(
         teacher_name=teacher_name,
         teacher_root=teacher_root,
     )
+    model_source = train_params["resume"] if train_params["resume"] else resolved_weights
+    model = YOLO(model_source)
+    if hasattr(model, "add_callback"):
+        for event_name, callback in callbacks.items():
+            model.add_callback(event_name, callback)
     run_name = _timestamp_token()
     train_kwargs = {
         "data": str(dataset_yaml),

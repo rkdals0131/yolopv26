@@ -206,6 +206,7 @@ class TeacherTrainTests(unittest.TestCase):
             with patch("tools.od_bootstrap.train.ultralytics_runner.YOLO", _FakeYOLO):
                 run_teacher_train_scenario(scenario, scenario_path=scenario_path)
 
+            self.assertEqual(_FakeYOLO.last_instance.weights, str(newer_signal))
             self.assertEqual(_FakeYOLO.last_instance.last_train_kwargs["resume"], str(newer_signal))
 
     def test_run_teacher_train_scenario_resume_requires_local_teacher_checkpoint(self) -> None:
