@@ -1,24 +1,23 @@
-teacher_name: mobility
+teacher_name: signal
 run:
   output_root: ../../../../runs/od_bootstrap/train
   exist_ok: true
 dataset:
-  root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/mobility
+  root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/signal
   image_dir: images
   label_dir: labels
   train_split: train
   val_split: val
 model:
-  model_size: n
-  weights: yolo26n.pt
+  model_size: s
+  weights: yolo26s.pt
   class_names:
-    - vehicle
-    - bike
-    - pedestrian
+    - traffic_light
+    - sign
 train:
-  epochs: 30
+  epochs: 150
   imgsz: 640
-  batch: 32
+  batch: 16
   device: cuda:0
   workers: 8
   pin_memory: true

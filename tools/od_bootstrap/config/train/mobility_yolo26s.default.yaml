@@ -9,8 +9,8 @@ dataset:
   train_split: train
   val_split: val
 model:
-  model_size: n
-  weights: yolo26n.pt
+  model_size: s
+  weights: yolo26s.pt
   class_names:
     - vehicle
     - bike
@@ -18,7 +18,7 @@ model:
 train:
   epochs: 30
   imgsz: 640
-  batch: 32
+  batch: 16
   device: cuda:0
   workers: 8
   pin_memory: true
