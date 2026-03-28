@@ -49,6 +49,30 @@ def _coerce_weights_name(model_size: str, weights: str | None) -> str:
     return f"yolo26{size}.pt"
 
 
+def _find_latest_teacher_checkpoint(teacher_root: Path) -> Path | None:
+    candidates = [path for path in teacher_root.glob("**/last*.pt") if path.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
+
+
+def _resolve_resume_argument(resume: Any, *, teacher_name: str, teacher_root: Path) -> bool | str:
+    if not resume:
+        return False
+    if isinstance(resume, Path):
+        return str(resume)
+    if isinstance(resume, str):
+        normalized = resume.strip()
+        return normalized or False
+
+    checkpoint = _find_latest_teacher_checkpoint(teacher_root)
+    if checkpoint is None:
+        raise FileNotFoundError(
+            f"resume requested for teacher '{teacher_name}' but no last.pt exists under {teacher_root}"
+        )
+    return str(checkpoint)
+
+
 def _extract_run_dir(train_result: Any, fallback_dir: Path) -> Path:
     for candidate in (
         getattr(train_result, "save_dir", None),
@@ -936,6 +960,12 @@ def train_teacher_with_ultralytics(
             model.add_callback(event_name, callback)
 
     teacher_root = output_root / teacher_name
+    train_params = dict(train_params)
+    train_params["resume"] = _resolve_resume_argument(
+        train_params.get("resume", False),
+        teacher_name=teacher_name,
+        teacher_root=teacher_root,
+    )
     run_name = _timestamp_token()
     train_kwargs = {
         "data": str(dataset_yaml),
