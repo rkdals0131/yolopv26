@@ -11,6 +11,9 @@ from unittest.mock import patch
 import torch
 
 from tools.od_bootstrap.train.ultralytics_runner import (
+    _build_epoch_tensorboard_payload,
+    _build_train_step_tensorboard_payload,
+    _flatten_scalar_tree,
     _install_ultralytics_postfix_renderer,
     _make_teacher_trainer,
     _resolve_resume_argument,
@@ -145,6 +148,89 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertIn("wait=", pbar.values[0])
             self.assertIn("compute=", pbar.values[0])
             self.assertFalse(trainer.od_profile_log_path.exists())
+
+    def test_epoch_tensorboard_payload_keeps_only_requested_tags(self) -> None:
+        payload = _build_epoch_tensorboard_payload(
+            losses={
+                "train/box_loss": 1.25,
+                "train/cls_loss": 2.5,
+                "train/dfl_loss": 0.75,
+                "train/extra_loss": 99.0,
+            },
+            profile_summary={
+                "window_size": 20,
+                "iteration_sec": {"mean": 0.31, "p50": 0.3, "p99": 0.4},
+                "wait_sec": {"mean": 0.02, "p50": 0.01, "p99": 0.05},
+                "compute_sec": {"mean": 0.29, "p50": 0.28, "p99": 0.38},
+            },
+            lr_values={"lr/pg0": 0.001, "lr/pg1": 0.002, "lr/pg2": 0.003},
+            metrics={
+                "metrics/precision(B)": 0.5,
+                "metrics/recall(B)": 0.25,
+                "metrics/mAP50(B)": 0.75,
+                "metrics/mAP50-95(B)": 0.4,
+                "val/box_loss": 1.1,
+                "val/cls_loss": 0.9,
+                "val/dfl_loss": 0.2,
+                "ignored_metric": 123.0,
+            },
+        )
+
+        scalar_names = {name for name, _ in _flatten_scalar_tree("epoch", payload)}
+
+        self.assertEqual(
+            scalar_names,
+            {
+                "epoch/train/box_loss",
+                "epoch/train/cls_loss",
+                "epoch/train/dfl_loss",
+                "epoch/lr/pg0",
+                "epoch/profile_sec/iteration_mean",
+                "epoch/profile_sec/wait_mean",
+                "epoch/profile_sec/compute_mean",
+                "epoch/precision",
+                "epoch/recall",
+                "epoch/f1",
+                "epoch/mAP50",
+                "epoch/mAP50_95",
+                "epoch/val/box_loss",
+                "epoch/val/cls_loss",
+                "epoch/val/dfl_loss",
+            },
+        )
+
+    def test_train_step_tensorboard_payload_keeps_only_requested_tags(self) -> None:
+        payload = _build_train_step_tensorboard_payload(
+            losses={
+                "train/box_loss": 1.0,
+                "train/cls_loss": 2.0,
+                "train/dfl_loss": 3.0,
+                "train/unused": 4.0,
+            },
+            profile_summary={
+                "iteration_sec": {"mean": 0.31, "p50": 0.3, "p99": 0.4},
+                "wait_sec": {"mean": 0.02, "p50": 0.01, "p99": 0.05},
+                "compute_sec": {"mean": 0.29, "p50": 0.28, "p99": 0.38},
+            },
+            elapsed_sec=12.5,
+        )
+
+        scalar_names = {name for name, _ in _flatten_scalar_tree("train_step", payload)}
+
+        self.assertEqual(
+            scalar_names,
+            {
+                "train_step/loss/box_loss",
+                "train_step/loss/cls_loss",
+                "train_step/loss/dfl_loss",
+                "train_step/profile_sec/iteration_mean",
+                "train_step/profile_sec/iteration_p50",
+                "train_step/profile_sec/iteration_p99",
+                "train_step/profile_sec/wait_mean",
+                "train_step/profile_sec/compute_mean",
+                "train_step/elapsed_sec",
+            },
+        )
 
     def test_resolve_resume_argument_prefers_resumable_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

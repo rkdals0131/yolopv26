@@ -266,6 +266,155 @@ def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any]
     return count
 
 
+def _coerce_scalar(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def _first_scalar(source: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key in source:
+            numeric = _coerce_scalar(source[key])
+            if numeric is not None:
+                return numeric
+    return None
+
+
+def _train_loss_payload(losses: dict[str, Any]) -> dict[str, float]:
+    payload: dict[str, float] = {}
+    for source_key, target_key in (
+        ("train/box_loss", "box_loss"),
+        ("train/cls_loss", "cls_loss"),
+        ("train/dfl_loss", "dfl_loss"),
+    ):
+        value = _first_scalar(losses, source_key, target_key)
+        if value is not None:
+            payload[target_key] = value
+    return payload
+
+
+def _epoch_lr_payload(lr_values: dict[str, Any]) -> dict[str, float]:
+    value = _first_scalar(lr_values, "lr/pg0", "pg0")
+    if value is None:
+        return {}
+    return {"pg0": value}
+
+
+def _epoch_metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    precision = None
+    recall = None
+    for target_key, candidates in (
+        ("precision", ("metrics/precision(B)", "metrics/precision")),
+        ("recall", ("metrics/recall(B)", "metrics/recall")),
+        ("mAP50", ("metrics/mAP50(B)", "metrics/mAP50")),
+        ("mAP50_95", ("metrics/mAP50-95(B)", "metrics/mAP50-95")),
+    ):
+        value = _first_scalar(metrics, *candidates)
+        if value is not None:
+            payload[target_key] = value
+            if target_key == "precision":
+                precision = value
+            elif target_key == "recall":
+                recall = value
+
+    if precision is not None and recall is not None and (precision + recall) > 0.0:
+        payload["f1"] = (2.0 * precision * recall) / (precision + recall)
+
+    val_payload: dict[str, float] = {}
+    for source_key, target_key in (
+        ("val/box_loss", "box_loss"),
+        ("val/cls_loss", "cls_loss"),
+        ("val/dfl_loss", "dfl_loss"),
+    ):
+        value = _first_scalar(metrics, source_key, target_key)
+        if value is not None:
+            val_payload[target_key] = value
+    if val_payload:
+        payload["val"] = val_payload
+    return payload
+
+
+def _epoch_profile_payload(profile_summary: dict[str, Any]) -> dict[str, float]:
+    payload: dict[str, float] = {}
+    for target_key, source_group in (
+        ("iteration_mean", "iteration_sec"),
+        ("wait_mean", "wait_sec"),
+        ("compute_mean", "compute_sec"),
+    ):
+        if isinstance(profile_summary.get(source_group), dict):
+            value = _first_scalar(profile_summary[source_group], "mean")
+            if value is not None:
+                payload[target_key] = value
+    return payload
+
+
+def _train_step_profile_payload(profile_summary: dict[str, Any]) -> dict[str, float]:
+    payload: dict[str, float] = {}
+    for target_key, source_group, stat_key in (
+        ("iteration_mean", "iteration_sec", "mean"),
+        ("iteration_p50", "iteration_sec", "p50"),
+        ("iteration_p99", "iteration_sec", "p99"),
+        ("wait_mean", "wait_sec", "mean"),
+        ("compute_mean", "compute_sec", "mean"),
+    ):
+        if isinstance(profile_summary.get(source_group), dict):
+            value = _first_scalar(profile_summary[source_group], stat_key)
+            if value is not None:
+                payload[target_key] = value
+    return payload
+
+
+def _build_epoch_tensorboard_payload(
+    *,
+    losses: dict[str, Any],
+    profile_summary: dict[str, Any],
+    lr_values: dict[str, Any],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+
+    train_loss = _train_loss_payload(losses)
+    if train_loss:
+        payload["train"] = train_loss
+
+    lr_payload = _epoch_lr_payload(lr_values)
+    if lr_payload:
+        payload["lr"] = lr_payload
+
+    profile_payload = _epoch_profile_payload(profile_summary)
+    if profile_payload:
+        payload["profile_sec"] = profile_payload
+
+    payload.update(_epoch_metric_payload(metrics))
+    return payload
+
+
+def _build_train_step_tensorboard_payload(
+    *,
+    losses: dict[str, Any],
+    profile_summary: dict[str, Any],
+    elapsed_sec: float,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+
+    loss_payload = _train_loss_payload(losses)
+    if loss_payload:
+        payload["loss"] = loss_payload
+
+    profile_payload = _train_step_profile_payload(profile_summary)
+    if profile_payload:
+        payload["profile_sec"] = profile_payload
+
+    payload["elapsed_sec"] = float(elapsed_sec)
+    return payload
+
+
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -947,24 +1096,6 @@ def _make_teacher_trainer(
             f"persistent_workers={val_loader_profile['persistent_workers']} "
             f"prefetch_factor={val_loader_profile['prefetch_factor']} batches={val_loader_profile['num_batches']}"
         )
-        _write_tensorboard_scalars(
-            trainer.od_tensorboard_writer,
-            "loader/train",
-            train_loader_profile,
-            step=0,
-        )
-        _write_tensorboard_scalars(
-            trainer.od_tensorboard_writer,
-            "loader/val",
-            val_loader_profile,
-            step=0,
-        )
-        _write_tensorboard_scalars(
-            trainer.od_tensorboard_writer,
-            "runtime",
-            {key: value for key, value in runtime_params.items() if key != "profile_device_sync"} | {"profile_device_sync": runtime_params["profile_device_sync"]},
-            step=0,
-        )
         if trainer.od_tensorboard_writer is not None:
             trainer.od_tensorboard_writer.flush()
 
@@ -1036,23 +1167,11 @@ def _make_teacher_trainer(
         _write_tensorboard_scalars(
             trainer.od_tensorboard_writer,
             "train_step",
-            {
-                "progress": {
-                    "epoch": payload["epoch"],
-                    "step": step_index,
-                    "total_steps": total_steps,
-                    "elapsed_sec": elapsed_sec,
-                    "eta_sec": eta_sec,
-                },
-                "loss": {key.split("/", 1)[-1]: value for key, value in losses.items()},
-                "profile_sec": {
-                    "iteration_mean": profile_summary["iteration_sec"]["mean"],
-                    "iteration_p50": profile_summary["iteration_sec"]["p50"],
-                    "iteration_p99": profile_summary["iteration_sec"]["p99"],
-                    "wait_mean": profile_summary["wait_sec"]["mean"],
-                    "compute_mean": profile_summary["compute_sec"]["mean"],
-                },
-            },
+            _build_train_step_tensorboard_payload(
+                losses=losses,
+                profile_summary=profile_summary,
+                elapsed_sec=elapsed_sec,
+            ),
             step=trainer.od_global_step,
         )
         if trainer.od_pbar is None:
@@ -1072,17 +1191,12 @@ def _make_teacher_trainer(
 
     def on_fit_epoch_end(trainer: Any) -> None:
         epoch_index = int(trainer.epoch) + 1
-        epoch_payload = {
-            "train": {
-                "loss": {
-                    key.split("/", 1)[-1]: value
-                    for key, value in trainer.label_loss_items(trainer.tloss, prefix="train").items()
-                },
-                "profile_sec": trainer.od_profile_history[-1]["timing_profile"] if trainer.od_profile_history else {},
-            },
-            "lr": dict(getattr(trainer, "lr", {})),
-            "val": dict(getattr(trainer, "metrics", {})),
-        }
+        epoch_payload = _build_epoch_tensorboard_payload(
+            losses=trainer.label_loss_items(trainer.tloss, prefix="train"),
+            profile_summary=trainer.od_profile_history[-1]["timing_profile"] if trainer.od_profile_history else {},
+            lr_values=dict(getattr(trainer, "lr", {})),
+            metrics=dict(getattr(trainer, "metrics", {})),
+        )
         _write_tensorboard_scalars(
             trainer.od_tensorboard_writer,
             "epoch",
