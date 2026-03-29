@@ -8,7 +8,7 @@
 - debug overlay
 - loss design spec
 
-## phase 1 next
+## phase 1 scope
 
 ### 0. full-run hardening
 
@@ -46,7 +46,7 @@
 
 ### 4. trunk adapter
 
-- official `yolo26n.pt` load path 결정
+- official `yolo26n.pt` load path 구현
 - backbone/neck parameter mapping 작성
 - partial load verification 추가
 

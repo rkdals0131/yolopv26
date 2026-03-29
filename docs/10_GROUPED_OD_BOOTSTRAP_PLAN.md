@@ -15,26 +15,26 @@
 - 각 모델은 자기에게 지정된 class와 지정된 dataset으로 먼저 파인튜닝한다.
 - 이 단계에서 각 dataset의 원본 OD label은 ground truth로 취급한다.
 - raw source label이 우선이다.
-- full confidence calibration은 초기에 넣지 않는다.
-- 개발 시작 baseline은 `yolov26n`으로 고정한다.
+- calibration 단계는 별도 경로로 유지하고, teacher val split 기준 class policy를 보정한다.
+- teacher train config는 `yolo26n`과 `yolo26s`를 둘 다 제공한다.
 
 ## three independent models
 
 ### 1. mobility model
 
-- base: `yolov26n`
+- base: `yolo26n` 기본, `yolo26s` 대안 config도 제공
 - classes: `vehicle`, `bike`, `pedestrian`
 - first fine-tune dataset: `bdd100k_det_100k`
 
 ### 2. signal model
 
-- base: `yolov26n`
+- base: `yolo26n` 기본, `yolo26s` 대안 config도 제공
 - classes: `traffic_light`, `sign`
 - first fine-tune dataset: `aihub_traffic_seoul`
 
 ### 3. obstacle model
 
-- base: `yolov26n`
+- base: `yolo26n` 기본, `yolo26s` 대안 config도 제공
 - classes: `traffic_cone`, `obstacle`
 - first fine-tune dataset: `aihub_obstacle_seoul`
 
@@ -51,14 +51,14 @@
 
 ## initial class policy
 
-- full confidence calibration은 보류한다.
-- 대신 초기 버전부터 class별 policy는 고정한다.
+- 초기 버전부터 class별 policy template을 두고 calibration run에서 score/NMS/min-size를 teacher val split 기준으로 보정한다.
 - 최소한 아래는 초기에 바로 둔다.
   - class별 score threshold
   - class별 NMS 기준
   - class별 minimum box size
 - `traffic_light`, `sign`, `traffic_cone`, `obstacle`는 같은 threshold로 밀지 않는다.
 - obstacle 계열은 더 보수적으로 잡는다.
+- calibration 결과와 `hard_negative_manifest.json`은 다음 보정 run의 입력으로 재사용한다.
 
 ## box provenance requirement
 
@@ -162,7 +162,7 @@ AIHUB obstacle source의 canonical detector mapping은 이미 고정돼 있다.
 - 이 산출물은 PV26 detector 재학습 입력으로 사용한다.
 - 최종 배포 후보는 bootstrap detector 3개가 아니라, exhaustive OD set으로 다시 학습한 PV26 detector다.
 
-## first implementation scope
+## implemented scope
 
 1. mobility / signal / obstacle detector용 train spec 분리
 2. class별 threshold / NMS / min-size policy 정의

@@ -30,10 +30,10 @@
 
 - source: `도로장애물·표면 인지 영상(수도권)`
 - V1 목적은 `traffic_cone / obstacle` supervision 보강이다.
-- planned detector remap
+- detector remap
   - `Traffic cone -> traffic_cone`
   - `Animals(Dolls) / Garbage bag & sacks / Box / Stones on road / Construction signs & Parking prohibited board -> obstacle`
-- planned exclusion
+- current exclusion
   - `Person`
   - `Manhole`
   - `Pothole on road`
