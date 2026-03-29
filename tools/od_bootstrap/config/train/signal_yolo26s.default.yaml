@@ -28,7 +28,7 @@ train:
   amp: true
   optimizer: auto
   seed: 0
-  resume: true
+  resume: false
   val: true
   save_period: 10
   log_every_n_steps: 20

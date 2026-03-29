@@ -109,9 +109,12 @@ def _extract_teacher_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     entry_by_path = {str(entry.image_path.resolve()): entry for entry in batch_entries}
-    for result in results:
+    for result_index, result in enumerate(results):
         result_path = str(Path(str(getattr(result, "path", ""))).resolve())
         entry = entry_by_path.get(result_path)
+        if entry is None and result_index < len(batch_entries):
+            # Ultralytics may rewrite per-item list inputs to synthetic names such as image0.jpg.
+            entry = batch_entries[result_index]
         if entry is None:
             continue
         orig_shape = getattr(result, "orig_shape", None)

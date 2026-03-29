@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections import Counter
 import json
 from dataclasses import asdict, dataclass, field
@@ -1091,8 +1092,21 @@ def run_meta_train_scenario(
     }
 
 
-def main() -> None:
-    scenario_path = Path(ENTRY_CONFIG.scenario_path).resolve()
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the PV26 meta-train scenario.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=ENTRY_CONFIG.scenario_path,
+        help="Path to a meta-train scenario YAML file.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    scenario_path = Path(args.config).resolve()
     if not scenario_path.is_file():
         raise SystemExit(f"meta_train scenario not found: {scenario_path}")
     scenario = load_meta_train_scenario(scenario_path)

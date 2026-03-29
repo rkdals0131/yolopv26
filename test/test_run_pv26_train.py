@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import textwrap
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from tools.run_pv26_train import (
     PhaseConfig,
@@ -16,6 +19,7 @@ from tools.run_pv26_train import (
     _sample_preview_selection,
     _scenario_phase_defaults,
     load_meta_train_scenario,
+    main,
 )
 
 
@@ -123,6 +127,27 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                 "aihub_lane_seoul",
             ),
         )
+
+    def test_load_exhaustive_od_lane_smoke_scenario_uses_smoke_root(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        scenario_path = (
+            repo_root / "tools" / "od_bootstrap" / "config" / "pv26_train" / "pv26_exhaustive_od_lane.smoke.yaml"
+        )
+
+        scenario = load_meta_train_scenario(scenario_path)
+
+        self.assertFalse(scenario.dataset.include_bdd)
+        self.assertEqual(
+            scenario.dataset.aihub_root,
+            (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset_smoke").resolve(),
+        )
+        self.assertEqual(
+            scenario.run.run_root,
+            (repo_root / "runs" / "pv26_exhaustive_od_lane_train_smoke").resolve(),
+        )
+        self.assertEqual(scenario.train_defaults.train_batches, 4)
+        self.assertEqual(scenario.train_defaults.val_batches, 2)
+        self.assertEqual(scenario.preview.max_samples_per_dataset, 1)
 
     def test_load_meta_train_scenario_rejects_invalid_stage_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -367,6 +392,25 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             [item["meta"]["sample_id"] for item in selected],
             ["val_a", "val_b"],
         )
+
+    def test_main_accepts_config_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scenario_path = Path(temp_dir) / "smoke.yaml"
+            scenario_path.write_text("phases: []\n", encoding="utf-8")
+            loaded_scenario = SimpleNamespace()
+
+            with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario) as mocked_load:
+                with patch(
+                    "tools.run_pv26_train.run_meta_train_scenario",
+                    return_value={"status": "ok", "scenario_path": str(scenario_path)},
+                ) as mocked_run:
+                    buffer = io.StringIO()
+                    with redirect_stdout(buffer):
+                        main(["--config", str(scenario_path)])
+
+            mocked_load.assert_called_once_with(scenario_path.resolve())
+            mocked_run.assert_called_once_with(loaded_scenario, scenario_path=scenario_path.resolve())
+            self.assertIn('"status": "ok"', buffer.getvalue())
 
 
 if __name__ == "__main__":
