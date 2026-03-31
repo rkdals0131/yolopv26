@@ -30,13 +30,13 @@ class EntryConfig:
 # =============================================================================
 ENTRY_CONFIG = EntryConfig(
     # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26n.default.yaml",
-    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26s.default.yaml",
+    scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26s.default.yaml",
 
     # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "signal_yolo26n.default.yaml",
     # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "signal_yolo26s.default.yaml",
 
     # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "obstacle_yolo26n.default.yaml",
-    scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "obstacle_yolo26s.default.yaml",
+    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "obstacle_yolo26s.default.yaml",
 )
 # =============================================================================
 

@@ -1,23 +1,23 @@
-teacher_name: signal
+teacher_name: obstacle
 run:
   output_root: ../../../../runs/od_bootstrap/train
   exist_ok: true
 dataset:
-  root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/signal
+  root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/obstacle
   image_dir: images
   label_dir: labels
   train_split: train
   val_split: val
 model:
-  model_size: s
-  weights: yolo26s.pt
+  model_size: m
+  weights: yolo26m.pt
   class_names:
-    - traffic_light
-    - sign
+    - traffic_cone
+    - obstacle
 train:
-  epochs: 200
+  epochs: 100
   imgsz: 640
-  batch: 20
+  batch: 12
   device: cuda:0
   workers: 8
   pin_memory: true
