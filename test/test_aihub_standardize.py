@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import tempfile
 import unittest
@@ -321,6 +322,36 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(second_datasets["aihub_obstacle_seoul"]["fresh_processed_count"], 0)
             self.assertEqual(second_datasets["aihub_traffic_seoul"]["resume_skipped_count"], 1)
             self.assertEqual(second_datasets["aihub_traffic_seoul"]["fresh_processed_count"], 1)
+
+    def test_parallel_standardize_logs_submit_progress_before_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+            log_stream = io.StringIO()
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+
+            run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+                log_stream=log_stream,
+            )
+
+            logs = log_stream.getvalue()
+            self.assertIn("stage=parallel_standardize submit_progress=1/", logs)
+            self.assertIn("stage=parallel_standardize waiting_for_results submitted=", logs)
 
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")

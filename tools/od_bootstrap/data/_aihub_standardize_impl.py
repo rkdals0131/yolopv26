@@ -10,7 +10,7 @@ import tarfile
 import time
 import zipfile
 from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
@@ -114,6 +114,8 @@ DEBUG_VIS_REASON_COLORS = {
     "unrecognized": "#ffe066",
     "invalid_bbox": "#ff5a5f",
 }
+PARALLEL_SUBMIT_LOG_INTERVAL = 5_000
+PARALLEL_WAIT_HEARTBEAT_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -2040,41 +2042,68 @@ def run_standardization(
     progress_counters = Counter()
     if pending_tasks:
         with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
-            future_map = {executor.submit(_worker_entry, task): task for task in pending_tasks}
-            for future in as_completed(future_map):
-                task = future_map[future]
-                try:
-                    summary = future.result()
-                except Exception as exc:
-                    failures.append(
-                        {
-                            "dataset_kind": task.dataset_kind,
-                            "dataset_key": task.output_dataset_key,
-                            "split": task.pair.split,
-                            "raw_id": task.pair.relative_id,
-                            "image_path": str(task.pair.image_path),
-                            "label_path": str(task.pair.label_path),
-                            "error_type": type(exc).__name__,
-                            "error_message": str(exc),
-                        }
-                    )
+            future_map = {}
+            for index, task in enumerate(pending_tasks, start=1):
+                future_map[executor.submit(_worker_entry, task)] = task
+                if index == 1 or index == len(pending_tasks) or index % PARALLEL_SUBMIT_LOG_INTERVAL == 0:
                     logger.info(
-                        f"stage=parallel_standardize error dataset={task.dataset_kind} sample={task.pair.relative_id} error={exc}"
+                        f"stage=parallel_standardize submit_progress={index}/{len(pending_tasks)} "
+                        f"workers={workers} queued={len(future_map)}"
                     )
-                    completed += 1
-                    progress_counters["failed"] += 1
-                    logger.progress(completed, dict(progress_counters), force=True)
+
+            logger.info(
+                f"stage=parallel_standardize waiting_for_results submitted={len(future_map)} "
+                f"completed={completed} heartbeat_interval_s={PARALLEL_WAIT_HEARTBEAT_SECONDS:.0f}"
+            )
+
+            pending_futures = set(future_map)
+            while pending_futures:
+                done, pending_futures = wait(
+                    pending_futures,
+                    timeout=PARALLEL_WAIT_HEARTBEAT_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    logger.info(
+                        f"stage=parallel_standardize heartbeat completed={completed}/{len(future_map)} "
+                        f"pending={len(pending_futures)} workers={workers}"
+                    )
                     continue
-                summaries.append(summary)
-                completed += 1
-                progress_counters["samples"] = completed
-                progress_counters["detections"] += summary["det_count"]
-                progress_counters["lanes"] += summary["lane_count"]
-                progress_counters["stop_lines"] += summary["stop_line_count"]
-                progress_counters["crosswalks"] += summary["crosswalk_count"]
-                progress_counters["tl_valid"] += summary["tl_attr_valid_count"]
-                progress_counters["held"] += sum(summary["held_reason_counts"].values())
-                logger.progress(completed, dict(progress_counters))
+
+                for future in done:
+                    task = future_map[future]
+                    try:
+                        summary = future.result()
+                    except Exception as exc:
+                        failures.append(
+                            {
+                                "dataset_kind": task.dataset_kind,
+                                "dataset_key": task.output_dataset_key,
+                                "split": task.pair.split,
+                                "raw_id": task.pair.relative_id,
+                                "image_path": str(task.pair.image_path),
+                                "label_path": str(task.pair.label_path),
+                                "error_type": type(exc).__name__,
+                                "error_message": str(exc),
+                            }
+                        )
+                        logger.info(
+                            f"stage=parallel_standardize error dataset={task.dataset_kind} sample={task.pair.relative_id} error={exc}"
+                        )
+                        completed += 1
+                        progress_counters["failed"] += 1
+                        logger.progress(completed, dict(progress_counters), force=True)
+                        continue
+                    summaries.append(summary)
+                    completed += 1
+                    progress_counters["samples"] = completed
+                    progress_counters["detections"] += summary["det_count"]
+                    progress_counters["lanes"] += summary["lane_count"]
+                    progress_counters["stop_lines"] += summary["stop_line_count"]
+                    progress_counters["crosswalks"] += summary["crosswalk_count"]
+                    progress_counters["tl_valid"] += summary["tl_attr_valid_count"]
+                    progress_counters["held"] += sum(summary["held_reason_counts"].values())
+                    logger.progress(completed, dict(progress_counters))
         logger.progress(completed, dict(progress_counters), force=True)
     else:
         logger.progress(0, {"samples": 0, "failed": 0}, force=True)

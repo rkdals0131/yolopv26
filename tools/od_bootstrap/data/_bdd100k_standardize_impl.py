@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
@@ -20,6 +20,8 @@ from ._raw_source_common import (
     _seg_dataset_root,
 )
 from ._aihub_standardize_impl import (
+    PARALLEL_SUBMIT_LOG_INTERVAL,
+    PARALLEL_WAIT_HEARTBEAT_SECONDS,
     LiveLogger,
     _bbox_to_yolo_line,
     _counter_to_dict,
@@ -962,38 +964,65 @@ def run_standardization(
     completed = 0
     if pending_tasks:
         with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
-            future_map = {executor.submit(_worker_entry, task): task for task in pending_tasks}
-            for future in as_completed(future_map):
-                task = future_map[future]
-                try:
-                    summary = future.result()
-                except Exception as exc:
-                    failures.append(
-                        {
-                            "dataset_key": OUTPUT_DATASET_KEY,
-                            "split": task.pair.split,
-                            "raw_id": task.pair.relative_id,
-                            "image_path": str(task.pair.image_path),
-                            "label_path": str(task.pair.label_path),
-                            "error_type": type(exc).__name__,
-                            "error_message": str(exc),
-                        }
-                    )
+            future_map = {}
+            for index, task in enumerate(pending_tasks, start=1):
+                future_map[executor.submit(_worker_entry, task)] = task
+                if index == 1 or index == len(pending_tasks) or index % PARALLEL_SUBMIT_LOG_INTERVAL == 0:
                     logger.info(
-                        f"stage=parallel_standardize error split={task.pair.split} sample={task.pair.relative_id} error={exc}"
+                        f"stage=parallel_standardize submit_progress={index}/{len(pending_tasks)} "
+                        f"workers={workers} queued={len(future_map)}"
                     )
-                    completed += 1
-                    progress["failed"] += 1
-                    logger.progress(completed, dict(progress), force=True)
+
+            logger.info(
+                f"stage=parallel_standardize waiting_for_results submitted={len(future_map)} "
+                f"completed={completed} heartbeat_interval_s={PARALLEL_WAIT_HEARTBEAT_SECONDS:.0f}"
+            )
+
+            pending_futures = set(future_map)
+            while pending_futures:
+                done, pending_futures = wait(
+                    pending_futures,
+                    timeout=PARALLEL_WAIT_HEARTBEAT_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    logger.info(
+                        f"stage=parallel_standardize heartbeat completed={completed}/{len(future_map)} "
+                        f"pending={len(pending_futures)} workers={workers}"
+                    )
                     continue
-                summaries.append(summary)
-                completed += 1
-                progress["samples"] = completed
-                progress["detections"] += summary["det_count"]
-                progress["traffic_lights"] += summary["traffic_light_count"]
-                progress["traffic_signs"] += summary["traffic_sign_count"]
-                progress["held"] += sum(summary["held_reason_counts"].values())
-                logger.progress(completed, dict(progress))
+
+                for future in done:
+                    task = future_map[future]
+                    try:
+                        summary = future.result()
+                    except Exception as exc:
+                        failures.append(
+                            {
+                                "dataset_key": OUTPUT_DATASET_KEY,
+                                "split": task.pair.split,
+                                "raw_id": task.pair.relative_id,
+                                "image_path": str(task.pair.image_path),
+                                "label_path": str(task.pair.label_path),
+                                "error_type": type(exc).__name__,
+                                "error_message": str(exc),
+                            }
+                        )
+                        logger.info(
+                            f"stage=parallel_standardize error split={task.pair.split} sample={task.pair.relative_id} error={exc}"
+                        )
+                        completed += 1
+                        progress["failed"] += 1
+                        logger.progress(completed, dict(progress), force=True)
+                        continue
+                    summaries.append(summary)
+                    completed += 1
+                    progress["samples"] = completed
+                    progress["detections"] += summary["det_count"]
+                    progress["traffic_lights"] += summary["traffic_light_count"]
+                    progress["traffic_signs"] += summary["traffic_sign_count"]
+                    progress["held"] += sum(summary["held_reason_counts"].values())
+                    logger.progress(completed, dict(progress))
         logger.progress(completed, dict(progress), force=True)
     else:
         logger.progress(0, {"samples": 0}, force=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import tempfile
 import unittest
@@ -179,6 +180,31 @@ class BDD100KStandardizationTests(unittest.TestCase):
             self.assertEqual(second_failures["failure_count"], 0)
             self.assertEqual(second_report["dataset"]["resume_skipped_count"], 3)
             self.assertEqual(second_report["dataset"]["fresh_processed_count"], 1)
+
+    def test_parallel_standardize_logs_submit_progress_before_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+            log_stream = io.StringIO()
+
+            self._create_bdd_fixture(images_root, labels_root)
+
+            run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+                log_stream=log_stream,
+            )
+
+            logs = log_stream.getvalue()
+            self.assertIn("stage=parallel_standardize submit_progress=1/", logs)
+            self.assertIn("stage=parallel_standardize waiting_for_results submitted=", logs)
 
     def _create_bdd_fixture(self, images_root: Path, labels_root: Path) -> None:
         samples = {
