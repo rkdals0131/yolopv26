@@ -17,7 +17,7 @@ try:
 except ImportError:  # pragma: no cover
     YOLO = None
 
-from tools.od_bootstrap.common import iou
+from common.boxes import iou
 from .policy import apply_policy_to_predictions, class_policy_to_dict
 from ..data.sweep_types import ClassPolicy
 from .calibration_types import CalibrationScenario, CalibrationTeacherConfig, HardNegativeConfig

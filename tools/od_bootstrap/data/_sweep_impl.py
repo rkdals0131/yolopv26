@@ -11,7 +11,7 @@ try:
 except ImportError:  # pragma: no cover
     YOLO = None
 
-from tools.od_bootstrap.common import nms_rows
+from common.boxes import nms_rows
 from .artifacts import (
     RunManifest,
     TeacherJobManifest,

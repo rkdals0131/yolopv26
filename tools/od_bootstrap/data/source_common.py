@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.od_bootstrap.common import resolve_path
+from common.paths import resolve_path
 from tools.od_bootstrap.data.source_prep import (
     BOOTSTRAP_SOURCE_KEYS,
     EXCLUDED_SOURCE_KEYS,
