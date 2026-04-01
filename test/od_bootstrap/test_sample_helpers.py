@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.data.checkpoint_audit import TeacherCheckpointSpec, audit_teacher_checkpoints
-from tools.od_bootstrap.data.review import canonical_scene_to_overlay_scene, render_overlay, render_review_bundle, select_review_rows
-from tools.od_bootstrap.data.sample_manifest import select_sample_entries, summarize_entries
-from tools.od_bootstrap.data.image_list import ImageListEntry
+from tools.od_bootstrap.build.checkpoint_audit import TeacherCheckpointSpec, audit_teacher_checkpoints
+from tools.od_bootstrap.build.review import canonical_scene_to_overlay_scene, render_overlay, render_review_bundle, select_review_rows
+from tools.od_bootstrap.build.sample_manifest import select_sample_entries, summarize_entries
+from tools.od_bootstrap.build.image_list import ImageListEntry
 
 
 class _FakeCheckpointModel(torch.nn.Module):
@@ -230,7 +230,7 @@ class ODBootstrapSampleHelpersTests(unittest.TestCase):
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_bytes(b"png")
 
-            with patch("tools.od_bootstrap.data.review.render_overlay", side_effect=_fake_render):
+            with patch("tools.od_bootstrap.build.review.render_overlay", side_effect=_fake_render):
                 summary = render_review_bundle(
                     manifest_path=manifest_path,
                     output_root=output_root,

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.data.final_dataset import build_pv26_exhaustive_od_lane_dataset
+from tools.od_bootstrap.build.final_dataset import build_pv26_exhaustive_od_lane_dataset
 
 
 def _write_text(path: Path, contents: str) -> None:

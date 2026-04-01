@@ -6,17 +6,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from tools.od_bootstrap.data.debug_vis import (
+from tools.od_bootstrap.build.debug_vis import (
     DEFAULT_DEBUG_VIS_COUNT,
     DEFAULT_DEBUG_VIS_SEED,
     generate_canonical_debug_vis,
     generate_exhaustive_debug_vis,
     generate_teacher_dataset_debug_vis,
 )
-from tools.od_bootstrap.data.final_dataset import build_pv26_exhaustive_od_lane_dataset
-from tools.od_bootstrap.data.source_common import CanonicalSourceBundle, prepare_od_bootstrap_sources
-from tools.od_bootstrap.data.teacher_dataset import build_teacher_datasets
-from tools.od_bootstrap.data.sweep import run_model_centric_sweep_scenario
+from tools.od_bootstrap.build.final_dataset import build_pv26_exhaustive_od_lane_dataset
+from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
+from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
+from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
+from tools.od_bootstrap.source.types import CanonicalSourceBundle
 from tools.od_bootstrap.presets import (
     build_calibration_preset,
     build_default_source_preset,

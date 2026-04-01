@@ -27,7 +27,7 @@ from common.pv26_schema import (
     OD_CLASS_TO_ID,
     TL_BITS,
 )
-from ._raw_source_common import (
+from .raw_common import (
     LANE_DATASET_KEY as DISCOVERY_LANE_KEY,
     OBSTACLE_DATASET_KEY as DISCOVERY_OBSTACLE_KEY,
     TRAFFIC_DATASET_KEY as DISCOVERY_TRAFFIC_KEY,

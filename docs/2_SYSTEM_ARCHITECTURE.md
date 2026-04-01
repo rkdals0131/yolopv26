@@ -29,18 +29,21 @@ tools/
   check_env.py
   run_pv26_train.py
   od_bootstrap/
-    common/
-      boxes.py
-      paths.py
-    data/
+    source/
       aihub.py
       bdd100k.py
+      prepare.py
+      raw_common.py
+      types.py
+    build/
+      checkpoint_audit.py
       debug_vis.py
       exhaustive_od.py
       final_dataset.py
       image_list.py
       review.py
-      source_prep.py
+      sample_manifest.py
+      sweep.py
       teacher_dataset.py
     teacher/
       calibrate.py
@@ -79,7 +82,7 @@ docs/
 
 ```text
 AIHUB raw
-  -> tools.od_bootstrap.data.aihub / bdd100k
+  -> tools.od_bootstrap.source.aihub / bdd100k
   -> canonical bundle
   -> teacher dataset build
   -> teacher train / eval / calibrate
@@ -121,4 +124,5 @@ AIHUB raw
 - `model/data`는 runtime dataset, transform, preview, sampler, target encoding을 다룬다.
 - `model/net`은 trunk/head 구조를 다룬다.
 - `model/engine`은 loss / metrics / postprocess / trainer / evaluator를 다룬다.
-- `tools/od_bootstrap/data`는 raw canonicalization, teacher dataset, exhaustive OD, final dataset, debug tooling을 다룬다.
+- `tools/od_bootstrap/source`는 raw canonicalization과 source typing을 다룬다.
+- `tools/od_bootstrap/build`는 teacher dataset, exhaustive OD, final dataset, review/debug tooling을 다룬다.

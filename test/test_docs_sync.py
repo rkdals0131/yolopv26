@@ -113,7 +113,7 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
         architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
-        self.assertIn("tools.od_bootstrap.data.aihub / bdd100k", architecture_doc)
+        self.assertIn("tools.od_bootstrap.source.aihub / bdd100k", architecture_doc)
         self.assertIn("model/data", architecture_doc)
         self.assertIn("model/net", architecture_doc)
         self.assertIn("model/engine", architecture_doc)

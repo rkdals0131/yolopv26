@@ -16,11 +16,11 @@ from common.user_config import (
     nested_get,
     resolve_repo_path,
 )
-from tools.od_bootstrap.data.source_common import (
+from tools.od_bootstrap.source.types import (
     SourcePrepConfig,
     SourceRoots,
 )
-from tools.od_bootstrap.data.sweep_types import (
+from tools.od_bootstrap.build.sweep_types import (
     BootstrapSweepScenario,
     ClassPolicy,
     ImageListConfig,

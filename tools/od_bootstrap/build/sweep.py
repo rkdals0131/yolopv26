@@ -267,4 +267,11 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
     return summary
 
 
-__all__ = ["run_model_centric_sweep_scenario"]
+__all__ = [
+    "BootstrapSweepScenario",
+    "ClassPolicy",
+    "TeacherConfig",
+    "YOLO",
+    "_extract_teacher_rows",
+    "run_model_centric_sweep_scenario",
+]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from tools.od_bootstrap.teacher.policy import apply_policy_to_predictions, row_passes_policy
-from tools.od_bootstrap.data.sweep import ClassPolicy
+from tools.od_bootstrap.build.sweep_types import ClassPolicy
 
 
 class ODBootstrapPolicyTests(unittest.TestCase):

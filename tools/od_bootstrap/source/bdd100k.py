@@ -9,7 +9,7 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from ._raw_source_common import (
+from .raw_common import (
     IMAGE_EXTENSIONS,
     PairRecord,
     _env_path,
@@ -19,7 +19,7 @@ from ._raw_source_common import (
     _safe_slug,
     _seg_dataset_root,
 )
-from ._aihub_standardize_impl import (
+from .aihub import (
     PARALLEL_INFLIGHT_CHUNKS_PER_WORKER,
     PARALLEL_SUBMIT_LOG_INTERVAL,
     PARALLEL_WAIT_HEARTBEAT_SECONDS,

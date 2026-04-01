@@ -9,7 +9,7 @@ from pathlib import Path
 
 class PV26PortabilityRuntimeTests(unittest.TestCase):
     def test_standardization_defaults_follow_repo_root(self) -> None:
-        from tools.od_bootstrap.data import aihub, bdd100k
+        from tools.od_bootstrap.source import aihub, bdd100k
 
         repo_root = Path(aihub.__file__).resolve().parents[3]
         self.assertEqual(aihub.DEFAULT_REPO_ROOT, repo_root)

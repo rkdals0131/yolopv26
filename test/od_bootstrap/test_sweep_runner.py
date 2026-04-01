@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.data.image_list import ImageListEntry, build_sample_uid
-from tools.od_bootstrap.data.sweep import ClassPolicy, TeacherConfig, run_model_centric_sweep_scenario
+from tools.od_bootstrap.build.image_list import ImageListEntry, build_sample_uid
+from tools.od_bootstrap.build.sweep import _extract_teacher_rows, run_model_centric_sweep_scenario
+from tools.od_bootstrap.build.sweep_types import ClassPolicy, TeacherConfig
 from tools.od_bootstrap.presets import build_sweep_preset
-from tools.od_bootstrap.data._sweep_impl import _extract_teacher_rows
 
 
 TEST_CLASS_POLICY = {
@@ -247,7 +247,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                 class_policy_path=root / "class_policy.yaml",
                 class_policy=TEST_CLASS_POLICY,
             )
-            with patch("tools.od_bootstrap.data.sweep.YOLO", _FakeYOLO):
+            with patch("tools.od_bootstrap.build.sweep.YOLO", _FakeYOLO):
                 summary = run_model_centric_sweep_scenario(scenario, scenario_path=root / "preset_sweep")
             run_dir = Path(summary["run_dir"])
 

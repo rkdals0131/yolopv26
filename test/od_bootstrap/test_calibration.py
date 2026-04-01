@@ -19,7 +19,7 @@ from tools.od_bootstrap.teacher.calibration_types import (
 )
 from tools.od_bootstrap.presets import build_calibration_preset
 from tools.od_bootstrap.teacher.calibrate import calibrate_class_policy_scenario
-from tools.od_bootstrap.data.sweep_types import ClassPolicy
+from tools.od_bootstrap.build.sweep_types import ClassPolicy
 
 
 class _FakeYOLO:

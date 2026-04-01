@@ -24,6 +24,8 @@ __pycache__/
 dist/
 build/
 *.so
+!tools/od_bootstrap/build/
+!tools/od_bootstrap/build/*.py
 
 # ----- Virtual environments -----
 venv/
@@ -55,3 +57,5 @@ results/
 build/
 install/
 log/
+!tools/od_bootstrap/build/
+!tools/od_bootstrap/build/*.py

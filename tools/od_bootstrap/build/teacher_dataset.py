@@ -12,7 +12,7 @@ from common.pv26_schema import OD_CLASSES
 from .image_list import build_sample_uid
 
 from .debug_vis import DEFAULT_DEBUG_VIS_SEED, generate_teacher_dataset_debug_vis
-from .source_prep import BOOTSTRAP_SOURCE_KEYS, CanonicalSourceBundle
+from ..source.types import BOOTSTRAP_SOURCE_KEYS, CanonicalSourceBundle
 
 
 TEACHER_DATASET_SPECS = {

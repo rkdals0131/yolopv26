@@ -10,13 +10,14 @@ from unittest.mock import patch
 from PIL import Image
 
 from tools.od_bootstrap import main as od_bootstrap_main
-from tools.od_bootstrap.data.source_common import SourcePrepConfig, SourceRoots, prepare_od_bootstrap_sources
-from tools.od_bootstrap.presets import build_default_source_preset
-from tools.od_bootstrap.data.source_prep import (
+from tools.od_bootstrap.source.prepare import (
     AIHUB_LANE_DIRNAME,
     AIHUB_OBSTACLE_DIRNAME,
     AIHUB_TRAFFIC_DIRNAME,
+    prepare_od_bootstrap_sources,
 )
+from tools.od_bootstrap.source.types import SourcePrepConfig, SourceRoots
+from tools.od_bootstrap.presets import build_default_source_preset
 
 
 class ODBootstrapSourcePrepTests(unittest.TestCase):
@@ -54,11 +55,11 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             fake_aihub_outputs = {"output_root": output_root / "canonical" / "aihub_standardized"}
             with (
                 patch(
-                    "tools.od_bootstrap.data.source_prep.run_bdd_standardization",
+                    "tools.od_bootstrap.source.prepare.run_bdd_standardization",
                     return_value=fake_bdd_outputs,
                 ) as mock_bdd,
                 patch(
-                    "tools.od_bootstrap.data.source_prep.run_aihub_standardization",
+                    "tools.od_bootstrap.source.prepare.run_aihub_standardization",
                     return_value=fake_aihub_outputs,
                 ) as mock_aihub,
             ):
@@ -142,8 +143,8 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             fake_bdd_outputs = {"output_root": bdd_canonical_root}
             fake_aihub_outputs = {"output_root": aihub_canonical_root}
             with (
-                patch("tools.od_bootstrap.data.source_prep.run_bdd_standardization", return_value=fake_bdd_outputs),
-                patch("tools.od_bootstrap.data.source_prep.run_aihub_standardization", return_value=fake_aihub_outputs),
+                patch("tools.od_bootstrap.source.prepare.run_bdd_standardization", return_value=fake_bdd_outputs),
+                patch("tools.od_bootstrap.source.prepare.run_aihub_standardization", return_value=fake_aihub_outputs),
             ):
                 result = prepare_od_bootstrap_sources(config)
 

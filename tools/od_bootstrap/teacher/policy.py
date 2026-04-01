@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 from common.boxes import box_size, iou, nms_rows
 
-from ..data.sweep_types import ClassPolicy
+from ..build.sweep_types import ClassPolicy
 
 
 def class_policy_to_dict(policy: ClassPolicy) -> dict[str, Any]:

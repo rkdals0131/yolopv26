@@ -10,8 +10,8 @@ import torch
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES
 from model.data import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
-from tools.od_bootstrap.data.aihub import run_standardization as run_aihub_standardization
-from tools.od_bootstrap.data.bdd100k import run_standardization as run_bdd_standardization
+from tools.od_bootstrap.source.aihub import run_standardization as run_aihub_standardization
+from tools.od_bootstrap.source.bdd100k import run_standardization as run_bdd_standardization
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:

@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.data.source_common import CanonicalSourceBundle
-from tools.od_bootstrap.data.teacher_dataset import build_teacher_datasets
+from tools.od_bootstrap.source.types import CanonicalSourceBundle
+from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:

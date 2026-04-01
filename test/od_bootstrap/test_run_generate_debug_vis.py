@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from tools.od_bootstrap import main as od_bootstrap_main
-from tools.od_bootstrap.data.image_list import build_sample_uid
+from tools.od_bootstrap.build.image_list import build_sample_uid
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:

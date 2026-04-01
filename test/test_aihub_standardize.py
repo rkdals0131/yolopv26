@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.data.aihub import (
+from tools.od_bootstrap.source.aihub import (
     TL_BITS,
     _prepare_debug_scene_for_overlay,
     _select_debug_vis_summaries,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.od_bootstrap.data.sweep_types import ClassPolicy
+from tools.od_bootstrap.build.sweep_types import ClassPolicy
 
 
 @dataclass(frozen=True)

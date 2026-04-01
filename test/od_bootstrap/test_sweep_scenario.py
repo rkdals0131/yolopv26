@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.od_bootstrap.data.sweep_types import REQUIRED_TEACHER_ORDER
+from tools.od_bootstrap.build.sweep_types import REQUIRED_TEACHER_ORDER
 from tools.od_bootstrap.presets import build_sweep_preset
 
 
