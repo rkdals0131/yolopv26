@@ -16,7 +16,17 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from ..viz.overlay import render_overlay
+from common.overlay import render_overlay
+from common.pv26_schema import (
+    AIHUB_LANE_DATASET_KEY,
+    AIHUB_OBSTACLE_DATASET_KEY,
+    AIHUB_TRAFFIC_DATASET_KEY,
+    LANE_CLASSES,
+    LANE_TYPES,
+    OD_CLASSES,
+    OD_CLASS_TO_ID,
+    TL_BITS,
+)
 from .aihub_common import (
     LANE_DATASET_KEY as DISCOVERY_LANE_KEY,
     OBSTACLE_DATASET_KEY as DISCOVERY_OBSTACLE_KEY,
@@ -53,22 +63,9 @@ CACHE_DIR_NAME = "_cache"
 DEBUG_VIS_DIRNAME = "debug_vis"
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
-OUTPUT_LANE_KEY = "aihub_lane_seoul"
-OUTPUT_OBSTACLE_KEY = "aihub_obstacle_seoul"
-OUTPUT_TRAFFIC_KEY = "aihub_traffic_seoul"
-OD_CLASSES = [
-    "vehicle",
-    "bike",
-    "pedestrian",
-    "traffic_cone",
-    "obstacle",
-    "traffic_light",
-    "sign",
-]
-OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
-LANE_CLASSES = ["white_lane", "yellow_lane", "blue_lane"]
-LANE_TYPES = ["solid", "dotted"]
-TL_BITS = ["red", "yellow", "green", "arrow"]
+OUTPUT_LANE_KEY = AIHUB_LANE_DATASET_KEY
+OUTPUT_OBSTACLE_KEY = AIHUB_OBSTACLE_DATASET_KEY
+OUTPUT_TRAFFIC_KEY = AIHUB_TRAFFIC_DATASET_KEY
 README_TREE_DEPTH = 3
 MAX_TREE_LINES = 96
 DOCUMENTED_STATS = {

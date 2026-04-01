@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable
 import torch
 from torch.utils.data import Dataset
 
-from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
+from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 from .transform import (
     NETWORK_HW,
     LetterboxTransform,

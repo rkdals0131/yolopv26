@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 import yaml
 
-from model.preprocess.aihub_standardize import OD_CLASS_TO_ID, OD_CLASSES
+from common.pv26_schema import OD_CLASS_TO_ID, OD_CLASSES
 
 from .artifacts import BoxProvenance
 from .image_list import ImageListEntry

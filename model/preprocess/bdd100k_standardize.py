@@ -21,7 +21,6 @@ from .aihub_common import (
 )
 from .aihub_standardize import (
     LiveLogger,
-    TL_BITS,
     _bbox_to_yolo_line,
     _counter_to_dict,
     _default_workers,
@@ -31,6 +30,7 @@ from .aihub_standardize import (
     _write_json,
     _write_text,
 )
+from common.pv26_schema import BDD100K_DATASET_KEY, OD_CLASSES, OD_CLASS_TO_ID, TL_BITS
 
 PIPELINE_VERSION = "pv26-bdd100k-standardize-v2"
 SCENE_VERSION = "pv26-scene-bdd100k-v2"
@@ -42,7 +42,7 @@ DEFAULT_LABELS_ROOT = DEFAULT_BDD_ROOT / "bdd100k_labels" / "100k"
 DEFAULT_OUTPUT_ROOT = _env_path("PV26_BDD_OUTPUT_ROOT", DEFAULT_BDD_ROOT.parent / "pv26_bdd100k_standardized")
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
-OUTPUT_DATASET_KEY = "bdd100k_det_100k"
+OUTPUT_DATASET_KEY = BDD100K_DATASET_KEY
 BDD_SPLITS = ("train", "val", "test")
 HELD_ANNOTATION_LIMIT = 32
 OFFICIAL_SPLIT_SIZES = {
@@ -50,16 +50,6 @@ OFFICIAL_SPLIT_SIZES = {
     "val": 10_000,
     "test": 20_000,
 }
-OD_CLASSES = [
-    "vehicle",
-    "bike",
-    "pedestrian",
-    "traffic_cone",
-    "obstacle",
-    "traffic_light",
-    "sign",
-]
-OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
 BDD_CATEGORY_ALIASES = {
     "bike": "bicycle",
     "motor": "motorcycle",

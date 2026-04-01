@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from ..preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
+from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
 SPEC_VERSION = "pv26-loss-v4"
 

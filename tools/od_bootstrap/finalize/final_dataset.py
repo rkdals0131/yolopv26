@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from model.preprocess.aihub_standardize import OD_CLASSES
+from common.pv26_schema import OD_CLASSES
 
 
 def _default_io_workers() -> int:

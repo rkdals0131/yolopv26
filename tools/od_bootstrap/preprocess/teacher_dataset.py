@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
-from model.preprocess.aihub_standardize import OD_CLASSES
+from common.pv26_schema import OD_CLASSES
 from tools.od_bootstrap.sweep.image_list import build_sample_uid
 
 from .debug_vis import DEFAULT_DEBUG_VIS_SEED, generate_teacher_dataset_debug_vis

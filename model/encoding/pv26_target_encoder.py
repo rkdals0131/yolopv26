@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 
-from ..preprocess.aihub_standardize import OD_CLASSES
+from common.pv26_schema import OD_CLASSES
 from ..loss.spec import build_loss_spec
 
 
