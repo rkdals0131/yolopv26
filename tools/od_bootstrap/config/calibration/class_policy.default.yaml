@@ -23,7 +23,7 @@ search:
 teachers:
   - name: mobility
     checkpoint_path: ../../../../runs/od_bootstrap/train/mobility/weights/best.pt
-    model_version: mobility_yolov26n_bootstrap_v1
+    model_version: mobility_yolov26s_bootstrap_v1
     dataset:
       root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/mobility
       source_dataset_key: bdd100k_det_100k
@@ -37,7 +37,7 @@ teachers:
 
   - name: signal
     checkpoint_path: ../../../../runs/od_bootstrap/train/signal/weights/best.pt
-    model_version: signal_yolov26n_bootstrap_v1
+    model_version: signal_yolov26s_bootstrap_v1
     dataset:
       root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/signal
       source_dataset_key: aihub_traffic_seoul
@@ -50,7 +50,7 @@ teachers:
 
   - name: obstacle
     checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle/weights/best.pt
-    model_version: obstacle_yolov26n_bootstrap_v1
+    model_version: obstacle_yolov26m_bootstrap_v1
     dataset:
       root: ../../../../seg_dataset/pv26_od_bootstrap/teacher_datasets/obstacle
       source_dataset_key: aihub_obstacle_seoul

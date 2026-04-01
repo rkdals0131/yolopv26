@@ -30,6 +30,7 @@ build/
 venv/
 .venv/
 env/
+.codex
 
 # ----- Jupyter Notebook -----
 .ipynb_checkpoints/

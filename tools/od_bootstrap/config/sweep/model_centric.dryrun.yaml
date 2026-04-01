@@ -19,26 +19,26 @@ class_policy_path: ../../../../runs/od_bootstrap/calibration/default/class_polic
 
 teachers:
   - name: mobility
-    base_model: yolov26n
+    base_model: yolov26s
     checkpoint_path: ../../../../runs/od_bootstrap/train/mobility/weights/best.pt
-    model_version: mobility_yolov26n_bootstrap_v1
+    model_version: mobility_yolov26s_bootstrap_v1
     classes:
       - vehicle
       - bike
       - pedestrian
 
   - name: signal
-    base_model: yolov26n
+    base_model: yolov26s
     checkpoint_path: ../../../../runs/od_bootstrap/train/signal/weights/best.pt
-    model_version: signal_yolov26n_bootstrap_v1
+    model_version: signal_yolov26s_bootstrap_v1
     classes:
       - traffic_light
       - sign
 
   - name: obstacle
-    base_model: yolov26n
+    base_model: yolov26m
     checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle/weights/best.pt
-    model_version: obstacle_yolov26n_bootstrap_v1
+    model_version: obstacle_yolov26m_bootstrap_v1
     classes:
       - traffic_cone
       - obstacle
