@@ -532,11 +532,6 @@ def build_teacher_eval_preset(teacher_name: str) -> CheckpointEvalScenario:
         "signal": ("traffic_light", "sign"),
         "obstacle": ("traffic_cone", "obstacle"),
     }
-    default_model_size = {
-        "mobility": "n",
-        "signal": "n",
-        "obstacle": "n",
-    }
     if teacher_name not in default_class_names:
         raise KeyError(f"unknown teacher preset: {teacher_name}")
 
@@ -565,10 +560,6 @@ def build_teacher_eval_preset(teacher_name: str) -> CheckpointEvalScenario:
         eval_specific.get("classes", default_class_names[teacher_name]),
         field_name=f"od_bootstrap.teacher_eval.{teacher_name}.classes",
     )
-    model_size = _coerce_str(
-        eval_specific.get("model_size", default_model_size[teacher_name]),
-        field_name=f"od_bootstrap.teacher_eval.{teacher_name}.model_size",
-    )
 
     # ===== HYPERPARAMETERS: TEACHER EVAL =====
     return CheckpointEvalScenario(
@@ -585,7 +576,6 @@ def build_teacher_eval_preset(teacher_name: str) -> CheckpointEvalScenario:
         model=CheckpointEvalModelConfig(
             checkpoint_path=checkpoint_path,
             class_names=class_names,
-            model_size=model_size,
         ),
         eval=CheckpointEvalParams(
             imgsz=_coerce_int(eval_common.get("imgsz", 640), field_name="od_bootstrap.teacher_eval.common.imgsz"),

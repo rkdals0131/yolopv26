@@ -68,13 +68,10 @@ od_bootstrap:
       verbose: false
       sample_limit: 8
     mobility:
-      model_size: n
       classes: [vehicle, bike, pedestrian]
     signal:
-      model_size: n
       classes: [traffic_light, sign]
     obstacle:
-      model_size: n
       classes: [traffic_cone, obstacle]
 
   calibration:

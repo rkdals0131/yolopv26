@@ -23,7 +23,6 @@ class CheckpointEvalDatasetConfig:
 class CheckpointEvalModelConfig:
     checkpoint_path: Path
     class_names: tuple[str, ...] = ()
-    model_size: str = "n"
 
 
 @dataclass(frozen=True)
