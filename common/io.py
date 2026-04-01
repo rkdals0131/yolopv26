@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -13,6 +15,15 @@ def now_iso() -> str:
 
 def read_json(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def read_yaml(path: str | Path) -> dict[str, Any]:
+    payload = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=yaml.SafeLoader)
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise TypeError(f"YAML root must be a mapping: {path}")
+    return payload
 
 
 def write_json(path: str | Path, payload: dict[str, Any]) -> Path:
@@ -39,4 +50,3 @@ def link_or_copy(source_path: str | Path, target_path: str | Path) -> None:
         target.symlink_to(source.resolve())
     except OSError:
         shutil.copy2(source, target)
-

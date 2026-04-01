@@ -4,12 +4,12 @@ import argparse
 import importlib
 import json
 from pathlib import Path
+import site
 import sys
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+site.addsitedir(str(REPO_ROOT))
 
 
 def _module_version(name: str) -> str | None:
@@ -50,7 +50,7 @@ def _check_yolo26(check_runtime: bool) -> dict[str, Any]:
         "error": None,
     }
     try:
-        from model.trunk.ultralytics_yolo26 import (
+        from model.net.trunk import (
             ULTRALYTICS_VERSION,
             build_yolo26n_trunk,
             ensure_yolo26_support,

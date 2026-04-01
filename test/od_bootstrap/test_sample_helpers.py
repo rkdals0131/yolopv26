@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.smoke.checkpoint_audit import TeacherCheckpointSpec, audit_teacher_checkpoints
-from tools.od_bootstrap.smoke.review import canonical_scene_to_overlay_scene, render_review_bundle, select_review_rows
-from tools.od_bootstrap.smoke.subset import select_smoke_entries, summarize_entries
-from tools.od_bootstrap.sweep.image_list import ImageListEntry
+from tools.od_bootstrap.data.checkpoint_audit import TeacherCheckpointSpec, audit_teacher_checkpoints
+from tools.od_bootstrap.data.review import canonical_scene_to_overlay_scene, render_overlay, render_review_bundle, select_review_rows
+from tools.od_bootstrap.data.sample_manifest import select_sample_entries, summarize_entries
+from tools.od_bootstrap.data.image_list import ImageListEntry
 
 
 class _FakeCheckpointModel(torch.nn.Module):
@@ -31,10 +31,10 @@ def _write_text(path: Path, payload: str) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
-class ODBootstrapSmokeHelpersTests(unittest.TestCase):
-    def test_select_smoke_entries_applies_dataset_split_quotas(self) -> None:
+class ODBootstrapSampleHelpersTests(unittest.TestCase):
+    def test_select_sample_entries_applies_dataset_split_quotas(self) -> None:
         entries = []
-        root = Path("/tmp/smoke")
+        root = Path("/tmp/sample_manifest")
         counts = {
             ("bdd100k_det_100k", "train"): 3,
             ("bdd100k_det_100k", "val"): 2,
@@ -61,7 +61,7 @@ class ODBootstrapSmokeHelpersTests(unittest.TestCase):
                     )
                 )
 
-        selected = select_smoke_entries(
+        selected = select_sample_entries(
             entries,
             quotas={
                 "bdd100k_det_100k": {"train": 2, "val": 1},
@@ -230,7 +230,7 @@ class ODBootstrapSmokeHelpersTests(unittest.TestCase):
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_bytes(b"png")
 
-            with patch("tools.od_bootstrap.smoke.review.render_overlay", side_effect=_fake_render):
+            with patch("tools.od_bootstrap.data.review.render_overlay", side_effect=_fake_render):
                 summary = render_review_bundle(
                     manifest_path=manifest_path,
                     output_root=output_root,

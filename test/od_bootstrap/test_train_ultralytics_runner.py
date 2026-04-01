@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.train.ultralytics_runner import (
+from tools.od_bootstrap.teacher.ultralytics_runner import (
     _build_epoch_tensorboard_payload,
     _build_train_step_tensorboard_payload,
     _flatten_scalar_tree,
@@ -95,7 +95,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
     def test_ultralytics_postfix_renders_at_line_end(self) -> None:
         pbar = _FakeUltralyticsPbar()
         _install_ultralytics_postfix_renderer(pbar)
-        with patch("tools.od_bootstrap.train.ultralytics_runner.time.time", return_value=123.9):
+        with patch("tools.od_bootstrap.teacher.ultralytics_runner.time.time", return_value=123.9):
             pbar.set_bootstrap_postfix("elapsed=00:24 eta=20:25 iter=283.7ms wait=0.3ms compute=283.7ms")
         rendered = pbar.file.getvalue()
         self.assertIn("58/4375", rendered)
@@ -137,7 +137,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 label_loss_items=lambda losses, prefix="train": {f"{prefix}/box_loss": float(losses["box_loss"])},
             )
 
-            with patch("tools.od_bootstrap.train.ultralytics_runner.time.perf_counter", return_value=10.150):
+            with patch("tools.od_bootstrap.teacher.ultralytics_runner.time.perf_counter", return_value=10.150):
                 callbacks["on_train_batch_end"](trainer)
 
             self.assertEqual(trainer.od_epoch_step, 1)

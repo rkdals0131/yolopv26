@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import json
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from dataclasses import replace
 from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.eval.checkpoint_eval import eval_teacher_checkpoint
-from tools.od_bootstrap.eval.scenario import load_teacher_checkpoint_eval_scenario
+from tools.od_bootstrap.presets import build_teacher_eval_preset
+from tools.od_bootstrap.teacher.eval import eval_teacher_checkpoint
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -52,15 +52,12 @@ class _FakeYOLO:
 
 class CheckpointEvalTests(unittest.TestCase):
     def test_shipped_eval_default_uses_teacher_name_checkpoint_path(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        scenario_path = repo_root / "tools" / "od_bootstrap" / "config" / "eval" / "mobility_checkpoint_eval.default.yaml"
-
-        scenario = load_teacher_checkpoint_eval_scenario(scenario_path)
+        scenario = build_teacher_eval_preset("mobility")
 
         self.assertEqual(scenario.teacher_name, "mobility")
         self.assertEqual(
             scenario.model.checkpoint_path,
-            (repo_root / "runs" / "od_bootstrap" / "train" / "mobility" / "weights" / "best.pt").resolve(),
+            (Path(__file__).resolve().parents[2] / "runs" / "od_bootstrap" / "train" / "mobility" / "weights" / "best.pt").resolve(),
         )
 
     def test_eval_teacher_checkpoint_writes_summary_and_predictions(self) -> None:
@@ -72,43 +69,22 @@ class CheckpointEvalTests(unittest.TestCase):
                 _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
             checkpoint_path = root / "weights" / "best.pt"
             _write_text(checkpoint_path, "checkpoint")
-            scenario_path = root / "eval.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    teacher_name: mobility
-                    run:
-                      output_root: runs
-                      exist_ok: true
-                    dataset:
-                      root: teacher_source
-                      image_dir: images
-                      label_dir: labels
-                      split: val
-                      sample_limit: 2
-                    model:
-                      checkpoint_path: weights/best.pt
-                      model_size: n
-                      class_names: [vehicle, bike, pedestrian]
-                    eval:
-                      imgsz: 640
-                      batch: 1
-                      device: cpu
-                      conf: 0.25
-                      iou: 0.7
-                      predict: true
-                      val: true
-                      save_conf: false
-                      verbose: false
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
+            scenario = replace(
+                build_teacher_eval_preset("mobility"),
+                run=replace(build_teacher_eval_preset("mobility").run, output_root=root / "runs"),
+                dataset=replace(
+                    build_teacher_eval_preset("mobility").dataset,
+                    root=source_root,
+                    sample_limit=2,
+                ),
+                model=replace(
+                    build_teacher_eval_preset("mobility").model,
+                    checkpoint_path=checkpoint_path,
+                    class_names=("vehicle", "bike", "pedestrian"),
+                ),
             )
-
-            scenario = load_teacher_checkpoint_eval_scenario(scenario_path)
-            with patch("tools.od_bootstrap.eval.checkpoint_eval.YOLO", _FakeYOLO):
-                summary = eval_teacher_checkpoint(scenario=scenario, scenario_path=scenario_path)
+            with patch("tools.od_bootstrap.teacher.eval.YOLO", _FakeYOLO):
+                summary = eval_teacher_checkpoint(scenario=scenario, scenario_path=root / "preset_eval")
 
             self.assertEqual(summary["teacher_name"], "mobility")
             self.assertEqual(summary["prediction_summary"]["prediction_count"], 3)

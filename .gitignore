@@ -3,6 +3,8 @@ seg_dataset/
 data/
 datasets/
 seg_dataset
+!tools/od_bootstrap/data/
+!tools/od_bootstrap/data/**
 
 # ----- Model weights & checkpoints -----
 *.pt

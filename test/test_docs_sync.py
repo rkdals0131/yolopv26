@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from model.loss.spec import build_loss_spec
+from model.engine.loss import build_loss_spec
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,27 +31,32 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_readme_matches_current_pv26_training_entrypoint(self) -> None:
         readme = _read(REPO_ROOT / "README.md")
-        self.assertIn("config/pv26_meta_train.default.yaml", readme)
+        self.assertIn("tools/run_pv26_train.py --preset default", readme)
+        self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
+        self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
         self.assertIn("seg_dataset/pv26_exhaustive_od_lane_dataset", readme)
         self.assertIn("runs/pv26_exhaustive_od_lane_train", readme)
-        self.assertIn("`4번`부터 `10번`까지", readme)
+        self.assertIn("`2번`부터 `8번`까지", readme)
         self.assertNotIn("runs/pv26_meta_train/", readme)
-        self.assertNotIn("`2번`, `3번`으로 전처리한 뒤 `1번`을 실행하면 된다", readme)
+        self.assertNotIn("tools/run_aihub_standardize.py", readme)
+        self.assertNotIn("tools/run_bdd100k_standardize.py", readme)
+        self.assertNotIn("tools/od_bootstrap/config/", readme)
 
     def test_od_bootstrap_readme_tracks_current_teacher_model_defaults(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
-        self.assertIn("tools/od_bootstrap/config/train/mobility_yolo26s.default.yaml", readme)
-        self.assertIn("tools/od_bootstrap/config/train/signal_yolo26s.default.yaml", readme)
-        self.assertIn("tools/od_bootstrap/config/train/obstacle_yolo26m.default.yaml", readme)
+        self.assertIn("python -m tools.od_bootstrap train --teacher mobility", readme)
+        self.assertIn("python -m tools.od_bootstrap train --teacher signal", readme)
+        self.assertIn("python -m tools.od_bootstrap train --teacher obstacle", readme)
+        self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
         self.assertIn("mobility/signal은 `yolo26s.pt`, obstacle은 `yolo26m.pt`", readme)
 
-    def test_preprocess_readme_mentions_current_debug_vis_and_smoke_tooling(self) -> None:
+    def test_preprocess_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_PREPROCESS_README)
-        self.assertIn("run_generate_debug_vis.py", readme)
+        self.assertIn("python -m tools.od_bootstrap", readme)
         self.assertIn("debug_vis.py", readme)
-        self.assertIn("run_build_smoke_image_list.py", readme)
-        self.assertIn("run_render_smoke_review.py", readme)
-        self.assertIn("run_audit_teacher_checkpoints.py", readme)
+        self.assertIn("sample_manifest.py", readme)
+        self.assertIn("review.py", readme)
+        self.assertIn("checkpoint_audit.py", readme)
 
     def test_sample_contract_doc_exists_and_is_referenced(self) -> None:
         sample_doc = DOCS_ROOT / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md"

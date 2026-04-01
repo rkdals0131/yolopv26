@@ -1,14 +1,15 @@
 # OD Bootstrap Preprocess
 
-이 디렉토리는 `od_bootstrap` 전처리 전용이다.
+이 디렉토리는 bootstrap 전처리 구현 메모다. 공식 진입점은 `python -m tools.od_bootstrap`다.
 
 구성:
-- `run_prepare_sources.py`: BDD100K와 AIHUB canonical source bundle 생성, bootstrap image list 생성
-- `run_build_teacher_datasets.py`: mobility, signal, obstacle teacher dataset materialization
-- `run_generate_debug_vis.py`: canonical / teacher-dataset / exhaustive debug-vis 생성
-- `sources.py`: raw source 준비와 canonical bundle 생성
-- `teacher_dataset.py`: canonical output에서 teacher 학습용 YOLO dataset 생성
-- `debug_vis.py`: canonical, teacher, exhaustive debug overlay 렌더링 헬퍼
+- `../cli.py`: `prepare-sources`, `build-teacher-datasets`, `generate-debug-vis` 서브커맨드 제공
+- `../data/source_prep.py`: raw source 준비와 canonical bundle 생성
+- `../data/teacher_dataset.py`: canonical output에서 teacher 학습용 YOLO dataset 생성
+- `../data/debug_vis.py`: canonical, teacher, exhaustive debug overlay 렌더링 헬퍼
+- `../data/sample_manifest.py`: bootstrap 이미지 샘플 manifest 선택
+- `../data/review.py`: final dataset review bundle 렌더링
+- `../data/checkpoint_audit.py`: teacher checkpoint alias / scale audit
 
 출력 규약:
 - bootstrap image list는 sweep collision 방지를 위해 `sample_id`와 `sample_uid`를 함께 기록한다
@@ -25,10 +26,10 @@ teacher dataset:
 - obstacle: `traffic_cone`, `obstacle`
 
 runtime:
-- `run_build_teacher_datasets.py`는 sample 단위 멀티스레드(`runtime.workers`)로 image/link copy와 label materialization을 병렬 처리한다
+- `build-teacher-datasets`는 sample 단위 멀티스레드(`runtime.workers`)로 image/link copy와 label materialization을 병렬 처리한다
 - 진행 로그는 stderr로 출력되며 `runtime.log_every` 샘플마다 throughput과 detection 누계를 갱신한다
 
-related smoke helpers:
-- `../smoke/run_build_smoke_image_list.py`: bootstrap image list smoke subset 생성
-- `../smoke/run_render_smoke_review.py`: final dataset smoke review bundle 렌더링
-- `../smoke/run_audit_teacher_checkpoints.py`: teacher checkpoint alias / scale audit
+related review helpers:
+- `../data/sample_manifest.py`: bootstrap image list selection helper
+- `../data/review.py`: final dataset review bundle 렌더링
+- `../data/checkpoint_audit.py`: teacher checkpoint alias / scale audit

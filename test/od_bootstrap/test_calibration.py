@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import json
 import tempfile
-import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
-import yaml
 
-from tools.od_bootstrap.calibration.policy_calibration import calibrate_class_policy_scenario
-from tools.od_bootstrap.calibration.scenario import load_calibration_scenario
+from common.io import read_yaml
+from tools.od_bootstrap.teacher.calibration_types import (
+    CalibrationDatasetConfig,
+    CalibrationScenario,
+    CalibrationTeacherConfig,
+    HardNegativeConfig,
+)
+from tools.od_bootstrap.presets import build_calibration_preset
+from tools.od_bootstrap.teacher.calibrate import calibrate_class_policy_scenario
+from tools.od_bootstrap.data.sweep_types import ClassPolicy
 
 
 class _FakeYOLO:
@@ -84,6 +91,27 @@ class _HardNegativeAwareFakeYOLO:
 
 
 class ODBootstrapCalibrationTests(unittest.TestCase):
+    def _build_scenario(
+        self,
+        *,
+        output_root: Path,
+        teachers: tuple[CalibrationTeacherConfig, ...],
+        search: dict[str, object] | None = None,
+        policy_template_path: Path | None = None,
+        policy_template: dict[str, object] | None = None,
+        hard_negative: HardNegativeConfig | None = None,
+    ) -> CalibrationScenario:
+        preset = build_calibration_preset()
+        return replace(
+            preset,
+            run=replace(preset.run, output_root=output_root, device="cpu", imgsz=640, batch_size=2, predict_conf=0.001, predict_iou=0.99),
+            search=replace(preset.search, **(search or {})),
+            teachers=teachers,
+            policy_template_path=policy_template_path,
+            policy_template=policy_template,
+            hard_negative=hard_negative,
+        )
+
     def test_calibration_selects_precision_constrained_policy_and_writes_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -97,59 +125,44 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             checkpoint_path = root / "weights" / "mobility.pt"
             checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
             checkpoint_path.write_text("checkpoint", encoding="utf-8")
-            scenario_path = root / "calibration.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    run:
-                      output_root: calibration
-                      device: cpu
-                      imgsz: 640
-                      batch_size: 2
-                      predict_conf: 0.001
-                      predict_iou: 0.99
-                    policy_template_path: template.yaml
-                    search:
-                      match_iou: 0.5
-                      min_precision: 0.90
-                      score_thresholds: [0.50, 0.90]
-                      nms_iou_thresholds: [0.50]
-                      min_box_sizes: [4]
-                    teachers:
-                      - name: mobility
-                        checkpoint_path: weights/mobility.pt
-                        model_version: mobility_v1
-                        dataset:
-                          root: teacher_dataset
-                          source_dataset_key: bdd100k_det_100k
-                          image_dir: images
-                          label_dir: labels
-                          split: val
-                        classes: [vehicle]
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
+            scenario = self._build_scenario(
+                output_root=root / "calibration",
+                teachers=(
+                    CalibrationTeacherConfig(
+                        name="mobility",
+                        checkpoint_path=root / "weights" / "mobility.pt",
+                        model_version="mobility_v1",
+                        dataset=CalibrationDatasetConfig(
+                            root=dataset_root,
+                            source_dataset_key="bdd100k_det_100k",
+                            image_dir="images",
+                            label_dir="labels",
+                            split="val",
+                        ),
+                        classes=("vehicle",),
+                    ),
+                ),
+                search={
+                    "match_iou": 0.5,
+                    "min_precision": 0.90,
+                    "score_thresholds": (0.50, 0.90),
+                    "nms_iou_thresholds": (0.50,),
+                    "min_box_sizes": (4,),
+                },
+                policy_template_path=root / "template.yaml",
+                policy_template={
+                    "vehicle": ClassPolicy(
+                        score_threshold=0.50,
+                        nms_iou_threshold=0.50,
+                        min_box_size=4,
+                        center_y_range=(0.0, 0.8),
+                    )
+                },
             )
-            (root / "template.yaml").write_text(
-                textwrap.dedent(
-                    """
-                    vehicle:
-                      score_threshold: 0.50
-                      nms_iou_threshold: 0.50
-                      min_box_size: 4
-                      center_y_range: [0.0, 0.8]
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
+            with patch("tools.od_bootstrap.teacher.calibrate.YOLO", _FakeYOLO):
+                summary = calibrate_class_policy_scenario(scenario, scenario_path=root / "preset_calibration")
 
-            scenario = load_calibration_scenario(scenario_path)
-            with patch("tools.od_bootstrap.calibration.policy_calibration.YOLO", _FakeYOLO):
-                summary = calibrate_class_policy_scenario(scenario, scenario_path=scenario_path)
-
-            class_policy = yaml.safe_load(Path(summary["class_policy_path"]).read_text(encoding="utf-8"))
+            class_policy = read_yaml(summary["class_policy_path"])
             report = json.loads(Path(summary["report_path"]).read_text(encoding="utf-8"))
             self.assertEqual(class_policy["vehicle"]["score_threshold"], 0.9)
             self.assertEqual(class_policy["vehicle"]["center_y_range"], [0.0, 0.8])
@@ -202,49 +215,40 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            scenario_path = root / "calibration.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    run:
-                      output_root: calibration
-                      device: cpu
-                      imgsz: 640
-                      batch_size: 2
-                      predict_conf: 0.001
-                      predict_iou: 0.99
-                    search:
-                      match_iou: 0.5
-                      min_precision: 0.90
-                      score_thresholds: [0.50, 0.80]
-                      nms_iou_thresholds: [0.50]
-                      min_box_sizes: [4]
-                    hard_negative:
-                      manifest_path: hard_negative_manifest.json
-                      top_k_per_class: 5
-                      focus_classes: [vehicle]
-                    teachers:
-                      - name: mobility
-                        checkpoint_path: weights/mobility.pt
-                        model_version: mobility_v1
-                        dataset:
-                          root: teacher_dataset
-                          source_dataset_key: bdd100k_det_100k
-                          image_dir: images
-                          label_dir: labels
-                          split: val
-                        classes: [vehicle]
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
+            scenario = self._build_scenario(
+                output_root=root / "calibration",
+                teachers=(
+                    CalibrationTeacherConfig(
+                        name="mobility",
+                        checkpoint_path=checkpoint_path,
+                        model_version="mobility_v1",
+                        dataset=CalibrationDatasetConfig(
+                            root=dataset_root,
+                            source_dataset_key="bdd100k_det_100k",
+                            image_dir="images",
+                            label_dir="labels",
+                            split="val",
+                        ),
+                        classes=("vehicle",),
+                    ),
+                ),
+                search={
+                    "match_iou": 0.5,
+                    "min_precision": 0.90,
+                    "score_thresholds": (0.50, 0.80),
+                    "nms_iou_thresholds": (0.50,),
+                    "min_box_sizes": (4,),
+                },
+                hard_negative=HardNegativeConfig(
+                    manifest_path=hard_negative_manifest,
+                    top_k_per_class=5,
+                    focus_classes=("vehicle",),
+                ),
             )
+            with patch("tools.od_bootstrap.teacher.calibrate.YOLO", _HardNegativeAwareFakeYOLO):
+                summary = calibrate_class_policy_scenario(scenario, scenario_path=root / "preset_calibration")
 
-            scenario = load_calibration_scenario(scenario_path)
-            with patch("tools.od_bootstrap.calibration.policy_calibration.YOLO", _HardNegativeAwareFakeYOLO):
-                summary = calibrate_class_policy_scenario(scenario, scenario_path=scenario_path)
-
-            class_policy = yaml.safe_load(Path(summary["class_policy_path"]).read_text(encoding="utf-8"))
+            class_policy = read_yaml(summary["class_policy_path"])
             report = json.loads(Path(summary["report_path"]).read_text(encoding="utf-8"))
             self.assertEqual(class_policy["vehicle"]["score_threshold"], 0.8)
             self.assertEqual(report["classes"]["vehicle"]["metrics"]["hard_negative_sample_count"], 1)
@@ -268,42 +272,6 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             checkpoint_path = root / "weights" / "signal.pt"
             checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
             checkpoint_path.write_text("checkpoint", encoding="utf-8")
-
-            scenario_path = root / "calibration.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    run:
-                      output_root: calibration
-                      device: cpu
-                      imgsz: 640
-                      batch_size: 2
-                      predict_conf: 0.001
-                      predict_iou: 0.99
-                    search:
-                      match_iou: 0.5
-                      min_precision: 0.90
-                      min_precision_by_class:
-                        traffic_light: 0.75
-                      score_thresholds: [0.50, 0.80]
-                      nms_iou_thresholds: [0.50]
-                      min_box_sizes: [4]
-                    teachers:
-                      - name: signal
-                        checkpoint_path: weights/signal.pt
-                        model_version: signal_v1
-                        dataset:
-                          root: teacher_dataset
-                          source_dataset_key: aihub_traffic_seoul
-                          image_dir: images
-                          label_dir: labels
-                          split: val
-                        classes: [traffic_light]
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
 
             class _SignalPrecisionOverrideFakeYOLO:
                 def __init__(self, checkpoint_path: str) -> None:
@@ -341,11 +309,36 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
                         )
                     return results
 
-            scenario = load_calibration_scenario(scenario_path)
-            with patch("tools.od_bootstrap.calibration.policy_calibration.YOLO", _SignalPrecisionOverrideFakeYOLO):
-                summary = calibrate_class_policy_scenario(scenario, scenario_path=scenario_path)
+            scenario = self._build_scenario(
+                output_root=root / "calibration",
+                teachers=(
+                    CalibrationTeacherConfig(
+                        name="signal",
+                        checkpoint_path=checkpoint_path,
+                        model_version="signal_v1",
+                        dataset=CalibrationDatasetConfig(
+                            root=dataset_root,
+                            source_dataset_key="aihub_traffic_seoul",
+                            image_dir="images",
+                            label_dir="labels",
+                            split="val",
+                        ),
+                        classes=("traffic_light",),
+                    ),
+                ),
+                search={
+                    "match_iou": 0.5,
+                    "min_precision": 0.90,
+                    "min_precision_by_class": {"traffic_light": 0.75},
+                    "score_thresholds": (0.50, 0.80),
+                    "nms_iou_thresholds": (0.50,),
+                    "min_box_sizes": (4,),
+                },
+            )
+            with patch("tools.od_bootstrap.teacher.calibrate.YOLO", _SignalPrecisionOverrideFakeYOLO):
+                summary = calibrate_class_policy_scenario(scenario, scenario_path=root / "preset_calibration")
 
-            class_policy = yaml.safe_load(Path(summary["class_policy_path"]).read_text(encoding="utf-8"))
+            class_policy = read_yaml(summary["class_policy_path"])
             report = json.loads(Path(summary["report_path"]).read_text(encoding="utf-8"))
             self.assertEqual(class_policy["traffic_light"]["score_threshold"], 0.5)
             self.assertTrue(report["classes"]["traffic_light"]["meets_precision_floor"])

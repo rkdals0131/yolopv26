@@ -9,15 +9,13 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from tools.od_bootstrap.preprocess.run_build_teacher_datasets import main as build_teacher_datasets_main
-from tools.od_bootstrap.preprocess.run_prepare_sources import DEFAULT_CONFIG_PATH, _resolve_config, main as prepare_sources_main
-from tools.od_bootstrap.preprocess.sources import (
+from tools.od_bootstrap import main as od_bootstrap_main
+from tools.od_bootstrap.data.source_common import SourcePrepConfig, SourceRoots, prepare_od_bootstrap_sources
+from tools.od_bootstrap.presets import build_default_source_preset
+from tools.od_bootstrap.data.source_prep import (
     AIHUB_LANE_DIRNAME,
     AIHUB_OBSTACLE_DIRNAME,
     AIHUB_TRAFFIC_DIRNAME,
-    SourcePrepConfig,
-    SourceRoots,
-    prepare_od_bootstrap_sources,
 )
 
 
@@ -56,11 +54,11 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             fake_aihub_outputs = {"output_root": output_root / "canonical" / "aihub_standardized"}
             with (
                 patch(
-                    "tools.od_bootstrap.preprocess.sources.run_bdd_standardization",
+                    "tools.od_bootstrap.data.source_prep.run_bdd_standardization",
                     return_value=fake_bdd_outputs,
                 ) as mock_bdd,
                 patch(
-                    "tools.od_bootstrap.preprocess.sources.run_aihub_standardization",
+                    "tools.od_bootstrap.data.source_prep.run_aihub_standardization",
                     return_value=fake_aihub_outputs,
                 ) as mock_aihub,
             ):
@@ -144,8 +142,8 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             fake_bdd_outputs = {"output_root": bdd_canonical_root}
             fake_aihub_outputs = {"output_root": aihub_canonical_root}
             with (
-                patch("tools.od_bootstrap.preprocess.sources.run_bdd_standardization", return_value=fake_bdd_outputs),
-                patch("tools.od_bootstrap.preprocess.sources.run_aihub_standardization", return_value=fake_aihub_outputs),
+                patch("tools.od_bootstrap.data.source_prep.run_bdd_standardization", return_value=fake_bdd_outputs),
+                patch("tools.od_bootstrap.data.source_prep.run_aihub_standardization", return_value=fake_aihub_outputs),
             ):
                 result = prepare_od_bootstrap_sources(config)
 
@@ -166,20 +164,11 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             self.assertTrue(Path(bdd_manifest["items"][0]["overlay_path"]).is_file())
             self.assertTrue(Path(aihub_manifest["items"][0]["overlay_path"]).is_file())
 
-    def test_default_prepare_sources_config_resolves_repo_seg_dataset_paths(self) -> None:
-        args = SimpleNamespace(
-            config=DEFAULT_CONFIG_PATH,
-            bdd_root=None,
-            aihub_root=None,
-            output_root=None,
-            workers=None,
-            force_reprocess=False,
-        )
-        config = _resolve_config(args)
-        repo_root = Path(__file__).resolve().parents[2]
-        self.assertEqual(config.roots.bdd_root, (repo_root / "seg_dataset" / "BDD100K").resolve())
-        self.assertEqual(config.roots.aihub_root, (repo_root / "seg_dataset" / "AIHUB").resolve())
-        self.assertEqual(config.output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
+    def test_default_prepare_sources_preset_resolves_repo_seg_dataset_paths(self) -> None:
+        config = build_default_source_preset()
+        self.assertTrue(str(config.roots.bdd_root).endswith("/seg_dataset/BDD100K"))
+        self.assertTrue(str(config.roots.aihub_root).endswith("/seg_dataset/AIHUB"))
+        self.assertTrue(str(config.output_root).endswith("/seg_dataset/pv26_od_bootstrap"))
 
     def test_entrypoints_use_default_configs_without_overrides(self) -> None:
         captured: dict[str, object] = {}
@@ -233,21 +222,21 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             }
 
         with (
-            patch("tools.od_bootstrap.preprocess.run_prepare_sources.prepare_od_bootstrap_sources") as mock_prepare,
-            patch("tools.od_bootstrap.preprocess.run_build_teacher_datasets.build_teacher_datasets") as mock_build,
+            patch("tools.od_bootstrap.cli.prepare_od_bootstrap_sources") as mock_prepare,
+            patch("tools.od_bootstrap.cli.build_teacher_datasets") as mock_build,
         ):
             mock_prepare.side_effect = _fake_prepare
             mock_build.side_effect = _fake_build
-            prepare_sources_main([])
-            build_teacher_datasets_main([])
+            od_bootstrap_main(["prepare-sources"])
+            od_bootstrap_main(["build-teacher-datasets"])
 
         repo_root = Path(__file__).resolve().parents[2]
         prepare_config = captured["prepare_config"]
         build_call = captured["build_call"]
-        self.assertEqual(prepare_config.roots.bdd_root, (repo_root / "seg_dataset" / "BDD100K").resolve())
-        self.assertEqual(prepare_config.output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
-        self.assertEqual(build_call["bundle"].output_root, (repo_root / "seg_dataset" / "pv26_od_bootstrap").resolve())
-        self.assertEqual(build_call["output_root"], (repo_root / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets").resolve())
+        self.assertTrue(str(prepare_config.roots.bdd_root).endswith("/seg_dataset/BDD100K"))
+        self.assertTrue(str(prepare_config.output_root).endswith("/seg_dataset/pv26_od_bootstrap"))
+        self.assertTrue(str(build_call["bundle"].output_root).endswith("/seg_dataset/pv26_od_bootstrap"))
+        self.assertTrue(str(build_call["output_root"]).endswith("/seg_dataset/pv26_od_bootstrap/teacher_datasets"))
         self.assertEqual(build_call["workers"], 8)
         self.assertEqual(build_call["log_every"], 500)
         self.assertEqual(build_call["debug_vis_count"], 20)

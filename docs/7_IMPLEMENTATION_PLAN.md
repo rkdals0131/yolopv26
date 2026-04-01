@@ -107,7 +107,7 @@
 ## current runtime snapshot
 
 - the end-to-end loop is closed from offline standardization through loader / train / loss / inference / evaluation
-- tiny overfit smoke and full epoch fit smoke both exist and are used as regression gates
+- tiny overfit regression and full epoch fit regression both exist and are used as regression gates
 - OD bootstrap is implemented as a separate pipeline with preprocess / train / eval / calibration / sweep / finalize stages
 
 ## implementation order
@@ -127,8 +127,8 @@
 - 완료
   - canonical loader batch 2-sample mixed overfit
   - repeated train-step loss 감소 확인
-  - smoke command 추가
-  - epoch fit smoke command 추가
+  - tiny overfit command 추가
+  - epoch fit regression command 추가
 
 ## train status
 

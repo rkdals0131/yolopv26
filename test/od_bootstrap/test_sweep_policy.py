@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from tools.od_bootstrap.sweep.policy import apply_policy_to_predictions, row_passes_policy
-from tools.od_bootstrap.sweep.scenario import ClassPolicy
+from tools.od_bootstrap.teacher.policy import apply_policy_to_predictions, row_passes_policy
+from tools.od_bootstrap.data.sweep import ClassPolicy
 
 
 class ODBootstrapPolicyTests(unittest.TestCase):

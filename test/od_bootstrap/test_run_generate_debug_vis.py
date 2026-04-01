@@ -9,8 +9,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from tools.od_bootstrap.preprocess.run_generate_debug_vis import main as generate_debug_vis_main
-from tools.od_bootstrap.sweep.image_list import build_sample_uid
+from tools.od_bootstrap import main as od_bootstrap_main
+from tools.od_bootstrap.data.image_list import build_sample_uid
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
@@ -69,8 +69,18 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             )
 
             with redirect_stdout(io.StringIO()):
-                exit_code = generate_debug_vis_main(
-                    ["canonical", "--bootstrap-root", str(bootstrap_root), "--count", "1", "--seed", "26"]
+                exit_code = od_bootstrap_main(
+                    [
+                        "generate-debug-vis",
+                        "--mode",
+                        "canonical",
+                        "--bootstrap-root",
+                        str(bootstrap_root),
+                        "--count",
+                        "1",
+                        "--seed",
+                        "26",
+                    ]
                 )
 
             self.assertEqual(exit_code, 0)
@@ -115,8 +125,20 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             )
 
             with redirect_stdout(io.StringIO()):
-                exit_code = generate_debug_vis_main(
-                    ["teacher", "--teacher-root", str(teacher_root), "--teacher", "signal", "--count", "1", "--seed", "26"]
+                exit_code = od_bootstrap_main(
+                    [
+                        "generate-debug-vis",
+                        "--mode",
+                        "teacher",
+                        "--teacher-root",
+                        str(teacher_root),
+                        "--teacher",
+                        "signal",
+                        "--count",
+                        "1",
+                        "--seed",
+                        "26",
+                    ]
                 )
 
             self.assertEqual(exit_code, 0)
@@ -170,8 +192,10 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             )
 
             with redirect_stdout(io.StringIO()):
-                exit_code = generate_debug_vis_main(
+                exit_code = od_bootstrap_main(
                     [
+                        "generate-debug-vis",
+                        "--mode",
                         "exhaustive",
                         "--exhaustive-root",
                         str(exhaustive_root),

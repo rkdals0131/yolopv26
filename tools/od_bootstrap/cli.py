@@ -103,9 +103,9 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_common_path_overrides(calibrate)
     calibrate.set_defaults(handler=_run_calibration)
 
-    sweep = subparsers.add_parser("sweep", help="Run the model-centric sweep preset.")
-    _add_common_path_overrides(sweep)
-    sweep.set_defaults(handler=_run_sweep)
+    exhaustive_od = subparsers.add_parser("build-exhaustive-od", help="Build the exhaustive OD dataset preset.")
+    _add_common_path_overrides(exhaustive_od)
+    exhaustive_od.set_defaults(handler=_run_exhaustive_od)
 
     finalize = subparsers.add_parser("build-final-dataset", help="Build the final exhaustive OD lane dataset.")
     _add_common_path_overrides(finalize)
@@ -217,7 +217,7 @@ def _run_calibration(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_sweep(args: argparse.Namespace) -> int:
+def _run_exhaustive_od(args: argparse.Namespace) -> int:
     scenario = build_sweep_preset()
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))

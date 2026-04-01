@@ -15,8 +15,8 @@
   - BDD는 detector 중심
   - AIHUB traffic은 detector + TL attr 중심
   - AIHUB lane은 geometry 중심
-- smoke-first
-  - 큰 학습 전에 small fixture, tiny subset, overfit smoke부터 통과시킨다.
+- test-first
+  - 큰 학습 전에 small fixture, tiny subset, overfit regression부터 통과시킨다.
 
 ## 코드 철학
 
@@ -40,7 +40,7 @@
 - 최소 기준
   - py_compile 통과
   - unit test 통과
-  - smoke run 통과
+  - regression run 통과
 - 구현 승인 기준
   - 문서와 코드가 모순되지 않을 것
   - loader/target/loss가 NaN 없이 동작할 것

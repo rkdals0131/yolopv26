@@ -38,15 +38,15 @@
 - [x] ragged sample collate 구현
 - [x] target encoder runtime 구현
 - [x] Ultralytics YOLO26 trunk adapter baseline 구현
-- [x] official `yolo26n.pt` real-load smoke 확인
+- [x] official `yolo26n.pt` real-load regression 확인
 - [x] PV26 custom heads skeleton 구현
-- [x] trunk + custom heads forward smoke 확인
+- [x] trunk + custom heads forward regression 확인
 - [x] multitask loss runtime 구현
-- [x] trunk + custom heads + loss backward smoke 확인
+- [x] trunk + custom heads + loss backward regression 확인
 - [x] trunk adapter default trainable 상태 regression 고정
 - [x] trainer skeleton runtime 구현
 - [x] evaluator skeleton runtime 구현
-- [x] tiny overfit smoke command 구현
+- [x] tiny overfit regression command 구현
 - [x] tiny overfit loss 감소 확인
 - [x] final detector assignment integration
 - [x] lane family Hungarian matching integration
@@ -77,7 +77,7 @@
 - [x] ultralytics-missing 환경용 runtime skip test 정리
 - [x] BDD sign/light exclusion 정책과 generic det debug overlay sync
 - [x] partial-det detector negative/class masking 구현
-- [x] trainer run manifest / TensorBoard logging / scenario YAML + CLI `--config` train entry 정리
+- [x] trainer run manifest / TensorBoard logging / preset-driven train entry 정리
 - [x] AIHUB obstacle det-only canonical standardization 구현
 - [x] obstacle source loader/sampler/loss masking 연동
 - [x] OD bootstrap source prep / teacher dataset materialization 구현
@@ -89,7 +89,7 @@
 - [x] PV26 training config simplification / TensorBoard defaults 정리
 - [x] obstacle teacher `yolo26m` migration
 - [x] unit test 통과
-- [x] real-data smoke 통과
+- [x] real-data regression 통과
 - [x] git commit 생성
 
 ## 다음 작업
@@ -121,7 +121,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
 - [x] `python3 tools/check_env.py`
-- [x] `python3 tools/run_pv26_tiny_overfit_smoke.py`
+- [x] `python3 tools/run_pv26_train.py --preset default`
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
 - [x] `python3 tools/run_pv26_train.py`
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1`
@@ -131,7 +131,7 @@
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] obstacle source 통합 후 `python3 -m unittest discover -s test -v` 재통과
-- [x] obstacle source 통합 후 `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1` 실데이터 smoke 통과
+- [x] obstacle source 통합 후 `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1` 실데이터 regression 통과
 
 ## 최근 결정
 
@@ -151,11 +151,11 @@
 - loader collate는 image만 stack하고 ragged target은 list 형태로 유지한다
 - target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다
-- current smoke env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
+- current verification env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
 - current custom heads skeleton uses `P3/P4/P5 = 64/128/256 channels` and `Q_det=9975` at `800x608`
 - current trunk feature extractor returns detect-source pyramid directly from Ultralytics detect head의 `f` indices를 따라 동작한다
 - current detector loss runtime uses task-aligned assignment on real trunk/head outputs
-- current synthetic `q_det != canonical` tests keep a `prefix positive fallback`
+- current synthetic `q_det != canonical` tests use deterministic task-aligned assigner fixtures
 - current lane/stop-line/crosswalk loss runtime uses Hungarian matching against valid GT rows
 - build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
@@ -166,12 +166,12 @@
 - current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard
 - current evaluator runtime returns batch loss summary / GT count summary and supports postprocessed prediction bundles
 - current evaluator runtime also returns batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, and lane family matching metrics
-- current tiny overfit smoke uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
+- current tiny overfit regression uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
 - current loop is closed end-to-end from offline standardization through loader / train / loss / inference / evaluation
 - current standardization runtime writes `failure_manifest` and `qa_summary`, and reuses existing outputs through resume scan
 - current defaults no longer depend on host-specific absolute repo paths
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
 - current postprocess tolerates missing `torchvision.ops.batched_nms` through pure PyTorch fallback
 - OD bootstrap teacher defaults are `mobility=yolo26s`, `signal=yolo26s`, `obstacle=yolo26m`
-- PV26 stage 3 stress config is `config/pv26_meta_train.stage3_vram_stress.yaml`
-- PV26 학습 경로는 `check_env.py`, `tools/run_pv26_tiny_overfit_smoke.py`, `tools/run_pv26_train.py --config ...` 기준으로 유지하고, OD bootstrap smoke 유틸리티는 `tools/od_bootstrap/smoke/` 아래에 별도로 남겨둔다
+- PV26 stage 3 stress preset is `stage3_vram_stress`
+- PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py --preset ...`, `run_pv26_tiny_overfit()` 기준으로 유지한다

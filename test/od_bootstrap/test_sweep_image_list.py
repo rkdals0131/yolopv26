@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.sweep.image_list import build_sample_uid, load_image_list
+from tools.od_bootstrap.data.image_list import build_sample_uid, load_image_list
 
 
 class ODBootstrapImageListTests(unittest.TestCase):

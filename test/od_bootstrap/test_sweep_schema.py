@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tools.od_bootstrap.sweep.artifacts import BoxProvenance, RunManifest, TeacherJobManifest
+from tools.od_bootstrap.data.artifacts import BoxProvenance, RunManifest, TeacherJobManifest
 
 
 class ODBootstrapSchemaTests(unittest.TestCase):
@@ -34,7 +34,6 @@ class ODBootstrapSchemaTests(unittest.TestCase):
             created_at="2026-03-27T10:00:00",
             scenario_path="/tmp/bootstrap.yaml",
             execution_mode="model-centric",
-            dry_run=True,
             run_dir="/tmp/runs/od_bootstrap/run_001",
             image_pool_manifest="/tmp/image_pool.jsonl",
             image_count=3,
@@ -50,7 +49,6 @@ class ODBootstrapSchemaTests(unittest.TestCase):
             classes=("traffic_cone", "obstacle"),
             image_count=3,
             predictions_path="/tmp/runs/od_bootstrap/run_001/teachers/obstacle/predictions.jsonl",
-            dry_run=True,
         )
 
         self.assertEqual(run_manifest.to_dict()["teacher_names"], ("mobility", "signal", "obstacle"))

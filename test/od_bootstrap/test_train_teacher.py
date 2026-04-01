@@ -3,20 +3,27 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.od_bootstrap.train.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
-from tools.od_bootstrap.train.run_train_teacher import run_teacher_train_scenario
-from tools.od_bootstrap.train.scenario import load_teacher_train_scenario
+from PIL import Image
+
+from tools.od_bootstrap.teacher.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
+from tools.od_bootstrap.presets import build_teacher_train_preset
+from tools.od_bootstrap.teacher.train import run_teacher_train_scenario
 
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _make_image(path: Path, width: int = 64, height: int = 64, color: str = "#224466") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (width, height), color).save(path)
 
 
 class _FakeYOLO:
@@ -40,6 +47,25 @@ class _FakeYOLO:
 
 
 class TeacherTrainTests(unittest.TestCase):
+    def _build_scenario(
+        self,
+        *,
+        teacher_name: str,
+        source_root: Path,
+        output_root: Path,
+        weights: str,
+        class_names: tuple[str, ...],
+        train_overrides: dict[str, object] | None = None,
+    ):
+        preset = build_teacher_train_preset(teacher_name)
+        return replace(
+            preset,
+            run=replace(preset.run, output_root=output_root),
+            dataset=replace(preset.dataset, root=source_root),
+            model=replace(preset.model, weights=weights, class_names=class_names),
+            train=replace(preset.train, **(train_overrides or {})),
+        )
+
     def test_resolve_teacher_dataset_root_and_build_data_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -69,55 +95,40 @@ class TeacherTrainTests(unittest.TestCase):
     def test_run_teacher_train_scenario_writes_summary_and_uses_ultralytics_weights(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            scenario_path = root / "train.yaml"
             source_root = root / "teacher_source"
             for split in ("train", "val"):
-                _write_text(source_root / "images" / split / f"{split}.jpg", "img")
+                _make_image(source_root / "images" / split / f"{split}.jpg")
                 _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    teacher_name: mobility
-                    run:
-                      output_root: runs
-                      exist_ok: true
-                    dataset:
-                      root: teacher_source
-                      image_dir: images
-                      label_dir: labels
-                    model:
-                      model_size: n
-                      weights: yolo26n.pt
-                      class_names: [vehicle, bike, pedestrian]
-                    train:
-                      epochs: 2
-                      imgsz: 640
-                      batch: 2
-                      device: cpu
-                      workers: 1
-                      pin_memory: true
-                      persistent_workers: true
-                      prefetch_factor: 3
-                      patience: 1
-                      cache: false
-                      amp: false
-                      optimizer: auto
-                      seed: 7
-                      resume: false
-                      val: true
-                      save_period: 1
-                      log_every_n_steps: 5
-                      profile_window: 7
-                      profile_device_sync: false
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
+            scenario = self._build_scenario(
+                teacher_name="mobility",
+                source_root=source_root,
+                output_root=root / "runs",
+                weights="yolo26n.pt",
+                class_names=("vehicle", "bike", "pedestrian"),
+                train_overrides={
+                    "epochs": 2,
+                    "imgsz": 640,
+                    "batch": 2,
+                    "device": "cpu",
+                    "workers": 1,
+                    "pin_memory": True,
+                    "persistent_workers": True,
+                    "prefetch_factor": 3,
+                    "patience": 1,
+                    "cache": False,
+                    "amp": False,
+                    "optimizer": "auto",
+                    "seed": 7,
+                    "resume": False,
+                    "val": True,
+                    "save_period": 1,
+                    "log_every_n_steps": 5,
+                    "profile_window": 7,
+                    "profile_device_sync": False,
+                },
             )
-
-            scenario = load_teacher_train_scenario(scenario_path)
-            with patch("tools.od_bootstrap.train.ultralytics_runner.YOLO", _FakeYOLO):
-                summary = run_teacher_train_scenario(scenario, scenario_path=scenario_path)
+            with patch("tools.od_bootstrap.teacher.ultralytics_runner.YOLO", _FakeYOLO):
+                summary = run_teacher_train_scenario(scenario, scenario_path=root / "preset_train")
 
             self.assertEqual(summary["teacher_name"], "mobility")
             self.assertEqual(summary["dataset_root"], str(source_root.resolve()))
@@ -145,52 +156,10 @@ class TeacherTrainTests(unittest.TestCase):
     def test_run_teacher_train_scenario_scopes_resume_to_teacher_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            scenario_path = root / "train.yaml"
             source_root = root / "teacher_source"
             for split in ("train", "val"):
-                _write_text(source_root / "images" / split / f"{split}.jpg", "img")
+                _make_image(source_root / "images" / split / f"{split}.jpg")
                 _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
-
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    teacher_name: signal
-                    run:
-                      output_root: runs
-                      exist_ok: true
-                    dataset:
-                      root: teacher_source
-                      image_dir: images
-                      label_dir: labels
-                    model:
-                      model_size: n
-                      weights: yolo26n.pt
-                      class_names: [traffic_light, sign]
-                    train:
-                      epochs: 72
-                      imgsz: 640
-                      batch: 2
-                      device: cpu
-                      workers: 1
-                      pin_memory: true
-                      persistent_workers: true
-                      prefetch_factor: 3
-                      patience: 1
-                      cache: false
-                      amp: false
-                      optimizer: auto
-                      seed: 7
-                      resume: true
-                      val: true
-                      save_period: 1
-                      log_every_n_steps: 5
-                      profile_window: 7
-                      profile_device_sync: false
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
 
             teacher_root = root / "runs" / "signal"
             older_signal = teacher_root / "20260328_040148" / "weights" / "last.pt"
@@ -202,9 +171,36 @@ class TeacherTrainTests(unittest.TestCase):
             os.utime(newer_signal, (200, 200))
             os.utime(unrelated_newest, (300, 300))
 
-            scenario = load_teacher_train_scenario(scenario_path)
-            with patch("tools.od_bootstrap.train.ultralytics_runner.YOLO", _FakeYOLO):
-                run_teacher_train_scenario(scenario, scenario_path=scenario_path)
+            scenario = self._build_scenario(
+                teacher_name="signal",
+                source_root=source_root,
+                output_root=root / "runs",
+                weights="yolo26n.pt",
+                class_names=("traffic_light", "sign"),
+                train_overrides={
+                    "epochs": 72,
+                    "imgsz": 640,
+                    "batch": 2,
+                    "device": "cpu",
+                    "workers": 1,
+                    "pin_memory": True,
+                    "persistent_workers": True,
+                    "prefetch_factor": 3,
+                    "patience": 1,
+                    "cache": False,
+                    "amp": False,
+                    "optimizer": "auto",
+                    "seed": 7,
+                    "resume": True,
+                    "val": True,
+                    "save_period": 1,
+                    "log_every_n_steps": 5,
+                    "profile_window": 7,
+                    "profile_device_sync": False,
+                },
+            )
+            with patch("tools.od_bootstrap.teacher.ultralytics_runner.YOLO", _FakeYOLO):
+                run_teacher_train_scenario(scenario, scenario_path=root / "preset_train")
 
             self.assertEqual(_FakeYOLO.last_instance.weights, str(newer_signal))
             self.assertEqual(_FakeYOLO.last_instance.last_train_kwargs["resume"], str(newer_signal))
@@ -212,54 +208,38 @@ class TeacherTrainTests(unittest.TestCase):
     def test_run_teacher_train_scenario_resume_requires_local_teacher_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            scenario_path = root / "train.yaml"
             source_root = root / "teacher_source"
             for split in ("train", "val"):
-                _write_text(source_root / "images" / split / f"{split}.jpg", "img")
+                _make_image(source_root / "images" / split / f"{split}.jpg")
                 _write_text(source_root / "labels" / split / f"{split}.txt", "0 0.5 0.5 0.2 0.2\n")
-
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    teacher_name: signal
-                    run:
-                      output_root: runs
-                      exist_ok: true
-                    dataset:
-                      root: teacher_source
-                      image_dir: images
-                      label_dir: labels
-                    model:
-                      model_size: n
-                      weights: yolo26n.pt
-                      class_names: [traffic_light, sign]
-                    train:
-                      epochs: 72
-                      imgsz: 640
-                      batch: 2
-                      device: cpu
-                      workers: 1
-                      pin_memory: true
-                      persistent_workers: true
-                      prefetch_factor: 3
-                      patience: 1
-                      cache: false
-                      amp: false
-                      optimizer: auto
-                      seed: 7
-                      resume: true
-                      val: true
-                      save_period: 1
-                      log_every_n_steps: 5
-                      profile_window: 7
-                      profile_device_sync: false
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
+            scenario = self._build_scenario(
+                teacher_name="signal",
+                source_root=source_root,
+                output_root=root / "runs",
+                weights="yolo26n.pt",
+                class_names=("traffic_light", "sign"),
+                train_overrides={
+                    "epochs": 72,
+                    "imgsz": 640,
+                    "batch": 2,
+                    "device": "cpu",
+                    "workers": 1,
+                    "pin_memory": True,
+                    "persistent_workers": True,
+                    "prefetch_factor": 3,
+                    "patience": 1,
+                    "cache": False,
+                    "amp": False,
+                    "optimizer": "auto",
+                    "seed": 7,
+                    "resume": True,
+                    "val": True,
+                    "save_period": 1,
+                    "log_every_n_steps": 5,
+                    "profile_window": 7,
+                    "profile_device_sync": False,
+                },
             )
-
-            scenario = load_teacher_train_scenario(scenario_path)
-            with patch("tools.od_bootstrap.train.ultralytics_runner.YOLO", _FakeYOLO):
+            with patch("tools.od_bootstrap.teacher.ultralytics_runner.YOLO", _FakeYOLO):
                 with self.assertRaisesRegex(FileNotFoundError, "no last.pt exists under"):
-                    run_teacher_train_scenario(scenario, scenario_path=scenario_path)
+                    run_teacher_train_scenario(scenario, scenario_path=root / "preset_train")

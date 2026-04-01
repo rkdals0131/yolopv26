@@ -66,7 +66,7 @@
 - loader sample contract와 transform contract가 문서와 코드에서 동일하다.
 - pretrained trunk를 부분 로드한 PV26 model이 forward/backward를 통과한다.
 - target encoder와 loss가 lane/TL/OD/stop-line/crosswalk를 동시에 처리한다.
-- small smoke dataset에서 loss가 정상적으로 감소한다.
+- small regression dataset에서 loss가 정상적으로 감소한다.
 - 문서와 구현 상태가 일치한다.
 
 ## 문서 맵

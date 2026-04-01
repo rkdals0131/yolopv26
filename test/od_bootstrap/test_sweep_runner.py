@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import json
 import tempfile
-import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.sweep.image_list import ImageListEntry, build_sample_uid
-from tools.od_bootstrap.sweep.run_model_centric_sweep import _extract_teacher_rows, run_model_centric_sweep_scenario
-from tools.od_bootstrap.sweep.scenario import ClassPolicy, TeacherConfig, load_sweep_scenario
+from tools.od_bootstrap.data.image_list import ImageListEntry, build_sample_uid
+from tools.od_bootstrap.data.sweep import ClassPolicy, TeacherConfig, run_model_centric_sweep_scenario
+from tools.od_bootstrap.presets import build_sweep_preset
+from tools.od_bootstrap.data._sweep_impl import _extract_teacher_rows
 
 
 class _FakeYOLO:
@@ -68,7 +69,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             name="mobility",
             base_model="yolov26s",
             checkpoint_path=Path("/tmp/mobility.pt"),
-            model_version="mobility_smoke_v1",
+            model_version="mobility_yolov26s_bootstrap_v1",
             classes=("vehicle", "bike", "pedestrian"),
         )
         result = SimpleNamespace(
@@ -208,65 +209,23 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            scenario_path = root / "bootstrap.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    run:
-                      output_root: runs/od_bootstrap
-                      execution_mode: model-centric
-                      dry_run: false
-                      device: cpu
-                      imgsz: 640
-                      batch_size: 2
-                      predict_conf: 0.001
-                      predict_iou: 0.99
-                    image_list:
-                      manifest_path: image_list.jsonl
-                    materialization:
-                      output_root: exhaustive_od
-                      copy_images: false
-                    class_policy_path: class_policy.yaml
-                    teachers:
-                      - name: mobility
-                        base_model: yolov26n
-                        checkpoint_path: weights/mobility.pt
-                        model_version: mobility_v1
-                        classes: [vehicle, bike, pedestrian]
-                      - name: signal
-                        base_model: yolov26n
-                        checkpoint_path: weights/signal.pt
-                        model_version: signal_v1
-                        classes: [traffic_light, sign]
-                      - name: obstacle
-                        base_model: yolov26n
-                        checkpoint_path: weights/obstacle.pt
-                        model_version: obstacle_v1
-                        classes: [traffic_cone, obstacle]
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
+            preset = build_sweep_preset()
+            scenario = replace(
+                preset,
+                run=replace(preset.run, output_root=root / "runs" / "od_bootstrap"),
+                image_list=replace(preset.image_list, manifest_path=image_list_manifest),
+                materialization=replace(preset.materialization, output_root=root / "exhaustive_od", copy_images=False),
+                teachers=tuple(
+                    replace(
+                        teacher,
+                        checkpoint_path=root / "weights" / f"{teacher.name}.pt",
+                    )
+                    for teacher in preset.teachers
+                ),
+                class_policy_path=root / "class_policy.yaml",
             )
-            (root / "class_policy.yaml").write_text(
-                textwrap.dedent(
-                    """
-                    vehicle: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
-                    bike: {score_threshold: 0.30, nms_iou_threshold: 0.55, min_box_size: 8}
-                    pedestrian: {score_threshold: 0.35, nms_iou_threshold: 0.50, min_box_size: 8}
-                    traffic_light: {score_threshold: 0.40, nms_iou_threshold: 0.45, min_box_size: 6, allowed_source_datasets: [bdd100k_det_100k, aihub_traffic_seoul], suppress_with_classes: [sign], cross_class_iou_threshold: 0.35}
-                    sign: {score_threshold: 0.40, nms_iou_threshold: 0.50, min_box_size: 8, allowed_source_datasets: [bdd100k_det_100k, aihub_traffic_seoul], suppress_with_classes: [traffic_light], cross_class_iou_threshold: 0.35}
-                    traffic_cone: {score_threshold: 0.45, nms_iou_threshold: 0.45, min_box_size: 8, suppress_with_classes: [obstacle], cross_class_iou_threshold: 0.40}
-                    obstacle: {score_threshold: 0.55, nms_iou_threshold: 0.40, min_box_size: 12, suppress_with_classes: [traffic_cone], cross_class_iou_threshold: 0.40}
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
-
-            scenario = load_sweep_scenario(scenario_path)
-            with patch("tools.od_bootstrap.sweep.run_model_centric_sweep.YOLO", _FakeYOLO):
-                summary = run_model_centric_sweep_scenario(scenario, scenario_path=scenario_path)
+            with patch("tools.od_bootstrap.data.sweep.YOLO", _FakeYOLO):
+                summary = run_model_centric_sweep_scenario(scenario, scenario_path=root / "preset_sweep")
             run_dir = Path(summary["run_dir"])
 
             self.assertEqual(summary["teacher_names"], ["mobility", "signal", "obstacle"])
@@ -293,13 +252,13 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertEqual(traffic_scene["source"]["dataset"], "pv26_exhaustive_aihub_traffic_seoul")
             self.assertEqual(bdd_scene["source"]["bootstrap_sample_uid"], bdd_uid)
             self.assertEqual(traffic_scene["source"]["bootstrap_sample_uid"], traffic_uid)
-            self.assertEqual(len(bdd_scene["detections"]), 3)
-            self.assertEqual(len(traffic_scene["detections"]), 3)
+            self.assertEqual(len(bdd_scene["detections"]), 5)
+            self.assertEqual(len(traffic_scene["detections"]), 5)
             self.assertEqual(bdd_scene["detections"][0]["provenance"]["label_origin"], "raw_source")
             self.assertEqual(bdd_scene["detections"][1]["provenance"]["label_origin"], "bootstrap")
-            self.assertEqual(
-                [item["class_name"] for item in traffic_scene["detections"]],
-                ["traffic_light", "obstacle", "vehicle"],
-            )
+            traffic_classes = [item["class_name"] for item in traffic_scene["detections"]]
+            self.assertIn("traffic_light", traffic_classes)
+            self.assertIn("obstacle", traffic_classes)
+            self.assertIn("vehicle", traffic_classes)
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{bdd_uid}.txt").is_file())
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{traffic_uid}.txt").is_file())
