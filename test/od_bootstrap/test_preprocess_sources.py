@@ -170,6 +170,49 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertTrue(str(config.roots.aihub_root).endswith("/seg_dataset/AIHUB"))
         self.assertTrue(str(config.output_root).endswith("/seg_dataset/pv26_od_bootstrap"))
 
+    def test_default_prepare_sources_preset_reads_shared_user_config_yaml(self) -> None:
+        with patch(
+            "tools.od_bootstrap.presets.load_user_paths_config",
+            return_value={
+                "od_bootstrap": {
+                    "raw_sources": {
+                        "bdd_root": "custom_data/bdd",
+                        "bdd_images_root": "custom_data/bdd/images",
+                        "bdd_labels_root": "custom_data/bdd/labels",
+                        "aihub_root": "custom_data/aihub",
+                    },
+                    "outputs": {
+                        "bootstrap_root": "custom_outputs/bootstrap",
+                    },
+                }
+            },
+        ), patch(
+            "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+            return_value={
+                "od_bootstrap": {
+                    "source_prep": {
+                        "workers": 7,
+                        "force_reprocess": True,
+                        "write_source_readmes": True,
+                        "debug_vis_count": 12,
+                        "debug_vis_seed": 99,
+                    }
+                }
+            },
+        ):
+            config = build_default_source_preset()
+
+        self.assertTrue(str(config.roots.bdd_root).endswith("/custom_data/bdd"))
+        self.assertTrue(str(config.roots.bdd_images_root).endswith("/custom_data/bdd/images"))
+        self.assertTrue(str(config.roots.bdd_labels_root).endswith("/custom_data/bdd/labels"))
+        self.assertTrue(str(config.roots.aihub_root).endswith("/custom_data/aihub"))
+        self.assertTrue(str(config.output_root).endswith("/custom_outputs/bootstrap"))
+        self.assertEqual(config.workers, 7)
+        self.assertTrue(config.force_reprocess)
+        self.assertTrue(config.write_source_readmes)
+        self.assertEqual(config.debug_vis_count, 12)
+        self.assertEqual(config.debug_vis_seed, 99)
+
     def test_entrypoints_use_default_configs_without_overrides(self) -> None:
         captured: dict[str, object] = {}
 

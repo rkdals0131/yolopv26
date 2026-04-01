@@ -31,6 +31,78 @@ def class_policy_to_dict(policy: ClassPolicy) -> dict[str, Any]:
     return payload
 
 
+def _optional_float_pair(value: Any, *, field_name: str) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise TypeError(f"{field_name} must be a 2-item list")
+    return (float(value[0]), float(value[1]))
+
+
+def class_policy_from_dict(
+    payload: dict[str, Any],
+    *,
+    default_policy: ClassPolicy | None = None,
+) -> ClassPolicy:
+    if not isinstance(payload, dict):
+        raise TypeError("class policy payload must be a mapping")
+
+    def _required(name: str) -> Any:
+        if name in payload:
+            return payload[name]
+        if default_policy is not None:
+            return getattr(default_policy, name)
+        raise KeyError(f"class policy missing required field: {name}")
+
+    def _optional_tuple(name: str, *, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+        if name in payload:
+            raw_value = payload[name]
+        elif default_policy is not None:
+            raw_value = getattr(default_policy, name)
+        else:
+            raw_value = default
+        if raw_value is None:
+            return ()
+        if isinstance(raw_value, str):
+            return (str(raw_value),)
+        if not isinstance(raw_value, (list, tuple)):
+            raise TypeError(f"{name} must be a list")
+        return tuple(str(item) for item in raw_value)
+
+    return ClassPolicy(
+        score_threshold=float(_required("score_threshold")),
+        nms_iou_threshold=float(_required("nms_iou_threshold")),
+        min_box_size=int(_required("min_box_size")),
+        allowed_source_datasets=_optional_tuple("allowed_source_datasets"),
+        suppress_with_classes=_optional_tuple("suppress_with_classes"),
+        cross_class_iou_threshold=(
+            float(payload["cross_class_iou_threshold"])
+            if payload.get("cross_class_iou_threshold") is not None
+            else (
+                float(default_policy.cross_class_iou_threshold)
+                if default_policy is not None and default_policy.cross_class_iou_threshold is not None
+                else None
+            )
+        ),
+        center_x_range=_optional_float_pair(
+            payload.get("center_x_range", default_policy.center_x_range if default_policy is not None else None),
+            field_name="center_x_range",
+        ),
+        center_y_range=_optional_float_pair(
+            payload.get("center_y_range", default_policy.center_y_range if default_policy is not None else None),
+            field_name="center_y_range",
+        ),
+        aspect_ratio_range=_optional_float_pair(
+            payload.get("aspect_ratio_range", default_policy.aspect_ratio_range if default_policy is not None else None),
+            field_name="aspect_ratio_range",
+        ),
+        area_ratio_range=_optional_float_pair(
+            payload.get("area_ratio_range", default_policy.area_ratio_range if default_policy is not None else None),
+            field_name="area_ratio_range",
+        ),
+    )
+
+
 def _range_contains(bounds: tuple[float, float] | None, value: float) -> bool:
     if bounds is None:
         return True

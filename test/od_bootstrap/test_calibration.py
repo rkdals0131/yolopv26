@@ -171,6 +171,67 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             self.assertTrue((Path(summary["output_root"]) / "teachers" / "mobility" / "predictions.jsonl").is_file())
             self.assertTrue(Path(summary["hard_negative_manifest_path"]).is_file())
 
+    def test_calibration_loads_policy_template_from_yaml_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "teacher_dataset"
+            for sample_id in ("frame_001", "frame_002"):
+                (dataset_root / "images" / "val").mkdir(parents=True, exist_ok=True)
+                (dataset_root / "images" / "val" / f"{sample_id}.jpg").write_bytes(b"img")
+            (dataset_root / "labels" / "val").mkdir(parents=True, exist_ok=True)
+            (dataset_root / "labels" / "val" / "frame_001.txt").write_text("0 0.200000 0.200000 0.200000 0.200000\n", encoding="utf-8")
+            (dataset_root / "labels" / "val" / "frame_002.txt").write_text("0 0.500000 0.500000 0.200000 0.200000\n", encoding="utf-8")
+            checkpoint_path = root / "weights" / "mobility.pt"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_text("checkpoint", encoding="utf-8")
+            template_path = root / "template.yaml"
+            template_path.write_text(
+                "\n".join(
+                    [
+                        "vehicle:",
+                        "  score_threshold: 0.50",
+                        "  nms_iou_threshold: 0.50",
+                        "  min_box_size: 4",
+                        "  center_y_range: [0.0, 0.8]",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            scenario = self._build_scenario(
+                output_root=root / "calibration",
+                teachers=(
+                    CalibrationTeacherConfig(
+                        name="mobility",
+                        checkpoint_path=checkpoint_path,
+                        model_version="mobility_v1",
+                        dataset=CalibrationDatasetConfig(
+                            root=dataset_root,
+                            source_dataset_key="bdd100k_det_100k",
+                            image_dir="images",
+                            label_dir="labels",
+                            split="val",
+                        ),
+                        classes=("vehicle",),
+                    ),
+                ),
+                search={
+                    "match_iou": 0.5,
+                    "min_precision": 0.90,
+                    "score_thresholds": (0.50, 0.90),
+                    "nms_iou_thresholds": (0.50,),
+                    "min_box_sizes": (4,),
+                },
+                policy_template_path=template_path,
+            )
+            with patch("tools.od_bootstrap.teacher.calibrate.YOLO", _FakeYOLO):
+                summary = calibrate_class_policy_scenario(scenario, scenario_path=root / "preset_calibration")
+
+            class_policy = read_yaml(summary["class_policy_path"])
+            self.assertEqual(class_policy["vehicle"]["score_threshold"], 0.9)
+            self.assertEqual(class_policy["vehicle"]["center_y_range"], [0.0, 0.8])
+
     def test_calibration_uses_hard_negative_regression_set_as_tie_breaker(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

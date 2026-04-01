@@ -13,6 +13,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 site.addsitedir(str(REPO_ROOT))
 
 from common.overlay import render_overlay
+from common.user_config import (
+    load_user_hyperparameters_config,
+    load_user_paths_config,
+    nested_get,
+    resolve_repo_path,
+    resolve_repo_paths,
+)
 from model.engine.evaluator import PV26Evaluator
 from model.data import (
     PV26CanonicalDataset,
@@ -162,7 +169,125 @@ def _phase(
     )
 
 
+def _deep_merge_mappings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overrides.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_mappings(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _phase_to_mapping(phase: PhaseConfig) -> dict[str, Any]:
+    return {
+        "name": phase.name,
+        "stage": phase.stage,
+        "min_epochs": phase.min_epochs,
+        "max_epochs": phase.max_epochs,
+        "patience": phase.patience,
+        "min_improvement_pct": phase.min_improvement_pct,
+        "overrides": dict(phase.overrides),
+    }
+
+
+def _scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
+    return {
+        "dataset": {
+            "root": str(scenario.dataset.root),
+            "additional_roots": [str(path) for path in scenario.dataset.additional_roots],
+        },
+        "run": {
+            "run_root": str(scenario.run.run_root),
+            "run_name_prefix": scenario.run.run_name_prefix,
+            "run_dir": str(scenario.run.run_dir) if scenario.run.run_dir is not None else None,
+        },
+        "train_defaults": asdict(scenario.train_defaults),
+        "selection": asdict(scenario.selection),
+        "preview": {
+            "enabled": scenario.preview.enabled,
+            "split": scenario.preview.split,
+            "dataset_keys": list(scenario.preview.dataset_keys),
+            "max_samples_per_dataset": scenario.preview.max_samples_per_dataset,
+            "write_overlay": scenario.preview.write_overlay,
+        },
+        "phases": [_phase_to_mapping(phase) for phase in scenario.phases],
+    }
+
+
+def _build_pv26_train_path_overrides(preset_name: str, paths_config: dict[str, Any]) -> dict[str, Any]:
+    dataset_root = resolve_repo_path(
+        nested_get(paths_config, "pv26_train", "dataset_root"),
+        repo_root=REPO_ROOT,
+    )
+    additional_roots = resolve_repo_paths(
+        nested_get(paths_config, "pv26_train", "additional_roots"),
+        repo_root=REPO_ROOT,
+    )
+    run_root_key = "stress_run_root" if preset_name == "stage3_vram_stress" else "run_root"
+    run_root = resolve_repo_path(
+        nested_get(paths_config, "pv26_train", run_root_key),
+        repo_root=REPO_ROOT,
+    )
+    overrides: dict[str, Any] = {}
+    if dataset_root is not None or additional_roots:
+        overrides["dataset"] = {}
+        if dataset_root is not None:
+            overrides["dataset"]["root"] = str(dataset_root)
+        if additional_roots:
+            overrides["dataset"]["additional_roots"] = [str(path) for path in additional_roots]
+    if run_root is not None:
+        overrides["run"] = {"run_root": str(run_root)}
+    return overrides
+
+
+def _meta_train_scenario_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> MetaTrainScenario:
+    phases_payload = payload.get("phases", ())
+    if not isinstance(phases_payload, (list, tuple)):
+        raise TypeError("phases must be a list")
+    return MetaTrainScenario(
+        dataset=_dataset_config_from_mapping(payload.get("dataset", {}), base_dir=base_dir),
+        run=_run_config_from_mapping(payload.get("run", {}), base_dir=base_dir),
+        train_defaults=_train_defaults_from_mapping(payload.get("train_defaults", {})),
+        selection=_selection_config_from_mapping(payload.get("selection", {})),
+        preview=_preview_config_from_mapping(payload.get("preview", {})),
+        phases=tuple(
+            _phase_config_from_mapping(phase_payload, index=index)
+            for index, phase_payload in enumerate(phases_payload)
+        ),
+    )
+
+
+def _apply_user_config_to_preset(
+    preset_name: str,
+    scenario: MetaTrainScenario,
+    *,
+    paths_config: dict[str, Any],
+    hyperparameters_config: dict[str, Any],
+) -> MetaTrainScenario:
+    scenario_mapping = _scenario_to_mapping(scenario)
+    path_overrides = _build_pv26_train_path_overrides(preset_name, paths_config)
+    hyperparameter_overrides = nested_get(
+        hyperparameters_config,
+        "pv26_train",
+        "presets",
+        preset_name,
+        default={},
+    )
+    if hyperparameter_overrides is None:
+        hyperparameter_overrides = {}
+    if not isinstance(hyperparameter_overrides, dict):
+        raise TypeError(f"pv26_train.presets.{preset_name} must be a mapping")
+    merged_mapping = _deep_merge_mappings(scenario_mapping, path_overrides)
+    merged_mapping = _deep_merge_mappings(merged_mapping, hyperparameter_overrides)
+    return _meta_train_scenario_from_mapping(merged_mapping, base_dir=REPO_ROOT)
+
+
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
+    paths_config = load_user_paths_config()
+    hyperparameters_config = load_user_hyperparameters_config()
+
     # ===== USER CONFIG: PV26 PREVIEW DATASETS =====
     preview_dataset_keys = (
         "pv26_exhaustive_bdd100k_det_100k",  # BDD 계열 preview 샘플
@@ -348,7 +473,7 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         ),
     )
 
-    return {
+    presets = {
         "default": MetaTrainScenario(
             dataset=default_dataset,
             run=default_run,
@@ -366,9 +491,15 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
             phases=stress_phases,
         ),
     }
-
-
-META_TRAIN_PRESETS = _build_meta_train_presets()
+    return {
+        preset_name: _apply_user_config_to_preset(
+            preset_name,
+            scenario,
+            paths_config=paths_config,
+            hyperparameters_config=hyperparameters_config,
+        )
+        for preset_name, scenario in presets.items()
+    }
 
 
 # Default CLI preset; override with `--preset`.
@@ -641,7 +772,7 @@ def _validate_meta_train_scenario(scenario: MetaTrainScenario) -> None:
 def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
     preset_key = Path(preset_name).name
     try:
-        scenario = META_TRAIN_PRESETS[preset_key]
+        scenario = _build_meta_train_presets()[preset_key]
     except KeyError as exc:
         raise KeyError(f"unsupported PV26 meta-train preset: {preset_key}") from exc
     _validate_meta_train_scenario(scenario)
@@ -1343,10 +1474,11 @@ def run_meta_train_scenario(
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    preset_names = tuple(sorted(_build_meta_train_presets().keys()))
     parser = argparse.ArgumentParser(description="Run the PV26 meta-train scenario.")
     parser.add_argument(
         "--preset",
-        choices=sorted(META_TRAIN_PRESETS.keys()),
+        choices=preset_names,
         default=ENTRY_CONFIG.preset_name,
         help="PV26 meta-train preset name.",
     )

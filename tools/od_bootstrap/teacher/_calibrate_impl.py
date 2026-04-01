@@ -10,6 +10,8 @@ from typing import Any
 import torch
 import yaml
 
+from common.io import read_yaml
+
 try:
     from ultralytics import YOLO
 except ImportError:  # pragma: no cover
@@ -487,6 +489,45 @@ def _build_default_policy_template(scenario: CalibrationScenario) -> dict[str, C
     }
 
 
+def _optional_float_pair(raw_value: Any, *, field_name: str, class_name: str) -> tuple[float, float] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) != 2:
+        raise TypeError(f"class policy '{class_name}' field '{field_name}' must be a 2-item list/tuple")
+    return (float(raw_value[0]), float(raw_value[1]))
+
+
+def _class_policy_from_payload(class_name: str, raw_payload: dict[str, Any]) -> ClassPolicy:
+    if not isinstance(raw_payload, dict):
+        raise TypeError(f"class policy '{class_name}' must be a mapping")
+    return ClassPolicy(
+        score_threshold=float(raw_payload["score_threshold"]),
+        nms_iou_threshold=float(raw_payload["nms_iou_threshold"]),
+        min_box_size=int(raw_payload["min_box_size"]),
+        allowed_source_datasets=tuple(str(item) for item in raw_payload.get("allowed_source_datasets", ())),
+        suppress_with_classes=tuple(str(item) for item in raw_payload.get("suppress_with_classes", ())),
+        cross_class_iou_threshold=(
+            float(raw_payload["cross_class_iou_threshold"])
+            if raw_payload.get("cross_class_iou_threshold") is not None
+            else None
+        ),
+        center_x_range=_optional_float_pair(raw_payload.get("center_x_range"), field_name="center_x_range", class_name=class_name),
+        center_y_range=_optional_float_pair(raw_payload.get("center_y_range"), field_name="center_y_range", class_name=class_name),
+        aspect_ratio_range=_optional_float_pair(raw_payload.get("aspect_ratio_range"), field_name="aspect_ratio_range", class_name=class_name),
+        area_ratio_range=_optional_float_pair(raw_payload.get("area_ratio_range"), field_name="area_ratio_range", class_name=class_name),
+    )
+
+
+def _load_policy_template_from_path(path: Path) -> dict[str, ClassPolicy]:
+    if not path.is_file():
+        raise FileNotFoundError(f"policy template not found: {path}")
+    payload = read_yaml(path)
+    return {
+        str(class_name): _class_policy_from_payload(str(class_name), raw_policy)
+        for class_name, raw_policy in payload.items()
+    }
+
+
 def _build_hard_negative_manifest_payload(
     *,
     scenario: CalibrationScenario,
@@ -571,7 +612,11 @@ def calibrate_class_policy_scenario(
     teacher_summaries: list[dict[str, Any]] = []
     samples_by_teacher: dict[str, dict[str, dict[str, Any]]] = {}
     teacher_by_class: dict[str, CalibrationTeacherConfig] = {}
-    policy_template = dict(scenario.policy_template or _build_default_policy_template(scenario))
+    policy_template = dict(_build_default_policy_template(scenario))
+    if scenario.policy_template is not None:
+        policy_template.update(scenario.policy_template)
+    elif scenario.policy_template_path is not None:
+        policy_template.update(_load_policy_template_from_path(scenario.policy_template_path.resolve()))
     _log_calibration(f"scenario={scenario_path}")
     _log_calibration(f"output_root={output_root}")
 

@@ -1,0 +1,320 @@
+# ===== USER CONFIG: HYPERPARAMETERS =====
+# 이 파일은 자주 바꿀 수 있는 숫자/토글만 모아둔 파일이다.
+# 경로는 user_paths.yaml에서 바꾸고, 여기서는 학습/전처리 파라미터만 조절한다.
+
+od_bootstrap:
+  source_prep:
+    workers: 4
+    force_reprocess: false
+    write_source_readmes: false
+    debug_vis_count: 50
+    debug_vis_seed: 42
+
+  teacher_dataset:
+    copy_images: false
+    workers: 8
+    log_every: 500
+    debug_vis_count: 20
+    debug_vis_seed: 26
+
+  teacher_train:
+    common:
+      imgsz: 640
+      device: cuda:0
+      workers: 8
+      pin_memory: true
+      persistent_workers: true
+      prefetch_factor: 4
+      patience: 50
+      cache: false
+      amp: true
+      optimizer: auto
+      seed: 0
+      resume: false
+      val: true
+      save_period: 10
+      log_every_n_steps: 20
+      profile_window: 20
+      profile_device_sync: true
+    mobility:
+      model_size: s
+      weights: yolo26s.pt
+      classes: [vehicle, bike, pedestrian]
+      epochs: 200
+      batch: 20
+    signal:
+      model_size: s
+      weights: yolo26s.pt
+      classes: [traffic_light, sign]
+      epochs: 200
+      batch: 20
+    obstacle:
+      model_size: m
+      weights: yolo26m.pt
+      classes: [traffic_cone, obstacle]
+      epochs: 100
+      batch: 12
+
+  teacher_eval:
+    common:
+      imgsz: 640
+      batch: 1
+      device: cuda:0
+      conf: 0.25
+      iou: 0.7
+      predict: true
+      val: true
+      save_conf: false
+      verbose: false
+      sample_limit: 8
+    mobility:
+      model_size: n
+      classes: [vehicle, bike, pedestrian]
+    signal:
+      model_size: n
+      classes: [traffic_light, sign]
+    obstacle:
+      model_size: n
+      classes: [traffic_cone, obstacle]
+
+  calibration:
+    run:
+      device: cuda:0
+      imgsz: 640
+      batch_size: 8
+      predict_conf: 0.001
+      predict_iou: 0.99
+    search:
+      match_iou: 0.5
+      min_precision: 0.90
+      min_precision_by_class:
+        traffic_light: 0.75
+      score_thresholds: [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+      nms_iou_thresholds: [0.40, 0.45, 0.50, 0.55]
+      min_box_sizes: [4, 6, 8, 10, 12]
+    hard_negative:
+      top_k_per_class: 25
+      focus_classes: [traffic_cone, obstacle]
+    teachers:
+      mobility:
+        model_version: mobility_yolov26s_bootstrap_v1
+        source_dataset_key: bdd100k_det_100k
+        image_dir: images
+        label_dir: labels
+        split: val
+        classes: [vehicle, bike, pedestrian]
+      signal:
+        model_version: signal_yolov26s_bootstrap_v1
+        source_dataset_key: aihub_traffic_seoul
+        image_dir: images
+        label_dir: labels
+        split: val
+        classes: [traffic_light, sign]
+      obstacle:
+        model_version: obstacle_yolov26m_bootstrap_v1
+        source_dataset_key: aihub_obstacle_seoul
+        image_dir: images
+        label_dir: labels
+        split: val
+        classes: [traffic_cone, obstacle]
+
+  exhaustive_od:
+    run:
+      execution_mode: model-centric
+      device: cuda:0
+      imgsz: 640
+      batch_size: 8
+      predict_conf: 0.001
+      predict_iou: 0.99
+    materialization:
+      copy_images: false
+    teachers:
+      mobility:
+        base_model: yolov26s
+        model_version: mobility_yolov26s_bootstrap_v1
+        classes: [vehicle, bike, pedestrian]
+      signal:
+        base_model: yolov26s
+        model_version: signal_yolov26s_bootstrap_v1
+        classes: [traffic_light, sign]
+      obstacle:
+        base_model: yolov26m
+        model_version: obstacle_yolov26m_bootstrap_v1
+        classes: [traffic_cone, obstacle]
+    # calibration/class_policy.yaml이 있으면 그 값을 우선 사용한다.
+    # 아래 값은 calibration을 아직 안 돌렸거나 일부 클래스가 누락됐을 때의 fallback이다.
+    class_policy_defaults:
+      vehicle:
+        score_threshold: 0.25
+        nms_iou_threshold: 0.55
+        min_box_size: 4
+      bike:
+        score_threshold: 0.25
+        nms_iou_threshold: 0.55
+        min_box_size: 4
+      pedestrian:
+        score_threshold: 0.25
+        nms_iou_threshold: 0.55
+        min_box_size: 4
+      traffic_light:
+        score_threshold: 0.30
+        nms_iou_threshold: 0.50
+        min_box_size: 4
+      sign:
+        score_threshold: 0.25
+        nms_iou_threshold: 0.50
+        min_box_size: 4
+      traffic_cone:
+        score_threshold: 0.25
+        nms_iou_threshold: 0.55
+        min_box_size: 4
+      obstacle:
+        score_threshold: 0.25
+        nms_iou_threshold: 0.55
+        min_box_size: 4
+
+  final_dataset:
+    copy_images: false
+
+pv26_train:
+  presets:
+    default:
+      preview:
+        enabled: true
+        split: val
+        dataset_keys:
+          - pv26_exhaustive_bdd100k_det_100k
+          - pv26_exhaustive_aihub_traffic_seoul
+          - pv26_exhaustive_aihub_obstacle_seoul
+          - aihub_lane_seoul
+        max_samples_per_dataset: 1
+        write_overlay: true
+      selection:
+        metric_path: val.losses.total.mean
+        mode: min
+        eps: 1.0e-8
+      train_defaults:
+        device: cuda:0
+        batch_size: 40
+        train_batches: -1
+        val_batches: -1
+        trunk_lr: 1.0e-4
+        head_lr: 5.0e-3
+        weight_decay: 1.0e-4
+        schedule: cosine
+        amp: true
+        accumulate_steps: 1
+        grad_clip_norm: 5.0
+        val_every: 1
+        checkpoint_every: 3
+        num_workers: 6
+        pin_memory: true
+        log_every_n_steps: 20
+        profile_window: 20
+        profile_device_sync: true
+        encode_train_batches_in_loader: true
+        encode_val_batches_in_loader: true
+        persistent_workers: true
+        prefetch_factor: 2
+      phases:
+        - name: head_warmup
+          stage: stage_1_frozen_trunk_warmup
+          min_epochs: 2
+          max_epochs: 4
+          patience: 2
+          min_improvement_pct: 2.0
+          overrides:
+            trunk_lr: 5.0e-5
+            head_lr: 3.0e-3
+        - name: partial_unfreeze
+          stage: stage_2_partial_unfreeze
+          min_epochs: 3
+          max_epochs: 6
+          patience: 2
+          min_improvement_pct: 1.0
+          overrides:
+            trunk_lr: 3.0e-5
+            head_lr: 8.0e-4
+        - name: end_to_end_finetune
+          stage: stage_3_end_to_end_finetune
+          min_epochs: 4
+          max_epochs: 10
+          patience: 2
+          min_improvement_pct: 0.5
+          overrides:
+            trunk_lr: 1.0e-5
+            head_lr: 4.0e-4
+
+    stage3_vram_stress:
+      preview:
+        enabled: false
+        split: val
+        dataset_keys:
+          - pv26_exhaustive_bdd100k_det_100k
+          - pv26_exhaustive_aihub_traffic_seoul
+          - pv26_exhaustive_aihub_obstacle_seoul
+          - aihub_lane_seoul
+        max_samples_per_dataset: 1
+        write_overlay: false
+      selection:
+        metric_path: train.losses.total.mean
+        mode: min
+        eps: 1.0e-8
+      train_defaults:
+        device: cuda:0
+        batch_size: 40
+        train_batches: 30
+        val_batches: 0
+        trunk_lr: 1.0e-4
+        head_lr: 5.0e-3
+        weight_decay: 1.0e-4
+        schedule: none
+        amp: true
+        accumulate_steps: 1
+        grad_clip_norm: 5.0
+        val_every: 1
+        checkpoint_every: 1
+        num_workers: 6
+        pin_memory: true
+        log_every_n_steps: 1
+        profile_window: 3
+        profile_device_sync: true
+        encode_train_batches_in_loader: true
+        encode_val_batches_in_loader: true
+        persistent_workers: true
+        prefetch_factor: 2
+      phases:
+        - name: head_warmup
+          stage: stage_1_frozen_trunk_warmup
+          min_epochs: 1
+          max_epochs: 1
+          patience: 1
+          min_improvement_pct: 0.0
+          overrides:
+            batch_size: 2
+            train_batches: 1
+            val_batches: 0
+            trunk_lr: 5.0e-5
+            head_lr: 3.0e-3
+        - name: partial_unfreeze
+          stage: stage_2_partial_unfreeze
+          min_epochs: 1
+          max_epochs: 1
+          patience: 1
+          min_improvement_pct: 0.0
+          overrides:
+            batch_size: 2
+            train_batches: 1
+            val_batches: 0
+            trunk_lr: 3.0e-5
+            head_lr: 8.0e-4
+        - name: end_to_end_finetune
+          stage: stage_3_end_to_end_finetune
+          min_epochs: 1
+          max_epochs: 1
+          patience: 1
+          min_improvement_pct: 0.0
+          overrides:
+            val_batches: 0
+            trunk_lr: 1.0e-5
+            head_lr: 4.0e-4

@@ -39,6 +39,98 @@ def _epoch_summary(epoch: int, metric_value: float) -> dict:
 
 
 class RunPV26TrainScenarioTests(unittest.TestCase):
+    def test_load_meta_train_scenario_applies_user_yaml_overrides(self) -> None:
+        user_paths_config = {
+            "pv26_train": {
+                "dataset_root": "custom/pv26_dataset",
+                "additional_roots": ["custom/extra_a", "custom/extra_b"],
+                "run_root": "custom/runs/default",
+                "stress_run_root": "custom/runs/stress",
+            }
+        }
+        user_hyperparameters_config = {
+            "pv26_train": {
+                "presets": {
+                    "default": {
+                        "train_defaults": {
+                            "batch_size": 12,
+                            "num_workers": 3,
+                        },
+                        "preview": {
+                            "dataset_keys": ["custom_preview_dataset"],
+                            "max_samples_per_dataset": 2,
+                        },
+                        "phases": [
+                            {
+                                "name": "head_warmup",
+                                "stage": "stage_1_frozen_trunk_warmup",
+                                "min_epochs": 2,
+                                "max_epochs": 4,
+                                "patience": 2,
+                                "min_improvement_pct": 2.0,
+                                "overrides": {
+                                    "head_lr": 0.0015,
+                                },
+                            },
+                            {
+                                "name": "partial_unfreeze",
+                                "stage": "stage_2_partial_unfreeze",
+                                "min_epochs": 3,
+                                "max_epochs": 6,
+                                "patience": 2,
+                                "min_improvement_pct": 1.0,
+                                "overrides": {
+                                    "head_lr": 0.0008,
+                                },
+                            },
+                            {
+                                "name": "end_to_end_finetune",
+                                "stage": "stage_3_end_to_end_finetune",
+                                "min_epochs": 4,
+                                "max_epochs": 10,
+                                "patience": 2,
+                                "min_improvement_pct": 0.5,
+                                "overrides": {
+                                    "head_lr": 0.0004,
+                                },
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+
+        with patch("tools.run_pv26_train.load_user_paths_config", return_value=user_paths_config):
+            with patch("tools.run_pv26_train.load_user_hyperparameters_config", return_value=user_hyperparameters_config):
+                scenario = load_meta_train_scenario("default")
+
+        self.assertEqual(scenario.dataset.root.parts[-2:], ("custom", "pv26_dataset"))
+        self.assertEqual(
+            tuple(path.parts[-2:] for path in scenario.dataset.additional_roots),
+            (("custom", "extra_a"), ("custom", "extra_b")),
+        )
+        self.assertEqual(scenario.run.run_root.parts[-3:], ("custom", "runs", "default"))
+        self.assertEqual(scenario.preview.dataset_keys, ("custom_preview_dataset",))
+        self.assertEqual(scenario.preview.max_samples_per_dataset, 2)
+        self.assertEqual(scenario.train_defaults.batch_size, 12)
+        self.assertEqual(scenario.train_defaults.num_workers, 3)
+        phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
+        self.assertAlmostEqual(phase_train.head_lr, 0.0015)
+
+    def test_load_meta_train_scenario_preserves_defaults_without_user_yaml(self) -> None:
+        with patch("tools.run_pv26_train.load_user_paths_config", return_value={}):
+            with patch("tools.run_pv26_train.load_user_hyperparameters_config", return_value={}):
+                scenario = load_meta_train_scenario("default")
+
+        self.assertEqual(scenario.dataset.root.parts[-2:], ("seg_dataset", "pv26_exhaustive_od_lane_dataset"))
+        self.assertEqual(scenario.run.run_root.parts[-2:], ("runs", "pv26_exhaustive_od_lane_train"))
+        self.assertEqual(scenario.train_defaults.batch_size, 40)
+        self.assertEqual(tuple(phase.stage for phase in scenario.phases), (
+            "stage_1_frozen_trunk_warmup",
+            "stage_2_partial_unfreeze",
+            "stage_3_end_to_end_finetune",
+        ))
+
     def test_default_preset_uses_exhaustive_dataset_and_stage_order(self) -> None:
         scenario = load_meta_train_scenario("default")
 

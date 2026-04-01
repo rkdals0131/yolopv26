@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from tools.od_bootstrap.data.sweep_types import REQUIRED_TEACHER_ORDER
 from tools.od_bootstrap.presets import build_sweep_preset
@@ -22,3 +25,57 @@ class ODBootstrapScenarioTests(unittest.TestCase):
         )
         self.assertEqual(scenario.class_policy["traffic_light"].score_threshold, 0.30)
         self.assertEqual(scenario.class_policy["obstacle"].min_box_size, 4)
+
+    def test_build_sweep_preset_prefers_generated_class_policy_yaml_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            policy_path = root / "class_policy.yaml"
+            policy_path.write_text(
+                "\n".join(
+                    [
+                        "vehicle:",
+                        "  score_threshold: 0.91",
+                        "  nms_iou_threshold: 0.42",
+                        "  min_box_size: 9",
+                        "  center_y_range: [0.1, 0.8]",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch(
+                "tools.od_bootstrap.presets.load_user_paths_config",
+                return_value={
+                    "od_bootstrap": {
+                        "runs": {
+                            "calibration_root": str(root),
+                        }
+                    }
+                },
+            ), patch(
+                "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+                return_value={
+                    "od_bootstrap": {
+                        "exhaustive_od": {
+                            "class_policy_defaults": {
+                                "vehicle": {"score_threshold": 0.25, "nms_iou_threshold": 0.55, "min_box_size": 4},
+                                "bike": {"score_threshold": 0.25, "nms_iou_threshold": 0.55, "min_box_size": 4},
+                                "pedestrian": {"score_threshold": 0.25, "nms_iou_threshold": 0.55, "min_box_size": 4},
+                                "traffic_light": {"score_threshold": 0.30, "nms_iou_threshold": 0.50, "min_box_size": 4},
+                                "sign": {"score_threshold": 0.25, "nms_iou_threshold": 0.50, "min_box_size": 4},
+                                "traffic_cone": {"score_threshold": 0.25, "nms_iou_threshold": 0.55, "min_box_size": 4},
+                                "obstacle": {"score_threshold": 0.25, "nms_iou_threshold": 0.55, "min_box_size": 4},
+                            }
+                        }
+                    }
+                },
+            ):
+                scenario = build_sweep_preset()
+
+        self.assertEqual(scenario.class_policy_path, policy_path.resolve())
+        self.assertEqual(scenario.class_policy["vehicle"].score_threshold, 0.91)
+        self.assertEqual(scenario.class_policy["vehicle"].nms_iou_threshold, 0.42)
+        self.assertEqual(scenario.class_policy["vehicle"].min_box_size, 9)
+        self.assertEqual(scenario.class_policy["vehicle"].center_y_range, (0.1, 0.8))
+        self.assertEqual(scenario.class_policy["traffic_light"].score_threshold, 0.30)

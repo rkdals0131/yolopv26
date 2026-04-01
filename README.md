@@ -19,8 +19,10 @@ python3 tools/check_env.py --strict --check-yolo-runtime
 
 - AIHUB와 BDD100K 원본 폴더 구조는 [docs/3A_RAW_DATASET_LAYOUTS.md](docs/3A_RAW_DATASET_LAYOUTS.md)를 기준으로 맞춘다.
 - 기본 preset은 `seg_dataset/AIHUB`, `seg_dataset/BDD100K`를 가정한다.
-- 로컬 경로가 다르면 [tools/od_bootstrap/presets.py](tools/od_bootstrap/presets.py)에서 `USER CONFIG`를 검색해서 source path를 먼저 수정한다.
-- PV26 학습 dataset 루트나 stage별 학습 파라미터를 바꾸려면 [tools/run_pv26_train.py](tools/run_pv26_train.py)에서 `USER CONFIG`, `HYPERPARAMETERS`, `PHASE HYPERPARAMETERS`를 검색해서 수정한다.
+- 경로는 [config/user_paths.yaml](config/user_paths.yaml)에서 먼저 수정한다.
+- 학습/전처리 숫자 파라미터는 [config/user_hyperparameters.yaml](config/user_hyperparameters.yaml)에서 수정한다.
+- 출력 경로를 바꾸면 bootstrap 단계 사이 연결도 같이 바뀌어야 한다. 이게 귀찮으면 기본값을 그대로 쓰는 편이 낫다.
+- preset 로직이 실제로 이 두 파일을 어떻게 읽는지 확인하려면 [tools/od_bootstrap/presets.py](tools/od_bootstrap/presets.py)와 [tools/run_pv26_train.py](tools/run_pv26_train.py)를 보면 된다.
 
 ## 바로 쓰는 명령어
 
@@ -144,7 +146,7 @@ python3 tools/run_pv26_train.py --preset default
 
 - 의존성 설치: `pip install -r requirements.txt`
 - 환경 점검: `python3 tools/check_env.py --strict --check-yolo-runtime`
-- raw dataset 경로와 bootstrap 입력 루트는 `tools/od_bootstrap/presets.py`에서 `USER CONFIG` 검색
-- PV26 기본 학습 파라미터와 stage별 override는 `tools/run_pv26_train.py`에서 `USER CONFIG`, `HYPERPARAMETERS`, `PHASE HYPERPARAMETERS` 검색
-- bootstrap preset 값은 `tools/od_bootstrap/presets.py`에서 확인할 수 있다.
+- raw dataset 경로, run/output 경로는 `config/user_paths.yaml`
+- bootstrap 전처리/teacher/calibration/exhaustive/PV26 학습 숫자 파라미터는 `config/user_hyperparameters.yaml`
+- 코드 안에서 빠르게 조절 지점을 찾고 싶으면 `tools/od_bootstrap/presets.py`와 `tools/run_pv26_train.py`에서 `USER CONFIG`, `HYPERPARAMETERS`, `PHASE HYPERPARAMETERS`를 검색
 - bootstrap 전체 흐름만 따로 보고 싶으면 [tools/od_bootstrap/README.md](tools/od_bootstrap/README.md)를 보면 된다.

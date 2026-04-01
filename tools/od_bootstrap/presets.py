@@ -2,10 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from common.io import read_yaml
 from common.pv26_schema import (
     AIHUB_OBSTACLE_DATASET_KEY,
     AIHUB_TRAFFIC_DATASET_KEY,
+    OD_CLASSES,
+)
+from common.user_config import (
+    load_user_hyperparameters_config,
+    load_user_paths_config,
+    nested_get,
+    resolve_repo_path,
 )
 from tools.od_bootstrap.data.source_common import (
     SourcePrepConfig,
@@ -19,13 +28,6 @@ from tools.od_bootstrap.data.sweep_types import (
     RunConfig as SweepRunConfig,
     TeacherConfig,
 )
-from tools.od_bootstrap.teacher.eval_types import (
-    CheckpointEvalDatasetConfig,
-    CheckpointEvalModelConfig,
-    CheckpointEvalParams,
-    CheckpointEvalRunConfig,
-    CheckpointEvalScenario,
-)
 from tools.od_bootstrap.teacher.calibration_types import (
     CalibrationDatasetConfig,
     CalibrationRunConfig,
@@ -34,6 +36,14 @@ from tools.od_bootstrap.teacher.calibration_types import (
     CalibrationTeacherConfig,
     HardNegativeConfig,
 )
+from tools.od_bootstrap.teacher.eval_types import (
+    CheckpointEvalDatasetConfig,
+    CheckpointEvalModelConfig,
+    CheckpointEvalParams,
+    CheckpointEvalRunConfig,
+    CheckpointEvalScenario,
+)
+from tools.od_bootstrap.teacher.policy import class_policy_from_dict
 from tools.od_bootstrap.teacher.train_types import (
     TeacherDatasetConfig,
     TeacherModelConfig,
@@ -76,30 +86,197 @@ class SourceDebugVisPreset:
     debug_vis_seed: int = 26
 
 
+def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"{field_name} must be a mapping")
+    return dict(value)
+
+
+def _coerce_bool(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    raise TypeError(f"{field_name} must be a boolean")
+
+
+def _coerce_int(value: Any, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an integer")
+    return int(value)
+
+
+def _coerce_float(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a float")
+    return float(value)
+
+
+def _coerce_str(value: Any, *, field_name: str) -> str:
+    text = str(value).strip()
+    if not text:
+        raise ValueError(f"{field_name} must not be empty")
+    return text
+
+
+def _coerce_str_tuple(value: Any, *, field_name: str) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (_coerce_str(value, field_name=field_name),)
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list")
+    return tuple(_coerce_str(item, field_name=f"{field_name}[]") for item in value)
+
+
+def _coerce_float_tuple(value: Any, *, field_name: str) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list")
+    return tuple(_coerce_float(item, field_name=f"{field_name}[]") for item in value)
+
+
+def _coerce_int_tuple(value: Any, *, field_name: str) -> tuple[int, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list")
+    return tuple(_coerce_int(item, field_name=f"{field_name}[]") for item in value)
+
+
+def _config_section(payload: dict[str, Any], *keys: str) -> dict[str, Any]:
+    field_name = ".".join(keys) if keys else "config"
+    return _coerce_mapping(nested_get(payload, *keys, default={}), field_name=field_name)
+
+
+def _load_od_bootstrap_paths_config() -> dict[str, Any]:
+    return _config_section(load_user_paths_config(), "od_bootstrap")
+
+
+def _load_od_bootstrap_hyperparameters_config() -> dict[str, Any]:
+    return _config_section(load_user_hyperparameters_config(), "od_bootstrap")
+
+
+def _path_from_config(config: dict[str, Any], *keys: str, default: Path) -> Path:
+    resolved = resolve_repo_path(nested_get(config, *keys), repo_root=REPO_ROOT)
+    return (resolved or default).resolve()
+
+
+def _optional_path_from_config(config: dict[str, Any], *keys: str) -> Path | None:
+    return resolve_repo_path(nested_get(config, *keys), repo_root=REPO_ROOT)
+
+
+def _class_policy_defaults_from_config(hyperparameters_config: dict[str, Any]) -> dict[str, ClassPolicy]:
+    defaults = {
+        "vehicle": ClassPolicy(0.25, 0.55, 4),
+        "bike": ClassPolicy(0.25, 0.55, 4),
+        "pedestrian": ClassPolicy(0.25, 0.55, 4),
+        "traffic_light": ClassPolicy(0.30, 0.50, 4),
+        "sign": ClassPolicy(0.25, 0.50, 4),
+        "traffic_cone": ClassPolicy(0.25, 0.55, 4),
+        "obstacle": ClassPolicy(0.25, 0.55, 4),
+    }
+    payload = _config_section(hyperparameters_config, "exhaustive_od", "class_policy_defaults")
+    merged = dict(defaults)
+    for class_name, raw_policy in payload.items():
+        merged[str(class_name)] = class_policy_from_dict(
+            raw_policy,
+            default_policy=merged.get(str(class_name)),
+        )
+    missing = sorted(set(OD_CLASSES) - set(merged))
+    if missing:
+        raise ValueError(f"missing exhaustive class_policy defaults for: {missing}")
+    return merged
+
+
+def _effective_class_policy(
+    *,
+    hyperparameters_config: dict[str, Any],
+    class_policy_path: Path,
+) -> dict[str, ClassPolicy]:
+    defaults = _class_policy_defaults_from_config(hyperparameters_config)
+    if not class_policy_path.is_file():
+        return defaults
+    payload = read_yaml(class_policy_path)
+    merged = dict(defaults)
+    for class_name, raw_policy in payload.items():
+        merged[str(class_name)] = class_policy_from_dict(
+            raw_policy,
+            default_policy=merged.get(str(class_name)),
+        )
+    return merged
+
+
 def build_default_source_preset(*, output_root: Path | None = None) -> SourcePrepConfig:
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+
     # ===== USER CONFIG: SOURCE PATHS =====
-    bdd_root = REPO_ROOT / "seg_dataset" / "BDD100K"  # BDD100K 원본 루트
-    bdd_images_root = bdd_root / "bdd100k_images_100k" / "100k"  # BDD image split 루트
-    bdd_labels_root = bdd_root / "bdd100k_labels" / "100k"  # BDD detection label split 루트
-    aihub_root = REPO_ROOT / "seg_dataset" / "AIHUB"  # AIHUB 원본 통합 루트
-    source_output_root = output_root or (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap")  # canonical 출력 루트
+    bdd_root = _path_from_config(
+        paths_config,
+        "raw_sources",
+        "bdd_root",
+        default=REPO_ROOT / "seg_dataset" / "BDD100K",
+    )  # BDD100K 원본 루트
+    bdd_images_root = _path_from_config(
+        paths_config,
+        "raw_sources",
+        "bdd_images_root",
+        default=bdd_root / "bdd100k_images_100k" / "100k",
+    )  # BDD image split 루트
+    bdd_labels_root = _path_from_config(
+        paths_config,
+        "raw_sources",
+        "bdd_labels_root",
+        default=bdd_root / "bdd100k_labels" / "100k",
+    )  # BDD detection label split 루트
+    aihub_root = _path_from_config(
+        paths_config,
+        "raw_sources",
+        "aihub_root",
+        default=REPO_ROOT / "seg_dataset" / "AIHUB",
+    )  # AIHUB 원본 통합 루트
+    source_output_root = (
+        Path(output_root).resolve()
+        if output_root is not None
+        else _path_from_config(
+            paths_config,
+            "outputs",
+            "bootstrap_root",
+            default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap",
+        )
+    )  # canonical 출력 루트
 
     # ===== HYPERPARAMETERS: SOURCE PREP =====
-    workers = 1  # 전처리 병렬 worker 수
-    force_reprocess = False  # 기존 산출물이 있어도 다시 만들지 여부
-    write_source_readmes = False  # 원본 dataset README를 다시 생성할지 여부
-    debug_vis_count = 20  # 샘플 debug vis 생성 개수
-    debug_vis_seed = 26  # debug vis 샘플링 시드
+    source_prep = _config_section(hyperparameters_config, "source_prep")
+    workers = _coerce_int(source_prep.get("workers", 4), field_name="od_bootstrap.source_prep.workers")
+    force_reprocess = _coerce_bool(
+        source_prep.get("force_reprocess", False),
+        field_name="od_bootstrap.source_prep.force_reprocess",
+    )
+    write_source_readmes = _coerce_bool(
+        source_prep.get("write_source_readmes", False),
+        field_name="od_bootstrap.source_prep.write_source_readmes",
+    )
+    debug_vis_count = _coerce_int(
+        source_prep.get("debug_vis_count", 50),
+        field_name="od_bootstrap.source_prep.debug_vis_count",
+    )
+    debug_vis_seed = _coerce_int(
+        source_prep.get("debug_vis_seed", 42),
+        field_name="od_bootstrap.source_prep.debug_vis_seed",
+    )
 
     roots = SourceRoots(
         bdd_root=bdd_root,
         bdd_images_root=bdd_images_root,
         bdd_labels_root=bdd_labels_root,
         aihub_root=aihub_root,
-        aihub_lane_root=None,
-        aihub_obstacle_root=None,
-        aihub_traffic_root=None,
-        aihub_docs_root=None,
+        aihub_lane_root=_optional_path_from_config(paths_config, "raw_sources", "aihub_lane_root"),
+        aihub_obstacle_root=_optional_path_from_config(paths_config, "raw_sources", "aihub_obstacle_root"),
+        aihub_traffic_root=_optional_path_from_config(paths_config, "raw_sources", "aihub_traffic_root"),
+        aihub_docs_root=_optional_path_from_config(paths_config, "raw_sources", "aihub_docs_root"),
     )
     return SourcePrepConfig(
         roots=roots,
@@ -113,18 +290,49 @@ def build_default_source_preset(*, output_root: Path | None = None) -> SourcePre
 
 
 def build_teacher_dataset_preset(*, output_root: Path | None = None) -> TeacherDatasetPreset:
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+
     # ===== USER CONFIG: TEACHER DATASET PATHS =====
-    canonical_root = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap").resolve()  # canonical bootstrap 입력 루트
+    canonical_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "bootstrap_root",
+        default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap",
+    )  # canonical bootstrap 입력 루트
     teacher_dataset_root = (
-        output_root or (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets")
-    ).resolve()  # teacher dataset 출력 루트
+        Path(output_root).resolve()
+        if output_root is not None
+        else _path_from_config(
+            paths_config,
+            "outputs",
+            "teacher_dataset_root",
+            default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets",
+        )
+    )  # teacher dataset 출력 루트
 
     # ===== HYPERPARAMETERS: TEACHER DATASET BUILD =====
-    copy_images = False  # 이미지를 복사할지, 링크/참조 중심으로 둘지
-    workers = 8  # teacher dataset materialize worker 수
-    log_every = 500  # 진행 로그 간격
-    debug_vis_count = 20  # teacher dataset debug vis 개수
-    debug_vis_seed = 26  # teacher dataset debug vis 시드
+    teacher_dataset = _config_section(hyperparameters_config, "teacher_dataset")
+    copy_images = _coerce_bool(
+        teacher_dataset.get("copy_images", False),
+        field_name="od_bootstrap.teacher_dataset.copy_images",
+    )
+    workers = _coerce_int(
+        teacher_dataset.get("workers", 8),
+        field_name="od_bootstrap.teacher_dataset.workers",
+    )
+    log_every = _coerce_int(
+        teacher_dataset.get("log_every", 500),
+        field_name="od_bootstrap.teacher_dataset.log_every",
+    )
+    debug_vis_count = _coerce_int(
+        teacher_dataset.get("debug_vis_count", 20),
+        field_name="od_bootstrap.teacher_dataset.debug_vis_count",
+    )
+    debug_vis_seed = _coerce_int(
+        teacher_dataset.get("debug_vis_seed", 26),
+        field_name="od_bootstrap.teacher_dataset.debug_vis_seed",
+    )
 
     return TeacherDatasetPreset(
         canonical_root=canonical_root,
@@ -138,15 +346,40 @@ def build_teacher_dataset_preset(*, output_root: Path | None = None) -> TeacherD
 
 
 def build_final_dataset_preset(*, output_root: Path | None = None) -> FinalDatasetPreset:
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+    bootstrap_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "bootstrap_root",
+        default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap",
+    )
+
     # ===== USER CONFIG: FINAL DATASET PATHS =====
-    exhaustive_od_root = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "exhaustive_od").resolve()
-    aihub_canonical_root = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "canonical" / "aihub_standardized").resolve()
+    exhaustive_od_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "exhaustive_od_root",
+        default=bootstrap_root / "exhaustive_od",
+    )
+    aihub_canonical_root = (bootstrap_root / "canonical" / "aihub_standardized").resolve()
     final_output_root = (
-        output_root or (REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset")
-    ).resolve()  # PV26 최종 학습 dataset 출력 루트
+        Path(output_root).resolve()
+        if output_root is not None
+        else _path_from_config(
+            paths_config,
+            "outputs",
+            "final_dataset_root",
+            default=REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset",
+        )
+    )  # PV26 최종 학습 dataset 출력 루트
 
     # ===== HYPERPARAMETERS: FINAL DATASET BUILD =====
-    copy_images = False  # 최종 dataset 이미지 복사 여부
+    final_dataset = _config_section(hyperparameters_config, "final_dataset")
+    copy_images = _coerce_bool(
+        final_dataset.get("copy_images", False),
+        field_name="od_bootstrap.final_dataset.copy_images",
+    )
 
     return FinalDatasetPreset(
         exhaustive_od_root=exhaustive_od_root,
@@ -157,254 +390,512 @@ def build_final_dataset_preset(*, output_root: Path | None = None) -> FinalDatas
 
 
 def build_teacher_train_preset(teacher_name: str) -> TeacherTrainScenario:
-    # ===== USER CONFIG: TEACHER TASK SPLIT =====
-    class_names_by_teacher = {
-        "mobility": ("vehicle", "bike", "pedestrian"),  # 이동체 teacher가 담당할 클래스
-        "signal": ("traffic_light", "sign"),  # 신호등/표지판 teacher 클래스
-        "obstacle": ("traffic_cone", "obstacle"),  # 장애물 teacher 클래스
-    }
-    model_size_by_teacher = {
-        "mobility": "s",  # mobility는 속도 우선으로 small 백본 사용
-        "signal": "s",  # signal도 small 백본 사용
-        "obstacle": "m",  # obstacle은 난도가 높아 medium 백본 사용
-    }
-    weights_by_teacher = {
-        "mobility": "yolo26s.pt",  # mobility teacher 초기 가중치
-        "signal": "yolo26s.pt",  # signal teacher 초기 가중치
-        "obstacle": "yolo26m.pt",  # obstacle teacher 초기 가중치
-    }
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+    teacher_common = _config_section(hyperparameters_config, "teacher_train", "common")
+    teacher_specific = _config_section(hyperparameters_config, "teacher_train", teacher_name)
 
-    # ===== HYPERPARAMETERS: TEACHER TRAIN =====
-    batch_by_teacher = {
-        "mobility": 20,  # teacher별 train batch 크기
-        "signal": 20,
-        "obstacle": 12,
+    # ===== USER CONFIG: TEACHER TASK SPLIT =====
+    default_class_names = {
+        "mobility": ("vehicle", "bike", "pedestrian"),
+        "signal": ("traffic_light", "sign"),
+        "obstacle": ("traffic_cone", "obstacle"),
     }
-    epochs_by_teacher = {
-        "mobility": 200,  # teacher별 총 epoch
+    default_model_size = {
+        "mobility": "s",
+        "signal": "s",
+        "obstacle": "m",
+    }
+    default_weights = {
+        "mobility": "yolo26s.pt",
+        "signal": "yolo26s.pt",
+        "obstacle": "yolo26m.pt",
+    }
+    default_epochs = {
+        "mobility": 200,
         "signal": 200,
         "obstacle": 100,
     }
-    if teacher_name not in class_names_by_teacher:
+    default_batch = {
+        "mobility": 20,
+        "signal": 20,
+        "obstacle": 12,
+    }
+    if teacher_name not in default_class_names:
         raise KeyError(f"unknown teacher preset: {teacher_name}")
 
-    run_output_root = (REPO_ROOT / "runs" / "od_bootstrap" / "train").resolve()  # teacher checkpoint 저장 루트
-    dataset_root = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets" / teacher_name).resolve()
+    run_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "train_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap" / "train",
+    )
+    teacher_dataset_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "teacher_dataset_root",
+        default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets",
+    )
+    dataset_root = (teacher_dataset_root / teacher_name).resolve()
 
+    class_names = _coerce_str_tuple(
+        teacher_specific.get("classes", default_class_names[teacher_name]),
+        field_name=f"od_bootstrap.teacher_train.{teacher_name}.classes",
+    )
+    model_size = _coerce_str(
+        teacher_specific.get("model_size", default_model_size[teacher_name]),
+        field_name=f"od_bootstrap.teacher_train.{teacher_name}.model_size",
+    )
+    weights = _coerce_str(
+        teacher_specific.get("weights", default_weights[teacher_name]),
+        field_name=f"od_bootstrap.teacher_train.{teacher_name}.weights",
+    )
+    epochs = _coerce_int(
+        teacher_specific.get("epochs", default_epochs[teacher_name]),
+        field_name=f"od_bootstrap.teacher_train.{teacher_name}.epochs",
+    )
+    batch = _coerce_int(
+        teacher_specific.get("batch", default_batch[teacher_name]),
+        field_name=f"od_bootstrap.teacher_train.{teacher_name}.batch",
+    )
+
+    # ===== HYPERPARAMETERS: TEACHER TRAIN =====
     return TeacherTrainScenario(
         teacher_name=teacher_name,
         run=TeacherRunConfig(output_root=run_output_root, exist_ok=True),
-        dataset=TeacherDatasetConfig(
-            root=dataset_root,
-        ),
+        dataset=TeacherDatasetConfig(root=dataset_root),
         model=TeacherModelConfig(
-            model_size=model_size_by_teacher[teacher_name],
-            weights=weights_by_teacher[teacher_name],
-            class_names=class_names_by_teacher[teacher_name],
+            model_size=model_size,
+            weights=weights,
+            class_names=class_names,
         ),
         train=TeacherTrainParams(
-            epochs=epochs_by_teacher[teacher_name],  # 총 학습 epoch
-            imgsz=640,  # 입력 해상도
-            batch=batch_by_teacher[teacher_name],  # teacher별 batch 크기
-            device="cuda:0",  # 학습 장치
-            workers=8,  # dataloader worker 수
-            pin_memory=True,  # host->GPU 전송 최적화
-            persistent_workers=True,  # epoch 사이 worker 재사용
-            prefetch_factor=4,  # worker별 prefetch 배치 수
-            patience=50,  # early stopping patience
-            cache=False,  # ultralytics dataset cache 사용 여부
-            amp=True,  # mixed precision 사용 여부
-            optimizer="auto",  # ultralytics optimizer 선택 방식
-            seed=0,  # 재현성 시드
-            resume=False,  # 이전 teacher run 이어서 학습 여부
-            val=True,  # epoch 검증 수행 여부
-            save_period=10,  # 체크포인트 저장 주기
-            log_every_n_steps=20,  # step 로그 간격
-            profile_window=20,  # profiling 평균 창 길이
-            profile_device_sync=True,  # timing 측정 전 device sync 여부
+            epochs=epochs,
+            imgsz=_coerce_int(teacher_common.get("imgsz", 640), field_name="od_bootstrap.teacher_train.common.imgsz"),
+            batch=batch,
+            device=_coerce_str(teacher_common.get("device", "cuda:0"), field_name="od_bootstrap.teacher_train.common.device"),
+            workers=_coerce_int(teacher_common.get("workers", 8), field_name="od_bootstrap.teacher_train.common.workers"),
+            pin_memory=_coerce_bool(
+                teacher_common.get("pin_memory", True),
+                field_name="od_bootstrap.teacher_train.common.pin_memory",
+            ),
+            persistent_workers=_coerce_bool(
+                teacher_common.get("persistent_workers", True),
+                field_name="od_bootstrap.teacher_train.common.persistent_workers",
+            ),
+            prefetch_factor=_coerce_int(
+                teacher_common.get("prefetch_factor", 4),
+                field_name="od_bootstrap.teacher_train.common.prefetch_factor",
+            ),
+            patience=_coerce_int(
+                teacher_common.get("patience", 50),
+                field_name="od_bootstrap.teacher_train.common.patience",
+            ),
+            cache=_coerce_bool(teacher_common.get("cache", False), field_name="od_bootstrap.teacher_train.common.cache"),
+            amp=_coerce_bool(teacher_common.get("amp", True), field_name="od_bootstrap.teacher_train.common.amp"),
+            optimizer=_coerce_str(
+                teacher_common.get("optimizer", "auto"),
+                field_name="od_bootstrap.teacher_train.common.optimizer",
+            ),
+            seed=_coerce_int(teacher_common.get("seed", 0), field_name="od_bootstrap.teacher_train.common.seed"),
+            resume=_coerce_bool(teacher_common.get("resume", False), field_name="od_bootstrap.teacher_train.common.resume"),
+            val=_coerce_bool(teacher_common.get("val", True), field_name="od_bootstrap.teacher_train.common.val"),
+            save_period=_coerce_int(
+                teacher_common.get("save_period", 10),
+                field_name="od_bootstrap.teacher_train.common.save_period",
+            ),
+            log_every_n_steps=_coerce_int(
+                teacher_common.get("log_every_n_steps", 20),
+                field_name="od_bootstrap.teacher_train.common.log_every_n_steps",
+            ),
+            profile_window=_coerce_int(
+                teacher_common.get("profile_window", 20),
+                field_name="od_bootstrap.teacher_train.common.profile_window",
+            ),
+            profile_device_sync=_coerce_bool(
+                teacher_common.get("profile_device_sync", True),
+                field_name="od_bootstrap.teacher_train.common.profile_device_sync",
+            ),
         ),
     )
 
 
 def build_teacher_eval_preset(teacher_name: str) -> CheckpointEvalScenario:
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+    eval_common = _config_section(hyperparameters_config, "teacher_eval", "common")
+    eval_specific = _config_section(hyperparameters_config, "teacher_eval", teacher_name)
+
     # ===== USER CONFIG: TEACHER EVAL TASK SPLIT =====
-    class_names_by_teacher = {
+    default_class_names = {
         "mobility": ("vehicle", "bike", "pedestrian"),
         "signal": ("traffic_light", "sign"),
         "obstacle": ("traffic_cone", "obstacle"),
     }
-
-    # ===== HYPERPARAMETERS: TEACHER EVAL =====
-    model_size_by_teacher = {
-        "mobility": "n",  # eval 리포트용 model-size 표시값
+    default_model_size = {
+        "mobility": "n",
         "signal": "n",
         "obstacle": "n",
     }
-    if teacher_name not in class_names_by_teacher:
+    if teacher_name not in default_class_names:
         raise KeyError(f"unknown teacher preset: {teacher_name}")
 
-    eval_output_root = (REPO_ROOT / "runs" / "od_bootstrap" / "eval").resolve()
-    dataset_root = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets" / teacher_name).resolve()
-    checkpoint_path = (REPO_ROOT / "runs" / "od_bootstrap" / "train" / teacher_name / "weights" / "best.pt").resolve()
+    eval_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "eval_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap" / "eval",
+    )
+    train_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "train_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap" / "train",
+    )
+    teacher_dataset_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "teacher_dataset_root",
+        default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets",
+    )
+    dataset_root = (teacher_dataset_root / teacher_name).resolve()
+    checkpoint_path = (train_output_root / teacher_name / "weights" / "best.pt").resolve()
 
+    class_names = _coerce_str_tuple(
+        eval_specific.get("classes", default_class_names[teacher_name]),
+        field_name=f"od_bootstrap.teacher_eval.{teacher_name}.classes",
+    )
+    model_size = _coerce_str(
+        eval_specific.get("model_size", default_model_size[teacher_name]),
+        field_name=f"od_bootstrap.teacher_eval.{teacher_name}.model_size",
+    )
+
+    # ===== HYPERPARAMETERS: TEACHER EVAL =====
     return CheckpointEvalScenario(
         teacher_name=teacher_name,
         run=CheckpointEvalRunConfig(output_root=eval_output_root, exist_ok=True),
         dataset=CheckpointEvalDatasetConfig(
             root=dataset_root,
-            split="val",  # 평가에 사용할 split
-            sample_limit=8,  # 빠른 체크용 샘플 제한
+            split=_coerce_str(eval_specific.get("split", "val"), field_name=f"od_bootstrap.teacher_eval.{teacher_name}.split"),
+            sample_limit=_coerce_int(
+                eval_common.get("sample_limit", 8),
+                field_name="od_bootstrap.teacher_eval.common.sample_limit",
+            ),
         ),
         model=CheckpointEvalModelConfig(
             checkpoint_path=checkpoint_path,
-            class_names=class_names_by_teacher[teacher_name],
-            model_size=model_size_by_teacher[teacher_name],
+            class_names=class_names,
+            model_size=model_size,
         ),
         eval=CheckpointEvalParams(
-            imgsz=640,  # 평가 입력 해상도
-            batch=1,  # eval batch 크기
-            device="cuda:0",  # 평가 장치
-            conf=0.25,  # 예측 confidence threshold
-            iou=0.7,  # NMS IoU threshold
-            predict=True,  # 예측 결과 저장/요약 수행 여부
-            val=True,  # 정식 validation 수행 여부
-            save_conf=False,  # confidence를 결과 파일에 남길지 여부
-            verbose=False,  # ultralytics verbose 출력 여부
+            imgsz=_coerce_int(eval_common.get("imgsz", 640), field_name="od_bootstrap.teacher_eval.common.imgsz"),
+            batch=_coerce_int(eval_common.get("batch", 1), field_name="od_bootstrap.teacher_eval.common.batch"),
+            device=_coerce_str(eval_common.get("device", "cuda:0"), field_name="od_bootstrap.teacher_eval.common.device"),
+            conf=_coerce_float(eval_common.get("conf", 0.25), field_name="od_bootstrap.teacher_eval.common.conf"),
+            iou=_coerce_float(eval_common.get("iou", 0.7), field_name="od_bootstrap.teacher_eval.common.iou"),
+            predict=_coerce_bool(eval_common.get("predict", True), field_name="od_bootstrap.teacher_eval.common.predict"),
+            val=_coerce_bool(eval_common.get("val", True), field_name="od_bootstrap.teacher_eval.common.val"),
+            save_conf=_coerce_bool(
+                eval_common.get("save_conf", False),
+                field_name="od_bootstrap.teacher_eval.common.save_conf",
+            ),
+            verbose=_coerce_bool(
+                eval_common.get("verbose", False),
+                field_name="od_bootstrap.teacher_eval.common.verbose",
+            ),
         ),
     )
 
 
 def build_calibration_preset() -> CalibrationScenario:
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+    calibration_run = _config_section(hyperparameters_config, "calibration", "run")
+    calibration_search = _config_section(hyperparameters_config, "calibration", "search")
+    calibration_hard_negative = _config_section(hyperparameters_config, "calibration", "hard_negative")
+    calibration_teachers = _config_section(hyperparameters_config, "calibration", "teachers")
+
+    teacher_defaults = {
+        "mobility": {
+            "model_version": "mobility_yolov26s_bootstrap_v1",
+            "source_dataset_key": "bdd100k_det_100k",
+            "image_dir": "images",
+            "label_dir": "labels",
+            "split": "val",
+            "classes": ("vehicle", "bike", "pedestrian"),
+        },
+        "signal": {
+            "model_version": "signal_yolov26s_bootstrap_v1",
+            "source_dataset_key": AIHUB_TRAFFIC_DATASET_KEY,
+            "image_dir": "images",
+            "label_dir": "labels",
+            "split": "val",
+            "classes": ("traffic_light", "sign"),
+        },
+        "obstacle": {
+            "model_version": "obstacle_yolov26m_bootstrap_v1",
+            "source_dataset_key": AIHUB_OBSTACLE_DATASET_KEY,
+            "image_dir": "images",
+            "label_dir": "labels",
+            "split": "val",
+            "classes": ("traffic_cone", "obstacle"),
+        },
+    }
+    calibration_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "calibration_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap" / "calibration" / "default",
+    )
+    train_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "train_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap" / "train",
+    )
+    teacher_dataset_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "teacher_dataset_root",
+        default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets",
+    )
+
+    teachers: list[CalibrationTeacherConfig] = []
+    for teacher_name, defaults in teacher_defaults.items():
+        teacher_config = dict(defaults)
+        teacher_config.update(_config_section(calibration_teachers, teacher_name))
+        teachers.append(
+            CalibrationTeacherConfig(
+                name=teacher_name,
+                checkpoint_path=(train_output_root / teacher_name / "weights" / "best.pt").resolve(),
+                model_version=_coerce_str(
+                    teacher_config.get("model_version", defaults["model_version"]),
+                    field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.model_version",
+                ),
+                dataset=CalibrationDatasetConfig(
+                    root=(teacher_dataset_root / teacher_name).resolve(),
+                    source_dataset_key=_coerce_str(
+                        teacher_config.get("source_dataset_key", defaults["source_dataset_key"]),
+                        field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.source_dataset_key",
+                    ),
+                    image_dir=_coerce_str(
+                        teacher_config.get("image_dir", defaults["image_dir"]),
+                        field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.image_dir",
+                    ),
+                    label_dir=_coerce_str(
+                        teacher_config.get("label_dir", defaults["label_dir"]),
+                        field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.label_dir",
+                    ),
+                    split=_coerce_str(
+                        teacher_config.get("split", defaults["split"]),
+                        field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.split",
+                    ),
+                ),
+                classes=_coerce_str_tuple(
+                    teacher_config.get("classes", defaults["classes"]),
+                    field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.classes",
+                ),
+            )
+        )
+
     # ===== USER CONFIG: CALIBRATION INPUTS =====
-    calibration_output_root = (REPO_ROOT / "runs" / "od_bootstrap" / "calibration" / "default").resolve()
+    policy_template_path = _optional_path_from_config(paths_config, "calibration", "policy_template_path")
 
     # ===== HYPERPARAMETERS: CALIBRATION SEARCH =====
     return CalibrationScenario(
         run=CalibrationRunConfig(
             output_root=calibration_output_root,
-            device="cuda:0",  # calibration 추론 장치
-            imgsz=640,  # calibration 입력 해상도
-            batch_size=8,  # calibration 추론 batch 크기
-            predict_conf=0.001,  # calibration용 낮은 confidence threshold
-            predict_iou=0.99,  # calibration용 느슨한 NMS IoU threshold
+            device=_coerce_str(calibration_run.get("device", "cuda:0"), field_name="od_bootstrap.calibration.run.device"),
+            imgsz=_coerce_int(calibration_run.get("imgsz", 640), field_name="od_bootstrap.calibration.run.imgsz"),
+            batch_size=_coerce_int(
+                calibration_run.get("batch_size", 8),
+                field_name="od_bootstrap.calibration.run.batch_size",
+            ),
+            predict_conf=_coerce_float(
+                calibration_run.get("predict_conf", 0.001),
+                field_name="od_bootstrap.calibration.run.predict_conf",
+            ),
+            predict_iou=_coerce_float(
+                calibration_run.get("predict_iou", 0.99),
+                field_name="od_bootstrap.calibration.run.predict_iou",
+            ),
         ),
         search=CalibrationSearchConfig(
-            match_iou=0.5,  # GT와 teacher 예측을 match할 IoU
-            min_precision=0.90,  # 기본 최소 precision 목표
-            min_precision_by_class={"traffic_light": 0.75},  # 클래스별 예외 precision 목표
-            score_thresholds=(0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60),  # score 탐색 후보
-            nms_iou_thresholds=(0.40, 0.45, 0.50, 0.55),  # NMS IoU 탐색 후보
-            min_box_sizes=(4, 6, 8, 10, 12),  # 최소 box 크기 탐색 후보
-        ),
-        teachers=(
-            CalibrationTeacherConfig(
-                name="mobility",
-                checkpoint_path=(REPO_ROOT / "runs" / "od_bootstrap" / "train" / "mobility" / "weights" / "best.pt").resolve(),
-                model_version="mobility_yolov26s_bootstrap_v1",
-                dataset=CalibrationDatasetConfig(
-                    root=(REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets" / "mobility").resolve(),
-                    source_dataset_key="bdd100k_det_100k",
-                    image_dir="images",
-                    label_dir="labels",
-                    split="val",
-                ),
-                classes=("vehicle", "bike", "pedestrian"),
+            match_iou=_coerce_float(
+                calibration_search.get("match_iou", 0.5),
+                field_name="od_bootstrap.calibration.search.match_iou",
             ),
-            CalibrationTeacherConfig(
-                name="signal",
-                checkpoint_path=(REPO_ROOT / "runs" / "od_bootstrap" / "train" / "signal" / "weights" / "best.pt").resolve(),
-                model_version="signal_yolov26s_bootstrap_v1",
-                dataset=CalibrationDatasetConfig(
-                    root=(REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets" / "signal").resolve(),
-                    source_dataset_key=AIHUB_TRAFFIC_DATASET_KEY,
-                    image_dir="images",
-                    label_dir="labels",
-                    split="val",
-                ),
-                classes=("traffic_light", "sign"),
+            min_precision=_coerce_float(
+                calibration_search.get("min_precision", 0.90),
+                field_name="od_bootstrap.calibration.search.min_precision",
             ),
-            CalibrationTeacherConfig(
-                name="obstacle",
-                checkpoint_path=(REPO_ROOT / "runs" / "od_bootstrap" / "train" / "obstacle" / "weights" / "best.pt").resolve(),
-                model_version="obstacle_yolov26m_bootstrap_v1",
-                dataset=CalibrationDatasetConfig(
-                    root=(REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets" / "obstacle").resolve(),
-                    source_dataset_key=AIHUB_OBSTACLE_DATASET_KEY,
-                    image_dir="images",
-                    label_dir="labels",
-                    split="val",
+            min_precision_by_class={
+                str(class_name): _coerce_float(
+                    value,
+                    field_name=f"od_bootstrap.calibration.search.min_precision_by_class.{class_name}",
+                )
+                for class_name, value in _config_section(calibration_search, "min_precision_by_class").items()
+            },
+            score_thresholds=_coerce_float_tuple(
+                calibration_search.get(
+                    "score_thresholds",
+                    (0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60),
                 ),
-                classes=("traffic_cone", "obstacle"),
+                field_name="od_bootstrap.calibration.search.score_thresholds",
+            ),
+            nms_iou_thresholds=_coerce_float_tuple(
+                calibration_search.get("nms_iou_thresholds", (0.40, 0.45, 0.50, 0.55)),
+                field_name="od_bootstrap.calibration.search.nms_iou_thresholds",
+            ),
+            min_box_sizes=_coerce_int_tuple(
+                calibration_search.get("min_box_sizes", (4, 6, 8, 10, 12)),
+                field_name="od_bootstrap.calibration.search.min_box_sizes",
             ),
         ),
-        policy_template_path=None,
+        teachers=tuple(teachers),
+        policy_template_path=policy_template_path,
         policy_template=None,
         hard_negative=HardNegativeConfig(
             manifest_path=(calibration_output_root / "hard_negative_manifest.json").resolve(),
-            top_k_per_class=25,  # 클래스별 hard negative 최대 샘플 수
-            focus_classes=("traffic_cone", "obstacle"),  # hard negative 집중 클래스
+            top_k_per_class=_coerce_int(
+                calibration_hard_negative.get("top_k_per_class", 25),
+                field_name="od_bootstrap.calibration.hard_negative.top_k_per_class",
+            ),
+            focus_classes=_coerce_str_tuple(
+                calibration_hard_negative.get("focus_classes", ("traffic_cone", "obstacle")),
+                field_name="od_bootstrap.calibration.hard_negative.focus_classes",
+            ),
         ),
     )
 
 
 def build_sweep_preset() -> BootstrapSweepScenario:
+    paths_config = _load_od_bootstrap_paths_config()
+    hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
+    exhaustive_run = _config_section(hyperparameters_config, "exhaustive_od", "run")
+    exhaustive_materialization = _config_section(hyperparameters_config, "exhaustive_od", "materialization")
+    exhaustive_teachers = _config_section(hyperparameters_config, "exhaustive_od", "teachers")
+
+    teacher_defaults = {
+        "mobility": {
+            "base_model": "yolov26s",
+            "model_version": "mobility_yolov26s_bootstrap_v1",
+            "classes": ("vehicle", "bike", "pedestrian"),
+        },
+        "signal": {
+            "base_model": "yolov26s",
+            "model_version": "signal_yolov26s_bootstrap_v1",
+            "classes": ("traffic_light", "sign"),
+        },
+        "obstacle": {
+            "base_model": "yolov26m",
+            "model_version": "obstacle_yolov26m_bootstrap_v1",
+            "classes": ("traffic_cone", "obstacle"),
+        },
+    }
+    bootstrap_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "bootstrap_root",
+        default=REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap",
+    )
+    train_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "train_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap" / "train",
+    )
+    exhaustive_run_output_root = _path_from_config(
+        paths_config,
+        "runs",
+        "exhaustive_run_root",
+        default=REPO_ROOT / "runs" / "od_bootstrap",
+    )
+    bootstrap_image_list_manifest = (bootstrap_root / "meta" / "bootstrap_image_list.jsonl").resolve()
+    exhaustive_output_root = _path_from_config(
+        paths_config,
+        "outputs",
+        "exhaustive_od_root",
+        default=bootstrap_root / "exhaustive_od",
+    )
+    class_policy_path = (
+        _path_from_config(
+            paths_config,
+            "runs",
+            "calibration_root",
+            default=REPO_ROOT / "runs" / "od_bootstrap" / "calibration" / "default",
+        )
+        / "class_policy.yaml"
+    ).resolve()
+
+    teachers: list[TeacherConfig] = []
+    for teacher_name, defaults in teacher_defaults.items():
+        teacher_config = dict(defaults)
+        teacher_config.update(_config_section(exhaustive_teachers, teacher_name))
+        teachers.append(
+            TeacherConfig(
+                name=teacher_name,
+                base_model=_coerce_str(
+                    teacher_config.get("base_model", defaults["base_model"]),
+                    field_name=f"od_bootstrap.exhaustive_od.teachers.{teacher_name}.base_model",
+                ),
+                checkpoint_path=(train_output_root / teacher_name / "weights" / "best.pt").resolve(),
+                model_version=_coerce_str(
+                    teacher_config.get("model_version", defaults["model_version"]),
+                    field_name=f"od_bootstrap.exhaustive_od.teachers.{teacher_name}.model_version",
+                ),
+                classes=_coerce_str_tuple(
+                    teacher_config.get("classes", defaults["classes"]),
+                    field_name=f"od_bootstrap.exhaustive_od.teachers.{teacher_name}.classes",
+                ),
+            )
+        )
+
     # ===== USER CONFIG: EXHAUSTIVE OD INPUTS =====
-    exhaustive_run_output_root = (REPO_ROOT / "runs" / "od_bootstrap").resolve()
-    bootstrap_image_list_manifest = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "meta" / "bootstrap_image_list.jsonl").resolve()
-    exhaustive_output_root = (REPO_ROOT / "seg_dataset" / "pv26_od_bootstrap" / "exhaustive_od").resolve()
-    class_policy_path = (REPO_ROOT / "runs" / "od_bootstrap" / "calibration" / "default" / "class_policy.yaml").resolve()
 
     # ===== HYPERPARAMETERS: EXHAUSTIVE OD BUILD =====
     return BootstrapSweepScenario(
         run=SweepRunConfig(
             output_root=exhaustive_run_output_root,
-            execution_mode="model-centric",  # teacher inference 실행 방식
-            device="cuda:0",  # exhaustive OD 생성 추론 장치
-            imgsz=640,  # teacher 입력 해상도
-            batch_size=8,  # teacher inference batch 크기
-            predict_conf=0.001,  # teacher 예측 수집 confidence threshold
-            predict_iou=0.99,  # teacher 예측 수집 NMS IoU threshold
+            execution_mode=_coerce_str(
+                exhaustive_run.get("execution_mode", "model-centric"),
+                field_name="od_bootstrap.exhaustive_od.run.execution_mode",
+            ),
+            device=_coerce_str(
+                exhaustive_run.get("device", "cuda:0"),
+                field_name="od_bootstrap.exhaustive_od.run.device",
+            ),
+            imgsz=_coerce_int(
+                exhaustive_run.get("imgsz", 640),
+                field_name="od_bootstrap.exhaustive_od.run.imgsz",
+            ),
+            batch_size=_coerce_int(
+                exhaustive_run.get("batch_size", 8),
+                field_name="od_bootstrap.exhaustive_od.run.batch_size",
+            ),
+            predict_conf=_coerce_float(
+                exhaustive_run.get("predict_conf", 0.001),
+                field_name="od_bootstrap.exhaustive_od.run.predict_conf",
+            ),
+            predict_iou=_coerce_float(
+                exhaustive_run.get("predict_iou", 0.99),
+                field_name="od_bootstrap.exhaustive_od.run.predict_iou",
+            ),
         ),
-        image_list=ImageListConfig(
-            manifest_path=bootstrap_image_list_manifest
-        ),
+        image_list=ImageListConfig(manifest_path=bootstrap_image_list_manifest),
         materialization=MaterializationConfig(
             output_root=exhaustive_output_root,
-            copy_images=False,  # exhaustive dataset 이미지 복사 여부
-        ),
-        teachers=(
-            TeacherConfig(
-                name="mobility",
-                base_model="yolov26s",
-                checkpoint_path=(REPO_ROOT / "runs" / "od_bootstrap" / "train" / "mobility" / "weights" / "best.pt").resolve(),
-                model_version="mobility_yolov26s_bootstrap_v1",
-                classes=("vehicle", "bike", "pedestrian"),
-            ),
-            TeacherConfig(
-                name="signal",
-                base_model="yolov26s",
-                checkpoint_path=(REPO_ROOT / "runs" / "od_bootstrap" / "train" / "signal" / "weights" / "best.pt").resolve(),
-                model_version="signal_yolov26s_bootstrap_v1",
-                classes=("traffic_light", "sign"),
-            ),
-            TeacherConfig(
-                name="obstacle",
-                base_model="yolov26m",
-                checkpoint_path=(REPO_ROOT / "runs" / "od_bootstrap" / "train" / "obstacle" / "weights" / "best.pt").resolve(),
-                model_version="obstacle_yolov26m_bootstrap_v1",
-                classes=("traffic_cone", "obstacle"),
+            copy_images=_coerce_bool(
+                exhaustive_materialization.get("copy_images", False),
+                field_name="od_bootstrap.exhaustive_od.materialization.copy_images",
             ),
         ),
+        teachers=tuple(teachers),
         class_policy_path=class_policy_path,
-        class_policy={
-            "vehicle": ClassPolicy(0.25, 0.55, 4),  # score, nms_iou, min_box_size
-            "bike": ClassPolicy(0.25, 0.55, 4),
-            "pedestrian": ClassPolicy(0.25, 0.55, 4),
-            "traffic_light": ClassPolicy(0.30, 0.50, 4),
-            "sign": ClassPolicy(0.25, 0.50, 4),
-            "traffic_cone": ClassPolicy(0.25, 0.55, 4),
-            "obstacle": ClassPolicy(0.25, 0.55, 4),
-        },
+        class_policy=_effective_class_policy(
+            hyperparameters_config=hyperparameters_config,
+            class_policy_path=class_policy_path,
+        ),
     )
 
 
