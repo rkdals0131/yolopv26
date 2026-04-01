@@ -38,6 +38,10 @@ PHASE_STAGE_ORDER = (
     "stage_2_partial_unfreeze",
     "stage_3_end_to_end_finetune",
 )
+# IDE에서 아래 검색어로 조절 지점을 바로 찾을 수 있다.
+# ===== USER CONFIG =====
+# ===== HYPERPARAMETERS =====
+# ===== PHASE HYPERPARAMETERS =====
 
 
 @dataclass(frozen=True)
@@ -159,145 +163,207 @@ def _phase(
 
 
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
+    # ===== USER CONFIG: PV26 PREVIEW DATASETS =====
     preview_dataset_keys = (
-        "pv26_exhaustive_bdd100k_det_100k",
-        "pv26_exhaustive_aihub_traffic_seoul",
-        "pv26_exhaustive_aihub_obstacle_seoul",
-        "aihub_lane_seoul",
+        "pv26_exhaustive_bdd100k_det_100k",  # BDD 계열 preview 샘플
+        "pv26_exhaustive_aihub_traffic_seoul",  # AIHUB traffic preview 샘플
+        "pv26_exhaustive_aihub_obstacle_seoul",  # AIHUB obstacle preview 샘플
+        "aihub_lane_seoul",  # lane 계열 preview 샘플
     )
+
+    # ===== USER CONFIG: PV26 META TRAIN / DEFAULT =====
+    default_dataset = DatasetConfig(root=DEFAULT_DATASET_ROOT)  # 기본 PV26 학습 dataset 루트
+    default_run = RunConfig(
+        run_root=DEFAULT_RUN_ROOT,
+        run_name_prefix="exhaustive_od_lane",  # run 디렉터리 prefix
+    )
+
+    # ===== HYPERPARAMETERS: PV26 META TRAIN / DEFAULT =====
+    default_train_defaults = TrainDefaultsConfig(
+        device="cuda:0",  # 학습 장치
+        batch_size=40,  # 기본 train/eval batch 크기
+        train_batches=-1,  # -1이면 전체 train 배치 사용
+        val_batches=-1,  # -1이면 전체 val 배치 사용
+        trunk_lr=1e-4,  # backbone learning rate
+        head_lr=5e-3,  # head learning rate
+        weight_decay=1e-4,  # optimizer weight decay
+        schedule="cosine",  # LR schedule 종류
+        amp=True,  # mixed precision 사용 여부
+        accumulate_steps=1,  # gradient accumulation step
+        grad_clip_norm=5.0,  # gradient clipping norm
+        val_every=1,  # 몇 epoch마다 validation할지
+        checkpoint_every=3,  # 몇 epoch마다 체크포인트를 남길지
+        num_workers=6,  # dataloader worker 수
+        pin_memory=True,  # host->GPU 전송 최적화
+        log_every_n_steps=20,  # step 로그 간격
+        profile_window=20,  # timing 평균 창 길이
+        profile_device_sync=True,  # timing 측정 전 device sync 여부
+        encode_train_batches_in_loader=True,  # train loader에서 미리 target encode 수행 여부
+        encode_val_batches_in_loader=True,  # val loader에서 미리 target encode 수행 여부
+        persistent_workers=True,  # epoch 사이 worker 유지 여부
+        prefetch_factor=2,  # worker별 prefetch 배치 수
+    )
+    default_selection = SelectionConfig(
+        metric_path="val.losses.total.mean",  # phase 승급/종료 판단 metric
+        mode="min",  # metric이 낮을수록 좋은지 여부
+        eps=1e-8,  # improvement 계산용 안정화 상수
+    )
+    default_preview = PreviewConfig(
+        enabled=True,  # 학습 요약용 preview 생성 여부
+        split="val",  # preview 샘플을 뽑을 split
+        dataset_keys=preview_dataset_keys,  # preview 대상 dataset key
+        max_samples_per_dataset=1,  # dataset key별 preview 샘플 수
+        write_overlay=True,  # overlay 이미지 저장 여부
+    )
+
+    # ===== PHASE HYPERPARAMETERS: PV26 META TRAIN / DEFAULT =====
+    default_phases = (
+        _phase(
+            "head_warmup",
+            "stage_1_frozen_trunk_warmup",
+            min_epochs=2,  # 최소 epoch
+            max_epochs=4,  # 최대 epoch
+            patience=2,  # plateau 허용 횟수
+            min_improvement_pct=2.0,  # 승급 유지에 필요한 최소 개선율(%)
+            overrides={
+                "trunk_lr": 5e-5,  # stage 1 backbone LR
+                "head_lr": 3e-3,  # stage 1 head LR
+            },
+        ),
+        _phase(
+            "partial_unfreeze",
+            "stage_2_partial_unfreeze",
+            min_epochs=3,
+            max_epochs=6,
+            patience=2,
+            min_improvement_pct=1.0,
+            overrides={
+                "trunk_lr": 3e-5,  # stage 2 backbone LR
+                "head_lr": 8e-4,  # stage 2 head LR
+            },
+        ),
+        _phase(
+            "end_to_end_finetune",
+            "stage_3_end_to_end_finetune",
+            min_epochs=4,
+            max_epochs=10,
+            patience=2,
+            min_improvement_pct=0.5,
+            overrides={
+                "trunk_lr": 1e-5,  # stage 3 backbone LR
+                "head_lr": 4e-4,  # stage 3 head LR
+            },
+        ),
+    )
+
+    # ===== USER CONFIG: PV26 META TRAIN / STRESS =====
+    stress_dataset = DatasetConfig(root=DEFAULT_DATASET_ROOT)
+    stress_run = RunConfig(
+        run_root=REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train_stress",
+        run_name_prefix="stage3_vram_stress",  # stress test run prefix
+    )
+
+    # ===== HYPERPARAMETERS: PV26 META TRAIN / STRESS =====
+    stress_train_defaults = TrainDefaultsConfig(
+        device="cuda:0",  # 학습 장치
+        batch_size=40,  # stress 기본 batch 크기
+        train_batches=30,  # 빠른 stress 확인용 train batch 제한
+        val_batches=0,  # validation 비활성화
+        trunk_lr=1e-4,
+        head_lr=5e-3,
+        weight_decay=1e-4,
+        schedule="none",  # stress 시나리오는 scheduler 비활성화
+        amp=True,
+        accumulate_steps=1,
+        grad_clip_norm=5.0,
+        val_every=1,
+        checkpoint_every=1,
+        num_workers=6,
+        pin_memory=True,
+        log_every_n_steps=1,  # stress에서는 step마다 로그
+        profile_window=3,  # 짧은 profile window
+        profile_device_sync=True,
+        encode_train_batches_in_loader=True,
+        encode_val_batches_in_loader=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
+    stress_selection = SelectionConfig(
+        metric_path="train.losses.total.mean",  # validation 없이 train loss로만 확인
+        mode="min",
+        eps=1e-8,
+    )
+    stress_preview = PreviewConfig(
+        enabled=False,  # stress preset은 preview 비활성화
+        split="val",
+        dataset_keys=preview_dataset_keys,
+        max_samples_per_dataset=1,
+        write_overlay=False,
+    )
+
+    # ===== PHASE HYPERPARAMETERS: PV26 META TRAIN / STRESS =====
+    stress_phases = (
+        _phase(
+            "head_warmup",
+            "stage_1_frozen_trunk_warmup",
+            min_epochs=1,
+            max_epochs=1,
+            patience=1,
+            min_improvement_pct=0.0,
+            overrides={
+                "batch_size": 2,  # stage 1 stress batch 크기
+                "train_batches": 1,  # stage 1 stress train batch 제한
+                "val_batches": 0,  # stage 1 stress validation 비활성화
+                "trunk_lr": 5e-5,
+                "head_lr": 3e-3,
+            },
+        ),
+        _phase(
+            "partial_unfreeze",
+            "stage_2_partial_unfreeze",
+            min_epochs=1,
+            max_epochs=1,
+            patience=1,
+            min_improvement_pct=0.0,
+            overrides={
+                "batch_size": 2,  # stage 2 stress batch 크기
+                "train_batches": 1,  # stage 2 stress train batch 제한
+                "val_batches": 0,  # stage 2 stress validation 비활성화
+                "trunk_lr": 3e-5,
+                "head_lr": 8e-4,
+            },
+        ),
+        _phase(
+            "end_to_end_finetune",
+            "stage_3_end_to_end_finetune",
+            min_epochs=1,
+            max_epochs=1,
+            patience=1,
+            min_improvement_pct=0.0,
+            overrides={
+                "val_batches": 0,  # stage 3 stress validation 비활성화
+                "trunk_lr": 1e-5,
+                "head_lr": 4e-4,
+            },
+        ),
+    )
+
     return {
         "default": MetaTrainScenario(
-            dataset=DatasetConfig(root=DEFAULT_DATASET_ROOT),
-            run=RunConfig(run_root=DEFAULT_RUN_ROOT, run_name_prefix="exhaustive_od_lane"),
-            train_defaults=TrainDefaultsConfig(
-                device="cuda:0",
-                batch_size=40,
-                train_batches=-1,
-                val_batches=-1,
-                trunk_lr=1e-4,
-                head_lr=5e-3,
-                weight_decay=1e-4,
-                schedule="cosine",
-                amp=True,
-                accumulate_steps=1,
-                grad_clip_norm=5.0,
-                val_every=1,
-                checkpoint_every=3,
-                num_workers=6,
-                pin_memory=True,
-                log_every_n_steps=20,
-                profile_window=20,
-                profile_device_sync=True,
-                encode_train_batches_in_loader=True,
-                encode_val_batches_in_loader=True,
-                persistent_workers=True,
-                prefetch_factor=2,
-            ),
-            selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min", eps=1e-8),
-            preview=PreviewConfig(
-                enabled=True,
-                split="val",
-                dataset_keys=preview_dataset_keys,
-                max_samples_per_dataset=1,
-                write_overlay=True,
-            ),
-            phases=(
-                _phase(
-                    "head_warmup",
-                    "stage_1_frozen_trunk_warmup",
-                    min_epochs=2,
-                    max_epochs=4,
-                    patience=2,
-                    min_improvement_pct=2.0,
-                    overrides={"trunk_lr": 5e-5, "head_lr": 3e-3},
-                ),
-                _phase(
-                    "partial_unfreeze",
-                    "stage_2_partial_unfreeze",
-                    min_epochs=3,
-                    max_epochs=6,
-                    patience=2,
-                    min_improvement_pct=1.0,
-                    overrides={"trunk_lr": 3e-5, "head_lr": 8e-4},
-                ),
-                _phase(
-                    "end_to_end_finetune",
-                    "stage_3_end_to_end_finetune",
-                    min_epochs=4,
-                    max_epochs=10,
-                    patience=2,
-                    min_improvement_pct=0.5,
-                    overrides={"trunk_lr": 1e-5, "head_lr": 4e-4},
-                ),
-            ),
+            dataset=default_dataset,
+            run=default_run,
+            train_defaults=default_train_defaults,
+            selection=default_selection,
+            preview=default_preview,
+            phases=default_phases,
         ),
         "stage3_vram_stress": MetaTrainScenario(
-            dataset=DatasetConfig(root=DEFAULT_DATASET_ROOT),
-            run=RunConfig(
-                run_root=REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train_stress",
-                run_name_prefix="stage3_vram_stress",
-            ),
-            train_defaults=TrainDefaultsConfig(
-                device="cuda:0",
-                batch_size=40,
-                train_batches=30,
-                val_batches=0,
-                trunk_lr=1e-4,
-                head_lr=5e-3,
-                weight_decay=1e-4,
-                schedule="none",
-                amp=True,
-                accumulate_steps=1,
-                grad_clip_norm=5.0,
-                val_every=1,
-                checkpoint_every=1,
-                num_workers=6,
-                pin_memory=True,
-                log_every_n_steps=1,
-                profile_window=3,
-                profile_device_sync=True,
-                encode_train_batches_in_loader=True,
-                encode_val_batches_in_loader=True,
-                persistent_workers=True,
-                prefetch_factor=2,
-            ),
-            selection=SelectionConfig(metric_path="train.losses.total.mean", mode="min", eps=1e-8),
-            preview=PreviewConfig(
-                enabled=False,
-                split="val",
-                dataset_keys=preview_dataset_keys,
-                max_samples_per_dataset=1,
-                write_overlay=False,
-            ),
-            phases=(
-                _phase(
-                    "head_warmup",
-                    "stage_1_frozen_trunk_warmup",
-                    min_epochs=1,
-                    max_epochs=1,
-                    patience=1,
-                    min_improvement_pct=0.0,
-                    overrides={"batch_size": 2, "train_batches": 1, "val_batches": 0, "trunk_lr": 5e-5, "head_lr": 3e-3},
-                ),
-                _phase(
-                    "partial_unfreeze",
-                    "stage_2_partial_unfreeze",
-                    min_epochs=1,
-                    max_epochs=1,
-                    patience=1,
-                    min_improvement_pct=0.0,
-                    overrides={"batch_size": 2, "train_batches": 1, "val_batches": 0, "trunk_lr": 3e-5, "head_lr": 8e-4},
-                ),
-                _phase(
-                    "end_to_end_finetune",
-                    "stage_3_end_to_end_finetune",
-                    min_epochs=1,
-                    max_epochs=1,
-                    patience=1,
-                    min_improvement_pct=0.0,
-                    overrides={"val_batches": 0, "trunk_lr": 1e-5, "head_lr": 4e-4},
-                ),
-            ),
+            dataset=stress_dataset,
+            run=stress_run,
+            train_defaults=stress_train_defaults,
+            selection=stress_selection,
+            preview=stress_preview,
+            phases=stress_phases,
         ),
     }
 
