@@ -189,6 +189,23 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         ][:10]
         self.assertEqual(flat_sample_ids, expected)
 
+    def test_eval_dataloader_can_encode_batches_and_preserve_raw_bundle_for_metrics(self) -> None:
+        dataset = _ToyCanonicalDataset()
+        loader = build_pv26_eval_dataloader(
+            dataset,
+            batch_size=5,
+            num_batches=1,
+            split="val",
+            encode_batches=True,
+        )
+
+        batch = next(iter(loader))
+
+        self.assertIn("det_gt", batch)
+        self.assertIn("_raw_batch", batch)
+        self.assertEqual(len(batch["_raw_batch"]["meta"]), 5)
+        self.assertTrue(all(item["split"] == "val" for item in batch["_raw_batch"]["meta"]))
+
     def test_balanced_dataloader_can_encode_batches_in_worker_collate(self) -> None:
         dataset = _ToyCanonicalDataset()
         loader = build_pv26_train_dataloader(

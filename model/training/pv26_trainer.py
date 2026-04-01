@@ -44,6 +44,8 @@ TENSORBOARD_LOSS_KEYS = (
     "stop_line",
     "crosswalk",
 )
+
+
 def _canonical_stage(stage: str) -> str:
     return STAGE_ALIASES.get(stage, stage)
 
@@ -394,7 +396,6 @@ def _timing_profile_mean_scalars(profile: dict[str, Any]) -> dict[str, float]:
 
 def _tensorboard_train_step_payload(summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
-        "lr": _select_numeric_scalars(summary["optimizer_lrs"], ("trunk", "heads")),
         "profile_sec": _select_numeric_scalars(summary["timing"], TIMING_KEYS),
     }
     if summary["successful"]:
@@ -429,16 +430,13 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "train": {
             "loss_mean": _loss_mean_scalars(epoch_summary["train"]["losses"]),
-            "duration_sec": float(epoch_summary["train"]["duration_sec"]),
-            "profile_sec": _timing_profile_mean_scalars(epoch_summary["train"].get("timing_profile", {})),
         },
-        "scheduler": {"lr": epoch_summary.get("scheduler_lrs", [])},
+        "lr": _select_numeric_scalars(epoch_summary["train"].get("optimizer_lrs", {}), ("trunk", "heads")),
     }
     val_summary = epoch_summary.get("val")
     if isinstance(val_summary, dict):
         payload["val"] = {
             "loss_mean": _loss_mean_scalars(val_summary.get("losses", {})),
-            "duration_sec": float(val_summary.get("duration_sec", 0.0)),
         }
         val_metrics = _tensorboard_val_metric_scalars(val_summary.get("metrics", {}))
         if any(val_metrics.values()):
@@ -1217,21 +1215,6 @@ class PV26Trainer:
             step_summaries.append(step_summary)
             if step_log_path is not None:
                 _append_jsonl(step_log_path, step_summary)
-            if self.tensorboard_writer is not None:
-                _write_tensorboard_scalars(
-                    self.tensorboard_writer,
-                    "train_progress",
-                    _tensorboard_progress_payload(
-                        step_summary,
-                        epoch=epoch,
-                        batch_index=batch_index,
-                        total_batches=total_batches,
-                        elapsed_sec=elapsed_sec,
-                        eta_sec=eta_sec,
-                        profile_summary=profile_summary,
-                    ),
-                    max(1, self._tensorboard_train_step),
-                )
             should_log = batch_index % max(1, int(log_every_n_steps)) == 0
             if total_batches is not None and batch_index == total_batches:
                 should_log = True

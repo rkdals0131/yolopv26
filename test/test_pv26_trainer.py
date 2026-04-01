@@ -286,12 +286,54 @@ class PV26TrainerTests(unittest.TestCase):
         scalar_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("train_step", payload)}
 
         self.assertIn("train_step/loss/total", scalar_names)
-        self.assertIn("train_step/lr/trunk", scalar_names)
         self.assertIn("train_step/profile_sec/iteration_sec", scalar_names)
+        self.assertNotIn("train_step/lr/trunk", scalar_names)
         self.assertNotIn("train_step/health/gradient_scale", scalar_names)
         self.assertNotIn("train_step/source/det_source_samples", scalar_names)
         self.assertNotIn("train_step/det_supervision/partial_det_ratio", scalar_names)
         self.assertNotIn("train_step/det_components/det_obj_loss", scalar_names)
+
+    def test_tensorboard_epoch_payload_keeps_named_lr_loss_and_val_metrics_only(self) -> None:
+        from model.training import pv26_trainer
+
+        epoch_summary = {
+            "train": {
+                "losses": {
+                    "total": {"mean": 1.0},
+                    "det": {"mean": 0.2},
+                },
+                "duration_sec": 12.5,
+                "timing_profile": {
+                    "iteration_sec": {"mean": 0.4},
+                },
+                "optimizer_lrs": {"trunk": 1e-4, "heads": 5e-4},
+            },
+            "val": {
+                "losses": {
+                    "total": {"mean": 0.8},
+                    "det": {"mean": 0.1},
+                },
+                "duration_sec": 3.0,
+                "metrics": {
+                    "detector": {"precision": 0.5, "recall": 0.4, "f1": 0.44, "map50": 0.6},
+                    "traffic_light": {"combo_accuracy": 0.75, "mean_f1": 0.7},
+                    "lane": {"precision": 0.8, "recall": 0.7, "f1": 0.74},
+                },
+            },
+        }
+
+        payload = pv26_trainer._tensorboard_epoch_payload(epoch_summary)
+        scalar_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("epoch", payload)}
+
+        self.assertIn("epoch/lr/trunk", scalar_names)
+        self.assertIn("epoch/lr/heads", scalar_names)
+        self.assertIn("epoch/train/loss_mean/total", scalar_names)
+        self.assertIn("epoch/val/loss_mean/total", scalar_names)
+        self.assertIn("epoch/val/metrics/detector/map50", scalar_names)
+        self.assertIn("epoch/val/metrics/lane/f1", scalar_names)
+        self.assertNotIn("epoch/train/duration_sec", scalar_names)
+        self.assertNotIn("epoch/train/profile_sec/iteration_sec", scalar_names)
+        self.assertNotIn("epoch/val/duration_sec", scalar_names)
 
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.training import configure_pv26_train_stage
