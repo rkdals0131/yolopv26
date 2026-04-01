@@ -203,29 +203,18 @@
 
 ## 4.2 지금 가장 큰 구조적 문제
 
-### A. wrapper + `_impl` 2중 구조가 너무 많다
+### A. wrapper + `_impl` 2중 구조는 실제로 정리 대상이었다
 
-`tools/od_bootstrap` 안의 Python 파일은 총 48개인데, 그중 **19개가 15줄 이하의 얇은 wrapper**다.  
-또 `_impl` 계열 파일이 **14개**나 있다.
+이 리포트를 쓸 당시 `tools/od_bootstrap` 안에는 얇은 wrapper와 `_impl` 쌍이 많았다.  
+대표적으로 `debug_vis.py`, `exhaustive_od.py`, `final_dataset.py`, `teacher/calibrate.py`, `teacher/eval.py`, `teacher/ultralytics_runner.py`가 그 구조를 갖고 있었다.
 
-대표 예:
+그 판단은 맞았고, 현재 트리에서는 이 public wrapper 대부분이 이미 제거됐다.  
+즉 **문제 진단은 유효했고, 실제 정리 방향도 맞았다.**
 
-- `data/debug_vis.py` → `_debug_vis_impl.py`
-- `data/exhaustive_od.py` → `_exhaustive_od_impl.py`
-- `data/final_dataset.py` → `_final_dataset_impl.py`
-- `teacher/calibrate.py` → `_calibrate_impl.py`
-- `teacher/eval.py` → `_eval_impl.py`
-- `teacher/policy.py` → `_policy_impl.py`
-- `teacher/ultralytics_runner.py` → `_ultralytics_runner_impl.py`
+남는 교훈은 하나다.
 
-이 구조는 폴더를 줄이는 데는 성공했지만, **읽는 사람 입장에서는 오히려 한 번 더 점프해야 해서 피로하다.**  
-게다가 `import *` re-export가 많아서 실제 정의 위치를 따라가기 더 어려워진다.
-
-내 판단은 이렇다.
-
-- 공개 API가 필요한 건 맞다.
-- 하지만 지금은 “패키지 안정화”보다 “코드 가독성”이 더 중요하다.
-- 따라서 **wrapper를 대량으로 유지할 가치가 크지 않다.**
+- 공개 API 안정화가 정말 필요한 경계가 아니면 wrapper/re-export 층을 다시 늘리지 않는 편이 낫다.
+- 특히 `import *` re-export는 실제 정의 위치를 흐리므로 되도록 피하는 편이 맞다.
 
 ### B. `data/` 폴더가 너무 많은 책임을 갖고 있다
 
@@ -252,7 +241,7 @@
 
 - `tools/run_pv26_train.py`와 `tools/od_bootstrap/presets.py`에  
   `_coerce_mapping`, `_coerce_bool`, `_coerce_int`, `_coerce_float`, `_coerce_str`가 **동일 구현**으로 중복
-- `model/engine/trainer.py`와 `tools/od_bootstrap/teacher/_ultralytics_runner_impl.py`에  
+- `model/engine/trainer.py`와 `tools/od_bootstrap/teacher/ultralytics_runner.py`에  
   `_flatten_scalar_tree`가 **동일 구현**으로 중복
 - `_now_iso`는 코드베이스에 여러 번 반복
 - `_write_json`, `_link_or_copy`, `_default_io_workers`도 반복
@@ -265,7 +254,7 @@
 특히 아래 둘이 크다.
 
 - `tools/od_bootstrap/source/aihub.py`: **2,334 LOC**
-- `tools/od_bootstrap/teacher/_ultralytics_runner_impl.py`: **1,327 LOC**
+- `tools/od_bootstrap/teacher/ultralytics_runner.py`: **1,327 LOC**
 
 둘 다 파일 하나가 너무 많은 일을 한다.
 
@@ -280,7 +269,7 @@
 
 까지 다 한다.
 
-`_ultralytics_runner_impl.py`는 안에서:
+`teacher/ultralytics_runner.py`는 안에서:
 
 - checkpoint resume 탐색
 - trainer class 구성
@@ -316,8 +305,8 @@
 | 기존 BDD wrapper/impl 쌍 | `source/bdd100k.py` | 동일 |
 | 기존 source prep wrapper/common 쌍 | `source/prepare.py` | source orchestration 한 곳으로 |
 | `_teacher_dataset_impl.py` + `teacher_dataset.py` + `teacher/data_yaml.py` | `teacher/dataset.py` | teacher dataset 관련 책임 통합 |
-| `_train_impl.py` + `train.py`, `_eval_impl.py` + `eval.py`, `_calibrate_impl.py` + `calibrate.py` | `teacher/ops.py` 또는 `teacher/train.py`, `teacher/eval.py`, `teacher/calibrate.py` 단일 파일화 | wrapper 제거 |
-| `_ultralytics_runner_impl.py` + `ultralytics_runner.py` | `teacher/runtime.py` | runtime 경계 한 곳 |
+| 기존 train/eval/calibrate wrapper 쌍 | 현재처럼 `teacher/train.py`, `teacher/eval.py`, `teacher/calibrate.py` 단일 파일 유지 | 이미 wrapper 제거 방향으로 정리됨 |
+| 기존 ultralytics runner wrapper 쌍 | 현재처럼 `teacher/ultralytics_runner.py` 단일 파일 유지 또는 추후 `teacher/runtime.py` 검토 | runtime 경계 한 곳 |
 | 기존 image-list/manifest/type helper 묶음 | `build/manifest.py` + `build/types.py` | materialization metadata/contract 응집 |
 | 기존 sweep wrapper/impl 쌍 | `build/sweep.py` | wrapper 제거 |
 | 기존 exhaustive wrapper/impl 쌍 | `build/exhaustive.py` | wrapper 제거 |
@@ -478,7 +467,7 @@ exhaustive OD의 provenance를 남기는 철학은 유지해야 한다.
 
 - `tools/run_pv26_train.py`
 - `model/engine/trainer.py`
-- `tools/od_bootstrap/teacher/_ultralytics_runner_impl.py`
+- `tools/od_bootstrap/teacher/ultralytics_runner.py`
 - `tools/od_bootstrap/source/aihub.py`
 
 이 네 파일을 “기능 단위”로 쪼개면 구조 완성도가 확 올라간다.
