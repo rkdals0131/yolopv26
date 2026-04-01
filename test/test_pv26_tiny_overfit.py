@@ -8,8 +8,8 @@ from pathlib import Path
 
 import torch
 
-from model.preprocess.aihub_standardize import run_standardization as run_aihub_standardization
 from runtime_support import has_yolo26_runtime
+from tools.od_bootstrap.data.aihub import run_standardization as run_aihub_standardization
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:

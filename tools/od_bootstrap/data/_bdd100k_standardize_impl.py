@@ -9,7 +9,7 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from .aihub_common import (
+from ._raw_source_common import (
     IMAGE_EXTENSIONS,
     PairRecord,
     _env_path,
@@ -19,7 +19,7 @@ from .aihub_common import (
     _safe_slug,
     _seg_dataset_root,
 )
-from .aihub_standardize import (
+from ._aihub_standardize_impl import (
     LiveLogger,
     _bbox_to_yolo_line,
     _counter_to_dict,

@@ -77,7 +77,7 @@ def build_default_source_preset(*, output_root: Path | None = None) -> SourcePre
     roots = SourceRoots(
         bdd_root=REPO_ROOT / "seg_dataset" / "BDD100K",
         bdd_images_root=REPO_ROOT / "seg_dataset" / "BDD100K" / "bdd100k_images_100k" / "100k",
-        bdd_labels_root=REPO_ROOT / "seg_dataset" / "BDD100K" / "bdd100k_labels_100k" / "100k",
+        bdd_labels_root=REPO_ROOT / "seg_dataset" / "BDD100K" / "bdd100k_labels" / "100k",
         aihub_root=REPO_ROOT / "seg_dataset" / "AIHUB",
         aihub_lane_root=None,
         aihub_obstacle_root=None,
@@ -278,7 +278,7 @@ def build_calibration_preset() -> CalibrationScenario:
                 classes=("traffic_cone", "obstacle"),
             ),
         ),
-        policy_template_path=(REPO_ROOT / "tools" / "od_bootstrap" / "config" / "sweep" / "class_policy.template.yaml").resolve(),
+        policy_template_path=None,
         policy_template=None,
         hard_negative=HardNegativeConfig(
             manifest_path=(REPO_ROOT / "runs" / "od_bootstrap" / "calibration" / "default" / "hard_negative_manifest.json").resolve(),

@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-01`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/sweep/finalize 경로는 구현 완료 상태이며, full exhaustive dataset 실제 실행, teacher checkpoint alias 정리, PV26 stage 3 stress 검증을 진행하는 단계`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, full exhaustive dataset 실제 실행, teacher checkpoint alias 정리, PV26 stage 3 stress 검증을 진행하는 단계`
 
 ## 완료된 항목
 
@@ -83,8 +83,8 @@
 - [x] OD bootstrap source prep / teacher dataset materialization 구현
 - [x] OD bootstrap teacher train / eval scenario 구현
 - [x] OD bootstrap class policy calibration / hard-negative manifest 구현
-- [x] OD bootstrap model-centric sweep / provenance materialization 구현
-- [x] exhaustive OD + lane finalize / PV26 exhaustive train scenario 구현
+- [x] OD bootstrap exhaustive OD / provenance materialization 구현
+- [x] exhaustive OD + lane final dataset / PV26 exhaustive train scenario 구현
 - [x] OD bootstrap pipeline visibility / QA tooling 정리
 - [x] PV26 training config simplification / TensorBoard defaults 정리
 - [x] obstacle teacher `yolo26m` migration
@@ -103,8 +103,8 @@
 
 - [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap -q` (`49 passed`)
 - [x] `python3 -m unittest discover -s test -v`
-- [x] `python3 -m model.preprocess.aihub_standardize --workers 2 --max-samples-per-dataset 4 --debug-vis-count 2`
-- [x] `python3 -m model.preprocess.bdd100k_standardize --workers 8 --max-samples-per-split 2 --debug-vis-count 2`
+- [x] `python3 -m tools.od_bootstrap prepare-sources`
+- [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loader.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
@@ -124,14 +124,14 @@
 - [x] `python3 tools/run_pv26_train.py --preset default`
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
 - [x] `python3 tools/run_pv26_train.py`
-- [x] `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1`
-- [x] `python3 -m model.preprocess.bdd100k_standardize --workers 1 --max-samples-per-split 1 --debug-vis-count 1`
+- [x] `python3 -m tools.od_bootstrap prepare-sources`
+- [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과
 - [x] lane Hungarian 통합 후 targeted tests 재통과
 - [x] docs sync test 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] loss runtime 추가 후 `python3 -m unittest discover -s test -v` 재통과
 - [x] obstacle source 통합 후 `python3 -m unittest discover -s test -v` 재통과
-- [x] obstacle source 통합 후 `python3 -m model.preprocess.aihub_standardize --workers 1 --max-samples-per-dataset 1 --debug-vis-count 1` 실데이터 regression 통과
+- [x] obstacle source 통합 후 `python3 -m tools.od_bootstrap prepare-sources` 실데이터 regression 통과
 
 ## 최근 결정
 

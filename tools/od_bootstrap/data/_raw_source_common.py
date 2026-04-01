@@ -64,7 +64,7 @@ def _repo_root() -> Path:
     env_value = os.environ.get("PV26_REPO_ROOT")
     if env_value:
         return Path(env_value).expanduser().resolve()
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def _seg_dataset_root(repo_root: Path | None = None) -> Path:

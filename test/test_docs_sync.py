@@ -31,7 +31,9 @@ class DocsSyncTests(unittest.TestCase):
         readme = _read(REPO_ROOT / "README.md")
         self.assertIn("tools/run_pv26_train.py --preset default", readme)
         self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
+        self.assertIn("python -m tools.od_bootstrap build-teacher-datasets", readme)
         self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
+        self.assertIn("python -m tools.od_bootstrap build-final-dataset", readme)
         self.assertIn("seg_dataset/pv26_exhaustive_od_lane_dataset", readme)
         self.assertIn("runs/pv26_exhaustive_od_lane_train", readme)
         self.assertIn("`2번`부터 `8번`까지", readme)
@@ -39,13 +41,17 @@ class DocsSyncTests(unittest.TestCase):
         self.assertNotIn("tools/run_aihub_standardize.py", readme)
         self.assertNotIn("tools/run_bdd100k_standardize.py", readme)
         self.assertNotIn("tools/od_bootstrap/config/", readme)
+        self.assertNotIn("[config/](config/)", readme)
 
     def test_od_bootstrap_readme_tracks_current_teacher_model_defaults(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
+        self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
+        self.assertIn("python -m tools.od_bootstrap build-teacher-datasets", readme)
         self.assertIn("python -m tools.od_bootstrap train --teacher mobility", readme)
         self.assertIn("python -m tools.od_bootstrap train --teacher signal", readme)
         self.assertIn("python -m tools.od_bootstrap train --teacher obstacle", readme)
         self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
+        self.assertIn("python -m tools.od_bootstrap build-final-dataset", readme)
         self.assertIn("mobility/signal은 `yolo26s.pt`, obstacle은 `yolo26m.pt`", readme)
 
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
@@ -93,8 +99,22 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
         architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
-        self.assertIn("training sample runtime", architecture_doc)
-        self.assertNotIn("training sample contract", architecture_doc)
+        self.assertIn("tools.od_bootstrap.data.aihub / bdd100k", architecture_doc)
+        self.assertIn("model/data", architecture_doc)
+        self.assertIn("model/net", architecture_doc)
+        self.assertIn("model/engine", architecture_doc)
+        self.assertNotIn("model/preprocess/", architecture_doc)
+        self.assertNotIn("model/encoding/", architecture_doc)
+        self.assertNotIn("model/loading/", architecture_doc)
+        self.assertNotIn("model/training/", architecture_doc)
+        self.assertNotIn("model/viz/", architecture_doc)
+
+    def test_standardization_doc_tracks_bootstrap_output_roots(self) -> None:
+        standardization_doc = _read(DOCS_ROOT / "3_DATA_AND_STANDARDIZATION.md")
+        self.assertIn("seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized", standardization_doc)
+        self.assertIn("seg_dataset/pv26_od_bootstrap/canonical/bdd100k_det_100k", standardization_doc)
+        self.assertNotIn("seg_dataset/pv26_aihub_standardized", standardization_doc)
+        self.assertNotIn("seg_dataset/pv26_bdd100k_standardized", standardization_doc)
 
 
 if __name__ == "__main__":

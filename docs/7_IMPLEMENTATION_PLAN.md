@@ -108,7 +108,7 @@
 
 - the end-to-end loop is closed from offline standardization through loader / train / loss / inference / evaluation
 - tiny overfit regression and full epoch fit regression both exist and are used as regression gates
-- OD bootstrap is implemented as a separate pipeline with preprocess / train / eval / calibration / sweep / finalize stages
+- OD bootstrap is implemented as a separate pipeline with `prepare-sources / build-teacher-datasets / train / eval / calibrate / build-exhaustive-od / build-final-dataset` stages
 
 ## implementation order
 

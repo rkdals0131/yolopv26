@@ -108,9 +108,8 @@ python3 tools/run_pv26_train.py --preset default
 
 ## 저장소 구성
 
-- [model/](model/): 전처리, 데이터 로딩, 인코딩, 헤드, 학습, 평가 코드
-- [tools/](tools/): 실제 실행용 스크립트
-- [config/](config/): PV26 기본 학습 설정
+- [model/](model/): PV26 runtime data/net/engine 코드
+- [tools/](tools/): 실행 스크립트와 bootstrap 파이프라인
 - [docs/](docs/): 설계 문서와 작업 기록
 - [test/](test/): 테스트 코드
 

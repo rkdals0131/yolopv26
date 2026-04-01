@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from model.preprocess.bdd100k_standardize import run_standardization
+from tools.od_bootstrap.data.bdd100k import run_standardization
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:

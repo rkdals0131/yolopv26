@@ -1,4 +1,3 @@
 from __future__ import annotations
 
-from model.preprocess.bdd100k_standardize import *  # noqa: F401,F403
-
+from ._bdd100k_standardize_impl import *  # noqa: F401,F403

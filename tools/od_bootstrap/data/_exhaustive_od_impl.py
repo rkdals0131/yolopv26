@@ -13,18 +13,11 @@ from typing import Any, Iterable
 
 import yaml
 
-from common.pv26_schema import OD_CLASS_TO_ID, OD_CLASSES
+from common.pv26_schema import EXHAUSTIVE_DATASET_KEY_BY_SOURCE, OD_CLASS_TO_ID, OD_CLASSES
 
 from .artifacts import BoxProvenance
 from .image_list import ImageListEntry
 from ..teacher.policy import apply_policy_to_predictions
-
-
-EXHAUSTIVE_DATASET_KEY_BY_SOURCE = {
-    "bdd100k_det_100k": "pv26_exhaustive_bdd100k_det_100k",
-    "aihub_traffic_seoul": "pv26_exhaustive_aihub_traffic_seoul",
-    "aihub_obstacle_seoul": "pv26_exhaustive_aihub_obstacle_seoul",
-}
 
 
 @dataclass(frozen=True)

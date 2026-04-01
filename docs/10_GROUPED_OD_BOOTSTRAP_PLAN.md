@@ -22,9 +22,9 @@
 - mobility teacher default는 `yolo26s`다.
 - signal teacher default는 `yolo26s`다.
 - obstacle teacher default는 `yolo26m`다.
-- mobility / signal / obstacle 모두 size variant preset은 계속 남겨두되, 현재 sweep baseline은 위 default를 따른다.
-- sweep default execution mode는 `model-centric`이다.
-- sweep은 calibration 산출물인 `class_policy.yaml`을 읽는다.
+- mobility / signal / obstacle 모두 size variant preset은 계속 남겨두되, 현재 `build-exhaustive-od` baseline은 위 default를 따른다.
+- `build-exhaustive-od` default execution mode는 `model-centric`이다.
+- `build-exhaustive-od`는 calibration 산출물인 `class_policy.yaml`을 읽는다.
 - calibration은 `hard_negative_manifest.json`을 다음 보정 run의 입력으로 재사용한다.
 
 ## teacher split
@@ -79,7 +79,7 @@
 - `model_version`
   - checkpoint version 또는 exported model version
 - `run_id`
-  - sweep run id
+  - exhaustive OD run id
 - `created_at`
   - 생성 시각
 
@@ -140,7 +140,7 @@ AIHUB obstacle source의 canonical detector mapping은 이미 고정돼 있다.
   - teacher train spec 분리
   - class별 threshold / NMS / min-size policy 정의
   - provenance 포함 detector output schema
-  - model-centric sweep runner
+  - model-centric exhaustive OD runner
   - detector output merge rule
   - exhaustive OD pseudo-label dataset materialization
   - exhaustive OD set을 사용하는 PV26 재학습 경로

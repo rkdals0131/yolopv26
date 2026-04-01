@@ -13,10 +13,10 @@
 - future sources
   - AIHUB OD source 추가 가능
 
-## AIHUB standardization 원칙
+## AIHUB bootstrap canonicalization 원칙
 
 - 원본 dataset는 intact 유지
-- output은 `seg_dataset/pv26_aihub_standardized` 아래 별도 생성
+- output은 `seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized` 아래 별도 생성
 - 원본 좌표계 유지
 - image는 hardlink 우선, 실패 시 copy
 - det label과 scene label을 분리 저장
@@ -40,10 +40,10 @@
   - `Filled pothole`
 - 즉 V1에서는 road-surface defect task로 확장하지 않고 detector의 missing obstacle classes만 채운다.
 
-## BDD100K standardization 원칙
+## BDD100K bootstrap canonicalization 원칙
 
 - 원본 dataset는 intact 유지
-- output은 `seg_dataset/pv26_bdd100k_standardized` 아래 별도 생성
+- output은 `seg_dataset/pv26_od_bootstrap/canonical/bdd100k_det_100k` 아래 별도 생성
 - detector-only canonical source로 사용
 - BDD는 `vehicle / bike / pedestrian` 보강 source로만 사용하고 `traffic_light / sign`는 canonical output에서 제외한다
 - image는 hardlink 우선, 실패 시 copy
@@ -57,7 +57,7 @@
 ## 현재 canonical output
 
 ```text
-seg_dataset/pv26_aihub_standardized/
+seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized/
   images/<split>/*
   labels_det/<split>/*.txt
   labels_scene/<split>/*.json
@@ -78,7 +78,7 @@ seg_dataset/pv26_aihub_standardized/
 ```
 
 ```text
-seg_dataset/pv26_bdd100k_standardized/
+seg_dataset/pv26_od_bootstrap/canonical/bdd100k_det_100k/
   images/<split>/*
   labels_det/<split>/*.txt
   labels_scene/<split>/*.json

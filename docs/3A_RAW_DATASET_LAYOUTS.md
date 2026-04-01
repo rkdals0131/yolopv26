@@ -253,7 +253,7 @@ AIHUB와 BDD는 raw를 그대로 학습에 쓰지 않고 canonical output으로 
 AIHUB:
 
 ```text
-seg_dataset/pv26_aihub_standardized/
+seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized/
   images/<split>/<sample_id>.<ext>
   labels_scene/<split>/<sample_id>.json
   labels_det/<split>/<sample_id>.txt
@@ -263,7 +263,7 @@ seg_dataset/pv26_aihub_standardized/
 BDD:
 
 ```text
-seg_dataset/pv26_bdd100k_standardized/
+seg_dataset/pv26_od_bootstrap/canonical/bdd100k_det_100k/
   images/<split>/<sample_id>.<ext>
   labels_scene/<split>/<sample_id>.json
   labels_det/<split>/<sample_id>.txt
@@ -279,12 +279,12 @@ seg_dataset/pv26_bdd100k_standardized/
 - `sample_id`
   - 각 canonical dataset 내부 stem
 - `sample_uid`
-  - sweep에서 쓰는 전역 키
+  - build-exhaustive-od에서 쓰는 전역 키
   - 규약: `<dataset_key>__<split>__<sample_id>`
 - `bootstrap_sample_uid`
   - exhaustive OD materialization scene JSON에 기록되는 UID
 - `final_sample_id`
-  - finalize 이후 최종 merged dataset에서 쓰는 stem
+  - build-final-dataset 이후 최종 merged dataset에서 쓰는 stem
   - 현재 계약은 `scene_path.stem`
 
 현재 중요한 점:

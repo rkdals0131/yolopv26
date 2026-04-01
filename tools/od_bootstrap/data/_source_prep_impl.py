@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .debug_vis import DEFAULT_DEBUG_VIS_SEED, generate_canonical_debug_vis
-from model.preprocess.aihub_standardize import (
+from .aihub import (
     DEFAULT_DOCS_ROOT as DEFAULT_AIHUB_DOCS_ROOT,
     DEFAULT_LANE_ROOT as DEFAULT_AIHUB_LANE_ROOT,
     DEFAULT_OBSTACLE_ROOT as DEFAULT_AIHUB_OBSTACLE_ROOT,
@@ -15,7 +15,7 @@ from model.preprocess.aihub_standardize import (
     DEFAULT_TRAFFIC_ROOT as DEFAULT_AIHUB_TRAFFIC_ROOT,
     run_standardization as run_aihub_standardization,
 )
-from model.preprocess.bdd100k_standardize import (
+from .bdd100k import (
     DEFAULT_BDD_ROOT,
     DEFAULT_IMAGES_ROOT,
     DEFAULT_LABELS_ROOT,

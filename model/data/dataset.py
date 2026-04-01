@@ -8,7 +8,14 @@ from typing import Any, Callable, Iterable
 import torch
 from torch.utils.data import Dataset
 
-from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
+from common.pv26_schema import (
+    DET_SUPERVISION_BY_DATASET,
+    LANE_CLASSES,
+    LANE_TYPES,
+    OD_CLASSES,
+    SOURCE_MASK_BY_DATASET,
+    TL_BITS,
+)
 from .transform import (
     NETWORK_HW,
     LetterboxTransform,
@@ -33,94 +40,6 @@ class SampleRecord:
     det_path: Path | None
 
 
-SOURCE_MASK_BY_DATASET = {
-    "pv26_exhaustive_bdd100k_det_100k": {
-        "det": True,
-        "tl_attr": False,
-        "lane": False,
-        "stop_line": False,
-        "crosswalk": False,
-    },
-    "pv26_exhaustive_aihub_traffic_seoul": {
-        "det": True,
-        "tl_attr": True,
-        "lane": False,
-        "stop_line": False,
-        "crosswalk": False,
-    },
-    "pv26_exhaustive_aihub_obstacle_seoul": {
-        "det": True,
-        "tl_attr": False,
-        "lane": False,
-        "stop_line": False,
-        "crosswalk": False,
-    },
-    "aihub_traffic_seoul": {
-        "det": True,
-        "tl_attr": True,
-        "lane": False,
-        "stop_line": False,
-        "crosswalk": False,
-    },
-    "aihub_obstacle_seoul": {
-        "det": True,
-        "tl_attr": False,
-        "lane": False,
-        "stop_line": False,
-        "crosswalk": False,
-    },
-    "aihub_lane_seoul": {
-        "det": False,
-        "tl_attr": False,
-        "lane": True,
-        "stop_line": True,
-        "crosswalk": True,
-    },
-    "bdd100k_det_100k": {
-        "det": True,
-        "tl_attr": False,
-        "lane": False,
-        "stop_line": False,
-        "crosswalk": False,
-    },
-}
-DET_SUPERVISION_BY_DATASET = {
-    "pv26_exhaustive_bdd100k_det_100k": {
-        "class_names": ("vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"),
-        "allow_objectness_negatives": True,
-        "allow_unmatched_class_negatives": True,
-    },
-    "pv26_exhaustive_aihub_traffic_seoul": {
-        "class_names": ("vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"),
-        "allow_objectness_negatives": True,
-        "allow_unmatched_class_negatives": True,
-    },
-    "pv26_exhaustive_aihub_obstacle_seoul": {
-        "class_names": ("vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"),
-        "allow_objectness_negatives": True,
-        "allow_unmatched_class_negatives": True,
-    },
-    "aihub_traffic_seoul": {
-        "class_names": ("traffic_light", "sign"),
-        "allow_objectness_negatives": False,
-        "allow_unmatched_class_negatives": True,
-    },
-    "aihub_obstacle_seoul": {
-        "class_names": ("traffic_cone", "obstacle"),
-        "allow_objectness_negatives": False,
-        "allow_unmatched_class_negatives": True,
-    },
-    "aihub_lane_seoul": {
-        "class_names": (),
-        "allow_objectness_negatives": False,
-        "allow_unmatched_class_negatives": False,
-    },
-    "bdd100k_det_100k": {
-        "class_names": ("vehicle", "bike", "pedestrian"),
-        "allow_objectness_negatives": False,
-        "allow_unmatched_class_negatives": True,
-    },
-}
 OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
 
 

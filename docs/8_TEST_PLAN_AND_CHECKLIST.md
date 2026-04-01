@@ -109,8 +109,8 @@
 ## 명령 체크리스트
 
 - [x] `python3 -m unittest discover -s test -v`
-- [x] `python3 -m model.preprocess.aihub_standardize --max-samples-per-dataset 4 --debug-vis-count 2`
-- [x] `python3 -m model.preprocess.bdd100k_standardize --max-samples-per-split 2 --debug-vis-count 2`
+- [x] `python3 -m tools.od_bootstrap prepare-sources`
+- [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`

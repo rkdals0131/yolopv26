@@ -5,13 +5,13 @@ from pathlib import Path
 
 import torch
 
+from common.pv26_schema import OD_CLASSES
 from model.data import (
     PV26BalancedBatchSampler,
     build_pv26_eval_dataloader,
     build_pv26_train_dataloader,
     dataset_group_for_key,
 )
-from model.preprocess.aihub_standardize import OD_CLASSES
 from model.data.dataset import SampleRecord
 
 
