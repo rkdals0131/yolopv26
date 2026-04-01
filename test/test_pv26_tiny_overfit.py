@@ -31,11 +31,11 @@ def _write_dummy_pdf(path: Path) -> None:
 
 class PV26TinyOverfitTests(unittest.TestCase):
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
-    def test_tiny_overfit_smoke_reduces_best_loss_on_real_loader_batch(self) -> None:
-        from model.heads import PV26Heads
-        from model.loading import PV26CanonicalDataset, collate_pv26_samples
-        from model.training import PV26Trainer, run_pv26_tiny_overfit
-        from model.trunk import build_yolo26n_trunk
+    def test_tiny_overfit_reduces_best_loss_on_real_loader_batch(self) -> None:
+        from model.net import PV26Heads
+        from model.data import PV26CanonicalDataset, collate_pv26_samples
+        from model.engine.trainer import PV26Trainer, run_pv26_tiny_overfit
+        from model.net import build_yolo26n_trunk
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

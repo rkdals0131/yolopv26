@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from model.viz.overlay import render_overlay
+from model.data.preview import render_overlay
 
 
 class OverlayRenderTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class OverlayRenderTests(unittest.TestCase):
                 ],
             }
 
-            with patch("model.viz.overlay.subprocess.run") as mocked:
+            with patch("model.data.preview.subprocess.run") as mocked:
                 render_overlay(scene, output_path)
 
             command = mocked.call_args.args[0]
@@ -69,7 +69,7 @@ class OverlayRenderTests(unittest.TestCase):
                 ],
             }
 
-            with patch("model.viz.overlay.subprocess.run") as mocked:
+            with patch("model.data.preview.subprocess.run") as mocked:
                 render_overlay(scene, output_path)
 
             command = mocked.call_args.args[0]

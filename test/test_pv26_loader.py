@@ -42,7 +42,7 @@ def _rewrite_scene_dataset_keys(root: Path, mapping: dict[str, str]) -> None:
 
 class PV26LoaderTests(unittest.TestCase):
     def test_loader_returns_sample_contract_for_aihub_and_bdd_sources(self) -> None:
-        from model.loading.pv26_loader import PV26CanonicalDataset
+        from model.data.dataset import PV26CanonicalDataset
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -157,7 +157,7 @@ class PV26LoaderTests(unittest.TestCase):
             self.assertEqual(bdd_sample["meta"]["transform"]["pad_top"], 79)
 
     def test_loader_supports_exhaustive_od_dataset_keys(self) -> None:
-        from model.loading.pv26_loader import PV26CanonicalDataset
+        from model.data.dataset import PV26CanonicalDataset
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -248,7 +248,7 @@ class PV26LoaderTests(unittest.TestCase):
             self.assertFalse(lane_sample["meta"]["det_allow_unmatched_class_negatives"])
 
     def test_collate_stacks_images_and_preserves_ragged_targets(self) -> None:
-        from model.loading.pv26_loader import PV26CanonicalDataset, collate_pv26_samples
+        from model.data.dataset import PV26CanonicalDataset, collate_pv26_samples
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

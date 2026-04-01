@@ -4,11 +4,11 @@ from typing import Any
 
 import torch
 
-from ..encoding import encode_pv26_batch
-from ..loss import PV26MultiTaskLoss
-from ..trunk import forward_pyramid_features
+from ..data.target_encoder import encode_pv26_batch
+from ..net.trunk import forward_pyramid_features
 from .metrics import PV26MetricConfig, summarize_pv26_metrics
 from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
+from .loss import PV26MultiTaskLoss
 
 
 def _move_to_device(item: Any, device: torch.device) -> Any:
@@ -48,7 +48,7 @@ class PV26Evaluator:
         adapter: Any,
         heads: torch.nn.Module,
         *,
-        stage: str = "stage_0_smoke",
+        stage: str = "stage_1_frozen_trunk_warmup",
         device: str | torch.device = "cpu",
         criterion: torch.nn.Module | None = None,
     ) -> None:

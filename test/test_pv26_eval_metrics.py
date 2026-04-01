@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from model.eval import PV26MetricConfig, summarize_pv26_metrics
+from model.engine.metrics import PV26MetricConfig, summarize_pv26_metrics
 
 
 def _identity_meta() -> dict:

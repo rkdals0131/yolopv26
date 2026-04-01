@@ -4,7 +4,7 @@ import unittest
 
 import torch.nn as nn
 import torch
-from model.loss.spec import build_loss_spec
+from model.engine.loss import build_loss_spec
 from test_pv26_eval_metrics import make_raw_sample_batch
 from runtime_support import has_yolo26_runtime
 
@@ -157,13 +157,13 @@ class _ExplodingCriterion(nn.Module):
 class PV26EvaluatorTests(unittest.TestCase):
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_evaluator_returns_loss_and_count_summary(self) -> None:
-        from model.eval import PV26Evaluator
-        from model.heads import PV26Heads
-        from model.trunk import build_yolo26n_trunk
+        from model.engine.evaluator import PV26Evaluator
+        from model.net import PV26Heads
+        from model.net import build_yolo26n_trunk
 
         adapter = build_yolo26n_trunk()
         heads = PV26Heads(in_channels=(64, 128, 256))
-        evaluator = PV26Evaluator(adapter, heads, stage="stage_0_smoke")
+        evaluator = PV26Evaluator(adapter, heads, stage="stage_1_frozen_trunk_warmup")
 
         summary = evaluator.evaluate_batch(_make_encoded_batch(batch_size=1, q_det=9975))
 
@@ -176,12 +176,12 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertEqual(summary["prediction_shapes"]["tl_attr"], [1, 9975, 4])
 
     def test_predict_batch_returns_postprocessed_prediction_bundle(self) -> None:
-        from model.eval.pv26_evaluator import PV26Evaluator
+        from model.engine.evaluator import PV26Evaluator
 
         evaluator = PV26Evaluator(
             _StaticAdapter(),
             _StaticHeads(),
-            stage="stage_0_smoke",
+            stage="stage_1_frozen_trunk_warmup",
             criterion=_ExplodingCriterion(),
         )
         evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
@@ -200,12 +200,12 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertEqual(len(predictions[0]["crosswalks"]), 1)
 
     def test_evaluate_batch_without_loss_still_returns_metrics(self) -> None:
-        from model.eval.pv26_evaluator import PV26Evaluator
+        from model.engine.evaluator import PV26Evaluator
 
         evaluator = PV26Evaluator(
             _StaticAdapter(),
             _StaticHeads(),
-            stage="stage_0_smoke",
+            stage="stage_1_frozen_trunk_warmup",
             criterion=_ExplodingCriterion(),
         )
         evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
@@ -218,12 +218,12 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertIn("traffic_light", summary["metrics"])
 
     def test_evaluate_batch_on_raw_sample_batch_includes_metrics(self) -> None:
-        from model.eval.pv26_evaluator import PV26Evaluator
+        from model.engine.evaluator import PV26Evaluator
 
         evaluator = PV26Evaluator(
             _StaticAdapter(),
             _StaticHeads(),
-            stage="stage_0_smoke",
+            stage="stage_1_frozen_trunk_warmup",
             criterion=_ExplodingCriterion(),
         )
         evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
@@ -237,8 +237,8 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertIn("map50", summary["metrics"]["detector"])
 
     def test_evaluate_batch_on_encoded_eval_batch_with_raw_bundle_includes_metrics(self) -> None:
-        from model.encoding import encode_pv26_batch
-        from model.eval.pv26_evaluator import PV26Evaluator
+        from model.data import encode_pv26_batch
+        from model.engine.evaluator import PV26Evaluator
 
         raw_batch = make_raw_sample_batch()
         encoded_batch = encode_pv26_batch(raw_batch)
@@ -254,7 +254,7 @@ class PV26EvaluatorTests(unittest.TestCase):
         evaluator = PV26Evaluator(
             _StaticAdapter(),
             _StaticHeads(),
-            stage="stage_0_smoke",
+            stage="stage_1_frozen_trunk_warmup",
             criterion=_ExplodingCriterion(),
         )
         evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
@@ -267,7 +267,7 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertGreaterEqual(summary["metrics"]["lane"]["f1"], 0.0)
 
     def test_encoded_eval_collate_preserves_raw_supervision_for_metrics(self) -> None:
-        from model.loading import collate_pv26_encoded_eval_batch
+        from model.data import collate_pv26_encoded_eval_batch
 
         raw_batch = make_raw_sample_batch()
         sample = {

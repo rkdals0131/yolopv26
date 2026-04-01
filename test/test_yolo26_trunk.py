@@ -31,17 +31,17 @@ class _DummyYOLO:
 
 class YOLO26TrunkTests(unittest.TestCase):
     def test_pretrained_adapter_requires_yolo26_capable_ultralytics(self) -> None:
-        from model.trunk.ultralytics_yolo26 import build_yolo26n_trunk
+        from model.net.trunk import build_yolo26n_trunk
 
-        with patch("model.trunk.ultralytics_yolo26.ULTRALYTICS_VERSION", "8.3.78"):
+        with patch("model.net.trunk.ULTRALYTICS_VERSION", "8.3.78"):
             with self.assertRaisesRegex(RuntimeError, "8.4.0"):
                 build_yolo26n_trunk()
 
     def test_pretrained_adapter_extracts_trunk_and_detect_head(self) -> None:
-        from model.trunk.ultralytics_yolo26 import build_yolo26n_trunk
+        from model.net.trunk import build_yolo26n_trunk
 
-        with patch("model.trunk.ultralytics_yolo26.ULTRALYTICS_VERSION", "8.4.2"):
-            with patch("model.trunk.ultralytics_yolo26.YOLO", _DummyYOLO):
+        with patch("model.net.trunk.ULTRALYTICS_VERSION", "8.4.2"):
+            with patch("model.net.trunk.YOLO", _DummyYOLO):
                 adapter = build_yolo26n_trunk()
 
         self.assertEqual(adapter.weights, "yolo26n.pt")
@@ -53,7 +53,7 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertTrue(all(parameter.requires_grad for parameter in adapter.trunk.parameters()))
 
     def test_partial_loader_only_applies_matching_shapes(self) -> None:
-        from model.trunk.ultralytics_yolo26 import load_matching_state_dict
+        from model.net.trunk import load_matching_state_dict
 
         module = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 2))
         source = {
@@ -72,7 +72,7 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertTrue(torch.allclose(module[0].bias, torch.zeros(4)))
 
     def test_summary_reports_trunk_and_detect_metadata(self) -> None:
-        from model.trunk.ultralytics_yolo26 import UltralyticsYOLO26TrunkAdapter, summarize_trunk_adapter
+        from model.net.trunk import UltralyticsYOLO26TrunkAdapter, summarize_trunk_adapter
 
         raw_model = _DummyCore()
         adapter = UltralyticsYOLO26TrunkAdapter(

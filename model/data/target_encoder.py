@@ -5,7 +5,7 @@ from typing import Any
 import torch
 
 from common.pv26_schema import OD_CLASSES
-from ..loss.spec import build_loss_spec
+from ..engine.spec import build_loss_spec
 
 
 SPEC = build_loss_spec()

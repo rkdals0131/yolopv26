@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from model.loading import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
+from model.data import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
 from model.preprocess.aihub_standardize import LANE_CLASSES, LANE_TYPES
 from model.preprocess.aihub_standardize import run_standardization as run_aihub_standardization
 from model.preprocess.bdd100k_standardize import run_standardization as run_bdd_standardization
@@ -54,7 +54,7 @@ def _minimal_raw_batch(*, det_source: bool, meta: dict | None = None) -> dict:
 
 class PV26TargetEncoderTests(unittest.TestCase):
     def test_encode_batch_builds_fixed_shape_targets(self) -> None:
-        from model.encoding import encode_pv26_batch
+        from model.data import encode_pv26_batch
 
         with tempfile.TemporaryDirectory() as temp_dir:
             dataset = self._build_dataset(Path(temp_dir))
@@ -133,7 +133,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(encoded["mask"]["lane_source"].tolist(), [True, False, False, False])
 
     def test_encode_batch_pads_unused_queries_with_zeros(self) -> None:
-        from model.encoding import encode_pv26_batch
+        from model.data import encode_pv26_batch
 
         with tempfile.TemporaryDirectory() as temp_dir:
             dataset = self._build_dataset(Path(temp_dir))
@@ -155,7 +155,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertTrue(torch.all(encoded["crosswalk"][lane_index, 1:, :] == 0.0))
 
     def test_encoded_collate_matches_manual_encode(self) -> None:
-        from model.encoding import encode_pv26_batch
+        from model.data import encode_pv26_batch
 
         with tempfile.TemporaryDirectory() as temp_dir:
             dataset = self._build_dataset(Path(temp_dir))
@@ -174,13 +174,13 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(encoded_direct["meta"], encoded_manual["meta"])
 
     def test_encode_batch_requires_det_supervision_meta_for_det_sources(self) -> None:
-        from model.encoding import encode_pv26_batch
+        from model.data import encode_pv26_batch
 
         with self.assertRaisesRegex(ValueError, "missing meta.det_supervised_class_ids"):
             encode_pv26_batch(_minimal_raw_batch(det_source=True))
 
     def test_encode_batch_accepts_det_source_false_without_det_supervision_meta(self) -> None:
-        from model.encoding import encode_pv26_batch
+        from model.data import encode_pv26_batch
 
         encoded = encode_pv26_batch(_minimal_raw_batch(det_source=False))
 

@@ -1103,7 +1103,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-samples-per-split",
         type=int,
         default=None,
-        help="Optional smoke-run limit applied independently to train/val/test.",
+        help="Optional per-split sample limit applied independently to train/val/test for faster verification runs.",
     )
     parser.add_argument(
         "--debug-vis-count",

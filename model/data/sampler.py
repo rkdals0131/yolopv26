@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from torch.utils.data import BatchSampler, DataLoader
 
-from .pv26_loader import (
+from .dataset import (
     PV26CanonicalDataset,
     collate_pv26_encoded_batch,
     collate_pv26_encoded_eval_batch,

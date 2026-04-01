@@ -9,8 +9,8 @@ from PIL import Image, ImageDraw
 from scipy.optimize import linear_sum_assignment
 import torch
 
-from ..loading.transform import inverse_transform_box_xyxy, inverse_transform_points, transform_from_meta
-from ..loss.spec import build_loss_spec
+from ..data.transform import inverse_transform_box_xyxy, inverse_transform_points, transform_from_meta
+from .spec import build_loss_spec
 
 
 SPEC = build_loss_spec()

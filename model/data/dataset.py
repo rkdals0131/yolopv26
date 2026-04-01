@@ -397,13 +397,13 @@ def collate_pv26_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def collate_pv26_encoded_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    from ..encoding import encode_pv26_batch
+    from .target_encoder import encode_pv26_batch
 
     return encode_pv26_batch(collate_pv26_samples(samples))
 
 
 def collate_pv26_encoded_eval_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    from ..encoding import encode_pv26_batch
+    from .target_encoder import encode_pv26_batch
 
     raw_batch = collate_pv26_samples(samples)
     encoded = encode_pv26_batch(raw_batch)

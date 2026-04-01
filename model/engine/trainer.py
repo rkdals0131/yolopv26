@@ -11,14 +11,13 @@ from typing import Any, Callable
 
 import torch
 
-from ..encoding import encode_pv26_batch
-from ..loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
-from ..loss.spec import build_loss_spec
-from ..trunk import forward_pyramid_features
+from ..data.target_encoder import encode_pv26_batch
+from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
+from .spec import build_loss_spec
+from ..net.trunk import forward_pyramid_features
 
 
 STAGE_NAMES = (
-    "stage_0_smoke",
     "stage_1_frozen_trunk_warmup",
     "stage_2_partial_unfreeze",
     "stage_3_end_to_end_finetune",
@@ -765,7 +764,7 @@ class PV26Trainer:
         adapter: Any,
         heads: torch.nn.Module,
         *,
-        stage: str = "stage_0_smoke",
+        stage: str = "stage_1_frozen_trunk_warmup",
         device: str | torch.device = "cpu",
         criterion: torch.nn.Module | None = None,
         optimizer: torch.optim.Optimizer | None = None,
@@ -1144,7 +1143,7 @@ class PV26Trainer:
         return checkpoint
 
     def build_evaluator(self):
-        from ..eval import PV26Evaluator
+        from .evaluator import PV26Evaluator
 
         criterion = self.criterion
         criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
@@ -1278,7 +1277,7 @@ class PV26Trainer:
         evaluator=None,
         max_batches: int | None = None,
     ) -> dict[str, Any]:
-        from ..eval import summarize_pv26_metrics
+        from .metrics import summarize_pv26_metrics
 
         evaluator = evaluator or self.build_evaluator()
         started_at = time.perf_counter()
@@ -1632,7 +1631,7 @@ def run_pv26_tiny_overfit(
     steps: int = 8,
 ) -> dict[str, Any]:
     if steps <= 0:
-        raise ValueError("tiny overfit smoke requires steps > 0")
+        raise ValueError("tiny overfit requires steps > 0")
 
     sample_ids = [str(item.get("sample_id", "unknown")) for item in batch.get("meta", [])]
     history: list[dict[str, Any]] = []

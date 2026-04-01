@@ -11,7 +11,7 @@
 - step 4
   - multitask loss 연결
 - step 5
-  - mini overfit smoke
+  - tiny overfit regression
 - step 6
   - full training wiring
 
@@ -23,13 +23,11 @@
 
 ## recommended stage schedule
 
-1. stage 0
-   - shape / target / loss NaN check
-2. stage 1
+1. stage 1
    - trunk freeze, new heads warm-up
-3. stage 2
+2. stage 2
    - neck + upper backbone unfreeze
-4. stage 3
+3. stage 3
    - full fine-tune
 
 ## sampler
@@ -61,7 +59,7 @@
   - polygon IoU
   - vertex distance
 
-## smoke criteria
+## test-first criteria
 
 - forward 성공
 - backward 성공
@@ -76,7 +74,7 @@
 - loader와 encoder가 stable
 - pretrained partial load 성공
 - lane/TL/OD multitask loss가 동시에 finite
-- mini smoke에서 명백한 shape bug가 없음
+- tiny regression에서 명백한 shape bug가 없음
 
 ## current runtime status
 
@@ -87,15 +85,15 @@
 - trainer는 checkpoint save/load를 지원한다.
 - trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
-- `tools/run_pv26_train.py`는 `config/pv26_meta_train.default.yaml`을 기본으로 읽고, `--config <yaml>`로 `config/pv26_meta_train.smoke.yaml` 같은 대체 scenario를 실행한다.
+- `tools/run_pv26_train.py`는 preset table을 사용하고, `--preset default|stage3_vram_stress`로 실행한다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
-- `tools/run_pv26_tiny_overfit_smoke.py`는 파일 상단 `DATASET_CONFIG` / `TRAIN_CONFIG` block을 직접 수정하는 방식으로 실행한다.
+- `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
 - evaluator는 raw model output을 postprocess prediction bundle로 decode하는 `predict_batch` runtime을 지원한다.
 - evaluator는 validation에서 loss/metrics/prediction bundle을 single forward path로 묶어 사용한다.
 - evaluator는 batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, lane family matching metrics를 지원한다.
 - postprocess는 `torchvision.ops.batched_nms` 사용 가능 시 우선 사용하고, 불가능하면 pure PyTorch NMS fallback을 사용한다.
-- tiny overfit smoke는 canonical train batch 2개 기준으로 실제 loss 감소를 확인했다.
-- epoch fit smoke는 canonical source 기준으로 checkpoint resume 가능한 run summary를 확인했다.
+- tiny overfit regression은 canonical train batch 2개 기준으로 실제 loss 감소를 확인했다.
+- epoch fit regression은 canonical source 기준으로 checkpoint resume 가능한 run summary를 확인했다.
 - detector assignment는 task-aligned assigner 기준으로 통합 완료다.
 - lane family Hungarian matching도 통합 완료다.

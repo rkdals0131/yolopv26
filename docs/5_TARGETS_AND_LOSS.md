@@ -41,8 +41,7 @@
 - detector
   - task-aligned assigner runtime 통합 완료
   - real trunk path에서는 feature-shape metadata를 이용해 anchor grid를 만들고 assignment를 계산한다.
-  - synthetic unit smoke는 `stage_0_smoke`에서 `allow_test_det_fallback=True`일 때만 metadata 없는 `prefix positive fallback`을 사용한다.
-  - fallback이 실제로 사용되면 runtime warning을 남긴다.
+  - metadata가 없거나 assigner가 실패하면 `PV26DetAssignmentUnavailable`를 올린다.
 - lane family
   - Hungarian matching runtime 통합 완료
   - lane, stop-line, crosswalk 모두 query-to-GT assignment를 cost matrix 기반으로 계산한다.
@@ -145,8 +144,8 @@ L_total = λ_det * L_det
 
 ## current status
 
-- spec는 [../model/loss/spec.py](../model/loss/spec.py)에 반영돼 있다.
-- smoke/runtime loss는 [../model/loss/runtime.py](../model/loss/runtime.py)에 반영돼 있다.
+- spec는 [../model/engine/spec.py](../model/engine/spec.py)에 반영돼 있다.
+- runtime loss는 [../model/engine/loss.py](../model/engine/loss.py)에 반영돼 있다.
 - current runtime은 full train/eval 경로에서 finite loss, backward, validation, prediction bundle decode를 모두 지원한다.
 - detector matching은 task-aligned assigner 기준으로 동작한다.
 - TL attr supervision은 matched detector positive의 GT index를 재사용한다.

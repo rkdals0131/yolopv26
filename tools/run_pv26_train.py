@@ -6,33 +6,31 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-import sys
+import site
 from typing import Any
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+site.addsitedir(str(REPO_ROOT))
 
-from model.eval import PV26Evaluator
-from model.heads import PV26Heads
-from model.loading import (
+from common.overlay import render_overlay
+from model.engine.evaluator import PV26Evaluator
+from model.data import (
     PV26CanonicalDataset,
     build_pv26_eval_dataloader,
     build_pv26_train_dataloader,
     collate_pv26_samples,
 )
-from model.training import PV26Trainer, build_pv26_optimizer, build_pv26_scheduler
-from model.training.pv26_trainer import _resolve_summary_path
-from model.trunk import build_yolo26n_trunk
-from model.viz import render_overlay
+from model.engine.trainer import PV26Trainer, build_pv26_optimizer, build_pv26_scheduler
+from model.engine.trainer import _resolve_summary_path
+from model.net import PV26Heads
+from model.net import build_yolo26n_trunk
 
 
 DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
 LEGACY_CANONICAL_BDD_ROOT = REPO_ROOT / "seg_dataset" / "pv26_bdd100k_standardized"
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
-DEFAULT_SCENARIO_PATH = REPO_ROOT / "config" / "pv26_meta_train.default.yaml"
+PRESET_PATH_ROOT = REPO_ROOT / "presets" / "pv26_meta_train"
+DEFAULT_PRESET_NAME = "default"
 HEAD_CHANNELS = (64, 128, 256)
 META_MANIFEST_VERSION = "pv26-meta-train-v1"
 PHASE_STAGE_ORDER = (
@@ -44,7 +42,7 @@ PHASE_STAGE_ORDER = (
 
 @dataclass(frozen=True)
 class EntryConfig:
-    scenario_path: Path = DEFAULT_SCENARIO_PATH
+    preset_name: str = DEFAULT_PRESET_NAME
 
 
 @dataclass(frozen=True)
@@ -139,7 +137,175 @@ class MetaTrainScenario:
     phases: tuple[PhaseConfig, ...]
 
 
-# Edit this block directly before running `python3 tools/run_pv26_train.py`.
+def _phase(
+    name: str,
+    stage: str,
+    *,
+    min_epochs: int,
+    max_epochs: int,
+    patience: int,
+    min_improvement_pct: float,
+    overrides: dict[str, Any] | None = None,
+) -> PhaseConfig:
+    return PhaseConfig(
+        name=name,
+        stage=stage,
+        min_epochs=min_epochs,
+        max_epochs=max_epochs,
+        patience=patience,
+        min_improvement_pct=min_improvement_pct,
+        overrides=dict(overrides or {}),
+    )
+
+
+def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
+    preview_dataset_keys = (
+        "pv26_exhaustive_bdd100k_det_100k",
+        "pv26_exhaustive_aihub_traffic_seoul",
+        "pv26_exhaustive_aihub_obstacle_seoul",
+        "aihub_lane_seoul",
+    )
+    return {
+        "default": MetaTrainScenario(
+            dataset=DatasetConfig(root=DEFAULT_DATASET_ROOT),
+            run=RunConfig(run_root=DEFAULT_RUN_ROOT, run_name_prefix="exhaustive_od_lane"),
+            train_defaults=TrainDefaultsConfig(
+                device="cuda:0",
+                batch_size=40,
+                train_batches=-1,
+                val_batches=-1,
+                trunk_lr=1e-4,
+                head_lr=5e-3,
+                weight_decay=1e-4,
+                schedule="cosine",
+                amp=True,
+                accumulate_steps=1,
+                grad_clip_norm=5.0,
+                val_every=1,
+                checkpoint_every=3,
+                num_workers=6,
+                pin_memory=True,
+                log_every_n_steps=20,
+                profile_window=20,
+                profile_device_sync=True,
+                encode_train_batches_in_loader=True,
+                encode_val_batches_in_loader=True,
+                persistent_workers=True,
+                prefetch_factor=2,
+            ),
+            selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min", eps=1e-8),
+            preview=PreviewConfig(
+                enabled=True,
+                split="val",
+                dataset_keys=preview_dataset_keys,
+                max_samples_per_dataset=1,
+                write_overlay=True,
+            ),
+            phases=(
+                _phase(
+                    "head_warmup",
+                    "stage_1_frozen_trunk_warmup",
+                    min_epochs=2,
+                    max_epochs=4,
+                    patience=2,
+                    min_improvement_pct=2.0,
+                    overrides={"trunk_lr": 5e-5, "head_lr": 3e-3},
+                ),
+                _phase(
+                    "partial_unfreeze",
+                    "stage_2_partial_unfreeze",
+                    min_epochs=3,
+                    max_epochs=6,
+                    patience=2,
+                    min_improvement_pct=1.0,
+                    overrides={"trunk_lr": 3e-5, "head_lr": 8e-4},
+                ),
+                _phase(
+                    "end_to_end_finetune",
+                    "stage_3_end_to_end_finetune",
+                    min_epochs=4,
+                    max_epochs=10,
+                    patience=2,
+                    min_improvement_pct=0.5,
+                    overrides={"trunk_lr": 1e-5, "head_lr": 4e-4},
+                ),
+            ),
+        ),
+        "stage3_vram_stress": MetaTrainScenario(
+            dataset=DatasetConfig(root=DEFAULT_DATASET_ROOT),
+            run=RunConfig(
+                run_root=REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train_stress",
+                run_name_prefix="stage3_vram_stress",
+            ),
+            train_defaults=TrainDefaultsConfig(
+                device="cuda:0",
+                batch_size=40,
+                train_batches=30,
+                val_batches=0,
+                trunk_lr=1e-4,
+                head_lr=5e-3,
+                weight_decay=1e-4,
+                schedule="none",
+                amp=True,
+                accumulate_steps=1,
+                grad_clip_norm=5.0,
+                val_every=1,
+                checkpoint_every=1,
+                num_workers=6,
+                pin_memory=True,
+                log_every_n_steps=1,
+                profile_window=3,
+                profile_device_sync=True,
+                encode_train_batches_in_loader=True,
+                encode_val_batches_in_loader=True,
+                persistent_workers=True,
+                prefetch_factor=2,
+            ),
+            selection=SelectionConfig(metric_path="train.losses.total.mean", mode="min", eps=1e-8),
+            preview=PreviewConfig(
+                enabled=False,
+                split="val",
+                dataset_keys=preview_dataset_keys,
+                max_samples_per_dataset=1,
+                write_overlay=False,
+            ),
+            phases=(
+                _phase(
+                    "head_warmup",
+                    "stage_1_frozen_trunk_warmup",
+                    min_epochs=1,
+                    max_epochs=1,
+                    patience=1,
+                    min_improvement_pct=0.0,
+                    overrides={"batch_size": 2, "train_batches": 1, "val_batches": 0, "trunk_lr": 5e-5, "head_lr": 3e-3},
+                ),
+                _phase(
+                    "partial_unfreeze",
+                    "stage_2_partial_unfreeze",
+                    min_epochs=1,
+                    max_epochs=1,
+                    patience=1,
+                    min_improvement_pct=0.0,
+                    overrides={"batch_size": 2, "train_batches": 1, "val_batches": 0, "trunk_lr": 3e-5, "head_lr": 8e-4},
+                ),
+                _phase(
+                    "end_to_end_finetune",
+                    "stage_3_end_to_end_finetune",
+                    min_epochs=1,
+                    max_epochs=1,
+                    patience=1,
+                    min_improvement_pct=0.0,
+                    overrides={"val_batches": 0, "trunk_lr": 1e-5, "head_lr": 4e-4},
+                ),
+            ),
+        ),
+    }
+
+
+META_TRAIN_PRESETS = _build_meta_train_presets()
+
+
+# Default CLI preset; override with `--preset`.
 ENTRY_CONFIG = EntryConfig()
 
 
@@ -406,23 +572,12 @@ def _validate_meta_train_scenario(scenario: MetaTrainScenario) -> None:
         raise ValueError("preview.max_samples_per_dataset must be > 0")
 
 
-def load_meta_train_scenario(path: str | Path) -> MetaTrainScenario:
-    scenario_path = Path(path).resolve()
-    payload = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise TypeError("meta_train scenario must be a mapping")
-    base_dir = scenario_path.parent
-    scenario = MetaTrainScenario(
-        dataset=_dataset_config_from_mapping(payload.get("dataset"), base_dir=base_dir),
-        run=_run_config_from_mapping(payload.get("run"), base_dir=base_dir),
-        train_defaults=_train_defaults_from_mapping(payload.get("train_defaults")),
-        selection=_selection_config_from_mapping(payload.get("selection")),
-        preview=_preview_config_from_mapping(payload.get("preview")),
-        phases=tuple(
-            _phase_config_from_mapping(item, index=index)
-            for index, item in enumerate(payload.get("phases", []))
-        ),
-    )
+def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
+    preset_key = Path(preset_name).name
+    try:
+        scenario = META_TRAIN_PRESETS[preset_key]
+    except KeyError as exc:
+        raise KeyError(f"unsupported PV26 meta-train preset: {preset_key}") from exc
     _validate_meta_train_scenario(scenario)
     return scenario
 
@@ -1124,10 +1279,10 @@ def run_meta_train_scenario(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the PV26 meta-train scenario.")
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=ENTRY_CONFIG.scenario_path,
-        help="Path to a meta-train scenario YAML file.",
+        "--preset",
+        choices=sorted(META_TRAIN_PRESETS.keys()),
+        default=ENTRY_CONFIG.preset_name,
+        help="PV26 meta-train preset name.",
     )
     return parser
 
@@ -1135,10 +1290,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
-    scenario_path = Path(args.config).resolve()
-    if not scenario_path.is_file():
-        raise SystemExit(f"meta_train scenario not found: {scenario_path}")
-    scenario = load_meta_train_scenario(scenario_path)
+    preset_name = str(args.preset)
+    scenario = load_meta_train_scenario(preset_name)
+    scenario_path = PRESET_PATH_ROOT / preset_name
     summary = run_meta_train_scenario(scenario, scenario_path=scenario_path)
     print(json.dumps(_json_ready(summary), indent=2, ensure_ascii=True))
 

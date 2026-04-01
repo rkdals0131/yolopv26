@@ -91,7 +91,7 @@ input image
 - trunk adapter를 먼저 만든다.
 - pretrained loading은 partial load로 구현한다.
 - head 모듈은 trunk와 분리된 클래스로 둔다.
-- smoke 기준은 `forward -> loss -> backward`가 된다.
+- 최소 regression 기준은 `forward -> loss -> backward`가 된다.
 - sample과 transform contract는 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)를 기준으로 한다.
 
 ## stage-wise training policy

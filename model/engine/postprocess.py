@@ -6,7 +6,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from ..loading.transform import (
+from ..data.transform import (
     clip_box_xyxy,
     clip_points,
     inverse_transform_box_xyxy,
@@ -14,7 +14,7 @@ from ..loading.transform import (
     transform_from_meta,
     unique_point_count,
 )
-from ..loss.spec import build_loss_spec
+from .spec import build_loss_spec
 
 
 SPEC = build_loss_spec()

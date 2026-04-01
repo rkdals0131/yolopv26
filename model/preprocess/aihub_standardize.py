@@ -2184,7 +2184,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-samples-per-dataset",
         type=int,
         default=None,
-        help="Optional smoke-run limit for each dataset. Source inventory and README generation still scan the full source tree.",
+        help="Optional per-dataset sample limit for faster verification runs. Source inventory and README generation still scan the full source tree.",
     )
     parser.add_argument(
         "--debug-vis-count",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any
-import warnings
 
 from scipy.optimize import linear_sum_assignment
 import torch
@@ -15,7 +14,7 @@ except ImportError:  # pragma: no cover - depends on external environment.
     ultralytics_bbox_iou = None
     TaskAlignedAssigner = None
 
-from .spec import build_loss_spec
+from .spec import build_loss_spec, render_loss_spec_markdown
 
 
 SPEC = build_loss_spec()
@@ -204,9 +203,8 @@ def _crosswalk_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> to
 class PV26MultiTaskLoss(nn.Module):
     def __init__(
         self,
-        stage: str = "stage_0_smoke",
+        stage: str = "stage_1_frozen_trunk_warmup",
         *,
-        allow_test_det_fallback: bool = False,
         det_cls_negative_weight: float = 0.1,
     ) -> None:
         super().__init__()
@@ -216,9 +214,6 @@ class PV26MultiTaskLoss(nn.Module):
         except KeyError as exc:
             raise KeyError(f"unsupported PV26 loss stage: {stage}") from exc
         self.stage = stage
-        self.allow_test_det_fallback = bool(allow_test_det_fallback)
-        if self.allow_test_det_fallback and self.stage != "stage_0_smoke":
-            raise ValueError("allow_test_det_fallback is restricted to stage_0_smoke")
         self.det_cls_negative_weight = float(det_cls_negative_weight)
         self.register_buffer(
             "tl_bit_weights",
@@ -244,7 +239,6 @@ class PV26MultiTaskLoss(nn.Module):
             "stop_line": "uninitialized",
             "crosswalk": "uninitialized",
         }
-        self._det_fallback_warned = False
         self.last_det_loss_breakdown = {
             "det_obj_loss": 0.0,
             "det_cls_matched_loss": 0.0,
@@ -258,19 +252,38 @@ class PV26MultiTaskLoss(nn.Module):
     def export_config(self) -> dict[str, Any]:
         return {
             "stage": self.stage,
-            "allow_test_det_fallback": bool(self.allow_test_det_fallback),
             "det_cls_negative_weight": float(self.det_cls_negative_weight),
         }
 
-    def _warn_test_det_fallback(self, reason: str) -> None:
-        if self._det_fallback_warned:
-            return
-        warnings.warn(
-            f"using test-only detector assignment fallback ({reason}) in {self.stage}",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        self._det_fallback_warned = True
+    def _run_task_aligned_assigner(
+        self,
+        pred_scores: torch.Tensor,
+        pred_bboxes: torch.Tensor,
+        anchor_points: torch.Tensor,
+        gt_labels: torch.Tensor,
+        gt_bboxes: torch.Tensor,
+        mask_gt: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.assigner is None:
+            raise PV26DetAssignmentUnavailable("task_aligned_assigner_missing")
+
+        original_topk = getattr(self.assigner, "topk", None)
+        original_topk2 = getattr(self.assigner, "topk2", None)
+        if original_topk is None:
+            return self.assigner(pred_scores, pred_bboxes, anchor_points, gt_labels, gt_bboxes, mask_gt)
+
+        effective_topk = max(1, min(int(original_topk), int(pred_scores.shape[1])))
+        if effective_topk != int(original_topk):
+            self.assigner.topk = effective_topk
+        if original_topk2 is not None and effective_topk != int(original_topk2):
+            self.assigner.topk2 = effective_topk
+        try:
+            return self.assigner(pred_scores, pred_bboxes, anchor_points, gt_labels, gt_bboxes, mask_gt)
+        finally:
+            if effective_topk != int(original_topk):
+                self.assigner.topk = original_topk
+            if original_topk2 is not None and effective_topk != int(original_topk2):
+                self.assigner.topk2 = original_topk2
 
     def _det_contract_label(self, encoded: dict[str, Any], batch_index: int) -> str:
         meta = encoded.get("meta", [])
@@ -421,28 +434,6 @@ class PV26MultiTaskLoss(nn.Module):
                 "det_source": det_source,
             }
 
-        def _prefix_fallback() -> dict[str, torch.Tensor | str]:
-            fallback = _empty_assignment("prefix_smoke")
-            for batch_index in range(batch_size):
-                if not bool(det_source[batch_index]):
-                    continue
-                valid_indices = torch.nonzero(det_valid[batch_index], as_tuple=False).flatten()
-                if valid_indices.numel() == 0:
-                    continue
-                positive_count = min(int(valid_indices.numel()), int(query_count))
-                positive_indices = valid_indices[:positive_count]
-                fg_mask[batch_index, :positive_count] = True
-                obj_target[batch_index, :positive_count] = 1.0
-                target_gt_idx[batch_index, :positive_count] = positive_indices
-                target_bboxes[batch_index, :positive_count] = det_gt["boxes_xyxy"][batch_index, positive_indices].to(
-                    device=det_pred.device,
-                    dtype=torch.float32,
-                )
-                classes = det_gt["classes"][batch_index, positive_indices].to(device=det_pred.device, dtype=torch.long)
-                target_scores[batch_index, torch.arange(positive_count, device=det_pred.device), classes] = 1.0
-            fallback["target_score_sum"] = target_scores.sum().clamp(min=1.0)
-            return fallback
-
         if not bool(positive_required.any()):
             return _empty_assignment("zero_positive")
 
@@ -468,7 +459,7 @@ class PV26MultiTaskLoss(nn.Module):
             try:
                 # Ultralytics task-aligned assigner is not consistently AMP-safe.
                 # Keep the training graph in the model dtype, but run assigner inputs in float32.
-                _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self.assigner(
+                _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self._run_task_aligned_assigner(
                     cls_logits.detach().to(dtype=torch.float32).sigmoid(),
                     pred_boxes.detach().to(dtype=torch.float32),
                     anchor_points.to(dtype=torch.float32),
@@ -477,10 +468,7 @@ class PV26MultiTaskLoss(nn.Module):
                     mask_gt,
                 )
             except Exception as exc:
-                if not self.allow_test_det_fallback:
-                    raise PV26DetAssignmentUnavailable(f"task_aligned_assigner_failed: {exc}") from exc
-                self._warn_test_det_fallback("task_aligned_assigner_failed")
-                return _prefix_fallback()
+                raise PV26DetAssignmentUnavailable(f"task_aligned_assigner_failed: {exc}") from exc
             assigned_fg = assigned_fg.to(dtype=torch.bool)
             assigned_scores = assigned_scores * det_source[:, None, None].to(dtype=det_pred.dtype)
             assigned_fg = assigned_fg & det_source[:, None]
@@ -516,9 +504,6 @@ class PV26MultiTaskLoss(nn.Module):
             missing.append("task_aligned_assigner_unavailable")
         if not feature_meta_valid:
             missing.append("det_feature_metadata_invalid")
-        if self.allow_test_det_fallback:
-            self._warn_test_det_fallback(", ".join(missing) or "task_aligned_assigner_unavailable")
-            return _prefix_fallback()
         raise PV26DetAssignmentUnavailable(", ".join(missing) or "task_aligned_assigner_unavailable")
 
     def _det_supervision_masks(

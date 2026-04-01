@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-from model.eval import PV26PostprocessConfig, postprocess_pv26_batch
+from model.engine.postprocess import PV26PostprocessConfig, postprocess_pv26_batch
 
 
 def _inverse_softplus(value: float) -> float:

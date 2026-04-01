@@ -5,7 +5,7 @@ from typing import Any
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v4"
+SPEC_VERSION = "pv26-loss-v5"
 
 
 @dataclass(frozen=True)
@@ -18,18 +18,6 @@ class StageSpec:
 
 def build_loss_spec() -> dict[str, Any]:
     stages = [
-        StageSpec(
-            name="stage_0_smoke",
-            objective="shape, target encoder, NaN guard 확인",
-            freeze="none",
-            loss_weights={
-                "det": 1.0,
-                "tl_attr": 0.5,
-                "lane": 1.0,
-                "stop_line": 1.0,
-                "crosswalk": 0.0,
-            },
-        ),
         StageSpec(
             name="stage_1_frozen_trunk_warmup",
             objective="새 head와 loss를 먼저 안정화",

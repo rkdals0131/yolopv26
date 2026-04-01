@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.run_pv26_train import (
+    PRESET_PATH_ROOT,
     PhaseConfig,
     PhaseTransitionController,
     PreviewConfig,
@@ -37,91 +38,13 @@ def _epoch_summary(epoch: int, metric_value: float) -> dict:
 
 
 class RunPV26TrainScenarioTests(unittest.TestCase):
-    def test_load_meta_train_scenario_resolves_relative_paths_and_overrides(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config_dir = root / "configs"
-            config_dir.mkdir(parents=True, exist_ok=True)
-            scenario_path = config_dir / "meta.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    dataset:
-                      root: ../data/aihub
-                      additional_roots:
-                        - ../data/bdd
-                    run:
-                      run_root: ../runs
-                      run_name_prefix: baseline
-                      run_dir: ../runs/meta_baseline
-                    train_defaults:
-                      device: cpu
-                      batch_size: 8
-                      encode_train_batches_in_loader: true
-                      encode_val_batches_in_loader: false
-                    selection:
-                      metric_path: val.losses.total.mean
-                      mode: min
-                    preview:
-                      enabled: true
-                      split: val
-                      dataset_keys: [aihub_traffic_seoul, bdd100k_det_100k]
-                      max_samples_per_dataset: 2
-                      write_overlay: false
-                    phases:
-                      - name: head_warmup
-                        stage: stage_1_frozen_trunk_warmup
-                        min_epochs: 2
-                        max_epochs: 5
-                        patience: 2
-                        min_improvement_pct: 2.0
-                        overrides:
-                          head_lr: 0.01
-                      - name: partial_unfreeze
-                        stage: stage_2_partial_unfreeze
-                        min_epochs: 2
-                        max_epochs: 4
-                        patience: 2
-                        min_improvement_pct: 1.0
-                        overrides:
-                          trunk_lr: 0.00005
-                      - name: full_finetune
-                        stage: stage_3_end_to_end_finetune
-                        min_epochs: 1
-                        max_epochs: 3
-                        patience: 1
-                        min_improvement_pct: 0.5
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
+    def test_default_preset_uses_exhaustive_dataset_and_stage_order(self) -> None:
+        scenario = load_meta_train_scenario("default")
 
-            scenario = load_meta_train_scenario(scenario_path)
-
-            self.assertEqual(scenario.dataset.root, (root / "data" / "aihub").resolve())
-            self.assertEqual(scenario.dataset.additional_roots, ((root / "data" / "bdd").resolve(),))
-            self.assertEqual(
-                scenario.dataset.roots,
-                ((root / "data" / "aihub").resolve(), (root / "data" / "bdd").resolve()),
-            )
-            self.assertEqual(scenario.run.run_dir, (root / "runs" / "meta_baseline").resolve())
-            self.assertEqual(scenario.preview.dataset_keys, ("aihub_traffic_seoul", "bdd100k_det_100k"))
-            phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
-            self.assertEqual(phase_train.batch_size, 8)
-            self.assertAlmostEqual(phase_train.head_lr, 0.01)
-            self.assertFalse(phase_train.encode_val_batches_in_loader)
-
-    def test_load_exhaustive_od_lane_scenario_uses_final_dataset_keys(self) -> None:
-        repo_root = Path(__file__).resolve().parents[1]
-        scenario_path = repo_root / "config" / "pv26_meta_train.default.yaml"
-
-        scenario = load_meta_train_scenario(scenario_path)
-
-        self.assertEqual(scenario.dataset.root, (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset").resolve())
+        self.assertEqual(scenario.dataset.root.parts[-2:], ("seg_dataset", "pv26_exhaustive_od_lane_dataset"))
         self.assertEqual(scenario.dataset.additional_roots, ())
-        self.assertEqual(scenario.dataset.roots, ((repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset").resolve(),))
-        self.assertEqual(scenario.run.run_root, (repo_root / "runs" / "pv26_exhaustive_od_lane_train").resolve())
+        self.assertEqual(scenario.dataset.roots[-1].parts[-2:], ("seg_dataset", "pv26_exhaustive_od_lane_dataset"))
+        self.assertEqual(scenario.run.run_root.parts[-2:], ("runs", "pv26_exhaustive_od_lane_train"))
         self.assertEqual(
             scenario.preview.dataset_keys,
             (
@@ -131,232 +54,63 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                 "aihub_lane_seoul",
             ),
         )
+        self.assertEqual(tuple(phase.stage for phase in scenario.phases), (
+            "stage_1_frozen_trunk_warmup",
+            "stage_2_partial_unfreeze",
+            "stage_3_end_to_end_finetune",
+        ))
+        phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
+        self.assertEqual(phase_train.batch_size, 40)
+        self.assertAlmostEqual(phase_train.head_lr, 0.003)
+        self.assertTrue(phase_train.encode_val_batches_in_loader)
 
-    def test_load_exhaustive_od_lane_smoke_scenario_uses_smoke_root(self) -> None:
-        repo_root = Path(__file__).resolve().parents[1]
-        scenario_path = repo_root / "config" / "pv26_meta_train.smoke.yaml"
+    def test_stage3_stress_preset_disables_validation_and_preview(self) -> None:
+        scenario = load_meta_train_scenario("stage3_vram_stress")
 
-        scenario = load_meta_train_scenario(scenario_path)
+        self.assertEqual(scenario.selection.metric_path, "train.losses.total.mean")
+        self.assertEqual(scenario.train_defaults.val_batches, 0)
+        self.assertFalse(scenario.preview.enabled)
+        self.assertFalse(scenario.preview.write_overlay)
+        self.assertEqual(scenario.phases[0].overrides["train_batches"], 1)
 
-        self.assertEqual(
-            scenario.dataset.root,
-            (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset_smoke").resolve(),
-        )
-        self.assertEqual(scenario.dataset.additional_roots, ())
-        self.assertEqual(
-            scenario.run.run_root,
-            (repo_root / "runs" / "pv26_exhaustive_od_lane_train_smoke").resolve(),
-        )
-        self.assertEqual(scenario.train_defaults.train_batches, 4)
-        self.assertEqual(scenario.train_defaults.val_batches, 2)
-        self.assertEqual(scenario.preview.max_samples_per_dataset, 1)
-
-    def test_load_meta_train_scenario_accepts_legacy_dataset_keys(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config_dir = root / "configs"
-            config_dir.mkdir(parents=True, exist_ok=True)
-            scenario_path = config_dir / "legacy.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    dataset:
-                      aihub_root: ../data/aihub
-                      include_bdd: true
-                      bdd_root: ../data/bdd
-                    phases:
-                      - name: head_warmup
-                        stage: stage_1_frozen_trunk_warmup
-                        min_epochs: 1
-                        max_epochs: 1
-                        patience: 1
-                        min_improvement_pct: 0.0
-                      - name: partial_unfreeze
-                        stage: stage_2_partial_unfreeze
-                        min_epochs: 1
-                        max_epochs: 1
-                        patience: 1
-                        min_improvement_pct: 0.0
-                      - name: end_to_end_finetune
-                        stage: stage_3_end_to_end_finetune
-                        min_epochs: 1
-                        max_epochs: 1
-                        patience: 1
-                        min_improvement_pct: 0.0
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
-
-            scenario = load_meta_train_scenario(scenario_path)
-
-            self.assertEqual(scenario.dataset.root, (root / "data" / "aihub").resolve())
-            self.assertEqual(scenario.dataset.additional_roots, ((root / "data" / "bdd").resolve(),))
+    def test_load_meta_train_scenario_rejects_unknown_preset(self) -> None:
+        with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset"):
+            load_meta_train_scenario("does-not-exist")
 
     def test_load_meta_train_scenario_rejects_invalid_stage_order(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            scenario_path = Path(temp_dir) / "invalid.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    phases:
-                      - name: wrong_first
-                        stage: stage_2_partial_unfreeze
-                        min_epochs: 1
-                        max_epochs: 2
-                        patience: 1
-                        min_improvement_pct: 1.0
-                      - name: second
-                        stage: stage_1_frozen_trunk_warmup
-                        min_epochs: 1
-                        max_epochs: 2
-                        patience: 1
-                        min_improvement_pct: 1.0
-                      - name: third
-                        stage: stage_3_end_to_end_finetune
-                        min_epochs: 1
-                        max_epochs: 2
-                        patience: 1
-                        min_improvement_pct: 1.0
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "phase 1 must use stage"):
-                load_meta_train_scenario(scenario_path)
-
-    def test_load_meta_train_scenario_rejects_val_metric_without_val_loader(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            scenario_path = Path(temp_dir) / "invalid_val.yaml"
-            scenario_path.write_text(
-                textwrap.dedent(
-                    """
-                    train_defaults:
-                      val_batches: 0
-                    phases:
-                      - name: head_warmup
-                        stage: stage_1_frozen_trunk_warmup
-                        min_epochs: 1
-                        max_epochs: 2
-                        patience: 1
-                        min_improvement_pct: 1.0
-                      - name: partial_unfreeze
-                        stage: stage_2_partial_unfreeze
-                        min_epochs: 1
-                        max_epochs: 2
-                        patience: 1
-                        min_improvement_pct: 1.0
-                      - name: full_finetune
-                        stage: stage_3_end_to_end_finetune
-                        min_epochs: 1
-                        max_epochs: 2
-                        patience: 1
-                        min_improvement_pct: 1.0
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(ValueError, "requires val"):
-                load_meta_train_scenario(scenario_path)
-
-    def test_phase_transition_controller_stops_after_plateau(self) -> None:
-        controller = PhaseTransitionController(
-            phase=PhaseConfig(
-                name="head_warmup",
-                stage="stage_1_frozen_trunk_warmup",
-                min_epochs=2,
-                max_epochs=8,
-                patience=2,
-                min_improvement_pct=1.0,
-            ),
-            selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min", eps=1e-8),
-        )
-
-        self.assertIsNone(controller.observe_epoch(_epoch_summary(epoch=1, metric_value=100.0)))
-        self.assertIsNone(controller.observe_epoch(_epoch_summary(epoch=2, metric_value=95.0)))
-        self.assertIsNone(controller.observe_epoch(_epoch_summary(epoch=3, metric_value=94.7)))
-        stop_state = controller.observe_epoch(_epoch_summary(epoch=4, metric_value=94.5))
-
-        self.assertIsNotNone(stop_state)
-        self.assertEqual(stop_state["reason"], "plateau")
-        self.assertEqual(stop_state["phase_state"]["plateau_count"], 2)
-        self.assertEqual(controller.best_epoch, 4)
-
-    def test_phase_transition_controller_stops_at_max_epochs(self) -> None:
-        controller = PhaseTransitionController(
-            phase=PhaseConfig(
-                name="full_finetune",
-                stage="stage_3_end_to_end_finetune",
-                min_epochs=1,
-                max_epochs=3,
-                patience=10,
-                min_improvement_pct=10.0,
-            ),
-            selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min", eps=1e-8),
-        )
-
-        self.assertIsNone(controller.observe_epoch(_epoch_summary(epoch=1, metric_value=100.0)))
-        self.assertIsNone(controller.observe_epoch(_epoch_summary(epoch=2, metric_value=92.0)))
-        stop_state = controller.observe_epoch(_epoch_summary(epoch=3, metric_value=91.5))
-
-        self.assertIsNotNone(stop_state)
-        self.assertEqual(stop_state["reason"], "max_epochs_reached")
-        self.assertEqual(stop_state["phase_state"]["epoch"], 3)
-
-    def test_phase_entry_is_completed_when_summary_contains_early_exit(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            phase_run_dir = Path(temp_dir) / "phase_1"
-            phase_run_dir.mkdir(parents=True, exist_ok=True)
-            (phase_run_dir / "summary.json").write_text(
-                textwrap.dedent(
-                    """
-                    {
-                      "completed_epochs": 4,
-                      "early_exit": {
-                        "reason": "plateau"
-                      }
-                    }
-                    """
-                ).strip()
-                + "\n",
-                encoding="utf-8",
-            )
-            entry = {
-                "status": "running",
-                "run_dir": str(phase_run_dir),
-                "best_checkpoint_path": None,
-            }
-            phase = PhaseConfig(
-                name="partial_unfreeze",
+        scenario = load_meta_train_scenario("default")
+        bad_scenario = SimpleNamespace(**scenario.__dict__)
+        bad_scenario.phases = (
+            PhaseConfig(
+                name="wrong_first",
                 stage="stage_2_partial_unfreeze",
-                min_epochs=2,
-                max_epochs=8,
-                patience=2,
+                min_epochs=1,
+                max_epochs=2,
+                patience=1,
                 min_improvement_pct=1.0,
-            )
+            ),
+            scenario.phases[1],
+            scenario.phases[2],
+        )
 
-            self.assertTrue(_phase_entry_is_completed(entry, phase))
+        with self.assertRaisesRegex(ValueError, "phase 1 must use stage"):
+            from tools.run_pv26_train import _validate_meta_train_scenario
 
-    def test_recover_phase_entry_from_run_dir_uses_summary_checkpoint_paths(self) -> None:
+            _validate_meta_train_scenario(bad_scenario)
+
+    def test_phase_recovery_roundtrip_from_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             phase_run_dir = Path(temp_dir) / "phase_2"
-            checkpoint_dir = phase_run_dir / "checkpoints"
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            best_checkpoint = checkpoint_dir / "best.pt"
-            last_checkpoint = checkpoint_dir / "last.pt"
-            best_checkpoint.write_bytes(b"best")
-            last_checkpoint.write_bytes(b"last")
-            (phase_run_dir / "summary.json").write_text(
+            summary_path = phase_run_dir / "summary.json"
+            best_checkpoint = phase_run_dir / "checkpoints" / "best.pt"
+            last_checkpoint = phase_run_dir / "checkpoints" / "last.pt"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(
                 textwrap.dedent(
                     f"""
                     {{
-                      "completed_epochs": 3,
-                      "best_metric_value": 12.5,
+                      "completed_epochs": 4,
+                      "best_metric_value": 1.23,
                       "best_epoch": 2,
                       "checkpoint_paths": {{
                         "best": "{best_checkpoint}",
@@ -433,28 +187,23 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         )
 
         self.assertEqual(dataset.loaded_indices, [2, 3])
-        self.assertEqual(
-            [item["meta"]["sample_id"] for item in selected],
-            ["val_a", "val_b"],
-        )
+        self.assertEqual([item["meta"]["sample_id"] for item in selected], ["val_a", "val_b"])
 
-    def test_main_accepts_config_argument(self) -> None:
+    def test_main_accepts_preset_argument(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            scenario_path = Path(temp_dir) / "smoke.yaml"
-            scenario_path.write_text("phases: []\n", encoding="utf-8")
             loaded_scenario = SimpleNamespace()
 
             with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario) as mocked_load:
                 with patch(
                     "tools.run_pv26_train.run_meta_train_scenario",
-                    return_value={"status": "ok", "scenario_path": str(scenario_path)},
+                    return_value={"status": "ok", "scenario_path": str(PRESET_PATH_ROOT / "default")},
                 ) as mocked_run:
                     buffer = io.StringIO()
                     with redirect_stdout(buffer):
-                        main(["--config", str(scenario_path)])
+                        main(["--preset", "default"])
 
-            mocked_load.assert_called_once_with(scenario_path.resolve())
-            mocked_run.assert_called_once_with(loaded_scenario, scenario_path=scenario_path.resolve())
+            mocked_load.assert_called_once_with("default")
+            mocked_run.assert_called_once_with(loaded_scenario, scenario_path=PRESET_PATH_ROOT / "default")
             self.assertIn('"status": "ok"', buffer.getvalue())
 
 

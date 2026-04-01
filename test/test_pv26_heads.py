@@ -7,7 +7,7 @@ import torch
 
 class PV26HeadsTests(unittest.TestCase):
     def test_heads_produce_documented_output_shapes(self) -> None:
-        from model.heads import PV26Heads
+        from model.net import PV26Heads
 
         heads = PV26Heads(in_channels=(64, 128, 256))
         features = [
@@ -27,7 +27,7 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(outputs["det_feature_strides"], [8, 16, 32])
 
     def test_heads_expose_feature_contract_metadata(self) -> None:
-        from model.heads import PV26Heads
+        from model.net import PV26Heads
 
         heads = PV26Heads(in_channels=(64, 128, 256))
         summary = heads.describe()
@@ -41,7 +41,7 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(summary["crosswalk_queries"], 4)
 
     def test_heads_reject_wrong_feature_count(self) -> None:
-        from model.heads import PV26Heads
+        from model.net import PV26Heads
 
         heads = PV26Heads(in_channels=(64, 128, 256))
         with self.assertRaisesRegex(ValueError, "3 feature maps"):

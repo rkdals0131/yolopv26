@@ -9,7 +9,7 @@ from unittest import mock
 import torch
 import torch.nn as nn
 
-from model.loss.spec import build_loss_spec
+from model.engine.loss import build_loss_spec
 from runtime_support import has_yolo26_runtime
 
 
@@ -139,7 +139,7 @@ class _OOMCriterion(nn.Module):
 class _AssignmentFailureCriterion(nn.Module):
     def forward(self, predictions, encoded):  # type: ignore[override]
         del predictions, encoded
-        from model.loss import PV26DetAssignmentUnavailable
+        from model.engine.loss import PV26DetAssignmentUnavailable
 
         raise PV26DetAssignmentUnavailable("det_feature_metadata_invalid")
 
@@ -178,6 +178,10 @@ class _FiniteCriterion(nn.Module):
         }
 
 
+def _dummy_optimizer() -> torch.optim.Optimizer:
+    return torch.optim.SGD([nn.Parameter(torch.tensor(0.0, requires_grad=True))], lr=1e-3)
+
+
 class _FakeSummaryWriter:
     def __init__(self, log_dir: str) -> None:
         self.log_dir = log_dir
@@ -201,7 +205,7 @@ class _FakeSummaryWriter:
 
 class PV26TrainerTests(unittest.TestCase):
     def test_format_train_progress_log_includes_phase_epoch_and_multiline_groups(self) -> None:
-        from model.training.pv26_trainer import _format_train_progress_log
+        from model.engine.trainer import _format_train_progress_log
 
         message = _format_train_progress_log(
             stage="stage_2_partial_unfreeze",
@@ -245,7 +249,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  timing_ms: ", message)
 
     def test_tensorboard_train_step_payload_keeps_only_core_scalars(self) -> None:
-        from model.training import pv26_trainer
+        import model.engine.trainer as pv26_trainer
 
         summary = {
             "successful": True,
@@ -294,7 +298,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertNotIn("train_step/det_components/det_obj_loss", scalar_names)
 
     def test_tensorboard_epoch_payload_keeps_named_lr_loss_and_val_metrics_only(self) -> None:
-        from model.training import pv26_trainer
+        import model.engine.trainer as pv26_trainer
 
         epoch_summary = {
             "train": {
@@ -336,7 +340,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertNotIn("epoch/val/duration_sec", scalar_names)
 
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
-        from model.training import configure_pv26_train_stage
+        from model.engine.trainer import configure_pv26_train_stage
 
         adapter = _DummyAdapter()
         heads = nn.Sequential(nn.Linear(8, 8), nn.Linear(8, 4))
@@ -358,20 +362,19 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_with_real_runtime_returns_finite_losses(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         adapter = build_yolo26n_trunk()
         heads = PV26Heads(in_channels=(64, 128, 256))
-        trainer = PV26Trainer(adapter, heads, stage="stage_0_smoke")
+        trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup")
 
         summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=9975))
 
         self.assertEqual(summary["global_step"], 1)
         self.assertEqual(summary["batch_size"], 1)
         self.assertTrue(summary["successful"])
-        self.assertIn("trunk", summary["optimizer_lrs"])
         self.assertIn("heads", summary["optimizer_lrs"])
         self.assertGreater(summary["losses"]["total"], 0.0)
         self.assertTrue(torch.isfinite(torch.tensor(summary["losses"]["total"])))
@@ -386,10 +389,10 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_trainer_checkpoint_and_history_roundtrip(self) -> None:
-        from model.heads import PV26Heads
-        from model.loss import PV26MultiTaskLoss
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         adapter = build_yolo26n_trunk()
         heads = PV26Heads(in_channels=(64, 128, 256))
@@ -412,7 +415,7 @@ class PV26TrainerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             history_path = trainer.save_history_jsonl(root / "history.jsonl")
-            checkpoint_path = trainer.save_checkpoint(root / "checkpoints" / "trainer.pt", extra_state={"tag": "smoke"})
+            checkpoint_path = trainer.save_checkpoint(root / "checkpoints" / "trainer.pt", extra_state={"tag": "regression"})
 
             history_lines = history_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(history_lines), 2)
@@ -421,41 +424,40 @@ class PV26TrainerTests(unittest.TestCase):
             reloaded_trainer = PV26Trainer(
                 build_yolo26n_trunk(),
                 PV26Heads(in_channels=(64, 128, 256)),
-                stage="stage_0_smoke",
+                stage="stage_1_frozen_trunk_warmup",
             )
             checkpoint = reloaded_trainer.load_checkpoint(checkpoint_path, map_location="cpu")
 
             self.assertEqual(reloaded_trainer.stage, "stage_1_frozen_trunk_warmup")
             self.assertEqual(reloaded_trainer.global_step, 2)
             self.assertEqual(len(reloaded_trainer.history), 2)
-            self.assertEqual(checkpoint["extra_state"]["tag"], "smoke")
+            self.assertEqual(checkpoint["extra_state"]["tag"], "regression")
             self.assertEqual(
                 reloaded_trainer.stage_summary["trainable_head_params"],
                 trainer.stage_summary["trainable_head_params"],
             )
             self.assertEqual(checkpoint["criterion_config"]["stage"], "stage_1_frozen_trunk_warmup")
             self.assertAlmostEqual(float(reloaded_trainer.criterion.det_cls_negative_weight), 0.2)
-            self.assertFalse(bool(reloaded_trainer.criterion.allow_test_det_fallback))
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         adapter = build_yolo26n_trunk()
         heads = PV26Heads(in_channels=(64, 128, 256))
-        trainer = PV26Trainer(adapter, heads, stage="stage_0_smoke")
+        trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup")
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "fit_smoke"
+            run_dir = Path(temp_dir) / "fit_regression"
             summary = trainer.fit(
                 [batch, batch],
                 epochs=1,
                 val_loader=[batch],
                 run_dir=run_dir,
-                run_manifest_extra={"tag": "fit_smoke"},
+                run_manifest_extra={"tag": "fit_regression"},
             )
 
             self.assertEqual(summary["completed_epochs"], 1)
@@ -491,7 +493,7 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertIn("timing_profile", summary_payload["last_epoch"]["train"])
             self.assertIn("det_components", summary_payload["last_epoch"]["train"])
             manifest_payload = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest_payload["extra"]["tag"], "fit_smoke")
+            self.assertEqual(manifest_payload["extra"]["tag"], "fit_regression")
             self.assertEqual(manifest_payload["artifacts"]["summary"], str(run_dir / "summary.json"))
             self.assertEqual(manifest_payload["trainer"]["log_every_n_steps"], 1)
             self.assertEqual(manifest_payload["trainer"]["profile_window"], 20)
@@ -499,15 +501,16 @@ class PV26TrainerTests(unittest.TestCase):
                 self.assertTrue(any((run_dir / "tensorboard").glob("events.out.tfevents.*")))
 
     def test_validate_epoch_aggregates_metrics_from_encoded_eval_batches(self) -> None:
-        from model.encoding import encode_pv26_batch
-        from model.training import PV26Trainer
+        from model.data import encode_pv26_batch
+        from model.engine.trainer import PV26Trainer
         from test_pv26_eval_metrics import make_prediction_bundle, make_raw_sample_batch
 
         trainer = PV26Trainer(
             _DummyAdapter(),
             nn.Identity(),
             criterion=_FiniteCriterion(),
-            stage="stage_0_smoke",
+            stage="stage_1_frozen_trunk_warmup",
+            optimizer=_dummy_optimizer(),
         )
         raw_batch = make_raw_sample_batch()
         encoded_batch = encode_pv26_batch(raw_batch)
@@ -535,14 +538,14 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_supports_grad_accumulation(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         trainer = PV26Trainer(
             build_yolo26n_trunk(),
             PV26Heads(in_channels=(64, 128, 256)),
-            stage="stage_0_smoke",
+            stage="stage_1_frozen_trunk_warmup",
             accumulate_steps=2,
             grad_clip_norm=1.0,
         )
@@ -562,9 +565,9 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         trainer = PV26Trainer(
             build_yolo26n_trunk(),
@@ -582,9 +585,9 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_recovers_from_oom_guard(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         trainer = PV26Trainer(
             build_yolo26n_trunk(),
@@ -601,13 +604,14 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(trainer.skipped_steps, 1)
 
     def test_train_step_skips_assignment_failure_without_advancing_counters(self) -> None:
-        from model.training import PV26Trainer
+        from model.engine.trainer import PV26Trainer
 
         trainer = PV26Trainer(
             _DummyAdapter(),
             nn.Identity(),
             criterion=_AssignmentFailureCriterion(),
             accumulate_steps=2,
+            optimizer=_dummy_optimizer(),
         )
         trainer.forward_encoded_batch = lambda encoded: {  # type: ignore[method-assign]
             "det": torch.zeros((1, 2, 12), requires_grad=True),
@@ -628,9 +632,9 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("det_feature_metadata_invalid", summary["skipped_reason_detail"])
 
     def test_train_epoch_aggregates_only_successful_batches(self) -> None:
-        from model.training import PV26Trainer
+        from model.engine.trainer import PV26Trainer
 
-        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0))
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0), optimizer=_dummy_optimizer())
 
         outcomes = iter(
             [
@@ -713,12 +717,12 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["source_counts"]["det_source_samples"], 1)
 
     def test_build_evaluator_clones_pv26_criterion_config(self) -> None:
-        from model.eval import PV26Evaluator
-        from model.loss import PV26MultiTaskLoss
-        from model.training import PV26Trainer
+        from model.engine.evaluator import PV26Evaluator
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.engine.trainer import PV26Trainer
 
-        criterion = PV26MultiTaskLoss(stage="stage_0_smoke", det_cls_negative_weight=0.2)
-        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=criterion)
+        criterion = PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup", det_cls_negative_weight=0.2)
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=criterion, optimizer=_dummy_optimizer())
 
         evaluator = trainer.build_evaluator()
 
@@ -727,9 +731,9 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(evaluator.criterion.export_config(), trainer.criterion.export_config())
 
     def test_train_epoch_fails_when_every_batch_is_skipped(self) -> None:
-        from model.training import PV26Trainer
+        from model.engine.trainer import PV26Trainer
 
-        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0))
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0), optimizer=_dummy_optimizer())
         trainer.train_step = lambda batch, **kwargs: {  # type: ignore[method-assign]
             "history_index": 1,
             "global_step": 0,
@@ -770,19 +774,19 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
 
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "resume_fit"
 
-            trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+            trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
             first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir)
             self.assertEqual(first["completed_epochs"], 1)
 
-            resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+            resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
             second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True)
 
             self.assertTrue(second["auto_resumed"])
@@ -792,10 +796,10 @@ class PV26TrainerTests(unittest.TestCase):
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_purges_stale_tensorboard_steps_and_continues_step_index(self) -> None:
-        from model.heads import PV26Heads
-        from model.training import PV26Trainer
-        from model.trunk import build_yolo26n_trunk
-        from model.training import pv26_trainer
+        from model.net import PV26Heads
+        from model.engine.trainer import PV26Trainer
+        from model.net import build_yolo26n_trunk
+        import model.engine.trainer as pv26_trainer
 
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
         writer_calls: list[tuple[Path, int | None, _FakeSummaryWriter]] = []
@@ -814,10 +818,10 @@ class PV26TrainerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "resume_fit_tb"
             with mock.patch.object(pv26_trainer, "_maybe_build_summary_writer", side_effect=_fake_build_summary_writer):
-                trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+                trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
                 first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, enable_tensorboard=True)
 
-                resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_0_smoke")
+                resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
                 second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True, enable_tensorboard=True)
 
         self.assertEqual(first["completed_epochs"], 1)
