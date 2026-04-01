@@ -15,6 +15,7 @@ from tools.run_pv26_train import (
     PhaseTransitionController,
     PreviewConfig,
     SelectionConfig,
+    _configure_torch_multiprocessing,
     _phase_entry_is_completed,
     _recover_phase_entry_from_run_dir,
     _sample_preview_selection,
@@ -205,6 +206,20 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             mocked_load.assert_called_once_with("default")
             mocked_run.assert_called_once_with(loaded_scenario, scenario_path=PRESET_PATH_ROOT / "default")
             self.assertIn('"status": "ok"', buffer.getvalue())
+
+    def test_configure_torch_multiprocessing_uses_file_system_sharing(self) -> None:
+        mock_torch = SimpleNamespace(
+            multiprocessing=SimpleNamespace(
+                get_sharing_strategy=lambda: "file_descriptor",
+                set_sharing_strategy=lambda strategy: setattr(self, "_sharing_strategy", strategy),
+            )
+        )
+
+        with patch.dict("sys.modules", {"torch": mock_torch}):
+            self._sharing_strategy = None
+            _configure_torch_multiprocessing()
+
+        self.assertEqual(self._sharing_strategy, "file_system")
 
 
 if __name__ == "__main__":

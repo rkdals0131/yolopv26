@@ -680,8 +680,8 @@ def _configure_torch_multiprocessing() -> None:
     try:
         import torch
 
-        if torch.multiprocessing.get_sharing_strategy() != "file_descriptor":
-            torch.multiprocessing.set_sharing_strategy("file_descriptor")
+        if torch.multiprocessing.get_sharing_strategy() != "file_system":
+            torch.multiprocessing.set_sharing_strategy("file_system")
     except RuntimeError:
         pass
 

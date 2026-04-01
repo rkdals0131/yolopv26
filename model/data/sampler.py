@@ -203,7 +203,7 @@ def build_pv26_train_dataloader(
         "batch_sampler": sampler,
         "num_workers": num_workers,
         "pin_memory": pin_memory,
-        "collate_fn": collate_pv26_encoded_eval_batch if encode_batches else collate_pv26_samples,
+        "collate_fn": collate_pv26_encoded_batch if encode_batches else collate_pv26_samples,
     }
     if num_workers > 0:
         loader_kwargs["persistent_workers"] = bool(persistent_workers)
