@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import shutil
+import time
 from typing import Any
 
 import yaml
 
 from model.preprocess.aihub_standardize import OD_CLASSES
+
+
+def _default_io_workers() -> int:
+    return max(1, min(8, os.cpu_count() or 1))
 
 
 def _resolve_latest_root(root: Path) -> Path:
@@ -124,22 +131,59 @@ def _build_final_scene(
     return final_scene
 
 
+def _finalize_sample_task(
+    *,
+    scene_output_path: Path,
+    final_scene: dict[str, Any],
+    det_source_path: Path | None,
+    det_output_path: Path,
+    source_image_path: Path,
+    image_output_path: Path,
+    copy_images: bool,
+    final_sample_id: str,
+    source_kind: str,
+    dataset_key: str,
+    split: str,
+) -> dict[str, Any]:
+    _write_json(scene_output_path, final_scene)
+    has_det = False
+    if det_source_path is not None:
+        has_det = _copy_optional(det_source_path, det_output_path)
+    _link_or_copy(source_image_path, image_output_path, copy_images=copy_images)
+    return {
+        "final_sample_id": final_sample_id,
+        "source_kind": source_kind,
+        "source_dataset_key": dataset_key,
+        "split": split,
+        "scene_path": str(scene_output_path),
+        "det_path": str(det_output_path) if has_det else None,
+        "image_path": str(image_output_path),
+    }
+
+
 def build_pv26_exhaustive_od_lane_dataset(
     *,
     exhaustive_od_root: Path,
     aihub_canonical_root: Path,
     output_root: Path,
     copy_images: bool = False,
+    log_fn: Any | None = None,
 ) -> dict[str, Any]:
     resolved_exhaustive_root = _resolve_latest_root(exhaustive_od_root)
     resolved_aihub_root = aihub_canonical_root.resolve()
     resolved_output_root = output_root.resolve()
     resolved_output_root.mkdir(parents=True, exist_ok=True)
 
-    copied_samples = 0
     dataset_counts = Counter()
     sample_rows: list[dict[str, Any]] = []
     seen_final_sample_ids: dict[str, dict[str, str]] = {}
+    exhaustive_tasks: list[dict[str, Any]] = []
+    lane_tasks: list[dict[str, Any]] = []
+
+    if log_fn is not None:
+        log_fn(f"finalize output_root={resolved_output_root}")
+        log_fn(f"finalize exhaustive_od_root={resolved_exhaustive_root}")
+        log_fn(f"finalize aihub_canonical_root={resolved_aihub_root}")
 
     for scene_path in sorted((resolved_exhaustive_root / "labels_scene").rglob("*.json")):
         scene = _load_scene(scene_path)
@@ -171,20 +215,19 @@ def build_pv26_exhaustive_od_lane_dataset(
             original_image_name=image_name,
             final_image_name=final_image_name,
         )
-        _write_json(scene_output_path, final_scene)
-        _copy_json(resolved_exhaustive_root / "labels_det" / split / f"{final_sample_id}.txt", det_output_path)
-        _link_or_copy(source_image_path, image_output_path, copy_images=copy_images)
-        copied_samples += 1
-        dataset_counts[dataset_key] += 1
-        sample_rows.append(
+        exhaustive_tasks.append(
             {
+                "scene_output_path": scene_output_path,
+                "final_scene": final_scene,
+                "det_source_path": resolved_exhaustive_root / "labels_det" / split / f"{final_sample_id}.txt",
+                "det_output_path": det_output_path,
+                "source_image_path": source_image_path,
+                "image_output_path": image_output_path,
+                "copy_images": copy_images,
                 "final_sample_id": final_sample_id,
                 "source_kind": "exhaustive_od",
-                "source_dataset_key": dataset_key,
+                "dataset_key": dataset_key,
                 "split": split,
-                "scene_path": str(scene_output_path),
-                "det_path": str(det_output_path),
-                "image_path": str(image_output_path),
             }
         )
 
@@ -214,22 +257,56 @@ def build_pv26_exhaustive_od_lane_dataset(
             original_image_name=image_name,
             final_image_name=final_image_name,
         )
-        _write_json(scene_output_path, final_scene)
-        has_det = _copy_optional(resolved_aihub_root / "labels_det" / split / f"{final_sample_id}.txt", det_output_path)
-        _link_or_copy(source_image_path, image_output_path, copy_images=copy_images)
-        copied_samples += 1
-        dataset_counts[dataset_key] += 1
-        sample_rows.append(
+        lane_tasks.append(
             {
+                "scene_output_path": scene_output_path,
+                "final_scene": final_scene,
+                "det_source_path": resolved_aihub_root / "labels_det" / split / f"{final_sample_id}.txt",
+                "det_output_path": det_output_path,
+                "source_image_path": source_image_path,
+                "image_output_path": image_output_path,
+                "copy_images": copy_images,
                 "final_sample_id": final_sample_id,
                 "source_kind": "lane",
-                "source_dataset_key": dataset_key,
+                "dataset_key": dataset_key,
                 "split": split,
-                "scene_path": str(scene_output_path),
-                "det_path": str(det_output_path) if has_det else None,
-                "image_path": str(image_output_path),
             }
         )
+
+    workers = _default_io_workers()
+
+    def _run_tasks(tasks: list[dict[str, Any]], *, stage_name: str) -> None:
+        if not tasks:
+            return
+        start_time = time.monotonic()
+        completed = 0
+        log_every = max(250, workers * 50)
+        stage_rows: list[dict[str, Any]] = []
+        if log_fn is not None:
+            log_fn(f"finalize {stage_name} start samples={len(tasks)} workers={workers}")
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"finalize_{stage_name}") as executor:
+            futures = [executor.submit(_finalize_sample_task, **task) for task in tasks]
+            for future in as_completed(futures):
+                row = future.result()
+                stage_rows.append(row)
+                dataset_counts[str(row["source_dataset_key"])] += 1
+                completed += 1
+                if (
+                    log_fn is not None
+                    and (completed == len(tasks) or completed == 1 or completed % log_every == 0)
+                ):
+                    elapsed = max(time.monotonic() - start_time, 1e-6)
+                    rate = completed / elapsed
+                    log_fn(
+                        f"finalize {stage_name} progress {completed}/{len(tasks)} "
+                        f"samples ({rate:.1f} samples/s)"
+                    )
+        stage_rows.sort(key=lambda row: str(row["final_sample_id"]))
+        sample_rows.extend(stage_rows)
+
+    _run_tasks(exhaustive_tasks, stage_name="exhaustive_od")
+    _run_tasks(lane_tasks, stage_name="lane")
+    copied_samples = len(sample_rows)
 
     meta_root = resolved_output_root / "meta"
     meta_root.mkdir(parents=True, exist_ok=True)

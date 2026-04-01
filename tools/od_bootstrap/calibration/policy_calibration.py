@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from datetime import datetime
+from contextlib import nullcontext
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,10 @@ from tools.od_bootstrap.sweep.scenario import ClassPolicy
 from .scenario import CalibrationScenario, CalibrationTeacherConfig, HardNegativeConfig
 
 
+def _log_calibration(message: str) -> None:
+    print(f"[od_bootstrap.calibration] {message}", flush=True)
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -28,13 +33,6 @@ def _now_iso() -> str:
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")
-    return path
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = "\n".join(json.dumps(row, ensure_ascii=True) for row in rows)
-    path.write_text((serialized + "\n") if serialized else "", encoding="utf-8")
     return path
 
 
@@ -173,54 +171,63 @@ def _load_ground_truth_by_class(
     return ground_truth
 
 
-def _extract_prediction_rows(
+def _append_prediction_rows(
     *,
     teacher: CalibrationTeacherConfig,
-    results: list[Any],
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    rows: list[dict[str, Any]] = []
-    samples: dict[str, dict[str, Any]] = {}
-    for result in results:
-        image_path = Path(str(getattr(result, "path", ""))).resolve()
-        sample_id = image_path.stem
-        sample_key = str(image_path)
-        width, height = _coerce_shape(result)
-        sample_record = samples.setdefault(
-            sample_key,
-            {
-                "sample_id": sample_id,
-                "image_path": str(image_path),
-                "width": width,
-                "height": height,
-            },
+    result: Any,
+    samples: dict[str, dict[str, Any]],
+    prediction_stream: Any | None = None,
+) -> int:
+    image_path = Path(str(getattr(result, "path", ""))).resolve()
+    sample_id = image_path.stem
+    sample_key = str(image_path)
+    width, height = _coerce_shape(result)
+    sample_record = samples.setdefault(
+        sample_key,
+        {
+            "sample_id": sample_id,
+            "image_path": str(image_path),
+            "width": width,
+            "height": height,
+            "predictions": [],
+            "raw_prediction_count": 0,
+        },
+    )
+    names = getattr(result, "names", {}) or {}
+    boxes = getattr(result, "boxes", None)
+    if boxes is None:
+        return 0
+    xyxy_rows = torch.as_tensor(getattr(boxes, "xyxy", None)).tolist()
+    cls_rows = torch.as_tensor(getattr(boxes, "cls", None)).tolist()
+    conf_rows = torch.as_tensor(getattr(boxes, "conf", None)).tolist()
+    appended = 0
+    for box_index, (box, cls_index, confidence) in enumerate(zip(xyxy_rows, cls_rows, conf_rows)):
+        class_name = str(
+            names.get(
+                int(cls_index),
+                teacher.classes[int(cls_index)] if int(cls_index) < len(teacher.classes) else int(cls_index),
+            )
         )
-        names = getattr(result, "names", {}) or {}
-        boxes = getattr(result, "boxes", None)
-        if boxes is None:
+        if class_name not in teacher.classes:
             continue
-        xyxy_rows = torch.as_tensor(getattr(boxes, "xyxy", None)).tolist()
-        cls_rows = torch.as_tensor(getattr(boxes, "cls", None)).tolist()
-        conf_rows = torch.as_tensor(getattr(boxes, "conf", None)).tolist()
-        for box_index, (box, cls_index, confidence) in enumerate(zip(xyxy_rows, cls_rows, conf_rows)):
-            class_name = str(names.get(int(cls_index), teacher.classes[int(cls_index)] if int(cls_index) < len(teacher.classes) else int(cls_index)))
-            if class_name not in teacher.classes:
-                continue
-            row = {
-                "teacher_name": teacher.name,
-                "model_version": teacher.model_version,
-                "sample_id": sample_id,
-                "image_path": str(image_path),
-                "width": width,
-                "height": height,
-                "class_name": class_name,
-                "confidence": float(confidence),
-                "xyxy": [float(value) for value in box],
-                "box_index": box_index,
-            }
-            rows.append(row)
-        sample_record["predictions"] = [row for row in rows if row["image_path"] == str(image_path)]
-        sample_record["raw_prediction_count"] = len(sample_record["predictions"])
-    return rows, samples
+        row = {
+            "teacher_name": teacher.name,
+            "model_version": teacher.model_version,
+            "sample_id": sample_id,
+            "image_path": str(image_path),
+            "width": width,
+            "height": height,
+            "class_name": class_name,
+            "confidence": float(confidence),
+            "xyxy": [float(value) for value in box],
+            "box_index": box_index,
+        }
+        sample_record["predictions"].append(row)
+        appended += 1
+        if prediction_stream is not None:
+            prediction_stream.write(json.dumps(row, ensure_ascii=True) + "\n")
+    sample_record["raw_prediction_count"] = len(sample_record["predictions"])
+    return appended
 
 
 def _run_teacher_predictions_for_images(
@@ -228,51 +235,65 @@ def _run_teacher_predictions_for_images(
     teacher: CalibrationTeacherConfig,
     scenario: CalibrationScenario,
     image_paths: list[Path],
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    predictions_path: Path | None = None,
+    log_fn: Any | None = None,
+) -> tuple[int, dict[str, dict[str, Any]]]:
     if YOLO is None:  # pragma: no cover
         raise RuntimeError("ultralytics is not installed")
     if not teacher.checkpoint_path.is_file():
         raise FileNotFoundError(f"teacher checkpoint not found: {teacher.checkpoint_path}")
     model = YOLO(str(teacher.checkpoint_path))
-    results: list[Any] = []
     ordered_images = sorted({path.resolve() for path in image_paths})
-    for batch_start in range(0, len(ordered_images), max(1, int(scenario.run.batch_size))):
-        batch = ordered_images[batch_start : batch_start + max(1, int(scenario.run.batch_size))]
-        results.extend(
-            list(
-                model.predict(
-                    source=[str(path) for path in batch],
-                    imgsz=scenario.run.imgsz,
-                    device=scenario.run.device,
-                    conf=scenario.run.predict_conf,
-                    iou=scenario.run.predict_iou,
-                    verbose=False,
-                    save=False,
-                    stream=False,
-                )
-            )
-        )
-    return _extract_prediction_rows(teacher=teacher, results=results)
-
-
-def _run_teacher_predictions(
-    *,
-    teacher: CalibrationTeacherConfig,
-    scenario: CalibrationScenario,
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    rows, samples = _run_teacher_predictions_for_images(
-        teacher=teacher,
-        scenario=scenario,
-        image_paths=_collect_sample_images(teacher),
+    batch_size = max(1, int(scenario.run.batch_size))
+    total_images = len(ordered_images)
+    samples: dict[str, dict[str, Any]] = {}
+    prediction_count = 0
+    processed_images = 0
+    last_logged = 0
+    log_every_images = max(batch_size * 50, 500)
+    if log_fn is not None:
+        log_fn(f"teacher={teacher.name} predict start images={total_images} batch={batch_size}")
+    stream_context = (
+        predictions_path.open("w", encoding="utf-8")
+        if predictions_path is not None
+        else nullcontext(None)
     )
-    for sample in samples.values():
-        sample["ground_truth"] = _load_ground_truth_by_class(
-            teacher,
-            sample_id=str(sample["sample_id"]),
-            width=int(sample["width"]),
-            height=int(sample["height"]),
-        )
-    return rows, samples
+    with stream_context as prediction_stream:
+        for batch_start in range(0, total_images, batch_size):
+            batch = ordered_images[batch_start : batch_start + batch_size]
+            batch_prediction_count = 0
+            for result in model.predict(
+                source=[str(path) for path in batch],
+                imgsz=scenario.run.imgsz,
+                device=scenario.run.device,
+                conf=scenario.run.predict_conf,
+                iou=scenario.run.predict_iou,
+                verbose=False,
+                save=False,
+                stream=True,
+            ):
+                batch_prediction_count += _append_prediction_rows(
+                    teacher=teacher,
+                    result=result,
+                    samples=samples,
+                    prediction_stream=prediction_stream,
+                )
+            processed_images += len(batch)
+            prediction_count += batch_prediction_count
+            if (
+                log_fn is not None
+                and (
+                    processed_images == total_images
+                    or processed_images == len(batch)
+                    or processed_images - last_logged >= log_every_images
+                )
+            ):
+                last_logged = processed_images
+                log_fn(
+                    f"teacher={teacher.name} predict progress {processed_images}/{total_images} "
+                    f"images predictions={prediction_count}"
+                )
+    return prediction_count, samples
 
 
 def _collect_hard_negative_samples_by_class(
@@ -303,15 +324,16 @@ def _collect_hard_negative_samples_by_class(
                 for image_path in manifest_by_class_and_image[class_name]
             }
         )
-        rows, predicted_samples = _run_teacher_predictions_for_images(
+        if teacher_image_paths:
+            _log_calibration(
+                f"teacher={teacher.name} hard-negative replay images={len(teacher_image_paths)} classes={teacher_classes}"
+            )
+        _, predicted_samples = _run_teacher_predictions_for_images(
             teacher=teacher,
             scenario=scenario,
             image_paths=teacher_image_paths,
+            log_fn=_log_calibration,
         )
-        predictions_by_image = {
-            str(sample["image_path"]): [row for row in rows if row["image_path"] == str(sample["image_path"])]
-            for sample in predicted_samples.values()
-        }
         for class_name in teacher_classes:
             class_samples: dict[str, dict[str, Any]] = {}
             for image_path, manifest_entry in manifest_by_class_and_image[class_name].items():
@@ -321,7 +343,7 @@ def _collect_hard_negative_samples_by_class(
                 class_samples[image_path] = {
                     **sample,
                     "dataset_key": str(manifest_entry.get("dataset_key") or teacher.dataset.source_dataset_key),
-                    "predictions": list(predictions_by_image.get(image_path, [])),
+                    "predictions": list(sample.get("predictions", [])),
                 }
             samples_by_class[class_name] = class_samples
     return manifest, samples_by_class
@@ -551,11 +573,29 @@ def calibrate_class_policy_scenario(
     samples_by_teacher: dict[str, dict[str, dict[str, Any]]] = {}
     teacher_by_class: dict[str, CalibrationTeacherConfig] = {}
     policy_template = dict(scenario.policy_template or _build_default_policy_template(scenario))
+    _log_calibration(f"scenario={scenario_path}")
+    _log_calibration(f"output_root={output_root}")
 
     for teacher in scenario.teachers:
-        rows, samples = _run_teacher_predictions(teacher=teacher, scenario=scenario)
         teacher_dir = output_root / "teachers" / teacher.name
-        predictions_path = _write_jsonl(teacher_dir / "predictions.jsonl", rows)
+        teacher_dir.mkdir(parents=True, exist_ok=True)
+        predictions_path = teacher_dir / "predictions.jsonl"
+        _log_calibration(f"teacher={teacher.name} calibration start checkpoint={teacher.checkpoint_path}")
+        prediction_count, samples = _run_teacher_predictions_for_images(
+            teacher=teacher,
+            scenario=scenario,
+            image_paths=_collect_sample_images(teacher),
+            predictions_path=predictions_path,
+            log_fn=_log_calibration,
+        )
+        _log_calibration(f"teacher={teacher.name} loading ground truth for {len(samples)} samples")
+        for sample in samples.values():
+            sample["ground_truth"] = _load_ground_truth_by_class(
+                teacher,
+                sample_id=str(sample["sample_id"]),
+                width=int(sample["width"]),
+                height=int(sample["height"]),
+            )
         teacher_summary = {
             "teacher_name": teacher.name,
             "model_version": teacher.model_version,
@@ -563,16 +603,21 @@ def calibrate_class_policy_scenario(
             "dataset_root": str(teacher.dataset.root),
             "split": teacher.dataset.split,
             "sample_count": len(samples),
-            "prediction_count": len(rows),
+            "prediction_count": int(prediction_count),
             "predictions_path": str(predictions_path),
         }
         _write_json(teacher_dir / "summary.json", teacher_summary)
         teacher_summaries.append(teacher_summary)
         samples_by_teacher[teacher.name] = samples
+        _log_calibration(
+            f"teacher={teacher.name} calibration ready samples={len(samples)} predictions={prediction_count}"
+        )
         for class_name in teacher.classes:
             teacher_by_class[class_name] = teacher
 
     hard_negative_config = _resolve_hard_negative_config(scenario)
+    if hard_negative_config.manifest_path is not None:
+        _log_calibration(f"hard-negative input manifest={hard_negative_config.manifest_path}")
     input_hard_negative_manifest, hard_negative_samples_by_class = _collect_hard_negative_samples_by_class(
         scenario=scenario,
         teacher_by_class=teacher_by_class,
@@ -584,7 +629,17 @@ def calibrate_class_policy_scenario(
         teacher = teacher_by_class[class_name]
         teacher_samples = samples_by_teacher[teacher.name]
         base_policy = policy_template[class_name]
+        class_min_precision = float(scenario.search.min_precision_by_class.get(class_name, scenario.search.min_precision))
         candidates: list[dict[str, Any]] = []
+        candidate_count = (
+            len(scenario.search.score_thresholds)
+            * len(scenario.search.nms_iou_thresholds)
+            * len(scenario.search.min_box_sizes)
+        )
+        _log_calibration(
+            f"class={class_name} search start teacher={teacher.name} samples={len(teacher_samples)} "
+            f"candidates={candidate_count} min_precision={class_min_precision:.2f}"
+        )
         for score_threshold in scenario.search.score_thresholds:
             for nms_iou_threshold in scenario.search.nms_iou_thresholds:
                 for min_box_size in scenario.search.min_box_sizes:
@@ -605,7 +660,7 @@ def calibrate_class_policy_scenario(
                             hard_negative_samples=hard_negative_samples_by_class.get(class_name, {}),
                         )
                     )
-        best_candidate = _select_best_candidate(candidates=candidates, min_precision=float(scenario.search.min_precision))
+        best_candidate = _select_best_candidate(candidates=candidates, min_precision=class_min_precision)
         selected_policy = replace(
             base_policy,
             score_threshold=float(best_candidate["score_threshold"]),
@@ -630,8 +685,14 @@ def calibrate_class_policy_scenario(
                 "hard_negative_prediction_count": best_candidate["hard_negative_prediction_count"],
             },
             "meets_precision_floor": bool(best_candidate["meets_precision_floor"]),
+            "min_precision_target": class_min_precision,
             "candidate_count": len(candidates),
         }
+        _log_calibration(
+            f"class={class_name} selected score={best_candidate['score_threshold']:.2f} "
+            f"nms={best_candidate['nms_iou_threshold']:.2f} min_box={best_candidate['min_box_size']} "
+            f"precision={best_candidate['precision']:.4f} recall={best_candidate['recall']:.4f}"
+        )
 
     class_policy_path = _write_yaml(output_root / "class_policy.yaml", class_policy_payload)
     hard_negative_manifest_path = _write_json(
@@ -667,6 +728,9 @@ def calibrate_class_policy_scenario(
         "classes": report_classes,
     }
     report_path = _write_json(output_root / "calibration_report.json", report)
+    _log_calibration(f"class policy written to {class_policy_path}")
+    _log_calibration(f"hard-negative manifest written to {hard_negative_manifest_path}")
+    _log_calibration(f"report written to {report_path}")
     return {
         "output_root": str(output_root),
         "class_policy_path": str(class_policy_path),

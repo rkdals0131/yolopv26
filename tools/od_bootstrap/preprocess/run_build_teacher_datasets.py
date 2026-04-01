@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
         args.log_every if args.log_every is not None else runtime_payload.get("log_every", 250),
         field_name="runtime.log_every",
     )
+    debug_vis_count = int(runtime_payload.get("debug_vis_count", 0))
+    debug_vis_seed = int(runtime_payload.get("debug_vis_seed", 26))
 
     bundle = CanonicalSourceBundle(
         bdd_root=canonical_root / "canonical" / "bdd100k_det_100k",
@@ -77,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     _log(
         f"[teacher-datasets] canonical_root={canonical_root} output_root={output_root} "
-        f"workers={workers} copy_images={copy_images} log_every={log_every}"
+        f"workers={workers} copy_images={copy_images} log_every={log_every} "
+        f"debug_vis_count={debug_vis_count} debug_vis_seed={debug_vis_seed}"
     )
     results = build_teacher_datasets(
         bundle,
@@ -85,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         copy_images=copy_images,
         workers=workers,
         log_every=log_every,
+        debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
         log_fn=_log,
     )
     print(
@@ -93,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
                 teacher_name: {
                     "dataset_root": str(result.dataset_root),
                     "manifest_path": str(result.manifest_path),
+                    "debug_vis_manifest_path": str(result.debug_vis_manifest_path),
                     "sample_count": result.sample_count,
                     "detection_count": result.detection_count,
                     "class_counts": result.class_counts,

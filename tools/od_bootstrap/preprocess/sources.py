@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .debug_vis import DEFAULT_DEBUG_VIS_SEED, generate_canonical_debug_vis
 from model.preprocess.aihub_standardize import (
     DEFAULT_DOCS_ROOT as DEFAULT_AIHUB_DOCS_ROOT,
     DEFAULT_LANE_ROOT as DEFAULT_AIHUB_LANE_ROOT,
@@ -51,6 +52,7 @@ class SourcePrepConfig:
     force_reprocess: bool = False
     write_source_readmes: bool = False
     debug_vis_count: int = 0
+    debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class SourcePrepResult:
     bundle: CanonicalSourceBundle
     manifest_path: Path
     image_list_manifest_path: Path
+    canonical_debug_vis_manifest_paths: dict[str, Path]
     bdd_outputs: dict[str, Path]
     aihub_outputs: dict[str, Path]
 
@@ -151,6 +154,7 @@ def prepare_od_bootstrap_sources(config: SourcePrepConfig) -> SourcePrepResult:
         "force_reprocess": bool(config.force_reprocess),
         "write_source_readmes": bool(config.write_source_readmes),
         "debug_vis_count": int(config.debug_vis_count),
+        "debug_vis_seed": int(config.debug_vis_seed),
     }
     manifest_path = _write_json(output_root / "meta" / "source_prep_manifest.json", manifest)
 
@@ -164,10 +168,20 @@ def prepare_od_bootstrap_sources(config: SourcePrepConfig) -> SourcePrepResult:
         allowed_dataset_keys=BOOTSTRAP_SOURCE_KEYS,
     )
     image_list_manifest_path = write_image_list(output_root / "meta" / "bootstrap_image_list.jsonl", image_list_entries)
+    canonical_debug_vis_outputs = generate_canonical_debug_vis(
+        image_list_manifest_path=image_list_manifest_path,
+        canonical_root=canonical_root,
+        debug_vis_count=int(config.debug_vis_count),
+        debug_vis_seed=int(config.debug_vis_seed),
+    )
     return SourcePrepResult(
         bundle=bundle,
         manifest_path=manifest_path,
         image_list_manifest_path=image_list_manifest_path,
+        canonical_debug_vis_manifest_paths={
+            dataset_name: Path(str(payload["debug_vis_manifest"]))
+            for dataset_name, payload in canonical_debug_vis_outputs.items()
+        },
         bdd_outputs=bdd_outputs,
         aihub_outputs=aihub_outputs,
     )

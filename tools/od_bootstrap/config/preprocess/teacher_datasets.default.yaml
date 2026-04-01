@@ -7,3 +7,5 @@ runtime:
   copy_images: false
   workers: 8
   log_every: 500
+  debug_vis_count: 20
+  debug_vis_seed: 26

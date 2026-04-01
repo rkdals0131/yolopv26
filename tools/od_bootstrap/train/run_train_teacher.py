@@ -16,7 +16,7 @@ from tools.od_bootstrap.train.scenario import TeacherTrainScenario, load_teacher
 from tools.od_bootstrap.train.ultralytics_runner import train_teacher_with_ultralytics
 
 
-DEFAULT_SCENARIO_PATH = REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26n.default.yaml"
+DEFAULT_SCENARIO_PATH = REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26s.default.yaml"
 
 
 @dataclass(frozen=True)
@@ -24,21 +24,7 @@ class EntryConfig:
     scenario_path: Path = DEFAULT_SCENARIO_PATH
 
 
-# =============================================================================
-# Edit this block directly before running `python3 tools/od_bootstrap/train/run_train_teacher.py`.
-# Set exactly one teacher scenario here. Fine-grained train parameters live in the selected YAML.
-# =============================================================================
-ENTRY_CONFIG = EntryConfig(
-    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26n.default.yaml",
-    scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "mobility_yolo26s.default.yaml",
-
-    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "signal_yolo26n.default.yaml",
-    scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "signal_yolo26s.default.yaml",
-
-    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "obstacle_yolo26n.default.yaml",
-    # scenario_path=REPO_ROOT / "tools" / "od_bootstrap" / "config" / "train" / "obstacle_yolo26s.default.yaml",
-)
-# =============================================================================
+ENTRY_CONFIG = EntryConfig()
 
 
 def _log_teacher_train(message: str) -> None:

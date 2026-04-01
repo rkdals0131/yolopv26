@@ -181,7 +181,15 @@ def _run_teacher_inference(
         raise FileNotFoundError(f"teacher checkpoint not found: {teacher.checkpoint_path}")
     model = YOLO(str(teacher.checkpoint_path))
     rows: list[dict[str, Any]] = []
-    for batch_entries in _batched(entries, scenario.run.batch_size):
+    total_images = len(entries)
+    processed_images = 0
+    last_logged = 0
+    batch_size = max(1, int(scenario.run.batch_size))
+    log_every_images = max(batch_size * 50, 500)
+    _log_bootstrap(
+        f"teacher={teacher.name} inference start images={total_images} batch={batch_size} checkpoint={teacher.checkpoint_path}"
+    )
+    for batch_entries in _batched(entries, batch_size):
         results = model.predict(
             source=[str(entry.image_path) for entry in batch_entries],
             imgsz=scenario.run.imgsz,
@@ -200,6 +208,16 @@ def _run_teacher_inference(
                 class_policy=scenario.class_policy,
             )
         )
+        processed_images += len(batch_entries)
+        if (
+            processed_images == total_images
+            or processed_images == len(batch_entries)
+            or processed_images - last_logged >= log_every_images
+        ):
+            last_logged = processed_images
+            _log_bootstrap(
+                f"teacher={teacher.name} inference progress {processed_images}/{total_images} images predictions={len(rows)}"
+            )
     return rows
 
 
@@ -262,6 +280,7 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
             run_id=run_id,
             created_at=created_at,
             copy_images=scenario.materialization.copy_images,
+            log_fn=_log_bootstrap,
         )
 
     summary = {

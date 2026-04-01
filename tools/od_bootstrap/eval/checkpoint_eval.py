@@ -17,6 +17,10 @@ from ..train.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_r
 from .scenario import CheckpointEvalScenario, load_teacher_checkpoint_eval_scenario
 
 
+def _log_eval(message: str) -> None:
+    print(f"[od_bootstrap.eval] {message}", flush=True)
+
+
 @dataclass(frozen=True)
 class PredictionSummary:
     class_counts: dict[str, int]
@@ -95,6 +99,8 @@ def eval_teacher_checkpoint(
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint_path}")
 
+    _log_eval(f"scenario={scenario_path}")
+    _log_eval(f"teacher={scenario.teacher_name} checkpoint={checkpoint_path}")
     model = YOLO(str(checkpoint_path))
     dataset_root = resolve_teacher_dataset_root(
         source_root=scenario.dataset.root,
@@ -111,6 +117,7 @@ def eval_teacher_checkpoint(
         train_split="train",
         val_split=scenario.dataset.split,
     )
+    _log_eval(f"teacher={scenario.teacher_name} dataset_root={dataset_root}")
 
     predict_rows: list[dict[str, Any]] = []
     prediction_summary = PredictionSummary({}, {"min": 0.0, "max": 0.0, "mean": 0.0}, 0, 0)
@@ -120,6 +127,10 @@ def eval_teacher_checkpoint(
             split=scenario.dataset.split,
             image_dir=scenario.dataset.image_dir,
             limit=scenario.dataset.sample_limit,
+        )
+        _log_eval(
+            f"teacher={scenario.teacher_name} predict start images={len(sample_images)} "
+            f"imgsz={scenario.eval.imgsz} batch={scenario.eval.batch}"
         )
         predict_results = model.predict(
             source=[str(path) for path in sample_images],
@@ -132,9 +143,17 @@ def eval_teacher_checkpoint(
             stream=False,
         )
         predict_rows, prediction_summary = _extract_prediction_rows(list(predict_results))
+        _log_eval(
+            f"teacher={scenario.teacher_name} predict done samples={prediction_summary.sample_count} "
+            f"predictions={prediction_summary.prediction_count}"
+        )
 
     val_summary: dict[str, Any] = {}
     if scenario.eval.val:
+        _log_eval(
+            f"teacher={scenario.teacher_name} val start split={scenario.dataset.split} "
+            f"imgsz={scenario.eval.imgsz} batch={scenario.eval.batch}"
+        )
         val_result = model.val(
             data=str(data_yaml_path),
             split=scenario.dataset.split,
@@ -144,6 +163,7 @@ def eval_teacher_checkpoint(
             verbose=scenario.eval.verbose,
         )
         val_summary = _normalize_val_result(val_result)
+        _log_eval(f"teacher={scenario.teacher_name} val done")
 
     output_dir = scenario.run.output_root / scenario.teacher_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -168,6 +188,7 @@ def eval_teacher_checkpoint(
     }
     summary_path = output_dir / "checkpoint_eval_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")
+    _log_eval(f"teacher={scenario.teacher_name} summary={summary_path}")
     return summary
 
 

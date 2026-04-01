@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ class CalibrationRunConfig:
 class CalibrationSearchConfig:
     match_iou: float = 0.5
     min_precision: float = 0.90
+    min_precision_by_class: dict[str, float] = field(default_factory=dict)
     score_thresholds: tuple[float, ...] = ()
     nms_iou_thresholds: tuple[float, ...] = ()
     min_box_sizes: tuple[int, ...] = ()
@@ -115,6 +116,10 @@ def _load_run_config(data: Any, *, base_dir: Path) -> CalibrationRunConfig:
 
 def _load_search_config(data: Any) -> CalibrationSearchConfig:
     payload = _coerce_mapping(data, field_name="search")
+    min_precision_by_class_payload = _coerce_mapping(
+        payload.get("min_precision_by_class"),
+        field_name="search.min_precision_by_class",
+    )
     score_thresholds = tuple(
         _coerce_float(item, field_name=f"search.score_thresholds[{index}]")
         for index, item in enumerate(_coerce_sequence(payload.get("score_thresholds"), field_name="search.score_thresholds"))
@@ -132,6 +137,13 @@ def _load_search_config(data: Any) -> CalibrationSearchConfig:
     return CalibrationSearchConfig(
         match_iou=_coerce_float(payload.get("match_iou", 0.5), field_name="search.match_iou"),
         min_precision=_coerce_float(payload.get("min_precision", 0.90), field_name="search.min_precision"),
+        min_precision_by_class={
+            _coerce_str(class_name, field_name=f"search.min_precision_by_class[{index}].key"): _coerce_float(
+                class_min_precision,
+                field_name=f"search.min_precision_by_class[{index}].value",
+            )
+            for index, (class_name, class_min_precision) in enumerate(min_precision_by_class_payload.items())
+        },
         score_thresholds=score_thresholds,
         nms_iou_thresholds=nms_iou_thresholds,
         min_box_sizes=min_box_sizes,
@@ -217,12 +229,18 @@ def load_calibration_scenario(path: str | Path) -> CalibrationScenario:
     )
     if not scenario.teachers:
         raise ValueError("teachers must not be empty")
+    known_classes = {
+        class_name
+        for teacher in scenario.teachers
+        for class_name in teacher.classes
+    }
+    invalid_min_precision_overrides = sorted(set(scenario.search.min_precision_by_class).difference(known_classes))
+    if invalid_min_precision_overrides:
+        raise ValueError(
+            "search.min_precision_by_class contain unknown classes: "
+            + ", ".join(invalid_min_precision_overrides)
+        )
     if scenario.hard_negative is not None:
-        known_classes = {
-            class_name
-            for teacher in scenario.teachers
-            for class_name in teacher.classes
-        }
         invalid_focus = sorted(set(scenario.hard_negative.focus_classes).difference(known_classes))
         if invalid_focus:
             raise ValueError(f"hard_negative.focus_classes contain unknown classes: {', '.join(invalid_focus)}")

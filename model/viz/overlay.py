@@ -4,6 +4,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:  # pragma: no cover
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
 
 LANE_COLOR_MAP = {
     "white_lane": "#ffffff",
@@ -119,6 +126,86 @@ def _label_anchor_from_bbox(bbox: list[float]) -> tuple[float, float] | None:
     return float(bbox[0]) + 4.0, float(bbox[1]) - 6.0
 
 
+def _render_overlay_with_pillow(scene: dict[str, Any], image_path: Path, output_path: Path) -> None:
+    if Image is None or ImageDraw is None or ImageFont is None:
+        raise RuntimeError("ImageMagick 'convert' is unavailable and Pillow is not installed")
+    image = Image.open(image_path).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    def draw_polyline(points: list[list[float]], color: str) -> None:
+        if len(points) < 2:
+            return
+        draw.line([(float(x), float(y)) for x, y in points], fill=color, width=3)
+
+    def draw_polygon(points: list[list[float]], color: str) -> None:
+        if len(points) < 3:
+            return
+        draw.polygon([(float(x), float(y)) for x, y in points], outline=color, width=2)
+
+    def draw_rectangle(bbox: list[float], color: str) -> None:
+        if len(bbox) != 4:
+            return
+        x1, y1, x2, y2 = bbox
+        draw.rectangle([(float(x1), float(y1)), (float(x2), float(y2))], outline=color, width=3)
+
+    def draw_label(anchor: tuple[float, float] | None, label: str, color: str) -> None:
+        if anchor is None:
+            return
+        safe_label = _safe_label(label)
+        if not safe_label:
+            return
+        draw.text((max(0.0, anchor[0]), max(0.0, anchor[1])), safe_label, fill=color, font=font)
+
+    for lane in scene.get("lanes", []):
+        color = LANE_COLOR_MAP.get(lane.get("class_name"), "#aaaaaa")
+        points = lane.get("points", [])
+        draw_polyline(points, color)
+        draw_label(_label_anchor_from_points(points), str(lane.get("class_name") or "lane"), color)
+
+    for stop_line in scene.get("stop_lines", []):
+        points = stop_line.get("points") or [stop_line.get("p1", []), stop_line.get("p2", [])]
+        draw_polyline(points, "#ff4040")
+        draw_label(_label_anchor_from_points(points), "stop_line", "#ff4040")
+
+    for crosswalk in scene.get("crosswalks", []):
+        points = crosswalk.get("points", [])
+        draw_polygon(points, "#ff66ff")
+        draw_label(_label_anchor_from_points(points), "crosswalk", "#ff66ff")
+
+    for ignored in scene.get("ignored_regions", []):
+        points = ignored.get("points", [])
+        draw_polygon(points, "#ff66ff")
+        draw_label(_label_anchor_from_points(points), "ignored_region", "#ff66ff")
+
+    for detection in scene.get("detections", []):
+        class_name = str(detection.get("class_name") or "").strip().lower()
+        if class_name in {"traffic_light", "sign"}:
+            continue
+        color = DETECTION_COLOR_MAP.get(class_name, "#ffaa00")
+        bbox = detection.get("bbox", [])
+        draw_rectangle(bbox, color)
+        draw_label(_label_anchor_from_bbox(bbox), class_name or "detection", color)
+
+    for light in scene.get("traffic_lights", []):
+        bbox = light.get("bbox", [])
+        draw_rectangle(bbox, "#00ff99")
+        draw_label(_label_anchor_from_bbox(bbox), "traffic_light", "#00ff99")
+
+    for sign in scene.get("traffic_signs", []):
+        bbox = sign.get("bbox", [])
+        draw_rectangle(bbox, "#00b7ff")
+        draw_label(_label_anchor_from_bbox(bbox), "sign", "#00b7ff")
+
+    for debug_rectangle in scene.get("debug_rectangles", []):
+        color = str(debug_rectangle.get("color") or DEBUG_RECTANGLE_DEFAULT_COLOR)
+        bbox = debug_rectangle.get("bbox", [])
+        draw_rectangle(bbox, color)
+        draw_label(_label_anchor_from_bbox(bbox), str(debug_rectangle.get("label") or "debug"), color)
+
+    image.save(output_path)
+
+
 def render_overlay(scene: dict[str, Any], output_path: Path) -> None:
     """Render a human-readable overlay on top of the original image."""
     image_source_path = scene.get("image", {}).get("source_path") or scene.get("source", {}).get("image_path")
@@ -192,4 +279,7 @@ def render_overlay(scene: dict[str, Any], output_path: Path) -> None:
             _append_text(command, anchor[0], anchor[1], str(debug_rectangle.get("label") or "debug"), color)
 
     command.append(str(output_path))
-    subprocess.run(command, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError:
+        _render_overlay_with_pillow(scene, image_path, output_path)

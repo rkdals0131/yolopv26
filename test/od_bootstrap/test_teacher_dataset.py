@@ -11,14 +11,9 @@ from tools.od_bootstrap.preprocess.teacher_dataset import build_teacher_datasets
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    import subprocess
+    from PIL import Image
 
-    subprocess.run(
-        ["convert", "-size", f"{width}x{height}", f"xc:{color}", str(path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    Image.new("RGB", (width, height), color).save(path)
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -53,6 +48,8 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
                 root / "pv26_od_bootstrap" / "teacher_datasets",
                 workers=2,
                 log_every=1,
+                debug_vis_count=1,
+                debug_vis_seed=26,
                 log_fn=logs.append,
             )
 
@@ -87,7 +84,17 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
             )
             self.assertEqual(signal_manifest["workers"], 2)
             self.assertEqual(signal_manifest["log_every"], 1)
+            self.assertEqual(signal_manifest["debug_vis_count"], 1)
+            self.assertEqual(signal_manifest["debug_vis_seed"], 26)
             self.assertEqual(signal_manifest["samples"][0]["image_action"], "hardlink")
+            self.assertTrue(signal.debug_vis_manifest_path.is_file())
+            debug_vis_manifest = json.loads(signal.debug_vis_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(debug_vis_manifest["selection_count"], 1)
+            debug_vis_dir = signal.dataset_root / "meta" / "debug_vis"
+            overlay_files = sorted(debug_vis_dir.glob("*.png"))
+            self.assertEqual(len(overlay_files), 1)
+            self.assertEqual(sorted(path.name for path in debug_vis_dir.iterdir()), [overlay_files[0].name])
+            self.assertTrue(Path(debug_vis_manifest["items"][0]["overlay_path"]).is_file())
 
             lane_labels = list((signal.dataset_root / "labels").rglob("aihub_lane_train_001.txt"))
             self.assertEqual(lane_labels, [])

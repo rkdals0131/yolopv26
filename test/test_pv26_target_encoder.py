@@ -16,12 +16,9 @@ from model.preprocess.bdd100k_standardize import run_standardization as run_bdd_
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["convert", "-size", f"{width}x{height}", f"xc:{color}", str(path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    from PIL import Image
+
+    Image.new("RGB", (width, height), color).save(path)
 
 
 def _write_json(path: Path, payload: dict) -> None:

@@ -9,7 +9,9 @@ import time
 from typing import Any, Callable
 
 from model.preprocess.aihub_standardize import OD_CLASSES
+from tools.od_bootstrap.sweep.image_list import build_sample_uid
 
+from .debug_vis import DEFAULT_DEBUG_VIS_SEED, generate_teacher_dataset_debug_vis
 from .sources import CanonicalSourceBundle, BOOTSTRAP_SOURCE_KEYS
 
 
@@ -42,6 +44,8 @@ class TeacherDatasetBuildConfig:
     copy_images: bool = False
     workers: int = 1
     log_every: int = 250
+    debug_vis_count: int = 0
+    debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,7 @@ class TeacherDatasetBuildResult:
     output_root: Path
     dataset_root: Path
     manifest_path: Path
+    debug_vis_manifest_path: Path
     sample_count: int
     detection_count: int
     class_counts: dict[str, int]
@@ -248,6 +253,11 @@ def _process_teacher_task(
             "source_dataset_key": task.source_dataset_key,
             "split": task.split,
             "sample_id": task.sample_id,
+            "sample_uid": build_sample_uid(
+                dataset_key=task.source_dataset_key,
+                split=task.split,
+                sample_id=task.sample_id,
+            ),
             "source_scene_path": str(task.scene_path),
             "source_image_path": str(task.image_src),
             "output_image_path": str(task.image_dst),
@@ -319,6 +329,15 @@ def build_teacher_dataset(
     manifest_rows.sort(key=lambda row: (str(row["split"]), str(row["sample_id"]), str(row["source_dataset_key"])))
     sample_count = len(manifest_rows)
     elapsed = max(time.monotonic() - start_time, 1e-6)
+    debug_vis_outputs = generate_teacher_dataset_debug_vis(
+        dataset_root=dataset_root,
+        teacher_name=resolved_spec.name,
+        class_names=resolved_spec.class_names,
+        manifest_rows=manifest_rows,
+        debug_vis_count=int(config.debug_vis_count),
+        debug_vis_seed=int(config.debug_vis_seed),
+        log_fn=log_fn,
+    )
 
     manifest_path = _write_json(
         dataset_root / "meta" / "teacher_dataset_manifest.json",
@@ -333,6 +352,9 @@ def build_teacher_dataset(
             "copy_images": bool(config.copy_images),
             "workers": workers,
             "log_every": log_every,
+            "debug_vis_count": int(config.debug_vis_count),
+            "debug_vis_seed": int(config.debug_vis_seed),
+            "debug_vis_manifest_path": str(debug_vis_outputs["debug_vis_manifest"]),
             "sample_count": sample_count,
             "detection_count": detection_count,
             "elapsed_seconds": round(elapsed, 3),
@@ -354,6 +376,7 @@ def build_teacher_dataset(
         output_root=output_root,
         dataset_root=dataset_root,
         manifest_path=manifest_path,
+        debug_vis_manifest_path=Path(str(debug_vis_outputs["debug_vis_manifest"])),
         sample_count=sample_count,
         detection_count=detection_count,
         class_counts=class_counts,
@@ -368,6 +391,8 @@ def build_teacher_datasets(
     copy_images: bool = False,
     workers: int = 1,
     log_every: int = 250,
+    debug_vis_count: int = 0,
+    debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
     log_fn: Callable[[str], None] | None = None,
     teacher_specs: dict[str, TeacherDatasetSpec] | None = None,
 ) -> dict[str, TeacherDatasetBuildResult]:
@@ -384,6 +409,8 @@ def build_teacher_datasets(
         copy_images=copy_images,
         workers=workers,
         log_every=log_every,
+        debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
     )
     results: dict[str, TeacherDatasetBuildResult] = {}
     for name, spec in spec_map.items():

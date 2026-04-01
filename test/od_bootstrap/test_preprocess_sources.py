@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from tools.od_bootstrap.preprocess.run_build_teacher_datasets import main as build_teacher_datasets_main
 from tools.od_bootstrap.preprocess.run_prepare_sources import DEFAULT_CONFIG_PATH, _resolve_config, main as prepare_sources_main
 from tools.od_bootstrap.preprocess.sources import (
@@ -78,6 +80,92 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             self.assertEqual(mock_aihub.call_args.kwargs["traffic_root"], (aihub_root / AIHUB_TRAFFIC_DIRNAME).resolve())
             self.assertFalse(mock_aihub.call_args.kwargs["write_dataset_readmes"])
 
+    def test_prepare_od_bootstrap_sources_writes_flat_debug_vis_under_each_canonical_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            aihub_root = root / "AIHUB"
+            output_root = root / "od_bootstrap"
+            for path in [
+                bdd_root / "bdd100k_images_100k" / "100k",
+                bdd_root / "bdd100k_labels" / "100k",
+                aihub_root / AIHUB_LANE_DIRNAME,
+                aihub_root / AIHUB_OBSTACLE_DIRNAME,
+                aihub_root / AIHUB_TRAFFIC_DIRNAME,
+                aihub_root / "docs",
+            ]:
+                path.mkdir(parents=True, exist_ok=True)
+
+            canonical_root = output_root / "canonical"
+            bdd_canonical_root = canonical_root / "bdd100k_det_100k"
+            aihub_canonical_root = canonical_root / "aihub_standardized"
+            self._make_image(bdd_canonical_root / "images" / "val" / "bdd_val_001.jpg", 64, 48, "#222222")
+            self._make_image(aihub_canonical_root / "images" / "val" / "traffic_val_001.png", 64, 48, "#444444")
+            self._write_json(
+                bdd_canonical_root / "labels_scene" / "val" / "bdd_val_001.json",
+                {
+                    "image": {"file_name": "bdd_val_001.jpg", "width": 64, "height": 48},
+                    "source": {"dataset": "bdd100k_det_100k", "split": "val"},
+                    "detections": [{"class_name": "vehicle", "bbox": [10, 10, 30, 30]}],
+                },
+            )
+            self._write_text(
+                bdd_canonical_root / "labels_det" / "val" / "bdd_val_001.txt",
+                "0 0.312500 0.416667 0.312500 0.416667\n",
+            )
+            self._write_json(
+                aihub_canonical_root / "labels_scene" / "val" / "traffic_val_001.json",
+                {
+                    "image": {"file_name": "traffic_val_001.png", "width": 64, "height": 48},
+                    "source": {"dataset": "aihub_traffic_seoul", "split": "val"},
+                    "traffic_lights": [{"bbox": [20, 5, 28, 18]}],
+                },
+            )
+            self._write_text(
+                aihub_canonical_root / "labels_det" / "val" / "traffic_val_001.txt",
+                "5 0.375000 0.239583 0.125000 0.270833\n",
+            )
+
+            config = SourcePrepConfig(
+                roots=SourceRoots(
+                    bdd_root=bdd_root,
+                    bdd_images_root=bdd_root / "bdd100k_images_100k" / "100k",
+                    bdd_labels_root=bdd_root / "bdd100k_labels" / "100k",
+                    aihub_root=aihub_root,
+                ),
+                output_root=output_root,
+                workers=1,
+                force_reprocess=False,
+                write_source_readmes=False,
+                debug_vis_count=2,
+                debug_vis_seed=26,
+            )
+
+            fake_bdd_outputs = {"output_root": bdd_canonical_root}
+            fake_aihub_outputs = {"output_root": aihub_canonical_root}
+            with (
+                patch("tools.od_bootstrap.preprocess.sources.run_bdd_standardization", return_value=fake_bdd_outputs),
+                patch("tools.od_bootstrap.preprocess.sources.run_aihub_standardization", return_value=fake_aihub_outputs),
+            ):
+                result = prepare_od_bootstrap_sources(config)
+
+            bdd_manifest = json.loads(
+                result.canonical_debug_vis_manifest_paths["bdd100k_det_100k"].read_text(encoding="utf-8")
+            )
+            aihub_manifest = json.loads(
+                result.canonical_debug_vis_manifest_paths["aihub_standardized"].read_text(encoding="utf-8")
+            )
+            self.assertEqual(bdd_manifest["selection_count"], 1)
+            self.assertEqual(aihub_manifest["selection_count"], 1)
+            bdd_debug_vis_dir = bdd_canonical_root / "meta" / "debug_vis"
+            aihub_debug_vis_dir = aihub_canonical_root / "meta" / "debug_vis"
+            self.assertEqual(len(sorted(bdd_debug_vis_dir.glob("*.png"))), 1)
+            self.assertEqual(len(sorted(aihub_debug_vis_dir.glob("*.png"))), 1)
+            self.assertEqual(len(list(bdd_debug_vis_dir.iterdir())), 1)
+            self.assertEqual(len(list(aihub_debug_vis_dir.iterdir())), 1)
+            self.assertTrue(Path(bdd_manifest["items"][0]["overlay_path"]).is_file())
+            self.assertTrue(Path(aihub_manifest["items"][0]["overlay_path"]).is_file())
+
     def test_default_prepare_sources_config_resolves_repo_seg_dataset_paths(self) -> None:
         args = SimpleNamespace(
             config=DEFAULT_CONFIG_PATH,
@@ -108,23 +196,36 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
                 ),
                 manifest_path=Path("/tmp/source_prep_manifest.json"),
                 image_list_manifest_path=Path("/tmp/bootstrap_image_list.jsonl"),
+                canonical_debug_vis_manifest_paths={"bdd100k_det_100k": Path("/tmp/bdd_debug_vis_manifest.json")},
                 bdd_outputs={"output_root": Path("/tmp/bdd")},
                 aihub_outputs={"output_root": Path("/tmp/aihub")},
             )
 
-        def _fake_build(bundle, output_root, copy_images=False, workers=1, log_every=250, log_fn=None):
+        def _fake_build(
+            bundle,
+            output_root,
+            copy_images=False,
+            workers=1,
+            log_every=250,
+            debug_vis_count=0,
+            debug_vis_seed=26,
+            log_fn=None,
+        ):
             captured["build_call"] = {
                 "bundle": bundle,
                 "output_root": output_root,
                 "copy_images": copy_images,
                 "workers": workers,
                 "log_every": log_every,
+                "debug_vis_count": debug_vis_count,
+                "debug_vis_seed": debug_vis_seed,
                 "log_fn": log_fn,
             }
             return {
                 "mobility": SimpleNamespace(
                     dataset_root=Path("/tmp/mobility"),
                     manifest_path=Path("/tmp/mobility_manifest.json"),
+                    debug_vis_manifest_path=Path("/tmp/mobility_debug_vis_manifest.json"),
                     sample_count=1,
                     detection_count=1,
                     class_counts={"vehicle": 1},
@@ -149,4 +250,21 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertEqual(build_call["output_root"], (repo_root / "seg_dataset" / "pv26_od_bootstrap" / "teacher_datasets").resolve())
         self.assertEqual(build_call["workers"], 8)
         self.assertEqual(build_call["log_every"], 500)
+        self.assertEqual(build_call["debug_vis_count"], 20)
+        self.assertEqual(build_call["debug_vis_seed"], 26)
         self.assertIsNotNone(build_call["log_fn"])
+
+    @staticmethod
+    def _make_image(path: Path, width: int, height: int, color: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (width, height), color).save(path)
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _write_text(path: Path, contents: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")

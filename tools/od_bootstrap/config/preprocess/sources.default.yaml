@@ -8,4 +8,5 @@ runtime:
   workers: 1
   force_reprocess: false
   write_source_readmes: false
-  debug_vis_count: 0
+  debug_vis_count: 20
+  debug_vis_seed: 26

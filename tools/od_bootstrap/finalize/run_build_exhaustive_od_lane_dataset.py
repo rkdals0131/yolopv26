@@ -17,6 +17,10 @@ from tools.od_bootstrap.finalize.final_dataset import build_pv26_exhaustive_od_l
 DEFAULT_CONFIG_PATH = REPO_ROOT / "tools" / "od_bootstrap" / "config" / "finalize" / "pv26_exhaustive_od_lane.default.yaml"
 
 
+def _log_finalize(message: str) -> None:
+    print(f"[od_bootstrap.finalize] {message}", flush=True)
+
+
 def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
     path = Path(value)
     if not path.is_absolute():
@@ -36,11 +40,13 @@ def run_finalize_scenario(config_path: Path) -> dict[str, Any]:
     base_dir = config_path.parent
     input_payload = dict(payload.get("input") or {})
     output_payload = dict(payload.get("output") or {})
+    _log_finalize(f"scenario={config_path}")
     return build_pv26_exhaustive_od_lane_dataset(
         exhaustive_od_root=_resolve_path(input_payload.get("exhaustive_od_root"), base_dir=base_dir),
         aihub_canonical_root=_resolve_path(input_payload.get("aihub_canonical_root"), base_dir=base_dir),
         output_root=_resolve_path(output_payload.get("root"), base_dir=base_dir),
         copy_images=bool(output_payload.get("copy_images", False)),
+        log_fn=_log_finalize,
     )
 
 

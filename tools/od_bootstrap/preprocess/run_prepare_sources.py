@@ -61,6 +61,7 @@ def _resolve_config(args: argparse.Namespace) -> SourcePrepConfig:
         force_reprocess=force_reprocess,
         write_source_readmes=bool(runtime.get("write_source_readmes", False)),
         debug_vis_count=int(runtime.get("debug_vis_count", 0)),
+        debug_vis_seed=int(runtime.get("debug_vis_seed", 26)),
     )
 
 
@@ -81,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "manifest_path": str(result.manifest_path),
                 "image_list_manifest_path": str(result.image_list_manifest_path),
+                "canonical_debug_vis_manifest_paths": {
+                    dataset_name: str(path)
+                    for dataset_name, path in result.canonical_debug_vis_manifest_paths.items()
+                },
                 "bdd_output_root": str(result.bdd_outputs["output_root"]),
                 "aihub_output_root": str(result.aihub_outputs["output_root"]),
             },
