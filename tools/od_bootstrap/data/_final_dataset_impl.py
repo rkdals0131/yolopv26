@@ -325,6 +325,11 @@ def build_pv26_exhaustive_od_lane_dataset(
     }
     summary_path = meta_root / "final_dataset_manifest.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    compact_summary_path = meta_root / "final_dataset_summary.json"
+    compact_summary_path.write_text(
+        json.dumps({key: value for key, value in summary.items() if key != "samples"}, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
     return {
         "output_root": str(resolved_output_root),
         "manifest_path": str(summary_path),

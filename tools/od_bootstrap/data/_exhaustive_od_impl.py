@@ -300,6 +300,11 @@ def materialize_exhaustive_od_dataset(
     }
     manifest_path = meta_root / "materialization_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    summary_path = meta_root / "materialization_summary.json"
+    summary_path.write_text(
+        json.dumps({key: value for key, value in manifest.items() if key != "samples"}, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
     return {
         "dataset_root": str(dataset_root),
         "manifest_path": str(manifest_path),

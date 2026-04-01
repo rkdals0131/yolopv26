@@ -29,7 +29,9 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_readme_matches_current_pv26_training_entrypoint(self) -> None:
         readme = _read(REPO_ROOT / "README.md")
+        self.assertIn("python3 tools/check_env.py", readme)
         self.assertIn("python3 tools/check_env.py --strict --check-yolo-runtime", readme)
+        self.assertIn("`H`를 누르면", readme)
         self.assertIn("docs/3A_RAW_DATASET_LAYOUTS.md", readme)
         self.assertIn("config/user_paths.yaml", readme)
         self.assertIn("config/od_bootstrap_hyperparameters.yaml", readme)

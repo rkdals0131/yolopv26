@@ -4,7 +4,7 @@
 
 od_bootstrap:
   source_prep:
-    workers: 4
+    workers: 16
     force_reprocess: false
     write_source_readmes: false
     debug_vis_count: 50
@@ -21,39 +21,39 @@ od_bootstrap:
     common:
       imgsz: 640
       device: cuda:0
-      workers: 8
+      workers: 4
       pin_memory: true
       persistent_workers: true
-      prefetch_factor: 4
-      patience: 50
+      prefetch_factor: 2
+      patience: 10
       cache: false
       amp: true
       optimizer: auto
       seed: 0
       resume: false
       val: true
-      save_period: 10
-      log_every_n_steps: 20
-      profile_window: 20
+      save_period: 1
+      log_every_n_steps: 10
+      profile_window: 10
       profile_device_sync: true
     mobility:
       model_size: s
       weights: yolo26s.pt
       classes: [vehicle, bike, pedestrian]
-      epochs: 200
-      batch: 20
+      epochs: 2
+      batch: 8
     signal:
       model_size: s
       weights: yolo26s.pt
       classes: [traffic_light, sign]
-      epochs: 200
-      batch: 20
+      epochs: 2
+      batch: 8
     obstacle:
       model_size: m
       weights: yolo26m.pt
       classes: [traffic_cone, obstacle]
-      epochs: 100
-      batch: 12
+      epochs: 2
+      batch: 6
 
   teacher_eval:
     common:

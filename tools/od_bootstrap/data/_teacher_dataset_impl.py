@@ -339,29 +339,31 @@ def build_teacher_dataset(
         log_fn=log_fn,
     )
 
-    manifest_path = _write_json(
-        dataset_root / "meta" / "teacher_dataset_manifest.json",
-        {
-            "version": "od-bootstrap-teacher-dataset-v1",
-            "generated_at": _now_iso(),
-            "teacher_name": resolved_spec.name,
-            "source_dataset_keys": list(resolved_spec.source_dataset_keys),
-            "class_names": list(resolved_spec.class_names),
-            "output_root": str(output_root),
-            "dataset_root": str(dataset_root),
-            "copy_images": bool(config.copy_images),
-            "workers": workers,
-            "log_every": log_every,
-            "debug_vis_count": int(config.debug_vis_count),
-            "debug_vis_seed": int(config.debug_vis_seed),
-            "debug_vis_manifest_path": str(debug_vis_outputs["debug_vis_manifest"]),
-            "sample_count": sample_count,
-            "detection_count": detection_count,
-            "elapsed_seconds": round(elapsed, 3),
-            "class_counts": class_counts,
-            "bootstrap_source_keys": list(BOOTSTRAP_SOURCE_KEYS),
-            "samples": manifest_rows,
-        },
+    manifest_payload = {
+        "version": "od-bootstrap-teacher-dataset-v1",
+        "generated_at": _now_iso(),
+        "teacher_name": resolved_spec.name,
+        "source_dataset_keys": list(resolved_spec.source_dataset_keys),
+        "class_names": list(resolved_spec.class_names),
+        "output_root": str(output_root),
+        "dataset_root": str(dataset_root),
+        "copy_images": bool(config.copy_images),
+        "workers": workers,
+        "log_every": log_every,
+        "debug_vis_count": int(config.debug_vis_count),
+        "debug_vis_seed": int(config.debug_vis_seed),
+        "debug_vis_manifest_path": str(debug_vis_outputs["debug_vis_manifest"]),
+        "sample_count": sample_count,
+        "detection_count": detection_count,
+        "elapsed_seconds": round(elapsed, 3),
+        "class_counts": class_counts,
+        "bootstrap_source_keys": list(BOOTSTRAP_SOURCE_KEYS),
+        "samples": manifest_rows,
+    }
+    manifest_path = _write_json(dataset_root / "meta" / "teacher_dataset_manifest.json", manifest_payload)
+    _write_json(
+        dataset_root / "meta" / "teacher_dataset_summary.json",
+        {key: value for key, value in manifest_payload.items() if key != "samples"},
     )
 
     if log_fn is not None:

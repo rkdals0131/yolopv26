@@ -16,6 +16,28 @@ from tools.od_bootstrap.presets import build_sweep_preset
 from tools.od_bootstrap.data._sweep_impl import _extract_teacher_rows
 
 
+TEST_CLASS_POLICY = {
+    "vehicle": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.55, min_box_size=4),
+    "bike": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.55, min_box_size=4),
+    "pedestrian": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.55, min_box_size=4),
+    "traffic_light": ClassPolicy(score_threshold=0.30, nms_iou_threshold=0.50, min_box_size=4),
+    "sign": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.50, min_box_size=4),
+    "traffic_cone": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.55, min_box_size=4),
+    "obstacle": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.55, min_box_size=4),
+}
+
+
+def _build_isolated_sweep_preset(*, calibration_root: Path):
+    with patch(
+        "tools.od_bootstrap.presets.load_user_paths_config",
+        return_value={"od_bootstrap": {"runs": {"calibration_root": str(calibration_root)}}},
+    ), patch(
+        "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+        return_value={},
+    ):
+        return build_sweep_preset()
+
+
 class _FakeYOLO:
     def __init__(self, checkpoint_path: str) -> None:
         self.checkpoint_path = checkpoint_path
@@ -209,7 +231,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            preset = build_sweep_preset()
+            preset = _build_isolated_sweep_preset(calibration_root=root / "missing_calibration")
             scenario = replace(
                 preset,
                 run=replace(preset.run, output_root=root / "runs" / "od_bootstrap"),
@@ -223,6 +245,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                     for teacher in preset.teachers
                 ),
                 class_policy_path=root / "class_policy.yaml",
+                class_policy=TEST_CLASS_POLICY,
             )
             with patch("tools.od_bootstrap.data.sweep.YOLO", _FakeYOLO):
                 summary = run_model_centric_sweep_scenario(scenario, scenario_path=root / "preset_sweep")

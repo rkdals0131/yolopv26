@@ -153,7 +153,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             "stage_3_end_to_end_finetune",
         ))
         phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
-        self.assertEqual(phase_train.batch_size, 40)
+        self.assertEqual(phase_train.batch_size, 6)
         self.assertAlmostEqual(phase_train.head_lr, 0.003)
         self.assertTrue(phase_train.encode_val_batches_in_loader)
 

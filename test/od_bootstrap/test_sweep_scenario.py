@@ -9,15 +9,36 @@ from tools.od_bootstrap.data.sweep_types import REQUIRED_TEACHER_ORDER
 from tools.od_bootstrap.presets import build_sweep_preset
 
 
+def _build_isolated_sweep_preset(
+    *,
+    calibration_root: Path | None = None,
+    hyperparameters_config: dict[str, object] | None = None,
+):
+    if calibration_root is None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            return _build_isolated_sweep_preset(
+                calibration_root=Path(temp_dir),
+                hyperparameters_config=hyperparameters_config,
+            )
+    with patch(
+        "tools.od_bootstrap.presets.load_user_paths_config",
+        return_value={"od_bootstrap": {"runs": {"calibration_root": str(calibration_root)}}},
+    ), patch(
+        "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+        return_value=hyperparameters_config or {},
+    ):
+        return build_sweep_preset()
+
+
 class ODBootstrapScenarioTests(unittest.TestCase):
     def test_build_sweep_preset_uses_model_centric_run_and_required_teacher_order(self) -> None:
-        scenario = build_sweep_preset()
+        scenario = _build_isolated_sweep_preset()
 
         self.assertEqual(scenario.run.execution_mode, "model-centric")
         self.assertEqual(tuple(teacher.name for teacher in scenario.teachers), REQUIRED_TEACHER_ORDER)
 
     def test_build_sweep_preset_class_policy_covers_required_classes(self) -> None:
-        scenario = build_sweep_preset()
+        scenario = _build_isolated_sweep_preset()
 
         self.assertEqual(
             sorted(scenario.class_policy),
@@ -44,18 +65,9 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch(
-                "tools.od_bootstrap.presets.load_user_paths_config",
-                return_value={
-                    "od_bootstrap": {
-                        "runs": {
-                            "calibration_root": str(root),
-                        }
-                    }
-                },
-            ), patch(
-                "tools.od_bootstrap.presets.load_user_hyperparameters_config",
-                return_value={
+            scenario = _build_isolated_sweep_preset(
+                calibration_root=root,
+                hyperparameters_config={
                     "od_bootstrap": {
                         "exhaustive_od": {
                             "class_policy_defaults": {
@@ -70,8 +82,7 @@ class ODBootstrapScenarioTests(unittest.TestCase):
                         }
                     }
                 },
-            ):
-                scenario = build_sweep_preset()
+            )
 
         self.assertEqual(scenario.class_policy_path, policy_path.resolve())
         self.assertEqual(scenario.class_policy["vehicle"].score_threshold, 0.91)
