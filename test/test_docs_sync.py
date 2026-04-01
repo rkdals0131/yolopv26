@@ -9,7 +9,6 @@ from model.engine.loss import build_loss_spec
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = REPO_ROOT / "docs"
 OD_BOOTSTRAP_README = REPO_ROOT / "tools" / "od_bootstrap" / "README.md"
-OD_BOOTSTRAP_PREPROCESS_README = REPO_ROOT / "tools" / "od_bootstrap" / "preprocess" / "README.md"
 
 
 def _read(path: Path) -> str:
@@ -21,7 +20,6 @@ class DocsSyncTests(unittest.TestCase):
         targets = [
             REPO_ROOT / "README.md",
             OD_BOOTSTRAP_README,
-            OD_BOOTSTRAP_PREPROCESS_README,
             *sorted(DOCS_ROOT.glob("*.md")),
         ]
         for path in targets:
@@ -50,8 +48,8 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
         self.assertIn("mobility/signal은 `yolo26s.pt`, obstacle은 `yolo26m.pt`", readme)
 
-    def test_preprocess_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
-        readme = _read(OD_BOOTSTRAP_PREPROCESS_README)
+    def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
+        readme = _read(OD_BOOTSTRAP_README)
         self.assertIn("python -m tools.od_bootstrap", readme)
         self.assertIn("debug_vis.py", readme)
         self.assertIn("sample_manifest.py", readme)

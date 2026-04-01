@@ -11,10 +11,12 @@
 
 구조:
 - `data/`
+  - tracked Python package다. repo-root artifact용 `.gitignore`의 `/data/`와는 별개다
   - raw BDD/AIHUB를 canonicalize
   - bootstrap용 image list 생성
   - teacher train dataset 3개 생성
   - debug-vis 생성
+  - 주요 모듈: `source_prep.py`, `teacher_dataset.py`, `debug_vis.py`, `sample_manifest.py`, `review.py`, `checkpoint_audit.py`
 - `teacher/`
   - `mobility`, `signal`, `obstacle` teacher를 direct Ultralytics YOLO로 파인튜닝
   - checkpoint evaluation

@@ -1,10 +1,7 @@
-# ----- Datasets -----
-seg_dataset/
-data/
-datasets/
-seg_dataset
-!tools/od_bootstrap/data/
-!tools/od_bootstrap/data/**
+# ----- Datasets (repo-root artifacts only) -----
+/seg_dataset
+/data/
+/datasets/
 
 # ----- Model weights & checkpoints -----
 *.pt
