@@ -3,20 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import shutil
 import sys
 import tarfile
 import time
 import zipfile
 from collections import Counter, defaultdict
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from common.overlay import render_overlay
 from common.pv26_schema import (
     AIHUB_LANE_DATASET_KEY,
     AIHUB_OBSTACLE_DATASET_KEY,
@@ -26,6 +24,10 @@ from common.pv26_schema import (
     OD_CLASSES,
     OD_CLASS_TO_ID,
     TL_BITS,
+)
+from .aihub_debug import (
+    _generate_debug_vis as _generate_debug_vis_impl,
+    _select_debug_vis_summaries as _select_debug_vis_summaries_impl,
 )
 from .raw_common import (
     LANE_DATASET_KEY as DISCOVERY_LANE_KEY,
@@ -399,21 +401,6 @@ def _obstacle_bbox(annotation: dict[str, Any], width: int, height: int) -> list[
     if x2 <= x1 or y2 <= y1:
         return None
     return [round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3)]
-
-
-def _debug_vis_priority(item: dict[str, Any]) -> tuple[int, int, int]:
-    annotation_score = (
-        int(item.get("det_count", 0))
-        + int(item.get("traffic_light_count", 0))
-        + int(item.get("traffic_sign_count", 0))
-        + int(item.get("lane_count", 0))
-        + int(item.get("stop_line_count", 0))
-        + int(item.get("crosswalk_count", 0))
-    )
-    obstacle_positive = int(item.get("dataset_key") == OUTPUT_OBSTACLE_KEY and int(item.get("det_count", 0)) > 0)
-    non_empty = int(annotation_score > 0)
-    return obstacle_positive, non_empty, annotation_score
-
 
 def _debug_vis_color_for_reason(reason: str) -> str:
     if reason.startswith("excluded_obstacle_"):
@@ -1823,45 +1810,12 @@ def _select_debug_vis_summaries(
     count: int,
     seed: int,
 ) -> list[dict[str, Any]]:
-    if count <= 0 or not summaries:
-        return []
-
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in summaries:
-        grouped[item["dataset_key"]].append(item)
-
-    rng = random.Random(seed)
-    dataset_keys = sorted(grouped)
-    for dataset_key in dataset_keys:
-        rng.shuffle(grouped[dataset_key])
-        grouped[dataset_key].sort(key=_debug_vis_priority)
-
-    selected: list[dict[str, Any]] = []
-    remaining = min(count, len(summaries))
-    active_keys = [key for key in dataset_keys if grouped[key]]
-    while remaining > 0 and active_keys:
-        next_active: list[str] = []
-        for dataset_key in active_keys:
-            bucket = grouped[dataset_key]
-            if not bucket:
-                continue
-            selected.append(bucket.pop())
-            remaining -= 1
-            if bucket:
-                next_active.append(dataset_key)
-            if remaining == 0:
-                break
-        active_keys = next_active
-    return selected
-
-
-def _render_debug_vis_entry(scene_path: str, output_path: str) -> dict[str, str]:
-    scene = _load_json(Path(scene_path))
-    render_overlay(_prepare_debug_scene_for_overlay(scene), Path(output_path))
-    return {
-        "scene_path": scene_path,
-        "output_path": output_path,
-    }
+    return _select_debug_vis_summaries_impl(
+        summaries,
+        count=count,
+        seed=seed,
+        obstacle_dataset_key=OUTPUT_OBSTACLE_KEY,
+    )
 
 
 def _generate_debug_vis(
@@ -1872,72 +1826,19 @@ def _generate_debug_vis(
     debug_vis_seed: int,
     logger: LiveLogger,
 ) -> dict[str, Path | None]:
-    debug_vis_dir = output_root / "meta" / DEBUG_VIS_DIRNAME
-    debug_vis_dir.mkdir(parents=True, exist_ok=True)
-
-    selected = _select_debug_vis_summaries(summaries, count=debug_vis_count, seed=debug_vis_seed)
-    index_path = debug_vis_dir / "index.json"
-    if not selected:
-        _write_json(
-            index_path,
-            {
-                "generated_at": _now_iso(),
-                "selection_count": 0,
-                "seed": debug_vis_seed,
-                "items": [],
-            },
-        )
-        return {
-            "debug_vis_dir": debug_vis_dir,
-            "debug_vis_index": index_path,
-        }
-
-    logger.stage(
-        "debug_vis",
-        "표준화 결과를 사람이 빠르게 검수할 수 있도록 랜덤 샘플에 라벨 오버레이 PNG를 생성합니다.",
-        total=len(selected) + 1,
+    return _generate_debug_vis_impl(
+        output_root,
+        summaries,
+        debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
+        obstacle_dataset_key=OUTPUT_OBSTACLE_KEY,
+        logger=logger,
+        debug_vis_dirname=DEBUG_VIS_DIRNAME,
+        now_iso_fn=_now_iso,
+        write_json_fn=_write_json,
+        load_json_fn=_load_json,
+        prepare_scene_fn=_prepare_debug_scene_for_overlay,
     )
-
-    completed = 0
-    items: list[dict[str, Any]] = []
-    max_workers = max(1, min(8, len(selected)))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {}
-        for item in selected:
-            output_path = debug_vis_dir / item["split"] / f"{item['sample_id']}.png"
-            future = executor.submit(_render_debug_vis_entry, item["scene_path"], str(output_path))
-            future_map[future] = (item, output_path)
-
-        for future in as_completed(future_map):
-            item, output_path = future_map[future]
-            result = future.result()
-            completed += 1
-            items.append(
-                {
-                    "dataset_key": item["dataset_key"],
-                    "split": item["split"],
-                    "sample_id": item["sample_id"],
-                    "scene_path": result["scene_path"],
-                    "image_path": item["image_path"],
-                    "output_path": result["output_path"],
-                }
-            )
-            logger.progress(completed, {"rendered": completed}, force=True)
-
-    _write_json(
-        index_path,
-        {
-            "generated_at": _now_iso(),
-            "selection_count": len(items),
-            "seed": debug_vis_seed,
-            "items": sorted(items, key=lambda item: (item["dataset_key"], item["split"], item["sample_id"])),
-        },
-    )
-    logger.progress(len(selected) + 1, {"rendered": len(items), "index_written": 1}, force=True)
-    return {
-        "debug_vis_dir": debug_vis_dir,
-        "debug_vis_index": index_path,
-    }
 
 
 def run_standardization(

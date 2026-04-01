@@ -6,12 +6,29 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import time
 from types import MethodType
 from typing import Any, Callable
 
 from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
+from .runtime_artifacts import _refresh_latest_teacher_artifacts
+from .runtime_resume import (
+    _checkpoint_resume_metadata,
+    _coerce_weights_name,
+    _extract_run_dir,
+    _find_latest_resumable_checkpoint,
+    _infer_teacher_root_from_checkpoint,
+    _load_checkpoint_payload,
+    _resolve_resume_argument,
+    _resolve_resume_checkpoint_path,
+    _resume_candidate_sort_key,
+)
+from .runtime_tensorboard import (
+    _build_epoch_tensorboard_payload,
+    _build_train_step_tensorboard_payload,
+    _maybe_build_summary_writer,
+    _write_tensorboard_scalars,
+)
 
 try:
     from tqdm.auto import tqdm
@@ -42,127 +59,6 @@ except ImportError:  # pragma: no cover - dependency absence handled in tests wi
     seed_worker = None
     torch_distributed_zero_first = None
     RANK = -1
-
-
-def _coerce_weights_name(model_size: str, weights: str | None) -> str:
-    if weights:
-        return weights
-    size = model_size.strip().lower() or "n"
-    return f"yolo26{size}.pt"
-
-
-def _load_checkpoint_payload(checkpoint: Path) -> dict[str, Any] | None:
-    if torch is None or not checkpoint.is_file():
-        return None
-    try:
-        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _checkpoint_resume_metadata(checkpoint: Path) -> dict[str, Any]:
-    payload = _load_checkpoint_payload(checkpoint)
-    train_args = payload.get("train_args") if isinstance(payload, dict) else None
-    optimizer = payload.get("optimizer") if isinstance(payload, dict) else None
-    epoch = payload.get("epoch") if isinstance(payload, dict) else None
-    return {
-        "epoch": int(epoch) if isinstance(epoch, int) else -1,
-        "train_args": dict(train_args) if isinstance(train_args, dict) else {},
-        "resumable": isinstance(optimizer, dict) and isinstance(epoch, int) and int(epoch) >= 0,
-    }
-
-
-def _infer_teacher_root_from_checkpoint(checkpoint: Path) -> Path | None:
-    for parent in checkpoint.parents:
-        if (parent / "latest_run.json").is_file():
-            return parent
-    return None
-
-
-def _resume_candidate_sort_key(checkpoint: Path) -> tuple[int, int, int, int, str]:
-    metadata = _checkpoint_resume_metadata(checkpoint)
-    name = checkpoint.name
-    kind_priority = 2 if name.startswith("last_resume") else 1 if name.startswith("last") else 0
-    return (
-        int(metadata["resumable"]),
-        kind_priority,
-        int(checkpoint.stat().st_mtime_ns),
-        int(metadata["epoch"]),
-        str(checkpoint),
-    )
-
-
-def _find_latest_resumable_checkpoint(teacher_root: Path) -> Path | None:
-    candidates: set[Path] = set()
-    for pattern in ("**/last_resume*.pt", "**/last*.pt", "**/epoch*.pt"):
-        candidates.update(path for path in teacher_root.glob(pattern) if path.is_file())
-    resumable = [path for path in candidates if _checkpoint_resume_metadata(path)["resumable"]]
-    if not resumable:
-        return None
-    return max(resumable, key=_resume_candidate_sort_key)
-
-
-def _resolve_resume_checkpoint_path(checkpoint: Path, *, teacher_root: Path | None = None) -> Path | None:
-    if not checkpoint.is_file():
-        return None
-    if _checkpoint_resume_metadata(checkpoint)["resumable"]:
-        return checkpoint
-
-    search_root = teacher_root or _infer_teacher_root_from_checkpoint(checkpoint)
-    if search_root is not None:
-        fallback = _find_latest_resumable_checkpoint(search_root)
-        if fallback is not None:
-            return fallback
-
-    sibling_candidates = [path for path in checkpoint.parent.glob("last_resume*.pt") if path.is_file()]
-    sibling_candidates.extend(path for path in checkpoint.parent.glob("epoch*.pt") if path.is_file())
-    resumable = [path for path in sibling_candidates if _checkpoint_resume_metadata(path)["resumable"]]
-    if resumable:
-        return max(resumable, key=_resume_candidate_sort_key)
-    return checkpoint
-
-
-def _find_latest_teacher_checkpoint(teacher_root: Path) -> Path | None:
-    resumable = _find_latest_resumable_checkpoint(teacher_root)
-    if resumable is not None:
-        return resumable
-    candidates = [path for path in teacher_root.glob("**/last*.pt") if path.is_file()]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
-
-
-def _resolve_resume_argument(resume: Any, *, teacher_name: str, teacher_root: Path) -> bool | str:
-    if not resume:
-        return False
-    if isinstance(resume, Path):
-        resolved = _resolve_resume_checkpoint_path(resume, teacher_root=teacher_root)
-        return str(resolved) if resolved is not None else str(resume)
-    if isinstance(resume, str):
-        normalized = resume.strip()
-        if not normalized:
-            return False
-        resolved = _resolve_resume_checkpoint_path(Path(normalized), teacher_root=teacher_root)
-        return str(resolved) if resolved is not None else normalized
-
-    checkpoint = _find_latest_teacher_checkpoint(teacher_root)
-    if checkpoint is None:
-        raise FileNotFoundError(
-            f"resume requested for teacher '{teacher_name}' but no last.pt exists under {teacher_root}"
-        )
-    return str(checkpoint)
-
-
-def _extract_run_dir(train_result: Any, fallback_dir: Path) -> Path:
-    for candidate in (
-        getattr(train_result, "save_dir", None),
-        getattr(getattr(train_result, "trainer", None), "save_dir", None),
-    ):
-        if candidate:
-            return Path(candidate)
-    return fallback_dir
-
 
 def _sync_timing_device(device: Any, enabled: bool) -> None:
     if not enabled or torch is None or not torch.cuda.is_available():
@@ -208,192 +104,6 @@ def _timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
         "wait_sec": _profile_stats([item["wait_sec"] for item in window]),
         "compute_sec": _profile_stats([item["compute_sec"] for item in window]),
     }
-
-def _maybe_build_summary_writer(log_dir: Path):
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-    except Exception as exc:  # pragma: no cover - optional dependency.
-        return None, {
-            "enabled": False,
-            "status": "unavailable",
-            "error": str(exc),
-            "log_dir": str(log_dir),
-        }
-    try:
-        writer = SummaryWriter(log_dir=str(log_dir))
-    except Exception as exc:  # pragma: no cover
-        return None, {
-            "enabled": False,
-            "status": "init_failed",
-            "error": str(exc),
-            "log_dir": str(log_dir),
-        }
-    return writer, {
-        "enabled": True,
-        "status": "active",
-        "error": None,
-        "log_dir": str(log_dir),
-    }
-
-
-def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
-    if writer is None:
-        return 0
-    count = 0
-    for name, value in _flatten_scalar_tree(prefix, payload):
-        writer.add_scalar(name, value, global_step=int(step))
-        count += 1
-    return count
-
-
-def _coerce_scalar(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return 1.0 if value else 0.0
-    if isinstance(value, (int, float)):
-        numeric = float(value)
-        if math.isfinite(numeric):
-            return numeric
-    return None
-
-
-def _first_scalar(source: dict[str, Any], *keys: str) -> float | None:
-    for key in keys:
-        if key in source:
-            numeric = _coerce_scalar(source[key])
-            if numeric is not None:
-                return numeric
-    return None
-
-
-def _train_loss_payload(losses: dict[str, Any]) -> dict[str, float]:
-    payload: dict[str, float] = {}
-    for source_key, target_key in (
-        ("train/box_loss", "box_loss"),
-        ("train/cls_loss", "cls_loss"),
-        ("train/dfl_loss", "dfl_loss"),
-    ):
-        value = _first_scalar(losses, source_key, target_key)
-        if value is not None:
-            payload[target_key] = value
-    return payload
-
-
-def _epoch_lr_payload(lr_values: dict[str, Any]) -> dict[str, float]:
-    value = _first_scalar(lr_values, "lr/pg0", "pg0")
-    if value is None:
-        return {}
-    return {"pg0": value}
-
-
-def _epoch_metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    precision = None
-    recall = None
-    for target_key, candidates in (
-        ("precision", ("metrics/precision(B)", "metrics/precision")),
-        ("recall", ("metrics/recall(B)", "metrics/recall")),
-        ("mAP50", ("metrics/mAP50(B)", "metrics/mAP50")),
-        ("mAP50_95", ("metrics/mAP50-95(B)", "metrics/mAP50-95")),
-    ):
-        value = _first_scalar(metrics, *candidates)
-        if value is not None:
-            payload[target_key] = value
-            if target_key == "precision":
-                precision = value
-            elif target_key == "recall":
-                recall = value
-
-    if precision is not None and recall is not None and (precision + recall) > 0.0:
-        payload["f1"] = (2.0 * precision * recall) / (precision + recall)
-
-    val_payload: dict[str, float] = {}
-    for source_key, target_key in (
-        ("val/box_loss", "box_loss"),
-        ("val/cls_loss", "cls_loss"),
-        ("val/dfl_loss", "dfl_loss"),
-    ):
-        value = _first_scalar(metrics, source_key, target_key)
-        if value is not None:
-            val_payload[target_key] = value
-    if val_payload:
-        payload["val"] = val_payload
-    return payload
-
-
-def _epoch_profile_payload(profile_summary: dict[str, Any]) -> dict[str, float]:
-    payload: dict[str, float] = {}
-    for target_key, source_group in (
-        ("iteration_mean", "iteration_sec"),
-        ("wait_mean", "wait_sec"),
-        ("compute_mean", "compute_sec"),
-    ):
-        if isinstance(profile_summary.get(source_group), dict):
-            value = _first_scalar(profile_summary[source_group], "mean")
-            if value is not None:
-                payload[target_key] = value
-    return payload
-
-
-def _train_step_profile_payload(profile_summary: dict[str, Any]) -> dict[str, float]:
-    payload: dict[str, float] = {}
-    for target_key, source_group, stat_key in (
-        ("iteration_mean", "iteration_sec", "mean"),
-        ("iteration_p50", "iteration_sec", "p50"),
-        ("iteration_p99", "iteration_sec", "p99"),
-        ("wait_mean", "wait_sec", "mean"),
-        ("compute_mean", "compute_sec", "mean"),
-    ):
-        if isinstance(profile_summary.get(source_group), dict):
-            value = _first_scalar(profile_summary[source_group], stat_key)
-            if value is not None:
-                payload[target_key] = value
-    return payload
-
-
-def _build_epoch_tensorboard_payload(
-    *,
-    losses: dict[str, Any],
-    profile_summary: dict[str, Any],
-    lr_values: dict[str, Any],
-    metrics: dict[str, Any],
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-
-    train_loss = _train_loss_payload(losses)
-    if train_loss:
-        payload["train"] = train_loss
-
-    lr_payload = _epoch_lr_payload(lr_values)
-    if lr_payload:
-        payload["lr"] = lr_payload
-
-    profile_payload = _epoch_profile_payload(profile_summary)
-    if profile_payload:
-        payload["profile_sec"] = profile_payload
-
-    payload.update(_epoch_metric_payload(metrics))
-    return payload
-
-
-def _build_train_step_tensorboard_payload(
-    *,
-    losses: dict[str, Any],
-    profile_summary: dict[str, Any],
-    elapsed_sec: float,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-
-    loss_payload = _train_loss_payload(losses)
-    if loss_payload:
-        payload["loss"] = loss_payload
-
-    profile_payload = _train_step_profile_payload(profile_summary)
-    if profile_payload:
-        payload["profile_sec"] = profile_payload
-
-    payload["elapsed_sec"] = float(elapsed_sec)
-    return payload
-
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -563,66 +273,6 @@ def _install_ultralytics_postfix_renderer(pbar: Any) -> Any:
     pbar._display = MethodType(_display_with_bootstrap_postfix, pbar)
     pbar.set_bootstrap_postfix = MethodType(_set_bootstrap_postfix, pbar)
     return pbar
-
-
-def _remove_path(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-        return
-    if path.is_dir():
-        shutil.rmtree(path)
-
-
-def _link_or_copy_file(source: Path, destination: Path) -> str:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() or destination.is_symlink():
-        _remove_path(destination)
-    try:
-        destination.hardlink_to(source)
-        return "hardlink"
-    except OSError:
-        try:
-            os.symlink(source, destination)
-            return "symlink"
-        except OSError:
-            shutil.copy2(source, destination)
-            return "copy"
-
-
-def _refresh_latest_teacher_artifacts(
-    *,
-    teacher_root: Path,
-    run_dir: Path,
-    summary: dict[str, Any],
-) -> dict[str, Any]:
-    latest_summary_path = teacher_root / "train_summary.json"
-    latest_summary_path.parent.mkdir(parents=True, exist_ok=True)
-    latest_summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-
-    alias_weights_root = teacher_root / "weights"
-    alias_actions: dict[str, str] = {}
-    for checkpoint_name in ("best.pt", "last.pt", "last_resume.pt"):
-        source_path = run_dir / "weights" / checkpoint_name
-        if not source_path.is_file():
-            continue
-        alias_actions[checkpoint_name] = _link_or_copy_file(source_path, alias_weights_root / checkpoint_name)
-
-    latest_run_payload = {
-        "teacher_root": str(teacher_root),
-        "run_dir": str(run_dir),
-        "best_checkpoint": str(run_dir / "weights" / "best.pt"),
-        "last_checkpoint": str(run_dir / "weights" / "last.pt"),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "alias_actions": alias_actions,
-    }
-    latest_run_path = teacher_root / "latest_run.json"
-    latest_run_path.write_text(json.dumps(latest_run_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return {
-        "train_summary_path": str(latest_summary_path),
-        "latest_run_path": str(latest_run_path),
-        "weights_root": str(alias_weights_root),
-        "alias_actions": alias_actions,
-    }
 
 
 def _loader_profile_payload(loader: Any) -> dict[str, Any]:
