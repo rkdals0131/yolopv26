@@ -8,7 +8,7 @@ import sys
 import tarfile
 import time
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from multiprocessing import get_context
@@ -19,15 +19,27 @@ from common.pv26_schema import (
     AIHUB_LANE_DATASET_KEY,
     AIHUB_OBSTACLE_DATASET_KEY,
     AIHUB_TRAFFIC_DATASET_KEY,
-    LANE_CLASSES,
-    LANE_TYPES,
-    OD_CLASSES,
     OD_CLASS_TO_ID,
     TL_BITS,
 )
 from .aihub_debug import (
     _generate_debug_vis as _generate_debug_vis_impl,
     _select_debug_vis_summaries as _select_debug_vis_summaries_impl,
+)
+from .aihub_reports import (
+    aggregate_results as _aggregate_results,
+    conversion_report_markdown as _conversion_report_markdown,
+    det_class_map_yaml as _det_class_map_yaml,
+    failure_manifest_markdown as _failure_manifest_markdown,
+    qa_summary as _qa_summary,
+    qa_summary_markdown as _qa_summary_markdown,
+    scene_class_map_yaml as _scene_class_map_yaml,
+)
+from .aihub_source_meta import (
+    build_source_inventory as _build_source_inventory,
+    source_inventory_markdown as _source_inventory_markdown,
+    source_root_for_dataset as _source_root_for_dataset,
+    write_source_readmes as _write_source_readmes,
 )
 from .raw_common import (
     LANE_DATASET_KEY as DISCOVERY_LANE_KEY,
@@ -68,8 +80,6 @@ DEFAULT_DEBUG_VIS_SEED = 26
 OUTPUT_LANE_KEY = AIHUB_LANE_DATASET_KEY
 OUTPUT_OBSTACLE_KEY = AIHUB_OBSTACLE_DATASET_KEY
 OUTPUT_TRAFFIC_KEY = AIHUB_TRAFFIC_DATASET_KEY
-README_TREE_DEPTH = 3
-MAX_TREE_LINES = 96
 DOCUMENTED_STATS = {
     OUTPUT_LANE_KEY: {
         "json_count_seoul": 1_147_048,
@@ -1036,774 +1046,6 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
     }
 
 
-def _inventory_lane_root(dataset_root: Path) -> dict[str, Any]:
-    inventory: dict[str, Any] = {
-        "root": str(dataset_root),
-        "splits": {},
-    }
-    for split in ("Training", "Validation", "Test"):
-        split_root = dataset_root / split
-        if not split_root.exists():
-            inventory["splits"][split] = {"present": False}
-            continue
-        images = sum(
-            1
-            for path in split_root.rglob("*")
-            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
-        )
-        json_files = sum(1 for path in split_root.rglob("*.json") if path.is_file())
-        archives = Counter(path.suffix.lower() for path in split_root.rglob("*") if path.is_file() and path.suffix.lower() in {".zip", ".tar"})
-        inventory["splits"][split] = {
-            "present": True,
-            "images": images,
-            "json_files": json_files,
-            "archives": _counter_to_dict(archives),
-        }
-    return inventory
-
-
-def _inventory_traffic_root(dataset_root: Path) -> dict[str, Any]:
-    inventory: dict[str, Any] = {
-        "root": str(dataset_root),
-        "splits": {},
-    }
-    for split in ("Training", "Validation", "Test"):
-        split_root = dataset_root / split
-        if not split_root.exists():
-            inventory["splits"][split] = {"present": False}
-            continue
-        raw_images = 0
-        crop_images = 0
-        for path in split_root.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
-                continue
-            if "표지판코드분류crop데이터" in str(path):
-                crop_images += 1
-            else:
-                raw_images += 1
-        json_files = sum(1 for path in split_root.rglob("*.json") if path.is_file())
-        archives = Counter(path.suffix.lower() for path in split_root.rglob("*") if path.is_file() and path.suffix.lower() in {".zip", ".tar"})
-        inventory["splits"][split] = {
-            "present": True,
-            "raw_images": raw_images,
-            "crop_images": crop_images,
-            "json_files": json_files,
-            "archives": _counter_to_dict(archives),
-        }
-    return inventory
-
-
-def _inventory_obstacle_root(dataset_root: Path) -> dict[str, Any]:
-    inventory: dict[str, Any] = {
-        "root": str(dataset_root),
-        "splits": {},
-    }
-    for split in ("Training", "Validation", "Test"):
-        split_root = dataset_root / split
-        if not split_root.exists():
-            inventory["splits"][split] = {"present": False}
-            continue
-        images = sum(
-            1
-            for path in split_root.rglob("*")
-            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
-        )
-        json_files = sum(1 for path in split_root.rglob("*.json") if path.is_file())
-        archives = Counter(path.suffix.lower() for path in split_root.rglob("*") if path.is_file() and path.suffix.lower() in {".zip", ".tar"})
-        inventory["splits"][split] = {
-            "present": True,
-            "images": images,
-            "json_files": json_files,
-            "archives": _counter_to_dict(archives),
-        }
-    return inventory
-
-
-def _docs_inventory(docs_root: Path) -> list[dict[str, Any]]:
-    return [
-        {
-            "file_name": path.name,
-            "path": str(path),
-            "size_bytes": path.stat().st_size,
-        }
-        for path in sorted(docs_root.glob("*.pdf"))
-        if path.is_file()
-    ]
-
-
-def _source_pdf_inventory(dataset_root: Path) -> list[dict[str, Any]]:
-    return [
-        {
-            "file_name": path.name,
-            "path": str(path),
-            "size_bytes": path.stat().st_size,
-        }
-        for path in sorted(dataset_root.glob("*.pdf"))
-        if path.is_file()
-    ]
-
-
-def _tree_markdown(root: Path, *, max_depth: int = README_TREE_DEPTH, max_lines: int = MAX_TREE_LINES) -> str:
-    lines = [f"{root.name}/"]
-
-    def walk(current: Path, depth: int) -> None:
-        if len(lines) >= max_lines or depth >= max_depth:
-            return
-        children = sorted(current.iterdir(), key=lambda item: (item.is_file(), item.name))
-        for child in children:
-            if len(lines) >= max_lines:
-                break
-            indent = "  " * depth
-            suffix = "/" if child.is_dir() else ""
-            lines.append(f"{indent}- {child.name}{suffix}")
-            if child.is_dir():
-                walk(child, depth + 1)
-
-    walk(root, 1)
-    if len(lines) >= max_lines:
-        lines.append("  - ...")
-    return "\n".join(lines)
-
-
-def _lane_readme(dataset_root: Path, docs_root: Path, inventory: dict[str, Any]) -> str:
-    stats = DOCUMENTED_STATS[OUTPUT_LANE_KEY]
-    lines = [
-        "# 차선-횡단보도 인지 영상(수도권)",
-        "",
-        "AIHUB 원본 데이터셋의 로컬 구조, 문서 기준 통계, 실제 JSON 스키마를 정리한 원본용 README다.",
-        "",
-        "## 문서 기준 통계",
-        "",
-        f"- 문서 기준 수도권 json 수량: `{stats['json_count_seoul']:,}`",
-        f"- 문서 기준 수도권 차선 객체 수: `{stats['lane_objects_seoul']:,}`",
-        f"- 문서 기준 수도권 횡단보도 객체 수: `{stats['crosswalk_objects_seoul']:,}`",
-        f"- 문서 기준 수도권 정지선 객체 수: `{stats['stop_line_objects_seoul']:,}`",
-        f"- 문서 기준 차선 색상 분포: `white {stats['white_lane_objects_seoul']:,} / yellow {stats['yellow_lane_objects_seoul']:,} / blue {stats['blue_lane_objects_seoul']:,}`",
-        f"- 문서 기준 차선 타입 분포: `solid {stats['solid_lane_objects_seoul']:,} / dotted {stats['dotted_lane_objects_seoul']:,}`",
-        "",
-        "## 현재 로컬 보유 상태",
-        "",
-        "| Split | Present | Images | JSON | Archives |",
-        "| --- | --- | ---: | ---: | --- |",
-    ]
-    for split, split_info in inventory["splits"].items():
-        if not split_info["present"]:
-            lines.append(f"| {split} | no | 0 | 0 | - |")
-            continue
-        archives = ", ".join(f"{key}:{value}" for key, value in split_info["archives"].items()) or "-"
-        lines.append(
-            f"| {split} | yes | {split_info['images']:,} | {split_info['json_files']:,} | {archives} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## 로컬 디렉터리 구조",
-            "",
-            "```text",
-            _tree_markdown(dataset_root),
-            "```",
-            "",
-            "## 원본 어노테이션 스키마 요약",
-            "",
-            "- 이미지 메타: `image.file_name`, `image.image_size`",
-            "- 라벨 객체 리스트: `annotations[]`",
-            "- 차선: `class=traffic_lane`, `category=polyline`, `attributes=[lane_color, lane_type]`, `data=[{x,y}, ...]`",
-            "- 정지선: `class=stop_line`, `category=polyline`, `data=[{x,y}, ...]`",
-            "- 횡단보도: `class=crosswalk`, `category=polygon`, `data=[{x,y}, ...]`",
-            "",
-            "## 표준화 관점 메모",
-            "",
-            "- 차선은 `white/yellow/blue`와 `solid/dotted` 속성을 모두 가진다.",
-            "- 정지선과 횡단보도는 차선과 별도 객체로 존재한다.",
-            "- 현재 표준화 스크립트는 원본 geometry를 유지한 scene JSON을 만들고, 학습용 fixed-length target은 후단 encoder가 만든다.",
-            "",
-            "## 참조 문서",
-            "",
-        ]
-    )
-    for item in _docs_inventory(docs_root):
-        lines.append(f"- `{item['file_name']}`")
-    return "\n".join(lines) + "\n"
-
-
-def _traffic_readme(dataset_root: Path, docs_root: Path, inventory: dict[str, Any]) -> str:
-    stats = DOCUMENTED_STATS[OUTPUT_TRAFFIC_KEY]
-    lines = [
-        "# 신호등-도로표지판 인지 영상(수도권)",
-        "",
-        "AIHUB 원본 데이터셋의 로컬 구조, 문서 기준 통계, 실제 JSON 스키마를 정리한 원본용 README다.",
-        "",
-        "## 문서 기준 통계",
-        "",
-        f"- 문서 기준 수도권 json 수량: `{stats['json_count_seoul']:,}`",
-        f"- 문서 기준 수도권 신호등 객체 수: `{stats['traffic_light_objects_seoul']:,}`",
-        f"- 문서 기준 수도권 표지판 객체 수: `{stats['traffic_sign_objects_seoul']:,}`",
-        f"- 문서 기준 수도권 TL 상태 분포: `red {stats['traffic_light_red_seoul']:,} / yellow {stats['traffic_light_yellow_seoul']:,} / green {stats['traffic_light_green_seoul']:,} / left_arrow {stats['traffic_light_left_arrow_seoul']:,}`",
-        f"- 문서 기준 수도권 표지판 세부 분포: `instruction {stats['traffic_sign_instruction_seoul']:,} / caution {stats['traffic_sign_caution_seoul']:,} / restriction {stats['traffic_sign_restriction_seoul']:,}`",
-        "",
-        "## 현재 로컬 보유 상태",
-        "",
-        "| Split | Present | Raw Images | Crop Images | JSON | Archives |",
-        "| --- | --- | ---: | ---: | ---: | --- |",
-    ]
-    for split, split_info in inventory["splits"].items():
-        if not split_info["present"]:
-            lines.append(f"| {split} | no | 0 | 0 | 0 | - |")
-            continue
-        archives = ", ".join(f"{key}:{value}" for key, value in split_info["archives"].items()) or "-"
-        lines.append(
-            f"| {split} | yes | {split_info['raw_images']:,} | {split_info['crop_images']:,} | {split_info['json_files']:,} | {archives} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## 로컬 디렉터리 구조",
-            "",
-            "```text",
-            _tree_markdown(dataset_root),
-            "```",
-            "",
-            "## 원본 어노테이션 스키마 요약",
-            "",
-            "- 이미지 메타: `image.filename`, `image.imsize`",
-            "- 라벨 객체 리스트: `annotation[]`",
-            "- 신호등: `class=traffic_light`, `box=[x1,y1,x2,y2]`, `attribute=[{red, yellow, green, left_arrow, others_arrow, x_light}]`, `type`, `direction`, `light_count`",
-            "- 표지판: `class=traffic_sign`, `box=[x1,y1,x2,y2]`, `shape`, `color`, `kind`, `type`, `text`",
-            "- 보조 정보: `class=traffic_information`, `type`",
-            "",
-            "## 표준화 관점 메모",
-            "",
-            "- 원천 주행 이미지와 `표지판코드분류crop데이터*`가 같은 split 아래 공존한다. detector 표준화는 원천 주행 이미지와 JSON만 사용하고 crop 분류셋은 별도 auxiliary 자산으로 본다.",
-            "- detector class는 `traffic_light` generic bbox와 `sign`으로 정규화한다.",
-            "- TL 상태는 후단 crop 분류기가 아니라 같은 박스에 붙는 `red/yellow/green/arrow` 4-bit supervision으로 유지한다.",
-            "- `left_arrow`와 `others_arrow`는 `arrow=1`로 접는다. `off`는 네 bit가 모두 0인 상태로 유지한다.",
-            "- `x_light`, non-car signal, base color 다중 on 조합은 TL attribute 학습 마스크로 빠진다.",
-            "",
-            "## 참조 문서",
-            "",
-        ]
-    )
-    for item in _docs_inventory(docs_root):
-        lines.append(f"- `{item['file_name']}`")
-    return "\n".join(lines) + "\n"
-
-
-def _obstacle_readme(dataset_root: Path, inventory: dict[str, Any]) -> str:
-    local_docs = _source_pdf_inventory(dataset_root)
-    lines = [
-        "# 도로장애물·표면 인지 영상(수도권)",
-        "",
-        "AIHUB 원본 데이터셋의 로컬 구조와 detector-only 표준화 규칙을 정리한 원본용 README다.",
-        "",
-        "## 현재 로컬 보유 상태",
-        "",
-        "| Split | Present | Images | JSON | Archives |",
-        "| --- | --- | ---: | ---: | --- |",
-    ]
-    for split, split_info in inventory["splits"].items():
-        if not split_info["present"]:
-            lines.append(f"| {split} | no | 0 | 0 | - |")
-            continue
-        archives = ", ".join(f"{key}:{value}" for key, value in split_info["archives"].items()) or "-"
-        lines.append(
-            f"| {split} | yes | {split_info['images']:,} | {split_info['json_files']:,} | {archives} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## 로컬 디렉터리 구조",
-            "",
-            "```text",
-            _tree_markdown(dataset_root),
-            "```",
-            "",
-            "## 원본 어노테이션 스키마 요약",
-            "",
-            "- 이미지 메타: `images.file_name`, `images.width`, `images.height`",
-            "- 라벨 객체 리스트: `annotations[]`",
-            "- 카테고리 정의: `categories[{id, name}]`",
-            "- 박스 포맷: `bbox=[x, y, w, h]`",
-            "",
-            "## 표준화 관점 메모",
-            "",
-            "- detector class는 `traffic_cone`와 `obstacle`만 유지한다.",
-            "- remap: `Traffic cone -> traffic_cone`",
-            "- remap: `Animals(Dolls) / Garbage bag & sacks / Construction signs & Parking prohibited board / Box / Stones on road -> obstacle`",
-            "- exclusion: `Person / Manhole / Pothole on road / Filled pothole`는 detector canonical output에서 제외한다.",
-            "- lane, stop-line, crosswalk, traffic-light attribute supervision은 이 source에서 제공하지 않는다.",
-            "",
-            "## 참조 문서",
-            "",
-        ]
-    )
-    for item in local_docs:
-        lines.append(f"- `{item['file_name']}`")
-    return "\n".join(lines) + "\n"
-
-
-def _write_source_readmes(
-    lane_root: Path,
-    traffic_root: Path,
-    obstacle_root: Path,
-    docs_root: Path,
-    logger: LiveLogger,
-) -> dict[str, str]:
-    logger.stage(
-        "source_readme",
-        "원본 데이터셋을 다시 열지 않고도 구조와 스키마를 확인할 수 있게 dataset-local README를 생성합니다.",
-        total=3,
-    )
-    lane_inventory = _inventory_lane_root(lane_root)
-    traffic_inventory = _inventory_traffic_root(traffic_root)
-    obstacle_inventory = _inventory_obstacle_root(obstacle_root)
-    lane_readme_path = lane_root / "README.md"
-    traffic_readme_path = traffic_root / "README.md"
-    obstacle_readme_path = obstacle_root / "README.md"
-    _write_text(lane_readme_path, _lane_readme(lane_root, docs_root, lane_inventory))
-    logger.progress(1, {"written": 1}, force=True)
-    _write_text(traffic_readme_path, _traffic_readme(traffic_root, docs_root, traffic_inventory))
-    logger.progress(2, {"written": 2}, force=True)
-    _write_text(obstacle_readme_path, _obstacle_readme(obstacle_root, obstacle_inventory))
-    logger.progress(3, {"written": 3}, force=True)
-    return {
-        "lane_readme": str(lane_readme_path),
-        "traffic_readme": str(traffic_readme_path),
-        "obstacle_readme": str(obstacle_readme_path),
-    }
-
-
-def _build_source_inventory(
-    lane_root: Path,
-    traffic_root: Path,
-    obstacle_root: Path,
-    docs_root: Path,
-    readme_paths: dict[str, str],
-) -> dict[str, Any]:
-    return {
-        "version": PIPELINE_VERSION,
-        "generated_at": _now_iso(),
-        "docs": _docs_inventory(docs_root),
-        "datasets": [
-            {
-                "dataset_key": OUTPUT_LANE_KEY,
-                "documented_stats": DOCUMENTED_STATS[OUTPUT_LANE_KEY],
-                "local_inventory": _inventory_lane_root(lane_root),
-                "readme_path": readme_paths["lane_readme"],
-            },
-            {
-                "dataset_key": OUTPUT_TRAFFIC_KEY,
-                "documented_stats": DOCUMENTED_STATS[OUTPUT_TRAFFIC_KEY],
-                "local_inventory": _inventory_traffic_root(traffic_root),
-                "readme_path": readme_paths["traffic_readme"],
-            },
-            {
-                "dataset_key": OUTPUT_OBSTACLE_KEY,
-                "documented_stats": {
-                    "doc_references": [item["file_name"] for item in _source_pdf_inventory(obstacle_root)],
-                },
-                "local_inventory": _inventory_obstacle_root(obstacle_root),
-                "readme_path": readme_paths["obstacle_readme"],
-            },
-        ],
-    }
-
-
-def _source_root_for_dataset(
-    dataset_key: str,
-    *,
-    lane_root: Path,
-    traffic_root: Path,
-    obstacle_root: Path,
-) -> Path:
-    if dataset_key == OUTPUT_LANE_KEY:
-        return lane_root
-    if dataset_key == OUTPUT_TRAFFIC_KEY:
-        return traffic_root
-    if dataset_key == OUTPUT_OBSTACLE_KEY:
-        return obstacle_root
-    raise KeyError(f"unsupported AIHUB dataset key: {dataset_key}")
-
-
-def _source_inventory_markdown(source_inventory: dict[str, Any]) -> str:
-    lines = [
-        "# PV26 AIHUB Source Inventory",
-        "",
-        f"- Generated: `{source_inventory['generated_at']}`",
-        f"- Version: `{source_inventory['version']}`",
-        "",
-        "## Docs",
-        "",
-    ]
-    for item in source_inventory["docs"]:
-        lines.append(f"- `{item['file_name']}` ({item['size_bytes']:,} bytes)")
-    for dataset in source_inventory["datasets"]:
-        lines.extend(
-            [
-                "",
-                f"## {dataset['dataset_key']}",
-                "",
-                f"- Root: `{dataset['local_inventory']['root']}`",
-                f"- README: `{dataset['readme_path']}`",
-                "",
-                "| Split | Present | Images/Raw | Crop | JSON | Archives |",
-                "| --- | --- | ---: | ---: | ---: | --- |",
-            ]
-        )
-        for split, split_info in dataset["local_inventory"]["splits"].items():
-            if not split_info["present"]:
-                lines.append(f"| {split} | no | 0 | 0 | 0 | - |")
-                continue
-            if dataset["dataset_key"] == OUTPUT_TRAFFIC_KEY:
-                images_or_raw = split_info["raw_images"]
-                crop_images = split_info["crop_images"]
-            else:
-                images_or_raw = split_info["images"]
-                crop_images = 0
-            archives = ", ".join(f"{key}:{value}" for key, value in split_info["archives"].items()) or "-"
-            lines.append(
-                f"| {split} | yes | {images_or_raw:,} | {crop_images:,} | {split_info['json_files']:,} | {archives} |"
-            )
-    return "\n".join(lines) + "\n"
-
-
-def _aggregate_results(
-    lane_root: Path,
-    traffic_root: Path,
-    obstacle_root: Path,
-    output_root: Path,
-    workers: int,
-    max_samples_per_dataset: int | None,
-    debug_vis_count: int,
-    source_inventory: dict[str, Any],
-    summaries: list[dict[str, Any]],
-    failures: list[dict[str, Any]],
-) -> dict[str, Any]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in summaries:
-        grouped[item["dataset_key"]].append(item)
-
-    datasets: list[dict[str, Any]] = []
-    for dataset_key, items in sorted(grouped.items()):
-        split_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        det_class_counts = Counter()
-        lane_class_counts = Counter()
-        lane_type_counts = Counter()
-        tl_combo_counts = Counter()
-        tl_invalid_reason_counts = Counter()
-        held_reason_counts = Counter()
-        materialization_counts = Counter()
-        total_stop_lines = 0
-        total_crosswalks = 0
-        total_tl_valid = 0
-        total_tl_invalid = 0
-        total_lights = 0
-        total_signs = 0
-        total_dets = 0
-        total_resume_skipped = 0
-        empty_scene_count = 0
-        for item in items:
-            split = item["split"]
-            split_counts[split]["samples"] += 1
-            split_counts[split]["detections"] += item["det_count"]
-            split_counts[split]["lanes"] += item["lane_count"]
-            split_counts[split]["stop_lines"] += item["stop_line_count"]
-            split_counts[split]["crosswalks"] += item["crosswalk_count"]
-            split_counts[split]["traffic_lights"] += item["traffic_light_count"]
-            split_counts[split]["traffic_signs"] += item["traffic_sign_count"]
-            total_stop_lines += item["stop_line_count"]
-            total_crosswalks += item["crosswalk_count"]
-            total_tl_valid += item["tl_attr_valid_count"]
-            total_tl_invalid += item["tl_attr_invalid_count"]
-            total_lights += item["traffic_light_count"]
-            total_signs += item["traffic_sign_count"]
-            total_dets += item["det_count"]
-            total_resume_skipped += int(item.get("resume_skipped", 0))
-            materialization_counts[item["image_materialization"]] += 1
-            det_class_counts.update(item["det_class_counts"])
-            lane_class_counts.update(item["lane_class_counts"])
-            lane_type_counts.update(item["lane_type_counts"])
-            tl_combo_counts.update(item["tl_combo_counts"])
-            tl_invalid_reason_counts.update(item["tl_invalid_reason_counts"])
-            held_reason_counts.update(item["held_reason_counts"])
-            if item["det_count"] == 0 and item["lane_count"] == 0 and item["stop_line_count"] == 0 and item["crosswalk_count"] == 0:
-                empty_scene_count += 1
-
-        dataset_failures = [item for item in failures if item["dataset_key"] == dataset_key]
-
-        datasets.append(
-            {
-                "dataset_key": dataset_key,
-                "source_root": str(
-                    _source_root_for_dataset(
-                        dataset_key,
-                        lane_root=lane_root,
-                        traffic_root=traffic_root,
-                        obstacle_root=obstacle_root,
-                    )
-                ),
-                "processed_samples": len(items),
-                "fresh_processed_count": len(items) - total_resume_skipped,
-                "resume_skipped_count": total_resume_skipped,
-                "failure_count": len(dataset_failures),
-                "per_split_counts": {
-                    split: {key: value for key, value in sorted(counts.items())}
-                    for split, counts in sorted(split_counts.items())
-                },
-                "det_class_counts": _counter_to_dict(det_class_counts),
-                "lane_class_counts": _counter_to_dict(lane_class_counts),
-                "lane_type_counts": _counter_to_dict(lane_type_counts),
-                "stop_line_count": total_stop_lines,
-                "crosswalk_count": total_crosswalks,
-                "traffic_light_count": total_lights,
-                "traffic_sign_count": total_signs,
-                "detection_count": total_dets,
-                "tl_attr_valid_count": total_tl_valid,
-                "tl_attr_invalid_count": total_tl_invalid,
-                "tl_combo_counts": _counter_to_dict(tl_combo_counts),
-                "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
-                "held_reason_counts": _counter_to_dict(held_reason_counts),
-                "image_materialization": _counter_to_dict(materialization_counts),
-                "empty_scene_count": empty_scene_count,
-            }
-        )
-
-    return {
-        "version": PIPELINE_VERSION,
-        "scene_version": SCENE_VERSION,
-        "generated_at": _now_iso(),
-        "settings": {
-            "workers": workers,
-            "max_samples_per_dataset": max_samples_per_dataset,
-            "debug_vis_count": debug_vis_count,
-            "output_root": str(output_root),
-            "failure_count": len(failures),
-        },
-        "det_class_map": {str(index): class_name for index, class_name in enumerate(OD_CLASSES)},
-        "lane_class_map": {str(index): class_name for index, class_name in enumerate(LANE_CLASSES)},
-        "tl_bits": TL_BITS,
-        "datasets": datasets,
-        "failures": failures,
-        "source_inventory_snapshot": source_inventory,
-    }
-
-
-def _conversion_report_markdown(report: dict[str, Any]) -> str:
-    lines = [
-        "# PV26 AIHUB Conversion Report",
-        "",
-        f"- Generated: `{report['generated_at']}`",
-        f"- Version: `{report['version']}`",
-        f"- Output root: `{report['settings']['output_root']}`",
-        f"- Workers: `{report['settings']['workers']}`",
-        f"- Max samples per dataset: `{report['settings']['max_samples_per_dataset']}`",
-        "",
-    ]
-    for dataset in report["datasets"]:
-        lines.extend(
-            [
-                f"## {dataset['dataset_key']}",
-                "",
-                f"- Processed samples: `{dataset['processed_samples']}`",
-                f"- Fresh processed samples: `{dataset['fresh_processed_count']}`",
-                f"- Resume skipped samples: `{dataset['resume_skipped_count']}`",
-                f"- Failure count: `{dataset['failure_count']}`",
-                f"- Detection count: `{dataset['detection_count']}`",
-                f"- Lane count: `{sum(item['lanes'] for item in dataset['per_split_counts'].values()) if dataset['per_split_counts'] else 0}`",
-                f"- Stop line count: `{dataset['stop_line_count']}`",
-                f"- Crosswalk count: `{dataset['crosswalk_count']}`",
-                f"- Traffic light count: `{dataset['traffic_light_count']}`",
-                f"- Traffic sign count: `{dataset['traffic_sign_count']}`",
-                "",
-                "| Split | Samples | Detections | Lanes | Stop lines | Crosswalks | TL | Sign |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-            ]
-        )
-        for split, counts in dataset["per_split_counts"].items():
-            lines.append(
-                f"| {split} | {counts.get('samples', 0)} | {counts.get('detections', 0)} | {counts.get('lanes', 0)} "
-                f"| {counts.get('stop_lines', 0)} | {counts.get('crosswalks', 0)} | {counts.get('traffic_lights', 0)} "
-                f"| {counts.get('traffic_signs', 0)} |"
-            )
-        if dataset["det_class_counts"]:
-            lines.extend(["", "### Detection Class Counts", ""])
-            for key, value in dataset["det_class_counts"].items():
-                lines.append(f"- `{key}`: {value}")
-        if dataset["lane_class_counts"]:
-            lines.extend(["", "### Lane Class Counts", ""])
-            for key, value in dataset["lane_class_counts"].items():
-                lines.append(f"- `{key}`: {value}")
-        if dataset["tl_combo_counts"]:
-            lines.extend(["", "### TL Combo Counts", ""])
-            for key, value in dataset["tl_combo_counts"].items():
-                lines.append(f"- `{key}`: {value}")
-        if dataset["tl_invalid_reason_counts"]:
-            lines.extend(["", "### TL Invalid Reasons", ""])
-            for key, value in dataset["tl_invalid_reason_counts"].items():
-                lines.append(f"- `{key}`: {value}")
-        if dataset["held_reason_counts"]:
-            lines.extend(["", "### Held Reasons", ""])
-            for key, value in dataset["held_reason_counts"].items():
-                lines.append(f"- `{key}`: {value}")
-        lines.append("")
-    if report["failures"]:
-        lines.extend(["## Failure Manifest", ""])
-        for item in report["failures"][:32]:
-            lines.append(
-                f"- dataset=`{item['dataset_key']}` split=`{item['split']}` raw_id=`{item['raw_id']}` error=`{item['error_type']}`"
-            )
-    return "\n".join(lines) + "\n"
-
-
-def _failure_manifest_markdown(manifest: dict[str, Any]) -> str:
-    lines = [
-        "# PV26 AIHUB Failure Manifest",
-        "",
-        f"- Generated: `{manifest['generated_at']}`",
-        f"- Version: `{manifest['version']}`",
-        f"- Failure count: `{manifest['failure_count']}`",
-        "",
-    ]
-    for item in manifest["items"]:
-        lines.extend(
-            [
-                f"## {item['dataset_key']} / {item['split']} / {item['raw_id']}",
-                "",
-                f"- Error type: `{item['error_type']}`",
-                f"- Error message: `{item['error_message']}`",
-                f"- Image path: `{item['image_path']}`",
-                f"- Label path: `{item['label_path']}`",
-                "",
-            ]
-        )
-    return "\n".join(lines) + "\n"
-
-
-def _qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "version": PIPELINE_VERSION,
-        "generated_at": _now_iso(),
-        "output_root": report["settings"]["output_root"],
-        "debug_vis": {
-            "selection_count": int(debug_vis_index.get("selection_count", 0)),
-            "seed": int(debug_vis_index.get("seed", 0)),
-        },
-        "failure_count": int(failure_manifest["failure_count"]),
-        "datasets": [
-            {
-                "dataset_key": item["dataset_key"],
-                "processed_samples": item["processed_samples"],
-                "fresh_processed_count": item["fresh_processed_count"],
-                "resume_skipped_count": item["resume_skipped_count"],
-                "failure_count": item["failure_count"],
-                "empty_scene_count": item["empty_scene_count"],
-                "traffic_light_count": item["traffic_light_count"],
-                "traffic_sign_count": item["traffic_sign_count"],
-                "detection_count": item["detection_count"],
-                "lane_count": sum(split.get("lanes", 0) for split in item["per_split_counts"].values()),
-                "top_held_reasons": list(item["held_reason_counts"].items())[:5],
-                "top_tl_invalid_reasons": list(item["tl_invalid_reason_counts"].items())[:5],
-            }
-            for item in report["datasets"]
-        ],
-    }
-
-
-def _qa_summary_markdown(summary: dict[str, Any]) -> str:
-    lines = [
-        "# PV26 AIHUB QA Summary",
-        "",
-        f"- Generated: `{summary['generated_at']}`",
-        f"- Output root: `{summary['output_root']}`",
-        f"- Debug vis selections: `{summary['debug_vis']['selection_count']}`",
-        f"- Failure count: `{summary['failure_count']}`",
-        "",
-    ]
-    for item in summary["datasets"]:
-        lines.extend(
-            [
-                f"## {item['dataset_key']}",
-                "",
-                f"- Processed samples: `{item['processed_samples']}`",
-                f"- Fresh processed samples: `{item['fresh_processed_count']}`",
-                f"- Resume skipped samples: `{item['resume_skipped_count']}`",
-                f"- Failure count: `{item['failure_count']}`",
-                f"- Empty scenes: `{item['empty_scene_count']}`",
-                f"- Detection count: `{item['detection_count']}`",
-                f"- Lane count: `{item['lane_count']}`",
-                f"- Traffic lights: `{item['traffic_light_count']}`",
-                f"- Traffic signs: `{item['traffic_sign_count']}`",
-                "",
-            ]
-        )
-        if item["top_held_reasons"]:
-            lines.append("### Top Held Reasons")
-            lines.append("")
-            for key, value in item["top_held_reasons"]:
-                lines.append(f"- `{key}`: {value}")
-            lines.append("")
-        if item["top_tl_invalid_reasons"]:
-            lines.append("### Top TL Invalid Reasons")
-            lines.append("")
-            for key, value in item["top_tl_invalid_reasons"]:
-                lines.append(f"- `{key}`: {value}")
-            lines.append("")
-    return "\n".join(lines) + "\n"
-
-
-def _det_class_map_yaml() -> str:
-    lines = [
-        "version: pv26-det-v1",
-        "classes:",
-    ]
-    for index, class_name in enumerate(OD_CLASSES):
-        lines.append(f"  {index}: {class_name}")
-    lines.extend(
-        [
-            "tl_bits:",
-        ]
-    )
-    for bit in TL_BITS:
-        lines.append(f"  - {bit}")
-    lines.extend(
-        [
-            "tl_attribute_policy:",
-            "  base_type: car",
-            "  arrow_sources:",
-            "    - left_arrow",
-            "    - others_arrow",
-            "  masked_cases:",
-            "    - x_light_active",
-            "    - multi_color_active",
-            "    - non_car_traffic_light",
-        ]
-    )
-    return "\n".join(lines) + "\n"
-
-
-def _scene_class_map_yaml() -> str:
-    lines = [
-        "version: pv26-scene-aihub-v1",
-        "lane_classes:",
-    ]
-    for class_name in LANE_CLASSES:
-        lines.append(f"  - {class_name}")
-    lines.extend(
-        [
-            "lane_types:",
-        ]
-    )
-    for lane_type in LANE_TYPES:
-        lines.append(f"  - {lane_type}")
-    lines.extend(
-        [
-            "other_geometry_classes:",
-            "  - stop_line",
-            "  - crosswalk",
-        ]
-    )
-    return "\n".join(lines) + "\n"
-
-
 def _select_debug_vis_summaries(
     summaries: list[dict[str, Any]],
     *,
@@ -1890,14 +1132,29 @@ def run_standardization(
 
     readme_paths = {"lane_readme": "", "traffic_readme": "", "obstacle_readme": ""}
     if write_dataset_readmes:
-        readme_paths = _write_source_readmes(lane_root, traffic_root, obstacle_root, docs_root, logger)
+        readme_paths = _write_source_readmes(
+            lane_root,
+            traffic_root,
+            obstacle_root,
+            docs_root,
+            logger,
+            documented_stats=DOCUMENTED_STATS,
+        )
 
     logger.stage(
         "source_inventory",
         "원본 데이터셋의 현재 추출 상태와 문서 참조 상태를 메타데이터로 남겨 나중에 재현성을 보장합니다.",
         total=1,
     )
-    source_inventory = _build_source_inventory(lane_root, traffic_root, obstacle_root, docs_root, readme_paths)
+    source_inventory = _build_source_inventory(
+        lane_root,
+        traffic_root,
+        obstacle_root,
+        docs_root,
+        readme_paths,
+        pipeline_version=PIPELINE_VERSION,
+        documented_stats=DOCUMENTED_STATS,
+    )
     logger.progress(1, {"docs": len(source_inventory["docs"]), "datasets": len(source_inventory["datasets"])}, force=True)
 
     working_lane_root = _extract_archives_if_needed(lane_root, cache_root, logger)
@@ -2096,6 +1353,9 @@ def run_standardization(
         source_inventory=source_inventory,
         summaries=summaries,
         failures=failures,
+        pipeline_version=PIPELINE_VERSION,
+        scene_version=SCENE_VERSION,
+        source_root_for_dataset=_source_root_for_dataset,
     )
 
     meta_root = output_root / "meta"

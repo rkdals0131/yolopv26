@@ -1,17 +1,28 @@
 from __future__ import annotations
 
-from collections import deque
+import math
 from datetime import datetime
 import json
-import math
 import os
 from pathlib import Path
 import time
-from types import MethodType
 from typing import Any, Callable
 
 from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
+from .runtime_callbacks import build_teacher_runtime_callbacks as _build_teacher_runtime_callbacks
 from .runtime_artifacts import _refresh_latest_teacher_artifacts
+from .runtime_progress import (
+    append_jsonl as _append_jsonl_impl,
+    build_live_postfix as _build_live_postfix_impl,
+    emit_log as _emit_log_impl,
+    format_duration as _format_duration_impl,
+    install_ultralytics_postfix_renderer as _install_ultralytics_postfix_renderer_impl,
+    loader_profile_payload as _loader_profile_payload_impl,
+    set_progress_postfix as _set_progress_postfix_impl,
+    sync_timing_device as _sync_timing_device_impl,
+    timing_profile as _timing_profile_impl,
+    timestamp_token as _timestamp_token_impl,
+)
 from .runtime_resume import (
     _checkpoint_resume_metadata,
     _coerce_weights_name,
@@ -29,6 +40,8 @@ from .runtime_tensorboard import (
     _maybe_build_summary_writer,
     _write_tensorboard_scalars,
 )
+from collections import deque
+from types import MethodType
 
 try:
     from tqdm.auto import tqdm
@@ -61,76 +74,26 @@ except ImportError:  # pragma: no cover - dependency absence handled in tests wi
     RANK = -1
 
 def _sync_timing_device(device: Any, enabled: bool) -> None:
-    if not enabled or torch is None or not torch.cuda.is_available():
-        return
-    device_type = getattr(device, "type", None)
-    if device_type != "cuda":
-        return
-    try:
-        torch.cuda.synchronize(device)
-    except Exception:
-        torch.cuda.synchronize()
-
-
-def _quantile(values: list[float], fraction: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(float(item) for item in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    index = max(0.0, min(float(len(ordered) - 1), float(len(ordered) - 1) * float(fraction)))
-    lower = int(math.floor(index))
-    upper = int(math.ceil(index))
-    if lower == upper:
-        return ordered[lower]
-    ratio = index - lower
-    return ordered[lower] * (1.0 - ratio) + ordered[upper] * ratio
-
-
-def _profile_stats(values: list[float]) -> dict[str, float]:
-    if not values:
-        return {"mean": 0.0, "p50": 0.0, "p99": 0.0}
-    return {
-        "mean": sum(float(item) for item in values) / len(values),
-        "p50": _quantile(values, 0.5),
-        "p99": _quantile(values, 0.99),
-    }
+    _sync_timing_device_impl(torch, device, enabled)
 
 
 def _timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
-    return {
-        "window_size": len(window),
-        "iteration_sec": _profile_stats([item["iteration_sec"] for item in window]),
-        "wait_sec": _profile_stats([item["wait_sec"] for item in window]),
-        "compute_sec": _profile_stats([item["compute_sec"] for item in window]),
-    }
+    return _timing_profile_impl(window)
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    _append_jsonl_impl(path, payload)
 
 
 def _format_duration(seconds: float | None) -> str:
-    if seconds is None:
-        return "unknown"
-    total_seconds = max(0, int(round(float(seconds))))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
+    return _format_duration_impl(seconds)
 
 
 def _emit_log(message: str) -> None:
-    if tqdm is not None:
-        tqdm.write(message)
-        return
-    print(message, flush=True)
+    _emit_log_impl(message, tqdm_module=tqdm)
 
 
 def _timestamp_token() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    return _timestamp_token_impl(datetime_cls=datetime)
 
 
 def _build_live_postfix(
@@ -139,152 +102,27 @@ def _build_live_postfix(
     eta_sec: float | None,
     profile_summary: dict[str, Any],
 ) -> str:
-    return " ".join(
-        [
-            f"elapsed={_format_duration(elapsed_sec)}",
-            f"eta={_format_duration(eta_sec)}",
-            f"iter={profile_summary['iteration_sec']['mean'] * 1000.0:.1f}ms",
-            f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.1f}ms",
-            f"compute={profile_summary['compute_sec']['mean'] * 1000.0:.1f}ms",
-        ]
+    return _build_live_postfix_impl(
+        elapsed_sec=elapsed_sec,
+        eta_sec=eta_sec,
+        profile_summary=profile_summary,
     )
 
 
 def _set_progress_postfix(pbar: Any, postfix: str) -> bool:
-    if pbar is None:
-        return False
-    if hasattr(pbar, "set_bootstrap_postfix"):
-        pbar.set_bootstrap_postfix(postfix)
-        return True
-    if hasattr(pbar, "set_postfix_str"):
-        pbar.set_postfix_str(postfix, refresh=True)
-        return True
-    description = str(getattr(pbar, "desc", "") or "")
-    base_description = description.split(" | ")[0] if " | " in description else description
-    merged_description = f"{base_description} | {postfix}" if base_description else postfix
-    if hasattr(pbar, "set_description"):
-        pbar.set_description(merged_description)
-        return True
-    if hasattr(pbar, "set_postfix"):
-        pbar.set_postfix(profile=postfix)
-        return True
-    return False
-
-
-def _render_progress_line(pbar: Any, *, final: bool = False) -> str | None:
-    if pbar.disable or (pbar.closed and not final):
-        return None
-
-    current_time = time.time()
-    dt = current_time - pbar.last_print_t
-    dn = pbar.n - pbar.last_print_n
-
-    if not final and not pbar._should_update(dt, dn):
-        return None
-
-    if dt > pbar.MIN_RATE_CALC_INTERVAL:
-        rate = dn / dt if dt else 0.0
-        if rate < pbar.MAX_SMOOTHED_RATE:
-            pbar.last_rate = pbar.RATE_SMOOTHING_FACTOR * rate + (1 - pbar.RATE_SMOOTHING_FACTOR) * pbar.last_rate
-            rate = pbar.last_rate
-    else:
-        rate = pbar.last_rate
-
-    if pbar.total and pbar.n >= pbar.total:
-        overall_elapsed = current_time - pbar.start_t
-        if overall_elapsed > 0:
-            rate = pbar.n / overall_elapsed
-
-    pbar.last_print_n = pbar.n
-    pbar.last_print_t = current_time
-    elapsed = current_time - pbar.start_t
-
-    remaining_str = ""
-    if pbar.total and 0 < pbar.n < pbar.total and elapsed > 0:
-        est_rate = rate or (pbar.n / elapsed)
-        remaining_str = f"<{pbar._format_time((pbar.total - pbar.n) / est_rate)}"
-
-    if pbar.total:
-        percent = (pbar.n / pbar.total) * 100
-        n_str = pbar._format_num(pbar.n)
-        t_str = pbar._format_num(pbar.total)
-        if pbar.is_bytes and len(n_str) >= 2 and len(t_str) >= 2 and n_str[-2] == t_str[-2]:
-            n_str = n_str.rstrip("KMGTPB")
-    else:
-        percent = 0.0
-        n_str, t_str = pbar._format_num(pbar.n), "?"
-
-    elapsed_str = pbar._format_time(elapsed)
-    rate_str = pbar._format_rate(rate) or (pbar._format_rate(pbar.n / elapsed) if elapsed > 0 else "")
-    bar = pbar._generate_bar()
-
-    if pbar.total:
-        if pbar.is_bytes and pbar.n >= pbar.total:
-            progress_str = f"{pbar.desc}: {percent:.0f}% {bar} {t_str} {rate_str} {elapsed_str}"
-        else:
-            progress_str = f"{pbar.desc}: {percent:.0f}% {bar} {n_str}/{t_str} {rate_str} {elapsed_str}{remaining_str}"
-    else:
-        progress_str = f"{pbar.desc}: {bar} {n_str} {rate_str} {elapsed_str}"
-
-    return progress_str
+    return _set_progress_postfix_impl(pbar, postfix)
 
 
 def _install_ultralytics_postfix_renderer(pbar: Any) -> Any:
-    if pbar is None or getattr(pbar, "_od_bootstrap_renderer_installed", False):
-        return pbar
-    if not hasattr(pbar, "_display"):
-        return pbar
-
-    def _display_with_bootstrap_postfix(self: Any, final: bool = False) -> None:
-        progress_str = _render_progress_line(self, final=final)
-        if progress_str is None:
-            return
-        postfix = str(getattr(self, "_od_bootstrap_postfix", "") or "").strip()
-        try:
-            if self.noninteractive:
-                if postfix:
-                    self.file.write(f"{progress_str} | {postfix}")
-                else:
-                    self.file.write(progress_str)
-            else:
-                prior_line_count = int(getattr(self, "_od_bootstrap_rendered_lines", 1))
-                if prior_line_count > 1:
-                    self.file.write("\r\033[1A\r\033[K")
-                else:
-                    self.file.write("\r\033[K")
-                self.file.write(progress_str)
-                if postfix:
-                    self.file.write(f"\n\033[K{postfix}")
-                    self._od_bootstrap_rendered_lines = 2
-                else:
-                    self._od_bootstrap_rendered_lines = 1
-            self.file.flush()
-        except Exception:
-            pass
-
-    def _set_bootstrap_postfix(self: Any, postfix: str) -> None:
-        self._od_bootstrap_postfix = str(postfix)
-        if not self.disable:
-            self._display()
-
-    pbar._od_bootstrap_postfix = ""
-    pbar._od_bootstrap_renderer_installed = True
-    pbar._od_bootstrap_rendered_lines = 1
-    pbar._display = MethodType(_display_with_bootstrap_postfix, pbar)
-    pbar.set_bootstrap_postfix = MethodType(_set_bootstrap_postfix, pbar)
-    return pbar
+    return _install_ultralytics_postfix_renderer_impl(
+        pbar,
+        time_module=time,
+        method_type=MethodType,
+    )
 
 
 def _loader_profile_payload(loader: Any) -> dict[str, Any]:
-    return {
-        "batch_size": int(getattr(loader, "batch_size", 0) or 0),
-        "num_workers": int(getattr(loader, "num_workers", 0) or 0),
-        "pin_memory": bool(getattr(loader, "pin_memory", False)),
-        "persistent_workers": bool(getattr(loader, "persistent_workers", False)),
-        "prefetch_factor": getattr(loader, "prefetch_factor", None),
-        "dataset_size": int(len(getattr(loader, "dataset", []))),
-        "num_batches": int(len(loader)),
-    }
+    return _loader_profile_payload_impl(loader)
 
 
 def _build_teacher_dataloader(
@@ -702,169 +540,23 @@ def _make_teacher_trainer(
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("ultralytics runtime dependencies are not available") from exc
 
-    def on_train_start(trainer: Any) -> None:
-        trainer.od_profile_log_path = Path(trainer.save_dir) / "profile_log.jsonl"
-        trainer.od_profile_summary_path = Path(trainer.save_dir) / "profile_summary.json"
-        trainer.od_tensorboard_dir = Path(trainer.save_dir) / "tensorboard"
-        trainer.od_tensorboard_dir.mkdir(parents=True, exist_ok=True)
-        trainer.od_tensorboard_writer, trainer.od_tensorboard_status = _maybe_build_summary_writer(trainer.od_tensorboard_dir)
-        train_loader_profile = _loader_profile_payload(trainer.train_loader)
-        val_loader_profile = _loader_profile_payload(trainer.test_loader)
-        trainer.od_log(
-            f"[od_bootstrap.train] tensorboard status={trainer.od_tensorboard_status['status']} "
-            f"log_dir={trainer.od_tensorboard_status['log_dir']}"
-        )
-        trainer.od_log(
-            f"[od_bootstrap.train] loader train batch={train_loader_profile['batch_size']} "
-            f"workers={train_loader_profile['num_workers']} pin_memory={train_loader_profile['pin_memory']} "
-            f"persistent_workers={train_loader_profile['persistent_workers']} "
-            f"prefetch_factor={train_loader_profile['prefetch_factor']} batches={train_loader_profile['num_batches']}"
-        )
-        trainer.od_log(
-            f"[od_bootstrap.train] loader val batch={val_loader_profile['batch_size']} "
-            f"workers={val_loader_profile['num_workers']} pin_memory={val_loader_profile['pin_memory']} "
-            f"persistent_workers={val_loader_profile['persistent_workers']} "
-            f"prefetch_factor={val_loader_profile['prefetch_factor']} batches={val_loader_profile['num_batches']}"
-        )
-        if trainer.od_tensorboard_writer is not None:
-            trainer.od_tensorboard_writer.flush()
-
-    def on_train_epoch_start(trainer: Any) -> None:
-        trainer.od_epoch_started_at = time.perf_counter()
-        trainer.od_last_batch_end_at = trainer.od_epoch_started_at
-        trainer.od_batch_started_at = None
-        trainer.od_pending_wait_sec = 0.0
-        trainer.od_epoch_step = 0
-        trainer.od_epoch_timing_window = deque(maxlen=max(1, int(runtime_params["profile_window"])))
-
-    def on_train_batch_start(trainer: Any) -> None:
-        _sync_timing_device(trainer.device, bool(runtime_params["profile_device_sync"]))
-        now = time.perf_counter()
-        last_batch_end_at = trainer.od_last_batch_end_at or now
-        trainer.od_pending_wait_sec = max(0.0, now - last_batch_end_at)
-        trainer.od_batch_started_at = now
-
-    def on_train_batch_end(trainer: Any) -> None:
-        _sync_timing_device(trainer.device, bool(runtime_params["profile_device_sync"]))
-        ended_at = time.perf_counter()
-        started_at = trainer.od_batch_started_at or ended_at
-        iteration_sec = max(0.0, ended_at - started_at)
-        wait_sec = max(0.0, float(trainer.od_pending_wait_sec))
-        compute_sec = max(0.0, iteration_sec)
-        trainer.od_last_batch_end_at = ended_at
-        trainer.od_epoch_step += 1
-        trainer.od_global_step += 1
-        timing_row = {
-            "iteration_sec": iteration_sec,
-            "wait_sec": wait_sec,
-            "compute_sec": compute_sec,
-        }
-        trainer.od_epoch_timing_window.append(timing_row)
-
-        step_index = int(trainer.od_epoch_step)
-        total_steps = int(len(trainer.train_loader))
-        log_every_n_steps = max(1, int(runtime_params["log_every_n_steps"]))
-        elapsed_sec = max(0.0, ended_at - trainer.od_epoch_started_at)
-        profile_summary = _timing_profile(list(trainer.od_epoch_timing_window))
-        remaining_steps = max(0, total_steps - step_index)
-        eta_sec = float(profile_summary["iteration_sec"]["mean"]) * float(remaining_steps)
-        _set_progress_postfix(
-            trainer.od_pbar,
-            _build_live_postfix(
-                elapsed_sec=elapsed_sec,
-                eta_sec=eta_sec,
-                profile_summary=profile_summary,
-            ),
-        )
-
-        should_log = step_index % log_every_n_steps == 0 or step_index == total_steps
-        if not should_log:
-            return
-
-        losses = trainer.label_loss_items(trainer.tloss, prefix="train")
-        payload = {
-            "epoch": int(trainer.epoch) + 1,
-            "epoch_total": int(trainer.epochs),
-            "step": step_index,
-            "total_steps": total_steps,
-            "elapsed_sec": elapsed_sec,
-            "eta_sec": eta_sec,
-            "losses": losses,
-            "profile": profile_summary,
-        }
-        if trainer.od_profile_log_path is not None:
-            _append_jsonl(trainer.od_profile_log_path, payload)
-        _write_tensorboard_scalars(
-            trainer.od_tensorboard_writer,
-            "train_step",
-            _build_train_step_tensorboard_payload(
-                losses=losses,
-                profile_summary=profile_summary,
-                elapsed_sec=elapsed_sec,
-            ),
-            step=trainer.od_global_step,
-        )
-        if trainer.od_pbar is None:
-            trainer.od_log(
-                f"[od_bootstrap.train] profile epoch={payload['epoch']}/{payload['epoch_total']} "
-                f"step={step_index}/{total_steps} "
-                f"{_build_live_postfix(elapsed_sec=elapsed_sec, eta_sec=eta_sec, profile_summary=profile_summary)}"
-            )
-
-    def on_train_epoch_end(trainer: Any) -> None:
-        epoch_profile = {
-            "epoch": int(trainer.epoch) + 1,
-            "timing_profile": _timing_profile(list(trainer.od_epoch_timing_window)),
-            "loader": _loader_profile_payload(trainer.train_loader),
-        }
-        trainer.od_profile_history.append(epoch_profile)
-
-    def on_fit_epoch_end(trainer: Any) -> None:
-        epoch_index = int(trainer.epoch) + 1
-        epoch_payload = _build_epoch_tensorboard_payload(
-            losses=trainer.label_loss_items(trainer.tloss, prefix="train"),
-            profile_summary=trainer.od_profile_history[-1]["timing_profile"] if trainer.od_profile_history else {},
-            lr_values=dict(getattr(trainer, "lr", {})),
-            metrics=dict(getattr(trainer, "metrics", {})),
-        )
-        _write_tensorboard_scalars(
-            trainer.od_tensorboard_writer,
-            "epoch",
-            epoch_payload,
-            step=epoch_index,
-        )
-        if trainer.od_tensorboard_writer is not None:
-            trainer.od_tensorboard_writer.flush()
-
-    def on_train_end(trainer: Any) -> None:
-        payload = {
-            "runtime": dict(runtime_params),
-            "tensorboard": dict(trainer.od_tensorboard_status),
-            "train_loader": _loader_profile_payload(trainer.train_loader),
-            "val_loader": _loader_profile_payload(trainer.test_loader),
-            "epochs": trainer.od_profile_history,
-        }
-        if trainer.od_profile_summary_path is not None:
-            trainer.od_profile_summary_path.parent.mkdir(parents=True, exist_ok=True)
-            trainer.od_profile_summary_path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
-                encoding="utf-8",
-            )
-        if trainer.od_tensorboard_writer is not None:
-            trainer.od_tensorboard_writer.flush()
-            trainer.od_tensorboard_writer.close()
-
     TeacherDetectionTrainer._od_bootstrap_runtime_params = dict(runtime_params)
     TeacherDetectionTrainer._od_bootstrap_log_fn = log_fn
-    callbacks = {
-        "on_train_start": on_train_start,
-        "on_train_epoch_start": on_train_epoch_start,
-        "on_train_batch_start": on_train_batch_start,
-        "on_train_batch_end": on_train_batch_end,
-        "on_train_epoch_end": on_train_epoch_end,
-        "on_fit_epoch_end": on_fit_epoch_end,
-        "on_train_end": on_train_end,
-    }
+    callbacks = _build_teacher_runtime_callbacks(
+        runtime_params=runtime_params,
+        time_module=time,
+        deque_type=deque,
+        append_jsonl_fn=_append_jsonl,
+        sync_timing_device_fn=_sync_timing_device,
+        timing_profile_fn=_timing_profile,
+        build_live_postfix_fn=_build_live_postfix,
+        set_progress_postfix_fn=_set_progress_postfix,
+        loader_profile_payload_fn=_loader_profile_payload,
+        maybe_build_summary_writer_fn=_maybe_build_summary_writer,
+        write_tensorboard_scalars_fn=_write_tensorboard_scalars,
+        build_train_step_tensorboard_payload_fn=_build_train_step_tensorboard_payload,
+        build_epoch_tensorboard_payload_fn=_build_epoch_tensorboard_payload,
+    )
     TeacherDetectionTrainer._od_bootstrap_callbacks = callbacks
     return TeacherDetectionTrainer, callbacks
 

@@ -4,7 +4,6 @@ import argparse
 from collections import Counter
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from pathlib import Path
 import site
 from typing import Any
@@ -38,6 +37,19 @@ from model.engine.trainer import PV26Trainer, build_pv26_optimizer, build_pv26_s
 from model.engine.trainer import _resolve_summary_path
 from model.net import PV26Heads
 from model.net import build_yolo26n_trunk
+from tools.pv26_train_artifacts import (
+    json_ready as _json_ready,
+    load_or_init_meta_manifest as _load_or_init_meta_manifest,
+    phase_entry_is_completed as _phase_entry_is_completed,
+    read_json as _read_json,
+    read_jsonl as _read_jsonl,
+    recover_phase_entry_from_run_dir as _recover_phase_entry_from_run_dir,
+    resolve_meta_run_dir as _resolve_meta_run_dir,
+    safe_name as _safe_name,
+    write_json as _write_json,
+    write_meta_manifest as _write_meta_manifest,
+    write_meta_summary as _write_meta_summary,
+)
 
 
 DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
@@ -429,44 +441,6 @@ def _log_meta_train(message: str) -> None:
     print(f"[meta_train] {message}", flush=True)
 
 
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def _json_ready(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _json_ready(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready(item) for item in value]
-    return value
-
-
-def _write_json(path: str | Path, payload: dict[str, Any]) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return output_path
-
-
-def _read_json(path: str | Path) -> dict[str, Any]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    input_path = Path(path)
-    if not input_path.is_file():
-        return []
-    return [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def _safe_name(value: str) -> str:
-    normalized = "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in str(value).strip())
-    normalized = normalized.strip("_")
-    return normalized or "meta_train"
-
-
 def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
     path = Path(value)
     if not path.is_absolute():
@@ -754,146 +728,6 @@ def _configure_torch_multiprocessing() -> None:
             torch.multiprocessing.set_sharing_strategy("file_system")
     except RuntimeError:
         pass
-
-
-def _resolve_meta_run_dir(scenario: MetaTrainScenario, *, scenario_path: Path) -> Path:
-    if scenario.run.run_dir is not None:
-        return Path(scenario.run.run_dir)
-    run_root = Path(scenario.run.run_root)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    prefix = _safe_name(f"{scenario.run.run_name_prefix}_{scenario_path.stem}")
-    candidate = run_root / f"{prefix}_{timestamp}"
-    suffix = 1
-    while candidate.exists():
-        candidate = run_root / f"{prefix}_{timestamp}_{suffix:02d}"
-        suffix += 1
-    return candidate
-
-
-def _build_meta_manifest_template(
-    *,
-    scenario: MetaTrainScenario,
-    scenario_path: Path,
-    run_dir: Path,
-) -> dict[str, Any]:
-    return {
-        "version": META_MANIFEST_VERSION,
-        "created_at": _now_iso(),
-        "updated_at": _now_iso(),
-        "status": "running",
-        "scenario_path": str(scenario_path),
-        "run_dir": str(run_dir),
-        "dataset": _json_ready(asdict(scenario.dataset)),
-        "run": _json_ready(asdict(scenario.run)),
-        "selection": _json_ready(asdict(scenario.selection)),
-        "preview": _json_ready(asdict(scenario.preview)),
-        "active_phase_index": None,
-        "active_phase_name": None,
-        "phases": [
-            {
-                "index": index + 1,
-                "name": phase.name,
-                "stage": phase.stage,
-                "status": "pending",
-                "run_dir": str(run_dir / f"phase_{index + 1}"),
-                "summary_path": str(run_dir / f"phase_{index + 1}" / "summary.json"),
-                "best_checkpoint_path": None,
-                "last_checkpoint_path": None,
-                "completed_epochs": 0,
-                "best_metric_value": None,
-                "best_epoch": None,
-                "promotion_reason": None,
-                "preview": {},
-            }
-            for index, phase in enumerate(scenario.phases)
-        ],
-    }
-
-
-def _load_or_init_meta_manifest(
-    *,
-    scenario: MetaTrainScenario,
-    scenario_path: Path,
-    run_dir: Path,
-) -> tuple[dict[str, Any], Path]:
-    manifest_path = run_dir / "meta_manifest.json"
-    if manifest_path.is_file():
-        return _read_json(manifest_path), manifest_path
-    manifest = _build_meta_manifest_template(scenario=scenario, scenario_path=scenario_path, run_dir=run_dir)
-    _write_json(manifest_path, manifest)
-    return manifest, manifest_path
-
-
-def _write_meta_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
-    manifest["updated_at"] = _now_iso()
-    _write_json(manifest_path, manifest)
-
-
-def _write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
-    phases = manifest.get("phases", [])
-    completed = [phase for phase in phases if phase.get("status") == "completed"]
-    summary = {
-        "version": manifest["version"],
-        "status": manifest["status"],
-        "scenario_path": manifest["scenario_path"],
-        "run_dir": manifest["run_dir"],
-        "completed_phases": len(completed),
-        "total_phases": len(phases),
-        "active_phase_index": manifest.get("active_phase_index"),
-        "active_phase_name": manifest.get("active_phase_name"),
-        "final_checkpoint_path": completed[-1]["best_checkpoint_path"] if completed else None,
-        "phases": phases,
-        "updated_at": manifest["updated_at"],
-    }
-    _write_json(run_dir / "summary.json", summary)
-
-
-def _phase_summary_indicates_complete(phase_run_dir: Path, phase: PhaseConfig) -> bool:
-    summary_path = phase_run_dir / "summary.json"
-    if not summary_path.is_file():
-        return False
-    summary = _read_json(summary_path)
-    if "early_exit" in summary:
-        return True
-    return int(summary.get("completed_epochs", 0)) >= int(phase.max_epochs)
-
-
-def _recover_phase_entry_from_run_dir(entry: dict[str, Any], phase: PhaseConfig) -> dict[str, Any] | None:
-    phase_run_dir = Path(entry["run_dir"])
-    if not _phase_summary_indicates_complete(phase_run_dir, phase):
-        return None
-    summary_path = phase_run_dir / "summary.json"
-    summary = _read_json(summary_path)
-    checkpoint_paths = summary.get("checkpoint_paths", {}) if isinstance(summary.get("checkpoint_paths"), dict) else {}
-    best_checkpoint = checkpoint_paths.get("best")
-    last_checkpoint = checkpoint_paths.get("last")
-    recovered = {
-        "status": "completed",
-        "run_dir": str(phase_run_dir),
-        "summary_path": str(summary_path),
-        "run_manifest_path": str(phase_run_dir / "run_manifest.json"),
-        "best_checkpoint_path": str(best_checkpoint) if best_checkpoint else None,
-        "last_checkpoint_path": str(last_checkpoint) if last_checkpoint else None,
-        "completed_epochs": int(summary.get("completed_epochs", 0)),
-        "best_metric_value": summary.get("best_metric_value"),
-        "best_epoch": summary.get("best_epoch"),
-        "promotion_reason": (
-            summary.get("early_exit", {}).get("reason", "completed")
-            if isinstance(summary.get("early_exit"), dict)
-            else "completed"
-        ),
-        "phase_state": summary.get("early_exit", {}).get("phase_state")
-        if isinstance(summary.get("early_exit"), dict)
-        else None,
-    }
-    return recovered
-
-
-def _phase_entry_is_completed(entry: dict[str, Any], phase: PhaseConfig) -> bool:
-    if entry.get("status") == "completed" and entry.get("best_checkpoint_path"):
-        return True
-    phase_run_dir = Path(entry["run_dir"])
-    return _phase_summary_indicates_complete(phase_run_dir, phase)
 
 
 def _build_phase_train_loaders(
@@ -1269,6 +1103,7 @@ def run_meta_train_scenario(
         scenario=scenario,
         scenario_path=scenario_path,
         run_dir=run_dir,
+        meta_manifest_version=META_MANIFEST_VERSION,
     )
 
     previous_best_checkpoint: Path | None = None
