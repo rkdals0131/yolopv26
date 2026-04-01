@@ -45,7 +45,6 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                 "dataset_root": "custom/pv26_dataset",
                 "additional_roots": ["custom/extra_a", "custom/extra_b"],
                 "run_root": "custom/runs/default",
-                "stress_run_root": "custom/runs/stress",
             }
         }
         user_hyperparameters_config = {
@@ -157,14 +156,35 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(phase_train.head_lr, 0.003)
         self.assertTrue(phase_train.encode_val_batches_in_loader)
 
-    def test_stage3_stress_preset_disables_validation_and_preview(self) -> None:
-        scenario = load_meta_train_scenario("stage3_vram_stress")
+    def test_removed_stage3_stress_preset_is_rejected(self) -> None:
+        with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset: stage3_vram_stress"):
+            load_meta_train_scenario("stage3_vram_stress")
 
-        self.assertEqual(scenario.selection.metric_path, "train.losses.total.mean")
-        self.assertEqual(scenario.train_defaults.val_batches, 0)
-        self.assertFalse(scenario.preview.enabled)
-        self.assertFalse(scenario.preview.write_overlay)
-        self.assertEqual(scenario.phases[0].overrides["train_batches"], 1)
+    def test_legacy_dataset_mapping_keys_fail_fast(self) -> None:
+        legacy_hyperparameters_config = {
+            "pv26_train": {
+                "presets": {
+                    "default": {
+                        "dataset": {
+                            "aihub_root": "custom/aihub_only",
+                            "bdd_root": "custom/bdd_legacy",
+                            "include_bdd": True,
+                        }
+                    }
+                }
+            }
+        }
+
+        with patch("tools.run_pv26_train.load_user_paths_config", return_value={}):
+            with patch(
+                "tools.run_pv26_train.load_user_hyperparameters_config",
+                return_value=legacy_hyperparameters_config,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "dataset.root and dataset.additional_roots",
+                ):
+                    load_meta_train_scenario("default")
 
     def test_load_meta_train_scenario_rejects_unknown_preset(self) -> None:
         with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset"):

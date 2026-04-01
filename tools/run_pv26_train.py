@@ -34,7 +34,6 @@ from model.net import build_yolo26n_trunk
 
 
 DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
-LEGACY_CANONICAL_BDD_ROOT = REPO_ROOT / "seg_dataset" / "pv26_bdd100k_standardized"
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
 PRESET_PATH_ROOT = REPO_ROOT / "presets" / "pv26_meta_train"
 DEFAULT_PRESET_NAME = "default"
@@ -216,7 +215,7 @@ def _scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
     }
 
 
-def _build_pv26_train_path_overrides(preset_name: str, paths_config: dict[str, Any]) -> dict[str, Any]:
+def _build_pv26_train_path_overrides(paths_config: dict[str, Any]) -> dict[str, Any]:
     dataset_root = resolve_repo_path(
         nested_get(paths_config, "pv26_train", "dataset_root"),
         repo_root=REPO_ROOT,
@@ -225,9 +224,8 @@ def _build_pv26_train_path_overrides(preset_name: str, paths_config: dict[str, A
         nested_get(paths_config, "pv26_train", "additional_roots"),
         repo_root=REPO_ROOT,
     )
-    run_root_key = "stress_run_root" if preset_name == "stage3_vram_stress" else "run_root"
     run_root = resolve_repo_path(
-        nested_get(paths_config, "pv26_train", run_root_key),
+        nested_get(paths_config, "pv26_train", "run_root"),
         repo_root=REPO_ROOT,
     )
     overrides: dict[str, Any] = {}
@@ -267,7 +265,7 @@ def _apply_user_config_to_preset(
     hyperparameters_config: dict[str, Any],
 ) -> MetaTrainScenario:
     scenario_mapping = _scenario_to_mapping(scenario)
-    path_overrides = _build_pv26_train_path_overrides(preset_name, paths_config)
+    path_overrides = _build_pv26_train_path_overrides(paths_config)
     hyperparameter_overrides = nested_get(
         hyperparameters_config,
         "pv26_train",
@@ -381,98 +379,6 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         ),
     )
 
-    # ===== USER CONFIG: PV26 META TRAIN / STRESS =====
-    stress_dataset = DatasetConfig(root=DEFAULT_DATASET_ROOT)
-    stress_run = RunConfig(
-        run_root=REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train_stress",
-        run_name_prefix="stage3_vram_stress",  # stress test run prefix
-    )
-
-    # ===== HYPERPARAMETERS: PV26 META TRAIN / STRESS =====
-    stress_train_defaults = TrainDefaultsConfig(
-        device="cuda:0",  # 학습 장치
-        batch_size=40,  # stress 기본 batch 크기
-        train_batches=30,  # 빠른 stress 확인용 train batch 제한
-        val_batches=0,  # validation 비활성화
-        trunk_lr=1e-4,
-        head_lr=5e-3,
-        weight_decay=1e-4,
-        schedule="none",  # stress 시나리오는 scheduler 비활성화
-        amp=True,
-        accumulate_steps=1,
-        grad_clip_norm=5.0,
-        val_every=1,
-        checkpoint_every=1,
-        num_workers=6,
-        pin_memory=True,
-        log_every_n_steps=1,  # stress에서는 step마다 로그
-        profile_window=3,  # 짧은 profile window
-        profile_device_sync=True,
-        encode_train_batches_in_loader=True,
-        encode_val_batches_in_loader=True,
-        persistent_workers=True,
-        prefetch_factor=2,
-    )
-    stress_selection = SelectionConfig(
-        metric_path="train.losses.total.mean",  # validation 없이 train loss로만 확인
-        mode="min",
-        eps=1e-8,
-    )
-    stress_preview = PreviewConfig(
-        enabled=False,  # stress preset은 preview 비활성화
-        split="val",
-        dataset_keys=preview_dataset_keys,
-        max_samples_per_dataset=1,
-        write_overlay=False,
-    )
-
-    # ===== PHASE HYPERPARAMETERS: PV26 META TRAIN / STRESS =====
-    stress_phases = (
-        _phase(
-            "head_warmup",
-            "stage_1_frozen_trunk_warmup",
-            min_epochs=1,
-            max_epochs=1,
-            patience=1,
-            min_improvement_pct=0.0,
-            overrides={
-                "batch_size": 2,  # stage 1 stress batch 크기
-                "train_batches": 1,  # stage 1 stress train batch 제한
-                "val_batches": 0,  # stage 1 stress validation 비활성화
-                "trunk_lr": 5e-5,
-                "head_lr": 3e-3,
-            },
-        ),
-        _phase(
-            "partial_unfreeze",
-            "stage_2_partial_unfreeze",
-            min_epochs=1,
-            max_epochs=1,
-            patience=1,
-            min_improvement_pct=0.0,
-            overrides={
-                "batch_size": 2,  # stage 2 stress batch 크기
-                "train_batches": 1,  # stage 2 stress train batch 제한
-                "val_batches": 0,  # stage 2 stress validation 비활성화
-                "trunk_lr": 3e-5,
-                "head_lr": 8e-4,
-            },
-        ),
-        _phase(
-            "end_to_end_finetune",
-            "stage_3_end_to_end_finetune",
-            min_epochs=1,
-            max_epochs=1,
-            patience=1,
-            min_improvement_pct=0.0,
-            overrides={
-                "val_batches": 0,  # stage 3 stress validation 비활성화
-                "trunk_lr": 1e-5,
-                "head_lr": 4e-4,
-            },
-        ),
-    )
-
     presets = {
         "default": MetaTrainScenario(
             dataset=default_dataset,
@@ -481,14 +387,6 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
             selection=default_selection,
             preview=default_preview,
             phases=default_phases,
-        ),
-        "stage3_vram_stress": MetaTrainScenario(
-            dataset=stress_dataset,
-            run=stress_run,
-            train_defaults=stress_train_defaults,
-            selection=stress_selection,
-            preview=stress_preview,
-            phases=stress_phases,
         ),
     }
     return {
@@ -616,25 +514,19 @@ def _coerce_path_list(value: Any, *, field_name: str, base_dir: Path) -> tuple[P
 
 def _dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> DatasetConfig:
     data = _coerce_mapping(payload, field_name="dataset")
-    if "root" in data or "additional_roots" in data:
-        return DatasetConfig(
-            root=_resolve_path(data.get("root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
-            additional_roots=_coerce_path_list(
-                data.get("additional_roots"),
-                field_name="dataset.additional_roots",
-                base_dir=base_dir,
-            ),
+    unknown_keys = sorted(set(data) - {"root", "additional_roots"})
+    if unknown_keys:
+        raise ValueError(
+            "unsupported dataset config keys: "
+            f"{unknown_keys}; use dataset.root and dataset.additional_roots"
         )
-
-    # Backward compatibility for legacy configs.
-    include_bdd = _coerce_bool(data.get("include_bdd", True), field_name="dataset.include_bdd")
-    additional_roots = ()
-    if include_bdd:
-        additional_roots = (
-            _resolve_path(data.get("bdd_root", LEGACY_CANONICAL_BDD_ROOT), base_dir=base_dir),
-        )
+    additional_roots = _coerce_path_list(
+        data.get("additional_roots"),
+        field_name="dataset.additional_roots",
+        base_dir=base_dir,
+    )
     return DatasetConfig(
-        root=_resolve_path(data.get("aihub_root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
+        root=_resolve_path(data.get("root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
         additional_roots=additional_roots,
     )
 

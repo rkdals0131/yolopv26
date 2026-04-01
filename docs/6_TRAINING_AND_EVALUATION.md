@@ -85,7 +85,7 @@
 - trainer는 checkpoint save/load를 지원한다.
 - trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
-- `tools/run_pv26_train.py`는 preset table을 사용하고, `--preset default|stage3_vram_stress`로 실행한다.
+- `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원하고, `--preset default`로 실행한다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
 - `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.

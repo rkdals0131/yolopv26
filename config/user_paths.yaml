@@ -34,4 +34,3 @@ pv26_train:
   dataset_root: seg_dataset/pv26_exhaustive_od_lane_dataset
   additional_roots: []
   run_root: runs/pv26_exhaustive_od_lane_train
-  stress_run_root: runs/pv26_exhaustive_od_lane_train_stress

@@ -173,5 +173,5 @@
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
 - current postprocess tolerates missing `torchvision.ops.batched_nms` through pure PyTorch fallback
 - OD bootstrap teacher defaults are `mobility=yolo26s`, `signal=yolo26s`, `obstacle=yolo26m`
-- PV26 stage 3 stress preset is `stage3_vram_stress`
+- PV26 meta-train preset is `default` only
 - PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py --preset ...`, `run_pv26_tiny_overfit()` 기준으로 유지한다

@@ -179,9 +179,8 @@
 보완점:
 
 - `tools/run_pv26_train.py`가 **1,499 LOC**로 여전히 너무 크다.
-- 그리고 여기엔 아직 `LEGACY_CANONICAL_BDD_ROOT`, `include_bdd` 같은 backward compatibility 가지가 남아 있다.
-- 네 현재 철학이 “최종 학습 입력은 exhaustive OD + lane merged dataset”이라면, 이 legacy branch는 치우는 편이 맞다.
-- `stage3_vram_stress` preset도 active config에 남아 있는데, 네 취향 기준으로는 test/dev 영역으로 보내는 게 더 일관적이다.
+- `run_pv26_train.py`는 여전히 큰 파일이지만, `LEGACY_CANONICAL_BDD_ROOT`, `include_bdd` 같은 backward compatibility 가지는 이제 정리됐다.
+- 현재 PV26 메타트레인 preset은 `default` 하나만 남기고, stress 성격의 preset은 active config에서 제거한 상태가 더 일관적이다.
 
 판단:
 
@@ -297,7 +296,7 @@
 
 ### E. dev/legacy residue가 아직 남아 있다
 
-대표적으로:
+대표적으로 정리 대상이었던 것은:
 
 - `tools/run_pv26_train.py`의 `LEGACY_CANONICAL_BDD_ROOT`, `include_bdd` backward compatibility
 - `config/pv26_train_hyperparameters.yaml`와 `tools/run_pv26_train.py` 안의 `stage3_vram_stress`
@@ -432,15 +431,13 @@ exhaustive OD의 provenance를 남기는 철학은 유지해야 한다.
 ### 8.1 `run_pv26_train.py`의 legacy compatibility
 
 지금 철학대로면 최종 입력은 `pv26_exhaustive_od_lane_dataset`다.  
-그런데 `run_pv26_train.py`에는 아직 legacy BDD canonical branch가 남아 있다.
-
-이건 “혹시 몰라서 남겨둔 것”에 가깝고, 앞으로는 오히려 헷갈림을 만든다.  
-정리하는 게 맞다.
+그래서 `run_pv26_train.py`의 legacy BDD canonical branch는 제거하고, dataset config는 `root` / `additional_roots`만 받도록 좁히는 게 맞다.  
+현재 기준으로는 이 방향으로 정리하는 편이 맞다.
 
 ### 8.2 `stage3_vram_stress`
 
 이건 이름만 다를 뿐, 네가 싫어하는 `smoke/dryrun` 계열의 개발 편의 preset에 가깝다.  
-정식 기능이라면 test/dev 영역으로 보내고, 정식 기능이 아니라면 없애는 게 더 일관적이다.
+정식 기능이 아니라면 active config에서 제거하고, 필요하면 나중에 test/dev 전용 루트에서 별도로 두는 게 더 일관적이다.
 
 ### 8.3 `checkpoint_audit.py`의 고정 checkpoint path
 
