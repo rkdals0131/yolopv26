@@ -222,6 +222,7 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         self.assertEqual(tuple(batch["image"].shape), (20, 3, 608, 800))
         self.assertIn("det_gt", batch)
         self.assertIn("mask", batch)
+        self.assertNotIn("_raw_batch", batch)
         self.assertTrue(all(item["split"] == "val" for item in batch["meta"]))
 
 
