@@ -1,3 +1,5 @@
 """OD bootstrap tooling for exhaustive 7-class detector supervision."""
 
-__all__ = ["preprocess", "train", "eval", "calibration", "sweep", "finalize", "common"]
+from .cli import main
+
+__all__ = ["main", "data", "teacher", "common"]
