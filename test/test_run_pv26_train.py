@@ -188,7 +188,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     ValueError,
-                    "dataset.root and dataset.additional_roots",
+                    "unsupported dataset config keys: .*dataset.root and dataset.additional_roots",
                 ):
                     load_meta_train_scenario("default")
 

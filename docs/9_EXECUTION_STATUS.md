@@ -8,9 +8,9 @@
 
 ## 현재 기준
 
-- 날짜: `2026-04-01`
+- 날짜: `2026-04-02`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, full exhaustive dataset 실제 실행, teacher checkpoint alias 정리, PV26 stage 3 stress 검증을 진행하는 단계`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, full exhaustive dataset 실제 실행, teacher checkpoint alias 정리, PV26 exhaustive 재학습 metric 해석을 진행하는 단계`
 
 ## 완료된 항목
 
@@ -96,7 +96,7 @@
 
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
-- [ ] exhaustive OD 기반 PV26 재학습 metric 해석 및 stage 3 stress run 검증
+- [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -174,4 +174,4 @@
 - current postprocess tolerates missing `torchvision.ops.batched_nms` through pure PyTorch fallback
 - OD bootstrap teacher defaults are `mobility=yolo26s`, `signal=yolo26s`, `obstacle=yolo26m`
 - PV26 meta-train preset is `default` only
-- PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py --preset ...`, `run_pv26_tiny_overfit()` 기준으로 유지한다
+- PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py`, `tools/run_pv26_train.py --preset default`, `run_pv26_tiny_overfit()` 기준으로 유지한다
