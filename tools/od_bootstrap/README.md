@@ -40,7 +40,7 @@
 9. `python3 tools/od_bootstrap/calibration/run_calibrate_class_policy.py --config tools/od_bootstrap/config/calibration/class_policy.default.yaml`
 10. `python3 tools/od_bootstrap/sweep/run_model_centric_sweep.py --config tools/od_bootstrap/config/sweep/model_centric.default.yaml`
 11. `python3 tools/od_bootstrap/finalize/run_build_exhaustive_od_lane_dataset.py --config tools/od_bootstrap/config/finalize/pv26_exhaustive_od_lane.default.yaml`
-12. `python3 tools/run_pv26_train.py --config tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
+12. `python3 tools/run_pv26_train.py --config config/pv26_meta_train.default.yaml`
 
 출력:
 - canonical intermediate: `seg_dataset/pv26_od_bootstrap/canonical/`
@@ -53,7 +53,7 @@
 - hard-negative regression set: `runs/od_bootstrap/calibration/default/hard_negative_manifest.json`
 - exhaustive OD dataset: `seg_dataset/pv26_od_bootstrap/exhaustive_od/<run_id>/`
 - final merged dataset: `seg_dataset/pv26_exhaustive_od_lane_dataset/`
-- PV26 final train scenario: `tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
+- PV26 final train scenario: `config/pv26_meta_train.default.yaml`
 
 provenance 필드:
 - `label_origin`
@@ -64,7 +64,7 @@ provenance 필드:
 - `created_at`
 
 최종 PV26 학습:
-- final merged dataset root를 `tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`의 `dataset.aihub_root`로 넣고
+- final merged dataset root를 `config/pv26_meta_train.default.yaml`의 `dataset.root`로 넣고
 - exhaustive OD source key 3개와 `aihub_lane_seoul`을 같이 사용한다
 - 목표는 `PV26 7-class OD head`가 `allow_objectness_negatives=True` 조건의 exhaustive OD supervision을 받도록 만드는 것이다
 

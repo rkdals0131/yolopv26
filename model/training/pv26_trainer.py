@@ -36,10 +36,6 @@ TIMING_KEYS = (
     "backward_sec",
     "iteration_sec",
 )
-TENSORBOARD_MODES = (
-    "curated",
-    "full",
-)
 TENSORBOARD_LOSS_KEYS = (
     "total",
     "det",
@@ -48,15 +44,6 @@ TENSORBOARD_LOSS_KEYS = (
     "stop_line",
     "crosswalk",
 )
-TENSORBOARD_SOURCE_KEYS = (
-    "det_source_samples",
-    "tl_attr_source_samples",
-    "lane_source_samples",
-    "stop_line_source_samples",
-    "crosswalk_source_samples",
-)
-
-
 def _canonical_stage(stage: str) -> str:
     return STAGE_ALIASES.get(stage, stage)
 
@@ -179,18 +166,6 @@ def _default_run_dir() -> Path:
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _canonical_tensorboard_mode(mode: str) -> str:
-    normalized = str(mode).strip().lower()
-    aliases = {
-        "default": "curated",
-        "recommended": "curated",
-    }
-    resolved = aliases.get(normalized, normalized)
-    if resolved not in TENSORBOARD_MODES:
-        raise ValueError(f"tensorboard_mode must be one of {TENSORBOARD_MODES}, got {mode!r}")
-    return resolved
 
 
 def _write_json(path: str | Path, payload: dict[str, Any]) -> Path:
@@ -378,7 +353,7 @@ def _loss_mean_scalars(payload: dict[str, Any]) -> dict[str, float]:
     return output
 
 
-def _curated_val_metric_scalars(metrics: dict[str, Any]) -> dict[str, Any]:
+def _tensorboard_val_metric_scalars(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "detector": _select_numeric_scalars(
             metrics.get("detector", {}),
@@ -417,38 +392,10 @@ def _timing_profile_mean_scalars(profile: dict[str, Any]) -> dict[str, float]:
     return output
 
 
-def _tensorboard_train_step_payload(summary: dict[str, Any], mode: str) -> dict[str, Any]:
-    resolved_mode = _canonical_tensorboard_mode(mode)
-    if resolved_mode == "full":
-        payload = {
-            "lr": summary["optimizer_lrs"],
-            "timing": summary["timing"],
-            "source": summary["source_counts"],
-            "det_supervision": summary["det_supervision"],
-            "state": {
-                "optimizer_step": summary["optimizer_step"],
-                "micro_step": summary["micro_step"],
-                "skipped_steps": summary["skipped_steps"],
-                "amp_enabled": summary["amp_enabled"],
-                "gradient_scale": summary["gradient_scale"],
-                "successful": summary["successful"],
-                "skipped_non_finite_loss": summary["skipped_reason"] == "non_finite_loss",
-                "skipped_oom_recovered": summary["skipped_reason"] == "oom_recovered",
-                "skipped_det_assignment_unavailable": summary["skipped_reason"] == "det_assignment_unavailable",
-            },
-        }
-        if summary["successful"]:
-            payload["loss"] = summary["losses"]
-            payload["det_components"] = summary["det_components"]
-        return payload
+def _tensorboard_train_step_payload(summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "lr": _select_numeric_scalars(summary["optimizer_lrs"], ("trunk", "heads")),
-        "timing": _select_numeric_scalars(summary["timing"], TIMING_KEYS),
-        "health": {
-            "gradient_scale": float(summary["gradient_scale"]),
-            "skipped_steps": float(summary["skipped_steps"]),
-            "successful": bool(summary["successful"]),
-        },
+        "profile_sec": _select_numeric_scalars(summary["timing"], TIMING_KEYS),
     }
     if summary["successful"]:
         payload["loss"] = _select_numeric_scalars(summary["losses"], TENSORBOARD_LOSS_KEYS)
@@ -464,22 +411,7 @@ def _tensorboard_progress_payload(
     elapsed_sec: float,
     eta_sec: float | None,
     profile_summary: dict[str, Any],
-    mode: str,
 ) -> dict[str, Any]:
-    resolved_mode = _canonical_tensorboard_mode(mode)
-    if resolved_mode == "full":
-        return {
-            "timing": step_summary["timing"],
-            "progress": {
-                "epoch": int(epoch),
-                "elapsed_sec": elapsed_sec,
-                "eta_sec": eta_sec if eta_sec is not None else 0.0,
-                "global_step": int(step_summary["global_step"]),
-                "iteration_in_epoch": int(batch_index),
-                "total_iterations_in_epoch": int(total_batches) if total_batches is not None else 0,
-            },
-            "profile": profile_summary,
-        }
     return {
         "progress": {
             "epoch": int(epoch),
@@ -489,33 +421,16 @@ def _tensorboard_progress_payload(
             "iteration_in_epoch": int(batch_index),
             "total_iterations_in_epoch": int(total_batches) if total_batches is not None else 0,
         },
-        "profile_mean": _timing_profile_mean_scalars(profile_summary),
+        "profile_sec": _timing_profile_mean_scalars(profile_summary),
     }
 
 
-def _tensorboard_epoch_payload(epoch_summary: dict[str, Any], mode: str) -> dict[str, Any]:
-    resolved_mode = _canonical_tensorboard_mode(mode)
-    if resolved_mode == "full":
-        return {
-            "train": {
-                "loss": epoch_summary["train"]["losses"],
-                "source": epoch_summary["train"]["source_counts"],
-                "det_supervision": epoch_summary["train"]["det_supervision"],
-                "det_components": epoch_summary["train"].get("det_components", {}),
-            },
-            "val": epoch_summary.get("val", {}),
-            "scheduler": {"lr": epoch_summary.get("scheduler_lrs", [])},
-        }
+def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "train": {
             "loss_mean": _loss_mean_scalars(epoch_summary["train"]["losses"]),
             "duration_sec": float(epoch_summary["train"]["duration_sec"]),
-            "skipped_batches": float(epoch_summary["train"]["skipped_batches"]),
-            "source": _select_numeric_scalars(epoch_summary["train"]["source_counts"], TENSORBOARD_SOURCE_KEYS),
-            "det_supervision": _select_numeric_scalars(
-                epoch_summary["train"]["det_supervision"],
-                ("partial_det_ratio",),
-            ),
+            "profile_sec": _timing_profile_mean_scalars(epoch_summary["train"].get("timing_profile", {})),
         },
         "scheduler": {"lr": epoch_summary.get("scheduler_lrs", [])},
     }
@@ -525,7 +440,7 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any], mode: str) -> dict
             "loss_mean": _loss_mean_scalars(val_summary.get("losses", {})),
             "duration_sec": float(val_summary.get("duration_sec", 0.0)),
         }
-        val_metrics = _curated_val_metric_scalars(val_summary.get("metrics", {}))
+        val_metrics = _tensorboard_val_metric_scalars(val_summary.get("metrics", {}))
         if any(val_metrics.values()):
             payload["val"]["metrics"] = val_metrics
     return payload
@@ -896,14 +811,12 @@ class PV26Trainer:
         self.history: list[dict[str, Any]] = []
         self.epoch_history: list[dict[str, Any]] = []
         self.tensorboard_writer = None
-        self.tensorboard_mode = "curated"
         self.tensorboard_status: dict[str, Any] = {
             "enabled": False,
             "status": "inactive",
             "error": None,
             "log_dir": None,
             "purge_step": None,
-            "mode": self.tensorboard_mode,
         }
         self._tensorboard_train_step = 0
 
@@ -1097,7 +1010,7 @@ class PV26Trainer:
             _write_tensorboard_scalars(
                 self.tensorboard_writer,
                 "train_step",
-                _tensorboard_train_step_payload(summary, self.tensorboard_mode),
+                _tensorboard_train_step_payload(summary),
                 self._tensorboard_train_step,
             )
         return summary
@@ -1316,7 +1229,6 @@ class PV26Trainer:
                         elapsed_sec=elapsed_sec,
                         eta_sec=eta_sec,
                         profile_summary=profile_summary,
-                        mode=self.tensorboard_mode,
                     ),
                     max(1, self._tensorboard_train_step),
                 )
@@ -1437,7 +1349,6 @@ class PV26Trainer:
         auto_resume: bool = False,
         resume_path: str | Path | None = None,
         enable_tensorboard: bool = True,
-        tensorboard_mode: str = "curated",
         early_exit_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         run_manifest_extra: dict[str, Any] | None = None,
         log_every_n_steps: int = 1,
@@ -1472,12 +1383,10 @@ class PV26Trainer:
         start_epoch = 1
         manifest_path = output_dir / "run_manifest.json"
         previous_writer = self.tensorboard_writer
-        previous_mode = self.tensorboard_mode
         previous_status = dict(self.tensorboard_status)
         previous_tb_step = int(self._tensorboard_train_step)
         tensorboard_purge_step: int | None = None
         resumed_from_checkpoint = False
-        self.tensorboard_mode = _canonical_tensorboard_mode(tensorboard_mode)
         if auto_resume:
             resume_candidate = Path(resume_path) if resume_path is not None else checkpoint_dir / "last.pt"
             if resume_candidate.is_file():
@@ -1509,7 +1418,6 @@ class PV26Trainer:
                 tensorboard_dir,
                 purge_step=tensorboard_purge_step,
             )
-            self.tensorboard_status["mode"] = self.tensorboard_mode
         else:
             self.tensorboard_writer = None
             self.tensorboard_status = {
@@ -1518,7 +1426,6 @@ class PV26Trainer:
                 "error": None,
                 "log_dir": str(tensorboard_dir),
                 "purge_step": tensorboard_purge_step,
-                "mode": self.tensorboard_mode,
             }
         evaluator = self.build_evaluator() if val_loader is not None else None
         try:
@@ -1565,7 +1472,6 @@ class PV26Trainer:
                             "grad_clip_norm": self.grad_clip_norm,
                             "skip_non_finite_loss": bool(self.skip_non_finite_loss),
                             "oom_guard": bool(self.oom_guard),
-                            "tensorboard_mode": self.tensorboard_mode,
                             "log_every_n_steps": int(log_every_n_steps),
                             "profile_window": int(profile_window),
                             "profile_device_sync": bool(profile_device_sync),
@@ -1661,7 +1567,7 @@ class PV26Trainer:
                     _write_tensorboard_scalars(
                         self.tensorboard_writer,
                         "epoch",
-                        _tensorboard_epoch_payload(epoch_summary, self.tensorboard_mode),
+                        _tensorboard_epoch_payload(epoch_summary),
                         epoch,
                     )
                     self.tensorboard_writer.flush()
@@ -1709,7 +1615,6 @@ class PV26Trainer:
                             "grad_clip_norm": self.grad_clip_norm,
                             "skip_non_finite_loss": bool(self.skip_non_finite_loss),
                             "oom_guard": bool(self.oom_guard),
-                            "tensorboard_mode": self.tensorboard_mode,
                             "log_every_n_steps": int(log_every_n_steps),
                             "profile_window": int(profile_window),
                             "profile_device_sync": bool(profile_device_sync),
@@ -1733,7 +1638,6 @@ class PV26Trainer:
                 self.tensorboard_writer.flush()
                 self.tensorboard_writer.close()
             self.tensorboard_writer = previous_writer
-            self.tensorboard_mode = previous_mode
             self.tensorboard_status = previous_status
             self._tensorboard_train_step = previous_tb_step
 

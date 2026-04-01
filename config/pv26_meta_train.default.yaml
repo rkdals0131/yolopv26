@@ -1,13 +1,9 @@
 dataset:
-  aihub_root: ../seg_dataset/pv26_aihub_standardized
-  include_bdd: true
-  bdd_root: ../seg_dataset/pv26_bdd100k_standardized
+  root: ../seg_dataset/pv26_exhaustive_od_lane_dataset
 
 run:
-  # run_root: ../runs/pv26_meta_train
-  run_dir: ../runs/pv26_meta_train/baseline_pv26_meta_train_default_20260327_125704  # resume from existing run
-  run_name_prefix: baseline
-  tensorboard_mode: curated
+  run_root: ../runs/pv26_exhaustive_od_lane_train
+  run_name_prefix: exhaustive_od_lane
 
 train_defaults:
   device: cuda:0
@@ -42,18 +38,18 @@ preview:
   enabled: true
   split: val
   dataset_keys:
-    - aihub_traffic_seoul
-    - aihub_obstacle_seoul
+    - pv26_exhaustive_bdd100k_det_100k
+    - pv26_exhaustive_aihub_traffic_seoul
+    - pv26_exhaustive_aihub_obstacle_seoul
     - aihub_lane_seoul
-    - bdd100k_det_100k
   max_samples_per_dataset: 1
   write_overlay: true
 
 phases:
   - name: head_warmup
     stage: stage_1_frozen_trunk_warmup
-    min_epochs: 3
-    max_epochs: 8
+    min_epochs: 2
+    max_epochs: 4
     patience: 2
     min_improvement_pct: 2.0
     overrides:
@@ -62,8 +58,8 @@ phases:
 
   - name: partial_unfreeze
     stage: stage_2_partial_unfreeze
-    min_epochs: 2
-    max_epochs: 8
+    min_epochs: 3
+    max_epochs: 6
     patience: 2
     min_improvement_pct: 1.0
     overrides:
@@ -72,8 +68,8 @@ phases:
 
   - name: end_to_end_finetune
     stage: stage_3_end_to_end_finetune
-    min_epochs: 2
-    max_epochs: 6
+    min_epochs: 4
+    max_epochs: 10
     patience: 2
     min_improvement_pct: 0.5
     overrides:

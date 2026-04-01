@@ -244,7 +244,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  iter_ms: ", message)
         self.assertIn("  timing_ms: ", message)
 
-    def test_curated_tensorboard_train_step_payload_keeps_recommended_scalars_only(self) -> None:
+    def test_tensorboard_train_step_payload_keeps_only_core_scalars(self) -> None:
         from model.training import pv26_trainer
 
         summary = {
@@ -282,16 +282,16 @@ class PV26TrainerTests(unittest.TestCase):
             "skipped_reason": None,
         }
 
-        curated = pv26_trainer._tensorboard_train_step_payload(summary, "curated")
-        curated_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("train_step", curated)}
+        payload = pv26_trainer._tensorboard_train_step_payload(summary)
+        scalar_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("train_step", payload)}
 
-        self.assertIn("train_step/loss/total", curated_names)
-        self.assertIn("train_step/lr/trunk", curated_names)
-        self.assertIn("train_step/timing/iteration_sec", curated_names)
-        self.assertIn("train_step/health/gradient_scale", curated_names)
-        self.assertNotIn("train_step/source/det_source_samples", curated_names)
-        self.assertNotIn("train_step/det_supervision/partial_det_ratio", curated_names)
-        self.assertNotIn("train_step/det_components/det_obj_loss", curated_names)
+        self.assertIn("train_step/loss/total", scalar_names)
+        self.assertIn("train_step/lr/trunk", scalar_names)
+        self.assertIn("train_step/profile_sec/iteration_sec", scalar_names)
+        self.assertNotIn("train_step/health/gradient_scale", scalar_names)
+        self.assertNotIn("train_step/source/det_source_samples", scalar_names)
+        self.assertNotIn("train_step/det_supervision/partial_det_ratio", scalar_names)
+        self.assertNotIn("train_step/det_components/det_obj_loss", scalar_names)
 
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.training import configure_pv26_train_stage
@@ -453,7 +453,6 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(manifest_payload["artifacts"]["summary"], str(run_dir / "summary.json"))
             self.assertEqual(manifest_payload["trainer"]["log_every_n_steps"], 1)
             self.assertEqual(manifest_payload["trainer"]["profile_window"], 20)
-            self.assertEqual(manifest_payload["trainer"]["tensorboard_mode"], "curated")
             if manifest_payload["artifacts"]["tensorboard"]["enabled"]:
                 self.assertTrue(any((run_dir / "tensorboard").glob("events.out.tfevents.*")))
 
@@ -768,7 +767,6 @@ class PV26TrainerTests(unittest.TestCase):
                 "error": None,
                 "log_dir": str(log_dir),
                 "purge_step": purge_step,
-                "mode": "curated",
             }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -790,7 +788,6 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(first_train_steps, [1])
         self.assertEqual(second_train_steps, [2])
         self.assertEqual(second["tensorboard"]["purge_step"], 2)
-        self.assertEqual(second["tensorboard"]["mode"], "curated")
 
 
 if __name__ == "__main__":

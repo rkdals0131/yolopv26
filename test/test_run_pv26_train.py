@@ -47,14 +47,13 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                 textwrap.dedent(
                     """
                     dataset:
-                      aihub_root: ../data/aihub
-                      include_bdd: true
-                      bdd_root: ../data/bdd
+                      root: ../data/aihub
+                      additional_roots:
+                        - ../data/bdd
                     run:
                       run_root: ../runs
                       run_name_prefix: baseline
                       run_dir: ../runs/meta_baseline
-                      tensorboard_mode: curated
                     train_defaults:
                       device: cpu
                       batch_size: 8
@@ -100,8 +99,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
             scenario = load_meta_train_scenario(scenario_path)
 
-            self.assertEqual(scenario.dataset.aihub_root, (root / "data" / "aihub").resolve())
-            self.assertEqual(scenario.dataset.bdd_root, (root / "data" / "bdd").resolve())
+            self.assertEqual(scenario.dataset.root, (root / "data" / "aihub").resolve())
+            self.assertEqual(scenario.dataset.additional_roots, ((root / "data" / "bdd").resolve(),))
+            self.assertEqual(
+                scenario.dataset.roots,
+                ((root / "data" / "aihub").resolve(), (root / "data" / "bdd").resolve()),
+            )
             self.assertEqual(scenario.run.run_dir, (root / "runs" / "meta_baseline").resolve())
             self.assertEqual(scenario.preview.dataset_keys, ("aihub_traffic_seoul", "bdd100k_det_100k"))
             phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
@@ -111,12 +114,13 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
     def test_load_exhaustive_od_lane_scenario_uses_final_dataset_keys(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
-        scenario_path = repo_root / "tools" / "od_bootstrap" / "config" / "pv26_train" / "pv26_exhaustive_od_lane.default.yaml"
+        scenario_path = repo_root / "config" / "pv26_meta_train.default.yaml"
 
         scenario = load_meta_train_scenario(scenario_path)
 
-        self.assertFalse(scenario.dataset.include_bdd)
-        self.assertEqual(scenario.dataset.aihub_root, (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset").resolve())
+        self.assertEqual(scenario.dataset.root, (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset").resolve())
+        self.assertEqual(scenario.dataset.additional_roots, ())
+        self.assertEqual(scenario.dataset.roots, ((repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset").resolve(),))
         self.assertEqual(scenario.run.run_root, (repo_root / "runs" / "pv26_exhaustive_od_lane_train").resolve())
         self.assertEqual(
             scenario.preview.dataset_keys,
@@ -130,17 +134,15 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
     def test_load_exhaustive_od_lane_smoke_scenario_uses_smoke_root(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
-        scenario_path = (
-            repo_root / "tools" / "od_bootstrap" / "config" / "pv26_train" / "pv26_exhaustive_od_lane.smoke.yaml"
-        )
+        scenario_path = repo_root / "config" / "pv26_meta_train.smoke.yaml"
 
         scenario = load_meta_train_scenario(scenario_path)
 
-        self.assertFalse(scenario.dataset.include_bdd)
         self.assertEqual(
-            scenario.dataset.aihub_root,
+            scenario.dataset.root,
             (repo_root / "seg_dataset" / "pv26_exhaustive_od_lane_dataset_smoke").resolve(),
         )
+        self.assertEqual(scenario.dataset.additional_roots, ())
         self.assertEqual(
             scenario.run.run_root,
             (repo_root / "runs" / "pv26_exhaustive_od_lane_train_smoke").resolve(),
@@ -148,6 +150,49 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.train_batches, 4)
         self.assertEqual(scenario.train_defaults.val_batches, 2)
         self.assertEqual(scenario.preview.max_samples_per_dataset, 1)
+
+    def test_load_meta_train_scenario_accepts_legacy_dataset_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_dir = root / "configs"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            scenario_path = config_dir / "legacy.yaml"
+            scenario_path.write_text(
+                textwrap.dedent(
+                    """
+                    dataset:
+                      aihub_root: ../data/aihub
+                      include_bdd: true
+                      bdd_root: ../data/bdd
+                    phases:
+                      - name: head_warmup
+                        stage: stage_1_frozen_trunk_warmup
+                        min_epochs: 1
+                        max_epochs: 1
+                        patience: 1
+                        min_improvement_pct: 0.0
+                      - name: partial_unfreeze
+                        stage: stage_2_partial_unfreeze
+                        min_epochs: 1
+                        max_epochs: 1
+                        patience: 1
+                        min_improvement_pct: 0.0
+                      - name: end_to_end_finetune
+                        stage: stage_3_end_to_end_finetune
+                        min_epochs: 1
+                        max_epochs: 1
+                        patience: 1
+                        min_improvement_pct: 0.0
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            scenario = load_meta_train_scenario(scenario_path)
+
+            self.assertEqual(scenario.dataset.root, (root / "data" / "aihub").resolve())
+            self.assertEqual(scenario.dataset.additional_roots, ((root / "data" / "bdd").resolve(),))
 
     def test_load_meta_train_scenario_rejects_invalid_stage_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

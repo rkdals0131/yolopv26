@@ -1,11 +1,9 @@
 dataset:
-  aihub_root: ../../../../seg_dataset/pv26_exhaustive_od_lane_dataset_smoke
-  include_bdd: false
+  root: ../seg_dataset/pv26_exhaustive_od_lane_dataset_smoke
 
 run:
-  run_root: ../../../../runs/pv26_exhaustive_od_lane_train_smoke
+  run_root: ../runs/pv26_exhaustive_od_lane_train_smoke
   run_name_prefix: exhaustive_od_lane_smoke
-  tensorboard_mode: curated
 
 train_defaults:
   device: cuda:0

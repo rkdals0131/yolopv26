@@ -29,9 +29,9 @@ from model.trunk import build_yolo26n_trunk
 from model.viz import render_overlay
 
 
-DEFAULT_AIHUB_ROOT = REPO_ROOT / "seg_dataset" / "pv26_aihub_standardized"
-DEFAULT_BDD_ROOT = REPO_ROOT / "seg_dataset" / "pv26_bdd100k_standardized"
-DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_meta_train"
+DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
+LEGACY_CANONICAL_BDD_ROOT = REPO_ROOT / "seg_dataset" / "pv26_bdd100k_standardized"
+DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
 DEFAULT_SCENARIO_PATH = REPO_ROOT / "config" / "pv26_meta_train.default.yaml"
 HEAD_CHANNELS = (64, 128, 256)
 META_MANIFEST_VERSION = "pv26-meta-train-v1"
@@ -49,9 +49,20 @@ class EntryConfig:
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    aihub_root: Path = DEFAULT_AIHUB_ROOT
-    include_bdd: bool = True
-    bdd_root: Path = DEFAULT_BDD_ROOT
+    root: Path = DEFAULT_DATASET_ROOT
+    additional_roots: tuple[Path, ...] = ()
+
+    @property
+    def roots(self) -> tuple[Path, ...]:
+        ordered_roots: list[Path] = []
+        seen: set[Path] = set()
+        for path in (self.root, *self.additional_roots):
+            resolved = Path(path).resolve()
+            if resolved in seen:
+                continue
+            ordered_roots.append(resolved)
+            seen.add(resolved)
+        return tuple(ordered_roots)
 
 
 @dataclass(frozen=True)
@@ -59,8 +70,6 @@ class RunConfig:
     run_root: Path = DEFAULT_RUN_ROOT
     run_name_prefix: str = "meta_train"
     run_dir: Path | None = None
-    tensorboard_mode: str = "curated"
-
 
 @dataclass(frozen=True)
 class TrainDefaultsConfig:
@@ -234,12 +243,36 @@ def _coerce_optional_int(value: Any, *, field_name: str) -> int | None:
     return _coerce_int(value, field_name=field_name)
 
 
+def _coerce_path_list(value: Any, *, field_name: str, base_dir: Path) -> tuple[Path, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list")
+    return tuple(_resolve_path(item, base_dir=base_dir) for item in value)
+
+
 def _dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> DatasetConfig:
     data = _coerce_mapping(payload, field_name="dataset")
+    if "root" in data or "additional_roots" in data:
+        return DatasetConfig(
+            root=_resolve_path(data.get("root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
+            additional_roots=_coerce_path_list(
+                data.get("additional_roots"),
+                field_name="dataset.additional_roots",
+                base_dir=base_dir,
+            ),
+        )
+
+    # Backward compatibility for legacy configs.
+    include_bdd = _coerce_bool(data.get("include_bdd", True), field_name="dataset.include_bdd")
+    additional_roots = ()
+    if include_bdd:
+        additional_roots = (
+            _resolve_path(data.get("bdd_root", LEGACY_CANONICAL_BDD_ROOT), base_dir=base_dir),
+        )
     return DatasetConfig(
-        aihub_root=_resolve_path(data.get("aihub_root", DEFAULT_AIHUB_ROOT), base_dir=base_dir),
-        include_bdd=_coerce_bool(data.get("include_bdd", True), field_name="dataset.include_bdd"),
-        bdd_root=_resolve_path(data.get("bdd_root", DEFAULT_BDD_ROOT), base_dir=base_dir),
+        root=_resolve_path(data.get("aihub_root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
+        additional_roots=additional_roots,
     )
 
 
@@ -249,7 +282,6 @@ def _run_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> RunC
         run_root=_resolve_path(data.get("run_root", DEFAULT_RUN_ROOT), base_dir=base_dir),
         run_name_prefix=_coerce_str(data.get("run_name_prefix", "meta_train"), field_name="run.run_name_prefix"),
         run_dir=_resolve_optional_path(data.get("run_dir"), base_dir=base_dir),
-        tensorboard_mode=_coerce_str(data.get("tensorboard_mode", "curated"), field_name="run.tensorboard_mode"),
     )
 
 
@@ -915,7 +947,6 @@ def _execute_phase(
         best_mode=scenario.selection.mode,
         auto_resume=True,
         enable_tensorboard=True,
-        tensorboard_mode=scenario.run.tensorboard_mode,
         early_exit_callback=controller.observe_epoch,
         log_every_n_steps=phase_train_config.log_every_n_steps,
         profile_window=phase_train_config.profile_window,
@@ -987,9 +1018,7 @@ def run_meta_train_scenario(
     scenario_path: Path,
 ) -> dict[str, Any]:
     _configure_torch_multiprocessing()
-    dataset_roots = [scenario.dataset.aihub_root]
-    if scenario.dataset.include_bdd:
-        dataset_roots.append(scenario.dataset.bdd_root)
+    dataset_roots = list(scenario.dataset.roots)
     missing_roots = [str(path) for path in dataset_roots if not path.is_dir()]
     if missing_roots:
         raise SystemExit(f"canonical dataset roots not found: {missing_roots}")
