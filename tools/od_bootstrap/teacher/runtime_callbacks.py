@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable
+
+from common.io import write_json
 
 
 def build_teacher_runtime_callbacks(
@@ -164,11 +165,7 @@ def build_teacher_runtime_callbacks(
             "epochs": trainer.od_profile_history,
         }
         if trainer.od_profile_summary_path is not None:
-            trainer.od_profile_summary_path.parent.mkdir(parents=True, exist_ok=True)
-            trainer.od_profile_summary_path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
-                encoding="utf-8",
-            )
+            write_json(trainer.od_profile_summary_path, payload)
         if trainer.od_tensorboard_writer is not None:
             trainer.od_tensorboard_writer.flush()
             trainer.od_tensorboard_writer.close()

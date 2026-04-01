@@ -16,12 +16,11 @@
 
 실행 결과 요약:
 
-- `python -m compileall`: 성공
-- `pytest -q test/test_docs_sync.py test/test_portability_runtime.py`: **14 passed**
-- `pytest -q test/od_bootstrap/test_sweep_schema.py test/od_bootstrap/test_sweep_policy.py test/od_bootstrap/test_sample_helpers.py test/od_bootstrap/test_final_dataset.py test/od_bootstrap/test_teacher_dataset.py`: **13 passed**
-- `pytest -q test/od_bootstrap`: **44 passed / 2 failed**
-  - 남은 실패 2개는 `ultralytics` trainer dependency 부족이 아니라, sweep preset/class policy가 현재 workspace의 `runs/od_bootstrap/calibration/default/class_policy.yaml`를 반영하는 구조 때문에 테스트 fixture가 repo 상태를 충분히 격리하지 못한 데서 나온다.
-  - 즉, 현재 기준으로는 **od_bootstrap의 핵심 데이터/스키마/머티리얼라이즈 계층은 잘 버티고 있고**, 남은 일은 teacher runtime 폴백 확대보다 sweep 관련 테스트를 deterministic하게 닫는 쪽에 가깝다.
+- `python -m compileall tools common model test`: 성공
+- `pytest -q test`: **154 passed**
+- `python tools/check_env.py --json`: 성공
+- `python tools/run_pv26_train.py --help`: 성공
+- `python -m tools.od_bootstrap --help`: 성공
 
 ## 1. 한 줄 총평
 
@@ -33,8 +32,8 @@
 3. `smoke`, `dryrun` 류를 active code에서 거의 없앤 것  
 4. formal test와 docs sync를 넣어서 “조용히 구조가 다시 망가지는 것”을 막은 것
 
-다만 지금 남아 있는 큰 문제는 **디렉토리 수 자체가 아니라 `od_bootstrap` 내부의 간접 계층, 설정 중복, giant module`**이다.  
-즉, “폴더는 줄였는데, 복잡도는 wrapper + `_impl` + YAML 중복 + 거대한 파일로 남아 있다”가 정확한 진단이다.
+다만 지금 남아 있는 큰 문제는 **디렉토리 수 자체가 아니라 `od_bootstrap` 내부의 남은 runtime 복잡도와 일부 helper 중복**이다.  
+초기 리뷰 시점의 “wrapper + `_impl` + giant module” 문제는 상당 부분 정리됐고, 현재는 남은 중대형 파일과 공용 helper 경계가 핵심 이슈다.
 
 ## 2. 이전 refactor 대비 객관적 변화
 
@@ -132,14 +131,15 @@
 
 아쉬운 점:
 
-- `model/engine/trainer.py`가 **1,666 LOC**로 너무 크다.
+- `model/engine/trainer.py`가 한때 너무 컸고, 실제로 `train_step` / checkpoint / `fit` helper 분리가 필요했다.
 - `model/engine/spec.py`는 사실상 `_loss_spec.py` wrapper다.
 - `model/data/preview.py`도 `common.overlay` thin wrapper다.
 
 판단:
 
 - 구조적 방향은 이미 맞다.
-- 여기서 더 손댈 것은 “폴더 개편”이 아니라 **큰 파일을 조금만 분해하는 정도**다.
+- 현재는 `trainer.py` 본체가 **547 LOC**까지 줄었고, `_trainer_step.py`, `_trainer_checkpoint.py`, `_trainer_fit.py`, `_trainer_epochs.py`, `_trainer_reporting.py`, `_trainer_io.py`로 책임이 분리됐다.
+- 여기서 더 손댈 것은 “폴더 개편”이 아니라 **남은 중대형 파일을 조금씩 더 다듬는 정도**다.
 - 즉 `model/`은 이제 거의 안정 구간으로 봐도 된다.
 
 ### 3.5 `test/`
@@ -178,8 +178,8 @@
 
 보완점:
 
-- `tools/run_pv26_train.py`가 **1,499 LOC**로 여전히 너무 크다.
-- `run_pv26_train.py`는 여전히 큰 파일이지만, `LEGACY_CANONICAL_BDD_ROOT`, `include_bdd` 같은 backward compatibility 가지는 이제 정리됐다.
+- `tools/run_pv26_train.py`는 helper 분리 후에도 **812 LOC**로 아직 중대형 파일이다.
+- 다만 `pv26_train_config.py`, `pv26_train_artifacts.py`로 scenario/config parsing과 artifact I/O가 이미 빠져서, 지금은 entry orchestration 성격이 훨씬 강해졌다.
 - 현재 PV26 메타트레인 preset은 `default` 하나만 남기고, stress 성격의 preset은 active config에서 제거한 상태가 더 일관적이다.
 
 판단:
@@ -239,49 +239,31 @@
 
 중복이 보이는 대표 예:
 
-- `tools/run_pv26_train.py`와 `tools/od_bootstrap/presets.py`에  
-  `_coerce_mapping`, `_coerce_bool`, `_coerce_int`, `_coerce_float`, `_coerce_str`가 **동일 구현**으로 중복
-- `model/engine/trainer.py`와 `tools/od_bootstrap/teacher/ultralytics_runner.py`에  
-  `_flatten_scalar_tree`가 **동일 구현**으로 중복
-- `_now_iso`는 코드베이스에 여러 번 반복
-- `_write_json`, `_link_or_copy`, `_default_io_workers`도 반복
+- `tools/run_pv26_train.py`와 `tools/od_bootstrap/presets.py`에 있던 config coercion helper 중복은 이미 공용 helper로 빠졌다.
+- `model/engine/trainer.py`와 `tools/od_bootstrap/teacher/ultralytics_runner.py`의 `_flatten_scalar_tree` 중복도 공용 helper로 정리됐다.
+- `common/io.py`가 확장되면서 `now_iso`, `timestamp_token`, `read_jsonl`, `append_jsonl`, `write_json` 일부도 공용화됐다.
+- 다만 `link_or_copy`, 일부 manifest materialization helper, source prep 쪽 `_write_json` 같은 것은 아직 부분 중복이 남아 있다.
 
 이건 단순 미관 문제가 아니라,  
 나중에 로깅 포맷/JSON 출력/typing 정책/설정 coercion을 바꾸려 할 때 **수정 포인트가 여러 군데로 찢어진다**는 뜻이다.
 
-### D. giant module 두 개가 복잡도를 끌어올린다
+### D. giant module 문제는 많이 줄었지만, 아직 중대형 파일이 남아 있다
 
-특히 아래 둘이 크다.
+초기 조사 시점에는 아래 둘이 핵심 giant module이었다.
 
 - `tools/od_bootstrap/source/aihub.py`: **2,334 LOC**
 - `tools/od_bootstrap/teacher/ultralytics_runner.py`: **1,327 LOC**
 
-둘 다 파일 하나가 너무 많은 일을 한다.
+현재는 이 상태가 아니다.
 
-`source/aihub.py`는 안에서:
+- `tools/od_bootstrap/source/aihub.py`: **682 LOC**
+- `tools/od_bootstrap/source/aihub_workers.py`: **138 LOC**
+- `tools/od_bootstrap/source/aihub_lane_worker.py`: **179 LOC**
+- `tools/od_bootstrap/source/aihub_obstacle_worker.py`: **271 LOC**
+- `tools/od_bootstrap/source/aihub_traffic_worker.py`: **237 LOC**
+- `tools/od_bootstrap/teacher/ultralytics_runner.py`: **743 LOC**
 
-- lane / traffic / obstacle worker
-- inventory
-- readme generation
-- failure manifest
-- qa summary
-- debug vis generation
-
-까지 다 한다.
-
-`teacher/ultralytics_runner.py`는 안에서:
-
-- checkpoint resume 탐색
-- trainer class 구성
-- dataloader patch
-- tensorboard payload
-- timing/profile
-- progress renderer
-- latest checkpoint alias 갱신
-
-까지 다 한다.
-
-이 둘은 “폴더 수”보다 “파일 책임”이 문제다.
+즉 AIHUB 쪽 giant file은 이미 worker 모듈 분리로 크게 줄었고, 지금 남은 큰 덩어리는 주로 `ultralytics_runner.py`와 `run_pv26_train.py`다.
 
 ### E. dev/legacy residue가 아직 남아 있다
 
@@ -463,14 +445,14 @@ exhaustive OD의 provenance를 남기는 철학은 유지해야 한다.
 
 이 단계는 지금 당장 손대기보다, 앞선 정합화 작업 뒤에 다시 판단하는 편이 맞다.
 
-### 4차: 남은 대형 파일 정리
+### 4차: 남은 중대형 파일 정리
 
 - `tools/run_pv26_train.py`
-- `model/engine/trainer.py`
 - `tools/od_bootstrap/teacher/ultralytics_runner.py`
-- `tools/od_bootstrap/source/aihub.py`
+- 필요하면 `tools/od_bootstrap/source/prepare.py`
 
-이 네 파일을 “기능 단위”로 쪼개면 구조 완성도가 확 올라간다.
+`model/engine/trainer.py`와 `tools/od_bootstrap/source/aihub.py`는 이미 helper/module 분리가 들어간 상태다.  
+지금 남은 작업은 “거대한 한 파일을 해체한다”보다는, 남은 중대형 파일의 책임 경계를 조금 더 또렷하게 만드는 쪽에 가깝다.
 
 ## 10. 최종 결론
 
@@ -483,17 +465,17 @@ exhaustive OD의 provenance를 남기는 철학은 유지해야 한다.
 - standardization의 `od_bootstrap` 귀속: **맞는 방향**
 - smoke/dryrun 제거: **대체로 달성**
 - formal test / docs sync: **좋음**
-- 남은 핵심 문제: **`od_bootstrap` 내부 복잡도와 설정 중복**
+- 남은 핵심 문제: **`od_bootstrap` runtime 경계와 일부 helper 중복**
 
 그래서 다음 수정 방향은  
 “다시 큰 폴더 리팩토링을 하자”보다,
 
-**`tools/od_bootstrap`를 `source / teacher / build` 3단계로 재정렬하고, wrapper + `_impl` + YAML 중복을 줄이는 것**  
+**`tools/od_bootstrap`의 현재 `source / teacher / build` 구조를 유지하면서, 남은 runtime/helper 경계를 더 다듬는 것**  
 이 제일 효과가 크다.
 
 내 추천 1순위는 이거다:
 
-> **추천안:** 문서/테스트 정합화 → sweep fixture 격리 → 그 다음 `od_bootstrap/common` 삭제와 wrapper 정리 → 필요하면 `data/`를 `source / build`로 재배치
+> **추천안:** 남은 helper 중복 정리 → `ultralytics_runner.py`와 `run_pv26_train.py` 추가 축소 → 문서/테스트 정합화 유지
 
 이 순서대로 가면, 지금 잘 돌아가는 흐름을 크게 깨지 않으면서도  
 “정말 잘 짠 코드” 쪽으로 한 단계 더 갈 수 있다.

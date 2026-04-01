@@ -40,8 +40,8 @@ from .aihub_source_meta import (
 from .aihub_worker_common import (
     SCENE_VERSION,
     StandardizeTask,
-    _counter_to_dict,
     _bbox_to_yolo_line,
+    _counter_to_dict,
     _link_or_copy,
     _write_json,
     _write_text,
@@ -174,12 +174,6 @@ def _parallel_chunk_size(total_tasks: int, workers: int) -> int:
 def _iter_task_chunks(tasks: list[Any], chunk_size: int) -> Any:
     for start in range(0, len(tasks), chunk_size):
         yield tasks[start : start + chunk_size]
-
-
-def _nested_counter_to_dict(data: dict[str, Counter[str]]) -> dict[str, dict[str, int]]:
-    return {key: _counter_to_dict(value) for key, value in sorted(data.items())}
-
-
 def _format_eta(seconds: float | None) -> str:
     if seconds is None:
         return "unknown"

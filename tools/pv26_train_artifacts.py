@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+from common.io import now_iso, read_json, read_jsonl, timestamp_token, write_json
 
 
 def json_ready(value: Any) -> Any:
@@ -19,24 +15,6 @@ def json_ready(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [json_ready(item) for item in value]
     return value
-
-
-def write_json(path: str | Path, payload: dict[str, Any]) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return output_path
-
-
-def read_json(path: str | Path) -> dict[str, Any]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
-
-
-def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    input_path = Path(path)
-    if not input_path.is_file():
-        return []
-    return [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def safe_name(value: str) -> str:
@@ -52,7 +30,7 @@ def resolve_meta_run_dir(scenario: Any, *, scenario_path: Path) -> Path:
     if scenario.run.run_dir is not None:
         return Path(scenario.run.run_dir)
     run_root = Path(scenario.run.run_root)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = timestamp_token()
     prefix = safe_name(f"{scenario.run.run_name_prefix}_{scenario_path.stem}")
     candidate = run_root / f"{prefix}_{timestamp}"
     suffix = 1

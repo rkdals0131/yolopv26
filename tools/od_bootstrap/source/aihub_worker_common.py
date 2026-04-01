@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from common.io import write_json as _common_write_json
+from common.io import write_text as _common_write_text
 
 from .raw_common import PairRecord, _extract_filename, _extract_image_size
 
@@ -23,12 +25,11 @@ class StandardizeTask:
 
 
 def _write_text(path: Path, contents: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(contents, encoding="utf-8")
+    _common_write_text(path, contents)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    _write_text(path, json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True) + "\n")
+    _common_write_json(path, payload, sort_keys=True)
 
 
 def _counter_to_dict(counter: Counter[str]) -> dict[str, int]:
@@ -85,4 +86,3 @@ def _base_scene(
         },
     }
     return width, height, scene
-

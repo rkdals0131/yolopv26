@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Any
+
+from common.io import append_jsonl as _append_jsonl_file
+from common.io import timestamp_token as _timestamp_token
 
 
 def sync_timing_device(torch_module: Any, device: Any, enabled: bool) -> None:
@@ -53,9 +55,7 @@ def timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    _append_jsonl_file(path, payload)
 
 
 def format_duration(seconds: float | None) -> str:
@@ -77,7 +77,7 @@ def emit_log(message: str, *, tqdm_module: Any) -> None:
 
 
 def timestamp_token(*, datetime_cls: Any) -> str:
-    return datetime_cls.now().strftime("%Y%m%d_%H%M%S")
+    return _timestamp_token(datetime_cls=datetime_cls)
 
 
 def build_live_postfix(

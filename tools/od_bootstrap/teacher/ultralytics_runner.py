@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-import json
 import os
 from pathlib import Path
+import shutil
 import time
 from typing import Any, Callable
 
+from common.io import write_json as _write_json_file
 from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
 from .runtime_callbacks import build_teacher_runtime_callbacks as _build_teacher_runtime_callbacks
 from .runtime_artifacts import _refresh_latest_teacher_artifacts
@@ -73,12 +74,14 @@ except ImportError:  # pragma: no cover - dependency absence handled in tests wi
     torch_distributed_zero_first = None
     RANK = -1
 
+
 def _sync_timing_device(device: Any, enabled: bool) -> None:
     _sync_timing_device_impl(torch, device, enabled)
 
 
 def _timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
     return _timing_profile_impl(window)
+
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     _append_jsonl_impl(path, payload)
@@ -125,7 +128,7 @@ def _loader_profile_payload(loader: Any) -> dict[str, Any]:
     return _loader_profile_payload_impl(loader)
 
 
-def _build_teacher_dataloader(
+def _build_teacher_dataloader_kwargs(
     dataset: Any,
     *,
     batch: int,
@@ -136,9 +139,7 @@ def _build_teacher_dataloader(
     pin_memory: bool,
     persistent_workers: bool,
     prefetch_factor: int | None,
-):
-    if torch is None or InfiniteDataLoader is None or seed_worker is None:
-        raise RuntimeError("ultralytics dataloader dependencies are not available")
+) -> dict[str, Any]:
     batch = min(batch, len(dataset))
     device_count = torch.cuda.device_count()
     worker_count = min(os.cpu_count() or 1, max(0, int(workers)))
@@ -167,7 +168,140 @@ def _build_teacher_dataloader(
         if prefetch_factor is not None:
             loader_kwargs["prefetch_factor"] = int(prefetch_factor)
         loader_kwargs["persistent_workers"] = bool(persistent_workers)
+    return loader_kwargs
+
+
+def _build_teacher_dataloader(
+    dataset: Any,
+    *,
+    batch: int,
+    workers: int,
+    shuffle: bool,
+    rank: int,
+    drop_last: bool,
+    pin_memory: bool,
+    persistent_workers: bool,
+    prefetch_factor: int | None,
+):
+    if torch is None or InfiniteDataLoader is None or seed_worker is None:
+        raise RuntimeError("ultralytics dataloader dependencies are not available")
+    loader_kwargs = _build_teacher_dataloader_kwargs(
+        dataset,
+        batch=batch,
+        workers=workers,
+        shuffle=shuffle,
+        rank=rank,
+        drop_last=drop_last,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
+    )
     return InfiniteDataLoader(**loader_kwargs)
+
+
+def _build_teacher_callbacks(
+    *,
+    runtime_params: dict[str, Any],
+) -> dict[str, Callable[[Any], None]]:
+    return _build_teacher_runtime_callbacks(
+        runtime_params=runtime_params,
+        time_module=time,
+        deque_type=deque,
+        append_jsonl_fn=_append_jsonl,
+        sync_timing_device_fn=_sync_timing_device,
+        timing_profile_fn=_timing_profile,
+        build_live_postfix_fn=_build_live_postfix,
+        set_progress_postfix_fn=_set_progress_postfix,
+        loader_profile_payload_fn=_loader_profile_payload,
+        maybe_build_summary_writer_fn=_maybe_build_summary_writer,
+        write_tensorboard_scalars_fn=_write_tensorboard_scalars,
+        build_train_step_tensorboard_payload_fn=_build_train_step_tensorboard_payload,
+        build_epoch_tensorboard_payload_fn=_build_epoch_tensorboard_payload,
+    )
+
+
+def _build_teacher_train_kwargs(
+    *,
+    dataset_yaml: Path,
+    teacher_root: Path,
+    run_name: str,
+    train_params: dict[str, Any],
+    exist_ok: bool,
+) -> dict[str, Any]:
+    return {
+        "data": str(dataset_yaml),
+        "project": str(teacher_root),
+        "name": run_name,
+        "exist_ok": bool(exist_ok),
+        "pretrained": True,
+        **train_params,
+    }
+
+
+def _teacher_runtime_artifact_paths(run_dir: Path) -> dict[str, Path]:
+    tensorboard_dir = run_dir / "tensorboard"
+    return {
+        "best_checkpoint": run_dir / "weights" / "best.pt",
+        "last_checkpoint": run_dir / "weights" / "last.pt",
+        "profile_log": run_dir / "profile_log.jsonl",
+        "profile_summary": run_dir / "profile_summary.json",
+        "tensorboard_dir": tensorboard_dir,
+        "train_summary": run_dir / "train_summary.json",
+    }
+
+
+def _resolve_tensorboard_status(trainer: Any, tensorboard_dir: Path) -> dict[str, Any]:
+    return dict(
+        getattr(
+            trainer,
+            "od_tensorboard_status",
+            {
+                "enabled": False,
+                "status": "unknown_no_callbacks",
+                "error": None,
+                "log_dir": str(tensorboard_dir),
+            },
+        )
+    )
+
+
+def _build_teacher_train_summary(
+    *,
+    teacher_name: str,
+    resolved_weights: str,
+    dataset_yaml: Path,
+    teacher_root: Path,
+    run_dir: Path,
+    runtime_params: dict[str, Any],
+    train_kwargs: dict[str, Any],
+    train_result: Any,
+    trainer: Any,
+) -> dict[str, Any]:
+    artifact_paths = _teacher_runtime_artifact_paths(run_dir)
+    tensorboard_dir = artifact_paths["tensorboard_dir"]
+    tensorboard_status = _resolve_tensorboard_status(trainer, tensorboard_dir)
+    tensorboard_event_files = (
+        sorted(path.name for path in tensorboard_dir.glob("events.out.tfevents*"))
+        if tensorboard_dir.is_dir()
+        else []
+    )
+    return {
+        "teacher_name": teacher_name,
+        "weights": resolved_weights,
+        "dataset_yaml": str(dataset_yaml),
+        "teacher_root": str(teacher_root),
+        "run_dir": str(run_dir),
+        "best_checkpoint": str(artifact_paths["best_checkpoint"]),
+        "last_checkpoint": str(artifact_paths["last_checkpoint"]),
+        "profile_log_path": str(artifact_paths["profile_log"]),
+        "profile_summary_path": str(artifact_paths["profile_summary"]),
+        "tensorboard_dir": str(tensorboard_dir),
+        "tensorboard_status": tensorboard_status,
+        "tensorboard_event_files": tensorboard_event_files,
+        "runtime": dict(runtime_params),
+        "train_kwargs": train_kwargs,
+        "train_result_type": type(train_result).__name__,
+    }
 
 
 def _make_teacher_trainer(
@@ -542,21 +676,7 @@ def _make_teacher_trainer(
 
     TeacherDetectionTrainer._od_bootstrap_runtime_params = dict(runtime_params)
     TeacherDetectionTrainer._od_bootstrap_log_fn = log_fn
-    callbacks = _build_teacher_runtime_callbacks(
-        runtime_params=runtime_params,
-        time_module=time,
-        deque_type=deque,
-        append_jsonl_fn=_append_jsonl,
-        sync_timing_device_fn=_sync_timing_device,
-        timing_profile_fn=_timing_profile,
-        build_live_postfix_fn=_build_live_postfix,
-        set_progress_postfix_fn=_set_progress_postfix,
-        loader_profile_payload_fn=_loader_profile_payload,
-        maybe_build_summary_writer_fn=_maybe_build_summary_writer,
-        write_tensorboard_scalars_fn=_write_tensorboard_scalars,
-        build_train_step_tensorboard_payload_fn=_build_train_step_tensorboard_payload,
-        build_epoch_tensorboard_payload_fn=_build_epoch_tensorboard_payload,
-    )
+    callbacks = _build_teacher_callbacks(runtime_params=runtime_params)
     TeacherDetectionTrainer._od_bootstrap_callbacks = callbacks
     return TeacherDetectionTrainer, callbacks
 
@@ -591,59 +711,33 @@ def train_teacher_with_ultralytics(
         for event_name, callback in callbacks.items():
             model.add_callback(event_name, callback)
     run_name = _timestamp_token()
-    train_kwargs = {
-        "data": str(dataset_yaml),
-        "project": str(teacher_root),
-        "name": run_name,
-        "exist_ok": bool(exist_ok),
-        "pretrained": True,
-        **train_params,
-    }
+    train_kwargs = _build_teacher_train_kwargs(
+        dataset_yaml=dataset_yaml,
+        teacher_root=teacher_root,
+        run_name=run_name,
+        train_params=train_params,
+        exist_ok=exist_ok,
+    )
     train_result = model.train(trainer=trainer_cls, **train_kwargs)
     run_dir = _extract_run_dir(train_result, teacher_root / run_name)
     trainer = getattr(model, "trainer", None)
-    best_checkpoint = run_dir / "weights" / "best.pt"
-    last_checkpoint = run_dir / "weights" / "last.pt"
-    profile_log_path = run_dir / "profile_log.jsonl"
-    profile_summary_path = run_dir / "profile_summary.json"
-    tensorboard_dir = run_dir / "tensorboard"
-    tensorboard_status = dict(
-        getattr(
-            trainer,
-            "od_tensorboard_status",
-            {
-                "enabled": False,
-                "status": "unknown_no_callbacks",
-                "error": None,
-                "log_dir": str(tensorboard_dir),
-            },
-        )
+    summary = _build_teacher_train_summary(
+        teacher_name=teacher_name,
+        resolved_weights=resolved_weights,
+        dataset_yaml=dataset_yaml,
+        teacher_root=teacher_root,
+        run_dir=run_dir,
+        runtime_params=runtime_params,
+        train_kwargs=train_kwargs,
+        train_result=train_result,
+        trainer=trainer,
     )
-    tensorboard_event_files = sorted(path.name for path in tensorboard_dir.glob("events.out.tfevents*")) if tensorboard_dir.is_dir() else []
-
-    summary = {
-        "teacher_name": teacher_name,
-        "weights": resolved_weights,
-        "dataset_yaml": str(dataset_yaml),
-        "teacher_root": str(teacher_root),
-        "run_dir": str(run_dir),
-        "best_checkpoint": str(best_checkpoint),
-        "last_checkpoint": str(last_checkpoint),
-        "profile_log_path": str(profile_log_path),
-        "profile_summary_path": str(profile_summary_path),
-        "tensorboard_dir": str(tensorboard_dir),
-        "tensorboard_status": tensorboard_status,
-        "tensorboard_event_files": tensorboard_event_files,
-        "runtime": dict(runtime_params),
-        "train_kwargs": train_kwargs,
-        "train_result_type": type(train_result).__name__,
-    }
     latest_artifacts = _refresh_latest_teacher_artifacts(teacher_root=teacher_root, run_dir=run_dir, summary=summary)
     summary["latest_artifacts"] = latest_artifacts
 
-    summary_path = run_dir / "train_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    artifact_paths = _teacher_runtime_artifact_paths(run_dir)
+    summary_path = artifact_paths["train_summary"]
+    _write_json_file(summary_path, summary)
     latest_summary_path = Path(latest_artifacts["train_summary_path"])
-    latest_summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    _write_json_file(latest_summary_path, summary)
     return summary

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-import json
 from pathlib import Path
-import time
 from typing import Any, Callable
 
 import torch
 
 from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
 from ..data.target_encoder import encode_pv26_batch
+from . import _trainer_checkpoint as _checkpoint
 from . import _trainer_epochs as _epochs
+from . import _trainer_fit as _fit
 from . import _trainer_io as _io
 from . import _trainer_reporting as _reporting
+from . import _trainer_step as _step
 from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
 from .spec import build_loss_spec
 from ..net.trunk import forward_pyramid_features
@@ -55,6 +56,7 @@ _aggregate_assignment_modes = _reporting._aggregate_assignment_modes
 _mean_metric_tree = _reporting._mean_metric_tree
 _run_train_epoch = _epochs.run_train_epoch
 _run_validate_epoch = _epochs.run_validate_epoch
+_run_train_step = _step.run_train_step
 _default_run_dir = _io._default_run_dir
 _now_iso = _io._now_iso
 _write_json = _io._write_json
@@ -88,18 +90,6 @@ def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
 
 
-def _default_det_components() -> dict[str, float | int]:
-    return {
-        "det_obj_loss": 0.0,
-        "det_cls_matched_loss": 0.0,
-        "det_cls_unmatched_neg_loss": 0.0,
-        "det_iou_loss": 0.0,
-        "det_l1_loss": 0.0,
-        "det_cls_matched_count": 0,
-        "det_cls_unmatched_neg_count": 0,
-    }
-
-
 def _criterion_config_from_instance(criterion: torch.nn.Module, stage: str) -> dict[str, Any] | None:
     export_config = getattr(criterion, "export_config", None)
     if not callable(export_config):
@@ -124,64 +114,6 @@ def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, floa
             values["head_lr"] = float(group.get("lr", values["head_lr"]))
             values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
     return values
-
-
-def _true_count(value: torch.Tensor) -> int:
-    return int(value.to(dtype=torch.int64).sum().item())
-
-
-def _source_counts(encoded: dict[str, Any]) -> dict[str, int]:
-    mask = encoded["mask"]
-    return {
-        "det_source_samples": _true_count(mask["det_source"]),
-        "tl_attr_source_samples": _true_count(mask["tl_attr_source"]),
-        "lane_source_samples": _true_count(mask["lane_source"]),
-        "stop_line_source_samples": _true_count(mask["stop_line_source"]),
-        "crosswalk_source_samples": _true_count(mask["crosswalk_source"]),
-    }
-
-
-def _det_supervision_summary(encoded: dict[str, Any]) -> dict[str, Any]:
-    det_source = encoded["mask"]["det_source"].to(dtype=torch.bool)
-    allow_objectness = encoded["mask"].get("det_allow_objectness_negatives")
-    if allow_objectness is None:
-        allow_objectness = torch.ones_like(det_source)
-    else:
-        allow_objectness = allow_objectness.to(dtype=torch.bool)
-    allow_unmatched_class = encoded["mask"].get("det_allow_unmatched_class_negatives")
-    if allow_unmatched_class is None:
-        allow_unmatched_class = torch.ones_like(det_source)
-    else:
-        allow_unmatched_class = allow_unmatched_class.to(dtype=torch.bool)
-    class_mask = encoded["mask"].get("det_supervised_class_mask")
-    if class_mask is None:
-        class_mask = torch.ones((det_source.shape[0], len(OD_CLASSES)), dtype=torch.bool, device=det_source.device)
-    else:
-        class_mask = class_mask.to(dtype=torch.bool)
-
-    partial_det = det_source & (~allow_objectness | ~allow_unmatched_class)
-    det_valid = encoded["det_gt"]["valid_mask"].to(dtype=torch.bool)
-    det_classes = encoded["det_gt"]["classes"].to(dtype=torch.long)
-    batch_size = max(1, int(det_source.shape[0]))
-
-    supervised_class_sample_counts: dict[str, int] = {}
-    gt_class_counts: dict[str, int] = {}
-    for class_index, class_name in enumerate(OD_CLASSES):
-        supervised_class_sample_counts[class_name] = _true_count(class_mask[:, class_index])
-        gt_class_counts[class_name] = int(((det_classes == class_index) & det_valid).sum().item())
-
-    return {
-        "det_source_samples": _true_count(det_source),
-        "partial_det_samples": _true_count(partial_det),
-        "objectness_negative_enabled_samples": _true_count(det_source & allow_objectness),
-        "class_negative_enabled_samples": _true_count(det_source & allow_unmatched_class),
-        "partial_det_ratio": float(_true_count(partial_det)) / float(batch_size),
-        "supervised_class_sample_counts": supervised_class_sample_counts,
-        "gt_class_counts": gt_class_counts,
-    }
-def _sync_timing_device(device: torch.device, enabled: bool) -> None:
-    if enabled and device.type == "cuda":
-        torch.cuda.synchronize(device)
 
 
 def _resolve_summary_path(summary: dict[str, Any], path: str) -> float:
@@ -373,180 +305,14 @@ class PV26Trainer:
         wait_sec: float = 0.0,
         profile_device_sync: bool = False,
     ) -> dict[str, Any]:
-        self.adapter.raw_model.train()
-        self.heads.train()
-        load_started_at = time.perf_counter()
-        encoded = self.prepare_batch(batch)
-        _sync_timing_device(self.device, profile_device_sync)
-        load_ended_at = time.perf_counter()
-        if self.micro_step == 0:
-            self.optimizer.zero_grad(set_to_none=True)
-
-        def _nan_losses() -> dict[str, torch.Tensor]:
-            return {
-                "total": torch.full((), float("nan"), device=self.device),
-                "det": torch.full((), float("nan"), device=self.device),
-                "tl_attr": torch.full((), float("nan"), device=self.device),
-                "lane": torch.full((), float("nan"), device=self.device),
-                "stop_line": torch.full((), float("nan"), device=self.device),
-                "crosswalk": torch.full((), float("nan"), device=self.device),
-            }
-
-        def _summary_det_components(payload: Any) -> dict[str, float | int]:
-            raw = payload if isinstance(payload, dict) else {}
-            summary = dict(_default_det_components())
-            for key in summary:
-                value = raw.get(key, summary[key])
-                if isinstance(value, torch.Tensor):
-                    value = float(value.detach().cpu())
-                if key.endswith("_count"):
-                    summary[key] = int(value)
-                else:
-                    summary[key] = float(value)
-            return summary
-
-        skipped_reason: str | None = None
-        skipped_reason_detail: str | None = None
-        optimizer_step = False
-        successful = False
-        losses: dict[str, torch.Tensor] = _nan_losses()
-        det_components = _summary_det_components({})
-        assignment_det_mode = "unknown"
-        assignment_lane_modes = dict(getattr(self.criterion, "last_lane_assignment_modes", {}))
-        forward_started_at = load_ended_at
-        forward_ended_at = load_ended_at
-        loss_started_at = load_ended_at
-        loss_ended_at = load_ended_at
-        backward_started_at = load_ended_at
-        backward_ended_at = load_ended_at
-        try:
-            _sync_timing_device(self.device, profile_device_sync)
-            forward_started_at = time.perf_counter()
-            with self._autocast_context():
-                predictions = self.forward_encoded_batch(encoded)
-            _sync_timing_device(self.device, profile_device_sync)
-            forward_ended_at = time.perf_counter()
-            loss_started_at = forward_ended_at
-            losses = self.criterion(predictions, encoded)
-            assignment_det_mode = str(getattr(self.criterion, "last_det_assignment_mode", "unknown"))
-            assignment_lane_modes = dict(getattr(self.criterion, "last_lane_assignment_modes", {}))
-            det_components = _summary_det_components(getattr(self.criterion, "last_det_loss_breakdown", {}))
-            _sync_timing_device(self.device, profile_device_sync)
-            loss_ended_at = time.perf_counter()
-            total_loss = losses["total"]
-            backward_started_at = loss_ended_at
-            if not torch.isfinite(total_loss):
-                skipped_reason = "non_finite_loss"
-                if not self.skip_non_finite_loss:
-                    raise FloatingPointError("non-finite PV26 total loss encountered")
-                self.optimizer.zero_grad(set_to_none=True)
-                self.micro_step = 0
-                self.skipped_steps += 1
-            else:
-                scaled_total = total_loss / float(self.accumulate_steps)
-                if self.amp_enabled:
-                    self.scaler.scale(scaled_total).backward()
-                else:
-                    scaled_total.backward()
-                self.micro_step += 1
-                if self.micro_step >= self.accumulate_steps:
-                    if self.grad_clip_norm is not None:
-                        if self.amp_enabled:
-                            self.scaler.unscale_(self.optimizer)
-                        torch.nn.utils.clip_grad_norm_(
-                            list(self.adapter.raw_model.parameters()) + list(self.heads.parameters()),
-                            max_norm=self.grad_clip_norm,
-                        )
-                    if self.amp_enabled:
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                    else:
-                        self.optimizer.step()
-                    self.optimizer.zero_grad(set_to_none=True)
-                    self.global_step += 1
-                    self.micro_step = 0
-                    optimizer_step = True
-                successful = True
-            _sync_timing_device(self.device, profile_device_sync)
-            backward_ended_at = time.perf_counter()
-        except PV26DetAssignmentUnavailable as exc:
-            skipped_reason = "det_assignment_unavailable"
-            skipped_reason_detail = str(exc)
-            self.optimizer.zero_grad(set_to_none=True)
-            self.micro_step = 0
-            self.skipped_steps += 1
-            losses = _nan_losses()
-            det_components = _summary_det_components({})
-            assignment_det_mode = "det_assignment_unavailable"
-            assignment_lane_modes = {}
-            _sync_timing_device(self.device, profile_device_sync)
-            backward_ended_at = time.perf_counter()
-        except RuntimeError as exc:
-            if not self.oom_guard or not _is_oom_error(exc):
-                raise
-            skipped_reason = "oom_recovered"
-            skipped_reason_detail = str(exc)
-            self.optimizer.zero_grad(set_to_none=True)
-            self.micro_step = 0
-            self.skipped_steps += 1
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
-            losses = _nan_losses()
-            det_components = _summary_det_components({})
-            assignment_det_mode = "oom_recovered"
-            assignment_lane_modes = {}
-            _sync_timing_device(self.device, profile_device_sync)
-            backward_ended_at = time.perf_counter()
-        timing = {
-            "wait_sec": float(wait_sec),
-            "load_sec": max(0.0, load_ended_at - load_started_at),
-            "forward_sec": max(0.0, forward_ended_at - forward_started_at),
-            "loss_sec": max(0.0, loss_ended_at - loss_started_at),
-            "backward_sec": max(0.0, backward_ended_at - backward_started_at),
-        }
-        timing["iteration_sec"] = sum(float(timing[key]) for key in TIMING_KEYS if key != "iteration_sec")
-        summary = {
-            "history_index": len(self.history) + 1,
-            "global_step": self.global_step,
-            "stage": self.stage,
-            "batch_size": int(encoded["image"].shape[0]),
-            "successful": successful,
-            "losses": {
-                name: float(value.detach().cpu())
-                for name, value in losses.items()
-            },
-            "det_components": det_components,
-            "optimizer_step": optimizer_step,
-            "micro_step": int(self.micro_step),
-            "accumulate_steps": int(self.accumulate_steps),
-            "skipped_reason": skipped_reason,
-            "skipped_reason_detail": skipped_reason_detail,
-            "skipped_steps": int(self.skipped_steps),
-            "amp_enabled": bool(self.amp_enabled),
-            "gradient_scale": float(self.scaler.get_scale()) if self.amp_enabled else 1.0,
-            "optimizer_lrs": {
-                str(group.get("group_name", f"group_{index}")): float(group["lr"])
-                for index, group in enumerate(self.optimizer.param_groups)
-            },
-            "trainable": dict(self.stage_summary),
-            "assignment": {
-                "det": assignment_det_mode,
-                "lane": assignment_lane_modes,
-            },
-            "timing": timing,
-            "source_counts": _source_counts(encoded),
-            "det_supervision": _det_supervision_summary(encoded),
-        }
-        self.history.append(summary)
-        if self.tensorboard_writer is not None:
-            self._tensorboard_train_step += 1
-            _write_tensorboard_scalars(
-                self.tensorboard_writer,
-                "train_step",
-                _tensorboard_train_step_payload(summary),
-                self._tensorboard_train_step,
-            )
-        return summary
+        return _run_train_step(
+            self,
+            batch,
+            wait_sec=wait_sec,
+            profile_device_sync=profile_device_sync,
+            od_classes=OD_CLASSES,
+            is_oom_error_fn=_is_oom_error,
+        )
 
     def summarize_history(self, *, last_n: int | None = None) -> dict[str, Any]:
         if not self.history:
@@ -578,39 +344,18 @@ class PV26Trainer:
         return _write_jsonl_rows(path, self.history)
 
     def checkpoint_state(self) -> dict[str, Any]:
-        checkpoint = {
-            "stage": self.stage,
-            "global_step": self.global_step,
-            "stage_summary": dict(self.stage_summary),
-            "adapter_state_dict": self.adapter.raw_model.state_dict(),
-            "heads_state_dict": self.heads.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "criterion_stage": str(getattr(self.criterion, "stage", self.stage)),
-            "history": list(self.history),
-            "epoch_history": list(self.epoch_history),
-            "micro_step": int(self.micro_step),
-            "skipped_steps": int(self.skipped_steps),
-            "accumulate_steps": int(self.accumulate_steps),
-            "grad_clip_norm": self.grad_clip_norm,
-            "amp_enabled": bool(self.amp_enabled),
-        }
-        criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
-        if criterion_config is not None:
-            checkpoint["criterion_config"] = criterion_config
-        if self.scheduler is not None:
-            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
-        if self.amp_enabled:
-            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
-        return checkpoint
+        return _checkpoint.checkpoint_state(
+            self,
+            criterion_config_from_instance_fn=_criterion_config_from_instance,
+        )
 
     def save_checkpoint(self, path: str | Path, *, extra_state: dict[str, Any] | None = None) -> Path:
-        output_path = Path(path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint = self.checkpoint_state()
-        if extra_state:
-            checkpoint["extra_state"] = dict(extra_state)
-        torch.save(checkpoint, output_path)
-        return output_path
+        return _checkpoint.save_checkpoint(
+            self,
+            path,
+            extra_state=extra_state,
+            checkpoint_state_fn=self.checkpoint_state,
+        )
 
     def load_checkpoint(
         self,
@@ -618,46 +363,16 @@ class PV26Trainer:
         *,
         map_location: str | torch.device | None = None,
     ) -> dict[str, Any]:
-        checkpoint = torch.load(path, map_location=map_location or self.device)
-        checkpoint_stage = _canonical_stage(str(checkpoint.get("stage", self.stage)))
-        optimizer_hparams = _optimizer_group_hparams(self.optimizer)
-        current_criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
-        checkpoint_criterion_config = checkpoint.get("criterion_config")
-        if isinstance(checkpoint_criterion_config, dict):
-            criterion_config = dict(checkpoint_criterion_config)
-            criterion_config["stage"] = checkpoint_stage
-        elif current_criterion_config is not None:
-            criterion_config = dict(current_criterion_config)
-            criterion_config["stage"] = checkpoint_stage
-        else:
-            criterion_config = None
-
-        if checkpoint_stage != self.stage:
-            self.stage = checkpoint_stage
-            self.stage_summary = configure_pv26_train_stage(self.adapter, self.heads, self.stage)
-            self.optimizer = build_pv26_optimizer(
-                self.adapter,
-                self.heads,
-                trunk_lr=optimizer_hparams["trunk_lr"],
-                head_lr=optimizer_hparams["head_lr"],
-                weight_decay=optimizer_hparams["weight_decay"],
-            )
-        if criterion_config is not None:
-            self.criterion = PV26MultiTaskLoss(**criterion_config).to(self.device)
-        self.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
-        self.heads.load_state_dict(checkpoint["heads_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        if self.amp_enabled and "scaler_state_dict" in checkpoint:
-            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
-        self.global_step = int(checkpoint.get("global_step", 0))
-        self.stage_summary = dict(checkpoint.get("stage_summary", self.stage_summary))
-        self.history = list(checkpoint.get("history", []))
-        self.epoch_history = list(checkpoint.get("epoch_history", []))
-        self.micro_step = int(checkpoint.get("micro_step", 0))
-        self.skipped_steps = int(checkpoint.get("skipped_steps", 0))
-        return checkpoint
+        return _checkpoint.load_checkpoint(
+            self,
+            path,
+            map_location=map_location,
+            canonical_stage_fn=_canonical_stage,
+            optimizer_group_hparams_fn=_optimizer_group_hparams,
+            criterion_config_from_instance_fn=_criterion_config_from_instance,
+            configure_stage_fn=configure_pv26_train_stage,
+            build_optimizer_fn=build_pv26_optimizer,
+        )
 
     def load_model_weights(
         self,
@@ -665,10 +380,7 @@ class PV26Trainer:
         *,
         map_location: str | torch.device | None = None,
     ) -> dict[str, Any]:
-        checkpoint = torch.load(path, map_location=map_location or self.device)
-        self.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
-        self.heads.load_state_dict(checkpoint["heads_state_dict"])
-        return checkpoint
+        return _checkpoint.load_model_weights(self, path, map_location=map_location)
 
     def build_evaluator(self):
         from .evaluator import PV26Evaluator
@@ -756,291 +468,41 @@ class PV26Trainer:
         profile_window: int = 20,
         profile_device_sync: bool = False,
     ) -> dict[str, Any]:
-        if epochs <= 0:
-            raise ValueError("fit requires epochs > 0")
-        if log_every_n_steps <= 0:
-            raise ValueError("log_every_n_steps must be > 0")
-        if profile_window <= 0:
-            raise ValueError("profile_window must be > 0")
-
-        output_dir = Path(run_dir) if run_dir is not None else _default_run_dir()
-        history_dir = output_dir / "history"
-        checkpoint_dir = output_dir / "checkpoints"
-        tensorboard_dir = output_dir / "tensorboard"
-        history_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        tensorboard_dir.mkdir(parents=True, exist_ok=True)
-
-        best_metric_path = best_metric or (
-            "val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"
+        return _fit.run_fit(
+            self,
+            train_loader,
+            epochs=epochs,
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
+            val_loader=val_loader,
+            run_dir=run_dir,
+            val_every=val_every,
+            checkpoint_every=checkpoint_every,
+            max_train_batches=max_train_batches,
+            max_val_batches=max_val_batches,
+            best_metric=best_metric,
+            best_mode=best_mode,
+            auto_resume=auto_resume,
+            resume_path=resume_path,
+            enable_tensorboard=enable_tensorboard,
+            early_exit_callback=early_exit_callback,
+            run_manifest_extra=run_manifest_extra,
+            log_every_n_steps=log_every_n_steps,
+            profile_window=profile_window,
+            profile_device_sync=profile_device_sync,
+            default_run_dir_fn=_default_run_dir,
+            now_iso_fn=_now_iso,
+            write_json_fn=_write_json,
+            json_ready_fn=_json_ready,
+            maybe_build_summary_writer_fn=_maybe_build_summary_writer,
+            optimizer_group_hparams_fn=_optimizer_group_hparams,
+            resolve_summary_path_fn=_resolve_summary_path,
+            is_better_fn=_is_better,
+            write_tensorboard_scalars_fn=_write_tensorboard_scalars,
+            tensorboard_epoch_payload_fn=_tensorboard_epoch_payload,
+            run_manifest_version=RUN_MANIFEST_VERSION,
         )
-        best_metric_value: float | None = None
-        best_epoch: int | None = None
-        best_checkpoint_path: Path | None = None
-        run_started_at = time.perf_counter()
-        run_started_at_iso = _now_iso()
-        run_summary: dict[str, Any] = {}
-        early_exit_state: dict[str, Any] | None = None
-        start_epoch = 1
-        manifest_path = output_dir / "run_manifest.json"
-        previous_writer = self.tensorboard_writer
-        previous_status = dict(self.tensorboard_status)
-        previous_tb_step = int(self._tensorboard_train_step)
-        tensorboard_purge_step: int | None = None
-        resumed_from_checkpoint = False
-        if auto_resume:
-            resume_candidate = Path(resume_path) if resume_path is not None else checkpoint_dir / "last.pt"
-            if resume_candidate.is_file():
-                checkpoint = self.load_checkpoint(resume_candidate, map_location=self.device)
-                resumed_from_checkpoint = True
-                extra_state = checkpoint.get("extra_state", {}) if isinstance(checkpoint.get("extra_state"), dict) else {}
-                restored_epoch = int(extra_state.get("epoch", len(self.epoch_history)))
-                start_epoch = restored_epoch + 1
-                summary_path = output_dir / "summary.json"
-                if summary_path.is_file():
-                    prior_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-                    if prior_summary.get("best_metric_value") is not None:
-                        best_metric_value = float(prior_summary["best_metric_value"])
-                    if prior_summary.get("best_epoch") is not None:
-                        best_epoch = int(prior_summary["best_epoch"])
-                if best_metric_value is None and self.epoch_history:
-                    best_metric_value = _resolve_summary_path(
-                        self.epoch_history[-1],
-                        best_metric or ("val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"),
-                    )
-                    best_epoch = int(self.epoch_history[-1]["epoch"])
-                if (checkpoint_dir / "best.pt").is_file():
-                    best_checkpoint_path = checkpoint_dir / "best.pt"
-        self._tensorboard_train_step = len(self.history)
-        if resumed_from_checkpoint:
-            tensorboard_purge_step = max(1, self._tensorboard_train_step + 1)
-        if enable_tensorboard:
-            self.tensorboard_writer, self.tensorboard_status = _maybe_build_summary_writer(
-                tensorboard_dir,
-                purge_step=tensorboard_purge_step,
-            )
-        else:
-            self.tensorboard_writer = None
-            self.tensorboard_status = {
-                "enabled": False,
-                "status": "disabled_by_config",
-                "error": None,
-                "log_dir": str(tensorboard_dir),
-                "purge_step": tensorboard_purge_step,
-            }
-        evaluator = self.build_evaluator() if val_loader is not None else None
-        try:
-            if start_epoch > epochs:
-                run_summary = {
-                    "stage": self.stage,
-                    "epochs": int(epochs),
-                    "completed_epochs": len(self.epoch_history),
-                    "global_step": int(self.global_step),
-                    "run_dir": str(output_dir),
-                    "best_metric_path": best_metric or (
-                        "val.losses.total.mean" if val_loader is not None else "train.losses.total.mean"
-                    ),
-                    "best_metric_value": best_metric_value,
-                    "best_epoch": best_epoch,
-                    "last_epoch": self.epoch_history[-1] if self.epoch_history else None,
-                    "history_paths": {
-                        "train_steps": str(history_dir / "train_steps.jsonl"),
-                        "epochs": str(history_dir / "epochs.jsonl"),
-                    },
-                    "checkpoint_paths": {
-                        "last": str(checkpoint_dir / "last.pt"),
-                        "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
-                    },
-                    "tensorboard": dict(self.tensorboard_status),
-                    "manifest_path": str(manifest_path),
-                    "duration_sec": time.perf_counter() - run_started_at,
-                    "auto_resumed": True,
-                    "resume_start_epoch": int(start_epoch),
-                }
-                _write_json(output_dir / "summary.json", run_summary)
-                _write_json(
-                    manifest_path,
-                    {
-                        "version": RUN_MANIFEST_VERSION,
-                        "created_at": run_started_at_iso,
-                        "updated_at": _now_iso(),
-                        "stage": self.stage,
-                        "device": str(self.device),
-                        "optimizer": _optimizer_group_hparams(self.optimizer),
-                        "trainer": {
-                            "amp_enabled": bool(self.amp_enabled),
-                            "accumulate_steps": int(self.accumulate_steps),
-                            "grad_clip_norm": self.grad_clip_norm,
-                            "skip_non_finite_loss": bool(self.skip_non_finite_loss),
-                            "oom_guard": bool(self.oom_guard),
-                            "log_every_n_steps": int(log_every_n_steps),
-                            "profile_window": int(profile_window),
-                            "profile_device_sync": bool(profile_device_sync),
-                        },
-                        "artifacts": {
-                            "summary": str(output_dir / "summary.json"),
-                            "history": run_summary["history_paths"],
-                            "checkpoints": run_summary["checkpoint_paths"],
-                            "tensorboard": dict(self.tensorboard_status),
-                        },
-                        "run_state": _json_ready(run_summary),
-                        "extra": _json_ready(run_manifest_extra or {}),
-                    },
-                )
-                return run_summary
-
-            for epoch in range(start_epoch, epochs + 1):
-                epoch_summary: dict[str, Any] = {
-                    "epoch": int(epoch),
-                    "stage": self.stage,
-                    "epoch_started_at": _now_iso(),
-                    "train": self.train_epoch(
-                        train_loader,
-                        epoch=epoch,
-                        epoch_total=epochs,
-                        phase_index=phase_index,
-                        phase_count=phase_count,
-                        phase_name=phase_name,
-                        max_batches=max_train_batches,
-                        step_log_path=history_dir / "train_steps.jsonl",
-                        log_every_n_steps=log_every_n_steps,
-                        profile_window=profile_window,
-                        profile_device_sync=profile_device_sync,
-                    ),
-                }
-                if val_loader is not None and epoch % val_every == 0:
-                    epoch_summary["val"] = self.validate_epoch(
-                        val_loader,
-                        epoch=epoch,
-                        evaluator=evaluator,
-                        max_batches=max_val_batches,
-                    )
-                if self.scheduler is not None:
-                    self.scheduler.step()
-                    epoch_summary["scheduler_lrs"] = [
-                        float(group["lr"]) for group in self.optimizer.param_groups
-                    ]
-
-                metric_value = _resolve_summary_path(epoch_summary, best_metric_path)
-                epoch_summary["selection"] = {
-                    "best_metric_path": best_metric_path,
-                    "best_metric_value": metric_value,
-                    "best_mode": best_mode,
-                }
-                is_best = _is_better(metric_value, best_metric_value, best_mode)
-                if is_best:
-                    best_metric_value = metric_value
-                    best_epoch = epoch
-
-                early_exit_state = None
-                if early_exit_callback is not None:
-                    callback_result = early_exit_callback(epoch_summary)
-                    if callback_result is not None:
-                        if not isinstance(callback_result, dict):
-                            raise TypeError("early_exit_callback must return dict[str, Any] | None")
-                        early_exit_state = dict(callback_result)
-                        early_exit_state.setdefault("should_stop", True)
-
-                self.epoch_history.append(epoch_summary)
-                last_checkpoint_path = self.save_checkpoint(
-                    checkpoint_dir / "last.pt",
-                    extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
-                )
-                epoch_summary["checkpoint_last"] = str(last_checkpoint_path)
-                if epoch % checkpoint_every == 0:
-                    epoch_checkpoint_path = self.save_checkpoint(
-                        checkpoint_dir / f"epoch_{epoch:03d}.pt",
-                        extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
-                    )
-                    epoch_summary["checkpoint_epoch"] = str(epoch_checkpoint_path)
-                if is_best:
-                    best_checkpoint_path = self.save_checkpoint(
-                        checkpoint_dir / "best.pt",
-                        extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
-                    )
-                    epoch_summary["checkpoint_best"] = str(best_checkpoint_path)
-
-                _append_jsonl(history_dir / "epochs.jsonl", epoch_summary)
-                self.save_history_jsonl(history_dir / "train_steps.jsonl")
-                self.save_epoch_history_jsonl(history_dir / "epochs.jsonl")
-
-                if self.tensorboard_writer is not None:
-                    _write_tensorboard_scalars(
-                        self.tensorboard_writer,
-                        "epoch",
-                        _tensorboard_epoch_payload(epoch_summary),
-                        epoch,
-                    )
-                    self.tensorboard_writer.flush()
-
-                run_summary = {
-                    "stage": self.stage,
-                    "epochs": int(epochs),
-                    "completed_epochs": len(self.epoch_history),
-                    "global_step": int(self.global_step),
-                    "run_dir": str(output_dir),
-                    "best_metric_path": best_metric_path,
-                    "best_metric_value": best_metric_value,
-                    "best_epoch": best_epoch,
-                    "last_epoch": self.epoch_history[-1],
-                    "skipped_steps": int(self.skipped_steps),
-                    "history_paths": {
-                        "train_steps": str(history_dir / "train_steps.jsonl"),
-                        "epochs": str(history_dir / "epochs.jsonl"),
-                    },
-                    "checkpoint_paths": {
-                        "last": str(checkpoint_dir / "last.pt"),
-                        "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
-                    },
-                    "tensorboard": dict(self.tensorboard_status),
-                    "manifest_path": str(manifest_path),
-                    "duration_sec": time.perf_counter() - run_started_at,
-                    "auto_resumed": bool(auto_resume and start_epoch > 1),
-                    "resume_start_epoch": int(start_epoch),
-                }
-                if early_exit_state is not None:
-                    run_summary["early_exit"] = _json_ready(early_exit_state)
-                _write_json(output_dir / "summary.json", run_summary)
-                _write_json(
-                    manifest_path,
-                    {
-                        "version": RUN_MANIFEST_VERSION,
-                        "created_at": run_started_at_iso,
-                        "updated_at": _now_iso(),
-                        "stage": self.stage,
-                        "device": str(self.device),
-                        "optimizer": _optimizer_group_hparams(self.optimizer),
-                        "trainer": {
-                            "amp_enabled": bool(self.amp_enabled),
-                            "accumulate_steps": int(self.accumulate_steps),
-                            "grad_clip_norm": self.grad_clip_norm,
-                            "skip_non_finite_loss": bool(self.skip_non_finite_loss),
-                            "oom_guard": bool(self.oom_guard),
-                            "log_every_n_steps": int(log_every_n_steps),
-                            "profile_window": int(profile_window),
-                            "profile_device_sync": bool(profile_device_sync),
-                        },
-                        "artifacts": {
-                            "summary": str(output_dir / "summary.json"),
-                            "history": run_summary["history_paths"],
-                            "checkpoints": run_summary["checkpoint_paths"],
-                            "tensorboard": dict(self.tensorboard_status),
-                        },
-                        "run_state": _json_ready(run_summary),
-                        "extra": _json_ready(run_manifest_extra or {}),
-                    },
-                )
-                if early_exit_state is not None and bool(early_exit_state.get("should_stop", True)):
-                    break
-
-            return run_summary
-        finally:
-            if self.tensorboard_writer is not None:
-                self.tensorboard_writer.flush()
-                self.tensorboard_writer.close()
-            self.tensorboard_writer = previous_writer
-            self.tensorboard_status = previous_status
-            self._tensorboard_train_step = previous_tb_step
 
 
 def run_pv26_tiny_overfit(

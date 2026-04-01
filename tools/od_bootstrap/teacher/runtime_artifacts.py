@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
-import json
 import os
 from pathlib import Path
 import shutil
 from typing import Any
+
+from common.io import now_iso, write_json
 
 
 def _remove_path(path: Path) -> None:
@@ -39,8 +39,7 @@ def _refresh_latest_teacher_artifacts(
     summary: dict[str, Any],
 ) -> dict[str, Any]:
     latest_summary_path = teacher_root / "train_summary.json"
-    latest_summary_path.parent.mkdir(parents=True, exist_ok=True)
-    latest_summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_json(latest_summary_path, summary)
 
     alias_weights_root = teacher_root / "weights"
     alias_actions: dict[str, str] = {}
@@ -55,11 +54,11 @@ def _refresh_latest_teacher_artifacts(
         "run_dir": str(run_dir),
         "best_checkpoint": str(run_dir / "weights" / "best.pt"),
         "last_checkpoint": str(run_dir / "weights" / "last.pt"),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": now_iso(),
         "alias_actions": alias_actions,
     }
     latest_run_path = teacher_root / "latest_run.json"
-    latest_run_path.write_text(json.dumps(latest_run_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_json(latest_run_path, latest_run_payload)
     return {
         "train_summary_path": str(latest_summary_path),
         "latest_run_path": str(latest_run_path),
