@@ -29,6 +29,13 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_readme_matches_current_pv26_training_entrypoint(self) -> None:
         readme = _read(REPO_ROOT / "README.md")
+        self.assertIn("python3 tools/check_env.py --strict --check-yolo-runtime", readme)
+        self.assertIn("docs/3A_RAW_DATASET_LAYOUTS.md", readme)
+        self.assertIn("tools/od_bootstrap/presets.py", readme)
+        self.assertIn("tools/run_pv26_train.py", readme)
+        self.assertIn("USER CONFIG", readme)
+        self.assertIn("HYPERPARAMETERS", readme)
+        self.assertIn("PHASE HYPERPARAMETERS", readme)
         self.assertIn("tools/run_pv26_train.py --preset default", readme)
         self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
         self.assertIn("python -m tools.od_bootstrap build-teacher-datasets", readme)
