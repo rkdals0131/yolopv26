@@ -329,6 +329,8 @@ def _configure_torch_multiprocessing() -> None:
     try:
         import torch
 
+        # Large encoded CPU batches can exhaust process file descriptors when
+        # PyTorch shares storages via duplicated FDs.
         if torch.multiprocessing.get_sharing_strategy() != "file_system":
             torch.multiprocessing.set_sharing_strategy("file_system")
     except RuntimeError:
