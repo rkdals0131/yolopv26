@@ -216,6 +216,9 @@ def _scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
 
 
 def _build_pv26_train_path_overrides(paths_config: dict[str, Any]) -> dict[str, Any]:
+    legacy_stress_run_root = nested_get(paths_config, "pv26_train", "stress_run_root")
+    if legacy_stress_run_root not in {None, ""}:
+        raise ValueError("pv26_train.stress_run_root is no longer supported; use pv26_train.run_root")
     dataset_root = resolve_repo_path(
         nested_get(paths_config, "pv26_train", "dataset_root"),
         repo_root=REPO_ROOT,
@@ -285,6 +288,17 @@ def _apply_user_config_to_preset(
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
     paths_config = load_user_paths_config()
     hyperparameters_config = load_user_hyperparameters_config()
+    preset_overrides = nested_get(hyperparameters_config, "pv26_train", "presets", default={})
+    if preset_overrides is None:
+        preset_overrides = {}
+    if not isinstance(preset_overrides, dict):
+        raise TypeError("pv26_train.presets must be a mapping")
+    unsupported_preset_overrides = sorted(set(preset_overrides) - {"default"})
+    if unsupported_preset_overrides:
+        raise KeyError(
+            "unsupported PV26 meta-train preset overrides: "
+            f"{unsupported_preset_overrides}; only 'default' is supported"
+        )
 
     # ===== USER CONFIG: PV26 PREVIEW DATASETS =====
     preview_dataset_keys = (
@@ -663,10 +677,10 @@ def _validate_meta_train_scenario(scenario: MetaTrainScenario) -> None:
 
 def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
     preset_key = Path(preset_name).name
-    try:
-        scenario = _build_meta_train_presets()[preset_key]
-    except KeyError as exc:
-        raise KeyError(f"unsupported PV26 meta-train preset: {preset_key}") from exc
+    presets = _build_meta_train_presets()
+    if preset_key not in presets:
+        raise KeyError(f"unsupported PV26 meta-train preset: {preset_key}")
+    scenario = presets[preset_key]
     _validate_meta_train_scenario(scenario)
     return scenario
 

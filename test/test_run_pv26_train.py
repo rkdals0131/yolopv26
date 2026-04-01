@@ -160,6 +160,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset: stage3_vram_stress"):
             load_meta_train_scenario("stage3_vram_stress")
 
+    def test_removed_stress_run_root_override_fails_fast(self) -> None:
+        with patch("tools.run_pv26_train.load_user_paths_config", return_value={"pv26_train": {"stress_run_root": "legacy/stress"}}):
+            with patch("tools.run_pv26_train.load_user_hyperparameters_config", return_value={}):
+                with self.assertRaisesRegex(ValueError, "pv26_train.stress_run_root is no longer supported"):
+                    load_meta_train_scenario("default")
+
     def test_legacy_dataset_mapping_keys_fail_fast(self) -> None:
         legacy_hyperparameters_config = {
             "pv26_train": {
@@ -184,6 +190,15 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                     ValueError,
                     "dataset.root and dataset.additional_roots",
                 ):
+                    load_meta_train_scenario("default")
+
+    def test_removed_preset_override_section_fails_fast(self) -> None:
+        with patch("tools.run_pv26_train.load_user_paths_config", return_value={}):
+            with patch(
+                "tools.run_pv26_train.load_user_hyperparameters_config",
+                return_value={"pv26_train": {"presets": {"stage3_vram_stress": {}}}},
+            ):
+                with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset overrides"):
                     load_meta_train_scenario("default")
 
     def test_load_meta_train_scenario_rejects_unknown_preset(self) -> None:
