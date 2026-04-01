@@ -11,6 +11,8 @@ import time
 from types import MethodType
 from typing import Any, Callable
 
+from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
+
 try:
     from tqdm.auto import tqdm
 except ImportError:  # pragma: no cover - dependency absence handled in tests with patching.
@@ -206,28 +208,6 @@ def _timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
         "wait_sec": _profile_stats([item["wait_sec"] for item in window]),
         "compute_sec": _profile_stats([item["compute_sec"] for item in window]),
     }
-
-
-def _flatten_scalar_tree(prefix: str, payload: Any) -> list[tuple[str, float]]:
-    scalars: list[tuple[str, float]] = []
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            next_prefix = f"{prefix}/{key}" if prefix else str(key)
-            scalars.extend(_flatten_scalar_tree(next_prefix, value))
-        return scalars
-    if isinstance(payload, (list, tuple)):
-        for index, value in enumerate(payload):
-            next_prefix = f"{prefix}/{index}" if prefix else str(index)
-            scalars.extend(_flatten_scalar_tree(next_prefix, value))
-        return scalars
-    if isinstance(payload, bool):
-        return [(prefix, 1.0 if payload else 0.0)]
-    if isinstance(payload, (int, float)):
-        numeric = float(payload)
-        if math.isfinite(numeric):
-            return [(prefix, numeric)]
-    return scalars
-
 
 def _maybe_build_summary_writer(log_dir: Path):
     try:

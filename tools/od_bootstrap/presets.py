@@ -4,6 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from common.config_coercion import (
+    coerce_bool as _coerce_bool,
+    coerce_float as _coerce_float,
+    coerce_float_tuple as _coerce_float_tuple,
+    coerce_int as _coerce_int,
+    coerce_int_tuple as _coerce_int_tuple,
+    coerce_mapping as _coerce_mapping,
+    coerce_str as _coerce_str,
+    coerce_str_tuple as _coerce_str_tuple,
+)
 from common.io import read_yaml
 from common.pv26_schema import (
     AIHUB_OBSTACLE_DATASET_KEY,
@@ -84,66 +94,6 @@ class SourceDebugVisPreset:
     canonical_root: Path
     debug_vis_count: int = 20
     debug_vis_seed: int = 26
-
-
-def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise TypeError(f"{field_name} must be a mapping")
-    return dict(value)
-
-
-def _coerce_bool(value: Any, *, field_name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    raise TypeError(f"{field_name} must be a boolean")
-
-
-def _coerce_int(value: Any, *, field_name: str) -> int:
-    if isinstance(value, bool):
-        raise TypeError(f"{field_name} must be an integer")
-    return int(value)
-
-
-def _coerce_float(value: Any, *, field_name: str) -> float:
-    if isinstance(value, bool):
-        raise TypeError(f"{field_name} must be a float")
-    return float(value)
-
-
-def _coerce_str(value: Any, *, field_name: str) -> str:
-    text = str(value).strip()
-    if not text:
-        raise ValueError(f"{field_name} must not be empty")
-    return text
-
-
-def _coerce_str_tuple(value: Any, *, field_name: str) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (_coerce_str(value, field_name=field_name),)
-    if not isinstance(value, (list, tuple)):
-        raise TypeError(f"{field_name} must be a list")
-    return tuple(_coerce_str(item, field_name=f"{field_name}[]") for item in value)
-
-
-def _coerce_float_tuple(value: Any, *, field_name: str) -> tuple[float, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise TypeError(f"{field_name} must be a list")
-    return tuple(_coerce_float(item, field_name=f"{field_name}[]") for item in value)
-
-
-def _coerce_int_tuple(value: Any, *, field_name: str) -> tuple[int, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise TypeError(f"{field_name} must be a list")
-    return tuple(_coerce_int(item, field_name=f"{field_name}[]") for item in value)
-
 
 def _config_section(payload: dict[str, Any], *keys: str) -> dict[str, Any]:
     field_name = ".".join(keys) if keys else "config"

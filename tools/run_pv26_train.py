@@ -12,6 +12,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 site.addsitedir(str(REPO_ROOT))
 
+from common.config_coercion import (
+    coerce_bool as _coerce_bool,
+    coerce_float as _coerce_float,
+    coerce_int as _coerce_int,
+    coerce_mapping as _coerce_mapping,
+    coerce_str as _coerce_str,
+)
 from common.overlay import render_overlay
 from common.user_config import (
     load_user_hyperparameters_config,
@@ -471,46 +478,6 @@ def _resolve_optional_path(value: str | Path | None, *, base_dir: Path) -> Path 
     if value in {None, ""}:
         return None
     return _resolve_path(value, base_dir=base_dir)
-
-
-def _coerce_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise TypeError(f"{field_name} must be a mapping")
-    return dict(value)
-
-
-def _coerce_bool(value: Any, *, field_name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    raise TypeError(f"{field_name} must be a boolean")
-
-
-def _coerce_int(value: Any, *, field_name: str) -> int:
-    if isinstance(value, bool):
-        raise TypeError(f"{field_name} must be an integer")
-    return int(value)
-
-
-def _coerce_float(value: Any, *, field_name: str) -> float:
-    if isinstance(value, bool):
-        raise TypeError(f"{field_name} must be a float")
-    return float(value)
-
-
-def _coerce_str(value: Any, *, field_name: str) -> str:
-    text = str(value).strip()
-    if not text:
-        raise ValueError(f"{field_name} must not be empty")
-    return text
-
 
 def _coerce_optional_int(value: Any, *, field_name: str) -> int | None:
     if value is None:

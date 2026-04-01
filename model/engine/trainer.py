@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 import torch
 
+from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
 from ..data.target_encoder import encode_pv26_batch
 from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
 from .spec import build_loss_spec
@@ -192,28 +193,6 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
     return value
-
-
-def _flatten_scalar_tree(prefix: str, payload: Any) -> list[tuple[str, float]]:
-    scalars: list[tuple[str, float]] = []
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            next_prefix = f"{prefix}/{key}" if prefix else str(key)
-            scalars.extend(_flatten_scalar_tree(next_prefix, value))
-        return scalars
-    if isinstance(payload, (list, tuple)):
-        for index, value in enumerate(payload):
-            next_prefix = f"{prefix}/{index}" if prefix else str(index)
-            scalars.extend(_flatten_scalar_tree(next_prefix, value))
-        return scalars
-    if isinstance(payload, bool):
-        return [(prefix, 1.0 if payload else 0.0)]
-    if isinstance(payload, (int, float)):
-        numeric = float(payload)
-        if math.isfinite(numeric):
-            return [(prefix, numeric)]
-    return scalars
-
 
 def _maybe_build_summary_writer(log_dir: Path, *, purge_step: int | None = None):
     try:
