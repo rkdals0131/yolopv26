@@ -30,6 +30,9 @@ class DocsSyncTests(unittest.TestCase):
     def test_readme_matches_current_pv26_training_entrypoint(self) -> None:
         readme = _read(REPO_ROOT / "README.md")
         self.assertIn("python3 tools/check_env.py", readme)
+        self.assertIn("## 가장 먼저 실행", readme)
+        self.assertIn("interactive launcher", readme)
+        self.assertIn("이게 기본 진입점이다.", readme)
         self.assertIn("python3 tools/check_env.py --strict --check-yolo-runtime", readme)
         self.assertIn("`H`를 누르면", readme)
         self.assertIn("docs/3A_RAW_DATASET_LAYOUTS.md", readme)
