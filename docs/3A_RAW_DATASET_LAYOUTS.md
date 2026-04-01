@@ -5,7 +5,7 @@
 ## 경로 전제
 
 - repo에서는 항상 `seg_dataset/...`를 논리 경로로 사용한다.
-- 실제 저장 위치는 심볼릭 링크일 수 있다. 현재 워크스페이스도 `seg_dataset -> /home/user1/Storage/seg_dataset/` 형태다.
+- 실제 저장 위치는 심볼릭 링크일 수 있다. 현재 워크스페이스도 repo 밖 저장소를 가리키는 `seg_dataset` 심볼릭 링크 구성을 사용할 수 있다.
 - 따라서 문서에서 말하는 `seg_dataset/AIHUB/...`는 “repo 안의 물리 디렉터리”가 아니라 “repo에서 접근하는 논리 dataset root”로 이해하면 된다.
 
 ## AIHUB 개요

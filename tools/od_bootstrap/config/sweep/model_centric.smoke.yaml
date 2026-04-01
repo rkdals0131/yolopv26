@@ -1,0 +1,44 @@
+run:
+  output_root: ../../../../runs/od_bootstrap_smoke/sweep
+  execution_mode: model-centric
+  dry_run: false
+  device: cuda:0
+  imgsz: 640
+  batch_size: 8
+  predict_conf: 0.001
+  predict_iou: 0.99
+
+image_list:
+  manifest_path: ../../../../seg_dataset/pv26_od_bootstrap/meta/bootstrap_image_list.smoke.jsonl
+
+materialization:
+  output_root: ../../../../seg_dataset/pv26_od_bootstrap/exhaustive_od_smoke
+  copy_images: false
+
+class_policy_path: class_policy.smoke.yaml
+
+teachers:
+  - name: mobility
+    base_model: yolov26s
+    checkpoint_path: ../../../../runs/od_bootstrap/train/mobility/20260328_145441/weights/best.pt
+    model_version: mobility_yolov26s_bootstrap_smoke_v1
+    classes:
+      - vehicle
+      - bike
+      - pedestrian
+
+  - name: signal
+    base_model: yolov26s
+    checkpoint_path: ../../../../runs/od_bootstrap/train/signal/20260329_021050/weights/best.pt
+    model_version: signal_yolov26s_bootstrap_smoke_v1
+    classes:
+      - traffic_light
+      - sign
+
+  - name: obstacle
+    base_model: yolov26s
+    checkpoint_path: ../../../../runs/od_bootstrap/train/obstacle/20260328_143910/weights/best.pt
+    model_version: obstacle_yolov26s_bootstrap_smoke_v1
+    classes:
+      - traffic_cone
+      - obstacle

@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.sweep.run_model_centric_sweep import run_model_centric_sweep_scenario
-from tools.od_bootstrap.sweep.image_list import build_sample_uid
-from tools.od_bootstrap.sweep.scenario import load_sweep_scenario
+from tools.od_bootstrap.sweep.image_list import ImageListEntry, build_sample_uid
+from tools.od_bootstrap.sweep.run_model_centric_sweep import _extract_teacher_rows, run_model_centric_sweep_scenario
+from tools.od_bootstrap.sweep.scenario import ClassPolicy, TeacherConfig, load_sweep_scenario
 
 
 class _FakeYOLO:
@@ -52,6 +52,49 @@ class _FakeYOLO:
 
 
 class ODBootstrapRunnerTests(unittest.TestCase):
+    def test_extract_teacher_rows_falls_back_to_batch_position_when_result_path_is_rewritten(self) -> None:
+        entry = ImageListEntry(
+            sample_id="frame_001",
+            sample_uid="bdd100k_det_100k__train__frame_001",
+            image_path=Path("/tmp/source.png"),
+            scene_path=Path("/tmp/source.json"),
+            dataset_root=Path("/tmp"),
+            dataset_key="bdd100k_det_100k",
+            split="train",
+            det_path=None,
+            source_name="canonical",
+        )
+        teacher = TeacherConfig(
+            name="mobility",
+            base_model="yolov26s",
+            checkpoint_path=Path("/tmp/mobility.pt"),
+            model_version="mobility_smoke_v1",
+            classes=("vehicle", "bike", "pedestrian"),
+        )
+        result = SimpleNamespace(
+            path="image0.jpg",
+            names={0: "vehicle"},
+            boxes=SimpleNamespace(
+                xyxy=torch.tensor([[10.0, 20.0, 30.0, 40.0]]),
+                cls=torch.tensor([0]),
+                conf=torch.tensor([0.95]),
+            ),
+            orig_shape=(480, 640),
+        )
+
+        rows = _extract_teacher_rows(
+            teacher=teacher,
+            batch_entries=[entry],
+            results=[result],
+            class_policy={
+                "vehicle": ClassPolicy(score_threshold=0.30, nms_iou_threshold=0.55, min_box_size=8),
+            },
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sample_uid"], entry.sample_uid)
+        self.assertEqual(rows[0]["class_name"], "vehicle")
+
     def test_run_model_centric_sweep_writes_manifests_and_materializes_exhaustive_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -84,7 +127,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                             {
                                 "id": 0,
                                 "class_name": "vehicle",
-                                "bbox": {"x1": 300.0, "y1": 300.0, "x2": 360.0, "y2": 380.0},
+                                "bbox": [300.0, 300.0, 360.0, 380.0],
                                 "score": None,
                                 "meta": {},
                             }
@@ -113,7 +156,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                             {
                                 "id": 0,
                                 "class_name": "traffic_light",
-                                "bbox": {"x1": 20.0, "y1": 20.0, "x2": 40.0, "y2": 60.0},
+                                "bbox": [20.0, 20.0, 40.0, 60.0],
                                 "score": None,
                                 "meta": {},
                             }

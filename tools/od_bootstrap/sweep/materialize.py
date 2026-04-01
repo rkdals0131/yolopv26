@@ -37,12 +37,18 @@ class MaterializedSample:
 
 def _bbox_from_scene_detection(detection: dict[str, Any]) -> list[float]:
     bbox = detection.get("bbox") or {}
-    return [
-        float(bbox.get("x1", 0.0)),
-        float(bbox.get("y1", 0.0)),
-        float(bbox.get("x2", 0.0)),
-        float(bbox.get("y2", 0.0)),
-    ]
+    if isinstance(bbox, dict):
+        return [
+            float(bbox.get("x1", 0.0)),
+            float(bbox.get("y1", 0.0)),
+            float(bbox.get("x2", 0.0)),
+            float(bbox.get("y2", 0.0)),
+        ]
+    if isinstance(bbox, (list, tuple)):
+        values = [float(item) for item in bbox[:4]]
+        if len(values) == 4:
+            return values
+    return [0.0, 0.0, 0.0, 0.0]
 
 
 def _bbox_to_mapping(box: list[float]) -> dict[str, float]:

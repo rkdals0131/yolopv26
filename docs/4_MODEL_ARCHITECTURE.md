@@ -101,7 +101,7 @@ input image
 2. neck + upper backbone unfreeze
 3. end-to-end fine-tune
 
-## 남아 있는 구현 선택지
+## 현재 구현 선택
 
-- ultralytics codebase를 wrapper로 쓸지, trunk만 가져와 local module로 감쌀지
-- trunk adapter에서 parameter name remap을 어느 층까지 자동화할지
+- Ultralytics wrapper를 그대로 사용하되, detect head 직전까지를 trunk adapter로 분리한다.
+- partial load helper는 key 이름과 tensor shape가 모두 맞는 항목만 자동으로 로드한다.

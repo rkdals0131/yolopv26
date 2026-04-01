@@ -80,8 +80,10 @@ AIHUB raw
 - PV26 custom heads skeleton
 - multitask loss runtime
 - task-aligned detector assignment runtime
+- lane family Hungarian matching runtime
 - trainer skeleton runtime
 - evaluator skeleton runtime
+- tiny overfit runtime
 - source README generation
 - source inventory / conversion report
 - debug overlay generation
@@ -89,12 +91,11 @@ AIHUB raw
 
 ## 아직 구현되지 않은 것
 
-- lane family Hungarian matching runtime
-- tiny overfit loop
+- export / ROS prediction bundle 정교화
 
 ## 운영 규칙
 
 - `preprocess/`는 raw data와 canonical data 사이 계약만 다룬다.
 - `viz/`는 human QA를 위한 오버레이와 리포트만 다룬다.
 - `loss/`는 target/loss contract를 다룬다.
-- model trunk/head, training loop, evaluation 코드는 이후 새 모듈로 추가한다.
+- model trunk/head, training loop, evaluation 코드는 현재 `model/`과 `tools/run_pv26_train.py`에 구현돼 있다.

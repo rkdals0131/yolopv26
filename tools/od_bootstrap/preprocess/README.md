@@ -3,7 +3,7 @@
 이 디렉토리는 `od_bootstrap` 전처리 전용이다.
 
 구성:
-- `run_prepare_sources.py`: BDD100K, AIHUB traffic, AIHUB obstacle canonicalization
+- `run_prepare_sources.py`: BDD100K, AIHUB lane/traffic/obstacle canonicalization과 bootstrap image list 생성
 - `run_build_teacher_datasets.py`: mobility, signal, obstacle teacher dataset materialization
 - `sources.py`: raw source 준비와 canonical bundle 생성
 - `teacher_dataset.py`: canonical output에서 teacher 학습용 YOLO dataset 생성

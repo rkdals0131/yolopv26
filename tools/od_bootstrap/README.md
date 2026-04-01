@@ -1,10 +1,10 @@
 # OD Bootstrap
 
-`tools/od_bootstrap/`는 `7-class OD exhaustive supervision`을 만들기 위한 전처리 전용 프로젝트다.
+`tools/od_bootstrap/`는 `7-class OD exhaustive supervision`을 만들기 위한 전처리, teacher 학습, calibration, sweep, 최종 병합용 프로젝트다.
 
 범위:
 - teacher 학습 대상 source는 `bdd100k_det_100k`, `aihub_traffic_seoul`, `aihub_obstacle_seoul`
-- teacher 모델은 `yolo26n.pt`를 그대로 불러와서 class 수만 바꿔 파인튜닝한다
+- teacher 모델은 선택한 시나리오 YAML에 따라 `yolo26n.pt` 또는 `yolo26s.pt`를 불러와 class 수만 바꿔 파인튜닝한다
 - `PV26Heads`, `PV26Trainer`, `run_pv26_train.py`는 teacher 학습에 쓰지 않는다
 - lane teacher는 없다
 - lane은 teacher sweep과 분리해서 마지막에 기존 standardize 산출물을 그대로 합친다
@@ -35,10 +35,12 @@
 4. `python3 tools/od_bootstrap/train/run_train_teacher.py --config tools/od_bootstrap/config/train/signal_yolo26n.default.yaml`
 5. `python3 tools/od_bootstrap/train/run_train_teacher.py --config tools/od_bootstrap/config/train/obstacle_yolo26n.default.yaml`
 6. `python3 tools/od_bootstrap/eval/run_teacher_checkpoint_eval.py --config tools/od_bootstrap/config/eval/mobility_checkpoint_eval.default.yaml`
-7. `python3 tools/od_bootstrap/calibration/run_calibrate_class_policy.py --config tools/od_bootstrap/config/calibration/class_policy.default.yaml`
-8. `python3 tools/od_bootstrap/sweep/run_model_centric_sweep.py --config tools/od_bootstrap/config/sweep/model_centric.default.yaml`
-9. `python3 tools/od_bootstrap/finalize/run_build_exhaustive_od_lane_dataset.py --config tools/od_bootstrap/config/finalize/pv26_exhaustive_od_lane.default.yaml`
-10. `python3 tools/run_pv26_train.py --config tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
+7. `python3 tools/od_bootstrap/eval/run_teacher_checkpoint_eval.py --config tools/od_bootstrap/config/eval/signal_checkpoint_eval.default.yaml`
+8. `python3 tools/od_bootstrap/eval/run_teacher_checkpoint_eval.py --config tools/od_bootstrap/config/eval/obstacle_checkpoint_eval.default.yaml`
+9. `python3 tools/od_bootstrap/calibration/run_calibrate_class_policy.py --config tools/od_bootstrap/config/calibration/class_policy.default.yaml`
+10. `python3 tools/od_bootstrap/sweep/run_model_centric_sweep.py --config tools/od_bootstrap/config/sweep/model_centric.default.yaml`
+11. `python3 tools/od_bootstrap/finalize/run_build_exhaustive_od_lane_dataset.py --config tools/od_bootstrap/config/finalize/pv26_exhaustive_od_lane.default.yaml`
+12. `python3 tools/run_pv26_train.py --config tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`
 
 출력:
 - canonical intermediate: `seg_dataset/pv26_od_bootstrap/canonical/`
@@ -62,7 +64,7 @@ provenance 필드:
 - `created_at`
 
 최종 PV26 학습:
-- final merged dataset root를 `run_pv26_train.py`의 dataset root로 넣고
+- final merged dataset root를 `tools/od_bootstrap/config/pv26_train/pv26_exhaustive_od_lane.default.yaml`의 `dataset.aihub_root`로 넣고
 - exhaustive OD source key 3개와 `aihub_lane_seoul`을 같이 사용한다
 - 목표는 `PV26 7-class OD head`가 `allow_objectness_negatives=True` 조건의 exhaustive OD supervision을 받도록 만드는 것이다
 

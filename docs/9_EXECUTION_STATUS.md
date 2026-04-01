@@ -8,9 +8,9 @@
 
 ## 현재 기준
 
-- 날짜: `2026-03-25`
-- phase: `phase 16 portability-and-validation-hardening`
-- current focus: `portability/import boundary/validation runtime hardening 완료, full-dataset 본학습 진입 단계`
+- 날짜: `2026-03-29`
+- phase: `phase 17 od-bootstrap-pipeline`
+- current focus: `OD bootstrap teacher/eval/calibration/sweep/finalize 경로 구현 완료, full exhaustive dataset 실행과 PV26 재학습 검증 단계`
 
 ## 완료된 항목
 
@@ -77,18 +77,23 @@
 - [x] ultralytics-missing 환경용 runtime skip test 정리
 - [x] BDD sign/light exclusion 정책과 generic det debug overlay sync
 - [x] partial-det detector negative/class masking 구현
-- [x] trainer run manifest / TensorBoard logging / config-first train entry 정리
+- [x] trainer run manifest / TensorBoard logging / scenario YAML + CLI `--config` train entry 정리
 - [x] AIHUB obstacle det-only canonical standardization 구현
 - [x] obstacle source loader/sampler/loss masking 연동
+- [x] OD bootstrap source prep / teacher dataset materialization 구현
+- [x] OD bootstrap teacher train / eval scenario 구현
+- [x] OD bootstrap class policy calibration / hard-negative manifest 구현
+- [x] OD bootstrap model-centric sweep / provenance materialization 구현
+- [x] exhaustive OD + lane finalize / PV26 exhaustive train scenario 구현
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] full-dataset 전처리 실제 실행 계획 확정
-- [ ] full-train metric 해석
-- [ ] preflight 결과를 기준으로 full-train 환경 lock 파일 정리
+- [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
+- [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
+- [ ] exhaustive OD 기반 PV26 재학습 metric 해석
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -126,7 +131,7 @@
 
 ## 최근 결정
 
-- trunk는 official pretrained `yolo26n` 기준
+- trunk는 official pretrained `yolo26n.pt` 기준
 - head는 PV26 custom implementation
 - raw-space standardized dataset 유지
 - `800x608` transform은 loader 단계 온라인 적용
@@ -144,7 +149,7 @@
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다
 - current smoke env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
 - current custom heads skeleton uses `P3/P4/P5 = 64/128/256 channels` and `Q_det=9975` at `800x608`
-- current trunk feature extractor returns detect-source pyramid directly from Ultralytics graph using indices `[16, 19, 22]`
+- current trunk feature extractor returns detect-source pyramid directly from Ultralytics detect head의 `f` indices를 따라 동작한다
 - current detector loss runtime uses task-aligned assignment on real trunk/head outputs
 - current synthetic `q_det != canonical` tests keep a `prefix positive fallback`
 - current lane/stop-line/crosswalk loss runtime uses Hungarian matching against valid GT rows
@@ -162,5 +167,5 @@
 - current standardization runtime writes `failure_manifest` and `qa_summary`, and reuses existing outputs through resume scan
 - current defaults no longer depend on host-specific absolute repo paths
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
-- current postprocess tolerates missing `torchvision.ops.nms` through pure PyTorch fallback
-- redundant smoke runners were removed in favor of `check_env.py` and config-first `run_pv26_train.py`
+- current postprocess tolerates missing `torchvision.ops.batched_nms` through pure PyTorch fallback
+- PV26 학습 경로는 `check_env.py`, `tools/run_pv26_tiny_overfit_smoke.py`, `tools/run_pv26_train.py --config ...` 기준으로 유지하고, OD bootstrap smoke 유틸리티는 `tools/od_bootstrap/smoke/` 아래에 별도로 남겨둔다
