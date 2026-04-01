@@ -622,7 +622,9 @@ def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, 
         verdict = "OK"
         ready = True
     else:
-        has_any = manifest_path.exists() or paths.final_dataset_root.is_dir()
+        has_any = manifest_path.exists()
+        if not has_any and paths.final_dataset_root.is_dir():
+            has_any = any(paths.final_dataset_root.iterdir())
         state = "없음" if not has_any else "meta는 일부 있지만 summary를 못 찾음"
         verdict = "WARN" if has_any else "TODO"
         ready = False

@@ -218,6 +218,46 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertEqual(row_map["Calibration"].verdict, "OK")
         self.assertEqual(row_map["PV26 학습 run"].verdict, "OK")
 
+    def test_empty_final_dataset_directory_stays_todo(self) -> None:
+        from tools.check_env import PipelinePaths, scan_workspace_status
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            final_dataset_root = root / "final_dataset"
+            final_dataset_root.mkdir(parents=True, exist_ok=True)
+            paths = PipelinePaths(
+                repo_root=root,
+                raw_bdd_root=root / "bdd_raw",
+                raw_aihub_root=root / "aihub_raw",
+                bootstrap_root=root / "bootstrap",
+                teacher_dataset_root=root / "teacher_datasets",
+                teacher_train_root=root / "teacher_runs",
+                teacher_eval_root=root / "teacher_eval",
+                calibration_root=root / "calibration",
+                exhaustive_run_root=root / "exhaustive_runs",
+                exhaustive_dataset_root=root / "exhaustive",
+                final_dataset_root=final_dataset_root,
+                pv26_run_root=root / "pv26_runs",
+                user_paths_config_path=root / "config" / "user_paths.yaml",
+                od_hyperparameters_config_path=root / "config" / "od.yaml",
+                pv26_hyperparameters_config_path=root / "config" / "pv26.yaml",
+            )
+            paths.raw_bdd_root.mkdir(parents=True, exist_ok=True)
+            paths.raw_aihub_root.mkdir(parents=True, exist_ok=True)
+            report = {
+                "versions": {"torch": "2.0.0", "torchvision": "0.1.0", "ultralytics": "8.0.0"},
+                "checks": {
+                    "torchvision_nms": {"callable": True},
+                    "yolo26": {"importable": True, "runtime_load_ok": True},
+                },
+            }
+
+            snapshot = scan_workspace_status(report, paths=paths)
+
+        row_map = {row.stage: row for row in snapshot.rows}
+        self.assertEqual(row_map["최종 병합 데이터셋"].verdict, "TODO")
+        self.assertEqual(row_map["최종 병합 데이터셋"].current_state, "없음")
+
 
 if __name__ == "__main__":
     unittest.main()
