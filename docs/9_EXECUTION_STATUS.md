@@ -8,9 +8,9 @@
 
 ## 현재 기준
 
-- 날짜: `2026-03-29`
+- 날짜: `2026-04-01`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/sweep/finalize 경로 구현 완료, full exhaustive dataset 실행과 PV26 재학습 검증 단계`
+- current focus: `OD bootstrap teacher/eval/calibration/sweep/finalize 경로는 구현 완료 상태이며, full exhaustive dataset 실제 실행, teacher checkpoint alias 정리, PV26 stage 3 stress 검증을 진행하는 단계`
 
 ## 완료된 항목
 
@@ -85,6 +85,9 @@
 - [x] OD bootstrap class policy calibration / hard-negative manifest 구현
 - [x] OD bootstrap model-centric sweep / provenance materialization 구현
 - [x] exhaustive OD + lane finalize / PV26 exhaustive train scenario 구현
+- [x] OD bootstrap pipeline visibility / QA tooling 정리
+- [x] PV26 training config simplification / TensorBoard defaults 정리
+- [x] obstacle teacher `yolo26m` migration
 - [x] unit test 통과
 - [x] real-data smoke 통과
 - [x] git commit 생성
@@ -93,11 +96,12 @@
 
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
-- [ ] exhaustive OD 기반 PV26 재학습 metric 해석
+- [ ] exhaustive OD 기반 PV26 재학습 metric 해석 및 stage 3 stress run 검증
 - [ ] export / ROS 정교화
 
 ## 최근 검증
 
+- [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap -q` (`49 passed`)
 - [x] `python3 -m unittest discover -s test -v`
 - [x] `python3 -m model.preprocess.aihub_standardize --workers 2 --max-samples-per-dataset 4 --debug-vis-count 2`
 - [x] `python3 -m model.preprocess.bdd100k_standardize --workers 8 --max-samples-per-split 2 --debug-vis-count 2`
@@ -168,4 +172,6 @@
 - current defaults no longer depend on host-specific absolute repo paths
 - current validation path uses sequential eval loader and avoids double-forward in epoch validation
 - current postprocess tolerates missing `torchvision.ops.batched_nms` through pure PyTorch fallback
+- OD bootstrap teacher defaults are `mobility=yolo26s`, `signal=yolo26s`, `obstacle=yolo26m`
+- PV26 stage 3 stress config is `config/pv26_meta_train.stage3_vram_stress.yaml`
 - PV26 학습 경로는 `check_env.py`, `tools/run_pv26_tiny_overfit_smoke.py`, `tools/run_pv26_train.py --config ...` 기준으로 유지하고, OD bootstrap smoke 유틸리티는 `tools/od_bootstrap/smoke/` 아래에 별도로 남겨둔다

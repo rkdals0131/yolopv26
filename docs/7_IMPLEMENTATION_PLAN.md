@@ -8,68 +8,75 @@
 - debug overlay
 - loss design spec
 
-## phase 1 scope
+## phase 1 implementation record
+
+- 아래 항목은 원래 phase 1 scope였고, 현재는 구현 완료된 runtime 기록으로 남긴다.
+- loader / transform / target encoder / trunk / heads / loss / trainer / evaluator는 모두 `model/`과 `tools/` 경로에서 연결돼 있다.
 
 ### 0. full-run hardening
 
-- AIHUB / BDD standardization resume scan
-- failure manifest / QA summary
-- trainer AMP / grad accumulation / grad clip
-- trainer auto resume / non-finite / OOM guard
-- train command
-- AIHUB `도로장애물·표면 인지 영상(수도권)` det-only source 통합 완료
-  - scope는 `traffic_cone / obstacle` only
-  - `Person / Manhole / Pothole on road / Filled pothole`는 표준화 output에서 제외
-  - loader det supervision도 같은 범위로 고정
+- implemented: AIHUB / BDD standardization resume scan
+- implemented: failure manifest / QA summary
+- implemented: trainer AMP / grad accumulation / grad clip
+- implemented: trainer auto resume / non-finite / OOM guard
+- implemented: train command
+- implemented: AIHUB `도로장애물·표면 인지 영상(수도권)` det-only source integration
+  - scope is `traffic_cone / obstacle` only
+  - `Person / Manhole / Pothole on road / Filled pothole` stay excluded from standardization output
+  - loader det supervision follows the same scope
 
 ### 1. training sample runtime
 
-- 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
-- loader runtime은 이 sample dictionary schema를 정확히 구현
-- image, det, tl bits, lane family fields를 contract에 맞춰 materialize
+- implemented via the [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md) contract
+- loader runtime materializes the sample dictionary schema exactly
+- image, det, tl bits, lane family fields are materialized to contract shape
 
 ### 2. online transform
 
-- 문서 기준은 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)로 고정
-- variable dataset raw -> `800x608` preprocessing contract를 코드로 구현
-- `800x600 -> 800x608`은 vehicle camera reference 입력일 때의 특수 케이스로 취급
-- train/infer shared transform 작성
-- raw-space label를 transformed-space sample target으로 변환
+- implemented via the [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md) contract
+- variable dataset raw -> `800x608` preprocessing is encoded in code
+- `800x600 -> 800x608` remains the vehicle camera reference special case
+- train/infer shared transform is in place
+- raw-space labels are converted into transformed-space sample targets
 
 ### 3. target encoder
 
-- detector target encoder
-- TL bit target encoder
-- lane vector encoder
-- stop-line encoder
-- crosswalk encoder
+- implemented:
+  - detector target encoder
+  - TL bit target encoder
+  - lane vector encoder
+  - stop-line encoder
+  - crosswalk encoder
 
 ### 4. trunk adapter
 
-- official `yolo26n.pt` load path 구현
-- backbone/neck parameter mapping 작성
-- partial load verification 추가
+- implemented:
+  - official `yolo26n.pt` load path
+  - backbone/neck parameter mapping
+  - partial load verification
 
 ### 5. custom heads
 
-- det head
-- TL attr head
-- lane head
-- stop-line head
-- crosswalk head
+- implemented:
+  - det head
+  - TL attr head
+  - lane head
+  - stop-line head
+  - crosswalk head
 
 ### 6. loss runtime
 
-- spec를 실제 loss module로 구현
-- masking / matching / normalization 구현
+- implemented:
+  - spec translated into the runtime loss module
+  - masking / matching / normalization logic
 
 ### 7. trainer skeleton
 
-- dataset-balanced sampler
-- stage-wise freeze policy
-- optimizer group 분리
-- logging / checkpoint
-- 현재 skeleton 완료
+- implemented:
+  - dataset-balanced sampler
+  - stage-wise freeze policy
+  - optimizer group separation
+  - logging / checkpointing
   - stage config
   - optimizer groups
   - 1-step train runtime
@@ -88,14 +95,20 @@
 
 ### 8. evaluator skeleton
 
-- detector metrics
-- TL bit metrics
-- lane family metrics
-- 현재 skeleton 완료
+- implemented:
+  - detector metrics
+  - TL bit metrics
+  - lane family metrics
   - batch loss summary
   - GT count summary
   - raw output -> prediction bundle postprocess decode
   - batch-level detector/TL/lane family metric summary
+
+## current runtime snapshot
+
+- the end-to-end loop is closed from offline standardization through loader / train / loss / inference / evaluation
+- tiny overfit smoke and full epoch fit smoke both exist and are used as regression gates
+- OD bootstrap is implemented as a separate pipeline with preprocess / train / eval / calibration / sweep / finalize stages
 
 ## implementation order
 
