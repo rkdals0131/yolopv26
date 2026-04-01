@@ -116,6 +116,8 @@ DEBUG_VIS_REASON_COLORS = {
 }
 PARALLEL_SUBMIT_LOG_INTERVAL = 5_000
 PARALLEL_WAIT_HEARTBEAT_SECONDS = 15.0
+PARALLEL_MAX_TASKS_PER_CHUNK = 16
+PARALLEL_INFLIGHT_CHUNKS_PER_WORKER = 2
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,18 @@ class LiveLogger:
 def _default_workers() -> int:
     available = os.cpu_count() or 4
     return max(1, min(32, available - 1))
+
+
+def _parallel_chunk_size(total_tasks: int, workers: int) -> int:
+    if total_tasks <= 0:
+        return 1
+    target_inflight_tasks = max(1, workers * 32)
+    return max(1, min(PARALLEL_MAX_TASKS_PER_CHUNK, (total_tasks + target_inflight_tasks - 1) // target_inflight_tasks))
+
+
+def _iter_task_chunks(tasks: list[Any], chunk_size: int) -> Any:
+    for start in range(0, len(tasks), chunk_size):
+        yield tasks[start : start + chunk_size]
 
 
 def _write_text(path: Path, contents: str) -> None:
@@ -918,6 +932,29 @@ def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
     if task.dataset_kind == "traffic":
         return _traffic_worker(task)
     raise ValueError(f"unsupported dataset kind: {task.dataset_kind}")
+
+
+def _worker_chunk_entry(tasks: list[StandardizeTask]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for task in tasks:
+        try:
+            results.append({"summary": _worker_entry(task)})
+        except Exception as exc:
+            results.append(
+                {
+                    "failure": {
+                        "dataset_kind": task.dataset_kind,
+                        "dataset_key": task.output_dataset_key,
+                        "split": task.pair.split,
+                        "raw_id": task.pair.relative_id,
+                        "image_path": str(task.pair.image_path),
+                        "label_path": str(task.pair.label_path),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                }
+            )
+    return results
 
 
 def _reason_counts_from_held_annotations(held_annotations: Any) -> dict[str, int]:
@@ -2041,69 +2078,103 @@ def run_standardization(
     completed = 0
     progress_counters = Counter()
     if pending_tasks:
+        chunk_size = _parallel_chunk_size(len(pending_tasks), workers)
+        max_inflight_chunks = max(1, workers * PARALLEL_INFLIGHT_CHUNKS_PER_WORKER)
         with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
-            future_map = {}
-            for index, task in enumerate(pending_tasks, start=1):
-                future_map[executor.submit(_worker_entry, task)] = task
-                if index == 1 or index == len(pending_tasks) or index % PARALLEL_SUBMIT_LOG_INTERVAL == 0:
-                    logger.info(
-                        f"stage=parallel_standardize submit_progress={index}/{len(pending_tasks)} "
-                        f"workers={workers} queued={len(future_map)}"
-                    )
+            future_map: dict[Any, list[StandardizeTask]] = {}
+            submitted = 0
+            next_submit_log = PARALLEL_SUBMIT_LOG_INTERVAL
+            chunk_iter = iter(_iter_task_chunks(pending_tasks, chunk_size))
+
+            def submit_chunks() -> None:
+                nonlocal submitted, next_submit_log
+                while len(future_map) < max_inflight_chunks:
+                    try:
+                        chunk = next(chunk_iter)
+                    except StopIteration:
+                        return
+                    future_map[executor.submit(_worker_chunk_entry, chunk)] = chunk
+                    submitted += len(chunk)
+                    if submitted == len(chunk) or submitted == len(pending_tasks) or submitted >= next_submit_log:
+                        logger.info(
+                            f"stage=parallel_standardize submit_progress={submitted}/{len(pending_tasks)} "
+                            f"workers={workers} chunk_size={chunk_size} inflight_chunks={len(future_map)}"
+                        )
+                        next_submit_log = ((submitted // PARALLEL_SUBMIT_LOG_INTERVAL) + 1) * PARALLEL_SUBMIT_LOG_INTERVAL
+
+            submit_chunks()
 
             logger.info(
-                f"stage=parallel_standardize waiting_for_results submitted={len(future_map)} "
-                f"completed={completed} heartbeat_interval_s={PARALLEL_WAIT_HEARTBEAT_SECONDS:.0f}"
+                f"stage=parallel_standardize waiting_for_results submitted={submitted}/{len(pending_tasks)} "
+                f"completed={completed} chunk_size={chunk_size} inflight_chunks={len(future_map)} "
+                f"heartbeat_interval_s={PARALLEL_WAIT_HEARTBEAT_SECONDS:.0f}"
             )
 
-            pending_futures = set(future_map)
-            while pending_futures:
-                done, pending_futures = wait(
-                    pending_futures,
+            while future_map:
+                done, _ = wait(
+                    set(future_map),
                     timeout=PARALLEL_WAIT_HEARTBEAT_SECONDS,
                     return_when=FIRST_COMPLETED,
                 )
                 if not done:
                     logger.info(
-                        f"stage=parallel_standardize heartbeat completed={completed}/{len(future_map)} "
-                        f"pending={len(pending_futures)} workers={workers}"
+                        f"stage=parallel_standardize heartbeat completed={completed}/{len(pending_tasks)} "
+                        f"submitted={submitted}/{len(pending_tasks)} inflight_chunks={len(future_map)} workers={workers}"
                     )
                     continue
 
                 for future in done:
-                    task = future_map[future]
+                    chunk = future_map.pop(future)
                     try:
-                        summary = future.result()
+                        results = future.result()
                     except Exception as exc:
-                        failures.append(
-                            {
-                                "dataset_kind": task.dataset_kind,
-                                "dataset_key": task.output_dataset_key,
-                                "split": task.pair.split,
-                                "raw_id": task.pair.relative_id,
-                                "image_path": str(task.pair.image_path),
-                                "label_path": str(task.pair.label_path),
-                                "error_type": type(exc).__name__,
-                                "error_message": str(exc),
-                            }
-                        )
                         logger.info(
-                            f"stage=parallel_standardize error dataset={task.dataset_kind} sample={task.pair.relative_id} error={exc}"
+                            f"stage=parallel_standardize chunk_error size={len(chunk)} error={type(exc).__name__}: {exc}"
                         )
-                        completed += 1
-                        progress_counters["failed"] += 1
+                        for task in chunk:
+                            failures.append(
+                                {
+                                    "dataset_kind": task.dataset_kind,
+                                    "dataset_key": task.output_dataset_key,
+                                    "split": task.pair.split,
+                                    "raw_id": task.pair.relative_id,
+                                    "image_path": str(task.pair.image_path),
+                                    "label_path": str(task.pair.label_path),
+                                    "error_type": type(exc).__name__,
+                                    "error_message": str(exc),
+                                }
+                            )
+                            completed += 1
+                            progress_counters["failed"] += 1
                         logger.progress(completed, dict(progress_counters), force=True)
+                        submit_chunks()
                         continue
-                    summaries.append(summary)
-                    completed += 1
-                    progress_counters["samples"] = completed
-                    progress_counters["detections"] += summary["det_count"]
-                    progress_counters["lanes"] += summary["lane_count"]
-                    progress_counters["stop_lines"] += summary["stop_line_count"]
-                    progress_counters["crosswalks"] += summary["crosswalk_count"]
-                    progress_counters["tl_valid"] += summary["tl_attr_valid_count"]
-                    progress_counters["held"] += sum(summary["held_reason_counts"].values())
-                    logger.progress(completed, dict(progress_counters))
+
+                    for result in results:
+                        failure = result.get("failure")
+                        if failure is not None:
+                            failures.append(failure)
+                            logger.info(
+                                f"stage=parallel_standardize error dataset={failure['dataset_kind']} "
+                                f"sample={failure['raw_id']} error={failure['error_type']}: {failure['error_message']}"
+                            )
+                            completed += 1
+                            progress_counters["failed"] += 1
+                            logger.progress(completed, dict(progress_counters), force=True)
+                            continue
+
+                        summary = result["summary"]
+                        summaries.append(summary)
+                        completed += 1
+                        progress_counters["samples"] = completed
+                        progress_counters["detections"] += summary["det_count"]
+                        progress_counters["lanes"] += summary["lane_count"]
+                        progress_counters["stop_lines"] += summary["stop_line_count"]
+                        progress_counters["crosswalks"] += summary["crosswalk_count"]
+                        progress_counters["tl_valid"] += summary["tl_attr_valid_count"]
+                        progress_counters["held"] += sum(summary["held_reason_counts"].values())
+                        logger.progress(completed, dict(progress_counters))
+                    submit_chunks()
         logger.progress(completed, dict(progress_counters), force=True)
     else:
         logger.progress(0, {"samples": 0, "failed": 0}, force=True)
