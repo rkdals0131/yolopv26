@@ -8,7 +8,8 @@ from .io import read_yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 USER_PATHS_CONFIG_PATH = REPO_ROOT / "config" / "user_paths.yaml"
-USER_HYPERPARAMETERS_CONFIG_PATH = REPO_ROOT / "config" / "user_hyperparameters.yaml"
+USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH = REPO_ROOT / "config" / "od_bootstrap_hyperparameters.yaml"
+USER_PV26_TRAIN_HYPERPARAMETERS_CONFIG_PATH = REPO_ROOT / "config" / "pv26_train_hyperparameters.yaml"
 
 
 def _read_optional_yaml(path: Path) -> dict[str, Any]:
@@ -21,8 +22,25 @@ def load_user_paths_config() -> dict[str, Any]:
     return _read_optional_yaml(USER_PATHS_CONFIG_PATH)
 
 
+def _deep_merge_mappings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overrides.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_mappings(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_user_hyperparameters_config() -> dict[str, Any]:
-    return _read_optional_yaml(USER_HYPERPARAMETERS_CONFIG_PATH)
+    merged: dict[str, Any] = {}
+    for path in (
+        USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH,
+        USER_PV26_TRAIN_HYPERPARAMETERS_CONFIG_PATH,
+    ):
+        merged = _deep_merge_mappings(merged, _read_optional_yaml(path))
+    return merged
 
 
 def nested_get(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -51,4 +69,3 @@ def resolve_repo_paths(values: Iterable[str | Path] | None, *, repo_root: Path =
         for resolved in (resolve_repo_path(value, repo_root=repo_root) for value in values)
         if resolved is not None
     )
-

@@ -32,7 +32,8 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("python3 tools/check_env.py --strict --check-yolo-runtime", readme)
         self.assertIn("docs/3A_RAW_DATASET_LAYOUTS.md", readme)
         self.assertIn("config/user_paths.yaml", readme)
-        self.assertIn("config/user_hyperparameters.yaml", readme)
+        self.assertIn("config/od_bootstrap_hyperparameters.yaml", readme)
+        self.assertIn("config/pv26_train_hyperparameters.yaml", readme)
         self.assertIn("tools/od_bootstrap/presets.py", readme)
         self.assertIn("tools/run_pv26_train.py", readme)
         self.assertIn("USER CONFIG", readme)
@@ -63,7 +64,7 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("python -m tools.od_bootstrap build-final-dataset", readme)
         self.assertIn("mobility/signal은 `yolo26s.pt`, obstacle은 `yolo26m.pt`", readme)
         self.assertIn("config/user_paths.yaml", readme)
-        self.assertIn("config/user_hyperparameters.yaml", readme)
+        self.assertIn("config/od_bootstrap_hyperparameters.yaml", readme)
 
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)

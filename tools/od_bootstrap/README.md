@@ -25,11 +25,11 @@
   - `python -m tools.od_bootstrap` 단일 진입점
 - `presets.py`
   - bootstrap preset 생성
-  - `config/user_paths.yaml`, `config/user_hyperparameters.yaml`을 읽어 code preset을 구성
+  - `config/user_paths.yaml`, `config/od_bootstrap_hyperparameters.yaml`을 읽어 code preset을 구성
 
 사용자 설정:
 - 경로 변경은 `config/user_paths.yaml`
-- teacher/calibration/exhaustive/PV26 관련 숫자 파라미터는 `config/user_hyperparameters.yaml`
+- teacher/calibration/exhaustive 관련 숫자 파라미터는 `config/od_bootstrap_hyperparameters.yaml`
 - output 경로를 바꾸면 downstream 단계 입력도 같이 바뀌므로, 특별한 이유가 없으면 기본값 유지 권장
 
 기본 실행 순서:
