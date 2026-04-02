@@ -4,22 +4,30 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .aihub_worker_common import (
-    StandardizeTask,
-    _base_scene,
-    _counter_to_dict,
-    _link_or_copy,
-    _sample_id,
-    _write_json,
+from .aihub_worker_common import StandardizeTask
+from .shared_io import link_or_copy as _link_or_copy, load_json as _load_json, write_json as _write_json
+from .shared_raw import (
+    extract_annotations as _extract_annotations,
+    extract_attribute_map as _extract_attribute_map,
+    extract_points as _extract_points,
+    normalize_text as _normalize_text,
+    safe_slug as _safe_slug,
 )
-from .raw_common import (
-    _extract_annotations,
-    _extract_attribute_map,
-    _extract_points,
-    _load_json,
-    _normalize_text,
-    _safe_slug,
-)
+from .shared_scene import DEFAULT_SCENE_VERSION, build_base_scene as _base_scene, sample_id as _sample_id
+from .shared_summary import counter_to_dict as _counter_to_dict
+
+SCENE_VERSION = DEFAULT_SCENE_VERSION
+link_or_copy = _link_or_copy
+load_json = _load_json
+write_json = _write_json
+extract_annotations = _extract_annotations
+extract_attribute_map = _extract_attribute_map
+extract_points = _extract_points
+normalize_text = _normalize_text
+safe_slug = _safe_slug
+build_base_scene = _base_scene
+sample_id = _sample_id
+counter_to_dict = _counter_to_dict
 
 
 def _lane_class_from_color(color: str) -> tuple[str | None, str | None]:
@@ -36,11 +44,17 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
     output_root = Path(task.output_root)
-    raw = _load_json(pair.label_path)
-    sample_id = _sample_id(task.output_dataset_key, pair, safe_slug=_safe_slug)
-    image_output_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
-    image_materialization = _link_or_copy(pair.image_path, image_output_path)
-    width, height, scene = _base_scene(task.output_dataset_key, pair, raw, image_output_path)
+    raw = load_json(pair.label_path)
+    scene_sample_id = sample_id(task.output_dataset_key, pair, safe_slug=safe_slug)
+    image_output_path = output_root / "images" / pair.split / f"{scene_sample_id}{pair.image_path.suffix.lower()}"
+    image_materialization = link_or_copy(pair.image_path, image_output_path)
+    width, height, scene = build_base_scene(
+        task.output_dataset_key,
+        pair,
+        raw,
+        image_output_path,
+        scene_version=SCENE_VERSION,
+    )
     del width, height
 
     lanes: list[dict[str, Any]] = []
@@ -51,13 +65,13 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
     lane_class_counts = Counter()
     lane_type_counts = Counter()
 
-    for annotation in _extract_annotations(raw):
-        raw_class = _normalize_text(annotation.get("class"))
+    for annotation in extract_annotations(raw):
+        raw_class = normalize_text(annotation.get("class"))
         if raw_class in {"traffic_lane", "lane", "lanes"}:
-            points = _extract_points(annotation)
-            attributes = _extract_attribute_map(annotation)
-            lane_color = _normalize_text(attributes.get("lane_color"))
-            lane_type = _normalize_text(attributes.get("lane_type"))
+            points = extract_points(annotation)
+            attributes = extract_attribute_map(annotation)
+            lane_color = normalize_text(attributes.get("lane_color"))
+            lane_type = normalize_text(attributes.get("lane_type"))
             class_name, error_reason = _lane_class_from_color(lane_color)
             if len(points) < 2:
                 held_reason_counts["lane_requires_two_points"] += 1
@@ -92,7 +106,7 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
             continue
 
         if raw_class in {"stop_line", "stopline"}:
-            points = _extract_points(annotation)
+            points = extract_points(annotation)
             if len(points) < 2:
                 held_reason_counts["stop_line_requires_two_points"] += 1
                 held_annotations.append({"raw_class": raw_class, "reason": "stop_line_requires_two_points"})
@@ -109,7 +123,7 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
             continue
 
         if raw_class in {"crosswalk", "cross_walk"}:
-            points = _extract_points(annotation)
+            points = extract_points(annotation)
             if len(points) < 3:
                 held_reason_counts["crosswalk_requires_three_points"] += 1
                 held_annotations.append({"raw_class": raw_class, "reason": "crosswalk_requires_three_points"})
@@ -151,13 +165,13 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
         }
     )
 
-    scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
-    _write_json(scene_path, scene)
+    scene_path = output_root / "labels_scene" / pair.split / f"{scene_sample_id}.json"
+    write_json(scene_path, scene)
 
     return {
         "dataset_key": task.output_dataset_key,
         "split": pair.split,
-        "sample_id": sample_id,
+        "sample_id": scene_sample_id,
         "scene_path": str(scene_path),
         "image_path": str(image_output_path),
         "image_materialization": image_materialization,
@@ -169,12 +183,12 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
         "traffic_sign_count": 0,
         "tl_attr_valid_count": 0,
         "tl_attr_invalid_count": 0,
-        "lane_class_counts": _counter_to_dict(lane_class_counts),
-        "lane_type_counts": _counter_to_dict(lane_type_counts),
+        "lane_class_counts": counter_to_dict(lane_class_counts),
+        "lane_type_counts": counter_to_dict(lane_type_counts),
         "det_class_counts": {},
         "tl_combo_counts": {},
         "tl_invalid_reason_counts": {},
-        "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "held_reason_counts": counter_to_dict(held_reason_counts),
         "resume_skipped": 0,
     }
 

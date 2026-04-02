@@ -169,3 +169,53 @@ def _generate_debug_vis(
         "debug_vis_dir": debug_vis_dir,
         "debug_vis_index": index_path,
     }
+
+
+def select_debug_vis_summaries(
+    summaries: list[dict[str, Any]],
+    *,
+    count: int,
+    seed: int,
+    obstacle_dataset_key: str,
+) -> list[dict[str, Any]]:
+    return _select_debug_vis_summaries(
+        summaries,
+        count=count,
+        seed=seed,
+        obstacle_dataset_key=obstacle_dataset_key,
+    )
+
+
+def generate_debug_vis_outputs(
+    output_root: Path,
+    summaries: list[dict[str, Any]],
+    *,
+    debug_vis_count: int,
+    debug_vis_seed: int,
+    obstacle_dataset_key: str,
+    logger: Any,
+    debug_vis_dirname: str,
+    now_iso_fn: Callable[[], str],
+    write_json_fn: Callable[[Path, dict[str, Any]], None],
+    load_json_fn: Callable[[Path], dict[str, Any]],
+    prepare_scene_fn: Callable[[dict[str, Any]], dict[str, Any]],
+) -> dict[str, Path | None]:
+    return _generate_debug_vis(
+        output_root,
+        summaries,
+        debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
+        obstacle_dataset_key=obstacle_dataset_key,
+        logger=logger,
+        debug_vis_dirname=debug_vis_dirname,
+        now_iso_fn=now_iso_fn,
+        write_json_fn=write_json_fn,
+        load_json_fn=load_json_fn,
+        prepare_scene_fn=prepare_scene_fn,
+    )
+
+
+__all__ = [
+    "generate_debug_vis_outputs",
+    "select_debug_vis_summaries",
+]

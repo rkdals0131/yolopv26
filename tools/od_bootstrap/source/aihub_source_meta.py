@@ -11,14 +11,14 @@ from common.pv26_schema import (
     AIHUB_TRAFFIC_DATASET_KEY,
 )
 
-from .raw_common import _now_iso
+from .shared_io import now_iso as _now_iso
+from .shared_summary import counter_to_dict as _counter_to_dict
+
+now_iso = _now_iso
+counter_to_dict = _counter_to_dict
 
 README_TREE_DEPTH = 3
 MAX_TREE_LINES = 96
-
-
-def _counter_to_dict(counter: Counter[str]) -> dict[str, int]:
-    return {key: counter[key] for key in sorted(counter)}
 
 
 def _inventory_image_json_archives(dataset_root: Path) -> dict[str, Any]:
@@ -362,7 +362,7 @@ def build_source_inventory(
 ) -> dict[str, Any]:
     return {
         "version": pipeline_version,
-        "generated_at": _now_iso(),
+        "generated_at": now_iso(),
         "docs": _docs_inventory(docs_root),
         "datasets": [
             {

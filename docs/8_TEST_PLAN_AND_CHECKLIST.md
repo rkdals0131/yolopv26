@@ -128,6 +128,7 @@
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loader.py' -v`
+- [x] `python3 tools/run_pv26_train.py --preset default`
 - [x] model regression command
 - [x] training regression command
 - [x] `python3 tools/check_env.py --check-yolo-runtime`

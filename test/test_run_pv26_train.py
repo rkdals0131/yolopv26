@@ -18,6 +18,7 @@ from tools.run_pv26_train import (
     PhaseTransitionController,
     PreviewConfig,
     SelectionConfig,
+    _build_arg_parser,
     _build_postprocess_config,
     _phase_manifest_extra,
     _configure_torch_multiprocessing,
@@ -54,6 +55,32 @@ def _epoch_summary(epoch: int, metric_value: float) -> dict:
 
 
 class RunPV26TrainScenarioTests(unittest.TestCase):
+    def test_public_facade_exports_remain_available(self) -> None:
+        from tools import run_pv26_train as module
+
+        expected_names = {
+            "PRESET_PATH_ROOT",
+            "PhaseConfig",
+            "PhaseTransitionController",
+            "PreviewConfig",
+            "SelectionConfig",
+            "_build_arg_parser",
+            "_build_postprocess_config",
+            "_configure_torch_multiprocessing",
+            "_phase_entry_is_completed",
+            "_recover_phase_entry_from_run_dir",
+            "_sample_preview_selection",
+            "_scenario_phase_defaults",
+            "load_meta_train_resume_scenario",
+            "load_meta_train_scenario",
+            "main",
+            "run_meta_train_scenario",
+            "run_stage3_vram_stress",
+        }
+
+        for name in expected_names:
+            self.assertTrue(hasattr(module, name), msg=name)
+
     def test_meta_manifest_persists_scenario_snapshot(self) -> None:
         scenario = load_meta_train_scenario("default")
         snapshot = scenario_to_mapping(scenario)
@@ -446,6 +473,60 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             tuple(phase.stage for phase in scenario.phases),
         )
 
+    def test_load_meta_train_resume_scenario_rejects_missing_run_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_run_dir = Path(temp_dir) / "missing_run"
+
+            with self.assertRaisesRegex(SystemExit, "resume run directory does not exist"):
+                load_meta_train_resume_scenario(missing_run_dir, preset_name="default")
+
+    def test_load_meta_train_resume_scenario_rejects_completed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "completed_run"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "meta_manifest.json").write_text(
+                json.dumps({"status": "completed", "phases": []}, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "exact resume only supports incomplete runs"):
+                load_meta_train_resume_scenario(run_dir, preset_name="default")
+
+    def test_load_meta_train_resume_scenario_loads_compatible_legacy_manifest(self) -> None:
+        scenario = load_meta_train_scenario("default")
+        scenario_mapping = scenario_to_mapping(scenario)
+        legacy_manifest = {
+            "status": "running",
+            "dataset": scenario_mapping["dataset"],
+            "train_defaults": scenario_mapping["train_defaults"],
+            "selection": scenario_mapping["selection"],
+            "preview": scenario_mapping["preview"],
+            "phases": [
+                {"name": phase.name, "stage": phase.stage, "status": "pending"}
+                for phase in scenario.phases
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "legacy_resume"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "meta_manifest.json").write_text(
+                json.dumps(legacy_manifest, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+            )
+
+            resumed_scenario, scenario_path = load_meta_train_resume_scenario(
+                run_dir,
+                preset_name="default",
+            )
+
+        self.assertEqual(scenario_path, PRESET_PATH_ROOT / "default")
+        self.assertEqual(resumed_scenario.run.run_dir, run_dir.resolve())
+        self.assertEqual(
+            tuple(phase.stage for phase in resumed_scenario.phases),
+            tuple(phase.stage for phase in scenario.phases),
+        )
+
     def test_load_meta_train_resume_scenario_rejects_legacy_mismatch(self) -> None:
         scenario = load_meta_train_scenario("default")
         scenario_mapping = scenario_to_mapping(scenario)
@@ -663,6 +744,47 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         )
         self.assertIn('"mode": "stage3_vram_stress"', buffer.getvalue())
 
+    def test_arg_parser_keeps_resume_and_stage3_runtime_flags(self) -> None:
+        parser = _build_arg_parser()
+
+        args = parser.parse_args(
+            [
+                "--preset",
+                "default",
+                "--resume-run",
+                "/tmp/existing_run",
+                "--stage3-vram-stress",
+                "--stress-batch-size",
+                "24",
+                "--stress-iters",
+                "16",
+            ]
+        )
+
+        self.assertEqual(args.preset, "default")
+        self.assertEqual(args.resume_run, "/tmp/existing_run")
+        self.assertTrue(args.stage3_vram_stress)
+        self.assertEqual(args.stress_batch_size, 24)
+        self.assertEqual(args.stress_iters, 16)
+
+    def test_main_rejects_resume_run_with_stage3_vram_stress(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "--resume-run cannot be combined with --stage3-vram-stress"):
+            main(["--resume-run", "/tmp/existing_run", "--stage3-vram-stress"])
+
+    def test_main_exits_with_code_2_when_stage3_vram_stress_reports_non_ok_status(self) -> None:
+        loaded_scenario = SimpleNamespace()
+
+        with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario):
+            with patch(
+                "tools.run_pv26_train.run_stage3_vram_stress",
+                return_value={"status": "oom", "mode": "stage3_vram_stress"},
+            ):
+                with self.assertRaises(SystemExit) as exc_info:
+                    with redirect_stdout(io.StringIO()):
+                        main(["--preset", "default", "--stage3-vram-stress"])
+
+        self.assertEqual(exc_info.exception.code, 2)
+
     def test_configure_torch_multiprocessing_uses_file_system_sharing(self) -> None:
         torch_root = Path("/tmp/fake_torch")
         mock_torch = SimpleNamespace(
@@ -681,6 +803,72 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                     self.assertEqual(os.environ["LD_LIBRARY_PATH"], str(torch_root / "lib"))
 
         self.assertEqual(self._sharing_strategy, "file_system")
+
+    def test_run_stage3_vram_stress_validates_runtime_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=Path(tmpdir)),
+                run=RunConfig(run_root=Path(tmpdir) / "runs"),
+                train_defaults=TrainDefaultsConfig(),
+                selection=SelectionConfig(),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(
+                    PhaseConfig(
+                        name="end_to_end_finetune",
+                        stage="stage_3_end_to_end_finetune",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                        min_improvement_pct=0.25,
+                    ),
+                ),
+            )
+            with patch("tools.run_pv26_train._configure_torch_multiprocessing"):
+                with patch.dict("sys.modules", {"torch": SimpleNamespace()}):
+                    with self.assertRaisesRegex(ValueError, "stress batch size must be > 0"):
+                        run_stage3_vram_stress(
+                            scenario,
+                            scenario_path=Path(tmpdir) / "default",
+                            batch_size=0,
+                            stress_iters=12,
+                        )
+                    with self.assertRaisesRegex(ValueError, "stress iterations must be > 0"):
+                        run_stage3_vram_stress(
+                            scenario,
+                            scenario_path=Path(tmpdir) / "default",
+                            batch_size=4,
+                            stress_iters=0,
+                        )
+
+    def test_run_stage3_vram_stress_rejects_missing_dataset_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_root = Path(tmpdir) / "missing_dataset"
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=missing_root),
+                run=RunConfig(run_root=Path(tmpdir) / "runs"),
+                train_defaults=TrainDefaultsConfig(),
+                selection=SelectionConfig(),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(
+                    PhaseConfig(
+                        name="end_to_end_finetune",
+                        stage="stage_3_end_to_end_finetune",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                        min_improvement_pct=0.25,
+                    ),
+                ),
+            )
+            with patch("tools.run_pv26_train._configure_torch_multiprocessing"):
+                with patch.dict("sys.modules", {"torch": SimpleNamespace()}):
+                    with self.assertRaisesRegex(SystemExit, "canonical dataset roots not found"):
+                        run_stage3_vram_stress(
+                            scenario,
+                            scenario_path=Path(tmpdir) / "default",
+                            batch_size=4,
+                            stress_iters=2,
+                        )
 
     def test_run_stage3_vram_stress_uses_single_process_loader(self) -> None:
         class FakeCudaDevice:

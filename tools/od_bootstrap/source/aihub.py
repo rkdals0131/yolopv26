@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 import tarfile
-import time
 import zipfile
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -18,14 +15,9 @@ from common.pv26_schema import (
     AIHUB_TRAFFIC_DATASET_KEY,
     TL_BITS,
 )
-from .aihub_debug import (
-    _generate_debug_vis as _generate_debug_vis_impl,
-    _select_debug_vis_summaries as _select_debug_vis_summaries_impl,
-)
 from .aihub_reports import (
     aggregate_results as _aggregate_results,
     conversion_report_markdown as _conversion_report_markdown,
-    det_class_map_yaml as _det_class_map_yaml,
     failure_manifest_markdown as _failure_manifest_markdown,
     qa_summary as _qa_summary,
     qa_summary_markdown as _qa_summary_markdown,
@@ -37,35 +29,50 @@ from .aihub_source_meta import (
     source_root_for_dataset as _source_root_for_dataset,
     write_source_readmes as _write_source_readmes,
 )
-from .aihub_worker_common import (
-    SCENE_VERSION,
-    StandardizeTask,
-    _bbox_to_yolo_line,
-    _counter_to_dict,
-    _link_or_copy,
-    _write_json,
-    _write_text,
-)
+from .aihub_worker_common import SCENE_VERSION, StandardizeTask
 from .aihub_workers import (
-    _existing_output_summary,
-    _prepare_debug_scene_for_overlay,
-    _worker_chunk_entry,
+    existing_output_summary as _existing_output_summary,
+    prepare_debug_scene_for_overlay as _prepare_debug_scene_for_overlay,
+    worker_chunk_entry as _worker_chunk_entry,
 )
 from .raw_common import (
     LANE_DATASET_KEY as DISCOVERY_LANE_KEY,
     OBSTACLE_DATASET_KEY as DISCOVERY_OBSTACLE_KEY,
     TRAFFIC_DATASET_KEY as DISCOVERY_TRAFFIC_KEY,
     PairRecord,
-    _discover_pairs,
-    _extract_annotations,
-    _load_json,
-    _env_path,
-    _normalize_text,
-    _now_iso,
-    _repo_root,
-    _safe_slug,
-    _seg_dataset_root,
 )
+from .shared_debug import (
+    generate_debug_vis as _generate_debug_vis_impl,
+    select_debug_vis_summaries as _select_debug_vis_summaries_impl,
+)
+from .shared_io import (
+    link_or_copy as _link_or_copy,
+    load_json as _load_json,
+    write_json as _write_json,
+    write_text as _write_text,
+)
+from .shared_parallel import (
+    LiveLogger,
+    PARALLEL_INFLIGHT_CHUNKS_PER_WORKER,
+    PARALLEL_SUBMIT_LOG_INTERVAL,
+    PARALLEL_WAIT_HEARTBEAT_SECONDS,
+    default_workers as _default_workers,
+    iter_task_chunks as _iter_task_chunks,
+    parallel_chunk_size as _parallel_chunk_size,
+)
+from .shared_raw import (
+    discover_pairs as _discover_pairs,
+    env_path as _env_path,
+    extract_annotations as _extract_annotations,
+    normalize_text as _normalize_text,
+    now_iso as _now_iso,
+    repo_root as _repo_root,
+    safe_slug as _safe_slug,
+    seg_dataset_root as _seg_dataset_root,
+)
+from .shared_reports import det_class_map_yaml as _det_class_map_yaml
+from .shared_scene import bbox_to_yolo_line as _bbox_to_yolo_line
+from .shared_summary import counter_to_dict as _counter_to_dict
 
 PIPELINE_VERSION = "pv26-aihub-standardize-v1"
 DEFAULT_REPO_ROOT = _repo_root()
@@ -110,74 +117,6 @@ DOCUMENTED_STATS = {
         "doc_reference": "수도권신호등표지판_인공지능 데이터 구축활용 가이드라인_통합수정_210607.pdf",
     },
 }
-PARALLEL_SUBMIT_LOG_INTERVAL = 5_000
-PARALLEL_WAIT_HEARTBEAT_SECONDS = 15.0
-PARALLEL_MAX_TASKS_PER_CHUNK = 16
-PARALLEL_INFLIGHT_CHUNKS_PER_WORKER = 2
-
-class LiveLogger:
-    def __init__(self, stream: TextIO | None = None, throttle_seconds: float = 1.0) -> None:
-        self.stream = stream or sys.stdout
-        self.throttle_seconds = throttle_seconds
-        self.stage_name = "idle"
-        self.stage_started_at = time.monotonic()
-        self.stage_total: int | None = None
-        self.last_progress_at = 0.0
-
-    def _emit(self, message: str) -> None:
-        timestamp = time.strftime("%H:%M:%S")
-        self.stream.write(f"[{timestamp}] {message}\n")
-        self.stream.flush()
-
-    def info(self, message: str) -> None:
-        self._emit(message)
-
-    def stage(self, name: str, why: str, total: int | None = None) -> None:
-        self.stage_name = name
-        self.stage_started_at = time.monotonic()
-        self.stage_total = total
-        self.last_progress_at = 0.0
-        total_text = f", total={total}" if total is not None else ""
-        self._emit(f"stage={name} 시작{total_text} | why={why}")
-
-    def progress(self, completed: int, counters: dict[str, int], *, force: bool = False) -> None:
-        now = time.monotonic()
-        if not force and now - self.last_progress_at < self.throttle_seconds:
-            return
-        elapsed = max(now - self.stage_started_at, 1e-6)
-        rate = completed / elapsed
-        eta_text = "eta=unknown"
-        if self.stage_total is not None and completed > 0:
-            remaining = max(self.stage_total - completed, 0)
-            eta_seconds = remaining / rate if rate > 0 else 0.0
-            eta_text = f"eta={eta_seconds:.1f}s"
-        total_text = self.stage_total if self.stage_total is not None else "?"
-        counters_text = " ".join(f"{key}={value}" for key, value in sorted(counters.items()))
-        self._emit(
-            f"stage={self.stage_name} progress={completed}/{total_text} rate={rate:.2f}/s {eta_text} {counters_text}".strip()
-        )
-        self.last_progress_at = now
-
-
-def _default_workers() -> int:
-    available = os.cpu_count() or 4
-    return max(1, min(32, available - 1))
-
-
-def _parallel_chunk_size(total_tasks: int, workers: int) -> int:
-    if total_tasks <= 0:
-        return 1
-    target_inflight_tasks = max(1, workers * 32)
-    return max(1, min(PARALLEL_MAX_TASKS_PER_CHUNK, (total_tasks + target_inflight_tasks - 1) // target_inflight_tasks))
-
-
-def _iter_task_chunks(tasks: list[Any], chunk_size: int) -> Any:
-    for start in range(0, len(tasks), chunk_size):
-        yield tasks[start : start + chunk_size]
-def _format_eta(seconds: float | None) -> str:
-    if seconds is None:
-        return "unknown"
-    return f"{seconds:.1f}s"
 
 
 def _archive_paths(dataset_root: Path) -> list[Path]:

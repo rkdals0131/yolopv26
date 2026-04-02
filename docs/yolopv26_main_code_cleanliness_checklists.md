@@ -1,6 +1,6 @@
 # YOLOPV26 main 코드 청결성 수정 체크리스트
 
-이 문서는 [리포트](/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26/docs/yolopv26_main_code_cleanliness_report.md)의 지적사항을 빠짐없이 액션 아이템으로 옮긴 체크리스트다.  
+이 문서는 [리포트](yolopv26_main_code_cleanliness_report.md)의 지적사항을 빠짐없이 액션 아이템으로 옮긴 체크리스트다.
 정렬 기준은 중요도 순서이며, 아래로 갈수록 우선순위가 낮을 뿐 누락된 항목은 없다.
 
 ## 1순위. `tools/od_bootstrap/source/` 경계 정리와 private cross-import 제거
@@ -16,7 +16,10 @@
 
 ## 2순위. `tools/run_pv26_train.py` 분해
 
-- [ ] `tools/run_pv26_train.py`에서 preset 조립, scenario 로딩, resume recovery, phase transition 제어, dataloader 생성, trainer/evaluator 생성, preview overlay 생성, manifest/summary 작성, stage3 VRAM stress probe, CLI entrypoint를 역할별 모듈로 분리한다.
+- [ ] `tools/run_pv26_train.py`를 stable thin facade로 유지하고, CLI / import surface(`load_meta_train_scenario`, `load_meta_train_resume_scenario`, `run_stage3_vram_stress`, `run_meta_train_scenario`, `main`)는 그대로 노출한다.
+- [ ] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
+- [ ] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
+- [ ] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
 - [ ] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
 - [ ] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
 - [ ] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.

@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-from .raw_common import _env_path, _repo_root, _seg_dataset_root
+from .shared_raw import env_path, repo_root, seg_dataset_root
 
 
-DEFAULT_REPO_ROOT = _repo_root()
-DEFAULT_SEG_DATASET_ROOT = _seg_dataset_root(DEFAULT_REPO_ROOT)
+DEFAULT_REPO_ROOT = repo_root()
+DEFAULT_SEG_DATASET_ROOT = seg_dataset_root(DEFAULT_REPO_ROOT)
 
-DEFAULT_AIHUB_ROOT = _env_path("PV26_AIHUB_ROOT", DEFAULT_SEG_DATASET_ROOT / "AIHUB")
+DEFAULT_AIHUB_ROOT = env_path("PV26_AIHUB_ROOT", DEFAULT_SEG_DATASET_ROOT / "AIHUB")
 DEFAULT_AIHUB_DOCS_ROOT = DEFAULT_AIHUB_ROOT / "docs"
 DEFAULT_AIHUB_LANE_ROOT = DEFAULT_AIHUB_ROOT / "차선-횡단보도 인지 영상(수도권)"
 DEFAULT_AIHUB_OBSTACLE_ROOT = DEFAULT_AIHUB_ROOT / "도로장애물·표면 인지 영상(수도권)"
 DEFAULT_AIHUB_TRAFFIC_ROOT = DEFAULT_AIHUB_ROOT / "신호등-도로표지판 인지 영상(수도권)"
-DEFAULT_AIHUB_OUTPUT_ROOT = _env_path(
+DEFAULT_AIHUB_OUTPUT_ROOT = env_path(
     "PV26_AIHUB_OUTPUT_ROOT",
     DEFAULT_AIHUB_ROOT.parent / "pv26_aihub_standardized",
 )
 
-DEFAULT_BDD_ROOT = _env_path("PV26_BDD_ROOT", DEFAULT_SEG_DATASET_ROOT / "BDD100K")
+DEFAULT_BDD_ROOT = env_path("PV26_BDD_ROOT", DEFAULT_SEG_DATASET_ROOT / "BDD100K")
 DEFAULT_BDD_IMAGES_ROOT = DEFAULT_BDD_ROOT / "bdd100k_images_100k" / "100k"
 DEFAULT_BDD_LABELS_ROOT = DEFAULT_BDD_ROOT / "bdd100k_labels" / "100k"
-DEFAULT_BDD_OUTPUT_ROOT = _env_path(
+DEFAULT_BDD_OUTPUT_ROOT = env_path(
     "PV26_BDD_OUTPUT_ROOT",
     DEFAULT_BDD_ROOT.parent / "pv26_bdd100k_standardized",
 )

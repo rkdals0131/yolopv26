@@ -6,11 +6,11 @@ from typing import Any, Callable
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-from .raw_common import _now_iso
+from .shared_io import now_iso as _now_iso
+from .shared_summary import counter_to_dict as _counter_to_dict
 
-
-def _counter_to_dict(counter: Counter[str]) -> dict[str, int]:
-    return {key: counter[key] for key in sorted(counter)}
+now_iso = _now_iso
+counter_to_dict = _counter_to_dict
 
 
 def aggregate_results(
@@ -126,7 +126,7 @@ def aggregate_results(
     return {
         "version": pipeline_version,
         "scene_version": scene_version,
-        "generated_at": _now_iso(),
+        "generated_at": now_iso(),
         "settings": {
             "workers": workers,
             "max_samples_per_dataset": max_samples_per_dataset,
@@ -237,7 +237,7 @@ def failure_manifest_markdown(manifest: dict[str, Any]) -> str:
 def qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": report["version"],
-        "generated_at": _now_iso(),
+        "generated_at": now_iso(),
         "output_root": report["settings"]["output_root"],
         "debug_vis": {
             "selection_count": int(debug_vis_index.get("selection_count", 0)),
@@ -307,33 +307,7 @@ def qa_summary_markdown(summary: dict[str, Any]) -> str:
 
 
 def det_class_map_yaml() -> str:
-    lines = [
-        "version: pv26-det-v1",
-        "classes:",
-    ]
-    for index, class_name in enumerate(OD_CLASSES):
-        lines.append(f"  {index}: {class_name}")
-    lines.extend(
-        [
-            "tl_bits:",
-        ]
-    )
-    for bit in TL_BITS:
-        lines.append(f"  - {bit}")
-    lines.extend(
-        [
-            "tl_attribute_policy:",
-            "  base_type: car",
-            "  arrow_sources:",
-            "    - left_arrow",
-            "    - others_arrow",
-            "  masked_cases:",
-            "    - x_light_active",
-            "    - multi_color_active",
-            "    - non_car_traffic_light",
-        ]
-    )
-    return "\n".join(lines) + "\n"
+    return shared_det_class_map_yaml()
 
 
 def scene_class_map_yaml() -> str:

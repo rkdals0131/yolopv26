@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .raw_common import PairRecord, _extract_filename, _extract_image_size
+from .raw_common import PairRecord
+from .shared_raw import extract_filename, extract_image_size
 
 
 DEFAULT_SCENE_VERSION = "pv26-scene-aihub-v1"
@@ -31,14 +32,14 @@ def build_base_scene(
     scene_version: str = DEFAULT_SCENE_VERSION,
 ) -> tuple[int, int, dict[str, Any]]:
     assert pair.image_path is not None
-    width, height = _extract_image_size(raw, pair.image_path)
+    width, height = extract_image_size(raw, pair.image_path)
     scene = {
         "version": scene_version,
         "image": {
             "file_name": output_image_path.name,
             "width": width,
             "height": height,
-            "original_file_name": _extract_filename(raw, pair.image_file_name),
+            "original_file_name": extract_filename(raw, pair.image_file_name),
         },
         "source": {
             "dataset": output_dataset_key,

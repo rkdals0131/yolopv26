@@ -9,32 +9,22 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
-from .raw_common import (
-    IMAGE_EXTENSIONS,
-    PairRecord,
-    _env_path,
-    _now_iso,
-    _probe_image_size,
-    _repo_root,
-    _safe_slug,
-    _seg_dataset_root,
-)
-from .aihub import (
+from .raw_common import IMAGE_EXTENSIONS, PairRecord
+from .shared_debug import generate_debug_vis as _generate_debug_vis_impl
+from .shared_io import link_or_copy as _link_or_copy, load_json as _load_json, write_json as _write_json, write_text as _write_text
+from .shared_parallel import (
     PARALLEL_INFLIGHT_CHUNKS_PER_WORKER,
     PARALLEL_SUBMIT_LOG_INTERVAL,
     PARALLEL_WAIT_HEARTBEAT_SECONDS,
     LiveLogger,
-    bbox_to_yolo_line as _bbox_to_yolo_line,
-    counter_to_dict as _counter_to_dict,
-    default_worker_count as _default_workers,
-    det_class_map_yaml as _det_class_map_yaml,
-    generate_debug_vis_outputs as _generate_debug_vis,
+    default_workers as _default_workers,
     iter_task_chunks as _iter_task_chunks,
-    link_or_copy_file as _link_or_copy,
     parallel_chunk_size as _parallel_chunk_size,
-    write_json_file as _write_json,
-    write_text_file as _write_text,
 )
+from .shared_raw import env_path as _env_path, now_iso as _now_iso, probe_image_size as _probe_image_size, repo_root as _repo_root, safe_slug as _safe_slug, seg_dataset_root as _seg_dataset_root
+from .shared_reports import det_class_map_yaml as _det_class_map_yaml
+from .shared_scene import bbox_to_yolo_line as _bbox_to_yolo_line
+from .shared_summary import counter_to_dict as _counter_to_dict
 from common.pv26_schema import BDD100K_DATASET_KEY, OD_CLASSES, OD_CLASS_TO_ID, TL_BITS
 
 PIPELINE_VERSION = "pv26-bdd100k-standardize-v2"
@@ -869,6 +859,29 @@ def _scene_class_map_yaml() -> str:
         "  - timestamp",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _generate_debug_vis(
+    output_root: Path,
+    summaries: list[dict[str, Any]],
+    *,
+    debug_vis_count: int,
+    debug_vis_seed: int,
+    logger: LiveLogger,
+) -> dict[str, Path | None]:
+    return _generate_debug_vis_impl(
+        output_root,
+        summaries,
+        debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
+        obstacle_dataset_key=OUTPUT_DATASET_KEY,
+        logger=logger,
+        debug_vis_dirname="debug_vis",
+        now_iso_fn=_now_iso,
+        write_json_fn=_write_json,
+        load_json_fn=_load_json,
+        prepare_scene_fn=lambda scene: scene,
+    )
 
 
 def _scan_existing_outputs(
