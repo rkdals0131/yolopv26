@@ -144,7 +144,7 @@ class _RichProgressBar:
             for line in str(self.detail).splitlines():
                 if not line:
                     continue
-                detail_line = Text("  ", style="dim")
+                detail_line = Text("  ")
                 detail_line.append_text(self._styled_line(line))
                 lines.append(detail_line)
         return Group(*lines)
@@ -153,7 +153,7 @@ class _RichProgressBar:
         output = Text(no_wrap=False)
         for index, segment in enumerate(part for part in str(line).split("  |  ") if part):
             if index > 0:
-                output.append("  |  ", style="dim")
+                output.append("  |  ")
             output.append_text(self._styled_segment(segment))
         return output
 
@@ -162,21 +162,7 @@ class _RichProgressBar:
         value = str(segment)
         if not value:
             return output
-        if value.startswith("[") and value.endswith("]") and "%" not in value:
-            output.append(value, style="bold cyan")
-            return output
-        if value.startswith("[") and "%" in value:
-            output.append(value, style="cyan")
-            return output
-        if value in {"timing_ms", "loss"}:
-            output.append(value, style="bold cyan")
-            return output
-        if "=" in value:
-            key, raw_value = value.split("=", 1)
-            output.append(f"{key}=", style="cyan")
-            output.append(raw_value, style="bold white")
-            return output
-        output.append(value, style="white")
+        output.append(value)
         return output
 
     def _refresh(self) -> None:
