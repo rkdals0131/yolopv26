@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - optional dependency fallback.
     Live = None
     Text = None
 
+from .batch import augment_lane_family_metrics, raw_batch_for_metrics
 from ._trainer_io import _append_jsonl, _now_iso
 from ._trainer_reporting import (
     _aggregate_assignment_modes,
@@ -58,37 +59,6 @@ def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
     if all("image" in batch for batch in batches):
         merged["image"] = torch.cat([batch["image"] for batch in batches], dim=0)
     return merged
-
-
-def _raw_batch_for_metrics(batch: dict[str, Any]) -> dict[str, Any] | None:
-    raw_batch = batch.get("_raw_batch")
-    if isinstance(raw_batch, dict):
-        return raw_batch
-    if "det_targets" in batch:
-        return batch
-    return None
-
-
-def _augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(metrics, dict):
-        return {}
-    lane_family = [
-        metrics.get("lane", {}),
-        metrics.get("stop_line", {}),
-        metrics.get("crosswalk", {}),
-    ]
-    f1_values = [
-        float(item["f1"])
-        for item in lane_family
-        if isinstance(item, dict) and isinstance(item.get("f1"), (int, float))
-    ]
-    output = dict(metrics)
-    if f1_values:
-        output["lane_family"] = {
-            "mean_f1": sum(f1_values) / len(f1_values),
-            "min_f1": min(f1_values),
-        }
-    return output
 
 
 def _progress_console() -> Any:
@@ -565,7 +535,7 @@ def run_validate_epoch(
                 break
             fetch_ended_at = time.perf_counter()
             batch_index += 1
-            raw_batch = _raw_batch_for_metrics(batch)
+            raw_batch = raw_batch_for_metrics(batch)
             needs_predictions = raw_batch is not None
             _sync_profile_device(trainer.device, profile_device_sync)
             evaluate_started_at = time.perf_counter()
@@ -660,7 +630,7 @@ def run_validate_epoch(
         else:
             metric_summaries = [item["metrics"] for item in batch_summaries if item.get("metrics")]
             metrics = _mean_metric_tree(metric_summaries) if metric_summaries else {}
-        metrics = _augment_lane_family_metrics(metrics)
+        metrics = augment_lane_family_metrics(metrics)
         metric_summary_ended_at = time.perf_counter()
         _emit_progress_message(
             (

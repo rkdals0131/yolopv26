@@ -5,53 +5,11 @@ from typing import Any
 import torch
 
 from ..data.target_encoder import encode_pv26_batch
+from .batch import augment_lane_family_metrics, move_batch_to_device, raw_batch_for_metrics
 from ..net.trunk import forward_pyramid_features
 from .metrics import PV26MetricConfig, summarize_pv26_metrics
 from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
 from .loss import PV26MultiTaskLoss
-
-
-def _move_to_device(item: Any, device: torch.device) -> Any:
-    if isinstance(item, torch.Tensor):
-        return item.to(device)
-    if isinstance(item, dict):
-        return {key: _move_to_device(value, device) for key, value in item.items()}
-    if isinstance(item, list):
-        return [_move_to_device(value, device) for value in item]
-    if isinstance(item, tuple):
-        return tuple(_move_to_device(value, device) for value in item)
-    return item
-
-
-def _raw_batch_for_metrics(batch: dict[str, Any]) -> dict[str, Any] | None:
-    raw_batch = batch.get("_raw_batch")
-    if isinstance(raw_batch, dict):
-        return raw_batch
-    if "det_targets" in batch:
-        return batch
-    return None
-
-
-def _augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(metrics, dict):
-        return {}
-    lane_family = [
-        metrics.get("lane", {}),
-        metrics.get("stop_line", {}),
-        metrics.get("crosswalk", {}),
-    ]
-    f1_values = [
-        float(item["f1"])
-        for item in lane_family
-        if isinstance(item, dict) and isinstance(item.get("f1"), (int, float))
-    ]
-    output = dict(metrics)
-    if f1_values:
-        output["lane_family"] = {
-            "mean_f1": sum(f1_values) / len(f1_values),
-            "min_f1": min(f1_values),
-        }
-    return output
 
 
 def _weighted_loss_summary(losses: dict[str, torch.Tensor], criterion: torch.nn.Module) -> dict[str, float]:
@@ -104,7 +62,7 @@ class PV26Evaluator:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
         raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
         encoded_payload = {key: value for key, value in encoded.items() if key != "_raw_batch"}
-        moved = _move_to_device(encoded_payload, self.device)
+        moved = move_batch_to_device(encoded_payload, self.device)
         if raw_batch is not None:
             moved["_raw_batch"] = raw_batch
         return moved
@@ -123,7 +81,7 @@ class PV26Evaluator:
     ) -> dict[str, Any]:
         self.adapter.raw_model.eval()
         self.heads.eval()
-        raw_batch = _raw_batch_for_metrics(batch)
+        raw_batch = raw_batch_for_metrics(batch)
         encoded = self.prepare_batch(batch)
         with torch.no_grad():
             predictions = self.forward_encoded_batch(encoded)
@@ -154,7 +112,7 @@ class PV26Evaluator:
         if weighted_losses:
             summary["losses_weighted"] = weighted_losses
         if summary["metrics"]:
-            summary["metrics"] = _augment_lane_family_metrics(summary["metrics"])
+            summary["metrics"] = augment_lane_family_metrics(summary["metrics"])
         if include_predictions:
             summary["predictions"] = postprocessed or []
         return summary

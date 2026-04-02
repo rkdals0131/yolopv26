@@ -14,6 +14,7 @@ from . import _trainer_fit as _fit
 from . import _trainer_io as _io
 from . import _trainer_reporting as _reporting
 from . import _trainer_step as _step
+from .batch import move_batch_to_device
 from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
 from .spec import build_loss_spec
 from ..net.trunk import forward_pyramid_features
@@ -72,18 +73,6 @@ _maybe_build_summary_writer = _io._maybe_build_summary_writer
 
 def _canonical_stage(stage: str) -> str:
     return STAGE_ALIASES.get(stage, stage)
-
-
-def _move_to_device(item: Any, device: torch.device, *, non_blocking: bool = False) -> Any:
-    if isinstance(item, torch.Tensor):
-        return item.to(device, non_blocking=non_blocking)
-    if isinstance(item, dict):
-        return {key: _move_to_device(value, device, non_blocking=non_blocking) for key, value in item.items()}
-    if isinstance(item, list):
-        return [_move_to_device(value, device, non_blocking=non_blocking) for value in item]
-    if isinstance(item, tuple):
-        return tuple(_move_to_device(value, device, non_blocking=non_blocking) for value in item)
-    return item
 
 
 def _count_parameters(parameters: list[torch.nn.Parameter]) -> int:
@@ -358,7 +347,7 @@ class PV26Trainer:
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
-        return _move_to_device(encoded, self.device, non_blocking=self.device.type == "cuda")
+        return move_batch_to_device(encoded, self.device, non_blocking=self.device.type == "cuda")
 
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         features = forward_pyramid_features(self.adapter, encoded["image"])
