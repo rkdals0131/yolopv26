@@ -45,6 +45,18 @@ def _build_runtime_params(scenario: TeacherTrainScenario) -> dict[str, Any]:
     }
 
 
+def _build_resolved_runtime_summary(scenario: TeacherTrainScenario) -> dict[str, Any]:
+    train = scenario.train
+    return {
+        "imgsz": train.imgsz,
+        "batch": train.batch,
+        "device": train.device,
+        "workers": train.workers,
+        "amp": train.amp,
+        "resume": train.resume,
+    }
+
+
 def run_teacher_train_scenario(scenario: TeacherTrainScenario, *, scenario_path: Path) -> dict[str, Any]:
     dataset_root = resolve_teacher_dataset_root(
         source_root=scenario.dataset.root,
@@ -80,6 +92,7 @@ def run_teacher_train_scenario(scenario: TeacherTrainScenario, *, scenario_path:
         "train": asdict(scenario.train),
         "run": asdict(scenario.run),
         "model": asdict(scenario.model),
+        "resolved_runtime": _build_resolved_runtime_summary(scenario),
         "train_summary": train_summary,
     }
     _log_teacher_train(f"trained {scenario.teacher_name} -> {train_summary['best_checkpoint']}")

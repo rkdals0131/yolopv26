@@ -29,6 +29,17 @@ class PredictionSummary:
     sample_count: int
 
 
+def _build_resolved_runtime_summary(scenario: CheckpointEvalScenario) -> dict[str, Any]:
+    params = scenario.eval
+    return {
+        "imgsz": params.imgsz,
+        "batch": params.batch,
+        "device": params.device,
+        "conf": params.conf,
+        "iou": params.iou,
+    }
+
+
 def _collect_sample_images(root: Path, *, split: str, image_dir: str, limit: int) -> list[Path]:
     image_root = root / image_dir / split
     if not image_root.is_dir():
@@ -185,6 +196,7 @@ def eval_teacher_checkpoint(
         "eval": asdict(scenario.eval),
         "model": asdict(scenario.model),
         "run": asdict(scenario.run),
+        "resolved_runtime": _build_resolved_runtime_summary(scenario),
     }
     summary_path = output_dir / "checkpoint_eval_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")

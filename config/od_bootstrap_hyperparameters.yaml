@@ -43,6 +43,8 @@ od_bootstrap:
       epochs: 2
       batch: 8
     signal:
+      # 필요하면 common.imgsz 대신 teacher별로 override할 수 있다.
+      # imgsz: 960
       model_size: s
       weights: yolo26s.pt
       classes: [traffic_light, sign]
@@ -70,6 +72,8 @@ od_bootstrap:
     mobility:
       classes: [vehicle, bike, pedestrian]
     signal:
+      # 필요하면 common.imgsz 대신 teacher별로 override할 수 있다.
+      # imgsz: 960
       classes: [traffic_light, sign]
     obstacle:
       classes: [traffic_cone, obstacle]
@@ -103,6 +107,8 @@ od_bootstrap:
       signal:
         model_version: signal_yolov26s_bootstrap_v1
         source_dataset_key: aihub_traffic_seoul
+        # 필요하면 calibration run 기본값 대신 teacher별로 override할 수 있다.
+        # imgsz: 960
         image_dir: images
         label_dir: labels
         split: val

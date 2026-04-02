@@ -42,6 +42,7 @@ class CalibrationTeacherConfig:
     model_version: str
     dataset: CalibrationDatasetConfig
     classes: tuple[str, ...]
+    imgsz: int | None = None
 
 
 @dataclass(frozen=True)

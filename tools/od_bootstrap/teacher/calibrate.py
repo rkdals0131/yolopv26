@@ -260,12 +260,13 @@ def _run_teacher_predictions_for_images(
         else nullcontext(None)
     )
     with stream_context as prediction_stream:
+        effective_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
         for batch_start in range(0, total_images, batch_size):
             batch = ordered_images[batch_start : batch_start + batch_size]
             batch_prediction_count = 0
             for result in model.predict(
                 source=[str(path) for path in batch],
-                imgsz=scenario.run.imgsz,
+                imgsz=effective_imgsz,
                 device=scenario.run.device,
                 conf=scenario.run.predict_conf,
                 iou=scenario.run.predict_iou,
@@ -624,6 +625,7 @@ def calibrate_class_policy_scenario(
         teacher_dir = output_root / "teachers" / teacher.name
         teacher_dir.mkdir(parents=True, exist_ok=True)
         predictions_path = teacher_dir / "predictions.jsonl"
+        resolved_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
         _log_calibration(f"teacher={teacher.name} calibration start checkpoint={teacher.checkpoint_path}")
         prediction_count, samples = _run_teacher_predictions_for_images(
             teacher=teacher,
@@ -649,6 +651,13 @@ def calibrate_class_policy_scenario(
             "sample_count": len(samples),
             "prediction_count": int(prediction_count),
             "predictions_path": str(predictions_path),
+            "resolved_runtime": {
+                "imgsz": resolved_imgsz,
+                "batch_size": int(scenario.run.batch_size),
+                "device": scenario.run.device,
+                "predict_conf": float(scenario.run.predict_conf),
+                "predict_iou": float(scenario.run.predict_iou),
+            },
         }
         _write_json(teacher_dir / "summary.json", teacher_summary)
         teacher_summaries.append(teacher_summary)

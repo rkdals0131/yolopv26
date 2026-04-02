@@ -51,6 +51,25 @@ class _FakeYOLO:
 
 
 class CheckpointEvalTests(unittest.TestCase):
+    def test_build_teacher_eval_preset_allows_per_teacher_imgsz_override(self) -> None:
+        hyperparameters = {
+            "od_bootstrap": {
+                "teacher_eval": {
+                    "common": {"imgsz": 640},
+                    "signal": {"imgsz": 960},
+                }
+            }
+        }
+        with patch("tools.od_bootstrap.presets.load_user_paths_config", return_value={}), patch(
+            "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+            return_value=hyperparameters,
+        ):
+            signal = build_teacher_eval_preset("signal")
+            mobility = build_teacher_eval_preset("mobility")
+
+        self.assertEqual(signal.eval.imgsz, 960)
+        self.assertEqual(mobility.eval.imgsz, 640)
+
     def test_shipped_eval_default_uses_teacher_name_checkpoint_path(self) -> None:
         scenario = build_teacher_eval_preset("mobility")
 
@@ -93,5 +112,7 @@ class CheckpointEvalTests(unittest.TestCase):
             self.assertIn("box.map50", summary["val_summary"]["results_dict"])
             self.assertTrue(Path(summary["predictions_path"]).is_file())
             self.assertEqual(summary["dataset_root"], str(source_root.resolve()))
+            self.assertEqual(summary["resolved_runtime"]["imgsz"], scenario.eval.imgsz)
+            self.assertEqual(summary["resolved_runtime"]["batch"], scenario.eval.batch)
             self.assertFalse((root / "runs" / "mobility" / "dataset").exists())
             self.assertTrue((root / "runs" / "mobility" / "checkpoint_eval_summary.json").is_file())

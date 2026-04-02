@@ -91,6 +91,27 @@ class _HardNegativeAwareFakeYOLO:
 
 
 class ODBootstrapCalibrationTests(unittest.TestCase):
+    def test_build_calibration_preset_allows_teacher_specific_imgsz_override(self) -> None:
+        hyperparameters = {
+            "od_bootstrap": {
+                "calibration": {
+                    "run": {"imgsz": 640},
+                    "teachers": {
+                        "signal": {"imgsz": 960},
+                    },
+                }
+            }
+        }
+        with patch("tools.od_bootstrap.presets.load_user_paths_config", return_value={}), patch(
+            "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+            return_value=hyperparameters,
+        ):
+            scenario = build_calibration_preset()
+
+        teacher_map = {teacher.name: teacher for teacher in scenario.teachers}
+        self.assertIsNone(teacher_map["mobility"].imgsz)
+        self.assertEqual(teacher_map["signal"].imgsz, 960)
+
     def _build_scenario(
         self,
         *,
@@ -140,6 +161,7 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
                             split="val",
                         ),
                         classes=("vehicle",),
+                        imgsz=960,
                     ),
                 ),
                 search={
@@ -170,6 +192,7 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             self.assertAlmostEqual(report["classes"]["vehicle"]["metrics"]["precision"], 1.0, places=6)
             self.assertTrue((Path(summary["output_root"]) / "teachers" / "mobility" / "predictions.jsonl").is_file())
             self.assertTrue(Path(summary["hard_negative_manifest_path"]).is_file())
+            self.assertEqual(summary["teachers"][0]["resolved_runtime"]["imgsz"], 960)
 
     def test_calibration_loads_policy_template_from_yaml_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

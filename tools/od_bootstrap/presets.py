@@ -95,6 +95,7 @@ class SourceDebugVisPreset:
     debug_vis_count: int = 20
     debug_vis_seed: int = 26
 
+
 def _config_section(payload: dict[str, Any], *keys: str) -> dict[str, Any]:
     field_name = ".".join(keys) if keys else "config"
     return _coerce_mapping(nested_get(payload, *keys, default={}), field_name=field_name)
@@ -115,6 +116,21 @@ def _path_from_config(config: dict[str, Any], *keys: str, default: Path) -> Path
 
 def _optional_path_from_config(config: dict[str, Any], *keys: str) -> Path | None:
     return resolve_repo_path(nested_get(config, *keys), repo_root=REPO_ROOT)
+
+
+def _resolve_teacher_int_override(
+    *,
+    common_config: dict[str, Any],
+    teacher_config: dict[str, Any],
+    key: str,
+    default: int,
+    common_field_name: str,
+    teacher_field_name: str,
+) -> int:
+    raw_teacher_value = teacher_config.get(key)
+    if raw_teacher_value is not None:
+        return _coerce_int(raw_teacher_value, field_name=teacher_field_name)
+    return _coerce_int(common_config.get(key, default), field_name=common_field_name)
 
 
 def _class_policy_defaults_from_config(hyperparameters_config: dict[str, Any]) -> dict[str, ClassPolicy]:
@@ -421,7 +437,14 @@ def build_teacher_train_preset(teacher_name: str) -> TeacherTrainScenario:
         ),
         train=TeacherTrainParams(
             epochs=epochs,
-            imgsz=_coerce_int(teacher_common.get("imgsz", 640), field_name="od_bootstrap.teacher_train.common.imgsz"),
+            imgsz=_resolve_teacher_int_override(
+                common_config=teacher_common,
+                teacher_config=teacher_specific,
+                key="imgsz",
+                default=640,
+                common_field_name="od_bootstrap.teacher_train.common.imgsz",
+                teacher_field_name=f"od_bootstrap.teacher_train.{teacher_name}.imgsz",
+            ),
             batch=batch,
             device=_coerce_str(teacher_common.get("device", "cuda:0"), field_name="od_bootstrap.teacher_train.common.device"),
             workers=_coerce_int(teacher_common.get("workers", 8), field_name="od_bootstrap.teacher_train.common.workers"),
@@ -528,7 +551,14 @@ def build_teacher_eval_preset(teacher_name: str) -> CheckpointEvalScenario:
             class_names=class_names,
         ),
         eval=CheckpointEvalParams(
-            imgsz=_coerce_int(eval_common.get("imgsz", 640), field_name="od_bootstrap.teacher_eval.common.imgsz"),
+            imgsz=_resolve_teacher_int_override(
+                common_config=eval_common,
+                teacher_config=eval_specific,
+                key="imgsz",
+                default=640,
+                common_field_name="od_bootstrap.teacher_eval.common.imgsz",
+                teacher_field_name=f"od_bootstrap.teacher_eval.{teacher_name}.imgsz",
+            ),
             batch=_coerce_int(eval_common.get("batch", 1), field_name="od_bootstrap.teacher_eval.common.batch"),
             device=_coerce_str(eval_common.get("device", "cuda:0"), field_name="od_bootstrap.teacher_eval.common.device"),
             conf=_coerce_float(eval_common.get("conf", 0.25), field_name="od_bootstrap.teacher_eval.common.conf"),
@@ -634,6 +664,14 @@ def build_calibration_preset() -> CalibrationScenario:
                 classes=_coerce_str_tuple(
                     teacher_config.get("classes", defaults["classes"]),
                     field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.classes",
+                ),
+                imgsz=(
+                    _coerce_int(
+                        teacher_config.get("imgsz"),
+                        field_name=f"od_bootstrap.calibration.teachers.{teacher_name}.imgsz",
+                    )
+                    if teacher_config.get("imgsz") is not None
+                    else None
                 ),
             )
         )

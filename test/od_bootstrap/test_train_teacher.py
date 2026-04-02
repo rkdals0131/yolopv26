@@ -47,6 +47,25 @@ class _FakeYOLO:
 
 
 class TeacherTrainTests(unittest.TestCase):
+    def test_build_teacher_train_preset_allows_per_teacher_imgsz_override(self) -> None:
+        hyperparameters = {
+            "od_bootstrap": {
+                "teacher_train": {
+                    "common": {"imgsz": 640},
+                    "signal": {"imgsz": 960},
+                }
+            }
+        }
+        with patch("tools.od_bootstrap.presets.load_user_paths_config", return_value={}), patch(
+            "tools.od_bootstrap.presets.load_user_hyperparameters_config",
+            return_value=hyperparameters,
+        ):
+            signal = build_teacher_train_preset("signal")
+            mobility = build_teacher_train_preset("mobility")
+
+        self.assertEqual(signal.train.imgsz, 960)
+        self.assertEqual(mobility.train.imgsz, 640)
+
     def _build_scenario(
         self,
         *,
@@ -136,6 +155,8 @@ class TeacherTrainTests(unittest.TestCase):
             self.assertEqual(summary["train"]["prefetch_factor"], 3)
             self.assertEqual(summary["train_summary"]["runtime"]["prefetch_factor"], 3)
             self.assertEqual(summary["train_summary"]["runtime"]["profile_window"], 7)
+            self.assertEqual(summary["resolved_runtime"]["imgsz"], 640)
+            self.assertEqual(summary["resolved_runtime"]["device"], "cpu")
             run_dir = Path(summary["train_summary"]["run_dir"])
             self.assertEqual(run_dir.parent, root / "runs" / "mobility")
             self.assertRegex(run_dir.name, r"^\d{8}_\d{6}$")
