@@ -12,7 +12,7 @@ from common.io import write_json
 from common.scalars import flatten_scalar_tree
 from . import runtime_progress
 from .runtime_artifacts import refresh_latest_teacher_artifacts
-from .runtime_callbacks import build_teacher_runtime_callbacks
+from .runtime_callbacks import TeacherRuntimeSupport, build_teacher_runtime_callbacks
 from .runtime_resume import (
     checkpoint_resume_metadata,
     coerce_weights_name,
@@ -156,8 +156,7 @@ def _build_teacher_callbacks(
     *,
     runtime_params: dict[str, Any],
 ) -> dict[str, Callable[[Any], None]]:
-    return build_teacher_runtime_callbacks(
-        runtime_params=runtime_params,
+    support = TeacherRuntimeSupport(
         time_module=time,
         deque_type=deque,
         append_jsonl_fn=_append_jsonl,
@@ -170,6 +169,10 @@ def _build_teacher_callbacks(
         write_tensorboard_scalars_fn=write_tensorboard_scalars,
         build_train_step_tensorboard_payload_fn=build_train_step_tensorboard_payload,
         build_epoch_tensorboard_payload_fn=build_epoch_tensorboard_payload,
+    )
+    return build_teacher_runtime_callbacks(
+        runtime_params=runtime_params,
+        support=support,
     )
 
 
