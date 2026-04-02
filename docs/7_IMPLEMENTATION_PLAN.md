@@ -114,6 +114,7 @@
 - OD bootstrap is implemented as a separate pipeline with `prepare-sources / build-teacher-datasets / train / eval / calibrate / build-exhaustive-od / build-final-dataset` stages
 - `tools/run_pv26_train.py` stays a single CLI entrypoint, but preset/config handling and manifest/writeout concerns are split into helper modules
 - `model/engine/trainer.py` is orchestration-only; step / epoch / fit / checkpoint / reporting logic lives in helper modules
+- `2026-04-03` team wave added `model/engine/batch.py`, promoted `deep_merge_mappings` reuse through `common.user_config`, and extracted source shared helpers into `tools/od_bootstrap/source/shared_resume.py` and `shared_source_meta.py`
 
 ## priority-2b extraction review boundary
 

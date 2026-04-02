@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness pass로 tools/run_pv26_train.py facade import boundary 정리를 완료했고 다음은 repo-wide 공통 helper 흡수와 model/engine internal API 경계 정리`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness team wave로 source/common/engine helper 정리를 일부 완료했다. 다음은 geometry helper, debug-vis manifest 공유, teacher runtime alias 정리, check_env 경계 분리다.`
 
 ## 완료된 항목
 
@@ -89,6 +89,9 @@
 - [x] PV26 training config simplification / TensorBoard defaults 정리
 - [x] obstacle teacher `yolo26m` migration
 - [x] `tools/run_pv26_train.py` facade import boundary cleanup (`tools/pv26_train_config.py` / `tools/pv26_train_artifacts.py` public API 우선 + compatibility wrapper 유지)
+- [x] `model/engine/batch.py` 도입으로 trainer/evaluator/_trainer_epochs batch helper 공용화
+- [x] `common.user_config.deep_merge_mappings` 재사용으로 `tools/pv26_train_config.py` deep-merge 중복 축소
+- [x] `tools/od_bootstrap/source/shared_resume.py`, `shared_source_meta.py` 도입으로 source resume/meta helper 공용화
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -98,8 +101,11 @@
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
-- [ ] repo-wide common helper 공통화 (`now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, path/deep-merge`)
-- [ ] `model/engine/` internal API / shared helper 경계 정리
+- [ ] repo-wide common helper 공통화 잔여분 (`now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, `resolve_latest_root`, `resolve_optional_path`)
+- [ ] `model/engine/` geometry/helper 잔여분 정리 (`_make_anchor_grid`, `_decode_anchor_relative_boxes`, trainer private re-export mesh)
+- [ ] source debug-vis manifest write helper shared public API 정리
+- [ ] teacher runtime alias import/public API 경계 정리
+- [ ] `tools/check_env.py` 역할별 파일 경계 분리
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -128,6 +134,8 @@
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
 - [x] `python3 tools/run_pv26_train.py`
 - [x] `pytest -q test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py` (`54 passed`, `2026-04-03`)
+- [x] `pytest -q test/test_pv26_engine_batch.py test/test_pv26_evaluator.py test/test_pv26_trainer.py test/test_pv26_eval_metrics.py test/test_common_user_config.py test/test_bdd100k_standardize.py test/od_bootstrap/test_shared_source_helpers.py test/od_bootstrap/test_aihub_workers.py test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py` (`101 passed`, `2026-04-03`)
+- [x] `python3 -m compileall -q common model/engine tools/od_bootstrap/source tools/pv26_train_config.py test/test_common_user_config.py test/test_pv26_engine_batch.py`
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과
@@ -181,3 +189,6 @@
 - PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py`, `tools/run_pv26_train.py --preset default`, `run_pv26_tiny_overfit()` 기준으로 유지한다
 - exact resume CLI는 `tools/run_pv26_train.py --resume-run <existing_run_dir>` 기준으로 유지한다
 - stage 3 VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다
+- engine 공통 batch helper는 `model/engine/batch.py`를 기준선으로 두고, trainer/evaluator/_trainer_epochs에서 중복을 다시 만들지 않는다
+- repo-wide deep merge helper는 `common.user_config.deep_merge_mappings`를 기준선으로 둔다
+- source resume/meta 공용 helper는 `tools/od_bootstrap/source/shared_resume.py`, `shared_source_meta.py`를 기준선으로 둔다

@@ -301,6 +301,11 @@ tools/od_bootstrap/
 
 내 판단으로 `common/`은 지금 급하게 뜯을 곳은 아니고, **새 shared helper를 받아줄 착지점**으로 쓰는 게 좋다.
 
+`2026-04-03` team wave 기준으로는 이 방향의 첫 단추를 이미 채웠다.
+`deep_merge_mappings`는 `common.user_config` public helper로 승격됐고,
+`tools/pv26_train_config.py`가 이를 재사용하도록 바뀌었다.
+다만 `now_iso`, `timestamp_token`, `write_json`, path resolve`류는 아직 부분 중복이 남아 있다.
+
 ---
 
 ## 5.2 `model/`
@@ -375,6 +380,11 @@ tools/od_bootstrap/
 
 `model/`은 상위 디렉토리는 합격이다.  
 남은 일은 **engine 내부 helper 경계 정리 + 수학 helper 공용화**다.
+
+`2026-04-03` team wave 기준으로는 batch/helper 쪽이 먼저 정리됐다.
+`model/engine/batch.py`가 추가되면서 `move_to_device`, raw batch unwrap,
+lane family metric augmentation이 trainer/evaluator/_trainer_epochs 사이에서 공용화됐다.
+이제 남은 핵심은 anchor grid / anchor-relative decode 같은 geometry 중복과 trainer private re-export mesh다.
 
 ---
 
@@ -638,6 +648,12 @@ source/
   types.py
   constants.py
 ```
+
+`2026-04-03` team wave 기준으로는 이 방향의 일부가 실제 코드로 들어갔다.
+`shared_resume.py`가 existing-output summary skeleton을 담당하고,
+`shared_source_meta.py`가 BDD README/tree/source inventory render를 담당한다.
+즉, source 공통골격 중 resume/meta 출력은 public shared API로 이동했고,
+남은 큰 잔여물은 debug-vis manifest write 쪽이다.
 
 핵심은 “더 쪼개자”가 아니라,
 
