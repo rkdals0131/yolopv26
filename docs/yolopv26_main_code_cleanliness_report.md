@@ -488,14 +488,35 @@ tools/
 
 ```text
 tools/
-  run_pv26_train.py         # entrypoint only
-  pv26_meta_train_presets.py
-  pv26_meta_train_resume.py
-  pv26_meta_train_preview.py
-  pv26_meta_train_runner.py
+  run_pv26_train.py         # stable thin facade / CLI entrypoint
+  pv26_train_scenario.py    # preset assembly + scenario/resume loading
+  pv26_train_runtime.py     # phase runtime orchestration
+  pv26_train_stress.py      # stage3 VRAM stress probe / summary
 ```
 
-이렇게만 나눠도 훨씬 읽기 좋아진다.
+이렇게 나누면 읽기 좋아질 뿐 아니라, `test/test_run_pv26_train.py`가 잡고 있는
+public facade(import surface)와 내부 orchestration 경계를 분리해 유지하기도 쉬워진다.
+
+특히 이번 2b 분해에서는 아래 경계를 먼저 고정하는 편이 안전하다.
+
+- facade에 남길 것
+  - `load_meta_train_scenario()`
+  - `load_meta_train_resume_scenario()`
+  - `run_stage3_vram_stress()`
+  - `run_meta_train_scenario()`
+  - `main()`
+- `pv26_train_scenario.py`로 옮길 것
+  - preset lookup / scenario validation
+  - `meta_manifest.json` snapshot restore
+  - legacy resume compatibility check
+- `pv26_train_stress.py`로 옮길 것
+  - stage 3 batch/iter override config
+  - probe execution
+  - OOM summary / recommendation payload
+- 회귀 gate
+  - `test/test_run_pv26_train.py`
+  - `test/test_portability_runtime.py`
+  - `test/test_docs_sync.py`
 
 ### 우선순위 판단
 
@@ -1088,4 +1109,3 @@ bootstrap 내부에서만 쓰는 건 bootstrap shared 모듈로 두는 게 맞�
 - `build/`는 구조는 좋고, manifest typing과 low-level helper 정리 정도면 충분하다.
 - teacher runtime과 PV26 trainer runtime은 전체 통합보다 **공통 runtime helper만 공유**하는 편이 맞다.
 - 선택 테스트 30개와 compileall 기준으로는 현재 코드 건강도는 꽤 좋은 편이다.
-

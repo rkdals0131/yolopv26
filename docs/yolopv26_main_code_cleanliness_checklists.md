@@ -16,7 +16,10 @@
 
 ## 2순위. `tools/run_pv26_train.py` 분해
 
-- [ ] `tools/run_pv26_train.py`에서 preset 조립, scenario 로딩, resume recovery, phase transition 제어, dataloader 생성, trainer/evaluator 생성, preview overlay 생성, manifest/summary 작성, stage3 VRAM stress probe, CLI entrypoint를 역할별 모듈로 분리한다.
+- [ ] `tools/run_pv26_train.py`를 stable thin facade로 유지하고, CLI / import surface(`load_meta_train_scenario`, `load_meta_train_resume_scenario`, `run_stage3_vram_stress`, `run_meta_train_scenario`, `main`)는 그대로 노출한다.
+- [ ] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
+- [ ] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
+- [ ] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
 - [ ] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
 - [ ] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
 - [ ] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.

@@ -115,6 +115,22 @@
 - `tools/run_pv26_train.py` stays a single CLI entrypoint, but preset/config handling and manifest/writeout concerns are split into helper modules
 - `model/engine/trainer.py` is orchestration-only; step / epoch / fit / checkpoint / reporting logic lives in helper modules
 
+## priority-2b extraction review boundary
+
+- `tools/run_pv26_train.py` should remain the stable thin facade for the CLI and the import surface exercised by `test/test_run_pv26_train.py`.
+- scenario / resume recovery responsibilities are the next extraction target:
+  - preset lookup and scenario validation
+  - scenario snapshot materialization for new runs
+  - `meta_manifest.json` loading, snapshot restore, and legacy resume compatibility checks
+- runtime / stress responsibilities are the next extraction target:
+  - exact-resume CLI dispatch
+  - stage 3 VRAM stress configuration / probe / summary assembly
+  - keeping the normal meta-train path and stress path on the same user-facing CLI contract
+- the regression bar for this split is fixed to:
+  - `test/test_run_pv26_train.py`
+  - `test/test_portability_runtime.py`
+  - `test/test_docs_sync.py`
+
 ## implementation order
 
 1. loader

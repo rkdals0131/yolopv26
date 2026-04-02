@@ -82,6 +82,28 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("config/user_paths.yaml", readme)
         self.assertIn("config/od_bootstrap_hyperparameters.yaml", readme)
 
+    def test_priority_2b_docs_track_run_pv26_train_split_boundary(self) -> None:
+        implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
+        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
+        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
+
+        for content in (implementation_plan, cleanliness_checklist, cleanliness_report):
+            self.assertIn("test/test_run_pv26_train.py", content)
+            self.assertIn("test/test_portability_runtime.py", content)
+            self.assertIn("test/test_docs_sync.py", content)
+
+        self.assertIn("priority-2b extraction review boundary", implementation_plan)
+        self.assertIn("stable thin facade", implementation_plan)
+
+        self.assertIn("tools/pv26_train_scenario.py", cleanliness_checklist)
+        self.assertIn("tools/pv26_train_runtime.py", cleanliness_checklist)
+        self.assertIn("tools/pv26_train_stress.py", cleanliness_checklist)
+
+        self.assertIn("run_pv26_train.py         # stable thin facade / CLI entrypoint", cleanliness_report)
+        self.assertIn("pv26_train_scenario.py", cleanliness_report)
+        self.assertIn("pv26_train_runtime.py", cleanliness_report)
+        self.assertIn("pv26_train_stress.py", cleanliness_report)
+
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
         self.assertIn("python -m tools.od_bootstrap", readme)
