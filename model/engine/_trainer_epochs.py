@@ -163,42 +163,20 @@ class _RichProgressBar:
         if not value:
             return output
         if value.startswith("[") and value.endswith("]") and "%" not in value:
-            output.append(value, style="bold bright_cyan")
+            output.append(value, style="bold cyan")
             return output
         if value.startswith("[") and "%" in value:
-            meter_style = "bold green"
-            if "100%" in value:
-                meter_style = "bold bright_green"
-            output.append(value, style=meter_style)
+            output.append(value, style="cyan")
             return output
         if value in {"timing_ms", "loss"}:
-            output.append(value, style="bold yellow")
+            output.append(value, style="bold cyan")
             return output
         if "=" in value:
             key, raw_value = value.split("=", 1)
-            label_style = "cyan"
-            value_style = "bright_white"
-            lowered_key = key.lower()
-            lowered_value = raw_value.lower()
-            if lowered_key == "loss":
-                label_style = "bold red"
-                value_style = "bold red" if "nan" in lowered_value else "red"
-            elif lowered_key in {"eta", "elapsed"}:
-                label_style = "yellow"
-                value_style = "bold white"
-            elif lowered_key in {"phase", "epoch", "iter"}:
-                label_style = "cyan"
-                value_style = "bold bright_white"
-            elif lowered_key in {"step"}:
-                label_style = "blue"
-                value_style = "bright_white"
-            elif lowered_key in {"load", "fwd", "bwd", "eval", "total"}:
-                label_style = "green"
-                value_style = "white"
-            output.append(f"{key}=", style=label_style)
-            output.append(raw_value, style=value_style)
+            output.append(f"{key}=", style="cyan")
+            output.append(raw_value, style="bold white")
             return output
-        output.append(value, style="bold magenta")
+        output.append(value, style="white")
         return output
 
     def _refresh(self) -> None:
