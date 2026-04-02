@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, NotRequired, Sequence, TypedDict, cast
 
 try:
     from PIL import Image
@@ -23,13 +23,77 @@ from .image_list import build_sample_uid, load_image_list
 
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
+class DebugSelectionRow(TypedDict, total=False):
+    dataset_key: str
+    dataset_root: str
+    det_path: str | None
+    image_path: str
+    output_label_path: str
+    sample_id: str
+    sample_uid: str
+    scene_path: str
+    source_dataset_key: str
+    source_image_path: str
+    split: str
+
+
+class OverlayImage(TypedDict):
+    source_path: str
+
+
+class OverlayItem(TypedDict, total=False):
+    bbox: list[float]
+    class_name: str
+
+
+class OverlayScene(TypedDict):
+    image: OverlayImage
+    detections: list[OverlayItem]
+    traffic_lights: list[OverlayItem]
+    traffic_signs: list[OverlayItem]
+    lanes: list[dict[str, Any]]
+    stop_lines: list[dict[str, Any]]
+    crosswalks: list[dict[str, Any]]
+    ignored_regions: list[dict[str, Any]]
+    debug_rectangles: list[dict[str, Any]]
+
+
+class DebugVisItem(TypedDict, total=False):
+    dataset_key: str
+    overlay_path: str
+    sample_id: str
+    sample_uid: str
+    source_det_path: str | None
+    source_image_path: str
+    source_label_path: str
+    source_scene_path: str
+    split: str
+    teacher_name: str
+
+
+class DebugVisPayload(TypedDict, total=False):
+    class_names: list[str]
+    dataset_root: str
+    generated_at: str
+    image_list_manifest_path: str
+    items: list[DebugVisItem]
+    seed: int
+    selection_count: int
+    teacher_name: str
+    version: str
+
+
+class DebugVisResult(TypedDict):
+    debug_vis_dir: Path
+    debug_vis_manifest: Path
+    selection_count: int
 def _reset_debug_vis_dir(debug_vis_dir: Path) -> None:
     if debug_vis_dir.exists():
         shutil.rmtree(debug_vis_dir)
     debug_vis_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _stable_selection_key(seed: int, row: Mapping[str, Any]) -> tuple[str, str, str]:
+def _stable_selection_key(seed: int, row: Mapping[str, Any] | DebugSelectionRow) -> tuple[str, str, str]:
     dataset_key = str(row.get("dataset_key") or row.get("source_dataset_key") or "").strip()
     split = str(row.get("split") or "").strip()
     sample_id = str(row.get("sample_uid") or row.get("sample_id") or "").strip()
@@ -37,16 +101,20 @@ def _stable_selection_key(seed: int, row: Mapping[str, Any]) -> tuple[str, str, 
     return digest, split, sample_id
 
 
-def _select_debug_rows(rows: Sequence[dict[str, Any]], *, count: int, seed: int) -> list[dict[str, Any]]:
+def _copy_debug_row(row: DebugSelectionRow) -> DebugSelectionRow:
+    return cast(DebugSelectionRow, dict(row))
+
+
+def _select_debug_rows(rows: Sequence[DebugSelectionRow], *, count: int, seed: int) -> list[DebugSelectionRow]:
     if count <= 0 or not rows:
         return []
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[str, list[DebugSelectionRow]] = defaultdict(list)
     for row in rows:
         dataset_key = str(row.get("dataset_key") or row.get("source_dataset_key") or "").strip() or "default"
-        grouped[dataset_key].append(dict(row))
+        grouped[dataset_key].append(_copy_debug_row(row))
     for dataset_key, items in grouped.items():
         items.sort(key=lambda item: _stable_selection_key(seed, {"dataset_key": dataset_key, **item}))
-    selected: list[dict[str, Any]] = []
+    selected: list[DebugSelectionRow] = []
     remaining = min(int(count), len(rows))
     active_keys = sorted(key for key, items in grouped.items() if items)
     while remaining > 0 and active_keys:
@@ -65,7 +133,7 @@ def _select_debug_rows(rows: Sequence[dict[str, Any]], *, count: int, seed: int)
     return selected
 
 
-def _empty_overlay_scene(*, image_path: Path) -> dict[str, Any]:
+def _empty_overlay_scene(*, image_path: Path) -> OverlayScene:
     return {
         "image": {"source_path": str(image_path.resolve())},
         "detections": [],
@@ -94,7 +162,7 @@ def _yolo_row_to_xyxy(values: list[float], *, width: int, height: int) -> list[f
     ]
 
 
-def _teacher_overlay_scene(*, image_path: Path, label_path: Path, class_names: Sequence[str]) -> dict[str, Any]:
+def _teacher_overlay_scene(*, image_path: Path, label_path: Path, class_names: Sequence[str]) -> OverlayScene:
     if Image is None:  # pragma: no cover
         raise RuntimeError("Pillow is required to render teacher debug overlays")
     with Image.open(image_path) as image:
@@ -121,7 +189,7 @@ def _teacher_overlay_scene(*, image_path: Path, label_path: Path, class_names: S
     return overlay_scene
 
 
-def _resolve_sample_uid(row: Mapping[str, Any]) -> str:
+def _resolve_sample_uid(row: Mapping[str, Any] | DebugSelectionRow) -> str:
     sample_uid = str(row.get("sample_uid") or "").strip()
     if sample_uid:
         return sample_uid
@@ -132,11 +200,11 @@ def _resolve_sample_uid(row: Mapping[str, Any]) -> str:
     )
 
 
-def _overlay_path_for_row(debug_vis_dir: Path, row: Mapping[str, Any]) -> Path:
+def _overlay_path_for_row(debug_vis_dir: Path, row: Mapping[str, Any] | DebugSelectionRow) -> Path:
     return debug_vis_dir / f"{_resolve_sample_uid(row)}.png"
 
 
-def _resolve_canonical_dataset_root(row: Mapping[str, Any], *, canonical_root: Path) -> Path:
+def _resolve_canonical_dataset_root(row: Mapping[str, Any] | DebugSelectionRow, *, canonical_root: Path) -> Path:
     dataset_root = str(row.get("dataset_root") or "").strip()
     if dataset_root:
         return Path(dataset_root).resolve()
@@ -146,7 +214,7 @@ def _resolve_canonical_dataset_root(row: Mapping[str, Any], *, canonical_root: P
     return (canonical_root / "aihub_standardized").resolve()
 
 
-def _render_canonical_debug_item(row: Mapping[str, Any], *, output_root: Path) -> dict[str, Any]:
+def _render_canonical_debug_item(row: DebugSelectionRow, *, output_root: Path) -> DebugVisItem:
     image_path = Path(str(row["image_path"])).resolve()
     scene_path = Path(str(row["scene_path"])).resolve()
     overlay_path = _overlay_path_for_row(output_root, row)
@@ -165,12 +233,12 @@ def _render_canonical_debug_item(row: Mapping[str, Any], *, output_root: Path) -
 
 
 def _render_teacher_debug_item(
-    row: Mapping[str, Any],
+    row: DebugSelectionRow,
     *,
     teacher_name: str,
     class_names: Sequence[str],
     output_root: Path,
-) -> dict[str, Any]:
+) -> DebugVisItem:
     image_path = Path(str(row["source_image_path"])).resolve()
     label_path = Path(str(row["output_label_path"])).resolve()
     overlay_path = _overlay_path_for_row(output_root, row)
@@ -188,12 +256,12 @@ def _render_teacher_debug_item(
 
 
 def _render_selected_rows(
-    rows: Sequence[dict[str, Any]],
+    rows: Sequence[DebugSelectionRow],
     *,
     stage_name: str,
     log_fn: Callable[[str], None] | None,
-    render_fn: Callable[[dict[str, Any]], dict[str, Any]],
-) -> list[dict[str, Any]]:
+    render_fn: Callable[[DebugSelectionRow], DebugVisItem],
+) -> list[DebugVisItem]:
     if not rows:
         return []
     workers = max(1, min(8, len(rows)))
@@ -201,7 +269,7 @@ def _render_selected_rows(
         log_fn(f"{stage_name} debug_vis start samples={len(rows)} workers={workers}")
     completed = 0
     start_time = time.monotonic()
-    items: list[dict[str, Any]] = []
+    items: list[DebugVisItem] = []
     log_every = max(10, workers * 4)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"{stage_name}_debug_vis") as executor:
         futures = [executor.submit(render_fn, row) for row in rows]
@@ -220,9 +288,9 @@ def _build_debug_vis_result(
     *,
     manifest_path: Path,
     debug_vis_dir: Path,
-    items: Sequence[dict[str, Any]],
-    payload: dict[str, Any],
-) -> dict[str, Any]:
+    items: Sequence[DebugVisItem],
+    payload: DebugVisPayload,
+) -> DebugVisResult:
     _write_json(manifest_path, payload)
     return {
         "debug_vis_dir": debug_vis_dir,
@@ -238,10 +306,10 @@ def generate_canonical_debug_vis(
     debug_vis_count: int,
     debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
     log_fn: Callable[[str], None] | None = None,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, DebugVisResult]:
     canonical_root = canonical_root.resolve()
-    rows = [entry.to_dict() for entry in load_image_list(image_list_manifest_path)]
-    grouped_rows: dict[Path, list[dict[str, Any]]] = {
+    rows = [cast(DebugSelectionRow, entry.to_dict()) for entry in load_image_list(image_list_manifest_path)]
+    grouped_rows: dict[Path, list[DebugSelectionRow]] = {
         dataset_root.resolve(): []
         for dataset_root in (
             canonical_root / "bdd100k_det_100k",
@@ -251,14 +319,14 @@ def generate_canonical_debug_vis(
     }
     for row in rows:
         dataset_root = _resolve_canonical_dataset_root(row, canonical_root=canonical_root)
-        grouped_rows.setdefault(dataset_root, []).append(dict(row))
+        grouped_rows.setdefault(dataset_root, []).append(_copy_debug_row(row))
     if not grouped_rows:
         grouped_rows = {
             (canonical_root / "bdd100k_det_100k").resolve(): [],
             (canonical_root / "aihub_standardized").resolve(): [],
         }
 
-    outputs: dict[str, dict[str, Any]] = {}
+    outputs: dict[str, DebugVisResult] = {}
     for dataset_root, dataset_rows in sorted(grouped_rows.items(), key=lambda item: str(item[0])):
         debug_vis_dir = dataset_root / "meta" / "debug_vis"
         manifest_path = dataset_root / "meta" / "debug_vis_manifest.json"
@@ -292,11 +360,11 @@ def generate_teacher_dataset_debug_vis(
     dataset_root: Path,
     teacher_name: str,
     class_names: Sequence[str],
-    manifest_rows: Sequence[dict[str, Any]],
+    manifest_rows: Sequence[DebugSelectionRow],
     debug_vis_count: int,
     debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
     log_fn: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
+) -> DebugVisResult:
     dataset_root = dataset_root.resolve()
     debug_vis_dir = dataset_root / "meta" / "debug_vis"
     manifest_path = dataset_root / "meta" / "debug_vis_manifest.json"
@@ -333,11 +401,11 @@ def generate_teacher_dataset_debug_vis(
 def generate_exhaustive_debug_vis(
     *,
     dataset_root: Path,
-    manifest_rows: Sequence[dict[str, Any]],
+    manifest_rows: Sequence[DebugSelectionRow],
     debug_vis_count: int,
     debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
     log_fn: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
+) -> DebugVisResult:
     dataset_root = dataset_root.resolve()
     debug_vis_dir = dataset_root / "meta" / "debug_vis"
     manifest_path = dataset_root / "meta" / "debug_vis_manifest.json"

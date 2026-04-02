@@ -5,14 +5,14 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import time
-from typing import Any, Callable
+from typing import Callable, TypedDict
 
 from common.io import now_iso as _now_iso
 from common.io import write_json as _write_json
 from common.pv26_schema import OD_CLASSES
 from .image_list import build_sample_uid
 
-from .debug_vis import DEFAULT_DEBUG_VIS_SEED, generate_teacher_dataset_debug_vis
+from .debug_vis import DEFAULT_DEBUG_VIS_SEED, DebugSelectionRow, generate_teacher_dataset_debug_vis
 from ..source.types import BOOTSTRAP_SOURCE_KEYS, CanonicalSourceBundle
 
 
@@ -76,9 +76,43 @@ class TeacherDatasetTask:
 
 @dataclass(frozen=True)
 class TeacherDatasetTaskResult:
-    manifest_row: dict[str, Any]
+    manifest_row: "TeacherDatasetManifestRow"
     detection_count: int
     class_counts: dict[str, int]
+class TeacherDatasetManifestRow(TypedDict):
+    teacher_name: str
+    source_dataset_key: str
+    split: str
+    sample_id: str
+    sample_uid: str
+    source_scene_path: str
+    source_image_path: str
+    output_image_path: str
+    output_label_path: str
+    detection_count: int
+    image_action: str
+
+
+class TeacherDatasetManifest(TypedDict):
+    version: str
+    generated_at: str
+    teacher_name: str
+    source_dataset_keys: list[str]
+    class_names: list[str]
+    output_root: str
+    dataset_root: str
+    copy_images: bool
+    workers: int
+    log_every: int
+    debug_vis_count: int
+    debug_vis_seed: int
+    debug_vis_manifest_path: str
+    sample_count: int
+    detection_count: int
+    elapsed_seconds: float
+    class_counts: dict[str, int]
+    bootstrap_source_keys: list[str]
+    samples: list[TeacherDatasetManifestRow]
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
@@ -237,23 +271,25 @@ def _process_teacher_task(
 
     task.label_dst.parent.mkdir(parents=True, exist_ok=True)
     task.label_dst.write_text(("\n".join(filtered_rows) + "\n") if filtered_rows else "", encoding="utf-8")
+    manifest_row: TeacherDatasetManifestRow = {
+        "teacher_name": "",
+        "source_dataset_key": task.source_dataset_key,
+        "split": task.split,
+        "sample_id": task.sample_id,
+        "sample_uid": build_sample_uid(
+            dataset_key=task.source_dataset_key,
+            split=task.split,
+            sample_id=task.sample_id,
+        ),
+        "source_scene_path": str(task.scene_path),
+        "source_image_path": str(task.image_src),
+        "output_image_path": str(task.image_dst),
+        "output_label_path": str(task.label_dst),
+        "detection_count": len(filtered_rows),
+        "image_action": image_action,
+    }
     return TeacherDatasetTaskResult(
-        manifest_row={
-            "source_dataset_key": task.source_dataset_key,
-            "split": task.split,
-            "sample_id": task.sample_id,
-            "sample_uid": build_sample_uid(
-                dataset_key=task.source_dataset_key,
-                split=task.split,
-                sample_id=task.sample_id,
-            ),
-            "source_scene_path": str(task.scene_path),
-            "source_image_path": str(task.image_src),
-            "output_image_path": str(task.image_dst),
-            "output_label_path": str(task.label_dst),
-            "detection_count": len(filtered_rows),
-            "image_action": image_action,
-        },
+        manifest_row=manifest_row,
         detection_count=len(filtered_rows),
         class_counts=class_counts,
     )
@@ -283,7 +319,7 @@ def build_teacher_dataset(
         )
 
     detection_count = 0
-    manifest_rows: list[dict[str, Any]] = []
+    manifest_rows: list[TeacherDatasetManifestRow] = []
     start_time = time.monotonic()
     completed = 0
 
@@ -304,7 +340,10 @@ def build_teacher_dataset(
                 detection_count += task_result.detection_count
                 for class_name, count in task_result.class_counts.items():
                     class_counts[class_name] += count
-                manifest_row = {"teacher_name": resolved_spec.name, **task_result.manifest_row}
+                manifest_row: TeacherDatasetManifestRow = {
+                    **task_result.manifest_row,
+                    "teacher_name": resolved_spec.name,
+                }
                 manifest_rows.append(manifest_row)
 
                 if log_fn is not None and (completed == total_tasks or completed == 1 or completed % log_every == 0):
@@ -322,13 +361,13 @@ def build_teacher_dataset(
         dataset_root=dataset_root,
         teacher_name=resolved_spec.name,
         class_names=resolved_spec.class_names,
-        manifest_rows=manifest_rows,
+        manifest_rows=[DebugSelectionRow(**row) for row in manifest_rows],
         debug_vis_count=int(config.debug_vis_count),
         debug_vis_seed=int(config.debug_vis_seed),
         log_fn=log_fn,
     )
 
-    manifest_payload = {
+    manifest_payload: TeacherDatasetManifest = {
         "version": "od-bootstrap-teacher-dataset-v1",
         "generated_at": _now_iso(),
         "teacher_name": resolved_spec.name,
