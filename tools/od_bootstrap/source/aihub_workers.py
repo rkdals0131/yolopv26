@@ -142,6 +142,5 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
 
 
 existing_output_summary = _existing_output_summary
-prepare_debug_scene_for_overlay_fn = prepare_debug_scene_for_overlay
 worker_chunk_entry = _worker_chunk_entry
 _prepare_debug_scene_for_overlay = prepare_debug_scene_for_overlay
