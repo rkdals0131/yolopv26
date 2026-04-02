@@ -65,7 +65,7 @@ from tools.pv26_train_artifacts import (
     write_meta_summary as _write_meta_summary,
 )
 from tools import pv26_train_runtime as _runtime_ops
-from tools import pv26_train_scenarios as _scenario_ops
+from tools import pv26_train_scenario as _scenario_ops
 from tools.pv26_train_config import (
     DEFAULT_DATASET_ROOT,
     DEFAULT_PRESET_NAME,
