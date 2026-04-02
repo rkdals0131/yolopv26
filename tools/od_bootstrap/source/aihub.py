@@ -73,6 +73,7 @@ from .shared_raw import (
 from .shared_reports import det_class_map_yaml as _det_class_map_yaml
 from .shared_scene import bbox_to_yolo_line as _bbox_to_yolo_line
 from .shared_summary import counter_to_dict as _counter_to_dict
+from .types import DebugVisOutputs, DebugVisSummaryRow
 
 PIPELINE_VERSION = "pv26-aihub-standardize-v1"
 DEFAULT_REPO_ROOT = _repo_root()
@@ -173,11 +174,11 @@ def _extract_archives_if_needed(dataset_root: Path, cache_root: Path, logger: Li
 
 
 def _select_debug_vis_summaries(
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     count: int,
     seed: int,
-) -> list[dict[str, Any]]:
+) -> list[DebugVisSummaryRow]:
     return _select_debug_vis_summaries_impl(
         summaries,
         count=count,
@@ -188,12 +189,12 @@ def _select_debug_vis_summaries(
 
 def _generate_debug_vis(
     output_root: Path,
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     debug_vis_count: int,
     debug_vis_seed: int,
     logger: LiveLogger,
-) -> dict[str, Path | None]:
+) -> DebugVisOutputs:
     return _generate_debug_vis_impl(
         output_root,
         summaries,
@@ -247,12 +248,12 @@ def det_class_map_yaml() -> str:
 
 def generate_debug_vis_outputs(
     output_root: Path,
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     debug_vis_count: int,
     debug_vis_seed: int,
     logger: LiveLogger,
-) -> dict[str, Path | None]:
+) -> DebugVisOutputs:
     return _generate_debug_vis(
         output_root,
         summaries,

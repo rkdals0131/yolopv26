@@ -11,7 +11,7 @@
 - [x] `tools/od_bootstrap/source/` 아래에 `shared_io.py`, `shared_parallel.py`, `shared_scene.py`, `shared_summary.py` 또는 동등한 public shared 모듈을 두고, cross-module 재사용이 필요한 helper는 underscore를 떼서 승격한다.
 - [x] `tools/od_bootstrap/source/types.py`를 pure types 모듈로 되돌리고, 기본 경로 상수나 implementation defaults는 `constants.py` 또는 별도 defaults 모듈로 분리한다.
 - [x] `shared_parallel.py`로 승격된 `LiveLogger`/parallel chunking 위에, existing output summary skeleton을 `shared_resume.py`로, BDD README/tree/source inventory render를 `shared_source_meta.py`로 재배치한다.
-- [ ] source pipeline 공통 출력 패턴 중 debug-vis manifest write helper까지 shared public API로 재배치한다.
+- [x] source pipeline 공통 출력 패턴 중 debug-vis manifest write helper를 `shared_debug.build_debug_vis_manifest()`와 typed manifest rows로 shared public API에 재배치한다.
 - [x] `tools/od_bootstrap/source/aihub.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 - [x] `tools/od_bootstrap/source/bdd100k.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 
@@ -38,11 +38,11 @@
 - [x] `common/io.py`, `common/paths.py` 확장 방향으로 정리하고 build/PV26 call-site가 그 공용 helper를 재사용하게 맞춘다.
 - [x] `tools/od_bootstrap/build/` 내부의 `write_json`, `resolve_latest_root`, `resolve_optional_path` 같은 low-level IO/path helper 중 공통화 가능한 부분을 shared helper로 정리한다.
 - [ ] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다.
-- [ ] source pipeline 쪽에서 existing output summary skeleton, debug-vis manifest write, README/tree markdown render 같은 공통 출력 패턴을 재사용 가능한 helper로 정리한다.
+- [x] source pipeline 쪽에서 existing output summary skeleton, debug-vis manifest write, README/tree markdown render 같은 공통 출력 패턴을 재사용 가능한 helper로 정리한다.
 
 ## 4순위. `model/engine/` 내부 API 경계 정리
 
-- [ ] `model/engine/trainer.py`가 `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`의 private helper를 대량 re-export/alias 하는 구조를 줄인다.
+- [x] `model/engine/trainer.py`가 `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`의 private helper를 대량 re-export/alias 하는 구조를 줄인다.
 - [ ] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다.
 - [ ] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다.
 - [x] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
@@ -64,7 +64,7 @@
 
 - [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`에서 dataloader kwargs, progress helper, tensorboard helper, resume helper, artifact refresh helper, callback builder, trainer subclass를 한 파일에서 모두 감싸는 구조를 분해한다.
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
-- [ ] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 또는 `TeacherRuntimeDeps` 같은 객체로 묶는다.
+- [x] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 객체로 묶는다.
 - [ ] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 - [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 
@@ -76,8 +76,8 @@
 ## 8순위. `tools/check_env.py` 파일 경계 정리
 
 - [x] `tools/check_env.py`에서 env check, manifest parsing, workspace scan, action catalog, blockers/advisory 계산, rich TUI render를 `check_env_scan.py`, `check_env_actions.py`, `check_env_tui.py`로 분리한다.
-- [ ] `tools/check_env.py`의 input handling, subprocess action launch, resume candidate handling을 추가 launch/helper 레이어로 더 분리한다.
-- [ ] `tools/check_env.py`는 entrypoint/compat facade로 더 경량화하고 필요하면 `check_env_launch.py` 같은 파일 경계로 추가 정리한다.
+- [x] `tools/check_env.py`의 input handling, subprocess action launch, resume candidate handling을 `check_env_launch.py` 레이어로 추가 분리한다.
+- [x] `tools/check_env.py`를 entrypoint/compat facade로 더 경량화하고 `check_env_launch.py` 파일 경계까지 정리한다.
 
 ## 9순위. `tools/od_bootstrap/build/` 마감 정리
 

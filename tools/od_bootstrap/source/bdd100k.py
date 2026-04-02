@@ -34,6 +34,7 @@ from .shared_source_meta import (
     build_bdd_source_inventory as _build_source_inventory,
 )
 from .shared_summary import counter_to_dict as _counter_to_dict
+from .types import DebugVisOutputs, DebugVisSummaryRow
 from common.pv26_schema import BDD100K_DATASET_KEY, OD_CLASSES, OD_CLASS_TO_ID, TL_BITS
 
 PIPELINE_VERSION = "pv26-bdd100k-standardize-v2"
@@ -695,12 +696,12 @@ def _scene_class_map_yaml() -> str:
 
 def _generate_debug_vis(
     output_root: Path,
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     debug_vis_count: int,
     debug_vis_seed: int,
     logger: LiveLogger,
-) -> dict[str, Path | None]:
+) -> DebugVisOutputs:
     return _generate_debug_vis_impl(
         output_root,
         summaries,

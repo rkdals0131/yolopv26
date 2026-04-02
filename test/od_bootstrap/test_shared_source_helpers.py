@@ -13,6 +13,7 @@ from tools.od_bootstrap.source import __all__ as SOURCE_EXPORTS
 from tools.od_bootstrap.source.constants import DEFAULT_AIHUB_OUTPUT_ROOT, DEFAULT_BDD_ROOT
 from tools.od_bootstrap.source.defaults import build_default_source_prep_config, resolve_source_path
 from tools.od_bootstrap.source.raw_common import PairRecord
+from tools.od_bootstrap.source.shared_debug import build_debug_vis_manifest
 from tools.od_bootstrap.source.shared_io import link_or_copy, load_json, write_json, write_text
 from tools.od_bootstrap.source.shared_parallel import LiveLogger, default_workers, iter_task_chunks, parallel_chunk_size
 from tools.od_bootstrap.source.shared_raw import extract_annotations, normalize_text, safe_slug
@@ -93,6 +94,34 @@ class SharedSourceHelpersTests(unittest.TestCase):
         self.assertGreaterEqual(default_workers(), 1)
         self.assertEqual(parallel_chunk_size(0, 4), 1)
         self.assertEqual(list(iter_task_chunks([1, 2, 3, 4, 5], 2)), [[1, 2], [3, 4], [5]])
+
+    def test_shared_debug_helper_builds_sorted_manifest_payload(self) -> None:
+        manifest = build_debug_vis_manifest(
+            generated_at="2026-04-03T00:00:00Z",
+            debug_vis_seed=7,
+            items=[
+                {
+                    "dataset_key": "bdd",
+                    "split": "val",
+                    "sample_id": "b",
+                    "scene_path": "/tmp/b.json",
+                    "image_path": "/tmp/b.jpg",
+                    "output_path": "/tmp/b.png",
+                },
+                {
+                    "dataset_key": "aihub",
+                    "split": "train",
+                    "sample_id": "a",
+                    "scene_path": "/tmp/a.json",
+                    "image_path": "/tmp/a.jpg",
+                    "output_path": "/tmp/a.png",
+                },
+            ],
+        )
+
+        self.assertEqual(manifest["selection_count"], 2)
+        self.assertEqual(manifest["seed"], 7)
+        self.assertEqual([item["dataset_key"] for item in manifest["items"]], ["aihub", "bdd"])
 
     def test_shared_raw_scene_and_summary_helpers_preserve_scene_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import torch
 
 from common.scalars import flatten_scalar_tree
+from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
 from tools.od_bootstrap.teacher.runtime_progress import install_ultralytics_postfix_renderer
 from tools.od_bootstrap.teacher.runtime_resume import resolve_resume_argument
 from tools.od_bootstrap.teacher.runtime_tensorboard import (
@@ -153,6 +154,37 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertIn("wait=", pbar.values[0])
             self.assertIn("compute=", pbar.values[0])
             self.assertFalse(trainer.od_profile_log_path.exists())
+
+    def test_make_teacher_trainer_groups_callback_support_dependencies(self) -> None:
+        runtime_params = {
+            "pin_memory": True,
+            "persistent_workers": True,
+            "prefetch_factor": 4,
+            "log_every_n_steps": 20,
+            "profile_window": 20,
+            "profile_device_sync": False,
+        }
+        seen: dict[str, object] = {}
+
+        def _fake_build_teacher_runtime_callbacks(*, runtime_params, support):
+            seen["runtime_params"] = runtime_params
+            seen["support"] = support
+            return {}
+
+        with patch(
+            "tools.od_bootstrap.teacher.ultralytics_runner.build_teacher_runtime_callbacks",
+            side_effect=_fake_build_teacher_runtime_callbacks,
+        ) as build_callbacks:
+            trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=lambda message: None)
+
+        self.assertIsNotNone(trainer_cls)
+        self.assertEqual(callbacks, {})
+        build_callbacks.assert_called_once()
+        self.assertEqual(seen["runtime_params"], runtime_params)
+        self.assertIsInstance(seen["support"], TeacherRuntimeSupport)
+        assert isinstance(seen["support"], TeacherRuntimeSupport)
+        self.assertTrue(callable(seen["support"].append_jsonl_fn))
+        self.assertTrue(callable(seen["support"].build_epoch_tensorboard_payload_fn))
 
     def test_epoch_tensorboard_payload_keeps_only_requested_tags(self) -> None:
         payload = build_epoch_tensorboard_payload(

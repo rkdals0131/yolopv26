@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,6 +85,16 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         interactive_loop.assert_not_called()
         self.assertEqual(json.loads(stdout.getvalue()), report)
+
+    def test_check_env_main_interactive_mode_delegates_to_interactive_loop(self) -> None:
+        from tools import check_env as check_env_module
+
+        with unittest.mock.patch.object(check_env_module, "_should_run_interactive", return_value=True):
+            with unittest.mock.patch.object(check_env_module, "_interactive_loop", return_value=7) as interactive_loop:
+                exit_code = check_env_module.main([])
+
+        self.assertEqual(exit_code, 7)
+        interactive_loop.assert_called_once()
 
     def test_check_env_action_catalog_includes_stage3_vram_stress_and_resume(self) -> None:
         from tools.check_env import PipelinePaths, _action_catalog
@@ -225,8 +236,8 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         )
         console = Console(file=io.StringIO())
 
-        with unittest.mock.patch("tools.check_env._default_stage3_stress_batch_size", return_value=40):
-            with unittest.mock.patch("tools.check_env._ascii_input", side_effect=["48", "18"]):
+        with unittest.mock.patch("tools.check_env_launch._default_stage3_stress_batch_size", return_value=40):
+            with unittest.mock.patch("tools.check_env_launch._ascii_input", side_effect=["48", "18"]):
                 resolved = _resolve_stage3_stress_action(console, action)
 
         self.assertIsNotNone(resolved)

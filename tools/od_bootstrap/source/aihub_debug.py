@@ -7,8 +7,10 @@ from typing import Any, Callable
 
 from common.overlay import render_overlay
 
+from .types import DebugVisManifest, DebugVisManifestItem, DebugVisOutputs, DebugVisSummaryRow
 
-def _debug_vis_priority(item: dict[str, Any], *, obstacle_dataset_key: str) -> tuple[int, int, int]:
+
+def _debug_vis_priority(item: DebugVisSummaryRow, *, obstacle_dataset_key: str) -> tuple[int, int, int]:
     annotation_score = (
         int(item.get("det_count", 0))
         + int(item.get("traffic_light_count", 0))
@@ -23,16 +25,16 @@ def _debug_vis_priority(item: dict[str, Any], *, obstacle_dataset_key: str) -> t
 
 
 def _select_debug_vis_summaries(
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     count: int,
     seed: int,
     obstacle_dataset_key: str,
-) -> list[dict[str, Any]]:
+) -> list[DebugVisSummaryRow]:
     if count <= 0 or not summaries:
         return []
 
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    grouped: dict[str, list[DebugVisSummaryRow]] = {}
     for item in summaries:
         grouped.setdefault(str(item["dataset_key"]), []).append(item)
 
@@ -44,7 +46,7 @@ def _select_debug_vis_summaries(
             key=lambda item: _debug_vis_priority(item, obstacle_dataset_key=obstacle_dataset_key)
         )
 
-    selected: list[dict[str, Any]] = []
+    selected: list[DebugVisSummaryRow] = []
     remaining = min(count, len(summaries))
     active_keys = [key for key in dataset_keys if grouped[key]]
     while remaining > 0 and active_keys:
@@ -61,6 +63,20 @@ def _select_debug_vis_summaries(
                 break
         active_keys = next_active
     return selected
+
+
+def build_debug_vis_manifest(
+    *,
+    generated_at: str,
+    debug_vis_seed: int,
+    items: list[DebugVisManifestItem],
+) -> DebugVisManifest:
+    return {
+        "generated_at": generated_at,
+        "selection_count": len(items),
+        "seed": debug_vis_seed,
+        "items": sorted(items, key=lambda item: (item["dataset_key"], item["split"], item["sample_id"])),
+    }
 
 
 def _render_debug_vis_entry(
@@ -80,7 +96,7 @@ def _render_debug_vis_entry(
 
 def _generate_debug_vis(
     output_root: Path,
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     debug_vis_count: int,
     debug_vis_seed: int,
@@ -91,7 +107,7 @@ def _generate_debug_vis(
     write_json_fn: Callable[[Path, dict[str, Any]], None],
     load_json_fn: Callable[[Path], dict[str, Any]],
     prepare_scene_fn: Callable[[dict[str, Any]], dict[str, Any]],
-) -> dict[str, Path | None]:
+) -> DebugVisOutputs:
     debug_vis_dir = output_root / "meta" / debug_vis_dirname
     debug_vis_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,12 +121,11 @@ def _generate_debug_vis(
     if not selected:
         write_json_fn(
             index_path,
-            {
-                "generated_at": now_iso_fn(),
-                "selection_count": 0,
-                "seed": debug_vis_seed,
-                "items": [],
-            },
+            build_debug_vis_manifest(
+                generated_at=now_iso_fn(),
+                debug_vis_seed=debug_vis_seed,
+                items=[],
+            ),
         )
         return {
             "debug_vis_dir": debug_vis_dir,
@@ -124,7 +139,7 @@ def _generate_debug_vis(
     )
 
     completed = 0
-    items: list[dict[str, Any]] = []
+    items: list[DebugVisManifestItem] = []
     max_workers = max(1, min(8, len(selected)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {}
@@ -157,12 +172,11 @@ def _generate_debug_vis(
 
     write_json_fn(
         index_path,
-        {
-            "generated_at": now_iso_fn(),
-            "selection_count": len(items),
-            "seed": debug_vis_seed,
-            "items": sorted(items, key=lambda item: (item["dataset_key"], item["split"], item["sample_id"])),
-        },
+        build_debug_vis_manifest(
+            generated_at=now_iso_fn(),
+            debug_vis_seed=debug_vis_seed,
+            items=items,
+        ),
     )
     logger.progress(len(selected) + 1, {"rendered": len(items), "index_written": 1}, force=True)
     return {
@@ -172,12 +186,12 @@ def _generate_debug_vis(
 
 
 def select_debug_vis_summaries(
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     count: int,
     seed: int,
     obstacle_dataset_key: str,
-) -> list[dict[str, Any]]:
+) -> list[DebugVisSummaryRow]:
     return _select_debug_vis_summaries(
         summaries,
         count=count,
@@ -188,7 +202,7 @@ def select_debug_vis_summaries(
 
 def generate_debug_vis_outputs(
     output_root: Path,
-    summaries: list[dict[str, Any]],
+    summaries: list[DebugVisSummaryRow],
     *,
     debug_vis_count: int,
     debug_vis_seed: int,
@@ -199,7 +213,7 @@ def generate_debug_vis_outputs(
     write_json_fn: Callable[[Path, dict[str, Any]], None],
     load_json_fn: Callable[[Path], dict[str, Any]],
     prepare_scene_fn: Callable[[dict[str, Any]], dict[str, Any]],
-) -> dict[str, Path | None]:
+) -> DebugVisOutputs:
     return _generate_debug_vis(
         output_root,
         summaries,
@@ -216,6 +230,7 @@ def generate_debug_vis_outputs(
 
 
 __all__ = [
+    "build_debug_vis_manifest",
     "generate_debug_vis_outputs",
     "select_debug_vis_summaries",
 ]
