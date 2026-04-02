@@ -12,6 +12,10 @@ from .aihub_traffic_worker import combo_name, traffic_worker
 from .aihub_worker_common import StandardizeTask
 from .shared_io import load_json as _load_json
 from .shared_raw import normalize_text as _normalize_text, safe_slug as _safe_slug
+from .shared_resume import (
+    count_held_annotation_reasons as _count_held_annotation_reasons,
+    load_existing_scene_output as _load_existing_scene_output,
+)
 from .shared_scene import sample_id as _sample_id
 from .shared_summary import counter_to_dict as _counter_to_dict
 
@@ -54,32 +58,22 @@ def _worker_chunk_entry(tasks: list[StandardizeTask]) -> list[dict[str, Any]]:
             )
     return results
 
-
-def _reason_counts_from_held_annotations(held_annotations: Any) -> dict[str, int]:
-    counter = Counter()
-    if not isinstance(held_annotations, list):
-        return {}
-    for item in held_annotations:
-        if not isinstance(item, dict):
-            continue
-        reason = _normalize_text(item.get("reason")) or "unknown"
-        counter[reason] += 1
-    return counter_to_dict(counter)
-
-
 def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
     sample_id_value = sample_id(task.output_dataset_key, task.pair, safe_slug=safe_slug)
     output_root = Path(task.output_root)
-    image_output_path = output_root / "images" / task.pair.split / f"{sample_id_value}{task.pair.image_path.suffix.lower()}"
-    scene_path = output_root / "labels_scene" / task.pair.split / f"{sample_id_value}.json"
-    det_path = output_root / "labels_det" / task.pair.split / f"{sample_id_value}.txt"
-    if not image_output_path.is_file() or not scene_path.is_file():
+    bundle = _load_existing_scene_output(
+        output_root=output_root,
+        split=task.pair.split,
+        sample_id=sample_id_value,
+        image_suffix=task.pair.image_path.suffix.lower(),
+        load_json_fn=load_json,
+    )
+    if bundle is None:
         return None
-
-    try:
-        scene = load_json(scene_path)
-    except Exception:
-        return None
+    image_output_path = bundle["image_path"]
+    scene_path = bundle["scene_path"]
+    det_path = bundle["det_path"]
+    scene = bundle["scene"]
 
     detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
     lanes = scene.get("lanes") if isinstance(scene.get("lanes"), list) else []
@@ -142,7 +136,10 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         "det_class_counts": counter_to_dict(det_class_counts),
         "tl_combo_counts": counter_to_dict(tl_combo_counts),
         "tl_invalid_reason_counts": counter_to_dict(tl_invalid_reason_counts),
-        "held_reason_counts": _reason_counts_from_held_annotations(scene.get("held_annotations")),
+        "held_reason_counts": _count_held_annotation_reasons(
+            scene.get("held_annotations"),
+            normalize_reason=normalize_text,
+        ),
         "resume_skipped": 1,
     }
 

@@ -62,6 +62,7 @@ class AIHubWorkerModuleCleanupTests(unittest.TestCase):
             "aihub_workers.py": {
                 "shared_io": ("load_json",),
                 "shared_raw": ("normalize_text", "safe_slug"),
+                "shared_resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
                 "shared_scene": ("sample_id",),
                 "shared_summary": ("counter_to_dict",),
             },
@@ -78,8 +79,15 @@ class AIHubWorkerModuleCleanupTests(unittest.TestCase):
                     "parallel_chunk_size",
                 ),
                 "shared_raw": ("env_path", "now_iso", "probe_image_size", "repo_root", "safe_slug", "seg_dataset_root"),
+                "shared_resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
                 "shared_reports": ("det_class_map_yaml",),
                 "shared_scene": ("bbox_to_yolo_line",),
+                "shared_source_meta": (
+                    "bdd_readme",
+                    "bdd_source_inventory_markdown",
+                    "build_bdd_inventory",
+                    "build_bdd_source_inventory",
+                ),
                 "shared_summary": ("counter_to_dict",),
             },
         }

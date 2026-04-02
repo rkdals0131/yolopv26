@@ -22,12 +22,12 @@ def load_user_paths_config() -> dict[str, Any]:
     return _read_optional_yaml(USER_PATHS_CONFIG_PATH)
 
 
-def _deep_merge_mappings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+def deep_merge_mappings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in overrides.items():
         current = merged.get(key)
         if isinstance(current, dict) and isinstance(value, dict):
-            merged[key] = _deep_merge_mappings(current, value)
+            merged[key] = deep_merge_mappings(current, value)
         else:
             merged[key] = value
     return merged
@@ -39,7 +39,7 @@ def load_user_hyperparameters_config() -> dict[str, Any]:
         USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH,
         USER_PV26_TRAIN_HYPERPARAMETERS_CONFIG_PATH,
     ):
-        merged = _deep_merge_mappings(merged, _read_optional_yaml(path))
+        merged = deep_merge_mappings(merged, _read_optional_yaml(path))
     return merged
 
 

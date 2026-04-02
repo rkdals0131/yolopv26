@@ -51,21 +51,10 @@ try:
     from model.net import resolve_yolo26_weights
 except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
     resolve_yolo26_weights = None
-from tools.pv26_train_artifacts import (
-    json_ready as _json_ready,
-    load_or_init_meta_manifest as _load_or_init_meta_manifest,
-    phase_entry_is_completed as _phase_entry_is_completed,
-    read_json as _read_json,
-    read_jsonl as _read_jsonl,
-    recover_phase_entry_from_run_dir as _recover_phase_entry_from_run_dir,
-    resolve_meta_run_dir as _resolve_meta_run_dir,
-    safe_name as _safe_name,
-    write_json as _write_json,
-    write_meta_manifest as _write_meta_manifest,
-    write_meta_summary as _write_meta_summary,
-)
+from tools import pv26_train_artifacts as train_artifacts
 from tools import pv26_train_runtime as _runtime_ops
 from tools import pv26_train_scenarios as _scenario_ops
+from tools import pv26_train_config as train_config_api
 from tools.pv26_train_config import (
     DEFAULT_DATASET_ROOT,
     DEFAULT_PRESET_NAME,
@@ -76,12 +65,6 @@ from tools.pv26_train_config import (
     PreviewConfig,
     SelectionConfig,
     TrainDefaultsConfig,
-    resolve_train_batch_limit as _resolve_train_batch_limit,
-    resolve_val_batch_limit as _resolve_val_batch_limit,
-    scenario_phase_defaults as _scenario_phase_defaults,
-    scenario_to_mapping as _scenario_to_mapping,
-    validate_meta_train_scenario as _validate_meta_train_scenario,
-    resolve_phase_selection as _resolve_phase_selection,
 )
 
 
@@ -214,7 +197,7 @@ def _default_scenario_path(preset_name: str | Path) -> Path:
 
 
 def _validated_meta_train_scenario(scenario: MetaTrainScenario) -> MetaTrainScenario:
-    _validate_meta_train_scenario(scenario)
+    train_config_api.validate_meta_train_scenario(scenario)
     return scenario
 
 
@@ -227,7 +210,7 @@ def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
         load_user_paths_config=load_user_paths_config,
         load_user_hyperparameters_config=load_user_hyperparameters_config,
         nested_get=nested_get,
-        validate_meta_train_scenario=_validate_meta_train_scenario,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
     )
 
 
@@ -247,14 +230,14 @@ def _scenario_snapshot_for_run(
     return _scenario_ops.scenario_snapshot_for_run(
         scenario,
         run_dir=run_dir,
-        scenario_to_mapping=_scenario_to_mapping,
+        scenario_to_mapping=train_config_api.scenario_to_mapping,
     )
 
 
 def _load_meta_resume_manifest(run_dir: Path) -> dict[str, Any]:
     return _scenario_ops.load_meta_resume_manifest(
         run_dir,
-        read_json=_read_json,
+        read_json=train_artifacts.read_json,
     )
 
 
@@ -279,8 +262,8 @@ def _load_legacy_resume_scenario(
         repo_root=REPO_ROOT,
         preset_path_root=PRESET_PATH_ROOT,
         load_meta_train_scenario=load_meta_train_scenario,
-        scenario_to_mapping=_scenario_to_mapping,
-        validate_meta_train_scenario=_validate_meta_train_scenario,
+        scenario_to_mapping=train_config_api.scenario_to_mapping,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
     )
 
 
@@ -293,7 +276,7 @@ def _load_resume_scenario_from_snapshot(
         scenario_snapshot,
         run_dir=run_dir,
         repo_root=REPO_ROOT,
-        validate_meta_train_scenario=_validate_meta_train_scenario,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
     )
 
 
@@ -321,10 +304,33 @@ def load_meta_train_resume_scenario(
         repo_root=REPO_ROOT,
         preset_path_root=PRESET_PATH_ROOT,
         load_meta_train_scenario=load_meta_train_scenario,
-        read_json=_read_json,
-        scenario_to_mapping=_scenario_to_mapping,
-        validate_meta_train_scenario=_validate_meta_train_scenario,
+        read_json=train_artifacts.read_json,
+        scenario_to_mapping=train_config_api.scenario_to_mapping,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
     )
+
+
+def _phase_entry_is_completed(entry: dict[str, Any], phase: Any) -> bool:
+    return train_artifacts.phase_entry_is_completed(entry, phase)
+
+
+def _recover_phase_entry_from_run_dir(entry: dict[str, Any], phase: Any) -> dict[str, Any] | None:
+    return train_artifacts.recover_phase_entry_from_run_dir(entry, phase)
+
+
+def _scenario_phase_defaults(
+    defaults: TrainDefaultsConfig,
+    overrides: dict[str, Any],
+) -> TrainDefaultsConfig:
+    return train_config_api.scenario_phase_defaults(defaults, overrides)
+
+
+def _resolve_phase_selection(default_selection: SelectionConfig, phase: PhaseConfig) -> SelectionConfig:
+    return train_config_api.resolve_phase_selection(default_selection, phase)
+
+
+def _validate_meta_train_scenario(scenario: MetaTrainScenario) -> None:
+    train_config_api.validate_meta_train_scenario(scenario)
 
 
 class PhaseTransitionController:
@@ -375,8 +381,8 @@ def _build_phase_train_loaders(
     *,
     train_config: TrainDefaultsConfig,
 ) -> tuple[Any, Any]:
-    train_batches = _resolve_train_batch_limit(train_config.train_batches)
-    val_batches = _resolve_val_batch_limit(train_config.val_batches)
+    train_batches = train_config_api.resolve_train_batch_limit(train_config.train_batches)
+    val_batches = train_config_api.resolve_val_batch_limit(train_config.val_batches)
     train_loader = build_pv26_train_dataloader(
         dataset,
         batch_size=train_config.batch_size,
@@ -558,8 +564,8 @@ def _generate_phase_preview_bundle(
     preview_entries: list[dict[str, Any]] = []
     for sample in preview_samples:
         sample_meta = sample["meta"]
-        sample_id = _safe_name(str(sample_meta["sample_id"]))
-        dataset_key = _safe_name(str(sample_meta["dataset_key"]))
+        sample_id = train_artifacts.safe_name(str(sample_meta["sample_id"]))
+        dataset_key = train_artifacts.safe_name(str(sample_meta["dataset_key"]))
         stem = f"{dataset_key}__{sample_id}"
         batch = collate_pv26_samples([sample])
         prediction = evaluator.predict_batch(batch)[0]
@@ -568,10 +574,10 @@ def _generate_phase_preview_bundle(
             "phase_name": phase.name,
             "phase_stage": phase.stage,
             "preview_kind": preview_kind,
-            "sample_meta": _json_ready(sample_meta),
-            "prediction": _json_ready(prediction),
+            "sample_meta": train_artifacts.json_ready(sample_meta),
+            "prediction": train_artifacts.json_ready(prediction),
         }
-        _write_json(prediction_path, prediction_payload)
+        train_artifacts.write_json(prediction_path, prediction_payload)
         overlay_path = output_dir / f"{stem}.png"
         overlay_error = None
         if preview_config.write_overlay:
@@ -595,7 +601,7 @@ def _generate_phase_preview_bundle(
         "entries": preview_entries,
     }
     index_path = output_dir / "index.json"
-    _write_json(index_path, index_payload)
+    train_artifacts.write_json(index_path, index_payload)
     return {
         "enabled": True,
         "index_path": str(index_path),
@@ -612,17 +618,17 @@ def _phase_manifest_extra(
     train_config: TrainDefaultsConfig,
     scenario: MetaTrainScenario,
 ) -> dict[str, Any]:
-    phase_selection = _resolve_phase_selection(scenario.selection, phase)
+    phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
     backbone_weights = _resolve_backbone_weights(train_config)
     head_channels = _configured_head_channels(train_config)
     postprocess_config = _build_postprocess_config(train_config)
     return {
         "entry_script": "tools/run_pv26_train.py",
         "scenario_path": str(scenario_path),
-        "dataset_config": _json_ready(asdict(scenario.dataset)),
-        "selection": _json_ready(asdict(scenario.selection)),
-        "phase_selection": _json_ready(asdict(phase_selection)),
-        "preview": _json_ready(asdict(scenario.preview)),
+        "dataset_config": train_artifacts.json_ready(asdict(scenario.dataset)),
+        "selection": train_artifacts.json_ready(asdict(scenario.selection)),
+        "phase_selection": train_artifacts.json_ready(asdict(phase_selection)),
+        "preview": train_artifacts.json_ready(asdict(scenario.preview)),
         "phase": {
             "index": int(phase_index),
             "name": phase.name,
@@ -631,16 +637,16 @@ def _phase_manifest_extra(
             "max_epochs": int(phase.max_epochs),
             "patience": int(phase.patience),
             "min_improvement_pct": float(phase.min_improvement_pct),
-            "selection": _json_ready(asdict(phase_selection)),
-            "loss_weights": _json_ready(phase.loss_weights),
+            "selection": train_artifacts.json_ready(asdict(phase_selection)),
+            "loss_weights": train_artifacts.json_ready(phase.loss_weights),
             "freeze_policy": phase.freeze_policy,
         },
-        "phase_train_config": _json_ready(asdict(train_config)),
+        "phase_train_config": train_artifacts.json_ready(asdict(train_config)),
         "backbone": {
             "variant": train_config.backbone_variant,
             "weights": backbone_weights,
         },
-        "postprocess": _json_ready(asdict(postprocess_config)),
+        "postprocess": train_artifacts.json_ready(asdict(postprocess_config)),
         "head_channels": list(head_channels),
     }
 
@@ -658,11 +664,11 @@ def _execute_phase(
 ) -> dict[str, Any]:
     phase_run_dir = run_dir / f"phase_{phase_index}"
     phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
-    phase_selection = _resolve_phase_selection(scenario.selection, phase)
+    phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
     _log_meta_train(f"building loaders for phase_{phase_index} at {phase_run_dir}")
     train_loader, val_loader = _build_phase_train_loaders(dataset, train_config=phase_train_config)
     controller = PhaseTransitionController(phase=phase, selection=phase_selection)
-    controller.replay(_read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
+    controller.replay(train_artifacts.read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
 
     trainer = _build_phase_trainer(phase, phase_train_config)
     last_checkpoint_path = phase_run_dir / "checkpoints" / "last.pt"
@@ -684,8 +690,8 @@ def _execute_phase(
         run_dir=phase_run_dir,
         val_every=phase_train_config.val_every,
         checkpoint_every=phase_train_config.checkpoint_every,
-        max_train_batches=_resolve_train_batch_limit(phase_train_config.train_batches),
-        max_val_batches=_resolve_val_batch_limit(phase_train_config.val_batches),
+        max_train_batches=train_config_api.resolve_train_batch_limit(phase_train_config.train_batches),
+        max_val_batches=train_config_api.resolve_val_batch_limit(phase_train_config.val_batches),
         best_metric=phase_selection.metric_path,
         best_mode=phase_selection.mode,
         auto_resume=True,
@@ -749,16 +755,16 @@ def _execute_phase(
         "best_epoch": phase_summary.get("best_epoch"),
         "promotion_reason": early_exit.get("reason", "completed"),
         "phase_state": early_exit.get("phase_state"),
-        "selection": _json_ready(asdict(phase_selection)),
+        "selection": train_artifacts.json_ready(asdict(phase_selection)),
         "backbone": {
             "variant": phase_train_config.backbone_variant,
             "weights": _resolve_backbone_weights(phase_train_config),
         },
-        "postprocess": _json_ready(asdict(_build_postprocess_config(phase_train_config))),
+        "postprocess": train_artifacts.json_ready(asdict(_build_postprocess_config(phase_train_config))),
         "head_channels": list(_configured_head_channels(phase_train_config)),
-        "preview": _json_ready(preview_payload),
-        "phase_train_config": _json_ready(asdict(phase_train_config)),
-        "run_summary": _json_ready(phase_summary),
+        "preview": train_artifacts.json_ready(preview_payload),
+        "phase_train_config": train_artifacts.json_ready(asdict(phase_train_config)),
+        "run_summary": train_artifacts.json_ready(phase_summary),
     }
 
 
@@ -877,7 +883,7 @@ def _stage3_stress_summary(
         status=status,
         train_summary=train_summary,
         error=error,
-        json_ready=_json_ready,
+        json_ready=train_artifacts.json_ready,
         cuda_memory_stats=_cuda_memory_stats,
     )
 
@@ -900,7 +906,7 @@ def run_stage3_vram_stress(
         build_phase_train_loaders=_build_phase_train_loaders,
         build_phase_trainer=_build_phase_trainer,
         scenario_phase_defaults=_scenario_phase_defaults,
-        json_ready=_json_ready,
+        json_ready=train_artifacts.json_ready,
         cuda_memory_stats=_cuda_memory_stats,
     )
 
@@ -916,15 +922,15 @@ def run_meta_train_scenario(
         configure_torch_multiprocessing=_configure_torch_multiprocessing,
         log_meta_train=_log_meta_train,
         canonical_dataset_cls=PV26CanonicalDataset,
-        resolve_meta_run_dir=_resolve_meta_run_dir,
+        resolve_meta_run_dir=train_artifacts.resolve_meta_run_dir,
         sample_preview_selection_with_logging=_sample_preview_selection_with_logging,
-        load_or_init_meta_manifest=_load_or_init_meta_manifest,
+        load_or_init_meta_manifest=train_artifacts.load_or_init_meta_manifest,
         phase_entry_is_completed=_phase_entry_is_completed,
         recover_phase_entry_from_run_dir=_recover_phase_entry_from_run_dir,
         scenario_snapshot_for_run=_scenario_snapshot_for_run,
-        write_meta_manifest=_write_meta_manifest,
-        write_meta_summary=_write_meta_summary,
-        resolve_phase_selection=_resolve_phase_selection,
+        write_meta_manifest=train_artifacts.write_meta_manifest,
+        write_meta_summary=train_artifacts.write_meta_summary,
+        resolve_phase_selection=train_config_api.resolve_phase_selection,
         execute_phase=_execute_phase,
     )
 
@@ -1014,7 +1020,7 @@ def main(argv: list[str] | None = None) -> None:
         scenario=scenario,
         scenario_path=scenario_path,
     )
-    print(json.dumps(_json_ready(summary), indent=2, ensure_ascii=True))
+    print(json.dumps(train_artifacts.json_ready(summary), indent=2, ensure_ascii=True))
     _raise_for_cli_failure(args, summary)
 
 

@@ -10,7 +10,8 @@
 - [x] `tools/od_bootstrap/source/aihub_lane_worker.py`, `tools/od_bootstrap/source/aihub_traffic_worker.py`, `tools/od_bootstrap/source/aihub_obstacle_worker.py`가 `raw_common.py`나 `aihub_worker_common.py`의 private helper(`_base_scene`, `_counter_to_dict`, `_sample_id`, `_extract_annotations`, `_safe_slug`, `_normalize_text`, `_load_json`)를 직접 import하지 않도록 정리한다.
 - [x] `tools/od_bootstrap/source/` 아래에 `shared_io.py`, `shared_parallel.py`, `shared_scene.py`, `shared_summary.py` 또는 동등한 public shared 모듈을 두고, cross-module 재사용이 필요한 helper는 underscore를 떼서 승격한다.
 - [x] `tools/od_bootstrap/source/types.py`를 pure types 모듈로 되돌리고, 기본 경로 상수나 implementation defaults는 `constants.py` 또는 별도 defaults 모듈로 분리한다.
-- [ ] source pipeline 공통 골격인 `LiveLogger`, parallel chunking, existing output summary skeleton, debug-vis manifest write, README/tree markdown render를 shared public API로 재배치한다.
+- [x] `shared_parallel.py`로 승격된 `LiveLogger`/parallel chunking 위에, existing output summary skeleton을 `shared_resume.py`로, BDD README/tree/source inventory render를 `shared_source_meta.py`로 재배치한다.
+- [ ] source pipeline 공통 출력 패턴 중 debug-vis manifest write helper까지 shared public API로 재배치한다.
 - [x] `tools/od_bootstrap/source/aihub.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 - [x] `tools/od_bootstrap/source/bdd100k.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 
@@ -20,15 +21,16 @@
 - [x] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
 - [x] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
 - [x] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
-- [ ] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
+- [x] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
 - [x] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
 - [x] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.
 - [x] `tools/run_pv26_train.py: run_meta_train_scenario()`를 phase/helper 단위로 쪼개 회귀 위험을 줄인다.
 
 ## 3순위. 공통 helper 추출과 중복 제거
 
-- [ ] repo 전반에 흩어진 `now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, `resolve_latest_root`, `resolve_optional_path`, `deep_merge_mappings`를 공통화한다.
-- [ ] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`, path resolve, deep merge를 흡수한다.
+- [x] `deep_merge_mappings`를 `common.user_config` public helper로 승격하고 `tools/pv26_train_config.py`가 이를 재사용하도록 정리한다.
+- [ ] repo 전반에 흩어진 `now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, `resolve_latest_root`, `resolve_optional_path`를 공통화한다.
+- [ ] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`, path resolve를 흡수한다.
 - [ ] `common/`은 대공사 대상이 아니라 새 shared helper를 받아주는 착지점으로 사용한다.
 - [ ] repo-wide truly common helper는 `common/`으로 올리고, bootstrap 내부에서만 재사용하는 helper는 `tools/od_bootstrap/...` shared 모듈에 두는 기준을 명확히 한다.
 - [ ] `common/io.py`, `common/paths.py`, `common/config_merge.py`를 확장할지, 아니면 `tools/od_bootstrap/shared_io.py`, `shared_paths.py`를 추가할지 한 방향으로 통일한다.
@@ -42,9 +44,10 @@
 - [ ] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다.
 - [ ] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다.
 - [ ] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
-- [ ] `model/engine/trainer.py`와 `model/engine/evaluator.py`의 `_move_to_device` 중복을 공용 batch helper로 정리한다.
-- [ ] `model/engine/_trainer_epochs.py`와 `model/engine/evaluator.py`의 `_raw_batch_for_metrics`, `_augment_lane_family_metrics` 중복을 공용 helper로 정리한다.
-- [ ] anchor grid 생성, anchor-relative box decode, raw batch unwrap, lane family metric augmentation, move-to-device 같은 engine 공통 수학/helper를 shared 모듈로 재배치한다.
+- [x] `model/engine/trainer.py`와 `model/engine/evaluator.py`의 `_move_to_device` 중복을 공용 batch helper로 정리한다.
+- [x] `model/engine/_trainer_epochs.py`와 `model/engine/evaluator.py`의 `_raw_batch_for_metrics`, `_augment_lane_family_metrics` 중복을 공용 helper로 정리한다.
+- [ ] anchor grid 생성, anchor-relative box decode 같은 engine 공통 geometry/helper를 shared 모듈로 재배치한다.
+- [x] raw batch unwrap, lane family metric augmentation, move-to-device 같은 engine 공통 batch/helper를 `model/engine/batch.py`로 재배치한다.
 - [ ] `model/engine/_trainer_epochs.py`에 몰린 epoch-level runtime/reporting helper를 정리해 파일 덩치를 줄인다.
 - [ ] `model/engine/_loss_spec.py: build_loss_spec()`의 큰 spec builder 흐름을 단계별 helper/contract로 분리해 회귀 범위를 줄인다.
 

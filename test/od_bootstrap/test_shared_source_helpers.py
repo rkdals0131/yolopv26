@@ -16,7 +16,9 @@ from tools.od_bootstrap.source.raw_common import PairRecord
 from tools.od_bootstrap.source.shared_io import link_or_copy, load_json, write_json, write_text
 from tools.od_bootstrap.source.shared_parallel import LiveLogger, default_workers, iter_task_chunks, parallel_chunk_size
 from tools.od_bootstrap.source.shared_raw import extract_annotations, normalize_text, safe_slug
+from tools.od_bootstrap.source.shared_resume import count_held_annotation_reasons, load_existing_scene_output
 from tools.od_bootstrap.source.shared_scene import bbox_to_yolo_line, build_base_scene, sample_id
+from tools.od_bootstrap.source.shared_source_meta import build_bdd_inventory, build_bdd_source_inventory, tree_markdown
 from tools.od_bootstrap.source.shared_summary import counter_to_dict
 
 
@@ -29,7 +31,9 @@ class SharedSourceHelpersTests(unittest.TestCase):
                 "shared_io",
                 "shared_parallel",
                 "shared_raw",
+                "shared_resume",
                 "shared_scene",
+                "shared_source_meta",
                 "shared_summary",
                 "types",
             }.issubset(set(SOURCE_EXPORTS))
@@ -135,7 +139,67 @@ class SharedSourceHelpersTests(unittest.TestCase):
                     {"id": 2, "bbox": [5, 6, 7, 8], "class": "sign"},
                 ],
             )
-            self.assertEqual(counter_to_dict(Counter({"z": 1, "a": 2})), {"a": 2, "z": 1})
+        self.assertEqual(counter_to_dict(Counter({"z": 1, "a": 2})), {"a": 2, "z": 1})
+
+    def test_shared_resume_and_bdd_source_meta_helpers_cover_public_source_cleanup_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k" / "train"
+            labels_root = bdd_root / "bdd100k_labels" / "100k" / "train"
+            images_root.mkdir(parents=True, exist_ok=True)
+            labels_root.mkdir(parents=True, exist_ok=True)
+            (images_root / "sample.jpg").write_bytes(b"jpg")
+            (labels_root / "sample.json").write_text("{}", encoding="utf-8")
+            (bdd_root / "bdd100k-gh").mkdir(parents=True, exist_ok=True)
+
+            inventory = build_bdd_inventory(
+                bdd_root,
+                bdd_root / "bdd100k_images_100k" / "100k",
+                bdd_root / "bdd100k_labels" / "100k",
+                splits=("train", "val"),
+                official_split_sizes={"train": 70000, "val": 10000},
+            )
+            source_inventory = build_bdd_source_inventory(
+                pipeline_version="pv26-test",
+                readme_path=str(bdd_root / "README.md"),
+                inventory=inventory,
+            )
+
+            self.assertEqual(source_inventory["dataset"]["local_inventory"]["splits"]["train"]["images"], 1)
+            self.assertIn("bdd100k_images_100k", tree_markdown(bdd_root))
+
+            output_root = root / "canonical"
+            sample_id_value = "bdd_train_sample"
+            image_path = output_root / "images" / "train" / f"{sample_id_value}.jpg"
+            scene_path = output_root / "labels_scene" / "train" / f"{sample_id_value}.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            payload = {
+                "version": "scene-v1",
+                "detections": [],
+                "held_annotations": [{"reason": "Traffic Light"}],
+            }
+            write_json(scene_path, payload)
+
+            bundle = load_existing_scene_output(
+                output_root=output_root,
+                split="train",
+                sample_id=sample_id_value,
+                image_suffix=".jpg",
+                load_json_fn=load_json,
+                scene_version="scene-v1",
+            )
+
+            self.assertIsNotNone(bundle)
+            assert bundle is not None
+            self.assertEqual(bundle["scene"]["version"], "scene-v1")
+            self.assertEqual(count_held_annotation_reasons(payload["held_annotations"]), {"traffic light": 1})
+            self.assertEqual(
+                count_held_annotation_reasons(payload["held_annotations"], normalize_reason=normalize_text),
+                {"traffic_light": 1},
+            )
 
 
 if __name__ == "__main__":
