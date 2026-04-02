@@ -4,10 +4,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
-from common.pv26_schema import LANE_CLASSES, LANE_TYPES, TL_BITS
+from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
 from .shared_io import now_iso as _now_iso
 from .shared_summary import counter_to_dict as _counter_to_dict
+
+now_iso = _now_iso
+counter_to_dict = _counter_to_dict
 
 
 def aggregate_results(

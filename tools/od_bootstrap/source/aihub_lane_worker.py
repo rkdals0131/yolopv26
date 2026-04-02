@@ -13,8 +13,21 @@ from .shared_raw import (
     normalize_text as _normalize_text,
     safe_slug as _safe_slug,
 )
-from .shared_scene import build_base_scene as _base_scene, sample_id as _sample_id
+from .shared_scene import DEFAULT_SCENE_VERSION, build_base_scene as _base_scene, sample_id as _sample_id
 from .shared_summary import counter_to_dict as _counter_to_dict
+
+SCENE_VERSION = DEFAULT_SCENE_VERSION
+link_or_copy = _link_or_copy
+load_json = _load_json
+write_json = _write_json
+extract_annotations = _extract_annotations
+extract_attribute_map = _extract_attribute_map
+extract_points = _extract_points
+normalize_text = _normalize_text
+safe_slug = _safe_slug
+build_base_scene = _base_scene
+sample_id = _sample_id
+counter_to_dict = _counter_to_dict
 
 
 def _lane_class_from_color(color: str) -> tuple[str | None, str | None]:

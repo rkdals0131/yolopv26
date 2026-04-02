@@ -21,11 +21,27 @@ from .shared_raw import (
     safe_slug as _safe_slug,
 )
 from .shared_scene import (
+    DEFAULT_SCENE_VERSION,
     bbox_to_yolo_line as _bbox_to_yolo_line,
     build_base_scene as _base_scene,
     sample_id as _sample_id,
 )
 from .shared_summary import counter_to_dict as _counter_to_dict
+
+SCENE_VERSION = DEFAULT_SCENE_VERSION
+link_or_copy = _link_or_copy
+load_json = _load_json
+write_json = _write_json
+write_text = _write_text
+extract_annotations = _extract_annotations
+extract_bbox = _extract_bbox
+extract_tl_state = _extract_tl_state
+normalize_text = _normalize_text
+safe_slug = _safe_slug
+bbox_to_yolo_line = _bbox_to_yolo_line
+build_base_scene = _base_scene
+sample_id = _sample_id
+counter_to_dict = _counter_to_dict
 
 
 def _tl_bits_from_annotation(annotation: dict[str, Any]) -> tuple[dict[str, int], int, str]:

@@ -81,7 +81,8 @@ class SharedSourceHelpersTests(unittest.TestCase):
         logger.progress(3, detail="done")
 
         log_output = stream.getvalue()
-        self.assertIn("[sync] checking shared helpers, total=3", log_output)
+        self.assertIn("stage=sync", log_output)
+        self.assertIn("checking shared helpers", log_output)
         self.assertIn("[sync] 1/3", log_output)
         self.assertIn("still running", log_output)
         self.assertIn("done", log_output)

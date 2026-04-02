@@ -15,6 +15,12 @@ from .shared_raw import normalize_text as _normalize_text, safe_slug as _safe_sl
 from .shared_scene import sample_id as _sample_id
 from .shared_summary import counter_to_dict as _counter_to_dict
 
+load_json = _load_json
+normalize_text = _normalize_text
+safe_slug = _safe_slug
+sample_id = _sample_id
+counter_to_dict = _counter_to_dict
+
 
 def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
     if task.dataset_kind == "lane":

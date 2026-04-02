@@ -5,6 +5,9 @@ import sys
 import time
 from typing import Any, Iterable, TextIO
 
+PARALLEL_SUBMIT_LOG_INTERVAL = 5_000
+PARALLEL_WAIT_HEARTBEAT_SECONDS = 15.0
+PARALLEL_INFLIGHT_CHUNKS_PER_WORKER = 2
 PARALLEL_MAX_TASKS_PER_CHUNK = 16
 
 
@@ -90,6 +93,10 @@ def default_workers() -> int:
     return max(1, min(32, available - 1))
 
 
+def default_worker_count() -> int:
+    return default_workers()
+
+
 def parallel_chunk_size(total_tasks: int, workers: int) -> int:
     if total_tasks <= 0:
         return 1
@@ -108,6 +115,7 @@ __all__ = [
     "PARALLEL_MAX_TASKS_PER_CHUNK",
     "PARALLEL_SUBMIT_LOG_INTERVAL",
     "PARALLEL_WAIT_HEARTBEAT_SECONDS",
+    "default_worker_count",
     "default_workers",
     "iter_task_chunks",
     "parallel_chunk_size",

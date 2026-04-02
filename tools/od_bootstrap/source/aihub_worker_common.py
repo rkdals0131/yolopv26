@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .raw_common import PairRecord
+from .shared_scene import DEFAULT_SCENE_VERSION
+
+
+SCENE_VERSION = DEFAULT_SCENE_VERSION
 
 
 @dataclass(frozen=True)

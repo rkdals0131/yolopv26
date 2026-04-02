@@ -14,6 +14,9 @@ from common.pv26_schema import (
 from .shared_io import now_iso as _now_iso
 from .shared_summary import counter_to_dict as _counter_to_dict
 
+now_iso = _now_iso
+counter_to_dict = _counter_to_dict
+
 README_TREE_DEPTH = 3
 MAX_TREE_LINES = 96
 
