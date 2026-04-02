@@ -43,6 +43,11 @@ pv26_train:
         persistent_workers: true
         prefetch_factor: 2
         backbone_variant: s
+        det_conf_threshold: 0.25
+        det_iou_threshold: 0.70
+        lane_obj_threshold: 0.50
+        stop_line_obj_threshold: 0.50
+        crosswalk_obj_threshold: 0.50
         sampler_ratios:
           bdd100k: 0.30
           aihub_traffic: 0.30

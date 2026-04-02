@@ -175,6 +175,26 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertAlmostEqual(box[2], 326.4, places=1)
         self.assertAlmostEqual(box[3], 72.0, places=1)
 
+    def test_postprocess_thresholds_filter_detection_and_lane_predictions(self) -> None:
+        predictions = _make_prediction_batch()
+
+        suppressed = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                lane_obj_threshold=0.9999,
+                stop_line_obj_threshold=0.9999,
+                crosswalk_obj_threshold=0.9999,
+            ),
+        )
+
+        sample = suppressed[0]
+        self.assertEqual(sample["detections"], [])
+        self.assertEqual(sample["lanes"], [])
+        self.assertEqual(sample["stop_lines"], [])
+        self.assertEqual(sample["crosswalks"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

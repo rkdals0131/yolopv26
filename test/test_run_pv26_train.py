@@ -15,6 +15,8 @@ from tools.run_pv26_train import (
     PhaseTransitionController,
     PreviewConfig,
     SelectionConfig,
+    _build_postprocess_config,
+    _phase_manifest_extra,
     _configure_torch_multiprocessing,
     _phase_entry_is_completed,
     _recover_phase_entry_from_run_dir,
@@ -23,6 +25,7 @@ from tools.run_pv26_train import (
     load_meta_train_scenario,
     main,
 )
+from tools.pv26_train_config import TrainDefaultsConfig
 
 
 def _epoch_summary(epoch: int, metric_value: float) -> dict:
@@ -54,6 +57,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                         "train_defaults": {
                             "batch_size": 12,
                             "num_workers": 3,
+                            "det_conf_threshold": 0.33,
+                            "lane_obj_threshold": 0.61,
                         },
                         "preview": {
                             "dataset_keys": ["custom_preview_dataset"],
@@ -137,6 +142,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.preview.max_samples_per_dataset, 2)
         self.assertEqual(scenario.train_defaults.batch_size, 12)
         self.assertEqual(scenario.train_defaults.num_workers, 3)
+        self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
+        self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)
@@ -152,6 +159,11 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.run.run_root.parts[-2:], ("runs", "pv26_exhaustive_od_lane_train"))
         self.assertEqual(scenario.train_defaults.batch_size, 40)
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
+        self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
+        self.assertAlmostEqual(scenario.train_defaults.det_iou_threshold, 0.70)
+        self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.50)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_obj_threshold, 0.50)
+        self.assertAlmostEqual(scenario.train_defaults.crosswalk_obj_threshold, 0.50)
         self.assertEqual(tuple(phase.stage for phase in scenario.phases), (
             "stage_1_frozen_trunk_warmup",
             "stage_2_partial_unfreeze",
@@ -186,6 +198,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(phase_train.head_lr, 0.003)
         self.assertTrue(phase_train.encode_val_batches_in_loader)
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
+        self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].freeze_policy, "lane_family_heads_only")
@@ -241,6 +254,47 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
     def test_load_meta_train_scenario_rejects_unknown_preset(self) -> None:
         with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset"):
             load_meta_train_scenario("does-not-exist")
+
+    def test_build_postprocess_config_uses_train_defaults_thresholds(self) -> None:
+        train_defaults = TrainDefaultsConfig(
+            det_conf_threshold=0.31,
+            det_iou_threshold=0.66,
+            lane_obj_threshold=0.41,
+            stop_line_obj_threshold=0.42,
+            crosswalk_obj_threshold=0.43,
+        )
+
+        config = _build_postprocess_config(train_defaults)
+
+        self.assertAlmostEqual(config.det_conf_threshold, 0.31)
+        self.assertAlmostEqual(config.det_iou_threshold, 0.66)
+        self.assertAlmostEqual(config.lane_obj_threshold, 0.41)
+        self.assertAlmostEqual(config.stop_line_obj_threshold, 0.42)
+        self.assertAlmostEqual(config.crosswalk_obj_threshold, 0.43)
+
+    def test_phase_manifest_extra_includes_resolved_postprocess_thresholds(self) -> None:
+        scenario = load_meta_train_scenario("default")
+        phase_train = _scenario_phase_defaults(
+            scenario.train_defaults,
+            {
+                "det_conf_threshold": 0.29,
+                "lane_obj_threshold": 0.44,
+            },
+        )
+
+        manifest_extra = _phase_manifest_extra(
+            scenario_path=PRESET_PATH_ROOT / "default",
+            phase_index=1,
+            phase=scenario.phases[0],
+            train_config=phase_train,
+            scenario=scenario,
+        )
+
+        self.assertEqual(manifest_extra["postprocess"]["det_conf_threshold"], 0.29)
+        self.assertEqual(manifest_extra["postprocess"]["det_iou_threshold"], 0.7)
+        self.assertEqual(manifest_extra["postprocess"]["lane_obj_threshold"], 0.44)
+        self.assertEqual(manifest_extra["postprocess"]["stop_line_obj_threshold"], 0.5)
+        self.assertEqual(manifest_extra["postprocess"]["crosswalk_obj_threshold"], 0.5)
 
     def test_load_meta_train_scenario_rejects_invalid_stage_order(self) -> None:
         scenario = load_meta_train_scenario("default")

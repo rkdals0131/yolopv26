@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 import site
+from types import MethodType
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,7 @@ from common.user_config import (
     nested_get,
 )
 from model.engine.evaluator import PV26Evaluator
+from model.engine.postprocess import PV26PostprocessConfig
 from model.data import (
     PV26CanonicalDataset,
     build_pv26_eval_dataloader,
@@ -136,6 +138,53 @@ def _configured_head_channels(train_config: TrainDefaultsConfig) -> tuple[int, i
             "unsupported backbone variant for fallback head-channel resolution: "
             f"{train_config.backbone_variant!r}"
         ) from exc
+
+
+def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26PostprocessConfig:
+    return PV26PostprocessConfig(
+        det_conf_threshold=float(train_config.det_conf_threshold),
+        det_iou_threshold=float(train_config.det_iou_threshold),
+        lane_obj_threshold=float(train_config.lane_obj_threshold),
+        stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
+        crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
+    )
+
+
+def _wrap_evaluator_postprocess_config(
+    evaluator: PV26Evaluator,
+    *,
+    postprocess_config: PV26PostprocessConfig,
+) -> PV26Evaluator:
+    original_evaluate_batch = evaluator.evaluate_batch
+    original_predict_batch = evaluator.predict_batch
+
+    def evaluate_batch_with_default(
+        self: PV26Evaluator,
+        batch: dict[str, Any],
+        *,
+        include_predictions: bool = False,
+        compute_loss: bool = True,
+        config: PV26PostprocessConfig | None = None,
+    ) -> dict[str, Any]:
+        return original_evaluate_batch(
+            batch,
+            include_predictions=include_predictions,
+            compute_loss=compute_loss,
+            config=config or postprocess_config,
+        )
+
+    def predict_batch_with_default(
+        self: PV26Evaluator,
+        batch: dict[str, Any],
+        *,
+        config: PV26PostprocessConfig | None = None,
+    ) -> list[dict[str, Any]]:
+        return original_predict_batch(batch, config=config or postprocess_config)
+
+    evaluator.evaluate_batch = MethodType(evaluate_batch_with_default, evaluator)
+    evaluator.predict_batch = MethodType(predict_batch_with_default, evaluator)
+    setattr(evaluator, "postprocess_config", postprocess_config)
+    return evaluator
 
 
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
@@ -487,6 +536,18 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         epochs=phase.max_epochs,
         schedule=train_config.schedule,
     )
+    postprocess_config = _build_postprocess_config(train_config)
+    original_build_evaluator = trainer.build_evaluator
+
+    def build_evaluator_with_postprocess(self: PV26Trainer):
+        evaluator = original_build_evaluator()
+        return _wrap_evaluator_postprocess_config(
+            evaluator,
+            postprocess_config=postprocess_config,
+        )
+
+    trainer.build_evaluator = MethodType(build_evaluator_with_postprocess, trainer)
+    setattr(trainer, "postprocess_config", postprocess_config)
     return trainer
 
 
@@ -642,6 +703,7 @@ def _phase_manifest_extra(
     phase_selection = _resolve_phase_selection(scenario.selection, phase)
     backbone_weights = _resolve_backbone_weights(train_config)
     head_channels = _configured_head_channels(train_config)
+    postprocess_config = _build_postprocess_config(train_config)
     return {
         "entry_script": "tools/run_pv26_train.py",
         "scenario_path": str(scenario_path),
@@ -666,6 +728,7 @@ def _phase_manifest_extra(
             "variant": train_config.backbone_variant,
             "weights": backbone_weights,
         },
+        "postprocess": _json_ready(asdict(postprocess_config)),
         "head_channels": list(head_channels),
     }
 
@@ -779,6 +842,7 @@ def _execute_phase(
             "variant": phase_train_config.backbone_variant,
             "weights": _resolve_backbone_weights(phase_train_config),
         },
+        "postprocess": _json_ready(asdict(_build_postprocess_config(phase_train_config))),
         "head_channels": list(_configured_head_channels(phase_train_config)),
         "preview": _json_ready(preview_payload),
         "phase_train_config": _json_ready(asdict(phase_train_config)),

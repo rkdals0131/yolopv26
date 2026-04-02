@@ -133,12 +133,15 @@ def write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
     }
     if isinstance(latest_phase, dict):
         backbone = latest_phase.get("backbone", {})
+        postprocess = latest_phase.get("postprocess", {})
         selection = latest_phase.get("selection", {})
         summary["latest_phase_name"] = latest_phase.get("name")
         summary["latest_phase_stage"] = latest_phase.get("stage")
         if isinstance(backbone, dict):
             summary["latest_backbone_variant"] = backbone.get("variant")
             summary["latest_backbone_weights"] = backbone.get("weights")
+        if isinstance(postprocess, dict):
+            summary["latest_postprocess"] = postprocess
         if isinstance(selection, dict):
             summary["latest_selection_metric_path"] = selection.get("metric_path")
             summary["latest_selection_mode"] = selection.get("mode")

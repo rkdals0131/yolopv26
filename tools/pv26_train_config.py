@@ -91,6 +91,11 @@ class TrainDefaultsConfig:
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
+    det_conf_threshold: float = 0.25
+    det_iou_threshold: float = 0.70
+    lane_obj_threshold: float = 0.50
+    stop_line_obj_threshold: float = 0.50
+    crosswalk_obj_threshold: float = 0.50
 
 
 @dataclass(frozen=True)
@@ -412,6 +417,26 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             field_name="train_defaults.backbone_weights",
         ),
         sampler_ratios=sampler_ratios,
+        det_conf_threshold=_coerce_float(
+            data.get("det_conf_threshold", defaults.det_conf_threshold),
+            field_name="train_defaults.det_conf_threshold",
+        ),
+        det_iou_threshold=_coerce_float(
+            data.get("det_iou_threshold", defaults.det_iou_threshold),
+            field_name="train_defaults.det_iou_threshold",
+        ),
+        lane_obj_threshold=_coerce_float(
+            data.get("lane_obj_threshold", defaults.lane_obj_threshold),
+            field_name="train_defaults.lane_obj_threshold",
+        ),
+        stop_line_obj_threshold=_coerce_float(
+            data.get("stop_line_obj_threshold", defaults.stop_line_obj_threshold),
+            field_name="train_defaults.stop_line_obj_threshold",
+        ),
+        crosswalk_obj_threshold=_coerce_float(
+            data.get("crosswalk_obj_threshold", defaults.crosswalk_obj_threshold),
+            field_name="train_defaults.crosswalk_obj_threshold",
+        ),
     )
 
 
