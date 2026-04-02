@@ -38,8 +38,6 @@ class DebugSelectionRow(TypedDict, total=False):
 
 class OverlayImage(TypedDict):
     source_path: str
-
-
 class OverlayItem(TypedDict, total=False):
     bbox: list[float]
     class_name: str
