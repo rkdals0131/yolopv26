@@ -24,10 +24,22 @@ from model.data import (
     build_pv26_train_dataloader,
     collate_pv26_samples,
 )
-from model.engine.trainer import PV26Trainer, build_pv26_optimizer, build_pv26_scheduler
+from model.engine.trainer import PV26Trainer, build_pv26_scheduler
 from model.engine.trainer import _resolve_summary_path
 from model.net import PV26Heads
 from model.net import build_yolo26n_trunk
+try:
+    from model.net import build_yolo26_trunk
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    build_yolo26_trunk = None
+try:
+    from model.net import infer_pyramid_channels
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    infer_pyramid_channels = None
+try:
+    from model.net import resolve_yolo26_weights
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    resolve_yolo26_weights = None
 from tools.pv26_train_artifacts import (
     json_ready as _json_ready,
     load_or_init_meta_manifest as _load_or_init_meta_manifest,
@@ -71,16 +83,59 @@ from tools.pv26_train_config import (
     train_defaults_from_mapping as _train_defaults_from_mapping,
     validate_meta_train_scenario as _validate_meta_train_scenario,
     dataset_config_from_mapping as _dataset_config_from_mapping,
+    resolve_phase_selection as _resolve_phase_selection,
 )
 
 
 PRESET_PATH_ROOT = REPO_ROOT / "presets" / "pv26_meta_train"
-HEAD_CHANNELS = (64, 128, 256)
+BACKBONE_HEAD_CHANNELS = {
+    "n": (64, 128, 256),
+    "s": (128, 256, 512),
+}
 META_MANIFEST_VERSION = "pv26-meta-train-v1"
 # IDE에서 아래 검색어로 조절 지점을 바로 찾을 수 있다.
 # ===== USER CONFIG =====
 # ===== HYPERPARAMETERS =====
 # ===== PHASE HYPERPARAMETERS =====
+
+
+def _resolve_backbone_weights(train_config: TrainDefaultsConfig) -> str:
+    if resolve_yolo26_weights is not None:
+        return resolve_yolo26_weights(
+            variant=train_config.backbone_variant,
+            weights=train_config.backbone_weights,
+        )
+    if train_config.backbone_weights:
+        return str(train_config.backbone_weights)
+    return f"yolo26{train_config.backbone_variant}.pt"
+
+
+def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
+    weights = _resolve_backbone_weights(train_config)
+    if build_yolo26_trunk is not None:
+        return build_yolo26_trunk(
+            variant=train_config.backbone_variant,
+            weights=weights,
+        )
+    return build_yolo26n_trunk(weights=weights)
+
+
+def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, int, int]:
+    if infer_pyramid_channels is not None:
+        channels = tuple(int(value) for value in infer_pyramid_channels(adapter))
+        if len(channels) == 3:
+            return channels
+    return _configured_head_channels(train_config)
+
+
+def _configured_head_channels(train_config: TrainDefaultsConfig) -> tuple[int, int, int]:
+    try:
+        return BACKBONE_HEAD_CHANNELS[str(train_config.backbone_variant)]
+    except KeyError as exc:
+        raise KeyError(
+            "unsupported backbone variant for fallback head-channel resolution: "
+            f"{train_config.backbone_variant!r}"
+        ) from exc
 
 
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
@@ -127,7 +182,7 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         accumulate_steps=1,  # gradient accumulation step
         grad_clip_norm=5.0,  # gradient clipping norm
         val_every=1,  # 몇 epoch마다 validation할지
-        checkpoint_every=3,  # 몇 epoch마다 체크포인트를 남길지
+        checkpoint_every=10,  # 몇 epoch마다 체크포인트를 남길지
         num_workers=6,  # dataloader worker 수
         pin_memory=True,  # host->GPU 전송 최적화
         log_every_n_steps=20,  # step 로그 간격
@@ -137,6 +192,7 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         encode_val_batches_in_loader=True,  # val loader에서 미리 target encode 수행 여부
         persistent_workers=True,  # epoch 사이 worker 유지 여부
         prefetch_factor=2,  # worker별 prefetch 배치 수
+        backbone_variant="s",  # 기본 YOLO26 backbone scale
     )
     default_selection = SelectionConfig(
         metric_path="val.losses.total.mean",  # phase 승급/종료 판단 metric
@@ -156,8 +212,8 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         _phase(
             "head_warmup",
             "stage_1_frozen_trunk_warmup",
-            min_epochs=2,  # 최소 epoch
-            max_epochs=4,  # 최대 epoch
+            min_epochs=4,  # 최소 epoch
+            max_epochs=12,  # 최대 epoch
             patience=2,  # plateau 허용 횟수
             min_improvement_pct=2.0,  # 승급 유지에 필요한 최소 개선율(%)
             overrides={
@@ -168,10 +224,10 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         _phase(
             "partial_unfreeze",
             "stage_2_partial_unfreeze",
-            min_epochs=3,
-            max_epochs=6,
+            min_epochs=6,
+            max_epochs=18,
             patience=2,
-            min_improvement_pct=1.0,
+            min_improvement_pct=0.5,
             overrides={
                 "trunk_lr": 3e-5,  # stage 2 backbone LR
                 "head_lr": 8e-4,  # stage 2 head LR
@@ -180,13 +236,44 @@ def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
         _phase(
             "end_to_end_finetune",
             "stage_3_end_to_end_finetune",
-            min_epochs=4,
-            max_epochs=10,
-            patience=2,
-            min_improvement_pct=0.5,
+            min_epochs=8,
+            max_epochs=24,
+            patience=3,
+            min_improvement_pct=0.25,
             overrides={
                 "trunk_lr": 1e-5,  # stage 3 backbone LR
                 "head_lr": 4e-4,  # stage 3 head LR
+            },
+        ),
+        _phase(
+            "lane_family_finetune",
+            "stage_4_lane_family_finetune",
+            min_epochs=4,
+            max_epochs=12,
+            patience=3,
+            min_improvement_pct=0.25,
+            selection=SelectionConfig(
+                metric_path="val.metrics.lane_family.mean_f1",
+                mode="max",
+                eps=1e-8,
+            ),
+            loss_weights={
+                "det": 0.0,
+                "tl_attr": 0.0,
+                "lane": 1.5,
+                "stop_line": 1.25,
+                "crosswalk": 1.0,
+            },
+            freeze_policy="lane_family_heads_only",
+            overrides={
+                "trunk_lr": 0.0,
+                "head_lr": 2e-4,
+                "sampler_ratios": {
+                    "bdd100k": 0.0,
+                    "aihub_traffic": 0.0,
+                    "aihub_lane": 1.0,
+                    "aihub_obstacle": 0.0,
+                },
             },
         ),
     )
@@ -262,11 +349,15 @@ class PhaseTransitionController:
     def _phase_state(self, *, epoch: int, current_metric_value: float) -> dict[str, Any]:
         return {
             "epoch": int(epoch),
+            "metric_path": self.selection.metric_path,
+            "metric_mode": self.selection.mode,
             "current_metric_value": float(current_metric_value),
             "best_metric_value": self.best_metric_value,
             "best_epoch": self.best_epoch,
             "plateau_count": int(self.plateau_count),
             "last_improvement_pct": self.last_improvement_pct,
+            "selection_metric_path": self.selection.metric_path,
+            "selection_mode": self.selection.mode,
             "min_epochs": int(self.phase.min_epochs),
             "max_epochs": int(self.phase.max_epochs),
             "patience": int(self.phase.patience),
@@ -348,6 +439,7 @@ def _build_phase_train_loaders(
         dataset,
         batch_size=train_config.batch_size,
         num_batches=train_batches,
+        ratios=train_config.sampler_ratios,
         split="train",
         seed=26,
         num_workers=train_config.num_workers,
@@ -373,31 +465,29 @@ def _build_phase_train_loaders(
 
 
 def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) -> PV26Trainer:
-    adapter = build_yolo26n_trunk()
-    heads = PV26Heads(in_channels=HEAD_CHANNELS)
-    optimizer = build_pv26_optimizer(
-        adapter,
-        heads,
-        trunk_lr=train_config.trunk_lr,
-        head_lr=train_config.head_lr,
-        weight_decay=train_config.weight_decay,
-    )
-    scheduler = build_pv26_scheduler(
-        optimizer,
-        epochs=phase.max_epochs,
-        schedule=train_config.schedule,
-    )
-    return PV26Trainer(
+    adapter = _build_backbone_adapter(train_config)
+    head_channels = _resolve_head_channels(adapter, train_config)
+    heads = PV26Heads(in_channels=head_channels)
+    trainer = PV26Trainer(
         adapter,
         heads,
         stage=phase.stage,
         device=train_config.device,
-        optimizer=optimizer,
-        scheduler=scheduler,
+        loss_weights=phase.loss_weights or None,
+        freeze_policy=phase.freeze_policy,
+        trunk_lr=train_config.trunk_lr,
+        head_lr=train_config.head_lr,
+        weight_decay=train_config.weight_decay,
         amp=train_config.amp,
         accumulate_steps=train_config.accumulate_steps,
         grad_clip_norm=train_config.grad_clip_norm,
     )
+    trainer.scheduler = build_pv26_scheduler(
+        trainer.optimizer,
+        epochs=phase.max_epochs,
+        schedule=train_config.schedule,
+    )
+    return trainer
 
 
 def _sample_preview_selection(dataset: PV26CanonicalDataset, preview: PreviewConfig) -> list[dict[str, Any]]:
@@ -549,11 +639,15 @@ def _phase_manifest_extra(
     train_config: TrainDefaultsConfig,
     scenario: MetaTrainScenario,
 ) -> dict[str, Any]:
+    phase_selection = _resolve_phase_selection(scenario.selection, phase)
+    backbone_weights = _resolve_backbone_weights(train_config)
+    head_channels = _configured_head_channels(train_config)
     return {
         "entry_script": "tools/run_pv26_train.py",
         "scenario_path": str(scenario_path),
         "dataset_config": _json_ready(asdict(scenario.dataset)),
         "selection": _json_ready(asdict(scenario.selection)),
+        "phase_selection": _json_ready(asdict(phase_selection)),
         "preview": _json_ready(asdict(scenario.preview)),
         "phase": {
             "index": int(phase_index),
@@ -563,9 +657,16 @@ def _phase_manifest_extra(
             "max_epochs": int(phase.max_epochs),
             "patience": int(phase.patience),
             "min_improvement_pct": float(phase.min_improvement_pct),
+            "selection": _json_ready(asdict(phase_selection)),
+            "loss_weights": _json_ready(phase.loss_weights),
+            "freeze_policy": phase.freeze_policy,
         },
         "phase_train_config": _json_ready(asdict(train_config)),
-        "head_channels": list(HEAD_CHANNELS),
+        "backbone": {
+            "variant": train_config.backbone_variant,
+            "weights": backbone_weights,
+        },
+        "head_channels": list(head_channels),
     }
 
 
@@ -582,9 +683,10 @@ def _execute_phase(
 ) -> dict[str, Any]:
     phase_run_dir = run_dir / f"phase_{phase_index}"
     phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+    phase_selection = _resolve_phase_selection(scenario.selection, phase)
     _log_meta_train(f"building loaders for phase_{phase_index} at {phase_run_dir}")
     train_loader, val_loader = _build_phase_train_loaders(dataset, train_config=phase_train_config)
-    controller = PhaseTransitionController(phase=phase, selection=scenario.selection)
+    controller = PhaseTransitionController(phase=phase, selection=phase_selection)
     controller.replay(_read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
 
     trainer = _build_phase_trainer(phase, phase_train_config)
@@ -609,8 +711,8 @@ def _execute_phase(
         checkpoint_every=phase_train_config.checkpoint_every,
         max_train_batches=_resolve_train_batch_limit(phase_train_config.train_batches),
         max_val_batches=_resolve_val_batch_limit(phase_train_config.val_batches),
-        best_metric=scenario.selection.metric_path,
-        best_mode=scenario.selection.mode,
+        best_metric=phase_selection.metric_path,
+        best_mode=phase_selection.mode,
         auto_resume=True,
         enable_tensorboard=True,
         early_exit_callback=controller.observe_epoch,
@@ -672,6 +774,12 @@ def _execute_phase(
         "best_epoch": phase_summary.get("best_epoch"),
         "promotion_reason": early_exit.get("reason", "completed"),
         "phase_state": early_exit.get("phase_state"),
+        "selection": _json_ready(asdict(phase_selection)),
+        "backbone": {
+            "variant": phase_train_config.backbone_variant,
+            "weights": _resolve_backbone_weights(phase_train_config),
+        },
+        "head_channels": list(_configured_head_channels(phase_train_config)),
         "preview": _json_ready(preview_payload),
         "phase_train_config": _json_ready(asdict(phase_train_config)),
         "run_summary": _json_ready(phase_summary),
@@ -742,7 +850,9 @@ def run_meta_train_scenario(
         )
         _log_meta_train(
             f"phase policy: min_epochs={phase.min_epochs}, max_epochs={phase.max_epochs}, "
-            f"patience={phase.patience}, min_improvement_pct={phase.min_improvement_pct}"
+            f"patience={phase.patience}, min_improvement_pct={phase.min_improvement_pct}, "
+            f"selection={_resolve_phase_selection(scenario.selection, phase).metric_path} "
+            f"({_resolve_phase_selection(scenario.selection, phase).mode})"
         )
 
         phase_result = _execute_phase(

@@ -648,7 +648,25 @@ def _build_pv26_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
         status = str(summary.get("status") or "unknown")
         completed_phases = _safe_int(summary.get("completed_phases"))
         total_phases = _safe_int(summary.get("total_phases") or len(summary.get("phases", [])))
-        current_state = f"latest={run_dir.name} | status={status} | phases={completed_phases}/{total_phases}"
+        train_defaults = summary.get("train_defaults", {})
+        backbone_variant = None
+        if isinstance(train_defaults, dict):
+            backbone_variant = train_defaults.get("backbone_variant")
+        latest_phase_stage = summary.get("latest_phase_stage")
+        latest_selection = summary.get("latest_selection_metric_path")
+        latest_backbone_variant = summary.get("latest_backbone_variant") or backbone_variant
+        current_state_parts = [
+            f"latest={run_dir.name}",
+            f"status={status}",
+            f"phases={completed_phases}/{total_phases}",
+        ]
+        if latest_phase_stage:
+            current_state_parts.append(f"stage={latest_phase_stage}")
+        if latest_backbone_variant:
+            current_state_parts.append(f"backbone={latest_backbone_variant}")
+        if latest_selection:
+            current_state_parts.append(f"selection={latest_selection}")
+        current_state = " | ".join(current_state_parts)
         ready = status == "completed"
         verdict = "OK" if ready else "WARN"
     else:

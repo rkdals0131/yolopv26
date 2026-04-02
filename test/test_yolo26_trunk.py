@@ -31,18 +31,18 @@ class _DummyYOLO:
 
 class YOLO26TrunkTests(unittest.TestCase):
     def test_pretrained_adapter_requires_yolo26_capable_ultralytics(self) -> None:
-        from model.net.trunk import build_yolo26n_trunk
+        from model.net.trunk import build_yolo26_trunk
 
         with patch("model.net.trunk.ULTRALYTICS_VERSION", "8.3.78"):
             with self.assertRaisesRegex(RuntimeError, "8.4.0"):
-                build_yolo26n_trunk()
+                build_yolo26_trunk(variant="n")
 
     def test_pretrained_adapter_extracts_trunk_and_detect_head(self) -> None:
-        from model.net.trunk import build_yolo26n_trunk
+        from model.net.trunk import build_yolo26_trunk
 
         with patch("model.net.trunk.ULTRALYTICS_VERSION", "8.4.2"):
             with patch("model.net.trunk.YOLO", _DummyYOLO):
-                adapter = build_yolo26n_trunk()
+                adapter = build_yolo26_trunk(variant="n")
 
         self.assertEqual(adapter.weights, "yolo26n.pt")
         self.assertEqual(adapter.ultralytics_version, "8.4.2")
@@ -50,7 +50,41 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertEqual(adapter.detect_head.__class__.__name__, "_DummyDetect")
         self.assertEqual(adapter.detect_head_index, 2)
         self.assertEqual(adapter.feature_source_indices, ())
+        self.assertEqual(adapter.resolved_feature_channels, (64, 128, 256))
         self.assertTrue(all(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+
+    def test_build_yolo26n_trunk_remains_compatibility_wrapper(self) -> None:
+        from model.net.trunk import build_yolo26n_trunk
+
+        with patch("model.net.trunk.ULTRALYTICS_VERSION", "8.4.2"):
+            with patch("model.net.trunk.YOLO", _DummyYOLO):
+                adapter = build_yolo26n_trunk()
+
+        self.assertEqual(adapter.weights, "yolo26n.pt")
+
+    def test_resolve_default_yolo26s_weights(self) -> None:
+        from model.net.trunk import resolve_yolo26_weights
+
+        self.assertEqual(resolve_yolo26_weights(variant="s"), "yolo26s.pt")
+        self.assertEqual(resolve_yolo26_weights(variant="n"), "yolo26n.pt")
+
+    def test_summary_reports_resolved_feature_channels(self) -> None:
+        from model.net.trunk import UltralyticsYOLO26TrunkAdapter, summarize_trunk_adapter
+
+        raw_model = _DummyCore()
+        adapter = UltralyticsYOLO26TrunkAdapter(
+            weights="yolo26s.pt",
+            ultralytics_version="8.4.25",
+            raw_model=raw_model,
+            trunk=nn.Sequential(*list(raw_model.model.children())[:-1]),
+            detect_head=raw_model.model[-1],
+            detect_head_index=2,
+            resolved_feature_channels=(128, 256, 512),
+        )
+
+        summary = summarize_trunk_adapter(adapter)
+
+        self.assertEqual(summary["resolved_feature_channels"], [128, 256, 512])
 
     def test_partial_loader_only_applies_matching_shapes(self) -> None:
         from model.net.trunk import load_matching_state_dict
@@ -93,6 +127,22 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertEqual(summary["detect_head_class"], "_DummyDetect")
         self.assertEqual(summary["detect_head_index"], 2)
         self.assertEqual(summary["feature_source_indices"], [])
+
+    def test_infer_pyramid_channels_prefers_adapter_metadata(self) -> None:
+        from model.net.trunk import UltralyticsYOLO26TrunkAdapter, infer_pyramid_channels
+
+        raw_model = _DummyCore()
+        adapter = UltralyticsYOLO26TrunkAdapter(
+            weights="custom.pt",
+            ultralytics_version="8.4.25",
+            raw_model=raw_model,
+            trunk=nn.Sequential(*list(raw_model.model.children())[:-1]),
+            detect_head=raw_model.model[-1],
+            detect_head_index=2,
+            resolved_feature_channels=(80, 160, 320),
+        )
+
+        self.assertEqual(infer_pyramid_channels(adapter), (80, 160, 320))
 
 
 if __name__ == "__main__":

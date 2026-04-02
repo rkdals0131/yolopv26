@@ -9,7 +9,7 @@ class PV26LossSpecTests(unittest.TestCase):
     def test_loss_spec_matches_approved_multitask_design(self) -> None:
         spec = build_loss_spec()
 
-        self.assertEqual(spec["version"], "pv26-loss-v5")
+        self.assertEqual(spec["version"], "pv26-loss-v6")
         self.assertEqual(
             spec["model_contract"]["od_classes"],
             ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
@@ -43,8 +43,12 @@ class PV26LossSpecTests(unittest.TestCase):
             spec["tl_attr_policy"]["training_binding"],
         )
         self.assertEqual(spec["inference_contract"]["raw_model_output"]["det"], "float32[B, Q_det, 12]")
-        self.assertEqual(len(spec["training_schedule"]), 3)
+        self.assertEqual(len(spec["training_schedule"]), 4)
         self.assertEqual(spec["training_schedule"][0]["loss_weights"]["lane"], 2.0)
+        self.assertEqual(spec["training_schedule"][-1]["name"], "stage_4_lane_family_finetune")
+        self.assertEqual(spec["training_schedule"][-1]["freeze"], "trunk_and_detector_tl_heads_frozen")
+        self.assertEqual(spec["training_schedule"][-1]["loss_weights"]["det"], 0.0)
+        self.assertEqual(spec["training_schedule"][-1]["loss_weights"]["tl_attr"], 0.0)
 
     def test_markdown_renderer_exposes_key_sections(self) -> None:
         markdown = render_loss_spec_markdown()
@@ -54,6 +58,7 @@ class PV26LossSpecTests(unittest.TestCase):
         self.assertIn("Q_det=number of detector prediction slots in one image", markdown)
         self.assertIn("traffic_light", markdown)
         self.assertIn("stage_3_end_to_end_finetune", markdown)
+        self.assertIn("stage_4_lane_family_finetune", markdown)
 
 
 if __name__ == "__main__":

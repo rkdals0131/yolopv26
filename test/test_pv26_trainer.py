@@ -360,6 +360,28 @@ class PV26TrainerTests(unittest.TestCase):
             sum(parameter.numel() for parameter in adapter.trunk.parameters()),
         )
 
+    def test_stage4_freezes_trunk_and_detector_tl_heads_but_keeps_lane_family_trainable(self) -> None:
+        from model.engine.trainer import configure_pv26_train_stage
+        from model.net import PV26Heads
+
+        adapter = _DummyAdapter()
+        heads = PV26Heads(in_channels=(64, 128, 256))
+
+        stage4 = configure_pv26_train_stage(adapter, heads, "stage_4_lane_family_finetune")
+
+        self.assertEqual(stage4["stage"], "stage_4_lane_family_finetune")
+        self.assertEqual(stage4["trainable_trunk_params"], 0)
+        self.assertEqual(stage4["trainable_det_head_params"], 0)
+        self.assertEqual(stage4["trainable_tl_attr_head_params"], 0)
+        self.assertGreater(stage4["trainable_lane_family_head_params"], 0)
+        self.assertEqual(stage4["head_training_policy"], "lane_family_only")
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.det_heads.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.tl_attr_heads.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_with_real_runtime_returns_finite_losses(self) -> None:
         from model.net import PV26Heads

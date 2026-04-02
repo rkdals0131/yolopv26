@@ -21,9 +21,9 @@ pv26_train:
         eps: 1.0e-8
       train_defaults:
         device: cuda:0
-        batch_size: 6
-        train_batches: 48
-        val_batches: 12
+        batch_size: 40
+        train_batches: -1
+        val_batches: -1
         trunk_lr: 1.0e-4
         head_lr: 5.0e-3
         weight_decay: 1.0e-4
@@ -32,41 +32,72 @@ pv26_train:
         accumulate_steps: 1
         grad_clip_norm: 5.0
         val_every: 1
-        checkpoint_every: 1
-        num_workers: 4
+        checkpoint_every: 10
+        num_workers: 6
         pin_memory: true
-        log_every_n_steps: 10
-        profile_window: 10
+        log_every_n_steps: 20
+        profile_window: 20
         profile_device_sync: true
         encode_train_batches_in_loader: true
         encode_val_batches_in_loader: true
         persistent_workers: true
         prefetch_factor: 2
+        backbone_variant: s
+        sampler_ratios:
+          bdd100k: 0.30
+          aihub_traffic: 0.30
+          aihub_lane: 0.25
+          aihub_obstacle: 0.15
       phases:
         - name: head_warmup
           stage: stage_1_frozen_trunk_warmup
-          min_epochs: 1
-          max_epochs: 2
-          patience: 1
-          min_improvement_pct: 0.0
+          min_epochs: 4
+          max_epochs: 12
+          patience: 2
+          min_improvement_pct: 2.0
           overrides:
             trunk_lr: 5.0e-5
             head_lr: 3.0e-3
         - name: partial_unfreeze
           stage: stage_2_partial_unfreeze
-          min_epochs: 1
-          max_epochs: 2
-          patience: 1
-          min_improvement_pct: 0.0
+          min_epochs: 6
+          max_epochs: 18
+          patience: 2
+          min_improvement_pct: 0.5
           overrides:
             trunk_lr: 3.0e-5
             head_lr: 8.0e-4
         - name: end_to_end_finetune
           stage: stage_3_end_to_end_finetune
-          min_epochs: 1
-          max_epochs: 2
-          patience: 1
-          min_improvement_pct: 0.0
+          min_epochs: 8
+          max_epochs: 24
+          patience: 3
+          min_improvement_pct: 0.25
           overrides:
             trunk_lr: 1.0e-5
             head_lr: 4.0e-4
+        - name: lane_family_finetune
+          stage: stage_4_lane_family_finetune
+          min_epochs: 4
+          max_epochs: 12
+          patience: 3
+          min_improvement_pct: 0.25
+          selection:
+            metric_path: val.metrics.lane_family.mean_f1
+            mode: max
+            eps: 1.0e-8
+          loss_weights:
+            det: 0.0
+            tl_attr: 0.0
+            lane: 1.5
+            stop_line: 1.25
+            crosswalk: 1.0
+          freeze_policy: lane_family_heads_only
+          overrides:
+            trunk_lr: 0.0
+            head_lr: 2.0e-4
+            sampler_ratios:
+              bdd100k: 0.0
+              aihub_traffic: 0.0
+              aihub_lane: 1.0
+              aihub_obstacle: 0.0

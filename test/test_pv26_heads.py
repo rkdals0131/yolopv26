@@ -47,6 +47,22 @@ class PV26HeadsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "3 feature maps"):
             heads([torch.randn(1, 64, 76, 100)])
 
+    def test_heads_support_yolo26s_channel_contract(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(in_channels=(128, 256, 512))
+        features = [
+            torch.randn(2, 128, 76, 100),
+            torch.randn(2, 256, 38, 50),
+            torch.randn(2, 512, 19, 25),
+        ]
+
+        outputs = heads(features)
+
+        self.assertEqual(tuple(outputs["det"].shape), (2, 9975, 12))
+        self.assertEqual(tuple(outputs["lane"].shape), (2, 12, 54))
+        self.assertEqual(outputs["det_feature_shapes"], [(76, 100), (38, 50), (19, 25)])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -87,10 +87,34 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                                 "stage": "stage_3_end_to_end_finetune",
                                 "min_epochs": 4,
                                 "max_epochs": 10,
-                                "patience": 2,
-                                "min_improvement_pct": 0.5,
+                                "patience": 3,
+                                "min_improvement_pct": 0.25,
                                 "overrides": {
                                     "head_lr": 0.0004,
+                                },
+                            },
+                            {
+                                "name": "lane_family_finetune",
+                                "stage": "stage_4_lane_family_finetune",
+                                "min_epochs": 4,
+                                "max_epochs": 8,
+                                "patience": 3,
+                                "min_improvement_pct": 0.25,
+                                "selection": {
+                                    "metric_path": "val.metrics.lane_family.mean_f1",
+                                    "mode": "max",
+                                    "eps": 1.0e-8,
+                                },
+                                "loss_weights": {
+                                    "det": 0.0,
+                                    "tl_attr": 0.0,
+                                    "lane": 1.5,
+                                    "stop_line": 1.25,
+                                    "crosswalk": 1.0,
+                                },
+                                "overrides": {
+                                    "trunk_lr": 0.0,
+                                    "head_lr": 0.0002,
                                 },
                             },
                         ],
@@ -113,6 +137,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.preview.max_samples_per_dataset, 2)
         self.assertEqual(scenario.train_defaults.batch_size, 12)
         self.assertEqual(scenario.train_defaults.num_workers, 3)
+        self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
+        self.assertEqual(scenario.phases[3].selection.mode, "max")
+        self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)
         phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
         self.assertAlmostEqual(phase_train.head_lr, 0.0015)
 
@@ -124,10 +151,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.dataset.root.parts[-2:], ("seg_dataset", "pv26_exhaustive_od_lane_dataset"))
         self.assertEqual(scenario.run.run_root.parts[-2:], ("runs", "pv26_exhaustive_od_lane_train"))
         self.assertEqual(scenario.train_defaults.batch_size, 40)
+        self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertEqual(tuple(phase.stage for phase in scenario.phases), (
             "stage_1_frozen_trunk_warmup",
             "stage_2_partial_unfreeze",
             "stage_3_end_to_end_finetune",
+            "stage_4_lane_family_finetune",
         ))
 
     def test_default_preset_uses_exhaustive_dataset_and_stage_order(self) -> None:
@@ -150,11 +179,19 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             "stage_1_frozen_trunk_warmup",
             "stage_2_partial_unfreeze",
             "stage_3_end_to_end_finetune",
+            "stage_4_lane_family_finetune",
         ))
         phase_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[0].overrides)
-        self.assertEqual(phase_train.batch_size, 6)
+        self.assertEqual(phase_train.batch_size, 40)
         self.assertAlmostEqual(phase_train.head_lr, 0.003)
         self.assertTrue(phase_train.encode_val_batches_in_loader)
+        self.assertEqual(scenario.train_defaults.backbone_variant, "s")
+        self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
+        self.assertEqual(scenario.phases[3].selection.mode, "max")
+        self.assertEqual(scenario.phases[3].freeze_policy, "lane_family_heads_only")
+        phase4_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[3].overrides)
+        self.assertEqual(phase4_train.sampler_ratios["aihub_lane"], 1.0)
+        self.assertEqual(phase4_train.sampler_ratios["bdd100k"], 0.0)
 
     def test_removed_stage3_stress_preset_is_rejected(self) -> None:
         with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset: stage3_vram_stress"):
@@ -219,6 +256,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             ),
             scenario.phases[1],
             scenario.phases[2],
+            scenario.phases[3],
         )
 
         with self.assertRaisesRegex(ValueError, "phase 1 must use stage"):
@@ -278,6 +316,45 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             self.assertEqual(recovered["last_checkpoint_path"], str(last_checkpoint))
             self.assertEqual(recovered["promotion_reason"], "plateau")
             self.assertEqual(recovered["phase_state"]["epoch"], 3)
+
+    def test_phase_transition_controller_supports_phase_specific_max_metric(self) -> None:
+        phase = PhaseConfig(
+            name="lane_family_finetune",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=2,
+            max_epochs=6,
+            patience=2,
+            min_improvement_pct=0.25,
+            selection=SelectionConfig(
+                metric_path="val.metrics.lane_family.mean_f1",
+                mode="max",
+                eps=1.0e-8,
+            ),
+        )
+        controller = PhaseTransitionController(
+            phase=phase,
+            selection=phase.selection,
+        )
+
+        def _summary(epoch: int, metric: float) -> dict:
+            return {
+                "epoch": int(epoch),
+                "val": {
+                    "metrics": {
+                        "lane_family": {
+                            "mean_f1": float(metric),
+                        }
+                    }
+                },
+            }
+
+        self.assertIsNone(controller.observe_epoch(_summary(1, 0.40)))
+        self.assertIsNone(controller.observe_epoch(_summary(2, 0.45)))
+        stop_state = controller.observe_epoch(_summary(3, 0.451))
+        self.assertIsNone(stop_state)
+        stop_state = controller.observe_epoch(_summary(4, 0.4515))
+        self.assertIsNotNone(stop_state)
+        self.assertEqual(stop_state["reason"], "plateau")
 
     def test_sample_preview_selection_uses_record_metadata_before_loading_samples(self) -> None:
         class _FakeDataset:

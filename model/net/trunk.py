@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+import torch
 import torch.nn as nn
 
 try:
@@ -14,6 +16,15 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
 
 
 MIN_YOLO26_VERSION = "8.4.0"
+DEFAULT_YOLO26_VARIANT = "s"
+YOLO26_DEFAULT_WEIGHTS = {
+    "n": "yolo26n.pt",
+    "s": "yolo26s.pt",
+}
+YOLO26_PYRAMID_CHANNELS = {
+    "n": (64, 128, 256),
+    "s": (128, 256, 512),
+}
 
 
 @dataclass
@@ -25,6 +36,7 @@ class UltralyticsYOLO26TrunkAdapter:
     detect_head: nn.Module
     detect_head_index: int
     feature_source_indices: tuple[int, ...] = field(default_factory=tuple)
+    resolved_feature_channels: tuple[int, ...] = field(default_factory=tuple)
 
     def freeze_trunk(self) -> None:
         for parameter in self.trunk.parameters():
@@ -49,6 +61,7 @@ def summarize_trunk_adapter(adapter: UltralyticsYOLO26TrunkAdapter) -> dict[str,
         "detect_head_index": adapter.detect_head_index,
         "detect_head_class": adapter.detect_head.__class__.__name__,
         "feature_source_indices": list(adapter.feature_source_indices),
+        "resolved_feature_channels": list(adapter.resolved_feature_channels),
         "trunk_layer_count": len(trunk_layers),
         "trunk_layer_classes": [layer.__class__.__name__ for layer in trunk_layers],
         "trunk_parameter_count": trunk_parameter_count,
@@ -78,6 +91,34 @@ def ensure_yolo26_support(version: str | None = None) -> None:
         )
 
 
+def infer_yolo26_variant(weights: str | Path) -> str | None:
+    filename = Path(weights).name.lower()
+    for variant in YOLO26_DEFAULT_WEIGHTS:
+        if f"26{variant}" in filename:
+            return variant
+    return None
+
+
+def resolve_yolo26_weights(*, variant: str | None = None, weights: str | None = None) -> str:
+    if weights:
+        return str(weights)
+    normalized_variant = str(variant or DEFAULT_YOLO26_VARIANT).strip().lower()
+    try:
+        return YOLO26_DEFAULT_WEIGHTS[normalized_variant]
+    except KeyError as exc:
+        raise KeyError(
+            f"unsupported YOLO26 backbone variant: {normalized_variant!r}; "
+            f"expected one of {sorted(YOLO26_DEFAULT_WEIGHTS)}"
+        ) from exc
+
+
+def expected_pyramid_channels(*, variant: str | None = None, weights: str | None = None) -> tuple[int, ...] | None:
+    resolved_variant = variant or infer_yolo26_variant(weights or "")
+    if resolved_variant is None:
+        return None
+    return YOLO26_PYRAMID_CHANNELS.get(resolved_variant)
+
+
 def _extract_model_layers(torch_model: nn.Module) -> list[nn.Module]:
     model_layers = getattr(torch_model, "model", None)
     if model_layers is None:
@@ -93,12 +134,17 @@ def _extract_model_layers(torch_model: nn.Module) -> list[nn.Module]:
     return layers
 
 
-def build_yolo26n_trunk(weights: str = "yolo26n.pt") -> UltralyticsYOLO26TrunkAdapter:
+def build_yolo26_trunk(
+    *,
+    variant: str | None = None,
+    weights: str | None = None,
+) -> UltralyticsYOLO26TrunkAdapter:
     ensure_yolo26_support()
     if YOLO is None:  # pragma: no cover - dependency absence handled above.
         raise RuntimeError("ultralytics is not installed.")
 
-    yolo = YOLO(weights)
+    resolved_weights = resolve_yolo26_weights(variant=variant, weights=weights)
+    yolo = YOLO(resolved_weights)
     torch_model = yolo.model
     layers = _extract_model_layers(torch_model)
     detect_head_index = len(layers) - 1
@@ -107,14 +153,23 @@ def build_yolo26n_trunk(weights: str = "yolo26n.pt") -> UltralyticsYOLO26TrunkAd
     trunk.requires_grad_(True)
     feature_source_indices = tuple(int(index) for index in getattr(detect_head, "f", ()))
     return UltralyticsYOLO26TrunkAdapter(
-        weights=weights,
+        weights=resolved_weights,
         ultralytics_version=ULTRALYTICS_VERSION,
         raw_model=torch_model,
         trunk=trunk,
         detect_head=detect_head,
         detect_head_index=detect_head_index,
         feature_source_indices=feature_source_indices,
+        resolved_feature_channels=expected_pyramid_channels(variant=variant, weights=resolved_weights) or (),
     )
+
+
+def build_yolo26n_trunk(weights: str = "yolo26n.pt") -> UltralyticsYOLO26TrunkAdapter:
+    return build_yolo26_trunk(weights=weights)
+
+
+def build_yolo26s_trunk(weights: str = "yolo26s.pt") -> UltralyticsYOLO26TrunkAdapter:
+    return build_yolo26_trunk(weights=weights)
 
 
 def forward_pyramid_features(adapter: UltralyticsYOLO26TrunkAdapter, image: Any) -> list[Any]:
@@ -137,6 +192,31 @@ def forward_pyramid_features(adapter: UltralyticsYOLO26TrunkAdapter, image: Any)
         outputs.append(current)
 
     return [outputs[index] for index in adapter.feature_source_indices]
+
+
+def infer_pyramid_channels(
+    adapter: UltralyticsYOLO26TrunkAdapter,
+    *,
+    network_hw: tuple[int, int] = (608, 800),
+) -> tuple[int, ...]:
+    if adapter.resolved_feature_channels:
+        return adapter.resolved_feature_channels
+    with torch.no_grad():
+        features = forward_pyramid_features(
+            adapter,
+            torch.zeros(1, 3, int(network_hw[0]), int(network_hw[1])),
+        )
+    channels = tuple(int(feature.shape[1]) for feature in features)
+    adapter.resolved_feature_channels = channels
+    return channels
+
+
+def resolve_pyramid_channels(
+    adapter: UltralyticsYOLO26TrunkAdapter,
+    *,
+    network_hw: tuple[int, int] = (608, 800),
+) -> tuple[int, ...]:
+    return infer_pyramid_channels(adapter, network_hw=network_hw)
 
 
 def load_matching_state_dict(target: nn.Module, source_state_dict: dict[str, Any]) -> dict[str, Any]:
@@ -168,9 +248,19 @@ __all__ = [
     "MIN_YOLO26_VERSION",
     "ULTRALYTICS_VERSION",
     "UltralyticsYOLO26TrunkAdapter",
+    "DEFAULT_YOLO26_VARIANT",
+    "YOLO26_DEFAULT_WEIGHTS",
+    "YOLO26_PYRAMID_CHANNELS",
+    "build_yolo26_trunk",
     "build_yolo26n_trunk",
+    "build_yolo26s_trunk",
     "ensure_yolo26_support",
+    "expected_pyramid_channels",
     "forward_pyramid_features",
+    "infer_pyramid_channels",
+    "infer_yolo26_variant",
     "load_matching_state_dict",
+    "resolve_pyramid_channels",
+    "resolve_yolo26_weights",
     "summarize_trunk_adapter",
 ]

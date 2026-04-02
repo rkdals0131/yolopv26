@@ -125,6 +125,25 @@ class _FakeSingleMatchTaskAlignedAssigner(nn.Module):
 
 
 class PV26LossRuntimeTests(unittest.TestCase):
+    def test_stage4_disables_detector_and_tl_attr_loss_paths(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions.pop("det_feature_shapes")
+        predictions.pop("det_feature_strides")
+
+        criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
+        losses = criterion(predictions, encoded)
+
+        self.assertEqual(criterion.last_det_assignment_mode, "disabled")
+        self.assertEqual(criterion.last_det_positive_count, 0)
+        self.assertEqual(float(losses["det"].detach().cpu()), 0.0)
+        self.assertEqual(float(losses["tl_attr"].detach().cpu()), 0.0)
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["lane"].grad)
+
     def test_task_aligned_assignment_promotes_amp_inputs_to_float32(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

@@ -5,7 +5,7 @@ from typing import Any
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v5"
+SPEC_VERSION = "pv26-loss-v6"
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,18 @@ def build_loss_spec() -> dict[str, Any]:
                 "lane": 1.0,
                 "stop_line": 1.0,
                 "crosswalk": 0.75,
+            },
+        ),
+        StageSpec(
+            name="stage_4_lane_family_finetune",
+            objective="lane family late fine-tuning with detector/TL frozen",
+            freeze="trunk_and_detector_tl_heads_frozen",
+            loss_weights={
+                "det": 0.0,
+                "tl_attr": 0.0,
+                "lane": 1.5,
+                "stop_line": 1.25,
+                "crosswalk": 1.0,
             },
         ),
     ]

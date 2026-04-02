@@ -56,6 +56,7 @@ def build_meta_manifest_template(
         "run_dir": str(run_dir),
         "dataset": json_ready(asdict(scenario.dataset)),
         "run": json_ready(asdict(scenario.run)),
+        "train_defaults": json_ready(asdict(scenario.train_defaults)),
         "selection": json_ready(asdict(scenario.selection)),
         "preview": json_ready(asdict(scenario.preview)),
         "active_phase_index": None,
@@ -109,11 +110,19 @@ def write_meta_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
 def write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
     phases = manifest.get("phases", [])
     completed = [phase for phase in phases if phase.get("status") == "completed"]
+    latest_phase = None
+    if completed:
+        latest_phase = completed[-1]
+    elif phases:
+        active_phase_index = int(manifest.get("active_phase_index") or 0)
+        if 1 <= active_phase_index <= len(phases):
+            latest_phase = phases[active_phase_index - 1]
     summary = {
         "version": manifest["version"],
         "status": manifest["status"],
         "scenario_path": manifest["scenario_path"],
         "run_dir": manifest["run_dir"],
+        "train_defaults": manifest.get("train_defaults", {}),
         "completed_phases": len(completed),
         "total_phases": len(phases),
         "active_phase_index": manifest.get("active_phase_index"),
@@ -122,6 +131,17 @@ def write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
         "phases": phases,
         "updated_at": manifest["updated_at"],
     }
+    if isinstance(latest_phase, dict):
+        backbone = latest_phase.get("backbone", {})
+        selection = latest_phase.get("selection", {})
+        summary["latest_phase_name"] = latest_phase.get("name")
+        summary["latest_phase_stage"] = latest_phase.get("stage")
+        if isinstance(backbone, dict):
+            summary["latest_backbone_variant"] = backbone.get("variant")
+            summary["latest_backbone_weights"] = backbone.get("weights")
+        if isinstance(selection, dict):
+            summary["latest_selection_metric_path"] = selection.get("metric_path")
+            summary["latest_selection_mode"] = selection.get("mode")
     write_json(run_dir / "summary.json", summary)
 
 

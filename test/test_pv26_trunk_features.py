@@ -12,7 +12,7 @@ class PV26TrunkFeatureTests(unittest.TestCase):
     def test_real_trunk_feature_extractor_returns_p3_p4_p5(self) -> None:
         from model.net import PV26Heads
         from model.net import build_yolo26n_trunk
-        from model.net.trunk import forward_pyramid_features
+        from model.net.trunk import forward_pyramid_features, infer_pyramid_channels
 
         adapter = build_yolo26n_trunk()
         with torch.no_grad():
@@ -22,8 +22,9 @@ class PV26TrunkFeatureTests(unittest.TestCase):
         self.assertEqual(tuple(features[0].shape), (1, 64, 76, 100))
         self.assertEqual(tuple(features[1].shape), (1, 128, 38, 50))
         self.assertEqual(tuple(features[2].shape), (1, 256, 19, 25))
+        self.assertEqual(infer_pyramid_channels(adapter), (64, 128, 256))
 
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        heads = PV26Heads(in_channels=infer_pyramid_channels(adapter))
         outputs = heads(features)
         self.assertEqual(tuple(outputs["det"].shape), (1, 9975, 12))
         self.assertEqual(tuple(outputs["tl_attr"].shape), (1, 9975, 4))

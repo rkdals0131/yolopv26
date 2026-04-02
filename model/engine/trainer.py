@@ -23,6 +23,7 @@ STAGE_NAMES = (
     "stage_1_frozen_trunk_warmup",
     "stage_2_partial_unfreeze",
     "stage_3_end_to_end_finetune",
+    "stage_4_lane_family_finetune",
 )
 STAGE_ALIASES = {
     "stage_1_head_warmup": "stage_1_frozen_trunk_warmup",
@@ -88,6 +89,11 @@ def _count_parameters(parameters: list[torch.nn.Parameter]) -> int:
 
 def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
+
+
+def _set_module_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
+    for parameter in module.parameters():
+        parameter.requires_grad = requires_grad
 
 
 def _criterion_config_from_instance(criterion: torch.nn.Module, stage: str) -> dict[str, Any] | None:
@@ -162,7 +168,13 @@ def build_pv26_scheduler(
     raise KeyError(f"unsupported PV26 scheduler: {schedule}")
 
 
-def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str) -> dict[str, int | str]:
+def configure_pv26_train_stage(
+    adapter: Any,
+    heads: torch.nn.Module,
+    stage: str,
+    *,
+    freeze_policy: str | None = None,
+) -> dict[str, int | str]:
     stage = _canonical_stage(stage)
     if stage not in STAGE_NAMES:
         raise KeyError(f"unsupported PV26 train stage: {stage}")
@@ -171,24 +183,72 @@ def configure_pv26_train_stage(adapter: Any, heads: torch.nn.Module, stage: str)
         parameter.requires_grad = True
 
     trunk_layers = list(adapter.trunk.children())
-    if stage == "stage_1_frozen_trunk_warmup":
+    policy = freeze_policy
+    if policy is None:
+        if stage == "stage_1_frozen_trunk_warmup":
+            policy = "backbone_and_neck"
+        elif stage == "stage_2_partial_unfreeze":
+            policy = "lower_backbone_only"
+        elif stage == "stage_4_lane_family_finetune":
+            policy = "lane_family_heads_only"
+        else:
+            policy = "none"
+
+    head_policy = "all_heads"
+    if policy == "backbone_and_neck":
         adapter.freeze_trunk()
-    elif stage == "stage_2_partial_unfreeze":
+    elif policy == "lower_backbone_only":
         adapter.freeze_trunk()
         partial_count = max(1, len(trunk_layers) // 3)
         for layer in trunk_layers[-partial_count:]:
             for parameter in layer.parameters():
                 parameter.requires_grad = True
-    else:
+    elif policy == "lane_family_heads_only":
+        adapter.freeze_trunk()
+        _set_module_requires_grad(heads, False)
+        lane_family_modules = [
+            getattr(heads, "lane_head", None),
+            getattr(heads, "stop_line_head", None),
+            getattr(heads, "crosswalk_head", None),
+        ]
+        if all(isinstance(module, torch.nn.Module) for module in lane_family_modules):
+            for module in lane_family_modules:
+                _set_module_requires_grad(module, True)
+            head_policy = "lane_family_only"
+        else:
+            _set_module_requires_grad(heads, True)
+            head_policy = "all_heads_fallback"
+    elif policy == "none":
         adapter.unfreeze_trunk()
+    else:
+        raise KeyError(f"unsupported PV26 freeze policy: {policy}")
 
     trainable_trunk = _trainable_parameters(adapter.trunk)
     trainable_heads = _trainable_parameters(heads)
-    return {
+    stage_summary: dict[str, int | str] = {
         "stage": stage,
+        "freeze_policy": policy,
         "trainable_trunk_params": _count_parameters(trainable_trunk),
         "trainable_head_params": _count_parameters(trainable_heads),
     }
+    if hasattr(heads, "det_heads"):
+        det_heads = getattr(heads, "det_heads")
+        if isinstance(det_heads, torch.nn.Module):
+            stage_summary["trainable_det_head_params"] = _count_parameters(_trainable_parameters(det_heads))
+    if hasattr(heads, "tl_attr_heads"):
+        tl_attr_heads = getattr(heads, "tl_attr_heads")
+        if isinstance(tl_attr_heads, torch.nn.Module):
+            stage_summary["trainable_tl_attr_head_params"] = _count_parameters(_trainable_parameters(tl_attr_heads))
+    lane_family_trainable = 0
+    for attr_name in ("lane_head", "stop_line_head", "crosswalk_head"):
+        module = getattr(heads, attr_name, None)
+        if isinstance(module, torch.nn.Module):
+            lane_family_trainable += _count_parameters(_trainable_parameters(module))
+    if lane_family_trainable:
+        stage_summary["trainable_lane_family_head_params"] = lane_family_trainable
+    if policy == "lane_family_heads_only":
+        stage_summary["head_training_policy"] = head_policy
+    return stage_summary
 
 
 def build_pv26_optimizer(
@@ -240,6 +300,8 @@ class PV26Trainer:
         trunk_lr: float = 1e-4,
         head_lr: float = 1e-3,
         weight_decay: float = 1e-4,
+        loss_weights: dict[str, float] | None = None,
+        freeze_policy: str | None = None,
         amp: bool = False,
         accumulate_steps: int = 1,
         grad_clip_norm: float | None = None,
@@ -252,10 +314,16 @@ class PV26Trainer:
         self.heads = heads
         self.device = torch.device(device)
         self.stage = _canonical_stage(stage)
-        self.stage_summary = configure_pv26_train_stage(adapter, heads, self.stage)
+        self.freeze_policy = freeze_policy
+        self.stage_summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            self.stage,
+            freeze_policy=self.freeze_policy,
+        )
         self.adapter.raw_model.to(self.device)
         self.heads.to(self.device)
-        self.criterion = (criterion or PV26MultiTaskLoss(stage=self.stage)).to(self.device)
+        self.criterion = (criterion or PV26MultiTaskLoss(stage=self.stage, loss_weights=loss_weights)).to(self.device)
         self.optimizer = optimizer or build_pv26_optimizer(
             adapter,
             heads,

@@ -151,6 +151,10 @@ def _tensorboard_val_metric_scalars(metrics: dict[str, Any]) -> dict[str, Any]:
             metrics.get("crosswalk", {}),
             ("precision", "recall", "f1", "mean_polygon_iou", "mean_vertex_distance"),
         ),
+        "lane_family": _select_numeric_scalars(
+            metrics.get("lane_family", {}),
+            ("mean_f1", "min_f1"),
+        ),
     }
 
 

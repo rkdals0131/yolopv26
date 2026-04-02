@@ -206,13 +206,16 @@ class PV26MultiTaskLoss(nn.Module):
         stage: str = "stage_1_frozen_trunk_warmup",
         *,
         det_cls_negative_weight: float = 0.1,
+        loss_weights: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
         stage = _canonical_stage(stage)
         try:
-            self.loss_weights = STAGE_LOSS_WEIGHTS[stage]
+            self.loss_weights = dict(STAGE_LOSS_WEIGHTS[stage])
         except KeyError as exc:
             raise KeyError(f"unsupported PV26 loss stage: {stage}") from exc
+        if loss_weights:
+            self.loss_weights.update({str(name): float(value) for name, value in loss_weights.items()})
         self.stage = stage
         self.det_cls_negative_weight = float(det_cls_negative_weight)
         self.register_buffer(
@@ -253,7 +256,14 @@ class PV26MultiTaskLoss(nn.Module):
         return {
             "stage": self.stage,
             "det_cls_negative_weight": float(self.det_cls_negative_weight),
+            "loss_weights": dict(self.loss_weights),
         }
+
+    def _detector_losses_enabled(self) -> bool:
+        return bool(
+            float(self.loss_weights.get("det", 0.0)) > 0.0
+            or float(self.loss_weights.get("tl_attr", 0.0)) > 0.0
+        )
 
     def _run_task_aligned_assigner(
         self,
@@ -365,12 +375,18 @@ class PV26MultiTaskLoss(nn.Module):
             "det_cls_matched_count": 0,
             "det_cls_unmatched_neg_count": 0,
         }
-        det_assignment = self._build_det_assignment(predictions, encoded)
-        self.last_det_assignment_mode = str(det_assignment["mode"])
-        self.last_det_positive_count = int(det_assignment["fg_mask"].sum().item())
-
-        det = self._det_loss(predictions["det"], encoded, det_assignment)
-        tl_attr = self._tl_attr_loss(predictions["tl_attr"], encoded, det_assignment)
+        det_assignment: dict[str, torch.Tensor | str] | None = None
+        if self._detector_losses_enabled():
+            det_assignment = self._build_det_assignment(predictions, encoded)
+            self.last_det_assignment_mode = str(det_assignment["mode"])
+            self.last_det_positive_count = int(det_assignment["fg_mask"].sum().item())
+            det = self._det_loss(predictions["det"], encoded, det_assignment)
+            tl_attr = self._tl_attr_loss(predictions["tl_attr"], encoded, det_assignment)
+        else:
+            self.last_det_assignment_mode = "disabled"
+            self.last_det_positive_count = 0
+            det = _zero_graph(predictions["det"])
+            tl_attr = _zero_graph(predictions["tl_attr"])
         lane = self._lane_loss(predictions["lane"], encoded)
         stop_line = self._stop_line_loss(predictions["stop_line"], encoded)
         crosswalk = self._crosswalk_loss(predictions["crosswalk"], encoded)

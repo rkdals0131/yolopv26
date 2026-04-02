@@ -53,6 +53,28 @@ def _raw_batch_for_metrics(batch: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(metrics, dict):
+        return {}
+    lane_family = [
+        metrics.get("lane", {}),
+        metrics.get("stop_line", {}),
+        metrics.get("crosswalk", {}),
+    ]
+    f1_values = [
+        float(item["f1"])
+        for item in lane_family
+        if isinstance(item, dict) and isinstance(item.get("f1"), (int, float))
+    ]
+    output = dict(metrics)
+    if f1_values:
+        output["lane_family"] = {
+            "mean_f1": sum(f1_values) / len(f1_values),
+            "min_f1": min(f1_values),
+        }
+    return output
+
+
 def run_train_epoch(
     trainer: Any,
     loader: Any,
@@ -201,6 +223,7 @@ def run_validate_epoch(
     else:
         metric_summaries = [item["metrics"] for item in batch_summaries if item.get("metrics")]
         metrics = _mean_metric_tree(metric_summaries) if metric_summaries else {}
+    metrics = _augment_lane_family_metrics(metrics)
     return {
         "epoch": int(epoch),
         "batches": len(batch_summaries),

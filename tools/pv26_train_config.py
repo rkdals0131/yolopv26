@@ -18,10 +18,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
 DEFAULT_PRESET_NAME = "default"
+BACKBONE_VARIANTS = ("n", "s")
+LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
+DEFAULT_SAMPLER_RATIOS = {
+    "bdd100k": 0.30,
+    "aihub_traffic": 0.30,
+    "aihub_lane": 0.25,
+    "aihub_obstacle": 0.15,
+}
 PHASE_STAGE_ORDER = (
     "stage_1_frozen_trunk_warmup",
     "stage_2_partial_unfreeze",
     "stage_3_end_to_end_finetune",
+    "stage_4_lane_family_finetune",
 )
 
 
@@ -79,6 +88,9 @@ class TrainDefaultsConfig:
     encode_val_batches_in_loader: bool = True
     persistent_workers: bool = True
     prefetch_factor: int | None = 2
+    backbone_variant: str = "s"
+    backbone_weights: str | None = None
+    sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
 
 
 @dataclass(frozen=True)
@@ -110,6 +122,9 @@ class PhaseConfig:
     max_epochs: int
     patience: int
     min_improvement_pct: float
+    selection: SelectionConfig | None = None
+    loss_weights: dict[str, float] = field(default_factory=dict)
+    freeze_policy: str | None = None
     overrides: dict[str, Any] = field(default_factory=dict)
 
 
@@ -131,6 +146,9 @@ def phase(
     max_epochs: int,
     patience: int,
     min_improvement_pct: float,
+    selection: SelectionConfig | None = None,
+    loss_weights: dict[str, float] | None = None,
+    freeze_policy: str | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> PhaseConfig:
     return PhaseConfig(
@@ -140,6 +158,9 @@ def phase(
         max_epochs=max_epochs,
         patience=patience,
         min_improvement_pct=min_improvement_pct,
+        selection=selection,
+        loss_weights=dict(loss_weights or {}),
+        freeze_policy=freeze_policy,
         overrides=dict(overrides or {}),
     )
 
@@ -163,6 +184,9 @@ def phase_to_mapping(phase_config: PhaseConfig) -> dict[str, Any]:
         "max_epochs": phase_config.max_epochs,
         "patience": phase_config.patience,
         "min_improvement_pct": phase_config.min_improvement_pct,
+        "selection": asdict(phase_config.selection) if phase_config.selection is not None else None,
+        "loss_weights": dict(phase_config.loss_weights),
+        "freeze_policy": phase_config.freeze_policy,
         "overrides": dict(phase_config.overrides),
     }
 
@@ -264,6 +288,12 @@ def _coerce_optional_int(value: Any, *, field_name: str) -> int | None:
     return _coerce_int(value, field_name=field_name)
 
 
+def _coerce_optional_str(value: Any, *, field_name: str) -> str | None:
+    if value in {None, ""}:
+        return None
+    return _coerce_str(value, field_name=field_name)
+
+
 def _coerce_path_list(value: Any, *, field_name: str, base_dir: Path) -> tuple[Path, ...]:
     if value is None:
         return ()
@@ -303,6 +333,26 @@ def run_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> RunCo
 def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
     data = _coerce_mapping(payload, field_name="train_defaults")
     defaults = TrainDefaultsConfig()
+    backbone_variant = _coerce_str(
+        data.get("backbone_variant", defaults.backbone_variant),
+        field_name="train_defaults.backbone_variant",
+    )
+    if backbone_variant not in BACKBONE_VARIANTS:
+        raise ValueError(
+            "train_defaults.backbone_variant must be one of "
+            f"{BACKBONE_VARIANTS}, got {backbone_variant!r}"
+        )
+    sampler_ratios_payload = _coerce_mapping(
+        data.get("sampler_ratios", defaults.sampler_ratios),
+        field_name="train_defaults.sampler_ratios",
+    )
+    sampler_ratios = {
+        _coerce_str(name, field_name="train_defaults.sampler_ratios.key"): _coerce_float(
+            value,
+            field_name=f"train_defaults.sampler_ratios[{name!r}]",
+        )
+        for name, value in sampler_ratios_payload.items()
+    }
     return TrainDefaultsConfig(
         device=_coerce_str(data.get("device", defaults.device), field_name="train_defaults.device"),
         batch_size=_coerce_int(data.get("batch_size", defaults.batch_size), field_name="train_defaults.batch_size"),
@@ -356,6 +406,12 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("prefetch_factor", defaults.prefetch_factor),
             field_name="train_defaults.prefetch_factor",
         ),
+        backbone_variant=backbone_variant,
+        backbone_weights=_coerce_optional_str(
+            data.get("backbone_weights", defaults.backbone_weights),
+            field_name="train_defaults.backbone_weights",
+        ),
+        sampler_ratios=sampler_ratios,
     )
 
 
@@ -388,6 +444,11 @@ def preview_config_from_mapping(payload: dict[str, Any]) -> PreviewConfig:
 def phase_config_from_mapping(payload: dict[str, Any], *, index: int) -> PhaseConfig:
     data = _coerce_mapping(payload, field_name=f"phases[{index}]")
     overrides = _coerce_mapping(data.get("overrides"), field_name=f"phases[{index}].overrides")
+    selection_payload = data.get("selection")
+    loss_weights_payload = _coerce_mapping(
+        data.get("loss_weights"),
+        field_name=f"phases[{index}].loss_weights",
+    )
     return PhaseConfig(
         name=_coerce_str(data.get("name", f"phase_{index + 1}"), field_name=f"phases[{index}].name"),
         stage=_coerce_str(data.get("stage"), field_name=f"phases[{index}].stage"),
@@ -397,6 +458,18 @@ def phase_config_from_mapping(payload: dict[str, Any], *, index: int) -> PhaseCo
         min_improvement_pct=_coerce_float(
             data.get("min_improvement_pct"),
             field_name=f"phases[{index}].min_improvement_pct",
+        ),
+        selection=selection_config_from_mapping(selection_payload) if selection_payload is not None else None,
+        loss_weights={
+            _coerce_str(name, field_name=f"phases[{index}].loss_weights.key"): _coerce_float(
+                value,
+                field_name=f"phases[{index}].loss_weights[{name!r}]",
+            )
+            for name, value in loss_weights_payload.items()
+        },
+        freeze_policy=_coerce_optional_str(
+            data.get("freeze_policy"),
+            field_name=f"phases[{index}].freeze_policy",
         ),
         overrides=overrides,
     )
@@ -444,6 +517,10 @@ def scenario_phase_defaults(
     return train_defaults_from_mapping(merged)
 
 
+def resolve_phase_selection(default_selection: SelectionConfig, phase: PhaseConfig) -> SelectionConfig:
+    return phase.selection if phase.selection is not None else default_selection
+
+
 def validate_meta_train_scenario(
     scenario: MetaTrainScenario,
     *,
@@ -465,11 +542,26 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} patience must be > 0")
         if phase_config.min_improvement_pct < 0.0:
             raise ValueError(f"phase {index} min_improvement_pct must be >= 0")
+        unknown_loss_weight_names = sorted(set(phase_config.loss_weights) - set(LOSS_WEIGHT_NAMES))
+        if unknown_loss_weight_names:
+            raise ValueError(
+                f"phase {index} uses unsupported loss weight names: {unknown_loss_weight_names}"
+            )
+        for name, value in phase_config.loss_weights.items():
+            if float(value) < 0.0:
+                raise ValueError(f"phase {index} loss weight {name!r} must be >= 0")
         phase_train = scenario_phase_defaults(scenario.train_defaults, phase_config.overrides)
-        if scenario.selection.metric_path.startswith("val.") and resolve_val_batch_limit(phase_train.val_batches) == 0:
+        phase_selection = resolve_phase_selection(scenario.selection, phase_config)
+        if phase_selection.mode not in {"min", "max"}:
+            raise ValueError(f"phase {index} selection.mode must be 'min' or 'max'")
+        if phase_selection.eps <= 0.0:
+            raise ValueError(f"phase {index} selection.eps must be > 0")
+        if not any(float(value) > 0.0 for value in phase_train.sampler_ratios.values()):
+            raise ValueError(f"phase {index} sampler_ratios must contain at least one positive value")
+        if phase_selection.metric_path.startswith("val.") and resolve_val_batch_limit(phase_train.val_batches) == 0:
             raise ValueError(
                 f"phase {index} disables validation but selection.metric_path="
-                f"{scenario.selection.metric_path!r} requires val"
+                f"{phase_selection.metric_path!r} requires val"
             )
     if scenario.selection.mode not in {"min", "max"}:
         raise ValueError("selection.mode must be 'min' or 'max'")

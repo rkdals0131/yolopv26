@@ -114,6 +114,17 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn(f"fixed query count `{spec['heads']['crosswalk']['query_count']}`", architecture_doc)
         self.assertNotIn("query count 최종값", architecture_doc)
 
+    def test_pv26_docs_track_backbone_and_stage4_direction(self) -> None:
+        architecture_doc = _read(DOCS_ROOT / "4_MODEL_ARCHITECTURE.md")
+        loss_doc = _read(DOCS_ROOT / "5_TARGETS_AND_LOSS.md")
+        training_doc = _read(DOCS_ROOT / "6_TRAINING_AND_EVALUATION.md")
+
+        self.assertIn("`yolo26s.pt`", architecture_doc)
+        self.assertIn("`yolo26n.pt`", architecture_doc)
+        self.assertIn("stage_4_lane_family_finetune", loss_doc)
+        self.assertIn("stage 4", training_doc)
+        self.assertIn("phase-specific selection", training_doc)
+
     def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
         architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
         self.assertIn("tools.od_bootstrap.source.aihub / bdd100k", architecture_doc)
