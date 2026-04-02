@@ -115,6 +115,7 @@
 - `tools/run_pv26_train.py` stays a single CLI entrypoint, but preset/config handling and manifest/writeout concerns are split into helper modules
 - `model/engine/trainer.py` is orchestration-only; step / epoch / fit / checkpoint / reporting logic lives in helper modules
 - `2026-04-03` team wave added `model/engine/batch.py`, promoted `deep_merge_mappings` reuse through `common.user_config`, and extracted source shared helpers into `tools/od_bootstrap/source/shared_resume.py` and `shared_source_meta.py`
+- `2026-04-03` follow-up wave added `model/engine/_det_geometry.py`, split `tools/check_env.py` into scan/actions/tui companions, tightened teacher runtime imports around public/shared helpers, and expanded `common.paths` / `common.io` reuse across bootstrap build call sites
 
 ## priority-2b extraction review boundary
 

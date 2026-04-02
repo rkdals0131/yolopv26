@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness team wave로 source/common/engine helper 정리를 일부 완료했다. 다음은 geometry helper, debug-vis manifest 공유, teacher runtime alias 정리, check_env 경계 분리다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness 후속 wave로 geometry helper, teacher runtime alias, check_env 분리, common/build helper 일부까지 정리했다. 다음은 trainer private mesh, source debug-vis manifest 공유, check_env launch/input 분리, manifest typing 잔여분이다.`
 
 ## 완료된 항목
 
@@ -92,6 +92,10 @@
 - [x] `model/engine/batch.py` 도입으로 trainer/evaluator/_trainer_epochs batch helper 공용화
 - [x] `common.user_config.deep_merge_mappings` 재사용으로 `tools/pv26_train_config.py` deep-merge 중복 축소
 - [x] `tools/od_bootstrap/source/shared_resume.py`, `shared_source_meta.py` 도입으로 source resume/meta helper 공용화
+- [x] `model/engine/_det_geometry.py` 도입으로 detector geometry helper (`_make_anchor_grid`, `_decode_anchor_relative_boxes`) 공용화
+- [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 teacher runtime public/shared helper를 우선 사용하도록 alias 경계 정리
+- [x] `tools/check_env.py`를 `tools/check_env_scan.py`, `tools/check_env_actions.py`, `tools/check_env_tui.py`와 역할 분리된 facade로 정리
+- [x] `common.paths.resolve_optional_path`, `resolve_latest_root`, `common.io.write_jsonl` 재사용으로 build/PV26 call-site helper 중복 축소
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -101,11 +105,12 @@
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
-- [ ] repo-wide common helper 공통화 잔여분 (`now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, `resolve_latest_root`, `resolve_optional_path`)
-- [ ] `model/engine/` geometry/helper 잔여분 정리 (`_make_anchor_grid`, `_decode_anchor_relative_boxes`, trainer private re-export mesh)
+- [ ] repo-wide common helper 공통화 잔여분 (`now_iso`, `timestamp_token`, `write_json`, `append_jsonl`)
+- [ ] `model/engine/` internal API 잔여분 정리 (trainer private re-export mesh, broader public/internal surface)
 - [ ] source debug-vis manifest write helper shared public API 정리
-- [ ] teacher runtime alias import/public API 경계 정리
-- [ ] `tools/check_env.py` 역할별 파일 경계 분리
+- [ ] teacher runtime runner 경량화 (`_make_teacher_trainer`, DI 인자 묶기, runner 덩치 축소)
+- [ ] `tools/check_env.py` launch/input/resume 후보 흐름 추가 분리
+- [ ] build/source manifest typing (`TypedDict`) 도입
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -136,6 +141,9 @@
 - [x] `pytest -q test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py` (`54 passed`, `2026-04-03`)
 - [x] `pytest -q test/test_pv26_engine_batch.py test/test_pv26_evaluator.py test/test_pv26_trainer.py test/test_pv26_eval_metrics.py test/test_common_user_config.py test/test_bdd100k_standardize.py test/od_bootstrap/test_shared_source_helpers.py test/od_bootstrap/test_aihub_workers.py test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py` (`101 passed`, `2026-04-03`)
 - [x] `python3 -m compileall -q common model/engine tools/od_bootstrap/source tools/pv26_train_config.py test/test_common_user_config.py test/test_pv26_engine_batch.py`
+- [x] `pytest -q test/test_pv26_det_geometry.py test/test_pv26_postprocess.py test/test_pv26_loss_runtime.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/test_common_paths.py test/od_bootstrap/test_sweep_image_list.py test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_final_dataset.py test/od_bootstrap/test_run_generate_debug_vis.py test/od_bootstrap/test_teacher_dataset.py test/test_portability_runtime.py test/test_docs_sync.py test/test_run_pv26_train.py` (`100 passed`, `2026-04-03`)
+- [x] `python3 -m compileall -q model/engine tools/od_bootstrap/teacher common tools/od_bootstrap/build tools/check_env.py tools/check_env_actions.py tools/check_env_scan.py tools/check_env_tui.py test/test_common_paths.py test/test_pv26_det_geometry.py test/test_portability_runtime.py`
+- [x] `python3 tools/check_env.py --json`
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과
@@ -190,5 +198,9 @@
 - exact resume CLI는 `tools/run_pv26_train.py --resume-run <existing_run_dir>` 기준으로 유지한다
 - stage 3 VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다
 - engine 공통 batch helper는 `model/engine/batch.py`를 기준선으로 두고, trainer/evaluator/_trainer_epochs에서 중복을 다시 만들지 않는다
+- detector geometry helper는 `model/engine/_det_geometry.py`를 기준선으로 두고 `loss.py`, `postprocess.py`가 이를 재사용한다
 - repo-wide deep merge helper는 `common.user_config.deep_merge_mappings`를 기준선으로 둔다
+- repo-wide latest/optional path helper는 `common.paths.resolve_latest_root`, `resolve_optional_path`를 기준선으로 둔다
 - source resume/meta 공용 helper는 `tools/od_bootstrap/source/shared_resume.py`, `shared_source_meta.py`를 기준선으로 둔다
+- teacher runtime helper는 runtime 모듈의 public/shared 이름을 우선 사용하고 underscore alias는 compatibility shim으로만 유지한다
+- `tools/check_env.py`는 compat facade이고 scan/actions/tui는 각 companion module 기준으로 유지한다
