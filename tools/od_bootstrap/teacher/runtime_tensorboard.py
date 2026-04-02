@@ -6,8 +6,15 @@ from typing import Any
 
 from common.scalars import flatten_scalar_tree
 
+__all__ = [
+    "build_epoch_tensorboard_payload",
+    "build_train_step_tensorboard_payload",
+    "maybe_build_summary_writer",
+    "write_tensorboard_scalars",
+]
 
-def _maybe_build_summary_writer(log_dir: Path):
+
+def maybe_build_summary_writer(log_dir: Path):
     try:
         from torch.utils.tensorboard import SummaryWriter
     except Exception as exc:  # pragma: no cover - optional dependency.
@@ -34,7 +41,7 @@ def _maybe_build_summary_writer(log_dir: Path):
     }
 
 
-def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
+def write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
     if writer is None:
         return 0
     count = 0
@@ -148,7 +155,7 @@ def _train_step_profile_payload(profile_summary: dict[str, Any]) -> dict[str, fl
     return payload
 
 
-def _build_epoch_tensorboard_payload(
+def build_epoch_tensorboard_payload(
     *,
     losses: dict[str, Any],
     profile_summary: dict[str, Any],
@@ -173,7 +180,7 @@ def _build_epoch_tensorboard_payload(
     return payload
 
 
-def _build_train_step_tensorboard_payload(
+def build_train_step_tensorboard_payload(
     *,
     losses: dict[str, Any],
     profile_summary: dict[str, Any],
@@ -191,3 +198,9 @@ def _build_train_step_tensorboard_payload(
 
     payload["elapsed_sec"] = float(elapsed_sec)
     return payload
+
+
+_build_epoch_tensorboard_payload = build_epoch_tensorboard_payload
+_build_train_step_tensorboard_payload = build_train_step_tensorboard_payload
+_maybe_build_summary_writer = maybe_build_summary_writer
+_write_tensorboard_scalars = write_tensorboard_scalars
