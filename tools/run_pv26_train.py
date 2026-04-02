@@ -184,165 +184,14 @@ def _wrap_evaluator_postprocess_config(
 
 
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
-    paths_config = load_user_paths_config()
-    hyperparameters_config = load_user_hyperparameters_config()
-    preset_overrides = nested_get(hyperparameters_config, "pv26_train", "presets", default={})
-    if preset_overrides is None:
-        preset_overrides = {}
-    if not isinstance(preset_overrides, dict):
-        raise TypeError("pv26_train.presets must be a mapping")
-    unsupported_preset_overrides = sorted(set(preset_overrides) - {"default"})
-    if unsupported_preset_overrides:
-        raise KeyError(
-            "unsupported PV26 meta-train preset overrides: "
-            f"{unsupported_preset_overrides}; only 'default' is supported"
-        )
-
-    # ===== USER CONFIG: PV26 PREVIEW DATASETS =====
-    preview_dataset_keys = (
-        "pv26_exhaustive_bdd100k_det_100k",  # BDD 계열 preview 샘플
-        "pv26_exhaustive_aihub_traffic_seoul",  # AIHUB traffic preview 샘플
-        "pv26_exhaustive_aihub_obstacle_seoul",  # AIHUB obstacle preview 샘플
-        "aihub_lane_seoul",  # lane 계열 preview 샘플
+    return _scenario_ops.build_meta_train_presets(
+        repo_root=REPO_ROOT,
+        default_dataset_root=DEFAULT_DATASET_ROOT,
+        default_run_root=DEFAULT_RUN_ROOT,
+        load_user_paths_config=load_user_paths_config,
+        load_user_hyperparameters_config=load_user_hyperparameters_config,
+        nested_get=nested_get,
     )
-
-    # ===== USER CONFIG: PV26 META TRAIN / DEFAULT =====
-    default_dataset = DatasetConfig(root=DEFAULT_DATASET_ROOT)  # 기본 PV26 학습 dataset 루트
-    default_run = RunConfig(
-        run_root=DEFAULT_RUN_ROOT,
-        run_name_prefix="exhaustive_od_lane",  # run 디렉터리 prefix
-    )
-
-    # ===== HYPERPARAMETERS: PV26 META TRAIN / DEFAULT =====
-    default_train_defaults = TrainDefaultsConfig(
-        device="cuda:0",  # 학습 장치
-        batch_size=40,  # 기본 train/eval batch 크기
-        train_batches=-1,  # -1이면 전체 train 배치 사용
-        val_batches=-1,  # -1이면 전체 val 배치 사용
-        trunk_lr=1e-4,  # backbone learning rate
-        head_lr=5e-3,  # head learning rate
-        weight_decay=1e-4,  # optimizer weight decay
-        schedule="cosine",  # LR schedule 종류
-        amp=True,  # mixed precision 사용 여부
-        accumulate_steps=1,  # gradient accumulation step
-        grad_clip_norm=5.0,  # gradient clipping norm
-        val_every=1,  # 몇 epoch마다 validation할지
-        checkpoint_every=10,  # 몇 epoch마다 체크포인트를 남길지
-        num_workers=6,  # dataloader worker 수
-        pin_memory=True,  # host->GPU 전송 최적화
-        log_every_n_steps=20,  # step 로그 간격
-        profile_window=20,  # timing 평균 창 길이
-        profile_device_sync=True,  # timing 측정 전 device sync 여부
-        encode_train_batches_in_loader=True,  # train loader에서 미리 target encode 수행 여부
-        encode_val_batches_in_loader=True,  # val loader에서 미리 target encode 수행 여부
-        persistent_workers=True,  # epoch 사이 worker 유지 여부
-        prefetch_factor=2,  # worker별 prefetch 배치 수
-        backbone_variant="s",  # 기본 YOLO26 backbone scale
-    )
-    default_selection = SelectionConfig(
-        metric_path="val.losses.total.mean",  # phase 승급/종료 판단 metric
-        mode="min",  # metric이 낮을수록 좋은지 여부
-        eps=1e-8,  # improvement 계산용 안정화 상수
-    )
-    default_preview = PreviewConfig(
-        enabled=True,  # 학습 요약용 preview 생성 여부
-        split="val",  # preview 샘플을 뽑을 split
-        dataset_keys=preview_dataset_keys,  # preview 대상 dataset key
-        max_samples_per_dataset=1,  # dataset key별 preview 샘플 수
-        write_overlay=True,  # overlay 이미지 저장 여부
-    )
-
-    # ===== PHASE HYPERPARAMETERS: PV26 META TRAIN / DEFAULT =====
-    default_phases = (
-        _phase(
-            "head_warmup",
-            "stage_1_frozen_trunk_warmup",
-            min_epochs=4,  # 최소 epoch
-            max_epochs=12,  # 최대 epoch
-            patience=2,  # plateau 허용 횟수
-            min_improvement_pct=2.0,  # 승급 유지에 필요한 최소 개선율(%)
-            overrides={
-                "trunk_lr": 5e-5,  # stage 1 backbone LR
-                "head_lr": 3e-3,  # stage 1 head LR
-            },
-        ),
-        _phase(
-            "partial_unfreeze",
-            "stage_2_partial_unfreeze",
-            min_epochs=6,
-            max_epochs=18,
-            patience=2,
-            min_improvement_pct=0.5,
-            overrides={
-                "trunk_lr": 3e-5,  # stage 2 backbone LR
-                "head_lr": 8e-4,  # stage 2 head LR
-            },
-        ),
-        _phase(
-            "end_to_end_finetune",
-            "stage_3_end_to_end_finetune",
-            min_epochs=8,
-            max_epochs=24,
-            patience=3,
-            min_improvement_pct=0.25,
-            overrides={
-                "trunk_lr": 1e-5,  # stage 3 backbone LR
-                "head_lr": 4e-4,  # stage 3 head LR
-            },
-        ),
-        _phase(
-            "lane_family_finetune",
-            "stage_4_lane_family_finetune",
-            min_epochs=4,
-            max_epochs=12,
-            patience=3,
-            min_improvement_pct=0.25,
-            selection=SelectionConfig(
-                metric_path="val.metrics.lane_family.mean_f1",
-                mode="max",
-                eps=1e-8,
-            ),
-            loss_weights={
-                "det": 0.0,
-                "tl_attr": 0.0,
-                "lane": 1.5,
-                "stop_line": 1.25,
-                "crosswalk": 1.0,
-            },
-            freeze_policy="lane_family_heads_only",
-            overrides={
-                "trunk_lr": 0.0,
-                "head_lr": 2e-4,
-                "sampler_ratios": {
-                    "bdd100k": 0.0,
-                    "aihub_traffic": 0.0,
-                    "aihub_lane": 1.0,
-                    "aihub_obstacle": 0.0,
-                },
-            },
-        ),
-    )
-
-    presets = {
-        "default": MetaTrainScenario(
-            dataset=default_dataset,
-            run=default_run,
-            train_defaults=default_train_defaults,
-            selection=default_selection,
-            preview=default_preview,
-            phases=default_phases,
-        ),
-    }
-    return {
-        preset_name: _apply_user_config_to_preset(
-            preset_name,
-            scenario,
-            paths_config=paths_config,
-            hyperparameters_config=hyperparameters_config,
-            repo_root=REPO_ROOT,
-        )
-        for preset_name, scenario in presets.items()
-    }
 
 
 # Default CLI preset; override with `--preset`.
@@ -354,11 +203,14 @@ def _log_meta_train(message: str) -> None:
 
 
 def _preset_key(preset_name: str | Path) -> str:
-    return Path(preset_name).name
+    return _scenario_ops.preset_key(preset_name)
 
 
 def _default_scenario_path(preset_name: str | Path) -> Path:
-    return PRESET_PATH_ROOT / _preset_key(preset_name)
+    return _scenario_ops.default_scenario_path(
+        preset_name,
+        preset_path_root=PRESET_PATH_ROOT,
+    )
 
 
 def _validated_meta_train_scenario(scenario: MetaTrainScenario) -> MetaTrainScenario:
@@ -367,20 +219,24 @@ def _validated_meta_train_scenario(scenario: MetaTrainScenario) -> MetaTrainScen
 
 
 def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
-    preset_key = _preset_key(preset_name)
-    presets = _build_meta_train_presets()
-    if preset_key not in presets:
-        raise KeyError(f"unsupported PV26 meta-train preset: {preset_key}")
-    return _validated_meta_train_scenario(presets[preset_key])
+    return _scenario_ops.load_meta_train_scenario(
+        preset_name,
+        repo_root=REPO_ROOT,
+        default_dataset_root=DEFAULT_DATASET_ROOT,
+        default_run_root=DEFAULT_RUN_ROOT,
+        load_user_paths_config=load_user_paths_config,
+        load_user_hyperparameters_config=load_user_hyperparameters_config,
+        nested_get=nested_get,
+        validate_meta_train_scenario=_validate_meta_train_scenario,
+    )
 
 
 def _resolve_scenario_path(value: str | Path | None, *, fallback: Path) -> Path:
-    if value in {None, ""}:
-        return fallback
-    resolved = Path(value)
-    if not resolved.is_absolute():
-        resolved = (REPO_ROOT / resolved).resolve()
-    return resolved
+    return _scenario_ops.resolve_scenario_path(
+        value,
+        fallback=fallback,
+        repo_root=REPO_ROOT,
+    )
 
 
 def _scenario_snapshot_for_run(
@@ -388,32 +244,26 @@ def _scenario_snapshot_for_run(
     *,
     run_dir: Path,
 ) -> dict[str, Any]:
-    snapshot = _scenario_to_mapping(scenario)
-    snapshot["run"]["run_dir"] = str(run_dir)
-    return snapshot
+    return _scenario_ops.scenario_snapshot_for_run(
+        scenario,
+        run_dir=run_dir,
+        scenario_to_mapping=_scenario_to_mapping,
+    )
 
 
 def _load_meta_resume_manifest(run_dir: Path) -> dict[str, Any]:
-    manifest_path = run_dir / "meta_manifest.json"
-    if not manifest_path.is_file():
-        raise SystemExit(f"resume run is missing meta_manifest.json: {run_dir}")
-    manifest = _read_json(manifest_path)
-    if not isinstance(manifest.get("phases"), list):
-        raise SystemExit(f"resume run has invalid phases payload: {manifest_path}")
-    return manifest
+    return _scenario_ops.load_meta_resume_manifest(
+        run_dir,
+        read_json=_read_json,
+    )
 
 
 def _manifest_phase_signature(phases: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
-    signature: list[tuple[str, str]] = []
-    for index, entry in enumerate(phases, start=1):
-        if not isinstance(entry, dict):
-            raise SystemExit(f"resume manifest phase entry must be an object: index={index}")
-        signature.append((str(entry.get("name") or ""), str(entry.get("stage") or "")))
-    return tuple(signature)
+    return _scenario_ops.manifest_phase_signature(phases)
 
 
 def _scenario_phase_signature(scenario: MetaTrainScenario) -> tuple[tuple[str, str], ...]:
-    return tuple((str(phase.name), str(phase.stage)) for phase in scenario.phases)
+    return _scenario_ops.scenario_phase_signature(scenario)
 
 
 def _load_legacy_resume_scenario(
@@ -422,31 +272,16 @@ def _load_legacy_resume_scenario(
     preset_name: str,
     run_dir: Path,
 ) -> tuple[MetaTrainScenario, Path]:
-    scenario = load_meta_train_scenario(preset_name)
-    current_mapping = _scenario_to_mapping(scenario)
-    expected_sections = ("dataset", "train_defaults", "selection", "preview")
-    mismatched_sections = [
-        key
-        for key in expected_sections
-        if manifest.get(key) != current_mapping.get(key)
-    ]
-    if _manifest_phase_signature(manifest["phases"]) != _scenario_phase_signature(scenario):
-        mismatched_sections.append("phases")
-    if mismatched_sections:
-        raise SystemExit(
-            "legacy resume run is incompatible with the current preset; "
-            f"mismatched sections: {sorted(set(mismatched_sections))}"
-        )
-    scenario_mapping = current_mapping
-    scenario_mapping["run"]["run_dir"] = str(run_dir)
-    resumed_scenario = _validated_meta_train_scenario(
-        _meta_train_scenario_from_mapping(scenario_mapping, base_dir=REPO_ROOT)
+    return _scenario_ops.load_legacy_resume_scenario(
+        manifest,
+        preset_name=preset_name,
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+        load_meta_train_scenario=load_meta_train_scenario,
+        scenario_to_mapping=_scenario_to_mapping,
+        validate_meta_train_scenario=_validate_meta_train_scenario,
     )
-    scenario_path = _resolve_scenario_path(
-        manifest.get("scenario_path"),
-        fallback=_default_scenario_path(preset_name),
-    )
-    return resumed_scenario, scenario_path
 
 
 def _load_resume_scenario_from_snapshot(
@@ -454,12 +289,11 @@ def _load_resume_scenario_from_snapshot(
     *,
     run_dir: Path,
 ) -> MetaTrainScenario:
-    snapshot_mapping = dict(scenario_snapshot)
-    run_mapping = dict(snapshot_mapping.get("run") or {})
-    run_mapping["run_dir"] = str(run_dir)
-    snapshot_mapping["run"] = run_mapping
-    return _validated_meta_train_scenario(
-        _meta_train_scenario_from_mapping(snapshot_mapping, base_dir=REPO_ROOT)
+    return _scenario_ops.load_resume_scenario_from_snapshot(
+        scenario_snapshot,
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        validate_meta_train_scenario=_validate_meta_train_scenario,
     )
 
 
@@ -468,9 +302,11 @@ def _resume_scenario_path(
     *,
     preset_name: str,
 ) -> Path:
-    return _resolve_scenario_path(
-        manifest.get("scenario_path"),
-        fallback=_default_scenario_path(preset_name),
+    return _scenario_ops.resume_scenario_path(
+        manifest,
+        preset_name=preset_name,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
     )
 
 
@@ -479,26 +315,15 @@ def load_meta_train_resume_scenario(
     *,
     preset_name: str,
 ) -> tuple[MetaTrainScenario, Path]:
-    resolved_run_dir = Path(run_dir).expanduser().resolve()
-    if not resolved_run_dir.is_dir():
-        raise SystemExit(f"resume run directory does not exist: {resolved_run_dir}")
-    manifest = _load_meta_resume_manifest(resolved_run_dir)
-    if str(manifest.get("status") or "").strip() == "completed":
-        raise SystemExit(f"exact resume only supports incomplete runs: {resolved_run_dir}")
-
-    scenario_path = _resume_scenario_path(manifest, preset_name=preset_name)
-    scenario_snapshot = manifest.get("scenario_snapshot")
-    if isinstance(scenario_snapshot, dict):
-        scenario = _load_resume_scenario_from_snapshot(
-            scenario_snapshot,
-            run_dir=resolved_run_dir,
-        )
-        return scenario, scenario_path
-
-    return _load_legacy_resume_scenario(
-        manifest,
+    return _scenario_ops.load_meta_train_resume_scenario(
+        run_dir,
         preset_name=preset_name,
-        run_dir=resolved_run_dir,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+        load_meta_train_scenario=load_meta_train_scenario,
+        read_json=_read_json,
+        scenario_to_mapping=_scenario_to_mapping,
+        validate_meta_train_scenario=_validate_meta_train_scenario,
     )
 
 
@@ -509,95 +334,14 @@ class PhaseTransitionController:
         phase: PhaseConfig,
         selection: SelectionConfig,
     ) -> None:
-        self.phase = phase
-        self.selection = selection
-        self.best_metric_value: float | None = None
-        self.best_epoch: int | None = None
-        self.plateau_count = 0
-        self.last_improvement_pct: float | None = None
-        self.last_stop_state: dict[str, Any] | None = None
+        self._delegate = _runtime_ops.PhaseTransitionController(
+            phase=phase,
+            selection=selection,
+            resolve_summary_path=_resolve_summary_path,
+        )
 
-    def _is_better(self, candidate: float) -> bool:
-        if self.best_metric_value is None:
-            return True
-        if self.selection.mode == "min":
-            return candidate < self.best_metric_value
-        return candidate > self.best_metric_value
-
-    def _relative_improvement(self, previous_best: float, current_value: float) -> float:
-        denominator = max(abs(previous_best), float(self.selection.eps))
-        if self.selection.mode == "min":
-            return ((previous_best - current_value) / denominator) * 100.0
-        return ((current_value - previous_best) / denominator) * 100.0
-
-    def _phase_state(self, *, epoch: int, current_metric_value: float) -> dict[str, Any]:
-        return {
-            "epoch": int(epoch),
-            "metric_path": self.selection.metric_path,
-            "metric_mode": self.selection.mode,
-            "current_metric_value": float(current_metric_value),
-            "best_metric_value": self.best_metric_value,
-            "best_epoch": self.best_epoch,
-            "plateau_count": int(self.plateau_count),
-            "last_improvement_pct": self.last_improvement_pct,
-            "selection_metric_path": self.selection.metric_path,
-            "selection_mode": self.selection.mode,
-            "min_epochs": int(self.phase.min_epochs),
-            "max_epochs": int(self.phase.max_epochs),
-            "patience": int(self.phase.patience),
-            "min_improvement_pct": float(self.phase.min_improvement_pct),
-            "transition_eligible": bool(epoch >= self.phase.min_epochs),
-        }
-
-    def observe_epoch(self, epoch_summary: dict[str, Any]) -> dict[str, Any] | None:
-        epoch = int(epoch_summary["epoch"])
-        current_metric = float(_resolve_summary_path(epoch_summary, self.selection.metric_path))
-        if self.best_metric_value is None:
-            self.best_metric_value = current_metric
-            self.best_epoch = epoch
-            self.plateau_count = 0
-            self.last_improvement_pct = None
-        else:
-            better = self._is_better(current_metric)
-            if better:
-                improvement_pct = self._relative_improvement(self.best_metric_value, current_metric)
-                self.best_metric_value = current_metric
-                self.best_epoch = epoch
-                self.last_improvement_pct = improvement_pct
-                if epoch >= self.phase.min_epochs:
-                    if improvement_pct >= float(self.phase.min_improvement_pct):
-                        self.plateau_count = 0
-                    else:
-                        self.plateau_count += 1
-                else:
-                    self.plateau_count = 0
-            else:
-                self.last_improvement_pct = 0.0
-                if epoch >= self.phase.min_epochs:
-                    self.plateau_count += 1
-
-        phase_state = self._phase_state(epoch=epoch, current_metric_value=current_metric)
-        epoch_summary["phase_transition"] = dict(phase_state)
-
-        stop_state: dict[str, Any] | None = None
-        if epoch >= self.phase.max_epochs:
-            stop_state = {
-                "should_stop": True,
-                "reason": "max_epochs_reached",
-                "phase_state": phase_state,
-            }
-        elif epoch >= self.phase.min_epochs and self.plateau_count >= self.phase.patience:
-            stop_state = {
-                "should_stop": True,
-                "reason": "plateau",
-                "phase_state": phase_state,
-            }
-        self.last_stop_state = dict(stop_state) if stop_state is not None else None
-        return stop_state
-
-    def replay(self, epoch_summaries: list[dict[str, Any]]) -> None:
-        for summary in epoch_summaries:
-            self.observe_epoch(summary)
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
 
 
 def _configure_torch_multiprocessing() -> None:
