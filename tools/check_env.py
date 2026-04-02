@@ -34,6 +34,7 @@ from tools.od_bootstrap.presets import (
     build_sweep_preset,
     build_teacher_dataset_preset,
     build_teacher_eval_preset,
+    build_teacher_train_preset,
 )
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_PUBLISH_MARKER, FINAL_DATASET_RERUN_MODE
 
@@ -90,6 +91,19 @@ class ActionSpec:
     argv: tuple[str, ...]
     output_hint: str
     rerun_contract: str | None = None
+
+
+@dataclass(frozen=True)
+class ResumeCandidate:
+    run_dir: Path
+    run_name: str
+    status: str
+    completed_phases: int
+    total_phases: int
+    next_phase_name: str
+    next_phase_stage: str
+    resume_source: str
+    updated_at: str | None
 
 
 def _module_version(name: str) -> str | None:
@@ -724,6 +738,93 @@ def _build_pv26_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
     )
 
 
+def _phase_run_dir(run_dir: Path, phase_entry: dict[str, Any], *, phase_index: int) -> Path:
+    raw_run_dir = phase_entry.get("run_dir")
+    if raw_run_dir not in {None, ""}:
+        return Path(raw_run_dir)
+    return run_dir / f"phase_{phase_index}"
+
+
+def _resume_source_for_phase(run_dir: Path, phases: list[dict[str, Any]], *, phase_index: int) -> str | None:
+    phase_entry = phases[phase_index - 1]
+    phase_run_dir = _phase_run_dir(run_dir, phase_entry, phase_index=phase_index)
+    last_checkpoint = phase_run_dir / "checkpoints" / "last.pt"
+    if last_checkpoint.is_file():
+        return f"phase_{phase_index} last.pt"
+    if phase_index <= 1:
+        return None
+    previous_entry = phases[phase_index - 2]
+    previous_best = previous_entry.get("best_checkpoint_path")
+    if previous_best not in {None, ""} and Path(previous_best).is_file():
+        return f"phase_{phase_index - 1} best.pt -> phase_{phase_index}"
+    return None
+
+
+def _resume_candidate_from_run_dir(run_dir: Path) -> ResumeCandidate | None:
+    manifest_path = run_dir / "meta_manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = _json_load(manifest_path)
+    except Exception:
+        return None
+    phases = manifest.get("phases")
+    if not isinstance(phases, list) or not phases:
+        return None
+    status = str(manifest.get("status") or "unknown")
+    if status == "completed":
+        return None
+    completed_phases = 0
+    next_phase_index: int | None = None
+    next_phase_entry: dict[str, Any] | None = None
+    for index, entry in enumerate(phases, start=1):
+        if not isinstance(entry, dict):
+            return None
+        if str(entry.get("status") or "") == "completed":
+            completed_phases += 1
+            continue
+        next_phase_index = index
+        next_phase_entry = entry
+        break
+    if next_phase_index is None or next_phase_entry is None:
+        return None
+    resume_source = _resume_source_for_phase(run_dir, phases, phase_index=next_phase_index)
+    if resume_source is None:
+        return None
+    updated_at = manifest.get("updated_at")
+    updated_at_text = str(updated_at) if updated_at not in {None, ""} else None
+    return ResumeCandidate(
+        run_dir=run_dir,
+        run_name=run_dir.name,
+        status=status,
+        completed_phases=completed_phases,
+        total_phases=len(phases),
+        next_phase_name=str(next_phase_entry.get("name") or f"phase_{next_phase_index}"),
+        next_phase_stage=str(next_phase_entry.get("stage") or "unknown"),
+        resume_source=resume_source,
+        updated_at=updated_at_text,
+    )
+
+
+def _scan_pv26_resume_candidates(run_root: Path) -> list[ResumeCandidate]:
+    if not run_root.is_dir():
+        return []
+    candidates: list[ResumeCandidate] = []
+    for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
+        candidate = _resume_candidate_from_run_dir(child)
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            item.updated_at or "",
+            item.run_dir.stat().st_mtime_ns if item.run_dir.exists() else 0,
+            item.run_name,
+        ),
+        reverse=True,
+    )
+
+
 def _recommendation(flags: dict[str, bool]) -> str:
     if not flags.get("runtime_core", False):
         return "환경 런타임부터 정리하세요. 학습/평가 계열 메뉴는 잠깁니다."
@@ -825,6 +926,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("B", "최종 병합 데이터셋 생성", "python -m tools.od_bootstrap build-final-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-final-dataset"), str(paths.final_dataset_root), rerun_contract="overwrite: staging build 후 final root swap"),
         ActionSpec("C", "PV26 기본 학습", "python3 tools/run_pv26_train.py --preset default", (python_exe, "tools/run_pv26_train.py", "--preset", "default"), str(paths.pv26_run_root)),
         ActionSpec("D", "PV26 stage_3 VRAM stress", "interactive: batch/iter 입력 후 stage_3 peak VRAM probe", (), "TUI result panel only (no checkpoints / no run dir)", rerun_contract="short probe only: stage_3 train loop 일부만 실행"),
+        ActionSpec("E", "PV26 exact resume", "interactive: resumable run 목록에서 골라 same run dir exact resume", (), str(paths.pv26_run_root), rerun_contract="exact resume only: same run dir / same scenario"),
     )
 
 
@@ -873,6 +975,9 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
             blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
         if not flags.get("final_dataset", False):
             blockers.append("최종 병합 데이터셋이 아직 없습니다.")
+    elif action.key == "E":
+        if not flags.get("pv26_runtime", False):
+            blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
     return blockers
 
 
@@ -883,7 +988,62 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
         return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
     if action.key == "D":
         return "stage_3는 현재 전체 학습 단계 중 VRAM 상한을 보는 가장 좋은 proxy입니다. stage_4는 trunk/lane-family만 학습하므로 보통 더 낮습니다."
+    if action.key == "E":
+        return "resume는 exact resume only입니다. batch_size 변경이나 best/epoch 재시작은 별도 흐름으로 다루는 편이 안전합니다."
     return None
+
+
+def _bool_flag(value: bool) -> str:
+    return "true" if bool(value) else "false"
+
+
+def _teacher_action_config_lines(action: ActionSpec) -> list[str]:
+    if action.key not in {"3", "4", "5"}:
+        return []
+    teacher_name = {"3": "mobility", "4": "signal", "5": "obstacle"}[action.key]
+    scenario = build_teacher_train_preset(teacher_name)
+    return [
+        f"- config: teacher={scenario.teacher_name}, model=yolo26{scenario.model.model_size}, weights={scenario.model.weights}",
+        f"- classes: {', '.join(scenario.model.class_names)}",
+        f"- train: epochs={scenario.train.epochs}, batch={scenario.train.batch}, imgsz={scenario.train.imgsz}, device={scenario.train.device}",
+        f"- loader: workers={scenario.train.workers}, pin_memory={_bool_flag(scenario.train.pin_memory)}, persistent_workers={_bool_flag(scenario.train.persistent_workers)}, prefetch_factor={scenario.train.prefetch_factor}",
+        f"- runtime: amp={_bool_flag(scenario.train.amp)}, cache={_bool_flag(scenario.train.cache)}, optimizer={scenario.train.optimizer}, patience={scenario.train.patience}, save_period={scenario.train.save_period}",
+        f"- dataset root: {scenario.dataset.root}",
+    ]
+
+
+def _pv26_action_config_lines() -> list[str]:
+    from tools.run_pv26_train import (
+        _resolve_phase_selection,
+        _scenario_phase_defaults,
+        load_meta_train_scenario,
+    )
+
+    scenario = load_meta_train_scenario("default")
+    dataset_roots = [str(path) for path in scenario.dataset.roots]
+    train_defaults = scenario.train_defaults
+    lines = [
+        f"- dataset roots: {dataset_roots}",
+        f"- defaults: device={train_defaults.device}, backbone={train_defaults.backbone_variant}, batch={train_defaults.batch_size}, workers={train_defaults.num_workers}, amp={_bool_flag(train_defaults.amp)}",
+        f"- optimizer: trunk_lr={train_defaults.trunk_lr}, head_lr={train_defaults.head_lr}, weight_decay={train_defaults.weight_decay}, schedule={train_defaults.schedule}",
+        f"- runtime: val_every={train_defaults.val_every}, checkpoint_every={train_defaults.checkpoint_every}, accumulate_steps={train_defaults.accumulate_steps}, grad_clip={train_defaults.grad_clip_norm}",
+        f"- preview: enabled={_bool_flag(scenario.preview.enabled)}, split={scenario.preview.split}, per_dataset={scenario.preview.max_samples_per_dataset}, keys={list(scenario.preview.dataset_keys)}",
+    ]
+    for phase_index, phase in enumerate(scenario.phases, start=1):
+        phase_train = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+        phase_selection = _resolve_phase_selection(scenario.selection, phase)
+        lines.append(
+            f"- phase_{phase_index} {phase.name}: epochs={phase.min_epochs}-{phase.max_epochs}, patience={phase.patience}, metric={phase_selection.metric_path}({phase_selection.mode}), trunk_lr={phase_train.trunk_lr}, head_lr={phase_train.head_lr}"
+        )
+    return lines
+
+
+def _action_config_lines(action: ActionSpec) -> list[str]:
+    if action.key in {"3", "4", "5"}:
+        return _teacher_action_config_lines(action)
+    if action.key == "C":
+        return _pv26_action_config_lines()
+    return []
 
 
 def _default_stage3_stress_batch_size() -> int:
@@ -1115,6 +1275,7 @@ def _render_help(console: Console, snapshot: WorkspaceSnapshot) -> None:
                     f"- 전체 흐름 설명: {snapshot.paths.repo_root / 'README.md'}",
                     f"- bootstrap 전용 설명: {snapshot.paths.repo_root / 'tools' / 'od_bootstrap' / 'README.md'}",
                     "- 코드에서 빠른 조절 지점을 찾고 싶으면 `USER CONFIG`, `HYPERPARAMETERS`, `PHASE HYPERPARAMETERS`를 검색하세요.",
+                    "- `E` resume는 exact resume only입니다. 같은 run을 그대로 이어서만 재개합니다.",
                     "- 입력은 숫자/영문만 받습니다. yes/no 또는 y/n만 사용하세요.",
                 ]
             ),
@@ -1157,6 +1318,99 @@ def _pause(console: Console, *, prompt: str = "Enter=계속 > ") -> str:
     return "" if raw is None else raw.upper()
 
 
+def _render_resume_candidates(console: Console, candidates: list[ResumeCandidate]) -> None:
+    table = Table(box=box.SIMPLE_HEAVY, title="PV26 Exact Resume Candidates")
+    table.add_column("번호", justify="right", style="bold cyan")
+    table.add_column("Run")
+    table.add_column("상태")
+    table.add_column("진행도")
+    table.add_column("다음 phase")
+    table.add_column("Resume source")
+    table.add_column("Updated")
+    for index, item in enumerate(candidates, start=1):
+        table.add_row(
+            str(index),
+            item.run_name,
+            item.status,
+            f"{item.completed_phases}/{item.total_phases}",
+            f"{item.next_phase_name} ({item.next_phase_stage})",
+            item.resume_source,
+            item.updated_at or "-",
+        )
+    console.print(table)
+
+
+def _select_resume_candidate(console: Console, candidates: list[ResumeCandidate]) -> ResumeCandidate | None:
+    while True:
+        raw = _ascii_input(console, f"resume 번호 선택 (1-{len(candidates)}, Enter=취소) > ")
+        if raw is None or raw == "":
+            return None
+        if not raw.isdigit():
+            console.print("[yellow]숫자만 입력하세요.[/yellow]")
+            continue
+        index = int(raw)
+        if 1 <= index <= len(candidates):
+            return candidates[index - 1]
+        console.print("[yellow]목록에 있는 번호만 입력하세요.[/yellow]")
+
+
+def _run_pv26_resume(console: Console, snapshot: WorkspaceSnapshot, action: ActionSpec) -> bool:
+    candidates = _scan_pv26_resume_candidates(snapshot.paths.pv26_run_root)
+    console.clear(home=True)
+    if not candidates:
+        console.print(
+            Panel(
+                f"resumable run이 없습니다.\n검색 위치: {snapshot.paths.pv26_run_root}",
+                title=f"{action.key} {action.label}",
+                border_style="yellow",
+            )
+        )
+        return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
+
+    _render_resume_candidates(console, candidates)
+    selected = _select_resume_candidate(console, candidates)
+    if selected is None:
+        return True
+
+    resolved_action = ActionSpec(
+        key=action.key,
+        label=f"{action.label}: {selected.run_name}",
+        command_display=f"python3 tools/run_pv26_train.py --resume-run {selected.run_dir}",
+        argv=(sys.executable, "tools/run_pv26_train.py", "--resume-run", str(selected.run_dir)),
+        output_hint=str(selected.run_dir),
+        rerun_contract=action.rerun_contract,
+    )
+    console.clear(home=True)
+    lines = [
+        f"🎯 작업: {resolved_action.label}",
+        f"- 명령: {resolved_action.command_display}",
+        f"- 출력 위치: {resolved_action.output_hint}",
+        f"- 다음 phase: {selected.next_phase_name} ({selected.next_phase_stage})",
+        f"- resume source: {selected.resume_source}",
+        "- config source: selected run의 meta_manifest.json / scenario snapshot",
+    ]
+    if resolved_action.rerun_contract is not None:
+        lines.append(f"- 재실행 계약: {resolved_action.rerun_contract}")
+    console.print(Panel("\n".join(lines), title=f"{resolved_action.key} 실행 확인", border_style="cyan"))
+    if not _confirm(console):
+        return True
+
+    console.print("[bold green]실행을 시작합니다. 로그는 아래에 그대로 이어집니다.[/bold green]")
+    try:
+        completed = subprocess.run(resolved_action.argv, cwd=str(snapshot.paths.repo_root), check=False)
+    except KeyboardInterrupt:
+        console.print("\n[red]실행 중단됨[/red]")
+        return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
+    console.print(
+        Panel(
+            f"return code: {completed.returncode}\n다시 스캔해서 상태를 갱신합니다.",
+            title="실행 종료",
+            border_style="green" if completed.returncode == 0 else "yellow",
+        )
+    )
+    return _pause(console, prompt="Enter=상태 새로고침, Q=종료 > ") != "Q"
+
+
 def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapshot) -> bool:
     blockers = _action_blockers(action, snapshot)
     if blockers:
@@ -1171,6 +1425,8 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
 
     if action.key == "D":
         return _run_stage3_stress_probe(console, snapshot, action)
+    if action.key == "E":
+        return _run_pv26_resume(console, snapshot, action)
 
     resolved_action = action
 
@@ -1180,6 +1436,11 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
         f"- 명령: {resolved_action.command_display}",
         f"- 출력 위치: {resolved_action.output_hint}",
     ]
+    try:
+        config_lines = _action_config_lines(resolved_action)
+    except Exception as exc:
+        config_lines = [f"- config load error: {exc}"]
+    lines.extend(config_lines)
     if resolved_action.rerun_contract is not None:
         lines.append(f"- 재실행 계약: {resolved_action.rerun_contract}")
     advisory = _action_advisory(resolved_action, snapshot)
@@ -1213,7 +1474,7 @@ def _interactive_loop(console: Console) -> int:
         actions = _action_catalog(snapshot.paths)
         _render_dashboard(console, snapshot, actions)
 
-        raw = _ascii_input(console, "선택 (1-9/A-D/H/R/Q) > ")
+        raw = _ascii_input(console, "선택 (1-9/A-E/H/R/Q) > ")
         if raw is None:
             return 0
         if raw == "":

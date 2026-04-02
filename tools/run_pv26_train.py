@@ -4,6 +4,7 @@ import argparse
 from collections import Counter
 import json
 from dataclasses import asdict, replace
+import os
 from pathlib import Path
 import site
 import time
@@ -368,6 +369,113 @@ def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
     return scenario
 
 
+def _resolve_scenario_path(value: str | Path | None, *, fallback: Path) -> Path:
+    if value in {None, ""}:
+        return fallback
+    resolved = Path(value)
+    if not resolved.is_absolute():
+        resolved = (REPO_ROOT / resolved).resolve()
+    return resolved
+
+
+def _scenario_snapshot_for_run(
+    scenario: MetaTrainScenario,
+    *,
+    run_dir: Path,
+) -> dict[str, Any]:
+    snapshot = _scenario_to_mapping(scenario)
+    snapshot["run"]["run_dir"] = str(run_dir)
+    return snapshot
+
+
+def _load_meta_resume_manifest(run_dir: Path) -> dict[str, Any]:
+    manifest_path = run_dir / "meta_manifest.json"
+    if not manifest_path.is_file():
+        raise SystemExit(f"resume run is missing meta_manifest.json: {run_dir}")
+    manifest = _read_json(manifest_path)
+    if not isinstance(manifest.get("phases"), list):
+        raise SystemExit(f"resume run has invalid phases payload: {manifest_path}")
+    return manifest
+
+
+def _manifest_phase_signature(phases: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
+    signature: list[tuple[str, str]] = []
+    for index, entry in enumerate(phases, start=1):
+        if not isinstance(entry, dict):
+            raise SystemExit(f"resume manifest phase entry must be an object: index={index}")
+        signature.append((str(entry.get("name") or ""), str(entry.get("stage") or "")))
+    return tuple(signature)
+
+
+def _scenario_phase_signature(scenario: MetaTrainScenario) -> tuple[tuple[str, str], ...]:
+    return tuple((str(phase.name), str(phase.stage)) for phase in scenario.phases)
+
+
+def _load_legacy_resume_scenario(
+    manifest: dict[str, Any],
+    *,
+    preset_name: str,
+    run_dir: Path,
+) -> tuple[MetaTrainScenario, Path]:
+    scenario = load_meta_train_scenario(preset_name)
+    current_mapping = _scenario_to_mapping(scenario)
+    expected_sections = ("dataset", "train_defaults", "selection", "preview")
+    mismatched_sections = [
+        key
+        for key in expected_sections
+        if manifest.get(key) != current_mapping.get(key)
+    ]
+    if _manifest_phase_signature(manifest["phases"]) != _scenario_phase_signature(scenario):
+        mismatched_sections.append("phases")
+    if mismatched_sections:
+        raise SystemExit(
+            "legacy resume run is incompatible with the current preset; "
+            f"mismatched sections: {sorted(set(mismatched_sections))}"
+        )
+    scenario_mapping = current_mapping
+    scenario_mapping["run"]["run_dir"] = str(run_dir)
+    resumed_scenario = _meta_train_scenario_from_mapping(scenario_mapping, base_dir=REPO_ROOT)
+    _validate_meta_train_scenario(resumed_scenario)
+    scenario_path = _resolve_scenario_path(
+        manifest.get("scenario_path"),
+        fallback=PRESET_PATH_ROOT / Path(preset_name).name,
+    )
+    return resumed_scenario, scenario_path
+
+
+def load_meta_train_resume_scenario(
+    run_dir: str | Path,
+    *,
+    preset_name: str,
+) -> tuple[MetaTrainScenario, Path]:
+    resolved_run_dir = Path(run_dir).expanduser().resolve()
+    if not resolved_run_dir.is_dir():
+        raise SystemExit(f"resume run directory does not exist: {resolved_run_dir}")
+    manifest = _load_meta_resume_manifest(resolved_run_dir)
+    if str(manifest.get("status") or "").strip() == "completed":
+        raise SystemExit(f"exact resume only supports incomplete runs: {resolved_run_dir}")
+
+    scenario_path = _resolve_scenario_path(
+        manifest.get("scenario_path"),
+        fallback=PRESET_PATH_ROOT / Path(preset_name).name,
+    )
+    scenario_snapshot = manifest.get("scenario_snapshot")
+    if isinstance(scenario_snapshot, dict):
+        snapshot_mapping = dict(scenario_snapshot)
+        run_mapping = dict(snapshot_mapping.get("run") or {})
+        run_mapping["run_dir"] = str(resolved_run_dir)
+        snapshot_mapping["run"] = run_mapping
+        scenario = _meta_train_scenario_from_mapping(snapshot_mapping, base_dir=REPO_ROOT)
+        _validate_meta_train_scenario(scenario)
+        return scenario, scenario_path
+
+    return _load_legacy_resume_scenario(
+        manifest,
+        preset_name=preset_name,
+        run_dir=resolved_run_dir,
+    )
+
+
 class PhaseTransitionController:
     def __init__(
         self,
@@ -470,6 +578,20 @@ def _configure_torch_multiprocessing() -> None:
     try:
         import torch
 
+        torch_module_path = getattr(torch, "__file__", None)
+        if torch_module_path:
+            torch_lib_dir = Path(torch_module_path).resolve().parent / "lib"
+            if torch_lib_dir.is_dir():
+                current_ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+                ld_library_entries = [entry for entry in current_ld_library_path.split(os.pathsep) if entry]
+                torch_lib_dir_str = str(torch_lib_dir)
+                if torch_lib_dir_str not in ld_library_entries:
+                    os.environ["LD_LIBRARY_PATH"] = (
+                        os.pathsep.join((torch_lib_dir_str, *ld_library_entries))
+                        if ld_library_entries
+                        else torch_lib_dir_str
+                    )
+
         # Large encoded CPU batches can exhaust process file descriptors when
         # PyTorch shares storages via duplicated FDs.
         if torch.multiprocessing.get_sharing_strategy() != "file_system":
@@ -553,6 +675,15 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
 
 
 def _sample_preview_selection(dataset: PV26CanonicalDataset, preview: PreviewConfig) -> list[dict[str, Any]]:
+    return _sample_preview_selection_with_logging(dataset, preview, progress_callback=None)
+
+
+def _sample_preview_selection_with_logging(
+    dataset: PV26CanonicalDataset,
+    preview: PreviewConfig,
+    *,
+    progress_callback: Any = None,
+) -> list[dict[str, Any]]:
     if not preview.enabled:
         return []
     selected: list[dict[str, Any]] = []
@@ -570,8 +701,18 @@ def _sample_preview_selection(dataset: PV26CanonicalDataset, preview: PreviewCon
         if all(count >= preview.max_samples_per_dataset for count in counts.values()):
             break
     missing = [dataset_key for dataset_key, count in counts.items() if count < preview.max_samples_per_dataset]
-    if missing:
-        raise RuntimeError(f"missing preview samples for dataset keys: {missing}")
+    if missing and progress_callback is not None:
+        available = {dataset_key: count for dataset_key, count in counts.items() if count > 0}
+        if available:
+            progress_callback(
+                "preview selection fallback: "
+                f"missing keys={missing}, available_counts={available}, split={preview.split}"
+            )
+        else:
+            progress_callback(
+                "preview selection skipped: "
+                f"no samples found for requested keys={list(preview.dataset_keys)} on split={preview.split}"
+            )
     for index in selected_indices:
         selected.append(dataset[index])
     return selected
@@ -934,6 +1075,9 @@ def run_stage3_vram_stress(
         train_batches=resolved_stress_iters,
         val_batches=0,
         log_every_n_steps=1,
+        num_workers=0,
+        persistent_workers=False,
+        prefetch_factor=None,
     )
 
     _log_meta_train(f"loading scenario for stage3 stress: {scenario_path}")
@@ -947,6 +1091,7 @@ def run_stage3_vram_stress(
         f"stage3 stress config: batch_size={resolved_batch_size}, stress_iters={resolved_stress_iters}, "
         f"device={phase_train_config.device}, backbone={phase_train_config.backbone_variant}"
     )
+    _log_meta_train("stage3 stress loader override: num_workers=0, persistent_workers=False, prefetch_factor=None")
     train_loader, _ = _build_phase_train_loaders(dataset, train_config=phase_train_config)
     trainer = _build_phase_trainer(phase, phase_train_config)
     trainer.oom_guard = False
@@ -1030,14 +1175,25 @@ def run_meta_train_scenario(
     _log_meta_train(f"dataset split counts: {dict(sorted(split_counts.items()))}")
     _log_meta_train(f"dataset key counts: {dict(sorted(dataset_key_counts.items()))}")
     _log_meta_train("selecting preview samples")
-    preview_samples = _sample_preview_selection(dataset, scenario.preview)
+    preview_samples = _sample_preview_selection_with_logging(
+        dataset,
+        scenario.preview,
+        progress_callback=_log_meta_train,
+    )
     _log_meta_train(f"prepared {len(preview_samples)} preview samples")
+    scenario_snapshot = _scenario_snapshot_for_run(scenario, run_dir=run_dir)
     manifest, manifest_path = _load_or_init_meta_manifest(
         scenario=scenario,
         scenario_path=scenario_path,
         run_dir=run_dir,
         meta_manifest_version=META_MANIFEST_VERSION,
+        scenario_snapshot=scenario_snapshot,
     )
+    if all(
+        _phase_entry_is_completed(entry, phase)
+        for entry, phase in zip(manifest["phases"], scenario.phases)
+    ):
+        raise SystemExit(f"exact resume only supports incomplete runs: {run_dir}")
 
     previous_best_checkpoint: Path | None = None
     for phase_index, phase in enumerate(scenario.phases, start=1):
@@ -1131,6 +1287,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Run a short stage-3 training probe and report peak CUDA VRAM usage.",
     )
     parser.add_argument(
+        "--resume-run",
+        default=None,
+        help="Resume an existing incomplete meta-train run directory exactly in place.",
+    )
+    parser.add_argument(
         "--stress-batch-size",
         type=int,
         default=None,
@@ -1149,8 +1310,17 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
     preset_name = str(args.preset)
-    scenario = load_meta_train_scenario(preset_name)
-    scenario_path = PRESET_PATH_ROOT / preset_name
+    if bool(args.stage3_vram_stress) and args.resume_run is not None:
+        raise SystemExit("--resume-run cannot be combined with --stage3-vram-stress")
+    if args.resume_run is not None:
+        scenario, scenario_path = load_meta_train_resume_scenario(
+            args.resume_run,
+            preset_name=preset_name,
+        )
+        _log_meta_train(f"resuming exact meta-train run: {scenario.run.run_dir}")
+    else:
+        scenario = load_meta_train_scenario(preset_name)
+        scenario_path = PRESET_PATH_ROOT / preset_name
     if bool(args.stage3_vram_stress):
         summary = run_stage3_vram_stress(
             scenario,

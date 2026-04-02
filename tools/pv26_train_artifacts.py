@@ -26,6 +26,20 @@ def safe_name(value: str) -> str:
     return normalized or "meta_train"
 
 
+def _normalize_scenario_snapshot(snapshot: dict[str, Any] | None, *, run_dir: Path) -> dict[str, Any] | None:
+    if snapshot is None:
+        return None
+    normalized = json_ready(snapshot)
+    if not isinstance(normalized, dict):
+        return None
+    run_mapping = normalized.get("run")
+    if not isinstance(run_mapping, dict):
+        run_mapping = {}
+    run_mapping["run_dir"] = str(run_dir)
+    normalized["run"] = run_mapping
+    return normalized
+
+
 def resolve_meta_run_dir(scenario: Any, *, scenario_path: Path) -> Path:
     if scenario.run.run_dir is not None:
         return Path(scenario.run.run_dir)
@@ -46,8 +60,10 @@ def build_meta_manifest_template(
     scenario_path: Path,
     run_dir: Path,
     meta_manifest_version: str,
+    scenario_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    normalized_snapshot = _normalize_scenario_snapshot(scenario_snapshot, run_dir=run_dir)
+    manifest = {
         "version": meta_manifest_version,
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -80,6 +96,9 @@ def build_meta_manifest_template(
             for index, phase in enumerate(scenario.phases)
         ],
     }
+    if normalized_snapshot is not None:
+        manifest["scenario_snapshot"] = normalized_snapshot
+    return manifest
 
 
 def load_or_init_meta_manifest(
@@ -88,15 +107,23 @@ def load_or_init_meta_manifest(
     scenario_path: Path,
     run_dir: Path,
     meta_manifest_version: str,
+    scenario_snapshot: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     manifest_path = run_dir / "meta_manifest.json"
+    normalized_snapshot = _normalize_scenario_snapshot(scenario_snapshot, run_dir=run_dir)
     if manifest_path.is_file():
-        return read_json(manifest_path), manifest_path
+        manifest = read_json(manifest_path)
+        if normalized_snapshot is not None and not isinstance(manifest.get("scenario_snapshot"), dict):
+            manifest["scenario_snapshot"] = normalized_snapshot
+            manifest["updated_at"] = now_iso()
+            write_json(manifest_path, manifest)
+        return manifest, manifest_path
     manifest = build_meta_manifest_template(
         scenario=scenario,
         scenario_path=scenario_path,
         run_dir=run_dir,
         meta_manifest_version=meta_manifest_version,
+        scenario_snapshot=normalized_snapshot,
     )
     write_json(manifest_path, manifest)
     return manifest, manifest_path

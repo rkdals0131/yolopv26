@@ -241,12 +241,12 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("phase=2/3", message)
         self.assertIn("epoch=4/8", message)
         self.assertIn("iter=120/1650", message)
-        self.assertIn("phase_name=partial_unfreeze", message)
+        self.assertIn("partial_unfreeze", message)
+        self.assertIn("[#.......]   7%", message)
         self.assertGreaterEqual(message.count("\n"), 3)
-        self.assertIn("  progress: ", message)
-        self.assertIn("  loss: ", message)
-        self.assertIn("  iter_ms: ", message)
-        self.assertIn("  timing_ms: ", message)
+        self.assertIn("  |  ", message)
+        self.assertIn("  loss  |  total=1.2500", message)
+        self.assertIn("  timing_ms  |  load=20.000", message)
 
     def test_tensorboard_train_step_payload_keeps_only_core_scalars(self) -> None:
         import model.engine.trainer as pv26_trainer

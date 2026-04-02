@@ -321,6 +321,19 @@ def _format_fraction(current: int, total: int | None) -> str:
     return f"{current}/{total}"
 
 
+def _join_segments(*segments: Any) -> str:
+    return "  |  ".join(str(item) for item in segments if item not in {None, ""})
+
+
+def _progress_meter(current: int, total: int | None, *, width: int = 8) -> str | None:
+    if total is None or int(total) <= 0:
+        return None
+    bounded_current = max(0, min(int(current), int(total)))
+    ratio = float(bounded_current) / float(int(total))
+    filled = min(width, max(0, int(round(ratio * float(width)))))
+    return f"[{'#' * filled}{'.' * (width - filled)}] {ratio * 100.0:3.0f}%"
+
+
 def _format_train_progress_log(
     *,
     stage: str,
@@ -338,51 +351,45 @@ def _format_train_progress_log(
     losses: dict[str, Any],
     profile_summary: dict[str, Any],
 ) -> str:
-    header_tokens = ["[train]"]
-    if phase_index is not None and phase_count is not None:
-        header_tokens.append(f"phase={_format_fraction(int(phase_index), int(phase_count))}")
-    if phase_name:
-        header_tokens.append(f"phase_name={phase_name}")
-    header_tokens.extend(
-        [
-            f"stage={stage}",
-            f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-            f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-            f"global_step={int(global_step)}",
-        ]
+    header = _join_segments(
+        "[train]",
+        f"phase={_format_fraction(int(phase_index), int(phase_count))}" if phase_index is not None and phase_count is not None else None,
+        phase_name,
+        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
+        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
     )
     iteration_profile = profile_summary["iteration_sec"]
+    progress_line = _join_segments(
+        _progress_meter(int(batch_index), int(total_batches) if total_batches is not None else None),
+        f"elapsed={_format_duration(elapsed_sec)}",
+        f"eta={_format_duration(eta_sec)}",
+        f"step={int(global_step)}",
+    )
+    loss_primary = _join_segments(
+        "loss",
+        f"total={float(losses.get('total', float('nan'))):.4f}",
+        f"det={float(losses.get('det', float('nan'))):.4f}",
+        f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
+        f"lane={float(losses.get('lane', float('nan'))):.4f}",
+    )
+    loss_secondary = _join_segments(
+        f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
+        f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
+    )
     return "\n".join(
         [
-            " ".join(header_tokens),
-            (
-                "  progress: "
-                f"epoch_start={epoch_started_at_iso} "
-                f"elapsed={_format_duration(elapsed_sec)} "
-                f"eta={_format_duration(eta_sec)}"
-            ),
-            (
-                "  loss: "
-                f"total={float(losses.get('total', float('nan'))):.4f} "
-                f"det={float(losses.get('det', float('nan'))):.4f} "
-                f"tl={float(losses.get('tl_attr', float('nan'))):.4f} "
-                f"lane={float(losses.get('lane', float('nan'))):.4f} "
-                f"stop={float(losses.get('stop_line', float('nan'))):.4f} "
-                f"cross={float(losses.get('crosswalk', float('nan'))):.4f}"
-            ),
-            (
-                "  iter_ms: "
-                f"mean={iteration_profile['mean'] * 1000.0:.3f} "
-                f"p50={iteration_profile['p50'] * 1000.0:.3f} "
-                f"p99={iteration_profile['p99'] * 1000.0:.3f}"
-            ),
-            (
-                "  timing_ms: "
-                f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.3f} "
-                f"load={profile_summary['load_sec']['mean'] * 1000.0:.3f} "
-                f"fwd={profile_summary['forward_sec']['mean'] * 1000.0:.3f} "
-                f"loss={profile_summary['loss_sec']['mean'] * 1000.0:.3f} "
-                f"bwd={profile_summary['backward_sec']['mean'] * 1000.0:.3f}"
+            header,
+            f"  {progress_line}",
+            f"  {loss_primary}",
+            f"  {loss_secondary}",
+            "  "
+            + _join_segments(
+                "timing_ms",
+                f"load={profile_summary['load_sec']['mean'] * 1000.0:.3f}",
+                f"fwd={profile_summary['forward_sec']['mean'] * 1000.0:.3f}",
+                f"loss={profile_summary['loss_sec']['mean'] * 1000.0:.3f}",
+                f"bwd={profile_summary['backward_sec']['mean'] * 1000.0:.3f}",
+                f"total={iteration_profile['mean'] * 1000.0:.3f}",
             ),
         ]
     )

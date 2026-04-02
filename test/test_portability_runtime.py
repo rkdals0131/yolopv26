@@ -54,7 +54,7 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
             )
         )
 
-    def test_check_env_action_catalog_includes_stage3_vram_stress(self) -> None:
+    def test_check_env_action_catalog_includes_stage3_vram_stress_and_resume(self) -> None:
         from tools.check_env import PipelinePaths, _action_catalog
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -79,10 +79,107 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
 
             actions = _action_catalog(paths)
 
-        action = next(item for item in actions if item.key == "D")
-        self.assertIn("interactive", action.command_display)
-        self.assertEqual(action.argv, ())
-        self.assertIn("stage_3", action.label)
+        stress_action = next(item for item in actions if item.key == "D")
+        self.assertIn("interactive", stress_action.command_display)
+        self.assertEqual(stress_action.argv, ())
+        self.assertIn("stage_3", stress_action.label)
+        resume_action = next(item for item in actions if item.key == "E")
+        self.assertIn("resume", resume_action.command_display)
+        self.assertEqual(resume_action.argv, ())
+        self.assertIn("resume", resume_action.label.lower())
+
+    def test_scan_pv26_resume_candidates_filters_completed_runs(self) -> None:
+        from tools.check_env import _scan_pv26_resume_candidates
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "pv26_runs"
+            resumable_run = run_root / "run_active"
+            completed_run = run_root / "run_done"
+            (resumable_run / "phase_2" / "checkpoints").mkdir(parents=True, exist_ok=True)
+            (completed_run).mkdir(parents=True, exist_ok=True)
+            (resumable_run / "phase_2" / "checkpoints" / "last.pt").write_text("checkpoint", encoding="utf-8")
+            (resumable_run / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "updated_at": "2026-04-02T12:34:56",
+                        "phases": [
+                            {
+                                "name": "head_warmup",
+                                "stage": "stage_1_frozen_trunk_warmup",
+                                "status": "completed",
+                                "run_dir": str(resumable_run / "phase_1"),
+                                "best_checkpoint_path": str(resumable_run / "phase_1" / "checkpoints" / "best.pt"),
+                            },
+                            {
+                                "name": "partial_unfreeze",
+                                "stage": "stage_2_partial_unfreeze",
+                                "status": "running",
+                                "run_dir": str(resumable_run / "phase_2"),
+                                "best_checkpoint_path": None,
+                            },
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (completed_run / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "updated_at": "2026-04-02T12:35:00",
+                        "phases": [
+                            {
+                                "name": "head_warmup",
+                                "stage": "stage_1_frozen_trunk_warmup",
+                                "status": "completed",
+                            }
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            candidates = _scan_pv26_resume_candidates(run_root)
+
+        self.assertEqual([item.run_name for item in candidates], ["run_active"])
+        self.assertEqual(candidates[0].resume_source, "phase_2 last.pt")
+        self.assertEqual(candidates[0].next_phase_stage, "stage_2_partial_unfreeze")
+
+    def test_action_config_lines_include_teacher_and_pv26_hyperparameters(self) -> None:
+        from tools.check_env import ActionSpec, _action_config_lines
+
+        teacher_lines = _action_config_lines(
+            ActionSpec(
+                key="3",
+                label="Mobility teacher 학습",
+                command_display="python -m tools.od_bootstrap train --teacher mobility",
+                argv=(),
+                output_hint="unused",
+            )
+        )
+        pv26_lines = _action_config_lines(
+            ActionSpec(
+                key="C",
+                label="PV26 기본 학습",
+                command_display="python3 tools/run_pv26_train.py --preset default",
+                argv=(),
+                output_hint="unused",
+            )
+        )
+
+        self.assertTrue(any("teacher=mobility" in line for line in teacher_lines))
+        self.assertTrue(any("epochs=" in line for line in teacher_lines))
+        self.assertTrue(any("dataset roots:" in line for line in pv26_lines))
+        self.assertTrue(any("phase_1" in line for line in pv26_lines))
+        self.assertTrue(any("preview:" in line for line in pv26_lines))
 
     def test_stage3_stress_action_resolution_appends_runtime_parameters(self) -> None:
         from rich.console import Console

@@ -19,9 +19,11 @@ from ._trainer_reporting import (
     _format_fraction,
     _format_train_progress_log,
     _is_successful_summary,
+    _join_segments,
     _loss_stats_from_summaries,
     _mean_metric_tree,
     _percentile,
+    _progress_meter,
     _successful_summaries,
     _sum_counts,
     _timing_profile,
@@ -98,12 +100,16 @@ def _phase_label(
     phase_count: int | None,
     phase_name: str | None,
 ) -> str:
-    tokens: list[str] = []
-    if phase_index is not None and phase_count is not None:
-        tokens.append(f"phase={_format_fraction(int(phase_index), int(phase_count))}")
-    if phase_name:
-        tokens.append(f"phase_name={phase_name}")
-    return " ".join(tokens)
+    return _join_segments(
+        f"phase={_format_fraction(int(phase_index), int(phase_count))}" if phase_index is not None and phase_count is not None else None,
+        phase_name,
+    )
+
+
+def _tqdm_bar_format(*, include_postfix: bool = True) -> str:
+    if include_postfix:
+        return "{desc}  {bar:8} {percentage:3.0f}%  |  {postfix}"
+    return "{desc}  {bar:8} {percentage:3.0f}%"
 
 
 def _train_progress_desc(
@@ -116,22 +122,15 @@ def _train_progress_desc(
     epoch_total: int | None,
     epoch_started_at_iso: str,
 ) -> str:
-    tokens = ["[train]"]
-    phase_label = _phase_label(
-        phase_index=phase_index,
-        phase_count=phase_count,
-        phase_name=phase_name,
+    return _join_segments(
+        "[train]",
+        _phase_label(
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
+        ),
+        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
     )
-    if phase_label:
-        tokens.append(phase_label)
-    tokens.extend(
-        [
-            f"stage={stage}",
-            f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-            f"epoch_start={epoch_started_at_iso}",
-        ]
-    )
-    return " ".join(tokens)
 
 
 def _train_progress_postfix(
@@ -143,28 +142,11 @@ def _train_progress_postfix(
     losses: dict[str, Any],
     profile_summary: dict[str, Any],
 ) -> str:
-    iteration_profile = profile_summary["iteration_sec"]
-    return " ".join(
-        [
-            f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-            f"elapsed={_format_duration(elapsed_sec)}",
-            f"eta={_format_duration(eta_sec)}",
-            f"loss={float(losses.get('total', float('nan'))):.4f}",
-            (
-                "iter_ms="
-                f"{iteration_profile['mean'] * 1000.0:.1f}/"
-                f"{iteration_profile['p50'] * 1000.0:.1f}/"
-                f"{iteration_profile['p99'] * 1000.0:.1f}"
-            ),
-            (
-                "timing_ms="
-                f"wait:{profile_summary['wait_sec']['mean'] * 1000.0:.1f},"
-                f"load:{profile_summary['load_sec']['mean'] * 1000.0:.1f},"
-                f"fwd:{profile_summary['forward_sec']['mean'] * 1000.0:.1f},"
-                f"loss:{profile_summary['loss_sec']['mean'] * 1000.0:.1f},"
-                f"bwd:{profile_summary['backward_sec']['mean'] * 1000.0:.1f}"
-            ),
-        ]
+    return _join_segments(
+        _progress_meter(int(batch_index), int(total_batches) if total_batches is not None else None),
+        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
+        f"loss={float(losses.get('total', float('nan'))):.4f}",
+        f"eta={_format_duration(eta_sec)}",
     )
 
 
@@ -192,22 +174,15 @@ def _validate_progress_desc(
     epoch_total: int | None,
     epoch_started_at_iso: str,
 ) -> str:
-    tokens = ["[val]"]
-    phase_label = _phase_label(
-        phase_index=phase_index,
-        phase_count=phase_count,
-        phase_name=phase_name,
+    return _join_segments(
+        "[val]",
+        _phase_label(
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
+        ),
+        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
     )
-    if phase_label:
-        tokens.append(phase_label)
-    tokens.extend(
-        [
-            f"stage={stage}",
-            f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-            f"epoch_start={epoch_started_at_iso}",
-        ]
-    )
-    return " ".join(tokens)
 
 
 def _validate_progress_postfix(
@@ -219,26 +194,11 @@ def _validate_progress_postfix(
     profile_summary: dict[str, Any],
     batch_summary: dict[str, Any],
 ) -> str:
-    iteration_profile = profile_summary["iteration_sec"]
     losses = dict(batch_summary.get("losses", {}))
-    return " ".join(
-        [
-            f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-            f"elapsed={_format_duration(elapsed_sec)}",
-            f"eta={_format_duration(eta_sec)}",
-            f"loss={float(losses.get('total', float('nan'))):.4f}",
-            (
-                "iter_ms="
-                f"{iteration_profile['mean'] * 1000.0:.1f}/"
-                f"{iteration_profile['p50'] * 1000.0:.1f}/"
-                f"{iteration_profile['p99'] * 1000.0:.1f}"
-            ),
-            (
-                "timing_ms="
-                f"wait:{profile_summary['wait_sec']['mean'] * 1000.0:.1f},"
-                f"eval:{profile_summary['evaluate_sec']['mean'] * 1000.0:.1f}"
-            ),
-        ]
+    return _join_segments(
+        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
+        f"loss={float(losses.get('total', float('nan'))):.4f}",
+        f"eta={_format_duration(eta_sec)}",
     )
 
 
@@ -258,51 +218,41 @@ def _format_validate_progress_log(
     batch_summary: dict[str, Any],
     profile_summary: dict[str, Any],
 ) -> str:
-    header_tokens = ["[val]"]
-    phase_label = _phase_label(
-        phase_index=phase_index,
-        phase_count=phase_count,
-        phase_name=phase_name,
-    )
-    if phase_label:
-        header_tokens.append(phase_label)
-    header_tokens.extend(
-        [
-            f"stage={stage}",
-            f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-            f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-        ]
+    header = _join_segments(
+        "[val]",
+        _phase_label(
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
+        ),
+        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
+        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
     )
     iteration_profile = profile_summary["iteration_sec"]
     losses = dict(batch_summary.get("losses", {}))
     return "\n".join(
         [
-            " ".join(header_tokens),
-            (
-                "  progress: "
-                f"epoch_start={epoch_started_at_iso} "
-                f"elapsed={_format_duration(elapsed_sec)} "
-                f"eta={_format_duration(eta_sec)}"
+            header,
+            "  "
+            + _join_segments(
+                f"elapsed={_format_duration(elapsed_sec)}",
+                f"eta={_format_duration(eta_sec)}",
+                f"total={float(losses.get('total', float('nan'))):.4f}",
             ),
-            (
-                "  loss: "
-                f"total={float(losses.get('total', float('nan'))):.4f} "
-                f"det={float(losses.get('det', float('nan'))):.4f} "
-                f"tl={float(losses.get('tl_attr', float('nan'))):.4f} "
-                f"lane={float(losses.get('lane', float('nan'))):.4f} "
-                f"stop={float(losses.get('stop_line', float('nan'))):.4f} "
-                f"cross={float(losses.get('crosswalk', float('nan'))):.4f}"
+            "  "
+            + _join_segments(
+                "loss",
+                f"det={float(losses.get('det', float('nan'))):.4f}",
+                f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
+                f"lane={float(losses.get('lane', float('nan'))):.4f}",
+                f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
+                f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
             ),
-            (
-                "  iter_ms: "
-                f"mean={iteration_profile['mean'] * 1000.0:.3f} "
-                f"p50={iteration_profile['p50'] * 1000.0:.3f} "
-                f"p99={iteration_profile['p99'] * 1000.0:.3f}"
-            ),
-            (
-                "  timing_ms: "
-                f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.3f} "
-                f"eval={profile_summary['evaluate_sec']['mean'] * 1000.0:.3f}"
+            "  "
+            + _join_segments(
+                "timing_ms",
+                f"eval={profile_summary['evaluate_sec']['mean'] * 1000.0:.3f}",
+                f"total={iteration_profile['mean'] * 1000.0:.3f}",
             ),
         ]
     )
@@ -352,6 +302,7 @@ def run_train_epoch(
                 epoch_started_at_iso=epoch_started_at_iso,
             ),
             dynamic_ncols=True,
+            bar_format=_tqdm_bar_format(),
             leave=True,
         )
     while max_batches is None or batch_index < max_batches:
@@ -405,8 +356,8 @@ def run_train_epoch(
                 ),
                 refresh=True,
             )
-        elif should_log:
-            print(
+        if should_log:
+            _emit_progress_message(
                 _format_train_progress_log(
                     stage=trainer.stage,
                     phase_index=phase_index,
@@ -423,7 +374,7 @@ def run_train_epoch(
                     losses=step_summary["losses"],
                     profile_summary=step_summary["profile"],
                 ),
-                flush=True,
+                progress_bar=progress_bar,
             )
     if progress_bar is not None:
         progress_bar.close()
@@ -501,6 +452,7 @@ def run_validate_epoch(
                 epoch_started_at_iso=epoch_started_at_iso,
             ),
             dynamic_ncols=True,
+            bar_format=_tqdm_bar_format(),
             leave=True,
         )
     while max_batches is None or batch_index < max_batches:
@@ -552,8 +504,8 @@ def run_validate_epoch(
                 ),
                 refresh=True,
             )
-        elif should_log:
-            print(
+        if should_log:
+            _emit_progress_message(
                 _format_validate_progress_log(
                     stage=trainer.stage,
                     phase_index=phase_index,
@@ -569,7 +521,7 @@ def run_validate_epoch(
                     batch_summary=batch_summary,
                     profile_summary=profile_summary,
                 ),
-                flush=True,
+                progress_bar=progress_bar,
             )
         if raw_batch is not None:
             raw_batches.append(raw_batch)
