@@ -60,6 +60,18 @@ class PV26LossSpecTests(unittest.TestCase):
         self.assertIn("stage_3_end_to_end_finetune", markdown)
         self.assertIn("stage_4_lane_family_finetune", markdown)
 
+    def test_build_loss_spec_returns_fresh_nested_mutables(self) -> None:
+        spec = build_loss_spec()
+        spec["model_contract"]["od_classes"].append("mutated")
+        spec["heads"]["lane"]["target_encoding"]["polyline_points"] = -1
+        spec["training_schedule"][0]["loss_weights"]["lane"] = -1.0
+
+        fresh = build_loss_spec()
+
+        self.assertNotIn("mutated", fresh["model_contract"]["od_classes"])
+        self.assertEqual(fresh["heads"]["lane"]["target_encoding"]["polyline_points"], 16)
+        self.assertEqual(fresh["training_schedule"][0]["loss_weights"]["lane"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
