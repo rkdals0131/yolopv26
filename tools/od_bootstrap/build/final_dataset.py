@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from common.paths import resolve_latest_root
 from common.pv26_schema import OD_CLASSES
 
 FINAL_DATASET_PUBLISH_MARKER = "final_dataset_publish_state.json"
@@ -20,17 +21,6 @@ FINAL_DATASET_RERUN_MODE = "atomic_overwrite"
 
 def _default_io_workers() -> int:
     return max(1, min(8, os.cpu_count() or 1))
-
-
-def _resolve_latest_root(root: Path) -> Path:
-    if root.name != "latest":
-        return root.resolve()
-    parent = root.parent.resolve()
-    candidates = [path for path in parent.iterdir() if path.is_dir()]
-    if not candidates:
-        raise FileNotFoundError(f"no exhaustive OD runs found under {parent}")
-    return sorted(candidates, key=lambda item: item.name)[-1]
-
 
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +214,7 @@ def build_pv26_exhaustive_od_lane_dataset(
     copy_images: bool = False,
     log_fn: Any | None = None,
 ) -> dict[str, Any]:
-    resolved_exhaustive_root = _resolve_latest_root(exhaustive_od_root)
+    resolved_exhaustive_root = resolve_latest_root(exhaustive_od_root)
     resolved_aihub_root = aihub_canonical_root.resolve()
     resolved_output_root = output_root.resolve()
     staging_root = _staging_root_for(resolved_output_root)

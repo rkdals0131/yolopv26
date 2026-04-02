@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-import json
 from pathlib import Path
 from typing import Any
+
+from common.io import write_json as _write_json
 
 try:
     import torch
@@ -159,8 +160,6 @@ def write_checkpoint_audit(
     specs: tuple[TeacherCheckpointSpec, ...] = DEFAULT_TEACHER_CHECKPOINT_SPECS,
 ) -> dict[str, Any]:
     payload = audit_teacher_checkpoints(specs)
-    resolved_output = Path(output_path).resolve()
-    resolved_output.parent.mkdir(parents=True, exist_ok=True)
-    resolved_output.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    resolved_output = _write_json(output_path, payload)
     payload["output_path"] = str(resolved_output)
     return payload

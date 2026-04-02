@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.build.image_list import build_sample_uid, load_image_list
+from tools.od_bootstrap.build.image_list import ImageListEntry, build_sample_uid, load_image_list, write_image_list
 
 
 class ODBootstrapImageListTests(unittest.TestCase):
@@ -116,3 +116,28 @@ class ODBootstrapImageListTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "duplicate sample_uid"):
                 load_image_list(manifest_path)
+
+    def test_write_image_list_serializes_entries_as_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "image_list.jsonl"
+            entries = (
+                ImageListEntry(
+                    sample_id="scene_a",
+                    sample_uid=build_sample_uid(dataset_key="aihub_traffic_seoul", split="train", sample_id="scene_a"),
+                    image_path=root / "images" / "scene_a.png",
+                    scene_path=root / "labels_scene" / "scene_a.json",
+                    dataset_root=root,
+                    dataset_key="aihub_traffic_seoul",
+                    split="train",
+                    source_name="aihub",
+                ),
+            )
+
+            written_path = write_image_list(manifest_path, entries)
+
+            self.assertEqual(written_path, manifest_path)
+            self.assertEqual(
+                manifest_path.read_text(encoding="utf-8"),
+                json.dumps(entries[0].to_dict(), ensure_ascii=True) + "\n",
+            )

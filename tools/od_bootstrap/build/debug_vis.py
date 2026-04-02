@@ -15,6 +15,7 @@ try:
 except Exception:  # pragma: no cover - Pillow is expected in the repo test env.
     Image = None
 
+from common.io import write_json as _write_json
 from common.overlay import render_overlay
 from .review import canonical_scene_to_overlay_scene
 from .image_list import build_sample_uid, load_image_list
@@ -26,13 +27,6 @@ DEFAULT_DEBUG_VIS_SEED = 26
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return path
-
 
 def _reset_debug_vis_dir(debug_vis_dir: Path) -> None:
     if debug_vis_dir.exists():
