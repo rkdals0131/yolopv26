@@ -172,7 +172,11 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
 
             (final_dataset_root / "meta").mkdir(parents=True, exist_ok=True)
             (final_dataset_root / "meta" / "final_dataset_summary.json").write_text(
-                json.dumps({"sample_count": 250, "dataset_counts": {"aihub_lane_seoul": 50}}, indent=2) + "\n",
+                json.dumps({"sample_count": 250, "dataset_counts": {"aihub_lane_seoul": 50}, "rerun_mode": "atomic_overwrite"}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (final_dataset_root / "meta" / "final_dataset_publish_state.json").write_text(
+                json.dumps({"status": "completed", "rerun_mode": "atomic_overwrite"}, indent=2) + "\n",
                 encoding="utf-8",
             )
 
@@ -229,6 +233,8 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("mobility 100", row_map["Teacher dataset"].current_state)
         self.assertEqual(row_map["Calibration"].verdict, "OK")
         self.assertEqual(row_map["PV26 학습 run"].verdict, "OK")
+        self.assertIn("rerun=atomic_overwrite", row_map["최종 병합 데이터셋"].current_state)
+        self.assertIn("publish=completed", row_map["최종 병합 데이터셋"].current_state)
         self.assertIn("phases=4/4", row_map["PV26 학습 run"].current_state)
         self.assertIn("stage=stage_4_lane_family_finetune", row_map["PV26 학습 run"].current_state)
         self.assertIn("backbone=s", row_map["PV26 학습 run"].current_state)

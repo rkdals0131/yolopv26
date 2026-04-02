@@ -35,6 +35,7 @@ from tools.od_bootstrap.presets import (
     build_teacher_dataset_preset,
     build_teacher_eval_preset,
 )
+from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_PUBLISH_MARKER, FINAL_DATASET_RERUN_MODE
 
 TEACHER_NAMES = ("mobility", "signal", "obstacle")
 STAGE_ICON = {
@@ -88,6 +89,7 @@ class ActionSpec:
     command_display: str
     argv: tuple[str, ...]
     output_hint: str
+    rerun_contract: str | None = None
 
 
 def _module_version(name: str) -> str | None:
@@ -323,6 +325,25 @@ def _final_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
     return _compact_or_manifest(
         summary_path=meta_root / "final_dataset_summary.json",
         manifest_path=meta_root / "final_dataset_manifest.json",
+    )
+
+
+def _final_dataset_publish_marker(dataset_root: Path) -> dict[str, Any] | None:
+    return _json_load_if_exists(dataset_root / "meta" / FINAL_DATASET_PUBLISH_MARKER)
+
+
+def _final_dataset_staging_roots(dataset_root: Path) -> list[Path]:
+    parent = dataset_root.parent
+    if not parent.is_dir():
+        return []
+    prefix = f".{dataset_root.name}.staging."
+    return sorted(
+        [
+            child
+            for child in parent.iterdir()
+            if child.is_dir() and child.name.startswith(prefix)
+        ],
+        key=lambda item: item.name,
     )
 
 
@@ -612,6 +633,8 @@ def _build_exhaustive_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, boo
 
 def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
     summary = _final_dataset_summary(paths.final_dataset_root)
+    marker = _final_dataset_publish_marker(paths.final_dataset_root)
+    staging_roots = _final_dataset_staging_roots(paths.final_dataset_root)
     manifest_path = paths.final_dataset_root / "meta" / "final_dataset_manifest.json"
     if summary is not None:
         sample_count = _safe_int(summary.get("sample_count"))
@@ -619,19 +642,34 @@ def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, 
         state = f"samples={sample_count}"
         if isinstance(dataset_counts, dict) and dataset_counts:
             state += " | " + ", ".join(f"{key}={_safe_int(value)}" for key, value in sorted(dataset_counts.items()))
+        rerun_mode = None
+        if isinstance(marker, dict):
+            rerun_mode = str(marker.get("rerun_mode") or "").strip() or None
+        if rerun_mode is None:
+            rerun_mode = str(summary.get("rerun_mode") or "").strip() or None
+        if rerun_mode:
+            state += f" | rerun={rerun_mode}"
+        if isinstance(marker, dict):
+            status = str(marker.get("status") or "").strip()
+            if status:
+                state += f" | publish={status}"
         verdict = "OK"
         ready = True
     else:
         has_any = manifest_path.exists()
         if not has_any and paths.final_dataset_root.is_dir():
             has_any = any(paths.final_dataset_root.iterdir())
-        state = "없음" if not has_any else "meta는 일부 있지만 summary를 못 찾음"
-        verdict = "WARN" if has_any else "TODO"
+        if staging_roots:
+            state = f"staging leftover={len(staging_roots)} | final root 미완성"
+            verdict = "WARN"
+        else:
+            state = "없음" if not has_any else "meta는 일부 있지만 summary를 못 찾음"
+            verdict = "WARN" if has_any else "TODO"
         ready = False
     return (
         StageRow(
             stage="최종 병합 데이터셋",
-            success_condition="`meta/final_dataset_manifest.json` 또는 summary가 존재",
+            success_condition=f"`meta/final_dataset_manifest.json` 또는 summary가 존재하고 rerun contract는 `{FINAL_DATASET_RERUN_MODE}`",
             current_state=state,
             verdict=verdict,
         ),
@@ -784,7 +822,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("8", "Obstacle teacher 평가", "python -m tools.od_bootstrap eval --teacher obstacle", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "obstacle"), str(paths.teacher_eval_root / "obstacle")),
         ActionSpec("9", "Calibration", "python -m tools.od_bootstrap calibrate", (python_exe, "-m", "tools.od_bootstrap", "calibrate"), str(paths.calibration_root)),
         ActionSpec("A", "Exhaustive OD 생성", "python -m tools.od_bootstrap build-exhaustive-od", (python_exe, "-m", "tools.od_bootstrap", "build-exhaustive-od"), str(paths.exhaustive_dataset_root)),
-        ActionSpec("B", "최종 병합 데이터셋 생성", "python -m tools.od_bootstrap build-final-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-final-dataset"), str(paths.final_dataset_root)),
+        ActionSpec("B", "최종 병합 데이터셋 생성", "python -m tools.od_bootstrap build-final-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-final-dataset"), str(paths.final_dataset_root), rerun_contract="overwrite: staging build 후 final root swap"),
         ActionSpec("C", "PV26 기본 학습", "python3 tools/run_pv26_train.py --preset default", (python_exe, "tools/run_pv26_train.py", "--preset", "default"), str(paths.pv26_run_root)),
     )
 
@@ -840,6 +878,8 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
 def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | None:
     if action.key == "A" and not snapshot.flags.get("calibration", False):
         return "calibration이 없어서 fallback class policy로 진행될 수 있습니다."
+    if action.key == "B":
+        return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
     return None
 
 
@@ -964,6 +1004,8 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
         f"- 명령: {action.command_display}",
         f"- 출력 위치: {action.output_hint}",
     ]
+    if action.rerun_contract is not None:
+        lines.append(f"- 재실행 계약: {action.rerun_contract}")
     advisory = _action_advisory(action, snapshot)
     if advisory is not None:
         lines.append(f"- 주의: {advisory}")

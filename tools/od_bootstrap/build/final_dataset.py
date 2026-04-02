@@ -14,6 +14,9 @@ import yaml
 
 from common.pv26_schema import OD_CLASSES
 
+FINAL_DATASET_PUBLISH_MARKER = "final_dataset_publish_state.json"
+FINAL_DATASET_RERUN_MODE = "atomic_overwrite"
+
 
 def _default_io_workers() -> int:
     return max(1, min(8, os.cpu_count() or 1))
@@ -56,6 +59,11 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
+def _write_json_replace(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
 def _copy_optional(source_path: Path, target_path: Path) -> bool:
     if source_path.is_file():
         _copy_json(source_path, target_path)
@@ -63,6 +71,53 @@ def _copy_optional(source_path: Path, target_path: Path) -> bool:
     if target_path.exists():
         raise FileExistsError(f"target path already exists without source file: {target_path}")
     return False
+
+
+def _staging_root_for(output_root: Path) -> Path:
+    parent = output_root.parent
+    stamp = int(time.time() * 1_000_000)
+    return parent / f".{output_root.name}.staging.{os.getpid()}.{stamp}"
+
+
+def _write_publish_marker(
+    root: Path,
+    *,
+    status: str,
+    final_output_root: Path,
+    sample_count: int | None = None,
+    dataset_counts: dict[str, int] | None = None,
+) -> Path:
+    marker_path = root / "meta" / FINAL_DATASET_PUBLISH_MARKER
+    payload: dict[str, Any] = {
+        "artifact": "pv26_final_dataset",
+        "status": status,
+        "rerun_mode": FINAL_DATASET_RERUN_MODE,
+        "final_output_root": str(final_output_root),
+        "staging_root": str(root),
+    }
+    if sample_count is not None:
+        payload["sample_count"] = int(sample_count)
+    if dataset_counts is not None:
+        payload["dataset_counts"] = dict(sorted(dataset_counts.items()))
+    _write_json_replace(marker_path, payload)
+    return marker_path
+
+
+def _publish_staging_root(*, staging_root: Path, output_root: Path) -> None:
+    output_parent = output_root.parent
+    output_parent.mkdir(parents=True, exist_ok=True)
+    backup_root: Path | None = None
+    if output_root.exists():
+        backup_root = output_parent / f".{output_root.name}.backup.{os.getpid()}.{int(time.time() * 1_000_000)}"
+        output_root.rename(backup_root)
+    try:
+        staging_root.rename(output_root)
+    except Exception:
+        if backup_root is not None and backup_root.exists() and not output_root.exists():
+            backup_root.rename(output_root)
+        raise
+    if backup_root is not None and backup_root.exists():
+        shutil.rmtree(backup_root)
 
 
 def _reserve_final_sample_id(
@@ -172,7 +227,12 @@ def build_pv26_exhaustive_od_lane_dataset(
     resolved_exhaustive_root = _resolve_latest_root(exhaustive_od_root)
     resolved_aihub_root = aihub_canonical_root.resolve()
     resolved_output_root = output_root.resolve()
-    resolved_output_root.mkdir(parents=True, exist_ok=True)
+    staging_root = _staging_root_for(resolved_output_root)
+    _write_publish_marker(
+        staging_root,
+        status="building",
+        final_output_root=resolved_output_root,
+    )
 
     dataset_counts = Counter()
     sample_rows: list[dict[str, Any]] = []
@@ -182,6 +242,7 @@ def build_pv26_exhaustive_od_lane_dataset(
 
     if log_fn is not None:
         log_fn(f"finalize output_root={resolved_output_root}")
+        log_fn(f"finalize staging_root={staging_root}")
         log_fn(f"finalize exhaustive_od_root={resolved_exhaustive_root}")
         log_fn(f"finalize aihub_canonical_root={resolved_aihub_root}")
 
@@ -205,9 +266,9 @@ def build_pv26_exhaustive_od_lane_dataset(
         )
         source_image_path = resolved_exhaustive_root / "images" / split / image_name
         final_image_name = f"{final_sample_id}{source_image_path.suffix.lower()}"
-        scene_output_path = resolved_output_root / "labels_scene" / split / f"{final_sample_id}.json"
-        det_output_path = resolved_output_root / "labels_det" / split / f"{final_sample_id}.txt"
-        image_output_path = resolved_output_root / "images" / split / final_image_name
+        scene_output_path = staging_root / "labels_scene" / split / f"{final_sample_id}.json"
+        det_output_path = staging_root / "labels_det" / split / f"{final_sample_id}.txt"
+        image_output_path = staging_root / "images" / split / final_image_name
         final_scene = _build_final_scene(
             scene=scene,
             final_sample_id=final_sample_id,
@@ -247,9 +308,9 @@ def build_pv26_exhaustive_od_lane_dataset(
         )
         source_image_path = resolved_aihub_root / "images" / split / image_name
         final_image_name = f"{final_sample_id}{source_image_path.suffix.lower()}"
-        scene_output_path = resolved_output_root / "labels_scene" / split / f"{final_sample_id}.json"
-        det_output_path = resolved_output_root / "labels_det" / split / f"{final_sample_id}.txt"
-        image_output_path = resolved_output_root / "images" / split / final_image_name
+        scene_output_path = staging_root / "labels_scene" / split / f"{final_sample_id}.json"
+        det_output_path = staging_root / "labels_det" / split / f"{final_sample_id}.txt"
+        image_output_path = staging_root / "images" / split / final_image_name
         final_scene = _build_final_scene(
             scene=scene,
             final_sample_id=final_sample_id,
@@ -308,7 +369,7 @@ def build_pv26_exhaustive_od_lane_dataset(
     _run_tasks(lane_tasks, stage_name="lane")
     copied_samples = len(sample_rows)
 
-    meta_root = resolved_output_root / "meta"
+    meta_root = staging_root / "meta"
     meta_root.mkdir(parents=True, exist_ok=True)
     (meta_root / "class_map_det.yaml").write_text(
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
@@ -321,6 +382,7 @@ def build_pv26_exhaustive_od_lane_dataset(
         "output_root": str(resolved_output_root),
         "sample_count": copied_samples,
         "dataset_counts": dict(sorted(dataset_counts.items())),
+        "rerun_mode": FINAL_DATASET_RERUN_MODE,
         "samples": sample_rows,
     }
     summary_path = meta_root / "final_dataset_manifest.json"
@@ -330,9 +392,26 @@ def build_pv26_exhaustive_od_lane_dataset(
         json.dumps({key: value for key, value in summary.items() if key != "samples"}, indent=2, ensure_ascii=True) + "\n",
         encoding="utf-8",
     )
+    _write_publish_marker(
+        staging_root,
+        status="ready",
+        final_output_root=resolved_output_root,
+        sample_count=copied_samples,
+        dataset_counts=dict(dataset_counts),
+    )
+    _publish_staging_root(staging_root=staging_root, output_root=resolved_output_root)
+    publish_marker_path = _write_publish_marker(
+        resolved_output_root,
+        status="completed",
+        final_output_root=resolved_output_root,
+        sample_count=copied_samples,
+        dataset_counts=dict(dataset_counts),
+    )
     return {
         "output_root": str(resolved_output_root),
-        "manifest_path": str(summary_path),
+        "manifest_path": str(resolved_output_root / "meta" / "final_dataset_manifest.json"),
+        "publish_marker_path": str(publish_marker_path),
+        "rerun_mode": FINAL_DATASET_RERUN_MODE,
         "sample_count": copied_samples,
         "dataset_counts": dict(sorted(dataset_counts.items())),
     }
