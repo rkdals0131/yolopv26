@@ -7,12 +7,21 @@ from dataclasses import asdict, replace
 import os
 from pathlib import Path
 import site
+import sys
 import time
 from types import MethodType
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-site.addsitedir(str(REPO_ROOT))
+
+
+def _ensure_repo_root_on_path() -> None:
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        site.addsitedir(repo_root)
+
+
+_ensure_repo_root_on_path()
 
 from common.overlay import render_overlay
 from common.user_config import (
@@ -359,14 +368,25 @@ def _log_meta_train(message: str) -> None:
     print(f"[meta_train] {message}", flush=True)
 
 
+def _preset_key(preset_name: str | Path) -> str:
+    return Path(preset_name).name
+
+
+def _default_scenario_path(preset_name: str | Path) -> Path:
+    return PRESET_PATH_ROOT / _preset_key(preset_name)
+
+
+def _validated_meta_train_scenario(scenario: MetaTrainScenario) -> MetaTrainScenario:
+    _validate_meta_train_scenario(scenario)
+    return scenario
+
+
 def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
-    preset_key = Path(preset_name).name
+    preset_key = _preset_key(preset_name)
     presets = _build_meta_train_presets()
     if preset_key not in presets:
         raise KeyError(f"unsupported PV26 meta-train preset: {preset_key}")
-    scenario = presets[preset_key]
-    _validate_meta_train_scenario(scenario)
-    return scenario
+    return _validated_meta_train_scenario(presets[preset_key])
 
 
 def _resolve_scenario_path(value: str | Path | None, *, fallback: Path) -> Path:
@@ -434,13 +454,39 @@ def _load_legacy_resume_scenario(
         )
     scenario_mapping = current_mapping
     scenario_mapping["run"]["run_dir"] = str(run_dir)
-    resumed_scenario = _meta_train_scenario_from_mapping(scenario_mapping, base_dir=REPO_ROOT)
-    _validate_meta_train_scenario(resumed_scenario)
+    resumed_scenario = _validated_meta_train_scenario(
+        _meta_train_scenario_from_mapping(scenario_mapping, base_dir=REPO_ROOT)
+    )
     scenario_path = _resolve_scenario_path(
         manifest.get("scenario_path"),
-        fallback=PRESET_PATH_ROOT / Path(preset_name).name,
+        fallback=_default_scenario_path(preset_name),
     )
     return resumed_scenario, scenario_path
+
+
+def _load_resume_scenario_from_snapshot(
+    scenario_snapshot: dict[str, Any],
+    *,
+    run_dir: Path,
+) -> MetaTrainScenario:
+    snapshot_mapping = dict(scenario_snapshot)
+    run_mapping = dict(snapshot_mapping.get("run") or {})
+    run_mapping["run_dir"] = str(run_dir)
+    snapshot_mapping["run"] = run_mapping
+    return _validated_meta_train_scenario(
+        _meta_train_scenario_from_mapping(snapshot_mapping, base_dir=REPO_ROOT)
+    )
+
+
+def _resume_scenario_path(
+    manifest: dict[str, Any],
+    *,
+    preset_name: str,
+) -> Path:
+    return _resolve_scenario_path(
+        manifest.get("scenario_path"),
+        fallback=_default_scenario_path(preset_name),
+    )
 
 
 def load_meta_train_resume_scenario(
@@ -455,18 +501,13 @@ def load_meta_train_resume_scenario(
     if str(manifest.get("status") or "").strip() == "completed":
         raise SystemExit(f"exact resume only supports incomplete runs: {resolved_run_dir}")
 
-    scenario_path = _resolve_scenario_path(
-        manifest.get("scenario_path"),
-        fallback=PRESET_PATH_ROOT / Path(preset_name).name,
-    )
+    scenario_path = _resume_scenario_path(manifest, preset_name=preset_name)
     scenario_snapshot = manifest.get("scenario_snapshot")
     if isinstance(scenario_snapshot, dict):
-        snapshot_mapping = dict(scenario_snapshot)
-        run_mapping = dict(snapshot_mapping.get("run") or {})
-        run_mapping["run_dir"] = str(resolved_run_dir)
-        snapshot_mapping["run"] = run_mapping
-        scenario = _meta_train_scenario_from_mapping(snapshot_mapping, base_dir=REPO_ROOT)
-        _validate_meta_train_scenario(scenario)
+        scenario = _load_resume_scenario_from_snapshot(
+            scenario_snapshot,
+            run_dir=resolved_run_dir,
+        )
         return scenario, scenario_path
 
     return _load_legacy_resume_scenario(
@@ -1045,6 +1086,110 @@ def _cuda_memory_stats(device: Any) -> dict[str, Any]:
     }
 
 
+def _existing_dataset_roots(scenario: MetaTrainScenario) -> list[Path]:
+    dataset_roots = list(scenario.dataset.roots)
+    missing_roots = [str(path) for path in dataset_roots if not path.is_dir()]
+    if missing_roots:
+        raise SystemExit(f"canonical dataset roots not found: {missing_roots}")
+    return dataset_roots
+
+
+def _stage3_stress_train_config(
+    scenario: MetaTrainScenario,
+    *,
+    batch_size: int,
+    stress_iters: int,
+) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
+    phase_index, phase = _find_phase_by_stage(scenario, stage="stage_3_end_to_end_finetune")
+    phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+    phase_train_config = replace(
+        phase_train_config,
+        batch_size=batch_size,
+        train_batches=stress_iters,
+        val_batches=0,
+        log_every_n_steps=1,
+        num_workers=0,
+        persistent_workers=False,
+        prefetch_factor=None,
+    )
+    return phase_index, phase, phase_train_config
+
+
+def _run_stage3_probe(
+    trainer: PV26Trainer,
+    train_loader: Any,
+    *,
+    scenario: MetaTrainScenario,
+    phase_index: int,
+    phase_name: str,
+    phase_train_config: TrainDefaultsConfig,
+    stress_iters: int,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    import torch
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(trainer.device)
+    status = "ok"
+    train_summary: dict[str, Any] | None = None
+    error: str | None = None
+    try:
+        train_summary = trainer.train_epoch(
+            train_loader,
+            epoch=1,
+            epoch_total=1,
+            phase_index=phase_index,
+            phase_count=len(scenario.phases),
+            phase_name=phase_name,
+            max_batches=stress_iters,
+            step_log_path=None,
+            log_every_n_steps=1,
+            profile_window=phase_train_config.profile_window,
+            profile_device_sync=phase_train_config.profile_device_sync,
+        )
+    except RuntimeError as exc:
+        if not _is_oom_error(exc):
+            raise
+        status = "oom"
+        error = str(exc)
+        torch.cuda.empty_cache()
+    return status, train_summary, error
+
+
+def _stage3_stress_summary(
+    *,
+    scenario_path: Path,
+    phase_index: int,
+    phase: PhaseConfig,
+    trainer: PV26Trainer,
+    train_config: TrainDefaultsConfig,
+    batch_size: int,
+    stress_iters: int,
+    duration_sec: float,
+    status: str,
+    train_summary: dict[str, Any] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    result = {
+        "mode": "stage3_vram_stress",
+        "status": status,
+        "scenario_path": str(scenario_path),
+        "phase_index": int(phase_index),
+        "phase_name": phase.name,
+        "phase_stage": phase.stage,
+        "device": str(trainer.device),
+        "backbone_variant": train_config.backbone_variant,
+        "batch_size": int(batch_size),
+        "stress_iters": int(stress_iters),
+        "duration_sec": duration_sec,
+        "memory": _cuda_memory_stats(trainer.device),
+        "train_summary": _json_ready(train_summary) if train_summary is not None else None,
+        "error": error,
+    }
+    if status == "oom":
+        result["recommendation"] = "reduce batch_size and rerun the stage3 stress probe"
+    return result
+
+
 def run_stage3_vram_stress(
     scenario: MetaTrainScenario,
     *,
@@ -1052,8 +1197,6 @@ def run_stage3_vram_stress(
     batch_size: int | None = None,
     stress_iters: int | None = None,
 ) -> dict[str, Any]:
-    import torch
-
     _configure_torch_multiprocessing()
     resolved_batch_size = int(batch_size) if batch_size is not None else int(scenario.train_defaults.batch_size)
     resolved_stress_iters = int(stress_iters) if stress_iters is not None else 12
@@ -1062,22 +1205,11 @@ def run_stage3_vram_stress(
     if resolved_stress_iters <= 0:
         raise ValueError("stress iterations must be > 0")
 
-    dataset_roots = list(scenario.dataset.roots)
-    missing_roots = [str(path) for path in dataset_roots if not path.is_dir()]
-    if missing_roots:
-        raise SystemExit(f"canonical dataset roots not found: {missing_roots}")
-
-    phase_index, phase = _find_phase_by_stage(scenario, stage="stage_3_end_to_end_finetune")
-    phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
-    phase_train_config = replace(
-        phase_train_config,
+    dataset_roots = _existing_dataset_roots(scenario)
+    phase_index, phase, phase_train_config = _stage3_stress_train_config(
+        scenario,
         batch_size=resolved_batch_size,
-        train_batches=resolved_stress_iters,
-        val_batches=0,
-        log_every_n_steps=1,
-        num_workers=0,
-        persistent_workers=False,
-        prefetch_factor=None,
+        stress_iters=resolved_stress_iters,
     )
 
     _log_meta_train(f"loading scenario for stage3 stress: {scenario_path}")
@@ -1100,53 +1232,30 @@ def run_stage3_vram_stress(
             f"stage3 VRAM stress requires a CUDA device, got device={trainer.device}"
         )
 
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats(trainer.device)
     run_started_at = time.perf_counter()
-    train_summary: dict[str, Any] | None = None
-    status = "ok"
-    error: str | None = None
-    try:
-        train_summary = trainer.train_epoch(
-            train_loader,
-            epoch=1,
-            epoch_total=1,
-            phase_index=phase_index,
-            phase_count=len(scenario.phases),
-            phase_name=phase.name,
-            max_batches=resolved_stress_iters,
-            step_log_path=None,
-            log_every_n_steps=1,
-            profile_window=phase_train_config.profile_window,
-            profile_device_sync=phase_train_config.profile_device_sync,
-        )
-    except RuntimeError as exc:
-        if not _is_oom_error(exc):
-            raise
-        status = "oom"
-        error = str(exc)
-        torch.cuda.empty_cache()
+    status, train_summary, error = _run_stage3_probe(
+        trainer,
+        train_loader,
+        scenario=scenario,
+        phase_index=phase_index,
+        phase_name=phase.name,
+        phase_train_config=phase_train_config,
+        stress_iters=resolved_stress_iters,
+    )
     duration_sec = max(0.0, time.perf_counter() - run_started_at)
-    memory = _cuda_memory_stats(trainer.device)
-    result = {
-        "mode": "stage3_vram_stress",
-        "status": status,
-        "scenario_path": str(scenario_path),
-        "phase_index": int(phase_index),
-        "phase_name": phase.name,
-        "phase_stage": phase.stage,
-        "device": str(trainer.device),
-        "backbone_variant": phase_train_config.backbone_variant,
-        "batch_size": int(resolved_batch_size),
-        "stress_iters": int(resolved_stress_iters),
-        "duration_sec": duration_sec,
-        "memory": memory,
-        "train_summary": _json_ready(train_summary) if train_summary is not None else None,
-        "error": error,
-    }
-    if status == "oom":
-        result["recommendation"] = "reduce batch_size and rerun the stage3 stress probe"
-    return result
+    return _stage3_stress_summary(
+        scenario_path=scenario_path,
+        phase_index=phase_index,
+        phase=phase,
+        trainer=trainer,
+        train_config=phase_train_config,
+        batch_size=resolved_batch_size,
+        stress_iters=resolved_stress_iters,
+        duration_sec=duration_sec,
+        status=status,
+        train_summary=train_summary,
+        error=error,
+    )
 
 
 def run_meta_train_scenario(
@@ -1155,10 +1264,7 @@ def run_meta_train_scenario(
     scenario_path: Path,
 ) -> dict[str, Any]:
     _configure_torch_multiprocessing()
-    dataset_roots = list(scenario.dataset.roots)
-    missing_roots = [str(path) for path in dataset_roots if not path.is_dir()]
-    if missing_roots:
-        raise SystemExit(f"canonical dataset roots not found: {missing_roots}")
+    dataset_roots = _existing_dataset_roots(scenario)
 
     _log_meta_train(f"loading scenario: {scenario_path}")
     _log_meta_train(f"dataset roots: {[str(path) for path in dataset_roots]}")
@@ -1306,33 +1412,59 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = _build_arg_parser()
-    args = parser.parse_args(argv)
-    preset_name = str(args.preset)
+def _validate_cli_args(args: argparse.Namespace) -> None:
     if bool(args.stage3_vram_stress) and args.resume_run is not None:
         raise SystemExit("--resume-run cannot be combined with --stage3-vram-stress")
+
+
+def _load_cli_scenario(args: argparse.Namespace) -> tuple[MetaTrainScenario, Path]:
+    preset_name = str(args.preset)
     if args.resume_run is not None:
         scenario, scenario_path = load_meta_train_resume_scenario(
             args.resume_run,
             preset_name=preset_name,
         )
         _log_meta_train(f"resuming exact meta-train run: {scenario.run.run_dir}")
-    else:
-        scenario = load_meta_train_scenario(preset_name)
-        scenario_path = PRESET_PATH_ROOT / preset_name
+        return scenario, scenario_path
+    return load_meta_train_scenario(preset_name), _default_scenario_path(preset_name)
+
+
+def _run_cli_command(
+    args: argparse.Namespace,
+    *,
+    scenario: MetaTrainScenario,
+    scenario_path: Path,
+) -> dict[str, Any]:
     if bool(args.stage3_vram_stress):
-        summary = run_stage3_vram_stress(
+        return run_stage3_vram_stress(
             scenario,
             scenario_path=scenario_path,
             batch_size=args.stress_batch_size,
             stress_iters=args.stress_iters,
-        )
-    else:
-        summary = run_meta_train_scenario(scenario, scenario_path=scenario_path)
-    print(json.dumps(_json_ready(summary), indent=2, ensure_ascii=True))
+    )
+    return run_meta_train_scenario(scenario, scenario_path=scenario_path)
+
+
+def _raise_for_cli_failure(
+    args: argparse.Namespace,
+    summary: dict[str, Any],
+) -> None:
     if bool(args.stage3_vram_stress) and summary.get("status") != "ok":
         raise SystemExit(2)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    _validate_cli_args(args)
+    scenario, scenario_path = _load_cli_scenario(args)
+    summary = _run_cli_command(
+        args,
+        scenario=scenario,
+        scenario_path=scenario_path,
+    )
+    print(json.dumps(_json_ready(summary), indent=2, ensure_ascii=True))
+    _raise_for_cli_failure(args, summary)
 
 
 if __name__ == "__main__":

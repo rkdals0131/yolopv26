@@ -98,7 +98,9 @@
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
 - trainer preset은 stage 1~4 phase chain을 기준으로 확장된다.
 - `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원한다. legacy/dev preset과 legacy dataset mapping key는 더 이상 지원하지 않는다.
+- exact in-place resume는 `python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>` 경로를 기준으로 유지한다.
 - `tools/check_env.py` interactive launcher는 `stage_3` peak VRAM stress probe를 제공하고, batch size / short iter 수를 받아 현재 backbone/stage 경로로 메모리 상한을 빠르게 확인할 수 있다.
+- direct CLI probe는 `python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 형식으로 유지한다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
 - phase summary와 run manifest는 backbone variant, resolved head channels, phase selection metric 같은 late-stage 판단 정보를 함께 남기는 방향을 따른다.
 - `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.

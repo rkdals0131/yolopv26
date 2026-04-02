@@ -17,6 +17,9 @@
 
 - implemented: AIHUB / BDD standardization resume scan
 - implemented: failure manifest / QA summary
+- implemented: `tools/od_bootstrap/source` shared helper split and `aihub` / `bdd100k` orchestration cleanup
+- implemented: `tools/run_pv26_train.py` orchestration split into `tools/pv26_train_config.py` and `tools/pv26_train_artifacts.py`
+- implemented: `model/engine` trainer helper split into `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`
 - implemented: trainer AMP / grad accumulation / grad clip
 - implemented: trainer auto resume / non-finite / OOM guard
 - implemented: train command
@@ -109,6 +112,8 @@
 - the end-to-end loop is closed from offline standardization through loader / train / loss / inference / evaluation
 - tiny overfit regression and full epoch fit regression both exist and are used as regression gates
 - OD bootstrap is implemented as a separate pipeline with `prepare-sources / build-teacher-datasets / train / eval / calibrate / build-exhaustive-od / build-final-dataset` stages
+- `tools/run_pv26_train.py` stays a single CLI entrypoint, but preset/config handling and manifest/writeout concerns are split into helper modules
+- `model/engine/trainer.py` is orchestration-only; step / epoch / fit / checkpoint / reporting logic lives in helper modules
 
 ## implementation order
 
@@ -136,6 +141,7 @@
   - train command 추가
   - fit resume path 지원
   - canonical subset 기준 hardening regression test 추가
+  - `tools/run_pv26_train.py` config/artifact split 반영
 
 ## 문서 업데이트 규칙
 

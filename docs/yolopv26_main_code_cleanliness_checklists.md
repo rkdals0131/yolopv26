@@ -1,6 +1,6 @@
 # YOLOPV26 main 코드 청결성 수정 체크리스트
 
-이 문서는 [리포트](/home/user1/ROS2_Workspace/ros2_ws/src/yolopv26/docs/yolopv26_main_code_cleanliness_report.md)의 지적사항을 빠짐없이 액션 아이템으로 옮긴 체크리스트다.  
+이 문서는 [리포트](yolopv26_main_code_cleanliness_report.md)의 지적사항을 빠짐없이 액션 아이템으로 옮긴 체크리스트다.
 정렬 기준은 중요도 순서이며, 아래로 갈수록 우선순위가 낮을 뿐 누락된 항목은 없다.
 
 ## 1순위. `tools/od_bootstrap/source/` 경계 정리와 private cross-import 제거

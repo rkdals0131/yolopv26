@@ -64,6 +64,18 @@ python3 tools/run_pv26_train.py --preset default
 - train/validation epoch 진행은 live progress로 표시되고, elapsed/ETA와 rolling timing profile을 함께 보여준다.
 - 출력 위치: `runs/pv26_exhaustive_od_lane_train/<meta_run_name>/`
 
+기존 불완전 run을 같은 디렉터리에서 정확히 이어서 실행하려면 아래처럼 `--resume-run`을 사용한다.
+
+```bash
+python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>
+```
+
+현재 stage 3 경로의 peak VRAM 상한만 빠르게 확인하려면 아래 direct probe도 사용할 수 있다.
+
+```bash
+python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size 24 --stress-iters 16
+```
+
 ### 2. OD bootstrap 소스 준비
 
 ```bash

@@ -175,3 +175,5 @@
 - OD bootstrap teacher defaults are `mobility=yolo26s`, `signal=yolo26s`, `obstacle=yolo26m`
 - PV26 meta-train preset is `default` only
 - PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py`, `tools/run_pv26_train.py --preset default`, `run_pv26_tiny_overfit()` 기준으로 유지한다
+- exact resume CLI는 `tools/run_pv26_train.py --resume-run <existing_run_dir>` 기준으로 유지한다
+- stage 3 VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다

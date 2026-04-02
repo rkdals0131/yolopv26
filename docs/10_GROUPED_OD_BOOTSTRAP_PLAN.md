@@ -144,3 +144,4 @@ AIHUB obstacle source의 canonical detector mapping은 이미 고정돼 있다.
   - detector output merge rule
   - exhaustive OD pseudo-label dataset materialization
   - exhaustive OD set을 사용하는 PV26 재학습 경로
+  - `tools/od_bootstrap/source` shared helper split과 `aihub` / `bdd100k` coordinator 정리

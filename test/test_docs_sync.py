@@ -45,6 +45,8 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("HYPERPARAMETERS", readme)
         self.assertIn("PHASE HYPERPARAMETERS", readme)
         self.assertIn("tools/run_pv26_train.py --preset default", readme)
+        self.assertIn("tools/run_pv26_train.py --resume-run", readme)
+        self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", readme)
         self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
         self.assertIn("python -m tools.od_bootstrap build-teacher-datasets", readme)
         self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
@@ -57,6 +59,15 @@ class DocsSyncTests(unittest.TestCase):
         self.assertNotIn("tools/run_bdd100k_standardize.py", readme)
         self.assertNotIn("tools/od_bootstrap/config/", readme)
         self.assertNotIn("[config/](config/)", readme)
+
+    def test_training_docs_track_resume_and_stage3_direct_entrypoints(self) -> None:
+        training_doc = _read(DOCS_ROOT / "6_TRAINING_AND_EVALUATION.md")
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
+
+        self.assertIn("tools/run_pv26_train.py --resume-run", training_doc)
+        self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", training_doc)
+        self.assertIn("tools/run_pv26_train.py --resume-run", execution_doc)
+        self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", execution_doc)
 
     def test_od_bootstrap_readme_tracks_current_teacher_model_defaults(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
