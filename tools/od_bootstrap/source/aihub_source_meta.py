@@ -11,7 +11,7 @@ from common.pv26_schema import (
     AIHUB_TRAFFIC_DATASET_KEY,
 )
 
-from .raw_common import _now_iso
+from .shared_raw import now_iso
 
 README_TREE_DEPTH = 3
 MAX_TREE_LINES = 96
@@ -362,7 +362,7 @@ def build_source_inventory(
 ) -> dict[str, Any]:
     return {
         "version": pipeline_version,
-        "generated_at": _now_iso(),
+        "generated_at": now_iso(),
         "docs": _docs_inventory(docs_root),
         "datasets": [
             {
