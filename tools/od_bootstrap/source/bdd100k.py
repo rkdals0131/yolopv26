@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
@@ -22,8 +21,18 @@ from .shared_parallel import (
     parallel_chunk_size as _parallel_chunk_size,
 )
 from .shared_raw import env_path as _env_path, now_iso as _now_iso, probe_image_size as _probe_image_size, repo_root as _repo_root, safe_slug as _safe_slug, seg_dataset_root as _seg_dataset_root
+from .shared_resume import (
+    count_held_annotation_reasons as _count_held_annotation_reasons,
+    load_existing_scene_output as _load_existing_scene_output,
+)
 from .shared_reports import det_class_map_yaml as _det_class_map_yaml
 from .shared_scene import bbox_to_yolo_line as _bbox_to_yolo_line
+from .shared_source_meta import (
+    bdd_readme as _bdd_readme,
+    bdd_source_inventory_markdown as _source_inventory_markdown,
+    build_bdd_inventory as _build_bdd_inventory,
+    build_bdd_source_inventory as _build_source_inventory,
+)
 from .shared_summary import counter_to_dict as _counter_to_dict
 from common.pv26_schema import BDD100K_DATASET_KEY, OD_CLASSES, OD_CLASS_TO_ID, TL_BITS
 
@@ -77,10 +86,6 @@ class BDDTask:
     output_root: str
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _normalize_bdd_category(value: Any) -> str:
     category = str(value or "").strip().lower()
     return BDD_CATEGORY_ALIASES.get(category, category)
@@ -88,169 +93,6 @@ def _normalize_bdd_category(value: Any) -> str:
 
 def _sample_id(pair: PairRecord) -> str:
     return _safe_slug(f"{OUTPUT_DATASET_KEY}_{pair.split}_{pair.relative_id}")
-
-
-def _count_files(root: Path, suffixes: set[str]) -> int:
-    return sum(1 for path in root.rglob("*") if path.is_file() and path.suffix.lower() in suffixes)
-
-
-def _tree_markdown(root: Path, *, max_depth: int = 3, max_lines: int = 96) -> str:
-    lines = [f"{root.name}/"]
-
-    def walk(current: Path, depth: int) -> None:
-        if len(lines) >= max_lines or depth >= max_depth:
-            return
-        for child in sorted(current.iterdir(), key=lambda item: (item.is_file(), item.name)):
-            if len(lines) >= max_lines:
-                break
-            indent = "  " * depth
-            suffix = "/" if child.is_dir() else ""
-            lines.append(f"{indent}- {child.name}{suffix}")
-            if child.is_dir():
-                walk(child, depth + 1)
-
-    walk(root, 1)
-    if len(lines) >= max_lines:
-        lines.append("  - ...")
-    return "\n".join(lines)
-
-
-def _inventory_bdd_root(bdd_root: Path, images_root: Path, labels_root: Path) -> dict[str, Any]:
-    splits: dict[str, Any] = {}
-    for split in BDD_SPLITS:
-        image_dir = images_root / split
-        label_dir = labels_root / split
-        splits[split] = {
-            "images_present": image_dir.is_dir(),
-            "labels_present": label_dir.is_dir(),
-            "images": _count_files(image_dir, IMAGE_EXTENSIONS) if image_dir.is_dir() else 0,
-            "json_files": _count_files(label_dir, {".json"}) if label_dir.is_dir() else 0,
-            "official_images": OFFICIAL_SPLIT_SIZES[split],
-        }
-
-    return {
-        "root": str(bdd_root),
-        "images_root": str(images_root),
-        "labels_root": str(labels_root),
-        "extra_assets": {
-            "bdd100k_det_20_labels": (bdd_root / "bdd100k_det_20_labels").is_dir(),
-            "bdd100k_drivable_maps": (bdd_root / "bdd100k_drivable_maps").is_dir(),
-            "bdd100k_seg_maps": (bdd_root / "bdd100k_seg_maps").is_dir(),
-            "bdd100k_gh_toolkit": (bdd_root / "bdd100k-gh").is_dir(),
-        },
-        "splits": splits,
-    }
-
-
-def _bdd_readme(bdd_root: Path, inventory: dict[str, Any]) -> str:
-    lines = [
-        "# BDD100K",
-        "",
-        "PV26에서 사용하는 BDD100K 원본 구조와 detection-only 표준화 관점을 정리한 원본용 README다.",
-        "",
-        "## PV26 사용 범위",
-        "",
-        "- 사용 목적: `7-class object detection` 중 non-signal class 보강",
-        "- 사용 원천: `bdd100k_images_100k/100k/<split>` + `bdd100k_labels/100k/<split>/*.json`",
-        "- 비사용 원천: drivable map, segmentation map, det_20 preview asset",
-        "- BDD canonical output은 `vehicle / bike / pedestrian`만 detector supervision으로 남긴다.",
-        "- `traffic light`, `traffic sign`는 AIHUB signal source가 담당하므로 BDD canonical output에서 제외한다.",
-        "- TL 4-bit supervision은 BDD source에서 사용하지 않는다.",
-        "",
-        "## 공식 split 크기",
-        "",
-        f"- train: `{OFFICIAL_SPLIT_SIZES['train']:,}`",
-        f"- val: `{OFFICIAL_SPLIT_SIZES['val']:,}`",
-        f"- test: `{OFFICIAL_SPLIT_SIZES['test']:,}`",
-        "",
-        "## 현재 로컬 보유 상태",
-        "",
-        "| Split | Images Present | Labels Present | Local Images | Local JSON | Official Images |",
-        "| --- | --- | --- | ---: | ---: | ---: |",
-    ]
-    for split, item in inventory["splits"].items():
-        lines.append(
-            f"| {split} | {'yes' if item['images_present'] else 'no'} | {'yes' if item['labels_present'] else 'no'} "
-            f"| {item['images']:,} | {item['json_files']:,} | {item['official_images']:,} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## 원본 어노테이션 스키마 요약",
-            "",
-            "- 파일 단위: 이미지 1장당 JSON 1개",
-            "- top-level: `name`, `attributes`, `frames[]`",
-            "- detection 객체: `frames[0].objects[]`",
-            "- detection box: `box2d = {x1, y1, x2, y2}`",
-            "- scene width/height와 YOLO normalization은 실제 image file size probe 기준으로 계산한다.",
-            "- 문맥 메타: `attributes.weather`, `attributes.scene`, `attributes.timeofday`",
-            "",
-            "## PV26 클래스 collapse 규칙",
-            "",
-            "- `car/truck/bus/train/(other vehicle, van, caravan, trailer alias)` -> `vehicle`",
-            "- `bike/motor/(bicycle, motorcycle alias)` -> `bike`",
-            "- `person/rider/(other person alias)` -> `pedestrian`",
-            "- `traffic light` -> excluded (`AIHUB-owned signal class`)",
-            "- `traffic sign` -> excluded (`AIHUB-owned signal class`)",
-            "- `lane/*`, `area/*` 등 non-box driving map 계열은 detector 표준화에서 제외",
-            "",
-            "## 로컬 디렉터리 구조",
-            "",
-            "```text",
-            _tree_markdown(bdd_root),
-            "```",
-            "",
-            "## 추가 자산 존재 여부",
-            "",
-        ]
-    )
-    for key, value in sorted(inventory["extra_assets"].items()):
-        lines.append(f"- `{key}`: {'yes' if value else 'no'}")
-    return "\n".join(lines) + "\n"
-
-
-def _build_source_inventory(bdd_root: Path, images_root: Path, labels_root: Path, readme_path: str) -> dict[str, Any]:
-    return {
-        "version": PIPELINE_VERSION,
-        "generated_at": _now_iso(),
-        "dataset": {
-            "dataset_key": OUTPUT_DATASET_KEY,
-            "readme_path": readme_path,
-            "local_inventory": _inventory_bdd_root(bdd_root, images_root, labels_root),
-        },
-    }
-
-
-def _source_inventory_markdown(source_inventory: dict[str, Any]) -> str:
-    dataset = source_inventory["dataset"]
-    inventory = dataset["local_inventory"]
-    lines = [
-        "# PV26 BDD100K Source Inventory",
-        "",
-        f"- Generated: `{source_inventory['generated_at']}`",
-        f"- Version: `{source_inventory['version']}`",
-        f"- Dataset key: `{dataset['dataset_key']}`",
-        f"- Root: `{inventory['root']}`",
-        f"- README: `{dataset['readme_path']}`",
-        "",
-        "| Split | Images Present | Labels Present | Local Images | Local JSON | Official Images |",
-        "| --- | --- | --- | ---: | ---: | ---: |",
-    ]
-    for split, item in inventory["splits"].items():
-        lines.append(
-            f"| {split} | {'yes' if item['images_present'] else 'no'} | {'yes' if item['labels_present'] else 'no'} "
-            f"| {item['images']:,} | {item['json_files']:,} | {item['official_images']:,} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## Extra Assets",
-            "",
-        ]
-    )
-    for key, value in sorted(inventory["extra_assets"].items()):
-        lines.append(f"- `{key}`: {'yes' if value else 'no'}")
-    return "\n".join(lines) + "\n"
 
 
 def _discover_pairs(images_root: Path, labels_root: Path) -> dict[str, Any]:
@@ -537,34 +379,24 @@ def _worker_chunk_entry(tasks: list[BDDTask]) -> list[dict[str, Any]]:
             )
     return results
 
-
-def _reason_counts_from_held_annotations(held_annotations: Any) -> dict[str, int]:
-    counter = Counter()
-    if not isinstance(held_annotations, list):
-        return {}
-    for item in held_annotations:
-        if not isinstance(item, dict):
-            continue
-        counter[str(item.get("reason") or "unknown").strip().lower()] += 1
-    return _counter_to_dict(counter)
-
-
 def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
     pair = task.pair
     sample_id = _sample_id(pair)
     output_root = Path(task.output_root)
-    image_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
-    scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
-    det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
-    if not image_path.is_file() or not scene_path.is_file():
+    bundle = _load_existing_scene_output(
+        output_root=output_root,
+        split=pair.split,
+        sample_id=sample_id,
+        image_suffix=pair.image_path.suffix.lower(),
+        load_json_fn=_load_json,
+        scene_version=SCENE_VERSION,
+    )
+    if bundle is None:
         return None
-
-    try:
-        scene = _load_json(scene_path)
-    except Exception:
-        return None
-    if str(scene.get("version") or "").strip() != SCENE_VERSION:
-        return None
+    image_path = bundle["image_path"]
+    scene_path = bundle["scene_path"]
+    det_path = bundle["det_path"]
+    scene = bundle["scene"]
 
     detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
     traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
@@ -604,7 +436,7 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
         "det_class_counts": _counter_to_dict(det_class_counts),
         "raw_category_counts": _counter_to_dict(raw_category_counts),
         "tl_state_hint_counts": _counter_to_dict(tl_state_hint_counts),
-        "held_reason_counts": _reason_counts_from_held_annotations(scene.get("held_annotations")),
+        "held_reason_counts": _count_held_annotation_reasons(scene.get("held_annotations")),
         "resume_skipped": 1,
     }
 
@@ -1178,7 +1010,13 @@ def run_standardization(
 
     output_root.mkdir(parents=True, exist_ok=True)
 
-    inventory = _inventory_bdd_root(bdd_root, images_root, labels_root)
+    inventory = _build_bdd_inventory(
+        bdd_root,
+        images_root,
+        labels_root,
+        splits=BDD_SPLITS,
+        official_split_sizes=OFFICIAL_SPLIT_SIZES,
+    )
     readme_path = ""
     if write_dataset_readme:
         logger.stage(
@@ -1196,7 +1034,12 @@ def run_standardization(
         "원본 split별 image/json 상태와 부가 자산 존재 여부를 메타데이터로 기록합니다.",
         total=1,
     )
-    source_inventory = _build_source_inventory(bdd_root, images_root, labels_root, readme_path)
+    source_inventory = _build_source_inventory(
+        pipeline_version=PIPELINE_VERSION,
+        readme_path=readme_path,
+        inventory=inventory,
+        dataset_key=OUTPUT_DATASET_KEY,
+    )
     logger.progress(1, {"datasets": 1}, force=True)
 
     logger.stage(

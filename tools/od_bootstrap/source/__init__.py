@@ -9,8 +9,10 @@ __all__ = [
     "shared_io",
     "shared_parallel",
     "shared_raw",
+    "shared_resume",
     "shared_reports",
     "shared_scene",
+    "shared_source_meta",
     "shared_summary",
     "types",
 ]
