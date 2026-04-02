@@ -311,6 +311,11 @@ tools/od_bootstrap/
 `tools/pv26_train_config.py` 일부 call-site가 공용 helper를 재사용하게 됐다.
 즉, path/JSONL helper는 한 단계 더 정리됐고, 남은 큰 축은 time helper와 `append_jsonl`류다.
 
+그 다음 wave에서는 `build/sweep.py`, `build/debug_vis.py`, `build/teacher_dataset.py`,
+`source/prepare.py`가 semantics-compatible `common.io` helper를 직접 재사용하게 됐다.
+즉, 공용 helper의 착륙 범위는 조금 더 넓어졌지만,
+`append_jsonl`, 일부 time helper, 정책 차이가 있는 writer는 아직 로컬 구현이 남아 있다.
+
 ---
 
 ## 5.2 `model/`
@@ -394,7 +399,9 @@ anchor grid / anchor-relative decode도 `loss.py`, `postprocess.py`에서 공용
 그 다음 wave에서는 `model/engine/trainer.py`도 한 단계 더 정리됐다.
 facade가 노출하던 private re-export를 테스트/호출자가 실제로 쓰는 compatibility shim 집합으로 줄이고,
 내부 호출은 `_trainer_*` 모듈을 직접 참조하도록 바뀌었다.
-이제 남은 핵심은 더 넓은 public/internal surface 경계와 `_trainer_epochs.py`/`_loss_spec.py` 같은 잔여 큰 파일이다.
+그 다음 wave에서는 `_loss_spec.py`도 section-builder 형태로 다시 쪼개져
+`build_loss_spec()`가 fresh nested mutable payload를 조립하는 구조가 더 읽히게 됐다.
+이제 남은 핵심은 더 넓은 public/internal surface 경계와 `_trainer_epochs.py` 같은 잔여 큰 파일이다.
 
 ---
 
@@ -768,7 +775,10 @@ teacher 폴더는 상위 구조는 좋다.
 underscore alias는 compatibility shim으로만 남겨둔 상태다.
 그 다음 wave에서는 `TeacherRuntimeSupport`가 `build_teacher_runtime_callbacks()`의
 callback dependency surface를 한 객체로 묶어줬다.
-즉, alias mesh와 callback DI는 한 단계 정리됐고, 남은 핵심은 `_make_teacher_trainer()`와 runner 본체 덩치다.
+그 다음 wave에서는 `_make_teacher_trainer()`도 resume restore,
+extended-LR scheduler build, runtime-state setup helper를 바깥으로 빼내며 조금 더 읽히는 구조가 됐다.
+즉, alias mesh / callback DI / trainer helper extraction은 한 단계 더 정리됐고,
+남은 핵심은 calibrate 흐름과 runner 본체 덩치다.
 
 우선순위는 `source/`보다는 약간 낮지만, **분명히 손볼 가치가 있다.**
 
@@ -823,6 +833,11 @@ callback dependency surface를 한 객체로 묶어줬다.
 - `TeacherPredictionRow`
 
 정도만 둬도 IDE 추적성과 리팩토링 안전성이 훨씬 좋아진다.
+
+그 다음 wave에서는 그 방향의 첫 실제 적용이 들어왔다.
+`debug_vis.py`와 `teacher_dataset.py`가 `TypedDict` 기반 manifest/item row를 쓰기 시작하면서
+적어도 debug/teacher dataset 경로는 loose dict 면적을 줄였다.
+다만 `exhaustive_od.py`, `final_dataset.py`, `sweep.py`까지 한 번에 다 끝난 것은 아니다.
 
 #### 2) IO helper가 아직 중복된다
 

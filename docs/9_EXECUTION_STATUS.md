@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 3까지로 trainer re-export mesh, source debug-vis manifest helper, teacher callback DI, check_env launch split까지 정리했다. 다음은 time/json helper 잔여분, _trainer_epochs/loss_spec, _make_teacher_trainer/calibrate, build/source manifest typing 확장이다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 4까지로 safe common.io call-site 확장, _loss_spec builder 분해, _make_teacher_trainer helper 분해, build/debug manifest typing slice까지 정리했다. 다음은 append_jsonl/time helper 잔여분, _trainer_epochs, calibrate split, exhaustive/final/sweep manifest typing 확장이다.`
 
 ## 완료된 항목
 
@@ -100,6 +100,10 @@
 - [x] `tools/od_bootstrap/source/shared_debug.build_debug_vis_manifest()` + typed rows로 source debug-vis manifest helper 공용화
 - [x] `TeacherRuntimeSupport` 도입으로 teacher callback dependency injection surface 정리
 - [x] `common.paths.resolve_optional_path`, `resolve_latest_root`, `common.io.write_jsonl` 재사용으로 build/PV26 call-site helper 중복 축소
+- [x] semantics-compatible `common.io` helper를 `build/sweep.py`, `build/debug_vis.py`, `build/teacher_dataset.py`, `source/prepare.py`에 추가 확장
+- [x] `model/engine/_loss_spec.py`를 section builder 구조로 분해하고 fresh-copy regression을 고정
+- [x] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()` helper 분해
+- [x] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`에 manifest/item row typing slice 도입
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -109,11 +113,11 @@
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
-- [ ] repo-wide common helper 공통화 잔여분 (`now_iso`, `timestamp_token`, `write_json`, `append_jsonl`)
-- [ ] `model/engine/` internal API 잔여분 정리 (broader public/internal surface, `_trainer_epochs.py` runtime/reporting, `_loss_spec.py`)
+- [ ] repo-wide common helper 공통화 잔여분 (`append_jsonl`, 일부 `now_iso`/`timestamp_token`/`write_json` local wrappers)
+- [ ] `model/engine/` internal API 잔여분 정리 (broader public/internal surface, `_trainer_epochs.py` runtime/reporting)
 - [ ] source debug-vis manifest write helper shared public API 정리
 - [ ] teacher runtime runner 경량화 (`_make_teacher_trainer`, calibrate split, runner 덩치 축소)
-- [ ] build/source manifest typing (`TypedDict`) 도입
+- [ ] build/source manifest typing (`TypedDict`) 확장 (`exhaustive_od.py`, `final_dataset.py`, `sweep.py`)
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -149,6 +153,8 @@
 - [x] `python3 tools/check_env.py --json`
 - [x] `pytest -q test/test_pv26_trainer.py test/test_pv26_tiny_overfit.py test/test_portability_runtime.py test/test_docs_sync.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/od_bootstrap/test_shared_source_helpers.py test/od_bootstrap/test_preprocess_sources.py test/test_aihub_standardize.py test/test_bdd100k_standardize.py` (`80 passed`, `2026-04-03`)
 - [x] `python3 -m compileall -q model/engine/trainer.py tools/check_env.py tools/check_env_launch.py tools/od_bootstrap/source/aihub.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/source/types.py tools/od_bootstrap/teacher/runtime_callbacks.py tools/od_bootstrap/teacher/ultralytics_runner.py`
+- [x] `pytest -q test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_trainer.py test/test_pv26_tiny_overfit.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/od_bootstrap/test_shared_source_helpers.py test/od_bootstrap/test_preprocess_sources.py test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_run_generate_debug_vis.py test/od_bootstrap/test_teacher_dataset.py test/test_aihub_standardize.py test/test_bdd100k_standardize.py test/test_docs_sync.py test/test_portability_runtime.py` (`101 passed`, `2026-04-03`)
+- [x] `python3 -m compileall -q common/io.py common/paths.py model/engine/_loss_spec.py model/engine/trainer.py tools/check_env.py tools/check_env_launch.py tools/od_bootstrap/source/aihub.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/source/aihub_debug.py tools/od_bootstrap/source/shared_debug.py tools/od_bootstrap/source/types.py tools/od_bootstrap/teacher/runtime_callbacks.py tools/od_bootstrap/teacher/ultralytics_runner.py tools/od_bootstrap/build/debug_vis.py tools/od_bootstrap/build/sweep.py tools/od_bootstrap/build/teacher_dataset.py test/test_pv26_loss_spec.py test/od_bootstrap/test_shared_source_helpers.py test/test_portability_runtime.py`
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과

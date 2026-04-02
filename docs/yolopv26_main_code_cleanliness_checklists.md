@@ -36,6 +36,7 @@
 - [ ] `common/`은 대공사 대상이 아니라 새 shared helper를 받아주는 착지점으로 사용한다.
 - [ ] repo-wide truly common helper는 `common/`으로 올리고, bootstrap 내부에서만 재사용하는 helper는 `tools/od_bootstrap/...` shared 모듈에 두는 기준을 명확히 한다.
 - [x] `common/io.py`, `common/paths.py` 확장 방향으로 정리하고 build/PV26 call-site가 그 공용 helper를 재사용하게 맞춘다.
+- [x] `build/sweep.py`, `build/debug_vis.py`, `build/teacher_dataset.py`, `source/prepare.py`가 semantics-compatible `common.io` helper(`now_iso`, `timestamp_token`, `write_json`)를 재사용하도록 정리한다.
 - [x] `tools/od_bootstrap/build/` 내부의 `write_json`, `resolve_latest_root`, `resolve_optional_path` 같은 low-level IO/path helper 중 공통화 가능한 부분을 shared helper로 정리한다.
 - [ ] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다.
 - [x] source pipeline 쪽에서 existing output summary skeleton, debug-vis manifest write, README/tree markdown render 같은 공통 출력 패턴을 재사용 가능한 helper로 정리한다.
@@ -51,12 +52,13 @@
 - [x] anchor grid 생성, anchor-relative box decode 같은 engine 공통 geometry/helper를 `model/engine/_det_geometry.py` shared 모듈로 재배치한다.
 - [x] raw batch unwrap, lane family metric augmentation, move-to-device 같은 engine 공통 batch/helper를 `model/engine/batch.py`로 재배치한다.
 - [ ] `model/engine/_trainer_epochs.py`에 몰린 epoch-level runtime/reporting helper를 정리해 파일 덩치를 줄인다.
-- [ ] `model/engine/_loss_spec.py: build_loss_spec()`의 큰 spec builder 흐름을 단계별 helper/contract로 분리해 회귀 범위를 줄인다.
+- [x] `model/engine/_loss_spec.py: build_loss_spec()`의 큰 spec builder 흐름을 단계별 helper/contract로 분리해 회귀 범위를 줄인다.
 
 ## 5순위. manifest row와 느슨한 dict 계약 축소
 
 - [ ] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`, `exhaustive_od.py`, `final_dataset.py`, `sweep.py`에서 JSON manifest row를 `dict[str, Any]` 중심으로 느슨하게 돌리는 구조를 줄인다.
-- [ ] 최소한 `TeacherDatasetManifestRow`, `ExhaustiveSampleRow`, `FinalDatasetSampleRow`, `DebugVisItemRow`, `TeacherPredictionRow` 수준의 `TypedDict`를 도입한다.
+- [x] `debug_vis.py`, `teacher_dataset.py`에서 `DebugVisItemRow`/`TeacherDatasetManifestRow` 수준의 `TypedDict`를 도입한다.
+- [ ] 최소한 `ExhaustiveSampleRow`, `FinalDatasetSampleRow`, `TeacherPredictionRow` 수준의 `TypedDict`를 더 도입한다.
 - [ ] manifest row, sample row, prediction row, summary row에서 key typo, optional field 누락, value 타입 drift, 경로/string 혼합을 정적 계약으로 잡을 수 있게 만든다.
 - [ ] source/build 파이프라인에서 자주 오가는 JSON row 계약을 명시적인 타입으로 치환해 IDE 추적성과 리팩토링 안전성을 높인다.
 
@@ -66,7 +68,7 @@
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
 - [x] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 객체로 묶는다.
 - [ ] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
-- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
+- [x] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 
 ## 7순위. teacher runtime과 PV26 trainer runtime의 공통 runtime helper 정리
 
