@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-import json
 from pathlib import Path
-from typing import Any
 
+from common.io import now_iso as _now_iso
+from common.io import write_json as _write_json
 from ..build.debug_vis import generate_canonical_debug_vis
 from ..build.image_list import discover_image_list_entries, write_image_list
 from .aihub import run_standardization as run_aihub_standardization
@@ -24,16 +23,6 @@ from .types import (
     SourcePrepResult,
     SourceRoots,
 )
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return path
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def _resolve_aihub_roots(roots: SourceRoots) -> tuple[Path, Path, Path, Path]:

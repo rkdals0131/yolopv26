@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -12,6 +11,8 @@ except ImportError:  # pragma: no cover
     YOLO = None
 
 from common.boxes import nms_rows
+from common.io import now_iso as _now_iso
+from common.io import timestamp_token as _timestamp_token
 from .artifacts import (
     RunManifest,
     TeacherJobManifest,
@@ -29,16 +30,6 @@ from .sweep_types import BootstrapSweepScenario, ClassPolicy, TeacherConfig
 
 def _log_bootstrap(message: str) -> None:
     print(f"[od_bootstrap.sweep] {message}", flush=True)
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def _timestamp_token() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
-
-
 def _safe_name(value: str) -> str:
     normalized = "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in value.strip())
     return normalized.strip("_") or "od_bootstrap"
