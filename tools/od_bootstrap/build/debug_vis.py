@@ -36,7 +36,6 @@ class DebugSelectionRow(TypedDict, total=False):
     source_image_path: str
     split: str
 
-
 class OverlayImage(TypedDict):
     source_path: str
 

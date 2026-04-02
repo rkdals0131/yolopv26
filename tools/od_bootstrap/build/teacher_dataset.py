@@ -91,8 +91,6 @@ class TeacherDatasetManifestRow(TypedDict):
     output_label_path: str
     detection_count: int
     image_action: str
-
-
 class TeacherDatasetManifest(TypedDict):
     version: str
     generated_at: str
