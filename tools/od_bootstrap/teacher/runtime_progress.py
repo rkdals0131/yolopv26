@@ -6,6 +6,15 @@ from typing import Any
 
 from common.io import append_jsonl as _append_jsonl_file
 from common.io import timestamp_token as _timestamp_token
+try:
+    from rich.console import Console
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+except Exception:  # pragma: no cover - optional dependency fallback.
+    Console = None
+    Progress = None
+    BarColumn = None
+    TaskProgressColumn = None
+    TextColumn = None
 
 
 def sync_timing_device(torch_module: Any, device: Any, enabled: bool) -> None:
@@ -69,9 +78,112 @@ def format_duration(seconds: float | None) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def emit_log(message: str, *, tqdm_module: Any) -> None:
-    if tqdm_module is not None:
-        tqdm_module.write(message)
+def _progress_console(*, console: Any = None) -> Any:
+    if console is not None:
+        return console
+    if Console is None:
+        return None
+    return Console(stderr=True)
+
+
+def rich_progress_available(*, console: Any = None, enabled: bool | None = None) -> bool:
+    resolved_console = _progress_console(console=console)
+    if resolved_console is None or Progress is None:
+        return False
+    if enabled is not None:
+        return bool(enabled)
+    return bool(getattr(resolved_console, "is_terminal", False))
+
+
+class RichBootstrapProgressBar:
+    def __init__(
+        self,
+        iterable: Any,
+        *,
+        total: int | None,
+        description: str,
+        console: Any = None,
+    ) -> None:
+        if Progress is None:
+            raise RuntimeError("rich progress backend is unavailable")
+        resolved_console = _progress_console(console=console)
+        if resolved_console is None:
+            raise RuntimeError("rich console backend is unavailable")
+        self._iterable = iter(iterable)
+        self.console = resolved_console
+        self.desc = str(description)
+        self.status = ""
+        self.closed = False
+        self._progress = Progress(
+            TextColumn("{task.fields[description]}", markup=False),
+            BarColumn(bar_width=10),
+            TaskProgressColumn(),
+            TextColumn("  |  "),
+            TextColumn("{task.fields[status]}", markup=False),
+            console=self.console,
+            transient=False,
+            auto_refresh=True,
+        )
+        self._progress.start()
+        self._task_id = self._progress.add_task("", total=total, description=self.desc, status=self.status)
+
+    def __iter__(self) -> "RichBootstrapProgressBar":
+        return self
+
+    def __next__(self) -> Any:
+        if self.closed:
+            raise StopIteration
+        try:
+            item = next(self._iterable)
+        except StopIteration:
+            self.close()
+            raise
+        self._progress.update(self._task_id, advance=1)
+        return item
+
+    def set_description(self, value: str) -> None:
+        self.desc = str(value)
+        self._progress.update(self._task_id, description=self.desc)
+
+    def set_bootstrap_postfix(self, postfix: str) -> None:
+        self.status = str(postfix)
+        self._progress.update(self._task_id, status=self.status)
+
+    def set_postfix_str(self, postfix: str, refresh: bool = True) -> None:
+        del refresh
+        self.set_bootstrap_postfix(postfix)
+
+    def write(self, message: str) -> None:
+        self.console.print(message, soft_wrap=True, markup=False)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self._progress.stop()
+        self.closed = True
+
+
+def build_rich_progress_bar(
+    iterable: Any,
+    *,
+    total: int | None,
+    description: str,
+    console: Any = None,
+    enabled: bool | None = None,
+) -> RichBootstrapProgressBar | None:
+    if not rich_progress_available(console=console, enabled=enabled):
+        return None
+    return RichBootstrapProgressBar(
+        iterable,
+        total=total,
+        description=description,
+        console=console,
+    )
+
+
+def emit_log(message: str, *, progress_bar: Any = None) -> None:
+    if progress_bar is not None and hasattr(progress_bar, "write"):
+        progress_bar.write(message)
         return
     print(message, flush=True)
 
@@ -86,7 +198,7 @@ def build_live_postfix(
     eta_sec: float | None,
     profile_summary: dict[str, Any],
 ) -> str:
-    return " ".join(
+    return "  |  ".join(
         [
             f"elapsed={format_duration(elapsed_sec)}",
             f"eta={format_duration(eta_sec)}",
@@ -107,8 +219,8 @@ def set_progress_postfix(pbar: Any, postfix: str) -> bool:
         pbar.set_postfix_str(postfix, refresh=True)
         return True
     description = str(getattr(pbar, "desc", "") or "")
-    base_description = description.split(" | ")[0] if " | " in description else description
-    merged_description = f"{base_description} | {postfix}" if base_description else postfix
+    base_description = description.split("  |  ")[0] if "  |  " in description else description
+    merged_description = f"{base_description}  |  {postfix}" if base_description else postfix
     if hasattr(pbar, "set_description"):
         pbar.set_description(merged_description)
         return True

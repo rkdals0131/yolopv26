@@ -14,6 +14,7 @@ from .runtime_callbacks import build_teacher_runtime_callbacks as _build_teacher
 from .runtime_artifacts import _refresh_latest_teacher_artifacts
 from .runtime_progress import (
     append_jsonl as _append_jsonl_impl,
+    build_rich_progress_bar as _build_rich_progress_bar_impl,
     build_live_postfix as _build_live_postfix_impl,
     emit_log as _emit_log_impl,
     format_duration as _format_duration_impl,
@@ -43,11 +44,6 @@ from .runtime_tensorboard import (
 )
 from collections import deque
 from types import MethodType
-
-try:
-    from tqdm.auto import tqdm
-except ImportError:  # pragma: no cover - dependency absence handled in tests with patching.
-    tqdm = None
 
 try:
     import torch
@@ -92,7 +88,7 @@ def _format_duration(seconds: float | None) -> str:
 
 
 def _emit_log(message: str) -> None:
-    _emit_log_impl(message, tqdm_module=tqdm)
+    _emit_log_impl(message)
 
 
 def _timestamp_token() -> str:
@@ -109,6 +105,19 @@ def _build_live_postfix(
         elapsed_sec=elapsed_sec,
         eta_sec=eta_sec,
         profile_summary=profile_summary,
+    )
+
+
+def _build_rich_progress_bar(
+    iterable: Any,
+    *,
+    total: int | None,
+    description: str,
+) -> Any:
+    return _build_rich_progress_bar_impl(
+        iterable,
+        total=total,
+        description=description,
     )
 
 
@@ -511,101 +520,111 @@ def _make_teacher_trainer(
                 self.od_pbar = None
                 if ultra_trainer.RANK in {-1, 0}:
                     ultra_trainer.LOGGER.info(self.progress_string())
-                    pbar = ultra_trainer.TQDM(enumerate(self.train_loader), total=nb)
-                    _install_ultralytics_postfix_renderer(pbar)
-                    self.od_pbar = pbar
+                    rich_pbar = _build_rich_progress_bar(
+                        enumerate(self.train_loader),
+                        total=nb,
+                        description=self.progress_string(),
+                    )
+                    if rich_pbar is not None:
+                        pbar = rich_pbar
+                        self.od_pbar = rich_pbar
                 self.tloss = None
-                for i, batch in pbar:
-                    self.run_callbacks("on_train_batch_start")
-                    ni = i + nb * epoch
-                    if ni <= nw:
-                        xi = [0, nw]
-                        self.accumulate = max(
-                            1,
-                            int(ultra_trainer.np.interp(ni, xi, [1, self.args.nbs / self.batch_size]).round()),
-                        )
-                        for x in self.optimizer.param_groups:
-                            x["lr"] = ultra_trainer.np.interp(
-                                ni,
-                                xi,
-                                [
-                                    self.args.warmup_bias_lr if x.get("param_group") == "bias" else 0.0,
-                                    x["initial_lr"] * self.lf(epoch),
-                                ],
+                try:
+                    for i, batch in pbar:
+                        self.run_callbacks("on_train_batch_start")
+                        ni = i + nb * epoch
+                        if ni <= nw:
+                            xi = [0, nw]
+                            self.accumulate = max(
+                                1,
+                                int(ultra_trainer.np.interp(ni, xi, [1, self.args.nbs / self.batch_size]).round()),
                             )
-                            if "momentum" in x:
-                                x["momentum"] = ultra_trainer.np.interp(
+                            for x in self.optimizer.param_groups:
+                                x["lr"] = ultra_trainer.np.interp(
                                     ni,
                                     xi,
-                                    [self.args.warmup_momentum, self.args.momentum],
+                                    [
+                                        self.args.warmup_bias_lr if x.get("param_group") == "bias" else 0.0,
+                                        x["initial_lr"] * self.lf(epoch),
+                                    ],
                                 )
+                                if "momentum" in x:
+                                    x["momentum"] = ultra_trainer.np.interp(
+                                        ni,
+                                        xi,
+                                        [self.args.warmup_momentum, self.args.momentum],
+                                    )
 
-                    try:
-                        with ultra_trainer.autocast(self.amp):
-                            batch = self.preprocess_batch(batch)
-                            if self.args.compile:
-                                preds = self.model(batch["img"])
-                                loss, self.loss_items = ultra_trainer.unwrap_model(self.model).loss(batch, preds)
-                            else:
-                                loss, self.loss_items = self.model(batch)
-                            self.loss = loss.sum()
-                            if ultra_trainer.RANK != -1:
-                                self.loss *= self.world_size
-                            self.tloss = (
-                                self.loss_items if self.tloss is None else (self.tloss * i + self.loss_items) / (i + 1)
+                        try:
+                            with ultra_trainer.autocast(self.amp):
+                                batch = self.preprocess_batch(batch)
+                                if self.args.compile:
+                                    preds = self.model(batch["img"])
+                                    loss, self.loss_items = ultra_trainer.unwrap_model(self.model).loss(batch, preds)
+                                else:
+                                    loss, self.loss_items = self.model(batch)
+                                self.loss = loss.sum()
+                                if ultra_trainer.RANK != -1:
+                                    self.loss *= self.world_size
+                                self.tloss = (
+                                    self.loss_items if self.tloss is None else (self.tloss * i + self.loss_items) / (i + 1)
+                                )
+                            self.scaler.scale(self.loss).backward()
+                        except torch.cuda.OutOfMemoryError:
+                            if epoch > self.start_epoch or self._oom_retries >= 3 or ultra_trainer.RANK != -1:
+                                raise
+                            self._oom_retries += 1
+                            old_batch = self.batch_size
+                            self.args.batch = self.batch_size = max(self.batch_size // 2, 1)
+                            ultra_trainer.LOGGER.warning(
+                                f"CUDA out of memory with batch={old_batch}. "
+                                f"Reducing to batch={self.batch_size} and retrying ({self._oom_retries}/3)."
                             )
-                        self.scaler.scale(self.loss).backward()
-                    except torch.cuda.OutOfMemoryError:
-                        if epoch > self.start_epoch or self._oom_retries >= 3 or ultra_trainer.RANK != -1:
-                            raise
-                        self._oom_retries += 1
-                        old_batch = self.batch_size
-                        self.args.batch = self.batch_size = max(self.batch_size // 2, 1)
-                        ultra_trainer.LOGGER.warning(
-                            f"CUDA out of memory with batch={old_batch}. "
-                            f"Reducing to batch={self.batch_size} and retrying ({self._oom_retries}/3)."
-                        )
-                        self._clear_memory()
-                        self._build_train_pipeline()
-                        self.scheduler.last_epoch = self.start_epoch - 1
-                        nb = len(self.train_loader)
-                        nw = max(round(self.args.warmup_epochs * nb), 100) if self.args.warmup_epochs > 0 else -1
-                        last_opt_step = -1
-                        self.optimizer.zero_grad()
-                        break
-                    if ni - last_opt_step >= self.accumulate:
-                        self.optimizer_step()
-                        last_opt_step = ni
-                        if self.args.time:
-                            self.stop = (ultra_trainer.time.time() - self.train_time_start) > (self.args.time * 3600)
-                            if ultra_trainer.RANK != -1:
-                                broadcast_list = [self.stop if ultra_trainer.RANK == 0 else None]
-                                ultra_trainer.dist.broadcast_object_list(broadcast_list, 0)
-                                self.stop = broadcast_list[0]
-                            if self.stop:
-                                break
+                            self._clear_memory()
+                            self._build_train_pipeline()
+                            self.scheduler.last_epoch = self.start_epoch - 1
+                            nb = len(self.train_loader)
+                            nw = max(round(self.args.warmup_epochs * nb), 100) if self.args.warmup_epochs > 0 else -1
+                            last_opt_step = -1
+                            self.optimizer.zero_grad()
+                            break
+                        if ni - last_opt_step >= self.accumulate:
+                            self.optimizer_step()
+                            last_opt_step = ni
+                            if self.args.time:
+                                self.stop = (ultra_trainer.time.time() - self.train_time_start) > (self.args.time * 3600)
+                                if ultra_trainer.RANK != -1:
+                                    broadcast_list = [self.stop if ultra_trainer.RANK == 0 else None]
+                                    ultra_trainer.dist.broadcast_object_list(broadcast_list, 0)
+                                    self.stop = broadcast_list[0]
+                                if self.stop:
+                                    break
 
-                    if ultra_trainer.RANK in {-1, 0}:
-                        loss_length = self.tloss.shape[0] if len(self.tloss.shape) else 1
-                        pbar.set_description(
-                            ("%11s" * 2 + "%11.4g" * (2 + loss_length))
-                            % (
-                                f"{epoch + 1}/{self.epochs}",
-                                f"{self._get_memory():.3g}G",
-                                *(self.tloss if loss_length > 1 else torch.unsqueeze(self.tloss, 0)),
-                                batch["cls"].shape[0],
-                                batch["img"].shape[-1],
-                            )
-                        )
-                        self.run_callbacks("on_batch_end")
-                        if self.args.plots and ni in self.plot_idx:
-                            self.plot_training_samples(batch, ni)
+                        if ultra_trainer.RANK in {-1, 0}:
+                            loss_length = self.tloss.shape[0] if len(self.tloss.shape) else 1
+                            if hasattr(pbar, "set_description"):
+                                pbar.set_description(
+                                    ("%11s" * 2 + "%11.4g" * (2 + loss_length))
+                                    % (
+                                        f"{epoch + 1}/{self.epochs}",
+                                        f"{self._get_memory():.3g}G",
+                                        *(self.tloss if loss_length > 1 else torch.unsqueeze(self.tloss, 0)),
+                                        batch["cls"].shape[0],
+                                        batch["img"].shape[-1],
+                                    )
+                                )
+                            self.run_callbacks("on_batch_end")
+                            if self.args.plots and ni in self.plot_idx:
+                                self.plot_training_samples(batch, ni)
 
-                    self.run_callbacks("on_train_batch_end")
-                    if self.stop:
-                        break
-                else:
-                    self._oom_retries = 0
+                        self.run_callbacks("on_train_batch_end")
+                        if self.stop:
+                            break
+                    else:
+                        self._oom_retries = 0
+                finally:
+                    if hasattr(pbar, "close"):
+                        pbar.close()
 
                 self.od_pbar = None
                 if self._oom_retries and not self.stop:

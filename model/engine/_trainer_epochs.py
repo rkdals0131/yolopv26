@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from collections import Counter
-import sys
 import time
 from typing import Any
 
 import torch
 try:
-    from tqdm.auto import tqdm as _tqdm
+    from rich.console import Console
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 except Exception:  # pragma: no cover - optional dependency fallback.
-    _tqdm = None
+    Console = None
+    Progress = None
+    BarColumn = None
+    TaskProgressColumn = None
+    TextColumn = None
 
 from ._trainer_io import _append_jsonl, _now_iso
 from ._trainer_reporting import (
@@ -23,7 +27,6 @@ from ._trainer_reporting import (
     _loss_stats_from_summaries,
     _mean_metric_tree,
     _percentile,
-    _progress_meter,
     _successful_summaries,
     _sum_counts,
     _timing_profile,
@@ -85,8 +88,53 @@ def _augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-def _should_use_tqdm() -> bool:
-    return bool(_tqdm is not None and sys.stderr.isatty())
+def _progress_console() -> Any:
+    if Console is None:
+        return None
+    return Console(stderr=True)
+
+
+def _should_use_rich_progress() -> bool:
+    console = _progress_console()
+    return bool(console is not None and getattr(console, "is_terminal", False) and Progress is not None)
+
+
+class _RichProgressBar:
+    def __init__(self, *, total: int | None, desc: str) -> None:
+        if Progress is None:
+            raise RuntimeError("rich progress backend is unavailable")
+        console = _progress_console()
+        if console is None:
+            raise RuntimeError("rich console backend is unavailable")
+        self.console = console
+        self._progress = Progress(
+            TextColumn("{task.description}", markup=False),
+            BarColumn(bar_width=10),
+            TaskProgressColumn(),
+            TextColumn("  |  "),
+            TextColumn("{task.fields[status]}", markup=False),
+            console=self.console,
+            transient=False,
+            auto_refresh=True,
+        )
+        self._progress.start()
+        self._task_id = self._progress.add_task(desc, total=total, status="")
+        self._closed = False
+
+    def update(self, advance: int = 1) -> None:
+        self._progress.update(self._task_id, advance=advance)
+
+    def set_postfix_str(self, value: str, refresh: bool = True) -> None:
+        self._progress.update(self._task_id, status=str(value), refresh=refresh)
+
+    def write(self, message: str) -> None:
+        self.console.print(message, soft_wrap=True, markup=False)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._progress.stop()
+        self._closed = True
 
 
 def _sync_profile_device(device: torch.device, enabled: bool) -> None:
@@ -104,12 +152,6 @@ def _phase_label(
         f"phase={_format_fraction(int(phase_index), int(phase_count))}" if phase_index is not None and phase_count is not None else None,
         phase_name,
     )
-
-
-def _tqdm_bar_format(*, include_postfix: bool = True) -> str:
-    if include_postfix:
-        return "{desc}  {bar:8} {percentage:3.0f}%  |  {postfix}"
-    return "{desc}  {bar:8} {percentage:3.0f}%"
 
 
 def _train_progress_desc(
@@ -143,7 +185,6 @@ def _train_progress_postfix(
     profile_summary: dict[str, Any],
 ) -> str:
     return _join_segments(
-        _progress_meter(int(batch_index), int(total_batches) if total_batches is not None else None),
         f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
         f"loss={float(losses.get('total', float('nan'))):.4f}",
         f"eta={_format_duration(eta_sec)}",
@@ -289,8 +330,8 @@ def run_train_epoch(
     loader_iter = iter(loader)
     batch_index = 0
     progress_bar = None
-    if _should_use_tqdm():
-        progress_bar = _tqdm(
+    if _should_use_rich_progress():
+        progress_bar = _RichProgressBar(
             total=total_batches,
             desc=_train_progress_desc(
                 stage=trainer.stage,
@@ -301,9 +342,6 @@ def run_train_epoch(
                 epoch_total=epoch_total,
                 epoch_started_at_iso=epoch_started_at_iso,
             ),
-            dynamic_ncols=True,
-            bar_format=_tqdm_bar_format(),
-            leave=True,
         )
     while max_batches is None or batch_index < max_batches:
         fetch_started_at = time.perf_counter()
@@ -439,8 +477,8 @@ def run_validate_epoch(
     loader_iter = iter(loader)
     batch_index = 0
     progress_bar = None
-    if _should_use_tqdm():
-        progress_bar = _tqdm(
+    if _should_use_rich_progress():
+        progress_bar = _RichProgressBar(
             total=total_batches,
             desc=_validate_progress_desc(
                 stage=trainer.stage,
@@ -451,9 +489,6 @@ def run_validate_epoch(
                 epoch_total=epoch_total,
                 epoch_started_at_iso=epoch_started_at_iso,
             ),
-            dynamic_ncols=True,
-            bar_format=_tqdm_bar_format(),
-            leave=True,
         )
     while max_batches is None or batch_index < max_batches:
         fetch_started_at = time.perf_counter()

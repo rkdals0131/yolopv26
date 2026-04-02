@@ -96,11 +96,16 @@ class UltralyticsRunnerTests(unittest.TestCase):
         pbar = _FakeUltralyticsPbar()
         _install_ultralytics_postfix_renderer(pbar)
         with patch("tools.od_bootstrap.teacher.ultralytics_runner.time.time", return_value=123.9):
-            pbar.set_bootstrap_postfix("elapsed=00:24 eta=20:25 iter=283.7ms wait=0.3ms compute=283.7ms")
+            pbar.set_bootstrap_postfix(
+                "elapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms"
+            )
         rendered = pbar.file.getvalue()
         self.assertIn("58/4375", rendered)
         self.assertIn("it/s", rendered)
-        self.assertIn("\n\033[Kelapsed=00:24 eta=20:25 iter=283.7ms wait=0.3ms compute=283.7ms", rendered)
+        self.assertIn(
+            "\n\033[Kelapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms",
+            rendered,
+        )
 
     def test_profile_postfix_updates_before_log_interval(self) -> None:
         runtime_params = {
@@ -143,7 +148,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertEqual(trainer.od_epoch_step, 1)
             self.assertEqual(trainer.od_global_step, 1)
             self.assertEqual(len(pbar.values), 1)
-            self.assertIn(" | elapsed=", pbar.values[0])
+            self.assertIn("  |  elapsed=", pbar.values[0])
             self.assertIn("iter=", pbar.values[0])
             self.assertIn("wait=", pbar.values[0])
             self.assertIn("compute=", pbar.values[0])
