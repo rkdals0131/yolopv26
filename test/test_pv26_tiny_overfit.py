@@ -8,6 +8,8 @@ from pathlib import Path
 
 import torch
 
+from model.data.transform import TrainAugmentationConfig, apply_train_augmentations
+from model.engine._trainer_reporting import _loss_stats_from_summaries
 from runtime_support import has_yolo26_runtime
 from tools.od_bootstrap.source.aihub import run_standardization as run_aihub_standardization
 
@@ -30,6 +32,67 @@ def _write_dummy_pdf(path: Path) -> None:
 
 
 class PV26TinyOverfitTests(unittest.TestCase):
+    def test_train_augmentations_flip_boxes_and_geometry_consistently(self) -> None:
+        image = torch.linspace(0.0, 1.0, steps=3 * 8 * 10, dtype=torch.float32).reshape(3, 8, 10)
+        lanes = [{"points_xy": torch.tensor([[1.0, 6.0], [3.0, 4.0]], dtype=torch.float32), "color": 0, "lane_type": 1}]
+        stop_lines = [{"points_xy": torch.tensor([[1.0, 5.0], [5.0, 5.0]], dtype=torch.float32)}]
+        crosswalks = [{"points_xy": torch.tensor([[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]], dtype=torch.float32)}]
+
+        augmented = apply_train_augmentations(
+            image,
+            det_boxes=[[1.0, 1.0, 4.0, 5.0]],
+            lanes=lanes,
+            stop_lines=stop_lines,
+            crosswalks=crosswalks,
+            network_hw=(8, 10),
+            config=TrainAugmentationConfig(
+                horizontal_flip_prob=1.0,
+                brightness_delta=0.0,
+                contrast_range=(1.0, 1.0),
+                gamma_range=(1.0, 1.0),
+            ),
+        )
+        augmented_image, det_boxes, augmented_lanes, _, _, meta = augmented
+
+        self.assertTrue(bool(meta["horizontal_flip"]))
+        self.assertEqual(det_boxes[0], [5.0, 1.0, 8.0, 5.0])
+        self.assertAlmostEqual(float(augmented_lanes[0]["points_xy"][0, 0]), 8.0, places=6)
+        self.assertAlmostEqual(float(augmented_lanes[0]["points_xy"][1, 0]), 6.0, places=6)
+        self.assertTrue(torch.allclose(augmented_image[:, :, 0], image[:, :, -1]))
+
+    def test_loss_stats_include_weighted_contributions(self) -> None:
+        summaries = [
+            {
+                "stage": "stage_4_lane_family_finetune",
+                "losses": {
+                    "total": 5.75,
+                    "det": 2.0,
+                    "tl_attr": 1.0,
+                    "lane": 1.5,
+                    "stop_line": 1.0,
+                    "crosswalk": 0.5,
+                },
+            },
+            {
+                "stage": "stage_4_lane_family_finetune",
+                "losses": {
+                    "total": 4.5,
+                    "det": 1.0,
+                    "tl_attr": 0.5,
+                    "lane": 1.5,
+                    "stop_line": 1.0,
+                    "crosswalk": 0.5,
+                },
+            },
+        ]
+
+        stats = _loss_stats_from_summaries(summaries)
+
+        self.assertIn("weighted", stats)
+        self.assertAlmostEqual(stats["weighted"]["lane"]["mean"], 2.25, places=6)
+        self.assertAlmostEqual(stats["weighted"]["det"]["mean"], 0.0, places=6)
+        self.assertAlmostEqual(stats["weighted"]["crosswalk"]["last"], 0.5, places=6)
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_tiny_overfit_reduces_best_loss_on_real_loader_batch(self) -> None:
         from model.net import PV26Heads

@@ -54,6 +54,24 @@ def _augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+def _weighted_loss_summary(losses: dict[str, torch.Tensor], criterion: torch.nn.Module) -> dict[str, float]:
+    export_config = getattr(criterion, "export_config", None)
+    if not callable(export_config):
+        return {}
+    raw_config = export_config()
+    raw_weights = raw_config.get("loss_weights")
+    if not isinstance(raw_weights, dict):
+        return {}
+    output: dict[str, float] = {}
+    for name, weight in raw_weights.items():
+        if name == "total":
+            continue
+        value = losses.get(name)
+        if isinstance(value, torch.Tensor):
+            output[name] = float(value.detach().cpu()) * float(weight)
+    return output
+
+
 def _summarize_counts(encoded: dict[str, Any]) -> dict[str, int]:
     return {
         "det_gt": int(encoded["det_gt"]["valid_mask"].sum().item()),
@@ -132,6 +150,9 @@ class PV26Evaluator:
             if raw_batch is not None and postprocessed is not None
             else {},
         }
+        weighted_losses = _weighted_loss_summary(losses, self.criterion)
+        if weighted_losses:
+            summary["losses_weighted"] = weighted_losses
         if summary["metrics"]:
             summary["metrics"] = _augment_lane_family_metrics(summary["metrics"])
         if include_predictions:

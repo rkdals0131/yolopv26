@@ -169,6 +169,9 @@ class PV26EvalMetricsTests(unittest.TestCase):
         self.assertEqual(summary["detector"]["per_class"]["traffic_light"]["tp"], 1)
         self.assertEqual(summary["detector"]["per_class"]["sign"]["tp"], 1)
         self.assertEqual(summary["detector"]["per_class"]["vehicle"]["fp"], 1)
+        self.assertEqual(summary["detector"]["size_buckets"]["medium_plus"]["tp"], 2)
+        self.assertEqual(summary["detector"]["size_buckets"]["medium_plus"]["fp"], 1)
+        self.assertEqual(summary["detector"]["size_buckets"]["tiny"]["gt_count"], 0)
 
         self.assertEqual(summary["traffic_light"]["matched_pairs"], 1)
         self.assertAlmostEqual(summary["traffic_light"]["combo_accuracy"], 1.0, places=6)

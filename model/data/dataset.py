@@ -19,6 +19,8 @@ from common.pv26_schema import (
 from .transform import (
     NETWORK_HW,
     LetterboxTransform,
+    TrainAugmentationConfig,
+    apply_train_augmentations,
     clip_box_xyxy,
     clip_points,
     compute_letterbox_transform,
@@ -179,10 +181,17 @@ class PV26CanonicalDataset(Dataset):
         self,
         dataset_roots: Iterable[Path | str],
         *,
+        train_augmentation: bool | TrainAugmentationConfig = False,
         progress_callback: Callable[[str], None] | None = None,
         progress_every: int = 2000,
     ) -> None:
         roots = [Path(root).resolve() for root in dataset_roots]
+        if isinstance(train_augmentation, TrainAugmentationConfig):
+            self.train_augmentation = train_augmentation
+        elif train_augmentation:
+            self.train_augmentation = TrainAugmentationConfig()
+        else:
+            self.train_augmentation = None
         self.records: list[SampleRecord] = []
         for root in roots:
             if progress_callback is not None:
@@ -262,6 +271,17 @@ class PV26CanonicalDataset(Dataset):
             min_unique_points=3,
             with_lane_attributes=False,
         )
+        augmentation_meta = None
+        if record.split == "train" and self.train_augmentation is not None:
+            image, det_boxes, lanes, stop_lines, crosswalks, augmentation_meta = apply_train_augmentations(
+                image,
+                det_boxes=det_boxes,
+                lanes=lanes,
+                stop_lines=stop_lines,
+                crosswalks=crosswalks,
+                network_hw=NETWORK_HW,
+                config=self.train_augmentation,
+            )
 
         return {
             "image": image,
@@ -299,6 +319,7 @@ class PV26CanonicalDataset(Dataset):
                 "det_supervised_class_ids": list(det_policy["class_ids"]),
                 "det_allow_objectness_negatives": bool(det_policy["allow_objectness_negatives"]),
                 "det_allow_unmatched_class_negatives": bool(det_policy["allow_unmatched_class_negatives"]),
+                "augmentation": augmentation_meta,
             },
         }
 

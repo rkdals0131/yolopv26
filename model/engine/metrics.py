@@ -25,6 +25,8 @@ class PV26MetricConfig:
     det_iou_threshold: float = 0.50
     tl_iou_threshold: float = 0.50
     tl_bit_threshold: float = 0.50
+    det_tiny_max_side: float = 16.0
+    det_small_max_side: float = 32.0
     lane_match_threshold: float = 40.0
     stop_line_match_threshold: float = 40.0
     crosswalk_iou_threshold: float = 0.30
@@ -64,6 +66,16 @@ def _box_iou(box_a: list[float], box_b: list[float]) -> float:
     area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
     union_area = area_a + area_b - inter_area
     return _safe_div(inter_area, union_area)
+
+
+def _det_box_bucket(box: Iterable[float], *, config: PV26MetricConfig) -> str:
+    x1, y1, x2, y2 = [float(value) for value in box]
+    min_side = min(max(0.0, x2 - x1), max(0.0, y2 - y1))
+    if min_side < float(config.det_tiny_max_side):
+        return "tiny"
+    if min_side < float(config.det_small_max_side):
+        return "small"
+    return "medium_plus"
 
 
 def _compute_ap(records: list[tuple[float, int]], gt_count: int) -> float:
@@ -254,6 +266,7 @@ def _detector_metrics(
     predictions: list[dict[str, Any]],
     gt_samples: list[dict[str, Any]],
     *,
+    config: PV26MetricConfig,
     iou_threshold: float,
 ) -> dict[str, Any]:
     per_class: dict[str, Any] = {}
@@ -261,6 +274,10 @@ def _detector_metrics(
     total_tp = 0
     total_fp = 0
     total_fn = 0
+    bucket_counts = {
+        name: {"tp": 0, "fp": 0, "fn": 0, "gt_count": 0, "records": []}
+        for name in ("tiny", "small", "medium_plus")
+    }
 
     for class_id, class_name in enumerate(OD_CLASSES):
         records: list[tuple[float, int]] = []
@@ -272,6 +289,8 @@ def _detector_metrics(
             gt_rows = [row for row in gt_sample["detections"] if int(row["class_id"]) == class_id]
             pred_rows = [row for row in pred_sample["detections"] if int(row["class_id"]) == class_id]
             gt_count += len(gt_rows)
+            for gt in gt_rows:
+                bucket_counts[_det_box_bucket(gt["box_xyxy"], config=config)]["gt_count"] += 1
             matched_gt: set[int] = set()
             for pred in sorted(pred_rows, key=lambda item: float(item["score"]), reverse=True):
                 best_iou = 0.0
@@ -287,11 +306,20 @@ def _detector_metrics(
                     matched_gt.add(best_gt_index)
                     class_tp += 1
                     records.append((float(pred["score"]), 1))
+                    bucket = _det_box_bucket(gt_rows[best_gt_index]["box_xyxy"], config=config)
+                    bucket_counts[bucket]["tp"] += 1
+                    bucket_counts[bucket]["records"].append((float(pred["score"]), 1))
                 else:
                     class_fp += 1
                     records.append((float(pred["score"]), 0))
+                    bucket = _det_box_bucket(pred["box_xyxy"], config=config)
+                    bucket_counts[bucket]["fp"] += 1
+                    bucket_counts[bucket]["records"].append((float(pred["score"]), 0))
 
         class_fn = gt_count - class_tp
+        for gt_index, gt in enumerate(gt_rows):
+            if gt_index not in matched_gt:
+                bucket_counts[_det_box_bucket(gt["box_xyxy"], config=config)]["fn"] += 1
         ap50 = _compute_ap(records, gt_count)
         if gt_count > 0:
             map_candidates.append(ap50)
@@ -306,6 +334,14 @@ def _detector_metrics(
     summary = _prf(total_tp, total_fp, total_fn)
     summary["map50"] = sum(map_candidates) / len(map_candidates) if map_candidates else 0.0
     summary["per_class"] = per_class
+    summary["size_buckets"] = {
+        bucket_name: {
+            **_prf(payload["tp"], payload["fp"], payload["fn"]),
+            "gt_count": int(payload["gt_count"]),
+            "ap50": _compute_ap(payload["records"], int(payload["gt_count"])),
+        }
+        for bucket_name, payload in bucket_counts.items()
+    }
     return summary
 
 
@@ -465,6 +501,7 @@ def summarize_pv26_metrics(
         "detector": _detector_metrics(
             predictions,
             gt_samples,
+            config=config,
             iou_threshold=config.det_iou_threshold,
         ),
         "traffic_light": _tl_metrics(

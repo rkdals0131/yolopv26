@@ -5,6 +5,7 @@ import math
 from typing import Any
 
 from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
+from ._loss_spec import build_loss_spec
 
 
 TIMING_KEYS = (
@@ -23,6 +24,10 @@ TENSORBOARD_LOSS_KEYS = (
     "stop_line",
     "crosswalk",
 )
+STAGE_LOSS_WEIGHTS = {
+    str(stage["name"]): {str(name): float(value) for name, value in dict(stage["loss_weights"]).items()}
+    for stage in build_loss_spec()["training_schedule"]
+}
 
 
 def _is_successful_summary(summary: dict[str, Any]) -> bool:
@@ -129,12 +134,51 @@ def _loss_mean_scalars(payload: dict[str, Any]) -> dict[str, float]:
     return output
 
 
+def _weighted_loss_mean_scalars(payload: dict[str, Any]) -> dict[str, float]:
+    weighted = payload.get("weighted", {})
+    if not isinstance(weighted, dict):
+        return {}
+    output: dict[str, float] = {}
+    for key in TENSORBOARD_LOSS_KEYS:
+        if key == "total":
+            continue
+        value = weighted.get(key)
+        if isinstance(value, dict):
+            value = value.get("mean")
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if math.isfinite(numeric):
+                output[key] = numeric
+    return output
+
+
+def _stage_weighted_losses(stage: str | None, losses: dict[str, Any]) -> dict[str, float]:
+    weights = STAGE_LOSS_WEIGHTS.get(str(stage), {})
+    output: dict[str, float] = {}
+    for key in TENSORBOARD_LOSS_KEYS:
+        if key == "total":
+            continue
+        value = losses.get(key)
+        if isinstance(value, dict):
+            value = value.get("mean")
+        if isinstance(value, (int, float)) and key in weights:
+            numeric = float(value) * float(weights[key])
+            if math.isfinite(numeric):
+                output[key] = numeric
+    return output
+
+
 def _tensorboard_val_metric_scalars(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "detector": _select_numeric_scalars(
             metrics.get("detector", {}),
             ("precision", "recall", "f1", "map50"),
         ),
+        "detector_size_buckets": {
+            bucket_name: _select_numeric_scalars(payload, ("precision", "recall", "f1", "ap50"))
+            for bucket_name, payload in metrics.get("detector", {}).get("size_buckets", {}).items()
+            if isinstance(payload, dict)
+        },
         "traffic_light": _select_numeric_scalars(
             metrics.get("traffic_light", {}),
             ("combo_accuracy", "mean_f1"),
@@ -178,6 +222,9 @@ def _tensorboard_train_step_payload(summary: dict[str, Any]) -> dict[str, Any]:
     }
     if summary["successful"]:
         payload["loss"] = _select_numeric_scalars(summary["losses"], TENSORBOARD_LOSS_KEYS)
+        weighted = _stage_weighted_losses(str(summary.get("stage")), summary["losses"])
+        if weighted:
+            payload["loss_weighted"] = weighted
     return payload
 
 
@@ -211,11 +258,17 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
         },
         "lr": _select_numeric_scalars(epoch_summary["train"].get("optimizer_lrs", {}), ("trunk", "heads")),
     }
+    weighted_train = _weighted_loss_mean_scalars(epoch_summary["train"]["losses"])
+    if weighted_train:
+        payload["train"]["loss_weighted_mean"] = weighted_train
     val_summary = epoch_summary.get("val")
     if isinstance(val_summary, dict):
         payload["val"] = {
             "loss_mean": _loss_mean_scalars(val_summary.get("losses", {})),
         }
+        weighted_val = _weighted_loss_mean_scalars(val_summary.get("losses", {}))
+        if weighted_val:
+            payload["val"]["loss_weighted_mean"] = weighted_val
         val_metrics = _tensorboard_val_metric_scalars(val_summary.get("metrics", {}))
         if any(val_metrics.values()):
             payload["val"]["metrics"] = val_metrics
@@ -339,7 +392,7 @@ def _loss_stats_from_summaries(summaries: list[dict[str, Any]]) -> dict[str, dic
     if not summaries:
         return {}
     names = list(summaries[0]["losses"].keys())
-    return {
+    output = {
         name: {
             "mean": sum(float(item["losses"][name]) for item in summaries) / len(summaries),
             "min": min(float(item["losses"][name]) for item in summaries),
@@ -348,6 +401,22 @@ def _loss_stats_from_summaries(summaries: list[dict[str, Any]]) -> dict[str, dic
         }
         for name in names
     }
+    stage = str(summaries[-1].get("stage", ""))
+    weights = STAGE_LOSS_WEIGHTS.get(stage, {})
+    weighted: dict[str, dict[str, float]] = {}
+    for name in names:
+        if name == "total" or name not in weights:
+            continue
+        weighted[name] = {
+            "mean": output[name]["mean"] * float(weights[name]),
+            "min": output[name]["min"] * float(weights[name]),
+            "max": output[name]["max"] * float(weights[name]),
+            "last": output[name]["last"] * float(weights[name]),
+            "weight": float(weights[name]),
+        }
+    if weighted:
+        output["weighted"] = weighted
+    return output
 
 
 def _sum_counts(summaries: list[dict[str, Any]]) -> dict[str, int]:
