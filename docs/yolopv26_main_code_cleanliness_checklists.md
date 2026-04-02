@@ -5,25 +5,25 @@
 
 ## 1순위. `tools/od_bootstrap/source/` 경계 정리와 private cross-import 제거
 
-- [ ] `tools/od_bootstrap/source/bdd100k.py`가 `tools/od_bootstrap/source/aihub.py`의 private/internal helper(`LiveLogger`, `_iter_task_chunks`, `_parallel_chunk_size`, `_default_workers`, `_generate_debug_vis`, `_link_or_copy`, `_write_json`, `_write_text`, `_bbox_to_yolo_line`, `_counter_to_dict`)를 직접 import하지 않도록 정리한다.
-- [ ] `tools/od_bootstrap/source/aihub.py`와 `tools/od_bootstrap/source/bdd100k.py`를 형제 pipeline coordinator로 분리하고, 서로의 implementation detail에 의존하지 않게 만든다.
-- [ ] `tools/od_bootstrap/source/aihub_lane_worker.py`, `tools/od_bootstrap/source/aihub_traffic_worker.py`, `tools/od_bootstrap/source/aihub_obstacle_worker.py`가 `raw_common.py`나 `aihub_worker_common.py`의 private helper(`_base_scene`, `_counter_to_dict`, `_sample_id`, `_extract_annotations`, `_safe_slug`, `_normalize_text`, `_load_json`)를 직접 import하지 않도록 정리한다.
-- [ ] `tools/od_bootstrap/source/` 아래에 `shared_io.py`, `shared_parallel.py`, `shared_scene.py`, `shared_summary.py` 또는 동등한 public shared 모듈을 두고, cross-module 재사용이 필요한 helper는 underscore를 떼서 승격한다.
-- [ ] `tools/od_bootstrap/source/types.py`를 pure types 모듈로 되돌리고, 기본 경로 상수나 implementation defaults는 `constants.py` 또는 별도 defaults 모듈로 분리한다.
+- [x] `tools/od_bootstrap/source/bdd100k.py`가 `tools/od_bootstrap/source/aihub.py`의 private/internal helper(`LiveLogger`, `_iter_task_chunks`, `_parallel_chunk_size`, `_default_workers`, `_generate_debug_vis`, `_link_or_copy`, `_write_json`, `_write_text`, `_bbox_to_yolo_line`, `_counter_to_dict`)를 직접 import하지 않도록 정리한다.
+- [x] `tools/od_bootstrap/source/aihub.py`와 `tools/od_bootstrap/source/bdd100k.py`를 형제 pipeline coordinator로 분리하고, 서로의 implementation detail에 의존하지 않게 만든다.
+- [x] `tools/od_bootstrap/source/aihub_lane_worker.py`, `tools/od_bootstrap/source/aihub_traffic_worker.py`, `tools/od_bootstrap/source/aihub_obstacle_worker.py`가 `raw_common.py`나 `aihub_worker_common.py`의 private helper(`_base_scene`, `_counter_to_dict`, `_sample_id`, `_extract_annotations`, `_safe_slug`, `_normalize_text`, `_load_json`)를 직접 import하지 않도록 정리한다.
+- [x] `tools/od_bootstrap/source/` 아래에 `shared_io.py`, `shared_parallel.py`, `shared_scene.py`, `shared_summary.py` 또는 동등한 public shared 모듈을 두고, cross-module 재사용이 필요한 helper는 underscore를 떼서 승격한다.
+- [x] `tools/od_bootstrap/source/types.py`를 pure types 모듈로 되돌리고, 기본 경로 상수나 implementation defaults는 `constants.py` 또는 별도 defaults 모듈로 분리한다.
 - [ ] source pipeline 공통 골격인 `LiveLogger`, parallel chunking, existing output summary skeleton, debug-vis manifest write, README/tree markdown render를 shared public API로 재배치한다.
-- [ ] `tools/od_bootstrap/source/aihub.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
-- [ ] `tools/od_bootstrap/source/bdd100k.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
+- [x] `tools/od_bootstrap/source/aihub.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
+- [x] `tools/od_bootstrap/source/bdd100k.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 
 ## 2순위. `tools/run_pv26_train.py` 분해
 
-- [ ] `tools/run_pv26_train.py`를 stable thin facade로 유지하고, CLI / import surface(`load_meta_train_scenario`, `load_meta_train_resume_scenario`, `run_stage3_vram_stress`, `run_meta_train_scenario`, `main`)는 그대로 노출한다.
-- [ ] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
-- [ ] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
-- [ ] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
+- [x] `tools/run_pv26_train.py`를 stable thin facade로 유지하고, CLI / import surface(`load_meta_train_scenario`, `load_meta_train_resume_scenario`, `run_stage3_vram_stress`, `run_meta_train_scenario`, `main`)는 그대로 노출한다.
+- [x] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
+- [x] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
+- [x] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
 - [ ] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
-- [ ] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
-- [ ] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.
-- [ ] `tools/run_pv26_train.py: run_meta_train_scenario()`를 phase/helper 단위로 쪼개 회귀 위험을 줄인다.
+- [x] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
+- [x] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.
+- [x] `tools/run_pv26_train.py: run_meta_train_scenario()`를 phase/helper 단위로 쪼개 회귀 위험을 줄인다.
 
 ## 3순위. 공통 helper 추출과 중복 제거
 

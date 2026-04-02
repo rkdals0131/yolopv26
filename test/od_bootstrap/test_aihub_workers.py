@@ -44,19 +44,19 @@ class AIHubWorkerModuleCleanupTests(unittest.TestCase):
             "aihub_lane_worker.py": {
                 "shared_io": ("link_or_copy", "load_json", "write_json"),
                 "shared_raw": ("extract_annotations", "extract_attribute_map", "extract_points", "normalize_text", "safe_slug"),
-                "shared_scene": ("build_base_scene", "sample_id"),
+                "shared_scene": ("DEFAULT_SCENE_VERSION", "build_base_scene", "sample_id"),
                 "shared_summary": ("counter_to_dict",),
             },
             "aihub_obstacle_worker.py": {
                 "shared_io": ("link_or_copy", "load_json", "write_json", "write_text"),
                 "shared_raw": ("extract_annotations", "normalize_text", "safe_slug"),
-                "shared_scene": ("bbox_to_yolo_line", "build_base_scene", "sample_id"),
+                "shared_scene": ("DEFAULT_SCENE_VERSION", "bbox_to_yolo_line", "build_base_scene", "sample_id"),
                 "shared_summary": ("counter_to_dict",),
             },
             "aihub_traffic_worker.py": {
                 "shared_io": ("link_or_copy", "load_json", "write_json", "write_text"),
                 "shared_raw": ("extract_annotations", "extract_bbox", "extract_tl_state", "normalize_text", "safe_slug"),
-                "shared_scene": ("bbox_to_yolo_line", "build_base_scene", "sample_id"),
+                "shared_scene": ("DEFAULT_SCENE_VERSION", "bbox_to_yolo_line", "build_base_scene", "sample_id"),
                 "shared_summary": ("counter_to_dict",),
             },
             "aihub_workers.py": {
