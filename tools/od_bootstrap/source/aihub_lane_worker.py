@@ -4,11 +4,17 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .aihub_worker_common import SCENE_VERSION, StandardizeTask
-from .shared_io import link_or_copy, load_json, write_json
-from .shared_raw import extract_annotations, extract_attribute_map, extract_points, normalize_text, safe_slug
-from .shared_scene import build_base_scene, sample_id
-from .shared_summary import counter_to_dict
+from .aihub_worker_common import StandardizeTask
+from .shared_io import link_or_copy as _link_or_copy, load_json as _load_json, write_json as _write_json
+from .shared_raw import (
+    extract_annotations as _extract_annotations,
+    extract_attribute_map as _extract_attribute_map,
+    extract_points as _extract_points,
+    normalize_text as _normalize_text,
+    safe_slug as _safe_slug,
+)
+from .shared_scene import build_base_scene as _base_scene, sample_id as _sample_id
+from .shared_summary import counter_to_dict as _counter_to_dict
 
 
 def _lane_class_from_color(color: str) -> tuple[str | None, str | None]:

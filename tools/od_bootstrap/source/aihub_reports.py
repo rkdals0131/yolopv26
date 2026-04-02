@@ -6,12 +6,8 @@ from typing import Any, Callable
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, TL_BITS
 
-from .shared_raw import now_iso
-from .shared_reports import det_class_map_yaml as shared_det_class_map_yaml
-
-
-def _counter_to_dict(counter: Counter[str]) -> dict[str, int]:
-    return {key: counter[key] for key in sorted(counter)}
+from .shared_io import now_iso as _now_iso
+from .shared_summary import counter_to_dict as _counter_to_dict
 
 
 def aggregate_results(

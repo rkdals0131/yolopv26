@@ -5,10 +5,7 @@ import sys
 import time
 from typing import Any, Iterable, TextIO
 
-PARALLEL_SUBMIT_LOG_INTERVAL = 5_000
-PARALLEL_WAIT_HEARTBEAT_SECONDS = 15.0
 PARALLEL_MAX_TASKS_PER_CHUNK = 16
-PARALLEL_INFLIGHT_CHUNKS_PER_WORKER = 2
 
 
 class LiveLogger:
@@ -36,23 +33,56 @@ class LiveLogger:
         total_text = f", total={total}" if total is not None else ""
         self._emit(f"stage={name} 시작{total_text} | why={why}")
 
-    def progress(self, completed: int, counters: dict[str, int], *, force: bool = False) -> None:
+    def progress(
+        self,
+        completed: int,
+        counters_or_total: dict[str, int] | int | None = None,
+        *,
+        force: bool = False,
+        total: int | None = None,
+        detail: str | None = None,
+    ) -> None:
         now = time.monotonic()
-        if not force and now - self.last_progress_at < self.throttle_seconds:
+        if isinstance(counters_or_total, dict) or force:
+            counters = counters_or_total if isinstance(counters_or_total, dict) else {}
+            if not force and now - self.last_progress_at < self.throttle_seconds:
+                return
+            elapsed = max(now - self.stage_started_at, 1e-6)
+            rate = completed / elapsed
+            effective_total = total if total is not None else self.stage_total
+            eta_text = "eta=unknown"
+            if effective_total is not None and completed > 0:
+                remaining = max(effective_total - completed, 0)
+                eta_seconds = remaining / rate if rate > 0 else 0.0
+                eta_text = f"eta={eta_seconds:.1f}s"
+            total_text = effective_total if effective_total is not None else "?"
+            counters_text = " ".join(f"{key}={value}" for key, value in sorted(counters.items()))
+            message = f"stage={self.stage_name} progress={completed}/{total_text} rate={rate:.2f}/s {eta_text}".strip()
+            if counters_text:
+                message = f"{message} {counters_text}"
+            if detail:
+                message = f"{message} | {detail}"
+            self._emit(message)
+            self.last_progress_at = now
             return
-        elapsed = max(now - self.stage_started_at, 1e-6)
-        rate = completed / elapsed
-        eta_text = "eta=unknown"
-        if self.stage_total is not None and completed > 0:
-            remaining = max(self.stage_total - completed, 0)
-            eta_seconds = remaining / rate if rate > 0 else 0.0
-            eta_text = f"eta={eta_seconds:.1f}s"
-        total_text = self.stage_total if self.stage_total is not None else "?"
-        counters_text = " ".join(f"{key}={value}" for key, value in sorted(counters.items()))
-        self._emit(
-            f"stage={self.stage_name} progress={completed}/{total_text} rate={rate:.2f}/s {eta_text} {counters_text}".strip()
-        )
-        self.last_progress_at = now
+
+        effective_total = total if total is not None else (counters_or_total if isinstance(counters_or_total, int) else self.stage_total)
+        if effective_total is not None:
+            message = f"[{self.stage_name}] {completed}/{effective_total}"
+        else:
+            message = f"[{self.stage_name}] {completed}"
+        if detail:
+            message = f"{message} {detail}"
+        if completed == 0 or completed == effective_total or now - self.last_progress_at >= self.throttle_seconds:
+            self._emit(message)
+            self.last_progress_at = now
+
+    def heartbeat(self, detail: str | None = None) -> None:
+        elapsed = time.monotonic() - self.stage_started_at
+        message = f"[{self.stage_name}] still running ({elapsed:.1f}s)"
+        if detail:
+            message = f"{message} {detail}"
+        self._emit(message)
 
 
 def default_workers() -> int:

@@ -10,8 +10,11 @@ from .raw_common import (
     _extract_annotations,
     _extract_attribute_map,
     _extract_bbox,
+    _extract_filename,
+    _extract_image_size,
     _extract_points,
     _extract_tl_state,
+    _extract_annotations,
     _normalize_text,
     _now_iso,
     _probe_image_size,
@@ -39,6 +42,14 @@ def extract_attribute_map(annotation: dict[str, Any]) -> dict[str, Any]:
 
 def extract_bbox(annotation: dict[str, Any], width: int, height: int) -> list[float] | None:
     return _extract_bbox(annotation, width, height)
+
+
+def extract_filename(raw: dict[str, Any], fallback_name: str) -> str:
+    return _extract_filename(raw, fallback_name)
+
+
+def extract_image_size(raw: dict[str, Any], image_path) -> tuple[int, int]:
+    return _extract_image_size(raw, image_path)
 
 
 def extract_points(annotation: dict[str, Any]) -> list[list[float]]:
@@ -79,6 +90,8 @@ __all__ = [
     "extract_annotations",
     "extract_attribute_map",
     "extract_bbox",
+    "extract_filename",
+    "extract_image_size",
     "extract_points",
     "extract_tl_state",
     "normalize_text",

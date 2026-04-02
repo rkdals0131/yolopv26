@@ -6,11 +6,24 @@ from typing import Any
 
 from common.pv26_schema import AIHUB_OBSTACLE_DATASET_KEY, OD_CLASS_TO_ID
 
-from .aihub_worker_common import SCENE_VERSION, StandardizeTask
-from .shared_io import link_or_copy, load_json, write_json, write_text
-from .shared_raw import extract_annotations, normalize_text, safe_slug
-from .shared_scene import bbox_to_yolo_line, build_base_scene, sample_id
-from .shared_summary import counter_to_dict
+from .aihub_worker_common import StandardizeTask
+from .shared_io import (
+    link_or_copy as _link_or_copy,
+    load_json as _load_json,
+    write_json as _write_json,
+    write_text as _write_text,
+)
+from .shared_raw import (
+    extract_annotations as _extract_annotations,
+    normalize_text as _normalize_text,
+    safe_slug as _safe_slug,
+)
+from .shared_scene import (
+    bbox_to_yolo_line as _bbox_to_yolo_line,
+    build_base_scene as _base_scene,
+    sample_id as _sample_id,
+)
+from .shared_summary import counter_to_dict as _counter_to_dict
 
 
 OBSTACLE_CLASS_REMAP = {

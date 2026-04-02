@@ -10,10 +10,10 @@ from .aihub_lane_worker import lane_worker
 from .aihub_obstacle_worker import obstacle_worker, prepare_debug_scene_for_overlay
 from .aihub_traffic_worker import combo_name, traffic_worker
 from .aihub_worker_common import StandardizeTask
-from .shared_io import load_json
-from .shared_raw import normalize_text, safe_slug
-from .shared_scene import sample_id
-from .shared_summary import counter_to_dict
+from .shared_io import load_json as _load_json
+from .shared_raw import normalize_text as _normalize_text, safe_slug as _safe_slug
+from .shared_scene import sample_id as _sample_id
+from .shared_summary import counter_to_dict as _counter_to_dict
 
 
 def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
