@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 from .constants import (
     BOOTSTRAP_SOURCE_KEYS,
@@ -57,12 +58,51 @@ class SourcePrepResult:
     aihub_outputs: dict[str, Path]
 
 
+class DebugVisSummaryRow(TypedDict):
+    dataset_key: str
+    split: str
+    sample_id: str
+    scene_path: str
+    image_path: str
+    det_count: int
+    traffic_light_count: int
+    traffic_sign_count: int
+    lane_count: int
+    stop_line_count: int
+    crosswalk_count: int
+
+
+class DebugVisManifestItem(TypedDict):
+    dataset_key: str
+    split: str
+    sample_id: str
+    scene_path: str
+    image_path: str
+    output_path: str
+
+
+class DebugVisManifest(TypedDict):
+    generated_at: str
+    selection_count: int
+    seed: int
+    items: list[DebugVisManifestItem]
+
+
+class DebugVisOutputs(TypedDict):
+    debug_vis_dir: Path
+    debug_vis_index: Path
+
+
 __all__ = [
     "BOOTSTRAP_SOURCE_KEYS",
     "EXCLUDED_SOURCE_KEYS",
     "CanonicalSourceBundle",
     "DEFAULT_AIHUB_DOCS_ROOT",
     "DEFAULT_DEBUG_VIS_SEED",
+    "DebugVisManifest",
+    "DebugVisManifestItem",
+    "DebugVisOutputs",
+    "DebugVisSummaryRow",
     "SourcePrepConfig",
     "SourcePrepResult",
     "SourceRoots",

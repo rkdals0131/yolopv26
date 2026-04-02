@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .aihub_debug import generate_debug_vis_outputs, select_debug_vis_summaries
+from .aihub_debug import build_debug_vis_manifest, generate_debug_vis_outputs, select_debug_vis_summaries
 
 
 def generate_debug_vis(*args, **kwargs):
@@ -8,6 +8,7 @@ def generate_debug_vis(*args, **kwargs):
 
 
 __all__ = [
+    "build_debug_vis_manifest",
     "generate_debug_vis",
     "generate_debug_vis_outputs",
     "select_debug_vis_summaries",
