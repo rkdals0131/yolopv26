@@ -61,12 +61,12 @@ def _tl_bits_from_annotation(annotation: dict[str, Any]) -> tuple[dict[str, int]
     return bits, 1, "valid"
 
 
-def _combo_name(bits: dict[str, int]) -> str:
+def combo_name(bits: dict[str, int]) -> str:
     active = [key for key, value in bits.items() if value]
     return "+".join(active) if active else "off"
 
 
-def _traffic_worker(task: StandardizeTask) -> dict[str, Any]:
+def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
     output_root = Path(task.output_root)
@@ -127,7 +127,7 @@ def _traffic_worker(task: StandardizeTask) -> dict[str, Any]:
                 }
             )
             if valid:
-                tl_combo_counts[_combo_name(bits)] += 1
+                tl_combo_counts[combo_name(bits)] += 1
             else:
                 tl_invalid_reason_counts[status_reason] += 1
             continue
@@ -235,3 +235,7 @@ def _traffic_worker(task: StandardizeTask) -> dict[str, Any]:
         "held_reason_counts": _counter_to_dict(held_reason_counts),
         "resume_skipped": 0,
     }
+
+
+_combo_name = combo_name
+_traffic_worker = traffic_worker

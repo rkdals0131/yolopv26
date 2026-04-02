@@ -24,16 +24,16 @@ from .aihub import (
     PARALLEL_SUBMIT_LOG_INTERVAL,
     PARALLEL_WAIT_HEARTBEAT_SECONDS,
     LiveLogger,
-    _iter_task_chunks,
-    _parallel_chunk_size,
-    _bbox_to_yolo_line,
-    _counter_to_dict,
-    _default_workers,
-    _det_class_map_yaml,
-    _generate_debug_vis,
-    _link_or_copy,
-    _write_json,
-    _write_text,
+    bbox_to_yolo_line as _bbox_to_yolo_line,
+    counter_to_dict as _counter_to_dict,
+    default_worker_count as _default_workers,
+    det_class_map_yaml as _det_class_map_yaml,
+    generate_debug_vis_outputs as _generate_debug_vis,
+    iter_task_chunks as _iter_task_chunks,
+    link_or_copy_file as _link_or_copy,
+    parallel_chunk_size as _parallel_chunk_size,
+    write_json_file as _write_json,
+    write_text_file as _write_text,
 )
 from common.pv26_schema import BDD100K_DATASET_KEY, OD_CLASSES, OD_CLASS_TO_ID, TL_BITS
 
@@ -871,6 +871,259 @@ def _scene_class_map_yaml() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _scan_existing_outputs(
+    tasks: list[BDDTask],
+    *,
+    force_reprocess: bool,
+    logger: LiveLogger,
+) -> tuple[list[dict[str, Any]], list[BDDTask]]:
+    summaries: list[dict[str, Any]] = []
+    pending_tasks: list[BDDTask] = []
+    logger.stage(
+        "resume_scan",
+        "기존 standardized outputs가 있으면 재처리하지 않고 summary만 재구성해 full run을 이어갑니다.",
+        total=len(tasks),
+    )
+    resume_progress = Counter()
+    if tasks:
+        for index, task in enumerate(tasks, start=1):
+            existing = None if force_reprocess else _existing_output_summary(task)
+            if existing is not None:
+                summaries.append(existing)
+                resume_progress["reused"] += 1
+            else:
+                pending_tasks.append(task)
+                resume_progress["pending"] += 1
+            logger.progress(index, dict(resume_progress))
+        logger.progress(len(tasks), dict(resume_progress), force=True)
+    else:
+        logger.progress(0, {"pending": 0, "reused": 0}, force=True)
+    return summaries, pending_tasks
+
+
+def _run_pending_standardization(
+    pending_tasks: list[BDDTask],
+    *,
+    workers: int,
+    logger: LiveLogger,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    summaries: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    logger.stage(
+        "parallel_standardize",
+        "BDD JSON 파싱, 7-class remap, YOLO txt 직렬화, image materialization을 프로세스 풀로 병렬 실행합니다.",
+        total=len(pending_tasks),
+    )
+    progress = Counter()
+    completed = 0
+    if not pending_tasks:
+        logger.progress(0, {"samples": 0}, force=True)
+        return summaries, failures
+
+    chunk_size = _parallel_chunk_size(len(pending_tasks), workers)
+    max_inflight_chunks = max(1, workers * PARALLEL_INFLIGHT_CHUNKS_PER_WORKER)
+    with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
+        future_map: dict[Any, list[BDDTask]] = {}
+        submitted = 0
+        next_submit_log = PARALLEL_SUBMIT_LOG_INTERVAL
+        chunk_iter = iter(_iter_task_chunks(pending_tasks, chunk_size))
+
+        def submit_chunks() -> None:
+            nonlocal submitted, next_submit_log
+            while len(future_map) < max_inflight_chunks:
+                try:
+                    chunk = next(chunk_iter)
+                except StopIteration:
+                    return
+                future_map[executor.submit(_worker_chunk_entry, chunk)] = chunk
+                submitted += len(chunk)
+                if submitted == len(chunk) or submitted == len(pending_tasks) or submitted >= next_submit_log:
+                    logger.info(
+                        f"stage=parallel_standardize submit_progress={submitted}/{len(pending_tasks)} "
+                        f"workers={workers} chunk_size={chunk_size} inflight_chunks={len(future_map)}"
+                    )
+                    next_submit_log = ((submitted // PARALLEL_SUBMIT_LOG_INTERVAL) + 1) * PARALLEL_SUBMIT_LOG_INTERVAL
+
+        submit_chunks()
+
+        logger.info(
+            f"stage=parallel_standardize waiting_for_results submitted={submitted}/{len(pending_tasks)} "
+            f"completed={completed} chunk_size={chunk_size} inflight_chunks={len(future_map)} "
+            f"heartbeat_interval_s={PARALLEL_WAIT_HEARTBEAT_SECONDS:.0f}"
+        )
+
+        while future_map:
+            done, _ = wait(
+                set(future_map),
+                timeout=PARALLEL_WAIT_HEARTBEAT_SECONDS,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                logger.info(
+                    f"stage=parallel_standardize heartbeat completed={completed}/{len(pending_tasks)} "
+                    f"submitted={submitted}/{len(pending_tasks)} inflight_chunks={len(future_map)} workers={workers}"
+                )
+                continue
+
+            for future in done:
+                chunk = future_map.pop(future)
+                try:
+                    results = future.result()
+                except Exception as exc:
+                    logger.info(
+                        f"stage=parallel_standardize chunk_error size={len(chunk)} error={type(exc).__name__}: {exc}"
+                    )
+                    for task in chunk:
+                        failures.append(
+                            {
+                                "dataset_key": OUTPUT_DATASET_KEY,
+                                "split": task.pair.split,
+                                "raw_id": task.pair.relative_id,
+                                "image_path": str(task.pair.image_path),
+                                "label_path": str(task.pair.label_path),
+                                "error_type": type(exc).__name__,
+                                "error_message": str(exc),
+                            }
+                        )
+                        completed += 1
+                        progress["failed"] += 1
+                    logger.progress(completed, dict(progress), force=True)
+                    submit_chunks()
+                    continue
+
+                for result in results:
+                    failure = result.get("failure")
+                    if failure is not None:
+                        failures.append(failure)
+                        logger.info(
+                            f"stage=parallel_standardize error split={failure['split']} "
+                            f"sample={failure['raw_id']} error={failure['error_type']}: {failure['error_message']}"
+                        )
+                        completed += 1
+                        progress["failed"] += 1
+                        logger.progress(completed, dict(progress), force=True)
+                        continue
+
+                    summary = result["summary"]
+                    summaries.append(summary)
+                    completed += 1
+                    progress["samples"] = completed
+                    progress["detections"] += summary["det_count"]
+                    progress["traffic_lights"] += summary["traffic_light_count"]
+                    progress["traffic_signs"] += summary["traffic_sign_count"]
+                    progress["held"] += sum(summary["held_reason_counts"].values())
+                    logger.progress(completed, dict(progress))
+                submit_chunks()
+    logger.progress(completed, dict(progress), force=True)
+    return summaries, failures
+
+
+def _write_standardization_outputs(
+    *,
+    bdd_root: Path,
+    images_root: Path,
+    labels_root: Path,
+    output_root: Path,
+    workers: int,
+    max_samples_per_split: int | None,
+    debug_vis_count: int,
+    debug_vis_seed: int,
+    source_inventory: dict[str, Any],
+    discovery: dict[str, Any],
+    summaries: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+    logger: LiveLogger,
+) -> dict[str, Path]:
+    logger.stage(
+        "report_write",
+        "클래스 맵, 변환 리포트, source inventory를 기록해 loader가 동일 계약을 읽을 수 있게 만듭니다.",
+        total=8,
+    )
+    report = _aggregate_results(
+        bdd_root=bdd_root,
+        images_root=images_root,
+        labels_root=labels_root,
+        output_root=output_root,
+        workers=workers,
+        max_samples_per_split=max_samples_per_split,
+        debug_vis_count=debug_vis_count,
+        source_inventory=source_inventory,
+        discovery=discovery,
+        summaries=summaries,
+        failures=failures,
+    )
+    meta_root = output_root / "meta"
+    conversion_json = meta_root / "conversion_report.json"
+    conversion_md = meta_root / "conversion_report.md"
+    inventory_json = meta_root / "source_inventory.json"
+    inventory_md = meta_root / "source_inventory.md"
+    det_map_yaml = meta_root / "class_map_det.yaml"
+    scene_map_yaml = meta_root / "class_map_scene.yaml"
+    failure_json = meta_root / "failure_manifest.json"
+    failure_md = meta_root / "failure_manifest.md"
+
+    _write_json(conversion_json, report)
+    logger.progress(1, {"files_written": 1}, force=True)
+    _write_text(conversion_md, _conversion_report_markdown(report))
+    logger.progress(2, {"files_written": 2}, force=True)
+    _write_json(inventory_json, source_inventory)
+    logger.progress(3, {"files_written": 3}, force=True)
+    _write_text(inventory_md, _source_inventory_markdown(source_inventory))
+    logger.progress(4, {"files_written": 4}, force=True)
+    _write_text(det_map_yaml, _det_class_map_yaml())
+    logger.progress(5, {"files_written": 5}, force=True)
+    _write_text(scene_map_yaml, _scene_class_map_yaml())
+    logger.progress(6, {"files_written": 6}, force=True)
+    failure_manifest = {
+        "version": PIPELINE_VERSION,
+        "generated_at": _now_iso(),
+        "failure_count": len(failures),
+        "items": failures,
+    }
+    _write_json(failure_json, failure_manifest)
+    logger.progress(7, {"files_written": 7}, force=True)
+    _write_text(failure_md, _failure_manifest_markdown(failure_manifest))
+    logger.progress(8, {"files_written": 8}, force=True)
+
+    debug_vis_outputs = _generate_debug_vis(
+        output_root,
+        summaries,
+        debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
+        logger=logger,
+    )
+
+    logger.stage(
+        "qa_write",
+        "resume/실패/debug-vis 결과를 묶어 BDD canonical QA summary를 남깁니다.",
+        total=2,
+    )
+    debug_vis_index = _load_json(debug_vis_outputs["debug_vis_index"])
+    qa_json = meta_root / "qa_summary.json"
+    qa_md = meta_root / "qa_summary.md"
+    qa_summary = _qa_summary(report, debug_vis_index, failure_manifest)
+    _write_json(qa_json, qa_summary)
+    logger.progress(1, {"files_written": 1}, force=True)
+    _write_text(qa_md, _qa_summary_markdown(qa_summary))
+    logger.progress(2, {"files_written": 2}, force=True)
+
+    return {
+        "output_root": output_root,
+        "conversion_json": conversion_json,
+        "conversion_md": conversion_md,
+        "inventory_json": inventory_json,
+        "inventory_md": inventory_md,
+        "det_map_yaml": det_map_yaml,
+        "scene_map_yaml": scene_map_yaml,
+        "failure_json": failure_json,
+        "failure_md": failure_md,
+        "qa_json": qa_json,
+        "qa_md": qa_md,
+        "debug_vis_dir": debug_vis_outputs["debug_vis_dir"],
+        "debug_vis_index": debug_vis_outputs["debug_vis_index"],
+    }
+
+
 def run_standardization(
     *,
     bdd_root: Path = DEFAULT_BDD_ROOT,
@@ -956,142 +1209,18 @@ def run_standardization(
         max_samples_per_split=max_samples_per_split,
     )
     tasks = [BDDTask(pair=pair, output_root=str(output_root)) for pair in pairs]
-
-    summaries: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-    pending_tasks: list[BDDTask] = []
-    logger.stage(
-        "resume_scan",
-        "기존 standardized outputs가 있으면 재처리하지 않고 summary만 재구성해 full run을 이어갑니다.",
-        total=len(tasks),
+    summaries, pending_tasks = _scan_existing_outputs(
+        tasks,
+        force_reprocess=force_reprocess,
+        logger=logger,
     )
-    resume_progress = Counter()
-    if tasks:
-        for index, task in enumerate(tasks, start=1):
-            existing = None if force_reprocess else _existing_output_summary(task)
-            if existing is not None:
-                summaries.append(existing)
-                resume_progress["reused"] += 1
-            else:
-                pending_tasks.append(task)
-                resume_progress["pending"] += 1
-            logger.progress(index, dict(resume_progress))
-        logger.progress(len(tasks), dict(resume_progress), force=True)
-    else:
-        logger.progress(0, {"pending": 0, "reused": 0}, force=True)
-
-    logger.stage(
-        "parallel_standardize",
-        "BDD JSON 파싱, 7-class remap, YOLO txt 직렬화, image materialization을 프로세스 풀로 병렬 실행합니다.",
-        total=len(pending_tasks),
+    fresh_summaries, failures = _run_pending_standardization(
+        pending_tasks,
+        workers=workers,
+        logger=logger,
     )
-    progress = Counter()
-    completed = 0
-    if pending_tasks:
-        chunk_size = _parallel_chunk_size(len(pending_tasks), workers)
-        max_inflight_chunks = max(1, workers * PARALLEL_INFLIGHT_CHUNKS_PER_WORKER)
-        with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
-            future_map: dict[Any, list[BDDTask]] = {}
-            submitted = 0
-            next_submit_log = PARALLEL_SUBMIT_LOG_INTERVAL
-            chunk_iter = iter(_iter_task_chunks(pending_tasks, chunk_size))
-
-            def submit_chunks() -> None:
-                nonlocal submitted, next_submit_log
-                while len(future_map) < max_inflight_chunks:
-                    try:
-                        chunk = next(chunk_iter)
-                    except StopIteration:
-                        return
-                    future_map[executor.submit(_worker_chunk_entry, chunk)] = chunk
-                    submitted += len(chunk)
-                    if submitted == len(chunk) or submitted == len(pending_tasks) or submitted >= next_submit_log:
-                        logger.info(
-                            f"stage=parallel_standardize submit_progress={submitted}/{len(pending_tasks)} "
-                            f"workers={workers} chunk_size={chunk_size} inflight_chunks={len(future_map)}"
-                        )
-                        next_submit_log = ((submitted // PARALLEL_SUBMIT_LOG_INTERVAL) + 1) * PARALLEL_SUBMIT_LOG_INTERVAL
-
-            submit_chunks()
-
-            logger.info(
-                f"stage=parallel_standardize waiting_for_results submitted={submitted}/{len(pending_tasks)} "
-                f"completed={completed} chunk_size={chunk_size} inflight_chunks={len(future_map)} "
-                f"heartbeat_interval_s={PARALLEL_WAIT_HEARTBEAT_SECONDS:.0f}"
-            )
-
-            while future_map:
-                done, _ = wait(
-                    set(future_map),
-                    timeout=PARALLEL_WAIT_HEARTBEAT_SECONDS,
-                    return_when=FIRST_COMPLETED,
-                )
-                if not done:
-                    logger.info(
-                        f"stage=parallel_standardize heartbeat completed={completed}/{len(pending_tasks)} "
-                        f"submitted={submitted}/{len(pending_tasks)} inflight_chunks={len(future_map)} workers={workers}"
-                    )
-                    continue
-
-                for future in done:
-                    chunk = future_map.pop(future)
-                    try:
-                        results = future.result()
-                    except Exception as exc:
-                        logger.info(
-                            f"stage=parallel_standardize chunk_error size={len(chunk)} error={type(exc).__name__}: {exc}"
-                        )
-                        for task in chunk:
-                            failures.append(
-                                {
-                                    "dataset_key": OUTPUT_DATASET_KEY,
-                                    "split": task.pair.split,
-                                    "raw_id": task.pair.relative_id,
-                                    "image_path": str(task.pair.image_path),
-                                    "label_path": str(task.pair.label_path),
-                                    "error_type": type(exc).__name__,
-                                    "error_message": str(exc),
-                                }
-                            )
-                            completed += 1
-                            progress["failed"] += 1
-                        logger.progress(completed, dict(progress), force=True)
-                        submit_chunks()
-                        continue
-
-                    for result in results:
-                        failure = result.get("failure")
-                        if failure is not None:
-                            failures.append(failure)
-                            logger.info(
-                                f"stage=parallel_standardize error split={failure['split']} "
-                                f"sample={failure['raw_id']} error={failure['error_type']}: {failure['error_message']}"
-                            )
-                            completed += 1
-                            progress["failed"] += 1
-                            logger.progress(completed, dict(progress), force=True)
-                            continue
-
-                        summary = result["summary"]
-                        summaries.append(summary)
-                        completed += 1
-                        progress["samples"] = completed
-                        progress["detections"] += summary["det_count"]
-                        progress["traffic_lights"] += summary["traffic_light_count"]
-                        progress["traffic_signs"] += summary["traffic_sign_count"]
-                        progress["held"] += sum(summary["held_reason_counts"].values())
-                        logger.progress(completed, dict(progress))
-                    submit_chunks()
-        logger.progress(completed, dict(progress), force=True)
-    else:
-        logger.progress(0, {"samples": 0}, force=True)
-
-    logger.stage(
-        "report_write",
-        "클래스 맵, 변환 리포트, source inventory를 기록해 loader가 동일 계약을 읽을 수 있게 만듭니다.",
-        total=8,
-    )
-    report = _aggregate_results(
+    summaries.extend(fresh_summaries)
+    outputs = _write_standardization_outputs(
         bdd_root=bdd_root,
         images_root=images_root,
         labels_root=labels_root,
@@ -1099,84 +1228,18 @@ def run_standardization(
         workers=workers,
         max_samples_per_split=max_samples_per_split,
         debug_vis_count=debug_vis_count,
+        debug_vis_seed=debug_vis_seed,
         source_inventory=source_inventory,
         discovery=discovery,
         summaries=summaries,
         failures=failures,
-    )
-    meta_root = output_root / "meta"
-    conversion_json = meta_root / "conversion_report.json"
-    conversion_md = meta_root / "conversion_report.md"
-    inventory_json = meta_root / "source_inventory.json"
-    inventory_md = meta_root / "source_inventory.md"
-    det_map_yaml = meta_root / "class_map_det.yaml"
-    scene_map_yaml = meta_root / "class_map_scene.yaml"
-    failure_json = meta_root / "failure_manifest.json"
-    failure_md = meta_root / "failure_manifest.md"
-
-    _write_json(conversion_json, report)
-    logger.progress(1, {"files_written": 1}, force=True)
-    _write_text(conversion_md, _conversion_report_markdown(report))
-    logger.progress(2, {"files_written": 2}, force=True)
-    _write_json(inventory_json, source_inventory)
-    logger.progress(3, {"files_written": 3}, force=True)
-    _write_text(inventory_md, _source_inventory_markdown(source_inventory))
-    logger.progress(4, {"files_written": 4}, force=True)
-    _write_text(det_map_yaml, _det_class_map_yaml())
-    logger.progress(5, {"files_written": 5}, force=True)
-    _write_text(scene_map_yaml, _scene_class_map_yaml())
-    logger.progress(6, {"files_written": 6}, force=True)
-    failure_manifest = {
-        "version": PIPELINE_VERSION,
-        "generated_at": _now_iso(),
-        "failure_count": len(failures),
-        "items": failures,
-    }
-    _write_json(failure_json, failure_manifest)
-    logger.progress(7, {"files_written": 7}, force=True)
-    _write_text(failure_md, _failure_manifest_markdown(failure_manifest))
-    logger.progress(8, {"files_written": 8}, force=True)
-
-    debug_vis_outputs = _generate_debug_vis(
-        output_root,
-        summaries,
-        debug_vis_count=debug_vis_count,
-        debug_vis_seed=debug_vis_seed,
         logger=logger,
     )
-
-    logger.stage(
-        "qa_write",
-        "resume/실패/debug-vis 결과를 묶어 BDD canonical QA summary를 남깁니다.",
-        total=2,
-    )
-    debug_vis_index = _load_json(debug_vis_outputs["debug_vis_index"])
-    qa_json = meta_root / "qa_summary.json"
-    qa_md = meta_root / "qa_summary.md"
-    qa_summary = _qa_summary(report, debug_vis_index, failure_manifest)
-    _write_json(qa_json, qa_summary)
-    logger.progress(1, {"files_written": 1}, force=True)
-    _write_text(qa_md, _qa_summary_markdown(qa_summary))
-    logger.progress(2, {"files_written": 2}, force=True)
 
     logger.info("standardization complete")
     if failures and fail_on_error:
         raise RuntimeError(f"BDD100K standardization completed with failures: {len(failures)}")
-    return {
-        "output_root": output_root,
-        "conversion_json": conversion_json,
-        "conversion_md": conversion_md,
-        "inventory_json": inventory_json,
-        "inventory_md": inventory_md,
-        "det_map_yaml": det_map_yaml,
-        "scene_map_yaml": scene_map_yaml,
-        "failure_json": failure_json,
-        "failure_md": failure_md,
-        "qa_json": qa_json,
-        "qa_md": qa_md,
-        "debug_vis_dir": debug_vis_outputs["debug_vis_dir"],
-        "debug_vis_index": debug_vis_outputs["debug_vis_index"],
-    }
+    return outputs
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

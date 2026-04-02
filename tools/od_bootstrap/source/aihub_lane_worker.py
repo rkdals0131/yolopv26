@@ -32,7 +32,7 @@ def _lane_class_from_color(color: str) -> tuple[str | None, str | None]:
     return None, "lane_color_unmapped"
 
 
-def _lane_worker(task: StandardizeTask) -> dict[str, Any]:
+def lane_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
     output_root = Path(task.output_root)
@@ -177,3 +177,6 @@ def _lane_worker(task: StandardizeTask) -> dict[str, Any]:
         "held_reason_counts": _counter_to_dict(held_reason_counts),
         "resume_skipped": 0,
     }
+
+
+_lane_worker = lane_worker

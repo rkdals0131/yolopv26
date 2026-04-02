@@ -3,35 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.paths import resolve_path
-DEFAULT_DEBUG_VIS_SEED = 26
-
-from .aihub import (
-    DEFAULT_DOCS_ROOT as DEFAULT_AIHUB_DOCS_ROOT,
-    DEFAULT_LANE_ROOT as DEFAULT_AIHUB_LANE_ROOT,
-    DEFAULT_OBSTACLE_ROOT as DEFAULT_AIHUB_OBSTACLE_ROOT,
-    DEFAULT_OUTPUT_ROOT as DEFAULT_AIHUB_OUTPUT_ROOT,
-    DEFAULT_TRAFFIC_ROOT as DEFAULT_AIHUB_TRAFFIC_ROOT,
-)
-from .bdd100k import (
+from .constants import (
+    BOOTSTRAP_SOURCE_KEYS,
+    DEFAULT_AIHUB_DOCS_ROOT,
+    DEFAULT_AIHUB_OUTPUT_ROOT,
+    DEFAULT_BDD_IMAGES_ROOT,
+    DEFAULT_BDD_LABELS_ROOT,
     DEFAULT_BDD_ROOT,
-    DEFAULT_IMAGES_ROOT,
-    DEFAULT_LABELS_ROOT,
+    DEFAULT_DEBUG_VIS_SEED,
+    EXCLUDED_SOURCE_KEYS,
 )
-
-
-AIHUB_LANE_DIRNAME = DEFAULT_AIHUB_LANE_ROOT.name
-AIHUB_OBSTACLE_DIRNAME = DEFAULT_AIHUB_OBSTACLE_ROOT.name
-AIHUB_TRAFFIC_DIRNAME = DEFAULT_AIHUB_TRAFFIC_ROOT.name
-BOOTSTRAP_SOURCE_KEYS = ("bdd100k_det_100k", "aihub_traffic_seoul", "aihub_obstacle_seoul")
-EXCLUDED_SOURCE_KEYS = ("aihub_lane_seoul",)
 
 
 @dataclass(frozen=True)
 class SourceRoots:
     bdd_root: Path = DEFAULT_BDD_ROOT
-    bdd_images_root: Path = DEFAULT_IMAGES_ROOT
-    bdd_labels_root: Path = DEFAULT_LABELS_ROOT
+    bdd_images_root: Path = DEFAULT_BDD_IMAGES_ROOT
+    bdd_labels_root: Path = DEFAULT_BDD_LABELS_ROOT
     aihub_root: Path = DEFAULT_AIHUB_OUTPUT_ROOT.parent / "AIHUB"
     aihub_lane_root: Path | None = None
     aihub_obstacle_root: Path | None = None
@@ -69,20 +57,7 @@ class SourcePrepResult:
     aihub_outputs: dict[str, Path]
 
 
-def build_default_source_prep_config(*, output_root: Path | None = None) -> SourcePrepConfig:
-    roots = SourceRoots()
-    resolved_output_root = Path(output_root or DEFAULT_AIHUB_OUTPUT_ROOT.parent / "pv26_od_bootstrap").resolve()
-    return SourcePrepConfig(roots=roots, output_root=resolved_output_root)
-
-
-def resolve_source_path(value: str | Path, *, base_dir: Path) -> Path:
-    return resolve_path(value, base_dir=base_dir)
-
-
 __all__ = [
-    "AIHUB_LANE_DIRNAME",
-    "AIHUB_OBSTACLE_DIRNAME",
-    "AIHUB_TRAFFIC_DIRNAME",
     "BOOTSTRAP_SOURCE_KEYS",
     "EXCLUDED_SOURCE_KEYS",
     "CanonicalSourceBundle",
@@ -91,6 +66,4 @@ __all__ = [
     "SourcePrepConfig",
     "SourcePrepResult",
     "SourceRoots",
-    "build_default_source_prep_config",
-    "resolve_source_path",
 ]
