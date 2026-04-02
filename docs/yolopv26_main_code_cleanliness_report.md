@@ -391,7 +391,10 @@ tools/od_bootstrap/
 lane family metric augmentation이 trainer/evaluator/_trainer_epochs 사이에서 공용화됐다.
 그 다음 wave에서는 `model/engine/_det_geometry.py`가 추가되면서
 anchor grid / anchor-relative decode도 `loss.py`, `postprocess.py`에서 공용화됐다.
-이제 남은 핵심은 trainer private re-export mesh와 더 넓은 public/internal surface 경계다.
+그 다음 wave에서는 `model/engine/trainer.py`도 한 단계 더 정리됐다.
+facade가 노출하던 private re-export를 테스트/호출자가 실제로 쓰는 compatibility shim 집합으로 줄이고,
+내부 호출은 `_trainer_*` 모듈을 직접 참조하도록 바뀌었다.
+이제 남은 핵심은 더 넓은 public/internal surface 경계와 `_trainer_epochs.py`/`_loss_spec.py` 같은 잔여 큰 파일이다.
 
 ---
 
@@ -455,8 +458,9 @@ tools/
 workspace scan은 `tools/check_env_scan.py`,
 action catalog는 `tools/check_env_actions.py`,
 rich rendering은 `tools/check_env_tui.py`로 분리됐다.
-다만 input handling / subprocess launch / resume candidate 흐름은 아직 facade 쪽에 남아 있어
-완전한 얇은 entrypoint까지는 한 번 더 다듬을 여지가 있다.
+그 다음 wave에서는 input handling / subprocess launch / resume candidate 흐름도
+`tools/check_env_launch.py`로 이동하면서 facade가 더 얇아졌다.
+즉, 현재 남은 큰 축은 launch 계층 추가 분해보다 실제 런타임 시나리오 coverage와 유지보수 세부 정리다.
 
 즉, 이건 “필수 수정”은 아니고 **나중에 덩치 줄이기용**이다.
 
@@ -762,7 +766,9 @@ teacher 폴더는 상위 구조는 좋다.
 `ultralytics_runner.py`는 이제 `runtime_progress`, `runtime_tensorboard`,
 `runtime_resume`, `runtime_artifacts`의 public/shared helper 이름을 우선 사용하고,
 underscore alias는 compatibility shim으로만 남겨둔 상태다.
-즉, alias mesh는 줄었지만 runner 자체의 덩치와 DI 인자 수는 아직 남아 있다.
+그 다음 wave에서는 `TeacherRuntimeSupport`가 `build_teacher_runtime_callbacks()`의
+callback dependency surface를 한 객체로 묶어줬다.
+즉, alias mesh와 callback DI는 한 단계 정리됐고, 남은 핵심은 `_make_teacher_trainer()`와 runner 본체 덩치다.
 
 우선순위는 `source/`보다는 약간 낮지만, **분명히 손볼 가치가 있다.**
 
@@ -859,6 +865,11 @@ underscore alias는 compatibility shim으로만 남겨둔 상태다.
 `common.io.write_jsonl`을 build 쪽에서 재사용하도록 맞췄고,
 `final_dataset.py`의 overwrite/publish처럼 정책 차이가 큰 helper는 그대로 로컬에 남겨뒀다.
 즉, 정책이 같은 helper만 공용화하고 나머지는 builder-local로 남기는 방향이 실제 코드에 반영됐다.
+
+source 쪽에서도 비슷한 방향으로 한 단계 더 나갔다.
+`shared_debug.build_debug_vis_manifest()`와 관련 `TypedDict`가 들어오면서
+debug-vis index payload가 더 이상 loose dict에만 기대지 않게 됐고,
+AIHUB/BDD caller가 같은 manifest contract를 재사용하게 됐다.
 
 ---
 

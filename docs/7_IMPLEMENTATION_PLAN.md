@@ -116,6 +116,7 @@
 - `model/engine/trainer.py` is orchestration-only; step / epoch / fit / checkpoint / reporting logic lives in helper modules
 - `2026-04-03` team wave added `model/engine/batch.py`, promoted `deep_merge_mappings` reuse through `common.user_config`, and extracted source shared helpers into `tools/od_bootstrap/source/shared_resume.py` and `shared_source_meta.py`
 - `2026-04-03` follow-up wave added `model/engine/_det_geometry.py`, split `tools/check_env.py` into scan/actions/tui companions, tightened teacher runtime imports around public/shared helpers, and expanded `common.paths` / `common.io` reuse across bootstrap build call sites
+- `2026-04-03` wave 3 narrowed `model/engine/trainer.py` re-export surface, added `tools/check_env_launch.py`, promoted source debug-vis manifest helpers into shared typed surfaces, and grouped teacher callback wiring behind `TeacherRuntimeSupport`
 
 ## priority-2b extraction review boundary
 
