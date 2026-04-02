@@ -395,6 +395,108 @@ def _format_train_progress_log(
     )
 
 
+def _format_train_live_detail(
+    *,
+    losses: dict[str, Any],
+    profile_summary: dict[str, Any],
+) -> str:
+    iteration_profile = profile_summary["iteration_sec"]
+    loss_line = _join_segments(
+        "loss",
+        f"total={float(losses.get('total', float('nan'))):.4f}",
+        f"det={float(losses.get('det', float('nan'))):.4f}",
+        f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
+        f"lane={float(losses.get('lane', float('nan'))):.4f}",
+        f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
+        f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
+    )
+    timing_line = _join_segments(
+        "timing_ms",
+        f"load={profile_summary['load_sec']['mean'] * 1000.0:.3f}",
+        f"fwd={profile_summary['forward_sec']['mean'] * 1000.0:.3f}",
+        f"loss={profile_summary['loss_sec']['mean'] * 1000.0:.3f}",
+        f"bwd={profile_summary['backward_sec']['mean'] * 1000.0:.3f}",
+        f"total={iteration_profile['mean'] * 1000.0:.3f}",
+    )
+    return "\n".join((loss_line, timing_line))
+
+
+def _format_validate_live_detail(
+    *,
+    elapsed_sec: float,
+    eta_sec: float | None,
+    batch_summary: dict[str, Any],
+    profile_summary: dict[str, Any],
+) -> str:
+    losses = dict(batch_summary.get("losses", {}))
+    iteration_profile = profile_summary["iteration_sec"]
+    loss_line = _join_segments(
+        "loss",
+        f"total={float(losses.get('total', float('nan'))):.4f}",
+        f"det={float(losses.get('det', float('nan'))):.4f}",
+        f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
+        f"lane={float(losses.get('lane', float('nan'))):.4f}",
+        f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
+        f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
+    )
+    timing_line = _join_segments(
+        "timing_ms",
+        f"eval={profile_summary['evaluate_sec']['mean'] * 1000.0:.3f}",
+        f"total={iteration_profile['mean'] * 1000.0:.3f}",
+        f"elapsed={_format_duration(elapsed_sec)}",
+        f"eta={_format_duration(eta_sec)}",
+    )
+    return "\n".join((loss_line, timing_line))
+
+
+def _loss_mean_for_log(summary: dict[str, Any] | None) -> float | None:
+    if not isinstance(summary, dict):
+        return None
+    losses = summary.get("losses", {})
+    if not isinstance(losses, dict):
+        return None
+    total = losses.get("total")
+    if isinstance(total, dict):
+        total = total.get("mean", total.get("last"))
+    if isinstance(total, (int, float)):
+        numeric = float(total)
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def _format_epoch_completion_log(
+    *,
+    phase_index: int | None,
+    phase_count: int | None,
+    phase_name: str | None,
+    epoch: int,
+    epoch_total: int | None,
+    train_summary: dict[str, Any],
+    val_summary: dict[str, Any] | None,
+    best_metric_value: float | None,
+    best_epoch: int | None,
+    is_best: bool,
+) -> str:
+    checkpoint_label = "last,best" if is_best else "last"
+    segments: list[Any] = [
+        "[epoch]",
+        f"phase={_format_fraction(int(phase_index), int(phase_count))}" if phase_index is not None and phase_count is not None else None,
+        phase_name,
+        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
+    ]
+    train_loss = _loss_mean_for_log(train_summary)
+    if train_loss is not None:
+        segments.append(f"train={train_loss:.4f}")
+    val_loss = _loss_mean_for_log(val_summary)
+    if val_loss is not None:
+        segments.append(f"val={val_loss:.4f}")
+    if isinstance(best_metric_value, (int, float)) and math.isfinite(float(best_metric_value)) and best_epoch is not None:
+        segments.append(f"best={float(best_metric_value):.4f}@{int(best_epoch)}")
+    segments.append(f"checkpoint={checkpoint_label}")
+    return _join_segments(*segments)
+
+
 def _loss_stats_from_summaries(summaries: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     if not summaries:
         return {}

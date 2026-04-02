@@ -204,6 +204,34 @@ class _FakeSummaryWriter:
 
 
 class PV26TrainerTests(unittest.TestCase):
+    def test_format_train_live_detail_compacts_to_two_lines(self) -> None:
+        from model.engine.trainer import _format_train_live_detail
+
+        message = _format_train_live_detail(
+            losses={
+                "total": 1.25,
+                "det": 0.5,
+                "tl_attr": 0.1,
+                "lane": 0.3,
+                "stop_line": 0.2,
+                "crosswalk": 0.15,
+            },
+            profile_summary={
+                "iteration_sec": {"mean": 0.25, "p50": 0.2, "p99": 0.4},
+                "wait_sec": {"mean": 0.01, "p50": 0.01, "p99": 0.01},
+                "load_sec": {"mean": 0.02, "p50": 0.02, "p99": 0.02},
+                "forward_sec": {"mean": 0.03, "p50": 0.03, "p99": 0.03},
+                "loss_sec": {"mean": 0.04, "p50": 0.04, "p99": 0.04},
+                "backward_sec": {"mean": 0.05, "p50": 0.05, "p99": 0.05},
+            },
+        )
+
+        self.assertEqual(message.count("\n"), 1)
+        self.assertIn("loss  |  total=1.2500", message)
+        self.assertIn("stop=0.2000", message)
+        self.assertIn("cross=0.1500", message)
+        self.assertIn("timing_ms  |  load=20.000", message)
+
     def test_format_train_progress_log_includes_phase_epoch_and_multiline_groups(self) -> None:
         from model.engine.trainer import _format_train_progress_log
 
@@ -247,6 +275,31 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  |  ", message)
         self.assertIn("  loss  |  total=1.2500", message)
         self.assertIn("  timing_ms  |  load=20.000", message)
+
+    def test_format_epoch_completion_log_is_concise_and_includes_checkpoint_state(self) -> None:
+        from model.engine.trainer import _format_epoch_completion_log
+
+        message = _format_epoch_completion_log(
+            phase_index=1,
+            phase_count=4,
+            phase_name="head_warmup",
+            epoch=2,
+            epoch_total=12,
+            train_summary={"losses": {"total": {"mean": 1.5}}},
+            val_summary={"losses": {"total": {"mean": 1.25}}},
+            best_metric_value=1.25,
+            best_epoch=2,
+            is_best=True,
+        )
+
+        self.assertIn("[epoch]", message)
+        self.assertIn("phase=1/4", message)
+        self.assertIn("head_warmup", message)
+        self.assertIn("epoch=2/12", message)
+        self.assertIn("train=1.5000", message)
+        self.assertIn("val=1.2500", message)
+        self.assertIn("best=1.2500@2", message)
+        self.assertIn("checkpoint=last,best", message)
 
     def test_tensorboard_train_step_payload_keeps_only_core_scalars(self) -> None:
         import model.engine.trainer as pv26_trainer

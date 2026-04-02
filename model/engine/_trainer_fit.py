@@ -5,6 +5,8 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
+from ._trainer_reporting import _format_epoch_completion_log
+
 
 def _best_metric_path(best_metric: str | None, *, has_val_loader: bool) -> str:
     return best_metric or ("val.losses.total.mean" if has_val_loader else "train.losses.total.mean")
@@ -410,6 +412,21 @@ def run_fit(
                     json_ready_fn=json_ready_fn,
                     run_manifest_version=run_manifest_version,
                 ),
+            )
+            print(
+                _format_epoch_completion_log(
+                    phase_index=phase_index,
+                    phase_count=phase_count,
+                    phase_name=phase_name,
+                    epoch=epoch,
+                    epoch_total=epochs,
+                    train_summary=epoch_summary["train"],
+                    val_summary=epoch_summary.get("val"),
+                    best_metric_value=best_metric_value,
+                    best_epoch=best_epoch,
+                    is_best=is_best,
+                ),
+                flush=True,
             )
             if early_exit_state is not None and bool(early_exit_state.get("should_stop", True)):
                 break
