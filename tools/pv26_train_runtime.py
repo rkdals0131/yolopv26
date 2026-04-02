@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 import time
 from typing import Any, Callable
@@ -142,15 +141,17 @@ def stage3_stress_train_config(
 ) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
     phase_index, phase = find_phase_by_stage(scenario, stage="stage_3_end_to_end_finetune")
     phase_train_config = scenario_phase_defaults(scenario.train_defaults, phase.overrides)
-    phase_train_config = replace(
-        phase_train_config,
-        batch_size=batch_size,
-        train_batches=stress_iters,
-        val_batches=0,
-        log_every_n_steps=1,
-        num_workers=0,
-        persistent_workers=False,
-        prefetch_factor=None,
+    phase_train_config = phase_train_config.__class__(
+        **{
+            **phase_train_config.__dict__,
+            "batch_size": batch_size,
+            "train_batches": stress_iters,
+            "val_batches": 0,
+            "log_every_n_steps": 1,
+            "num_workers": 0,
+            "persistent_workers": False,
+            "prefetch_factor": None,
+        }
     )
     return phase_index, phase, phase_train_config
 
@@ -326,7 +327,6 @@ def run_meta_train_scenario(
     scenario_snapshot_for_run: Callable[..., dict[str, Any]],
     write_meta_manifest: Callable[[Path, dict[str, Any]], None],
     write_meta_summary: Callable[[Path, dict[str, Any]], None],
-    resolve_phase_selection: Callable[[Any, PhaseConfig], Any],
     execute_phase: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     configure_torch_multiprocessing()
@@ -393,12 +393,6 @@ def run_meta_train_scenario(
         log_meta_train(
             f"starting phase {phase_index}/{len(scenario.phases)}: "
             f"{phase.name} ({phase.stage})"
-        )
-        phase_selection = resolve_phase_selection(scenario.selection, phase)
-        log_meta_train(
-            f"phase policy: min_epochs={phase.min_epochs}, max_epochs={phase.max_epochs}, "
-            f"patience={phase.patience}, min_improvement_pct={phase.min_improvement_pct}, "
-            f"selection={phase_selection.metric_path} ({phase_selection.mode})"
         )
 
         phase_result = execute_phase(
