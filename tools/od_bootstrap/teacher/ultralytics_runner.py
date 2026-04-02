@@ -260,135 +260,165 @@ def _build_teacher_train_summary(
     }
 
 
+def _require_teacher_trainer_dependencies() -> None:
+    if DetectionTrainer is None or torch_distributed_zero_first is None or ultra_trainer is None:
+        raise RuntimeError("ultralytics trainer dependencies are not available")
+
+
+def _restore_resume_training_args(trainer: Any, overrides: dict[str, Any]) -> bool | str | Path:
+    resume = trainer.args.resume
+    if not resume:
+        return resume
+    try:
+        exists = isinstance(resume, (str, Path)) and Path(resume).exists()
+        requested = Path(ultra_trainer.check_file(resume) if exists else ultra_trainer.get_latest_run())
+        last = resolve_resume_checkpoint_path(requested) or requested
+        metadata = checkpoint_resume_metadata(last)
+        ckpt_args = dict(metadata["train_args"])
+        if not ckpt_args:
+            raise FileNotFoundError(f"resume checkpoint is missing train_args: {last}")
+        if not metadata["resumable"]:
+            raise FileNotFoundError(
+                f"resume checkpoint is finalized and not resumable: {last}. "
+                "Use a saved epoch*.pt or last_resume.pt checkpoint instead."
+            )
+        if not isinstance(ckpt_args["data"], dict) and not Path(ckpt_args["data"]).exists():
+            ckpt_args["data"] = trainer.args.data
+
+        trainer.od_resume_base_epochs = int(ckpt_args.get("epochs") or 0) or None
+        trainer.od_resume_start_epoch = int(metadata["epoch"]) + 1
+        trainer.args = ultra_trainer.get_cfg(ckpt_args)
+        trainer.args.model = trainer.args.resume = str(last)
+        for key in (
+            "epochs",
+            "imgsz",
+            "batch",
+            "device",
+            "close_mosaic",
+            "augmentations",
+            "save_period",
+            "workers",
+            "cache",
+            "patience",
+            "time",
+            "freeze",
+            "val",
+            "plots",
+        ):
+            if key in overrides:
+                setattr(trainer.args, key, overrides[key])
+
+        if ckpt_args.get("augmentations") is not None:
+            ultra_trainer.LOGGER.warning(
+                "Custom Albumentations transforms were used in the original training run but are not "
+                "being restored. To preserve custom augmentations when resuming, you need to pass the "
+                "'augmentations' parameter again to get expected results. Example: \n"
+                f"model.train(resume=True, augmentations={ckpt_args['augmentations']})"
+            )
+    except Exception as exc:
+        raise FileNotFoundError(
+            "Resume checkpoint not found. Please pass a valid checkpoint to resume from, "
+            "i.e. 'yolo train resume model=path/to/last.pt'"
+        ) from exc
+    return True
+
+
+def _build_extended_resume_lf(
+    *,
+    resume: bool | str | Path,
+    base_epochs: int | None,
+    start_epoch: int | None,
+    total_epochs: int,
+    lrf: float,
+    cos_lr: bool,
+) -> Callable[[int], float] | None:
+    if not resume or base_epochs is None or start_epoch is None or total_epochs <= base_epochs:
+        return None
+
+    resume_epoch = int(start_epoch)
+
+    def _base_linear(epoch_index: int) -> float:
+        return max(1.0 - float(epoch_index) / float(base_epochs), 0.0) * (1.0 - lrf) + lrf
+
+    def _base_cosine(epoch_index: int) -> float:
+        progress = max(float(epoch_index), 0.0) * math.pi / float(base_epochs)
+        return ((1.0 - math.cos(progress)) / 2.0) * (lrf - 1.0) + 1.0
+
+    base_fn = _base_cosine if cos_lr else _base_linear
+    start_factor = float(base_fn(resume_epoch))
+    remaining_epochs = max(total_epochs - resume_epoch, 1)
+
+    if cos_lr:
+        def _extended_lf(epoch_index: int) -> float:
+            if epoch_index <= resume_epoch:
+                return float(base_fn(epoch_index))
+            progress = min(max(float(epoch_index - resume_epoch) / float(remaining_epochs), 0.0), 1.0)
+            return ((1.0 - math.cos(progress * math.pi)) / 2.0) * (lrf - start_factor) + start_factor
+    else:
+        def _extended_lf(epoch_index: int) -> float:
+            if epoch_index <= resume_epoch:
+                return float(base_fn(epoch_index))
+            progress = min(max(float(epoch_index - resume_epoch) / float(remaining_epochs), 0.0), 1.0)
+            return (1.0 - progress) * start_factor + progress * lrf
+
+    return _extended_lf
+
+
+def _initialize_teacher_runtime_state(
+    trainer: Any,
+    *,
+    runtime_params: dict[str, Any],
+    log_fn: Callable[[str], None],
+) -> None:
+    trainer.od_runtime_params = dict(runtime_params)
+    trainer.od_log = log_fn
+    trainer.od_profile_log_path = None
+    trainer.od_profile_summary_path = None
+    trainer.od_tensorboard_dir = None
+    trainer.od_tensorboard_writer = None
+    trainer.od_tensorboard_status = {
+        "enabled": False,
+        "status": "not_initialized",
+        "error": None,
+        "log_dir": None,
+    }
+    trainer.od_profile_history = []
+    trainer.od_epoch_timing_window = deque(maxlen=max(1, int(runtime_params["profile_window"])))
+    trainer.od_epoch_started_at = 0.0
+    trainer.od_last_batch_end_at = None
+    trainer.od_batch_started_at = None
+    trainer.od_pending_wait_sec = 0.0
+    trainer.od_epoch_step = 0
+    trainer.od_global_step = 0
+    trainer.od_pbar = None
+
+
 def _make_teacher_trainer(
     *,
     runtime_params: dict[str, Any],
     log_fn: Callable[[str], None],
 ):
-    if DetectionTrainer is None or torch_distributed_zero_first is None or ultra_trainer is None:
-        raise RuntimeError("ultralytics trainer dependencies are not available")
+    _require_teacher_trainer_dependencies()
 
     class TeacherDetectionTrainer(DetectionTrainer):
         def check_resume(self, overrides):
             self.od_resume_base_epochs = None
             self.od_resume_start_epoch = None
-            resume = self.args.resume
-            if resume:
-                try:
-                    exists = isinstance(resume, (str, Path)) and Path(resume).exists()
-                    requested = Path(ultra_trainer.check_file(resume) if exists else ultra_trainer.get_latest_run())
-                    last = resolve_resume_checkpoint_path(requested) or requested
-                    metadata = checkpoint_resume_metadata(last)
-                    ckpt_args = dict(metadata["train_args"])
-                    if not ckpt_args:
-                        raise FileNotFoundError(f"resume checkpoint is missing train_args: {last}")
-                    if not metadata["resumable"]:
-                        raise FileNotFoundError(
-                            f"resume checkpoint is finalized and not resumable: {last}. "
-                            "Use a saved epoch*.pt or last_resume.pt checkpoint instead."
-                        )
-                    if not isinstance(ckpt_args["data"], dict) and not Path(ckpt_args["data"]).exists():
-                        ckpt_args["data"] = self.args.data
-
-                    resume = True
-                    self.od_resume_base_epochs = int(ckpt_args.get("epochs") or 0) or None
-                    self.od_resume_start_epoch = int(metadata["epoch"]) + 1
-                    self.args = ultra_trainer.get_cfg(ckpt_args)
-                    self.args.model = self.args.resume = str(last)
-                    for k in (
-                        "epochs",
-                        "imgsz",
-                        "batch",
-                        "device",
-                        "close_mosaic",
-                        "augmentations",
-                        "save_period",
-                        "workers",
-                        "cache",
-                        "patience",
-                        "time",
-                        "freeze",
-                        "val",
-                        "plots",
-                    ):
-                        if k in overrides:
-                            setattr(self.args, k, overrides[k])
-
-                    if ckpt_args.get("augmentations") is not None:
-                        ultra_trainer.LOGGER.warning(
-                            "Custom Albumentations transforms were used in the original training run but are not "
-                            "being restored. To preserve custom augmentations when resuming, you need to pass the "
-                            "'augmentations' parameter again to get expected results. Example: \n"
-                            f"model.train(resume=True, augmentations={ckpt_args['augmentations']})"
-                        )
-                except Exception as e:
-                    raise FileNotFoundError(
-                        "Resume checkpoint not found. Please pass a valid checkpoint to resume from, "
-                        "i.e. 'yolo train resume model=path/to/last.pt'"
-                    ) from e
-            self.resume = resume
+            self.resume = _restore_resume_training_args(self, overrides)
 
         def _build_extended_resume_lf(self):
-            base_epochs = getattr(self, "od_resume_base_epochs", None)
-            start_epoch = getattr(self, "od_resume_start_epoch", None)
-            if not self.resume or base_epochs is None or start_epoch is None or self.epochs <= base_epochs:
-                return None
-
-            lrf = float(self.args.lrf)
-            total_epochs = int(self.epochs)
-            resume_epoch = int(start_epoch)
-
-            def _base_linear(epoch_index: int) -> float:
-                return max(1.0 - float(epoch_index) / float(base_epochs), 0.0) * (1.0 - lrf) + lrf
-
-            def _base_cosine(epoch_index: int) -> float:
-                progress = max(float(epoch_index), 0.0) * math.pi / float(base_epochs)
-                return ((1.0 - math.cos(progress)) / 2.0) * (lrf - 1.0) + 1.0
-
-            base_fn = _base_cosine if self.args.cos_lr else _base_linear
-            start_factor = float(base_fn(resume_epoch))
-            remaining_epochs = max(total_epochs - resume_epoch, 1)
-
-            if self.args.cos_lr:
-                def _extended_lf(epoch_index: int) -> float:
-                    if epoch_index <= resume_epoch:
-                        return float(base_fn(epoch_index))
-                    progress = min(max(float(epoch_index - resume_epoch) / float(remaining_epochs), 0.0), 1.0)
-                    return ((1.0 - math.cos(progress * math.pi)) / 2.0) * (lrf - start_factor) + start_factor
-            else:
-                def _extended_lf(epoch_index: int) -> float:
-                    if epoch_index <= resume_epoch:
-                        return float(base_fn(epoch_index))
-                    progress = min(max(float(epoch_index - resume_epoch) / float(remaining_epochs), 0.0), 1.0)
-                    return (1.0 - progress) * start_factor + progress * lrf
-
-            return _extended_lf
+            return _build_extended_resume_lf(
+                resume=self.resume,
+                base_epochs=getattr(self, "od_resume_base_epochs", None),
+                start_epoch=getattr(self, "od_resume_start_epoch", None),
+                total_epochs=int(self.epochs),
+                lrf=float(self.args.lrf),
+                cos_lr=bool(self.args.cos_lr),
+            )
 
         def __init__(self, cfg=DEFAULT_CFG, overrides: dict[str, Any] | None = None, _callbacks: dict | None = None):
             super().__init__(cfg=cfg, overrides=overrides, _callbacks=_callbacks)
-            self.od_runtime_params = dict(runtime_params)
-            self.od_log = log_fn
-            self.od_profile_log_path: Path | None = None
-            self.od_profile_summary_path: Path | None = None
-            self.od_tensorboard_dir: Path | None = None
-            self.od_tensorboard_writer = None
-            self.od_tensorboard_status: dict[str, Any] = {
-                "enabled": False,
-                "status": "not_initialized",
-                "error": None,
-                "log_dir": None,
-            }
-            self.od_profile_history: list[dict[str, Any]] = []
-            self.od_epoch_timing_window: deque[dict[str, float]] = deque(
-                maxlen=max(1, int(runtime_params["profile_window"]))
-            )
-            self.od_epoch_started_at = 0.0
-            self.od_last_batch_end_at: float | None = None
-            self.od_batch_started_at: float | None = None
-            self.od_pending_wait_sec = 0.0
-            self.od_epoch_step = 0
-            self.od_global_step = 0
-            self.od_pbar = None
+            _initialize_teacher_runtime_state(self, runtime_params=runtime_params, log_fn=log_fn)
 
         def _setup_scheduler(self):
             extended_lf = self._build_extended_resume_lf()
