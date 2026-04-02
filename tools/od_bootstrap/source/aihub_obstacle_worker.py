@@ -6,22 +6,11 @@ from typing import Any
 
 from common.pv26_schema import AIHUB_OBSTACLE_DATASET_KEY, OD_CLASS_TO_ID
 
-from .aihub_worker_common import (
-    StandardizeTask,
-    _base_scene,
-    _bbox_to_yolo_line,
-    _counter_to_dict,
-    _link_or_copy,
-    _sample_id,
-    _write_json,
-    _write_text,
-)
-from .raw_common import (
-    _extract_annotations,
-    _load_json,
-    _normalize_text,
-    _safe_slug,
-)
+from .aihub_worker_common import SCENE_VERSION, StandardizeTask
+from .shared_io import link_or_copy, load_json, write_json, write_text
+from .shared_raw import extract_annotations, normalize_text, safe_slug
+from .shared_scene import bbox_to_yolo_line, build_base_scene, sample_id
+from .shared_summary import counter_to_dict
 
 
 OBSTACLE_CLASS_REMAP = {
@@ -56,7 +45,7 @@ def _obstacle_category_lookup(raw: dict[str, Any]) -> dict[int, str]:
         category_id = item.get("id")
         if category_id is None:
             continue
-        lookup[int(category_id)] = _normalize_text(item.get("name"))
+        lookup[int(category_id)] = normalize_text(item.get("name"))
     return lookup
 
 
@@ -94,7 +83,7 @@ def _obstacle_debug_rectangles(scene: dict[str, Any]) -> list[dict[str, Any]]:
     if not label_path_text:
         return []
 
-    raw = _load_json(Path(label_path_text))
+    raw = load_json(Path(label_path_text))
     width = int(scene.get("image", {}).get("width") or 0)
     height = int(scene.get("image", {}).get("height") or 0)
     if width <= 0 or height <= 0:
@@ -102,7 +91,7 @@ def _obstacle_debug_rectangles(scene: dict[str, Any]) -> list[dict[str, Any]]:
 
     category_lookup = _obstacle_category_lookup(raw)
     rectangles: list[dict[str, Any]] = []
-    for annotation in _extract_annotations(raw):
+    for annotation in extract_annotations(raw):
         raw_category_id = annotation.get("category_id")
         raw_category = None
         if raw_category_id is not None:
@@ -111,7 +100,7 @@ def _obstacle_debug_rectangles(scene: dict[str, Any]) -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 raw_category = None
         if raw_category is None:
-            raw_category = _normalize_text(annotation.get("class")) or "unknown"
+            raw_category = normalize_text(annotation.get("class")) or "unknown"
 
         excluded_reason = OBSTACLE_EXCLUDED_REASONS.get(raw_category)
         if excluded_reason is not None:
@@ -160,11 +149,17 @@ def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
     output_root = Path(task.output_root)
-    raw = _load_json(pair.label_path)
-    sample_id = _sample_id(task.output_dataset_key, pair, safe_slug=_safe_slug)
-    image_output_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
-    image_materialization = _link_or_copy(pair.image_path, image_output_path)
-    width, height, scene = _base_scene(task.output_dataset_key, pair, raw, image_output_path)
+    raw = load_json(pair.label_path)
+    scene_sample_id = sample_id(task.output_dataset_key, pair, safe_slug=safe_slug)
+    image_output_path = output_root / "images" / pair.split / f"{scene_sample_id}{pair.image_path.suffix.lower()}"
+    image_materialization = link_or_copy(pair.image_path, image_output_path)
+    width, height, scene = build_base_scene(
+        task.output_dataset_key,
+        pair,
+        raw,
+        image_output_path,
+        scene_version=SCENE_VERSION,
+    )
 
     category_lookup = _obstacle_category_lookup(raw)
     detections: list[dict[str, Any]] = []
@@ -173,7 +168,7 @@ def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
     det_class_counts = Counter()
     held_reason_counts = Counter()
 
-    for annotation in _extract_annotations(raw):
+    for annotation in extract_annotations(raw):
         raw_category_id = annotation.get("category_id")
         raw_category = None
         if raw_category_id is not None:
@@ -182,7 +177,7 @@ def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
             except (TypeError, ValueError):
                 raw_category = None
         if raw_category is None:
-            raw_category = _normalize_text(annotation.get("class")) or "unknown"
+            raw_category = normalize_text(annotation.get("class")) or "unknown"
         excluded_reason = OBSTACLE_EXCLUDED_REASONS.get(raw_category)
         if excluded_reason is not None:
             held_reason_counts[excluded_reason] += 1
@@ -213,7 +208,7 @@ def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
             }
         )
         det_class_counts[mapped_class] += 1
-        det_lines.append(_bbox_to_yolo_line(OD_CLASS_TO_ID[mapped_class], bbox, width, height))
+        det_lines.append(bbox_to_yolo_line(OD_CLASS_TO_ID[mapped_class], bbox, width, height))
 
     scene.update(
         {
@@ -239,17 +234,17 @@ def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
         }
     )
 
-    scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
-    _write_json(scene_path, scene)
+    scene_path = output_root / "labels_scene" / pair.split / f"{scene_sample_id}.json"
+    write_json(scene_path, scene)
 
     if det_lines:
-        det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
-        _write_text(det_path, "\n".join(det_lines) + "\n")
+        det_path = output_root / "labels_det" / pair.split / f"{scene_sample_id}.txt"
+        write_text(det_path, "\n".join(det_lines) + "\n")
 
     return {
         "dataset_key": task.output_dataset_key,
         "split": pair.split,
-        "sample_id": sample_id,
+        "sample_id": scene_sample_id,
         "scene_path": str(scene_path),
         "image_path": str(image_output_path),
         "image_materialization": image_materialization,
@@ -263,10 +258,10 @@ def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
         "tl_attr_invalid_count": 0,
         "lane_class_counts": {},
         "lane_type_counts": {},
-        "det_class_counts": _counter_to_dict(det_class_counts),
+        "det_class_counts": counter_to_dict(det_class_counts),
         "tl_combo_counts": {},
         "tl_invalid_reason_counts": {},
-        "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "held_reason_counts": counter_to_dict(held_reason_counts),
         "resume_skipped": 0,
     }
 

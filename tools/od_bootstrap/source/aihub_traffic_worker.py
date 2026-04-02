@@ -6,29 +6,16 @@ from typing import Any
 
 from common.pv26_schema import OD_CLASS_TO_ID, TL_BITS
 
-from .aihub_worker_common import (
-    StandardizeTask,
-    _base_scene,
-    _bbox_to_yolo_line,
-    _counter_to_dict,
-    _link_or_copy,
-    _sample_id,
-    _write_json,
-    _write_text,
-)
-from .raw_common import (
-    _extract_annotations,
-    _extract_bbox,
-    _extract_tl_state,
-    _load_json,
-    _normalize_text,
-    _safe_slug,
-)
+from .aihub_worker_common import SCENE_VERSION, StandardizeTask
+from .shared_io import link_or_copy, load_json, write_json, write_text
+from .shared_raw import extract_annotations, extract_bbox, extract_tl_state, normalize_text, safe_slug
+from .shared_scene import bbox_to_yolo_line, build_base_scene, sample_id
+from .shared_summary import counter_to_dict
 
 
 def _tl_bits_from_annotation(annotation: dict[str, Any]) -> tuple[dict[str, int], int, str]:
     bits = {bit: 0 for bit in TL_BITS}
-    light_type = _normalize_text(annotation.get("type"))
+    light_type = normalize_text(annotation.get("type"))
     if light_type != "car":
         return bits, 0, "non_car_traffic_light"
 
@@ -70,11 +57,17 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
     output_root = Path(task.output_root)
-    raw = _load_json(pair.label_path)
-    sample_id = _sample_id(task.output_dataset_key, pair, safe_slug=_safe_slug)
-    image_output_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
-    image_materialization = _link_or_copy(pair.image_path, image_output_path)
-    width, height, scene = _base_scene(task.output_dataset_key, pair, raw, image_output_path)
+    raw = load_json(pair.label_path)
+    scene_sample_id = sample_id(task.output_dataset_key, pair, safe_slug=safe_slug)
+    image_output_path = output_root / "images" / pair.split / f"{scene_sample_id}{pair.image_path.suffix.lower()}"
+    image_materialization = link_or_copy(pair.image_path, image_output_path)
+    width, height, scene = build_base_scene(
+        task.output_dataset_key,
+        pair,
+        raw,
+        image_output_path,
+        scene_version=SCENE_VERSION,
+    )
 
     detections: list[dict[str, Any]] = []
     traffic_lights: list[dict[str, Any]] = []
@@ -87,10 +80,10 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
     tl_invalid_reason_counts = Counter()
     held_reason_counts = Counter()
 
-    for annotation in _extract_annotations(raw):
-        raw_class = _normalize_text(annotation.get("class"))
+    for annotation in extract_annotations(raw):
+        raw_class = normalize_text(annotation.get("class"))
         if raw_class in {"traffic_light", "light"}:
-            bbox = _extract_bbox(annotation, width, height)
+            bbox = extract_bbox(annotation, width, height)
             if bbox is None:
                 held_reason_counts["traffic_light_invalid_bbox"] += 1
                 held_annotations.append({"raw_class": raw_class, "reason": "traffic_light_invalid_bbox"})
@@ -107,7 +100,7 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
                 }
             )
             det_class_counts["traffic_light"] += 1
-            det_lines.append(_bbox_to_yolo_line(OD_CLASS_TO_ID["traffic_light"], bbox, width, height))
+            det_lines.append(bbox_to_yolo_line(OD_CLASS_TO_ID["traffic_light"], bbox, width, height))
 
             bits, valid, status_reason = _tl_bits_from_annotation(annotation)
             traffic_lights.append(
@@ -118,7 +111,7 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
                     "tl_bits": bits,
                     "tl_attr_valid": valid,
                     "collapse_reason": status_reason,
-                    "state_hint": _extract_tl_state(annotation),
+                    "state_hint": extract_tl_state(annotation),
                     "light_count": annotation.get("light_count"),
                     "type": annotation.get("type"),
                     "direction": annotation.get("direction"),
@@ -133,7 +126,7 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
             continue
 
         if raw_class in {"traffic_sign", "road_sign", "sign"}:
-            bbox = _extract_bbox(annotation, width, height)
+            bbox = extract_bbox(annotation, width, height)
             if bbox is None:
                 held_reason_counts["traffic_sign_invalid_bbox"] += 1
                 held_annotations.append({"raw_class": raw_class, "reason": "traffic_sign_invalid_bbox"})
@@ -150,7 +143,7 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
                 }
             )
             det_class_counts["sign"] += 1
-            det_lines.append(_bbox_to_yolo_line(OD_CLASS_TO_ID["sign"], bbox, width, height))
+            det_lines.append(bbox_to_yolo_line(OD_CLASS_TO_ID["sign"], bbox, width, height))
             traffic_signs.append(
                 {
                     "id": len(traffic_signs),
@@ -171,7 +164,7 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
                 {
                     "id": len(auxiliary_annotations),
                     "class_name": "traffic_information",
-                    "bbox": _extract_bbox(annotation, width, height),
+                    "bbox": extract_bbox(annotation, width, height),
                     "type": annotation.get("type"),
                     "raw_annotation": annotation,
                 }
@@ -205,17 +198,17 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
         }
     )
 
-    scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
-    _write_json(scene_path, scene)
+    scene_path = output_root / "labels_scene" / pair.split / f"{scene_sample_id}.json"
+    write_json(scene_path, scene)
 
     if det_lines:
-        det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
-        _write_text(det_path, "\n".join(det_lines) + "\n")
+        det_path = output_root / "labels_det" / pair.split / f"{scene_sample_id}.txt"
+        write_text(det_path, "\n".join(det_lines) + "\n")
 
     return {
         "dataset_key": task.output_dataset_key,
         "split": pair.split,
-        "sample_id": sample_id,
+        "sample_id": scene_sample_id,
         "scene_path": str(scene_path),
         "image_path": str(image_output_path),
         "image_materialization": image_materialization,
@@ -229,10 +222,10 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
         "tl_attr_invalid_count": sum(1 for item in traffic_lights if not item["tl_attr_valid"]),
         "lane_class_counts": {},
         "lane_type_counts": {},
-        "det_class_counts": _counter_to_dict(det_class_counts),
-        "tl_combo_counts": _counter_to_dict(tl_combo_counts),
-        "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
-        "held_reason_counts": _counter_to_dict(held_reason_counts),
+        "det_class_counts": counter_to_dict(det_class_counts),
+        "tl_combo_counts": counter_to_dict(tl_combo_counts),
+        "tl_invalid_reason_counts": counter_to_dict(tl_invalid_reason_counts),
+        "held_reason_counts": counter_to_dict(held_reason_counts),
         "resume_skipped": 0,
     }
 

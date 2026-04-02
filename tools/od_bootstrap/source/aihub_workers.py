@@ -9,8 +9,11 @@ from common.pv26_schema import TL_BITS
 from .aihub_lane_worker import lane_worker
 from .aihub_obstacle_worker import obstacle_worker, prepare_debug_scene_for_overlay
 from .aihub_traffic_worker import combo_name, traffic_worker
-from .aihub_worker_common import StandardizeTask, _counter_to_dict, _sample_id
-from .raw_common import _load_json, _normalize_text, _safe_slug
+from .aihub_worker_common import StandardizeTask
+from .shared_io import load_json
+from .shared_raw import normalize_text, safe_slug
+from .shared_scene import sample_id
+from .shared_summary import counter_to_dict
 
 
 def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
@@ -55,20 +58,20 @@ def _reason_counts_from_held_annotations(held_annotations: Any) -> dict[str, int
             continue
         reason = _normalize_text(item.get("reason")) or "unknown"
         counter[reason] += 1
-    return _counter_to_dict(counter)
+    return counter_to_dict(counter)
 
 
 def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
-    sample_id = _sample_id(task.output_dataset_key, task.pair, safe_slug=_safe_slug)
+    sample_id_value = sample_id(task.output_dataset_key, task.pair, safe_slug=safe_slug)
     output_root = Path(task.output_root)
-    image_output_path = output_root / "images" / task.pair.split / f"{sample_id}{task.pair.image_path.suffix.lower()}"
-    scene_path = output_root / "labels_scene" / task.pair.split / f"{sample_id}.json"
-    det_path = output_root / "labels_det" / task.pair.split / f"{sample_id}.txt"
+    image_output_path = output_root / "images" / task.pair.split / f"{sample_id_value}{task.pair.image_path.suffix.lower()}"
+    scene_path = output_root / "labels_scene" / task.pair.split / f"{sample_id_value}.json"
+    det_path = output_root / "labels_det" / task.pair.split / f"{sample_id_value}.txt"
     if not image_output_path.is_file() or not scene_path.is_file():
         return None
 
     try:
-        scene = _load_json(scene_path)
+        scene = load_json(scene_path)
     except Exception:
         return None
 
@@ -85,16 +88,16 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
     det_class_counts = Counter()
     for item in detections:
         if isinstance(item, dict):
-            det_class_counts[_normalize_text(item.get("class_name")) or "unknown"] += 1
+            det_class_counts[normalize_text(item.get("class_name")) or "unknown"] += 1
 
     lane_class_counts = Counter()
     lane_type_counts = Counter()
     for item in lanes:
         if not isinstance(item, dict):
             continue
-        lane_class_counts[_normalize_text(item.get("class_name")) or "unknown"] += 1
+        lane_class_counts[normalize_text(item.get("class_name")) or "unknown"] += 1
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
-        lane_type = _normalize_text(meta.get("raw_type") or item.get("source_style")) or "missing"
+        lane_type = normalize_text(meta.get("raw_type") or item.get("source_style")) or "missing"
         lane_type_counts[lane_type] += 1
 
     tl_combo_counts = Counter()
@@ -106,7 +109,7 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         bits_raw = item.get("tl_bits") if isinstance(item.get("tl_bits"), dict) else {}
         bits = {bit: int(bits_raw.get(bit, 0)) for bit in TL_BITS}
         valid = int(item.get("tl_attr_valid", 0))
-        reason = _normalize_text(item.get("collapse_reason")) or "unknown"
+        reason = normalize_text(item.get("collapse_reason")) or "unknown"
         if valid:
             tl_combo_counts[combo_name(bits)] += 1
             tl_attr_valid_count += 1
@@ -116,7 +119,7 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
     return {
         "dataset_key": task.output_dataset_key,
         "split": task.pair.split,
-        "sample_id": sample_id,
+        "sample_id": sample_id_value,
         "scene_path": str(scene_path),
         "image_path": str(image_output_path),
         "image_materialization": "resume_existing",
@@ -128,14 +131,17 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         "traffic_sign_count": len(traffic_signs),
         "tl_attr_valid_count": tl_attr_valid_count,
         "tl_attr_invalid_count": len(traffic_lights) - tl_attr_valid_count,
-        "lane_class_counts": _counter_to_dict(lane_class_counts),
-        "lane_type_counts": _counter_to_dict(lane_type_counts),
-        "det_class_counts": _counter_to_dict(det_class_counts),
-        "tl_combo_counts": _counter_to_dict(tl_combo_counts),
-        "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
+        "lane_class_counts": counter_to_dict(lane_class_counts),
+        "lane_type_counts": counter_to_dict(lane_type_counts),
+        "det_class_counts": counter_to_dict(det_class_counts),
+        "tl_combo_counts": counter_to_dict(tl_combo_counts),
+        "tl_invalid_reason_counts": counter_to_dict(tl_invalid_reason_counts),
         "held_reason_counts": _reason_counts_from_held_annotations(scene.get("held_annotations")),
         "resume_skipped": 1,
     }
 
 
+existing_output_summary = _existing_output_summary
+prepare_debug_scene_for_overlay_fn = prepare_debug_scene_for_overlay
+worker_chunk_entry = _worker_chunk_entry
 _prepare_debug_scene_for_overlay = prepare_debug_scene_for_overlay
