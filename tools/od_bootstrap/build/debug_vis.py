@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Callable, Mapping, NotRequired, Sequence, TypedDict, cast
+from typing import Any, Callable, Mapping, Sequence, TypedDict, cast
 
 try:
     from PIL import Image
