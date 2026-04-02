@@ -226,11 +226,11 @@ class PV26TrainerTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(message.count("\n"), 1)
-        self.assertIn("loss  |  total=1.2500", message)
-        self.assertIn("stop=0.2000", message)
-        self.assertIn("cross=0.1500", message)
+        self.assertEqual(message.count("\n"), 0)
         self.assertIn("timing_ms  |  load=20.000", message)
+        self.assertIn("fwd=30.000", message)
+        self.assertIn("bwd=50.000", message)
+        self.assertNotIn("total=1.2500", message)
 
     def test_format_train_progress_log_includes_phase_epoch_and_multiline_groups(self) -> None:
         from model.engine.trainer import _format_train_progress_log

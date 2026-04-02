@@ -6,11 +6,12 @@ from typing import Any
 
 import torch
 try:
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.live import Live
     from rich.text import Text
 except Exception:  # pragma: no cover - optional dependency fallback.
     Console = None
+    Group = None
     Live = None
     Text = None
 
@@ -98,12 +99,18 @@ def _progress_console() -> Any:
 
 def _should_use_rich_progress() -> bool:
     console = _progress_console()
-    return bool(console is not None and getattr(console, "is_terminal", False) and Live is not None and Text is not None)
+    return bool(
+        console is not None
+        and getattr(console, "is_terminal", False)
+        and Group is not None
+        and Live is not None
+        and Text is not None
+    )
 
 
 class _RichProgressBar:
     def __init__(self, *, total: int | None, desc: str) -> None:
-        if Live is None or Text is None:
+        if Group is None or Live is None or Text is None:
             raise RuntimeError("rich progress backend is unavailable")
         console = _progress_console()
         if console is None:
@@ -125,15 +132,74 @@ class _RichProgressBar:
 
     def _renderable(self) -> Any:
         lines = [
-            _join_segments(
-                self.desc,
-                _progress_meter(int(self.current), int(self.total) if self.total is not None else None, width=10),
-                self.status,
+            self._styled_line(
+                _join_segments(
+                    self.desc,
+                    _progress_meter(int(self.current), int(self.total) if self.total is not None else None, width=10),
+                    self.status,
+                )
             )
         ]
         if self.detail:
-            lines.extend(f"  {line}" for line in str(self.detail).splitlines() if line)
-        return Text("\n".join(lines), no_wrap=False)
+            for line in str(self.detail).splitlines():
+                if not line:
+                    continue
+                detail_line = Text("  ", style="dim")
+                detail_line.append_text(self._styled_line(line))
+                lines.append(detail_line)
+        return Group(*lines)
+
+    def _styled_line(self, line: str) -> Text:
+        output = Text(no_wrap=False)
+        for index, segment in enumerate(part for part in str(line).split("  |  ") if part):
+            if index > 0:
+                output.append("  |  ", style="dim")
+            output.append_text(self._styled_segment(segment))
+        return output
+
+    def _styled_segment(self, segment: str) -> Text:
+        output = Text()
+        value = str(segment)
+        if not value:
+            return output
+        if value.startswith("[") and value.endswith("]") and "%" not in value:
+            output.append(value, style="bold bright_cyan")
+            return output
+        if value.startswith("[") and "%" in value:
+            meter_style = "bold green"
+            if "100%" in value:
+                meter_style = "bold bright_green"
+            output.append(value, style=meter_style)
+            return output
+        if value in {"timing_ms", "loss"}:
+            output.append(value, style="bold yellow")
+            return output
+        if "=" in value:
+            key, raw_value = value.split("=", 1)
+            label_style = "cyan"
+            value_style = "bright_white"
+            lowered_key = key.lower()
+            lowered_value = raw_value.lower()
+            if lowered_key == "loss":
+                label_style = "bold red"
+                value_style = "bold red" if "nan" in lowered_value else "red"
+            elif lowered_key in {"eta", "elapsed"}:
+                label_style = "yellow"
+                value_style = "bold white"
+            elif lowered_key in {"phase", "epoch", "iter"}:
+                label_style = "cyan"
+                value_style = "bold bright_white"
+            elif lowered_key in {"step"}:
+                label_style = "blue"
+                value_style = "bright_white"
+            elif lowered_key in {"load", "fwd", "bwd", "eval", "total"}:
+                label_style = "green"
+                value_style = "white"
+            output.append(f"{key}=", style=label_style)
+            output.append(raw_value, style=value_style)
+            return output
+        output.append(value, style="bold magenta")
+        return output
 
     def _refresh(self) -> None:
         if self._closed:

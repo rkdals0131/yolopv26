@@ -400,17 +400,9 @@ def _format_train_live_detail(
     losses: dict[str, Any],
     profile_summary: dict[str, Any],
 ) -> str:
+    del losses
     iteration_profile = profile_summary["iteration_sec"]
-    loss_line = _join_segments(
-        "loss",
-        f"total={float(losses.get('total', float('nan'))):.4f}",
-        f"det={float(losses.get('det', float('nan'))):.4f}",
-        f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
-        f"lane={float(losses.get('lane', float('nan'))):.4f}",
-        f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
-        f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
-    )
-    timing_line = _join_segments(
+    return _join_segments(
         "timing_ms",
         f"load={profile_summary['load_sec']['mean'] * 1000.0:.3f}",
         f"fwd={profile_summary['forward_sec']['mean'] * 1000.0:.3f}",
@@ -418,7 +410,6 @@ def _format_train_live_detail(
         f"bwd={profile_summary['backward_sec']['mean'] * 1000.0:.3f}",
         f"total={iteration_profile['mean'] * 1000.0:.3f}",
     )
-    return "\n".join((loss_line, timing_line))
 
 
 def _format_validate_live_detail(
@@ -428,25 +419,13 @@ def _format_validate_live_detail(
     batch_summary: dict[str, Any],
     profile_summary: dict[str, Any],
 ) -> str:
-    losses = dict(batch_summary.get("losses", {}))
+    del elapsed_sec, eta_sec, batch_summary
     iteration_profile = profile_summary["iteration_sec"]
-    loss_line = _join_segments(
-        "loss",
-        f"total={float(losses.get('total', float('nan'))):.4f}",
-        f"det={float(losses.get('det', float('nan'))):.4f}",
-        f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
-        f"lane={float(losses.get('lane', float('nan'))):.4f}",
-        f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
-        f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
-    )
-    timing_line = _join_segments(
+    return _join_segments(
         "timing_ms",
         f"eval={profile_summary['evaluate_sec']['mean'] * 1000.0:.3f}",
         f"total={iteration_profile['mean'] * 1000.0:.3f}",
-        f"elapsed={_format_duration(elapsed_sec)}",
-        f"eta={_format_duration(eta_sec)}",
     )
-    return "\n".join((loss_line, timing_line))
 
 
 def _loss_mean_for_log(summary: dict[str, Any] | None) -> float | None:
