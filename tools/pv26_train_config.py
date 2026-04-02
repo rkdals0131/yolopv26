@@ -11,7 +11,8 @@ from common.config_coercion import (
     coerce_mapping as _coerce_mapping,
     coerce_str as _coerce_str,
 )
-from common.user_config import nested_get, resolve_repo_path, resolve_repo_paths
+from common.paths import resolve_path
+from common.user_config import deep_merge_mappings, nested_get, resolve_repo_path, resolve_repo_paths
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -170,17 +171,6 @@ def phase(
     )
 
 
-def deep_merge_mappings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in overrides.items():
-        current = merged.get(key)
-        if isinstance(current, dict) and isinstance(value, dict):
-            merged[key] = deep_merge_mappings(current, value)
-        else:
-            merged[key] = value
-    return merged
-
-
 def phase_to_mapping(phase_config: PhaseConfig) -> dict[str, Any]:
     return {
         "name": phase_config.name,
@@ -274,17 +264,10 @@ def apply_user_config_to_preset(
     return meta_train_scenario_from_mapping(merged_mapping, base_dir=repo_root)
 
 
-def _resolve_path(value: str | Path, *, base_dir: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return path
-
-
 def _resolve_optional_path(value: str | Path | None, *, base_dir: Path) -> Path | None:
     if value in {None, ""}:
         return None
-    return _resolve_path(value, base_dir=base_dir)
+    return resolve_path(value, base_dir=base_dir)
 
 
 def _coerce_optional_int(value: Any, *, field_name: str) -> int | None:
@@ -304,7 +287,7 @@ def _coerce_path_list(value: Any, *, field_name: str, base_dir: Path) -> tuple[P
         return ()
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"{field_name} must be a list")
-    return tuple(_resolve_path(item, base_dir=base_dir) for item in value)
+    return tuple(resolve_path(item, base_dir=base_dir) for item in value)
 
 
 def dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> DatasetConfig:
@@ -321,7 +304,7 @@ def dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> D
         base_dir=base_dir,
     )
     return DatasetConfig(
-        root=_resolve_path(data.get("root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
+        root=resolve_path(data.get("root", DEFAULT_DATASET_ROOT), base_dir=base_dir),
         additional_roots=additional_roots,
     )
 
@@ -329,7 +312,7 @@ def dataset_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> D
 def run_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> RunConfig:
     data = _coerce_mapping(payload, field_name="run")
     return RunConfig(
-        run_root=_resolve_path(data.get("run_root", DEFAULT_RUN_ROOT), base_dir=base_dir),
+        run_root=resolve_path(data.get("run_root", DEFAULT_RUN_ROOT), base_dir=base_dir),
         run_name_prefix=_coerce_str(data.get("run_name_prefix", "meta_train"), field_name="run.run_name_prefix"),
         run_dir=_resolve_optional_path(data.get("run_dir"), base_dir=base_dir),
     )
