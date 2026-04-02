@@ -17,7 +17,7 @@ from .shared_parallel import (
     PARALLEL_SUBMIT_LOG_INTERVAL,
     PARALLEL_WAIT_HEARTBEAT_SECONDS,
     LiveLogger,
-    default_worker_count as _default_workers,
+    default_workers as _default_workers,
     iter_task_chunks as _iter_task_chunks,
     parallel_chunk_size as _parallel_chunk_size,
 )
