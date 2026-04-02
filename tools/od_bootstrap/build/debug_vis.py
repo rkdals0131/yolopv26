@@ -23,7 +23,6 @@ from .image_list import build_sample_uid, load_image_list
 
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
-
 def _reset_debug_vis_dir(debug_vis_dir: Path) -> None:
     if debug_vis_dir.exists():
         shutil.rmtree(debug_vis_dir)

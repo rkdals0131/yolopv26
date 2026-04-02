@@ -30,7 +30,6 @@ from .sweep_types import BootstrapSweepScenario, ClassPolicy, TeacherConfig
 
 def _log_bootstrap(message: str) -> None:
     print(f"[od_bootstrap.sweep] {message}", flush=True)
-
 def _safe_name(value: str) -> str:
     normalized = "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in value.strip())
     return normalized.strip("_") or "od_bootstrap"

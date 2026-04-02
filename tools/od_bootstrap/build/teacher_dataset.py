@@ -79,7 +79,6 @@ class TeacherDatasetTaskResult:
     manifest_row: dict[str, Any]
     detection_count: int
     class_counts: dict[str, int]
-
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
