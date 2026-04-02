@@ -83,25 +83,106 @@ from tools.pv26_train_config import (
     validate_meta_train_scenario as _validate_meta_train_scenario,
     resolve_phase_selection as _resolve_phase_selection,
 )
-from tools.pv26_train_runtime import (
-    _build_phase_train_loaders,
-    _build_phase_trainer,
-    _build_postprocess_config,
-    _configure_torch_multiprocessing,
-    _cuda_memory_stats,
-    _execute_phase,
-    _find_phase_by_stage,
-    _is_oom_error,
-    _phase_manifest_extra,
-    _sample_preview_selection,
-    _sample_preview_selection_with_logging,
-    run_meta_train_scenario,
-    run_stage3_vram_stress,
-)
-
 
 
 PRESET_PATH_ROOT = REPO_ROOT / "presets" / "pv26_meta_train"
+BACKBONE_HEAD_CHANNELS = {
+    "n": (64, 128, 256),
+    "s": (128, 256, 512),
+}
+META_MANIFEST_VERSION = "pv26-meta-train-v1"
+# IDE에서 아래 검색어로 조절 지점을 바로 찾을 수 있다.
+# ===== USER CONFIG =====
+# ===== HYPERPARAMETERS =====
+# ===== PHASE HYPERPARAMETERS =====
+
+
+def _resolve_backbone_weights(train_config: TrainDefaultsConfig) -> str:
+    if resolve_yolo26_weights is not None:
+        return resolve_yolo26_weights(
+            variant=train_config.backbone_variant,
+            weights=train_config.backbone_weights,
+        )
+    if train_config.backbone_weights:
+        return str(train_config.backbone_weights)
+    return f"yolo26{train_config.backbone_variant}.pt"
+
+
+def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
+    weights = _resolve_backbone_weights(train_config)
+    if build_yolo26_trunk is not None:
+        return build_yolo26_trunk(
+            variant=train_config.backbone_variant,
+            weights=weights,
+        )
+    return build_yolo26n_trunk(weights=weights)
+
+
+def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, int, int]:
+    if infer_pyramid_channels is not None:
+        channels = tuple(int(value) for value in infer_pyramid_channels(adapter))
+        if len(channels) == 3:
+            return channels
+    return _configured_head_channels(train_config)
+
+
+def _configured_head_channels(train_config: TrainDefaultsConfig) -> tuple[int, int, int]:
+    try:
+        return BACKBONE_HEAD_CHANNELS[str(train_config.backbone_variant)]
+    except KeyError as exc:
+        raise KeyError(
+            "unsupported backbone variant for fallback head-channel resolution: "
+            f"{train_config.backbone_variant!r}"
+        ) from exc
+
+
+def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26PostprocessConfig:
+    return PV26PostprocessConfig(
+        det_conf_threshold=float(train_config.det_conf_threshold),
+        det_iou_threshold=float(train_config.det_iou_threshold),
+        lane_obj_threshold=float(train_config.lane_obj_threshold),
+        stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
+        crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
+    )
+
+
+def _wrap_evaluator_postprocess_config(
+    evaluator: PV26Evaluator,
+    *,
+    postprocess_config: PV26PostprocessConfig,
+) -> PV26Evaluator:
+    original_evaluate_batch = evaluator.evaluate_batch
+    original_predict_batch = evaluator.predict_batch
+
+    def evaluate_batch_with_default(
+        self: PV26Evaluator,
+        batch: dict[str, Any],
+        *,
+        include_predictions: bool = False,
+        compute_loss: bool = True,
+        config: PV26PostprocessConfig | None = None,
+    ) -> dict[str, Any]:
+        return original_evaluate_batch(
+            batch,
+            include_predictions=include_predictions,
+            compute_loss=compute_loss,
+            config=config or postprocess_config,
+        )
+
+    def predict_batch_with_default(
+        self: PV26Evaluator,
+        batch: dict[str, Any],
+        *,
+        config: PV26PostprocessConfig | None = None,
+    ) -> list[dict[str, Any]]:
+        return original_predict_batch(batch, config=config or postprocess_config)
+
+    evaluator.evaluate_batch = MethodType(evaluate_batch_with_default, evaluator)
+    evaluator.predict_batch = MethodType(predict_batch_with_default, evaluator)
+    setattr(evaluator, "postprocess_config", postprocess_config)
+    return evaluator
+
+
 def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
     return _scenario_ops.build_meta_train_presets(
         repo_root=REPO_ROOT,
@@ -617,12 +698,235 @@ def _execute_phase(
             scenario_path=scenario_path,
             phase_index=phase_index,
             phase=phase,
-            selection=selection,
-            resolve_summary_path=_resolve_summary_path,
+            train_config=phase_train_config,
+            scenario=scenario,
+        ),
+    )
+
+    phase_preview_dir = run_dir / "preview" / f"phase_{phase_index}"
+    preview_payload = {
+        "best": None,
+        "last": None,
+    }
+    best_checkpoint = Path(phase_summary["checkpoint_paths"]["best"]) if phase_summary["checkpoint_paths"]["best"] else None
+    last_checkpoint = Path(phase_summary["checkpoint_paths"]["last"]) if phase_summary["checkpoint_paths"]["last"] else None
+    if best_checkpoint is not None and best_checkpoint.is_file():
+        _log_meta_train(f"writing best preview bundle for phase_{phase_index}: {best_checkpoint}")
+        preview_payload["best"] = _generate_phase_preview_bundle(
+            phase=phase,
+            train_config=phase_train_config,
+            checkpoint_path=best_checkpoint,
+            preview_kind="best",
+            preview_dir=phase_preview_dir,
+            preview_samples=preview_samples,
+            preview_config=scenario.preview,
+        )
+    if last_checkpoint is not None and last_checkpoint.is_file():
+        _log_meta_train(f"writing last preview bundle for phase_{phase_index}: {last_checkpoint}")
+        preview_payload["last"] = _generate_phase_preview_bundle(
+            phase=phase,
+            train_config=phase_train_config,
+            checkpoint_path=last_checkpoint,
+            preview_kind="last",
+            preview_dir=phase_preview_dir,
+            preview_samples=preview_samples,
+            preview_config=scenario.preview,
         )
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._delegate, name)
+    early_exit = phase_summary.get("early_exit", {})
+    return {
+        "index": int(phase_index),
+        "name": phase.name,
+        "stage": phase.stage,
+        "status": "completed",
+        "run_dir": str(phase_run_dir),
+        "summary_path": str(phase_run_dir / "summary.json"),
+        "run_manifest_path": str(phase_run_dir / "run_manifest.json"),
+        "best_checkpoint_path": str(best_checkpoint) if best_checkpoint is not None else None,
+        "last_checkpoint_path": str(last_checkpoint) if last_checkpoint is not None else None,
+        "completed_epochs": int(phase_summary["completed_epochs"]),
+        "best_metric_value": phase_summary.get("best_metric_value"),
+        "best_epoch": phase_summary.get("best_epoch"),
+        "promotion_reason": early_exit.get("reason", "completed"),
+        "phase_state": early_exit.get("phase_state"),
+        "selection": _json_ready(asdict(phase_selection)),
+        "backbone": {
+            "variant": phase_train_config.backbone_variant,
+            "weights": _resolve_backbone_weights(phase_train_config),
+        },
+        "postprocess": _json_ready(asdict(_build_postprocess_config(phase_train_config))),
+        "head_channels": list(_configured_head_channels(phase_train_config)),
+        "preview": _json_ready(preview_payload),
+        "phase_train_config": _json_ready(asdict(phase_train_config)),
+        "run_summary": _json_ready(phase_summary),
+    }
+
+
+def _find_phase_by_stage(
+    scenario: MetaTrainScenario,
+    *,
+    stage: str,
+) -> tuple[int, PhaseConfig]:
+    return _runtime_ops.find_phase_by_stage(scenario, stage=stage)
+
+
+def _is_oom_error(exc: RuntimeError) -> bool:
+    return _runtime_ops.is_oom_error(exc)
+
+
+def _cuda_memory_stats(device: Any) -> dict[str, Any]:
+    import torch
+
+    if getattr(device, "type", None) != "cuda":
+        return {
+            "device": str(device),
+            "current_allocated_bytes": None,
+            "current_allocated_gib": None,
+            "peak_allocated_bytes": None,
+            "peak_allocated_gib": None,
+            "current_reserved_bytes": None,
+            "current_reserved_gib": None,
+            "peak_reserved_bytes": None,
+            "peak_reserved_gib": None,
+        }
+    torch.cuda.synchronize(device)
+    current_allocated = int(torch.cuda.memory_allocated(device))
+    peak_allocated = int(torch.cuda.max_memory_allocated(device))
+    current_reserved = int(torch.cuda.memory_reserved(device))
+    peak_reserved = int(torch.cuda.max_memory_reserved(device))
+
+    def _to_gib(value: int) -> float:
+        return float(value) / float(1024**3)
+
+    return {
+        "device": str(device),
+        "current_allocated_bytes": current_allocated,
+        "current_allocated_gib": _to_gib(current_allocated),
+        "peak_allocated_bytes": peak_allocated,
+        "peak_allocated_gib": _to_gib(peak_allocated),
+        "current_reserved_bytes": current_reserved,
+        "current_reserved_gib": _to_gib(current_reserved),
+        "peak_reserved_bytes": peak_reserved,
+        "peak_reserved_gib": _to_gib(peak_reserved),
+    }
+
+
+def _existing_dataset_roots(scenario: MetaTrainScenario) -> list[Path]:
+    return _runtime_ops.existing_dataset_roots(scenario)
+
+
+def _stage3_stress_train_config(
+    scenario: MetaTrainScenario,
+    *,
+    batch_size: int,
+    stress_iters: int,
+) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
+    return _runtime_ops.stage3_stress_train_config(
+        scenario,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        scenario_phase_defaults=_scenario_phase_defaults,
+    )
+
+
+def _run_stage3_probe(
+    trainer: PV26Trainer,
+    train_loader: Any,
+    *,
+    scenario: MetaTrainScenario,
+    phase_index: int,
+    phase_name: str,
+    phase_train_config: TrainDefaultsConfig,
+    stress_iters: int,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    return _runtime_ops.run_stage3_probe(
+        trainer,
+        train_loader,
+        scenario=scenario,
+        phase_index=phase_index,
+        phase_name=phase_name,
+        phase_train_config=phase_train_config,
+        stress_iters=stress_iters,
+        is_oom_error=_is_oom_error,
+    )
+
+
+def _stage3_stress_summary(
+    *,
+    scenario_path: Path,
+    phase_index: int,
+    phase: PhaseConfig,
+    trainer: PV26Trainer,
+    train_config: TrainDefaultsConfig,
+    batch_size: int,
+    stress_iters: int,
+    duration_sec: float,
+    status: str,
+    train_summary: dict[str, Any] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    return _runtime_ops.stage3_stress_summary(
+        scenario_path=scenario_path,
+        phase_index=phase_index,
+        phase=phase,
+        trainer=trainer,
+        train_config=train_config,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        duration_sec=duration_sec,
+        status=status,
+        train_summary=train_summary,
+        error=error,
+        json_ready=_json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_stage3_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_stage3_vram_stress(
+        scenario,
+        scenario_path=scenario_path,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=_json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_meta_train_scenario(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+) -> dict[str, Any]:
+    return _runtime_ops.run_meta_train_scenario(
+        scenario,
+        scenario_path=scenario_path,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        resolve_meta_run_dir=_resolve_meta_run_dir,
+        sample_preview_selection_with_logging=_sample_preview_selection_with_logging,
+        load_or_init_meta_manifest=_load_or_init_meta_manifest,
+        phase_entry_is_completed=_phase_entry_is_completed,
+        recover_phase_entry_from_run_dir=_recover_phase_entry_from_run_dir,
+        scenario_snapshot_for_run=_scenario_snapshot_for_run,
+        write_meta_manifest=_write_meta_manifest,
+        write_meta_summary=_write_meta_summary,
+        resolve_phase_selection=_resolve_phase_selection,
+        execute_phase=_execute_phase,
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
