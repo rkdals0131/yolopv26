@@ -56,6 +56,23 @@ L_total = λ_det * L_det
         + λ_cross * L_cross
 ```
 
+## stage-aware loss policy
+
+- stage 1
+  - trunk freeze
+  - 새 head와 geometry loss를 먼저 안정화한다.
+- stage 2
+  - partial unfreeze
+  - detector와 lane family를 함께 다시 맞춘다.
+- stage 3
+  - end-to-end fine-tune
+  - 전체 multitask joint tuning을 진행한다.
+- stage 4
+  - `stage_4_lane_family_finetune`
+  - lane / stop-line / crosswalk late fine-tune에 집중한다.
+  - detector / TL attr은 유지 목적의 낮은 가중치 또는 freeze 정책으로 다룬다.
+  - phase selection도 total loss보다 lane family metric을 우선할 수 있다.
+
 ## detector loss
 
 - type
@@ -159,6 +176,12 @@ L_total = λ_det * L_det
 1. full-train metric 해석
 2. export / ROS 정교화
 3. dataset-level metric aggregation 정교화
+
+## phase selection policy
+
+- stages 1~3은 기본적으로 `val.losses.total.mean` 같은 전역 scalar를 selection 기준으로 둘 수 있다.
+- stage 4는 lane family late-stage라서 `lane.f1`, `stop_line.f1`, `crosswalk.f1` 또는 이들의 composite metric을 우선 selection 기준으로 둔다.
+- 즉 loss weighting과 selection metric은 stage별로 같은 목적을 보도록 맞춘다.
 
 ## raw model output contract
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import site
+import time
 from types import MethodType
 from typing import Any
 
@@ -850,6 +851,159 @@ def _execute_phase(
     }
 
 
+def _find_phase_by_stage(
+    scenario: MetaTrainScenario,
+    *,
+    stage: str,
+) -> tuple[int, PhaseConfig]:
+    for phase_index, phase in enumerate(scenario.phases, start=1):
+        if str(phase.stage) == str(stage):
+            return phase_index, phase
+    raise KeyError(f"phase stage not found in scenario: {stage}")
+
+
+def _is_oom_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda error: out of memory" in message
+
+
+def _cuda_memory_stats(device: Any) -> dict[str, Any]:
+    import torch
+
+    if getattr(device, "type", None) != "cuda":
+        return {
+            "device": str(device),
+            "current_allocated_bytes": None,
+            "current_allocated_gib": None,
+            "peak_allocated_bytes": None,
+            "peak_allocated_gib": None,
+            "current_reserved_bytes": None,
+            "current_reserved_gib": None,
+            "peak_reserved_bytes": None,
+            "peak_reserved_gib": None,
+        }
+    torch.cuda.synchronize(device)
+    current_allocated = int(torch.cuda.memory_allocated(device))
+    peak_allocated = int(torch.cuda.max_memory_allocated(device))
+    current_reserved = int(torch.cuda.memory_reserved(device))
+    peak_reserved = int(torch.cuda.max_memory_reserved(device))
+
+    def _to_gib(value: int) -> float:
+        return float(value) / float(1024**3)
+
+    return {
+        "device": str(device),
+        "current_allocated_bytes": current_allocated,
+        "current_allocated_gib": _to_gib(current_allocated),
+        "peak_allocated_bytes": peak_allocated,
+        "peak_allocated_gib": _to_gib(peak_allocated),
+        "current_reserved_bytes": current_reserved,
+        "current_reserved_gib": _to_gib(current_reserved),
+        "peak_reserved_bytes": peak_reserved,
+        "peak_reserved_gib": _to_gib(peak_reserved),
+    }
+
+
+def run_stage3_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    import torch
+
+    _configure_torch_multiprocessing()
+    resolved_batch_size = int(batch_size) if batch_size is not None else int(scenario.train_defaults.batch_size)
+    resolved_stress_iters = int(stress_iters) if stress_iters is not None else 12
+    if resolved_batch_size <= 0:
+        raise ValueError("stress batch size must be > 0")
+    if resolved_stress_iters <= 0:
+        raise ValueError("stress iterations must be > 0")
+
+    dataset_roots = list(scenario.dataset.roots)
+    missing_roots = [str(path) for path in dataset_roots if not path.is_dir()]
+    if missing_roots:
+        raise SystemExit(f"canonical dataset roots not found: {missing_roots}")
+
+    phase_index, phase = _find_phase_by_stage(scenario, stage="stage_3_end_to_end_finetune")
+    phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+    phase_train_config = replace(
+        phase_train_config,
+        batch_size=resolved_batch_size,
+        train_batches=resolved_stress_iters,
+        val_batches=0,
+        log_every_n_steps=1,
+    )
+
+    _log_meta_train(f"loading scenario for stage3 stress: {scenario_path}")
+    _log_meta_train(f"dataset roots: {[str(path) for path in dataset_roots]}")
+    _log_meta_train("building canonical dataset index for stage3 stress")
+    dataset = PV26CanonicalDataset(
+        dataset_roots,
+        progress_callback=_log_meta_train,
+    )
+    _log_meta_train(
+        f"stage3 stress config: batch_size={resolved_batch_size}, stress_iters={resolved_stress_iters}, "
+        f"device={phase_train_config.device}, backbone={phase_train_config.backbone_variant}"
+    )
+    train_loader, _ = _build_phase_train_loaders(dataset, train_config=phase_train_config)
+    trainer = _build_phase_trainer(phase, phase_train_config)
+    trainer.oom_guard = False
+    if trainer.device.type != "cuda":
+        raise SystemExit(
+            f"stage3 VRAM stress requires a CUDA device, got device={trainer.device}"
+        )
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(trainer.device)
+    run_started_at = time.perf_counter()
+    train_summary: dict[str, Any] | None = None
+    status = "ok"
+    error: str | None = None
+    try:
+        train_summary = trainer.train_epoch(
+            train_loader,
+            epoch=1,
+            epoch_total=1,
+            phase_index=phase_index,
+            phase_count=len(scenario.phases),
+            phase_name=phase.name,
+            max_batches=resolved_stress_iters,
+            step_log_path=None,
+            log_every_n_steps=1,
+            profile_window=phase_train_config.profile_window,
+            profile_device_sync=phase_train_config.profile_device_sync,
+        )
+    except RuntimeError as exc:
+        if not _is_oom_error(exc):
+            raise
+        status = "oom"
+        error = str(exc)
+        torch.cuda.empty_cache()
+    duration_sec = max(0.0, time.perf_counter() - run_started_at)
+    memory = _cuda_memory_stats(trainer.device)
+    result = {
+        "mode": "stage3_vram_stress",
+        "status": status,
+        "scenario_path": str(scenario_path),
+        "phase_index": int(phase_index),
+        "phase_name": phase.name,
+        "phase_stage": phase.stage,
+        "device": str(trainer.device),
+        "backbone_variant": phase_train_config.backbone_variant,
+        "batch_size": int(resolved_batch_size),
+        "stress_iters": int(resolved_stress_iters),
+        "duration_sec": duration_sec,
+        "memory": memory,
+        "train_summary": _json_ready(train_summary) if train_summary is not None else None,
+        "error": error,
+    }
+    if status == "oom":
+        result["recommendation"] = "reduce batch_size and rerun the stage3 stress probe"
+    return result
+
+
 def run_meta_train_scenario(
     scenario: MetaTrainScenario,
     *,
@@ -971,6 +1125,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=ENTRY_CONFIG.preset_name,
         help="PV26 meta-train preset name.",
     )
+    parser.add_argument(
+        "--stage3-vram-stress",
+        action="store_true",
+        help="Run a short stage-3 training probe and report peak CUDA VRAM usage.",
+    )
+    parser.add_argument(
+        "--stress-batch-size",
+        type=int,
+        default=None,
+        help="Override batch size for --stage3-vram-stress.",
+    )
+    parser.add_argument(
+        "--stress-iters",
+        type=int,
+        default=None,
+        help="Number of short train iterations to run for --stage3-vram-stress.",
+    )
     return parser
 
 
@@ -980,8 +1151,18 @@ def main(argv: list[str] | None = None) -> None:
     preset_name = str(args.preset)
     scenario = load_meta_train_scenario(preset_name)
     scenario_path = PRESET_PATH_ROOT / preset_name
-    summary = run_meta_train_scenario(scenario, scenario_path=scenario_path)
+    if bool(args.stage3_vram_stress):
+        summary = run_stage3_vram_stress(
+            scenario,
+            scenario_path=scenario_path,
+            batch_size=args.stress_batch_size,
+            stress_iters=args.stress_iters,
+        )
+    else:
+        summary = run_meta_train_scenario(scenario, scenario_path=scenario_path)
     print(json.dumps(_json_ready(summary), indent=2, ensure_ascii=True))
+    if bool(args.stage3_vram_stress) and summary.get("status") != "ok":
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

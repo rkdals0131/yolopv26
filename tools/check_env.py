@@ -824,6 +824,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("A", "Exhaustive OD 생성", "python -m tools.od_bootstrap build-exhaustive-od", (python_exe, "-m", "tools.od_bootstrap", "build-exhaustive-od"), str(paths.exhaustive_dataset_root)),
         ActionSpec("B", "최종 병합 데이터셋 생성", "python -m tools.od_bootstrap build-final-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-final-dataset"), str(paths.final_dataset_root), rerun_contract="overwrite: staging build 후 final root swap"),
         ActionSpec("C", "PV26 기본 학습", "python3 tools/run_pv26_train.py --preset default", (python_exe, "tools/run_pv26_train.py", "--preset", "default"), str(paths.pv26_run_root)),
+        ActionSpec("D", "PV26 stage_3 VRAM stress", "interactive: batch/iter 입력 후 stage_3 peak VRAM probe", (), "TUI result panel only (no checkpoints / no run dir)", rerun_contract="short probe only: stage_3 train loop 일부만 실행"),
     )
 
 
@@ -867,7 +868,7 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
             blockers.append("lane canonical/source prep이 먼저 필요합니다.")
         if not flags.get("exhaustive", False):
             blockers.append("최신 exhaustive OD run이 아직 없습니다.")
-    elif action.key == "C":
+    elif action.key in {"C", "D"}:
         if not flags.get("pv26_runtime", False):
             blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
         if not flags.get("final_dataset", False):
@@ -880,7 +881,177 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
         return "calibration이 없어서 fallback class policy로 진행될 수 있습니다."
     if action.key == "B":
         return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
+    if action.key == "D":
+        return "stage_3는 현재 전체 학습 단계 중 VRAM 상한을 보는 가장 좋은 proxy입니다. stage_4는 trunk/lane-family만 학습하므로 보통 더 낮습니다."
     return None
+
+
+def _default_stage3_stress_batch_size() -> int:
+    try:
+        from tools.run_pv26_train import load_meta_train_scenario
+
+        scenario = load_meta_train_scenario("default")
+        return int(scenario.train_defaults.batch_size)
+    except Exception:
+        return 40
+
+
+def _prompt_positive_int(console: Console, prompt: str, *, default: int) -> int | None:
+    while True:
+        raw = _ascii_input(console, prompt)
+        if raw is None:
+            return None
+        if raw == "":
+            return int(default)
+        if raw.upper() == "Q":
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            console.print("[yellow]양의 정수만 입력하세요.[/yellow]")
+            continue
+        if value <= 0:
+            console.print("[yellow]0보다 큰 정수만 입력하세요.[/yellow]")
+            continue
+        return value
+
+
+def _resolve_stage3_stress_action(console: Console, action: ActionSpec) -> ActionSpec | None:
+    default_batch_size = _default_stage3_stress_batch_size()
+    batch_size = _prompt_positive_int(
+        console,
+        f"stage_3 stress batch size (Enter={default_batch_size}, Q=취소) > ",
+        default=default_batch_size,
+    )
+    if batch_size is None:
+        return None
+    stress_iters = _prompt_positive_int(
+        console,
+        "stage_3 stress iterations (Enter=12, 권장 10-20, Q=취소) > ",
+        default=12,
+    )
+    if stress_iters is None:
+        return None
+    argv = tuple(action.argv) + (
+        "--stress-batch-size",
+        str(batch_size),
+        "--stress-iters",
+        str(stress_iters),
+    )
+    command_display = (
+        "interactive: "
+        f"stage_3 peak VRAM probe (batch_size={batch_size}, stress_iters={stress_iters})"
+    )
+    return ActionSpec(
+        key=action.key,
+        label=action.label,
+        command_display=command_display,
+        argv=argv,
+        output_hint=action.output_hint,
+        rerun_contract=action.rerun_contract,
+    )
+
+
+def _format_gib(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{float(value):.2f} GiB"
+
+
+def _render_stage3_stress_result(console: Console, result: dict[str, Any]) -> None:
+    memory = result.get("memory", {}) if isinstance(result.get("memory"), dict) else {}
+    train_summary = result.get("train_summary", {}) if isinstance(result.get("train_summary"), dict) else {}
+    lines = [
+        f"status: {result.get('status')}",
+        f"phase: {result.get('phase_name')} ({result.get('phase_stage')})",
+        f"device: {result.get('device')}",
+        f"backbone: {result.get('backbone_variant')}",
+        f"batch_size: {result.get('batch_size')}",
+        f"stress_iters: {result.get('stress_iters')}",
+        f"duration: {float(result.get('duration_sec', 0.0)):.2f} sec",
+        f"peak_allocated: {_format_gib(memory.get('peak_allocated_gib'))}",
+        f"peak_reserved: {_format_gib(memory.get('peak_reserved_gib'))}",
+        f"current_allocated: {_format_gib(memory.get('current_allocated_gib'))}",
+        f"current_reserved: {_format_gib(memory.get('current_reserved_gib'))}",
+    ]
+    if train_summary:
+        lines.extend(
+            [
+                f"attempted_batches: {train_summary.get('attempted_batches')}",
+                f"successful_batches: {train_summary.get('successful_batches')}",
+                f"skipped_batches: {train_summary.get('skipped_batches')}",
+            ]
+        )
+    error = result.get("error")
+    if error:
+        lines.append(f"error: {error}")
+    recommendation = result.get("recommendation")
+    if recommendation:
+        lines.append(f"recommendation: {recommendation}")
+    status = str(result.get("status") or "")
+    border_style = "green" if status == "ok" else "yellow"
+    console.print(Panel("\n".join(lines), title="Stage 3 VRAM Probe", border_style=border_style))
+
+
+def _run_stage3_stress_probe(
+    console: Console,
+    snapshot: WorkspaceSnapshot,
+    action: ActionSpec,
+) -> bool:
+    resolved_action = _resolve_stage3_stress_action(console, action)
+    if resolved_action is None:
+        return True
+
+    console.clear(home=True)
+    lines = [
+        f"🎯 작업: {resolved_action.label}",
+        f"- mode: {resolved_action.command_display}",
+        f"- 출력 위치: {resolved_action.output_hint}",
+    ]
+    if resolved_action.rerun_contract is not None:
+        lines.append(f"- 재실행 계약: {resolved_action.rerun_contract}")
+    advisory = _action_advisory(resolved_action, snapshot)
+    if advisory is not None:
+        lines.append(f"- 주의: {advisory}")
+    console.print(Panel("\n".join(lines), title=f"{resolved_action.key} 실행 확인", border_style="cyan"))
+    if not _confirm(console):
+        return True
+
+    console.print("[bold green]stage_3 VRAM stress probe를 시작합니다. 진행 로그가 아래에 이어집니다.[/bold green]")
+    from tools.run_pv26_train import PRESET_PATH_ROOT, load_meta_train_scenario, run_stage3_vram_stress
+
+    try:
+        scenario = load_meta_train_scenario("default")
+        result = run_stage3_vram_stress(
+            scenario,
+            scenario_path=PRESET_PATH_ROOT / "default",
+            batch_size=int(resolved_action.argv[-3]),
+            stress_iters=int(resolved_action.argv[-1]),
+        )
+    except KeyboardInterrupt:
+        console.print("\n[red]실행 중단됨[/red]")
+        return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
+    except SystemExit as exc:
+        console.print(
+            Panel(
+                str(exc),
+                title="Stage 3 VRAM Probe 실패",
+                border_style="red",
+            )
+        )
+        return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
+    except Exception as exc:
+        console.print(
+            Panel(
+                str(exc),
+                title="Stage 3 VRAM Probe 예외",
+                border_style="red",
+            )
+        )
+        return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
+
+    _render_stage3_stress_result(console, result)
+    return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
 
 
 def _render_dashboard(console: Console, snapshot: WorkspaceSnapshot, actions: tuple[ActionSpec, ...]) -> None:
@@ -998,24 +1169,29 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
         )
         return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
 
+    if action.key == "D":
+        return _run_stage3_stress_probe(console, snapshot, action)
+
+    resolved_action = action
+
     console.clear(home=True)
     lines = [
-        f"🎯 작업: {action.label}",
-        f"- 명령: {action.command_display}",
-        f"- 출력 위치: {action.output_hint}",
+        f"🎯 작업: {resolved_action.label}",
+        f"- 명령: {resolved_action.command_display}",
+        f"- 출력 위치: {resolved_action.output_hint}",
     ]
-    if action.rerun_contract is not None:
-        lines.append(f"- 재실행 계약: {action.rerun_contract}")
-    advisory = _action_advisory(action, snapshot)
+    if resolved_action.rerun_contract is not None:
+        lines.append(f"- 재실행 계약: {resolved_action.rerun_contract}")
+    advisory = _action_advisory(resolved_action, snapshot)
     if advisory is not None:
         lines.append(f"- 주의: {advisory}")
-    console.print(Panel("\n".join(lines), title=f"{action.key} 실행 확인", border_style="cyan"))
+    console.print(Panel("\n".join(lines), title=f"{resolved_action.key} 실행 확인", border_style="cyan"))
     if not _confirm(console):
         return True
 
     console.print("[bold green]실행을 시작합니다. 로그는 아래에 그대로 이어집니다.[/bold green]")
     try:
-        completed = subprocess.run(action.argv, cwd=str(snapshot.paths.repo_root), check=False)
+        completed = subprocess.run(resolved_action.argv, cwd=str(snapshot.paths.repo_root), check=False)
     except KeyboardInterrupt:
         console.print("\n[red]실행 중단됨[/red]")
         return _pause(console, prompt="Enter=메인으로 복귀, Q=종료 > ") != "Q"
@@ -1037,7 +1213,7 @@ def _interactive_loop(console: Console) -> int:
         actions = _action_catalog(snapshot.paths)
         _render_dashboard(console, snapshot, actions)
 
-        raw = _ascii_input(console, "선택 (1-9/A-C/H/R/Q) > ")
+        raw = _ascii_input(console, "선택 (1-9/A-D/H/R/Q) > ")
         if raw is None:
             return 0
         if raw == "":

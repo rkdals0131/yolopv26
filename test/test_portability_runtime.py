@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import tempfile
 import unittest
@@ -52,6 +53,59 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                 stdout_isatty=True,
             )
         )
+
+    def test_check_env_action_catalog_includes_stage3_vram_stress(self) -> None:
+        from tools.check_env import PipelinePaths, _action_catalog
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = PipelinePaths(
+                repo_root=root,
+                raw_bdd_root=root / "bdd_raw",
+                raw_aihub_root=root / "aihub_raw",
+                bootstrap_root=root / "bootstrap",
+                teacher_dataset_root=root / "teacher_datasets",
+                teacher_train_root=root / "teacher_train",
+                teacher_eval_root=root / "teacher_eval",
+                calibration_root=root / "calibration",
+                exhaustive_run_root=root / "exhaustive_runs",
+                exhaustive_dataset_root=root / "exhaustive",
+                final_dataset_root=root / "final_dataset",
+                pv26_run_root=root / "pv26_runs",
+                user_paths_config_path=root / "config" / "user_paths.yaml",
+                od_hyperparameters_config_path=root / "config" / "od.yaml",
+                pv26_hyperparameters_config_path=root / "config" / "pv26.yaml",
+            )
+
+            actions = _action_catalog(paths)
+
+        action = next(item for item in actions if item.key == "D")
+        self.assertIn("interactive", action.command_display)
+        self.assertEqual(action.argv, ())
+        self.assertIn("stage_3", action.label)
+
+    def test_stage3_stress_action_resolution_appends_runtime_parameters(self) -> None:
+        from rich.console import Console
+        from tools.check_env import ActionSpec, _resolve_stage3_stress_action
+
+        action = ActionSpec(
+            key="D",
+            label="PV26 stage_3 VRAM stress",
+            command_display="python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>",
+            argv=("python3", "tools/run_pv26_train.py", "--preset", "default", "--stage3-vram-stress"),
+            output_hint="stdout only",
+        )
+        console = Console(file=io.StringIO())
+
+        with unittest.mock.patch("tools.check_env._default_stage3_stress_batch_size", return_value=40):
+            with unittest.mock.patch("tools.check_env._ascii_input", side_effect=["48", "18"]):
+                resolved = _resolve_stage3_stress_action(console, action)
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.argv[-4:], ("--stress-batch-size", "48", "--stress-iters", "18"))
+        self.assertIn("batch_size=48", resolved.command_display)
+        self.assertIn("stress_iters=18", resolved.command_display)
 
     def test_manifest_header_loader_reads_prefix_without_full_samples_array(self) -> None:
         from tools.check_env import _manifest_header

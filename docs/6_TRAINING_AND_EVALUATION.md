@@ -20,6 +20,7 @@
 - new head는 trunk보다 높은 learning rate를 쓴다.
 - freeze stage에서는 head 위주로 먼저 수렴시킨다.
 - unfreeze는 단계적으로 한다.
+- backbone variant는 `n/s`를 모두 지원하되, 현재 추천 경로는 `yolo26s`다.
 
 ## recommended stage schedule
 
@@ -29,6 +30,15 @@
    - neck + upper backbone unfreeze
 3. stage 3
    - full fine-tune
+4. stage 4
+   - lane-family late fine-tune
+   - lane / stop-line / crosswalk metric 회복 및 보정
+
+## phase-specific selection
+
+- early stage는 전역 total loss 기준 selection으로 충분하다.
+- late stage, 특히 `stage_4_lane_family_finetune`은 lane family metric 기준 selection이 더 적합하다.
+- 따라서 training preset은 phase별 selection metric override를 수용하는 방향으로 유지한다.
 
 ## sampler
 
@@ -82,11 +92,15 @@
 - trainer는 dataset-balanced batch sampler helper를 지원한다.
 - trainer는 step history 요약과 JSONL logging을 지원한다.
 - trainer는 `run_manifest.json`, live step/epoch JSONL, TensorBoard scalar logging, rolling timing profile(`wait/load/fwd/loss/bwd`, mean/p50/p99, ETA)를 지원한다.
+- trainer는 train/validation epoch 양쪽 모두 live progress 표시를 지원하고, phase/epoch/iter/epoch start/elapsed/ETA/timing 정보를 runtime에서 바로 노출한다.
 - trainer는 checkpoint save/load를 지원한다.
 - trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
+- trainer preset은 stage 1~4 phase chain을 기준으로 확장된다.
 - `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원한다. legacy/dev preset과 legacy dataset mapping key는 더 이상 지원하지 않는다.
+- `tools/check_env.py` interactive launcher는 `stage_3` peak VRAM stress probe를 제공하고, batch size / short iter 수를 받아 현재 backbone/stage 경로로 메모리 상한을 빠르게 확인할 수 있다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
+- phase summary와 run manifest는 backbone variant, resolved head channels, phase selection metric 같은 late-stage 판단 정보를 함께 남기는 방향을 따른다.
 - `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.
 - evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
 - evaluator는 raw model output을 postprocess prediction bundle로 decode하는 `predict_batch` runtime을 지원한다.

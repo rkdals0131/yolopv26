@@ -21,7 +21,7 @@ pv26_train:
         eps: 1.0e-8
       train_defaults:
         device: cuda:0
-        batch_size: 40
+        batch_size: 16
         train_batches: -1
         val_batches: -1
         trunk_lr: 1.0e-4
@@ -83,8 +83,8 @@ pv26_train:
             head_lr: 4.0e-4
         - name: lane_family_finetune
           stage: stage_4_lane_family_finetune
-          min_epochs: 4
-          max_epochs: 12
+          min_epochs: 8
+          max_epochs: 24
           patience: 3
           min_improvement_pct: 0.25
           selection:

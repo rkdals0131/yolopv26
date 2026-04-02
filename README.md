@@ -13,6 +13,7 @@ python3 tools/check_env.py
 - 이게 기본 진입점이다.
 - 실행하자마자 runtime, raw dataset root, canonical 처리 수, teacher/calibration/final dataset 상태를 자동 스캔해서 보여준다.
 - 숫자/영문 키로 다음 작업을 바로 실행할 수 있다.
+- `D` 메뉴로 `stage_3` 기준 peak VRAM stress probe를 바로 돌려 볼 수 있다.
 - 직접 `python -m ...` 명령을 치기 전에 현재 상태와 다음 추천 액션을 여기서 먼저 확인하면 된다.
 - `H`를 누르면 README 요약과 config 파일 위치를 볼 수 있다.
 - TUI 안에서 하이퍼파라미터를 직접 수정하지는 않는다.
@@ -59,7 +60,8 @@ python3 tools/run_pv26_train.py --preset default
 
 - `default` preset은 `seg_dataset/pv26_exhaustive_od_lane_dataset`를 입력으로 쓰는 최종 merged dataset 전용이다.
 - canonical-only 상태라면 먼저 `2번`부터 `8번`까지 실행해 exhaustive OD + lane dataset을 만들어야 한다.
-- `stage_1_frozen_trunk_warmup -> stage_2_partial_unfreeze -> stage_3_end_to_end_finetune` 3단계를 자동으로 수행한다.
+- `stage_1_frozen_trunk_warmup -> stage_2_partial_unfreeze -> stage_3_end_to_end_finetune -> stage_4_lane_family_finetune` 4단계를 자동으로 수행한다.
+- train/validation epoch 진행은 live progress로 표시되고, elapsed/ETA와 rolling timing profile을 함께 보여준다.
 - 출력 위치: `runs/pv26_exhaustive_od_lane_train/<meta_run_name>/`
 
 ### 2. OD bootstrap 소스 준비

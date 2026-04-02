@@ -465,6 +465,34 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             mocked_run.assert_called_once_with(loaded_scenario, scenario_path=PRESET_PATH_ROOT / "default")
             self.assertIn('"status": "ok"', buffer.getvalue())
 
+    def test_main_dispatches_stage3_vram_stress_mode(self) -> None:
+        loaded_scenario = SimpleNamespace()
+
+        with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario) as mocked_load:
+            with patch("tools.run_pv26_train.run_stage3_vram_stress", return_value={"status": "ok", "mode": "stage3_vram_stress"}) as mocked_stress:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    main(
+                        [
+                            "--preset",
+                            "default",
+                            "--stage3-vram-stress",
+                            "--stress-batch-size",
+                            "24",
+                            "--stress-iters",
+                            "16",
+                        ]
+                    )
+
+        mocked_load.assert_called_once_with("default")
+        mocked_stress.assert_called_once_with(
+            loaded_scenario,
+            scenario_path=PRESET_PATH_ROOT / "default",
+            batch_size=24,
+            stress_iters=16,
+        )
+        self.assertIn('"mode": "stage3_vram_stress"', buffer.getvalue())
+
     def test_configure_torch_multiprocessing_uses_file_system_sharing(self) -> None:
         mock_torch = SimpleNamespace(
             multiprocessing=SimpleNamespace(

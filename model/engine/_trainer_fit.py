@@ -309,8 +309,15 @@ def run_fit(
                 epoch_summary["val"] = trainer.validate_epoch(
                     val_loader,
                     epoch=epoch,
+                    epoch_total=epochs,
+                    phase_index=phase_index,
+                    phase_count=phase_count,
+                    phase_name=phase_name,
                     evaluator=evaluator,
                     max_batches=max_val_batches,
+                    log_every_n_steps=log_every_n_steps,
+                    profile_window=profile_window,
+                    profile_device_sync=profile_device_sync,
                 )
             if trainer.scheduler is not None:
                 trainer.scheduler.step()

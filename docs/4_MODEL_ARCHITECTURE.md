@@ -2,7 +2,9 @@
 
 ## 핵심 방향
 
-- trunk는 `Ultralytics YOLO v26 nano` 공식 pretrained model을 기준으로 한다.
+- trunk는 `Ultralytics YOLO v26` 공식 pretrained model을 기준으로 한다.
+- PV26 runtime은 `yolo26n.pt`와 `yolo26s.pt`를 모두 수용한다.
+- 권장 backbone 경로는 작은 객체 recall과 전체 표현 용량을 고려해 `yolo26s.pt`다.
 - backbone과 neck는 가능한 한 공식 구조와 채널 구성을 유지한다.
 - PV26 requirement는 custom head와 loss로 해결한다.
 
@@ -10,6 +12,7 @@
 
 - load source
   - official `yolo26n.pt`
+  - official `yolo26s.pt`
 - reuse 대상
   - backbone
   - neck
@@ -30,8 +33,8 @@
 
 ```text
 input image
-  -> YOLOv26n backbone
-  -> YOLOv26n neck
+  -> YOLOv26 backbone
+  -> YOLOv26 neck
   -> det head
   -> tl attr head
   -> lane head
@@ -47,10 +50,14 @@ input image
   - `Q_det` detector slot별 7-class logits
 - detector class는 generic `traffic_light`를 유지한다.
 - `Q_det`는 prediction slot 수를 의미하고, GT row 수와 다르다.
-- 현재 `800x608` 입력 기준 head 입력 pyramid는 아래로 고정돼 있다.
-  - P3: `64 x 76 x 100`
-  - P4: `128 x 38 x 50`
-  - P5: `256 x 19 x 25`
+- 현재 `608x800` 입력 기준 pyramid spatial shape는 아래와 같다.
+  - P3: `76 x 100`
+  - P4: `38 x 50`
+  - P5: `19 x 25`
+- channel count는 backbone variant에 따라 달라진다.
+  - `yolo26n`: P3/P4/P5 = `64 / 128 / 256`
+  - `yolo26s`: P3/P4/P5 = `128 / 256 / 512`
+- 즉 PV26 runtime은 fixed spatial contract 위에서 variant-dependent channel contract를 가진다.
 - 현재 custom head skeleton의 raw slot count는 `9975`다.
 
 ## traffic light attr head
@@ -85,10 +92,12 @@ input image
   - fixed query count `4`
   - 8-point polygon
 - 현재 skeleton 구현은 pooled pyramid embedding 위의 query MLP head다.
+- runtime은 trunk adapter가 resolve한 실제 pyramid channel을 head construction에 전달한다.
 
 ## 구현 규칙
 
 - trunk adapter를 먼저 만든다.
+- trunk adapter는 backbone variant, source weights, resolved pyramid channels를 함께 노출한다.
 - pretrained loading은 partial load로 구현한다.
 - head 모듈은 trunk와 분리된 클래스로 둔다.
 - 최소 regression 기준은 `forward -> loss -> backward`가 된다.
@@ -100,8 +109,12 @@ input image
    - trunk freeze
 2. neck + upper backbone unfreeze
 3. end-to-end fine-tune
+4. lane-family late fine-tune
+   - lane / stop-line / crosswalk metric 중심 보정
+   - detector / TL attr은 유지 또는 약한 가중치로만 관여
 
 ## 현재 구현 선택
 
 - Ultralytics wrapper를 그대로 사용하되, detect head 직전까지를 trunk adapter로 분리한다.
 - partial load helper는 key 이름과 tensor shape가 모두 맞는 항목만 자동으로 로드한다.
+- phase 4에서는 lane family 개선을 위해 late-stage selection 기준을 lane family metric 쪽으로 전환할 수 있게 설계한다.

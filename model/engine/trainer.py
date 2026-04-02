@@ -500,15 +500,29 @@ class PV26Trainer:
         loader,
         *,
         epoch: int,
+        epoch_total: int | None = None,
+        phase_index: int | None = None,
+        phase_count: int | None = None,
+        phase_name: str | None = None,
         evaluator=None,
         max_batches: int | None = None,
+        log_every_n_steps: int = 1,
+        profile_window: int = 20,
+        profile_device_sync: bool = False,
     ) -> dict[str, Any]:
         return _run_validate_epoch(
             self,
             loader,
             epoch=epoch,
+            epoch_total=epoch_total,
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
             evaluator=evaluator,
             max_batches=max_batches,
+            log_every_n_steps=log_every_n_steps,
+            profile_window=profile_window,
+            profile_device_sync=profile_device_sync,
         )
 
     def fit(
