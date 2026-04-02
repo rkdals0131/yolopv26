@@ -7,24 +7,22 @@ from typing import Any
 
 from ..build.debug_vis import generate_canonical_debug_vis
 from ..build.image_list import discover_image_list_entries, write_image_list
-from .aihub import (
-    DEFAULT_DOCS_ROOT as DEFAULT_AIHUB_DOCS_ROOT,
-    run_standardization as run_aihub_standardization,
-)
-from .bdd100k import (
-    run_standardization as run_bdd_standardization,
-)
-from .types import (
+from .aihub import run_standardization as run_aihub_standardization
+from .bdd100k import run_standardization as run_bdd_standardization
+from .constants import (
     AIHUB_LANE_DIRNAME,
     AIHUB_OBSTACLE_DIRNAME,
     AIHUB_TRAFFIC_DIRNAME,
     BOOTSTRAP_SOURCE_KEYS,
+    DEFAULT_AIHUB_DOCS_ROOT,
     EXCLUDED_SOURCE_KEYS,
+)
+from .defaults import build_default_source_prep_config
+from .types import (
     CanonicalSourceBundle,
     SourcePrepConfig,
     SourcePrepResult,
     SourceRoots,
-    build_default_source_prep_config,
 )
 
 

@@ -6,20 +6,20 @@ from typing import Any
 
 from common.pv26_schema import TL_BITS
 
-from .aihub_lane_worker import _lane_worker
-from .aihub_obstacle_worker import _prepare_debug_scene_for_overlay, _obstacle_worker
-from .aihub_traffic_worker import _combo_name, _traffic_worker
+from .aihub_lane_worker import lane_worker
+from .aihub_obstacle_worker import obstacle_worker, prepare_debug_scene_for_overlay
+from .aihub_traffic_worker import combo_name, traffic_worker
 from .aihub_worker_common import StandardizeTask, _counter_to_dict, _sample_id
 from .raw_common import _load_json, _normalize_text, _safe_slug
 
 
 def _worker_entry(task: StandardizeTask) -> dict[str, Any]:
     if task.dataset_kind == "lane":
-        return _lane_worker(task)
+        return lane_worker(task)
     if task.dataset_kind == "obstacle":
-        return _obstacle_worker(task)
+        return obstacle_worker(task)
     if task.dataset_kind == "traffic":
-        return _traffic_worker(task)
+        return traffic_worker(task)
     raise ValueError(f"unsupported dataset kind: {task.dataset_kind}")
 
 
@@ -108,7 +108,7 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         valid = int(item.get("tl_attr_valid", 0))
         reason = _normalize_text(item.get("collapse_reason")) or "unknown"
         if valid:
-            tl_combo_counts[_combo_name(bits)] += 1
+            tl_combo_counts[combo_name(bits)] += 1
             tl_attr_valid_count += 1
         else:
             tl_invalid_reason_counts[reason] += 1
@@ -136,3 +136,6 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         "held_reason_counts": _reason_counts_from_held_annotations(scene.get("held_annotations")),
         "resume_skipped": 1,
     }
+
+
+_prepare_debug_scene_for_overlay = prepare_debug_scene_for_overlay

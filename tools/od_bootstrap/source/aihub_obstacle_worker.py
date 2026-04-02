@@ -143,7 +143,7 @@ def _obstacle_debug_rectangles(scene: dict[str, Any]) -> list[dict[str, Any]]:
     return rectangles
 
 
-def _prepare_debug_scene_for_overlay(scene: dict[str, Any]) -> dict[str, Any]:
+def prepare_debug_scene_for_overlay(scene: dict[str, Any]) -> dict[str, Any]:
     if scene.get("source", {}).get("dataset") != AIHUB_OBSTACLE_DATASET_KEY:
         return scene
 
@@ -156,7 +156,7 @@ def _prepare_debug_scene_for_overlay(scene: dict[str, Any]) -> dict[str, Any]:
     return overlay_scene
 
 
-def _obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
+def obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
     output_root = Path(task.output_root)
@@ -269,3 +269,7 @@ def _obstacle_worker(task: StandardizeTask) -> dict[str, Any]:
         "held_reason_counts": _counter_to_dict(held_reason_counts),
         "resume_skipped": 0,
     }
+
+
+_prepare_debug_scene_for_overlay = prepare_debug_scene_for_overlay
+_obstacle_worker = obstacle_worker
