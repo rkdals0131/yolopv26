@@ -118,6 +118,7 @@
 ## priority-2b extraction review boundary
 
 - `tools/run_pv26_train.py` should remain the stable thin facade for the CLI and the import surface exercised by `test/test_run_pv26_train.py`.
+- completed on `2026-04-03`: `tools/run_pv26_train.py` no longer mass-imports underscore helpers from `tools/pv26_train_config.py` and `tools/pv26_train_artifacts.py`; internal reads go through public module APIs and the old underscore import surface survives only as local compatibility wrappers.
 - scenario / resume recovery responsibilities are the next extraction target:
   - preset lookup and scenario validation
   - scenario snapshot materialization for new runs

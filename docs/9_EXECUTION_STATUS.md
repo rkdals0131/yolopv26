@@ -8,9 +8,9 @@
 
 ## 현재 기준
 
-- 날짜: `2026-04-02`
+- 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, full exhaustive dataset 실제 실행, teacher checkpoint alias 정리, PV26 exhaustive 재학습 metric 해석을 진행하는 단계`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness pass로 tools/run_pv26_train.py facade import boundary 정리를 완료했고 다음은 repo-wide 공통 helper 흡수와 model/engine internal API 경계 정리`
 
 ## 완료된 항목
 
@@ -88,6 +88,7 @@
 - [x] OD bootstrap pipeline visibility / QA tooling 정리
 - [x] PV26 training config simplification / TensorBoard defaults 정리
 - [x] obstacle teacher `yolo26m` migration
+- [x] `tools/run_pv26_train.py` facade import boundary cleanup (`tools/pv26_train_config.py` / `tools/pv26_train_artifacts.py` public API 우선 + compatibility wrapper 유지)
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -97,6 +98,8 @@
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
+- [ ] repo-wide common helper 공통화 (`now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, path/deep-merge`)
+- [ ] `model/engine/` internal API / shared helper 경계 정리
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -124,6 +127,7 @@
 - [x] `python3 tools/run_pv26_train.py --preset default`
 - [x] `python3 tools/check_env.py --check-yolo-runtime`
 - [x] `python3 tools/run_pv26_train.py`
+- [x] `pytest -q test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py` (`54 passed`, `2026-04-03`)
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과

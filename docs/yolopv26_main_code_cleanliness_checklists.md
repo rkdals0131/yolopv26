@@ -20,7 +20,7 @@
 - [x] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
 - [x] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
 - [x] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
-- [ ] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
+- [x] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
 - [x] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
 - [x] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.
 - [x] `tools/run_pv26_train.py: run_meta_train_scenario()`를 phase/helper 단위로 쪼개 회귀 위험을 줄인다.

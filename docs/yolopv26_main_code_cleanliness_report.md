@@ -473,6 +473,11 @@ tools/
 
 가 한눈에 안 들어온다.
 
+`2026-04-03` 후속 정리 기준으로 이 항목은 해소됐다.
+현재 `run_pv26_train.py` 내부 호출은 `pv26_train_config.py`, `pv26_train_artifacts.py`의 public module API를 기준으로 읽히고,
+기존 import surface 호환이 필요한 `_scenario_phase_defaults`, `_resolve_phase_selection`, `_validate_meta_train_scenario`,
+`_phase_entry_is_completed`, `_recover_phase_entry_from_run_dir`만 로컬 compatibility wrapper로 남겨둔 상태다.
+
 #### 2) `site.addsitedir(REPO_ROOT)`는 실행은 되지만 구조 냄새다
 
 스크립트를 직접 실행하기 위해 repo root를 path에 넣는 방식은 실용적이긴 하다.  
