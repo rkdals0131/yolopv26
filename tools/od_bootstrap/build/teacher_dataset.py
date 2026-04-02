@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
 import json
 from pathlib import Path
 import time
 from typing import Any, Callable
 
+from common.io import now_iso as _now_iso
 from common.io import write_json as _write_json
 from common.pv26_schema import OD_CLASSES
 from .image_list import build_sample_uid
@@ -79,10 +79,6 @@ class TeacherDatasetTaskResult:
     manifest_row: dict[str, Any]
     detection_count: int
     class_counts: dict[str, int]
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)

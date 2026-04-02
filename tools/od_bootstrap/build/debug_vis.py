@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +14,7 @@ try:
 except Exception:  # pragma: no cover - Pillow is expected in the repo test env.
     Image = None
 
+from common.io import now_iso as _now_iso
 from common.io import write_json as _write_json
 from common.overlay import render_overlay
 from .review import canonical_scene_to_overlay_scene
@@ -23,10 +23,6 @@ from .image_list import build_sample_uid, load_image_list
 
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 def _reset_debug_vis_dir(debug_vis_dir: Path) -> None:
     if debug_vis_dir.exists():
