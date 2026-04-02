@@ -621,8 +621,200 @@ def _execute_phase(
             resolve_summary_path=_resolve_summary_path,
         )
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._delegate, name)
+    early_exit = phase_summary.get("early_exit", {})
+    return {
+        "index": int(phase_index),
+        "name": phase.name,
+        "stage": phase.stage,
+        "status": "completed",
+        "run_dir": str(phase_run_dir),
+        "summary_path": str(phase_run_dir / "summary.json"),
+        "run_manifest_path": str(phase_run_dir / "run_manifest.json"),
+        "best_checkpoint_path": str(best_checkpoint) if best_checkpoint is not None else None,
+        "last_checkpoint_path": str(last_checkpoint) if last_checkpoint is not None else None,
+        "completed_epochs": int(phase_summary["completed_epochs"]),
+        "best_metric_value": phase_summary.get("best_metric_value"),
+        "best_epoch": phase_summary.get("best_epoch"),
+        "promotion_reason": early_exit.get("reason", "completed"),
+        "phase_state": early_exit.get("phase_state"),
+        "selection": _json_ready(asdict(phase_selection)),
+        "backbone": {
+            "variant": phase_train_config.backbone_variant,
+            "weights": _resolve_backbone_weights(phase_train_config),
+        },
+        "postprocess": _json_ready(asdict(_build_postprocess_config(phase_train_config))),
+        "head_channels": list(_configured_head_channels(phase_train_config)),
+        "preview": _json_ready(preview_payload),
+        "phase_train_config": _json_ready(asdict(phase_train_config)),
+        "run_summary": _json_ready(phase_summary),
+    }
+
+
+def _find_phase_by_stage(
+    scenario: MetaTrainScenario,
+    *,
+    stage: str,
+) -> tuple[int, PhaseConfig]:
+    return _runtime_ops.find_phase_by_stage(scenario, stage=stage)
+
+
+def _is_oom_error(exc: RuntimeError) -> bool:
+    return _runtime_ops.is_oom_error(exc)
+
+
+def _cuda_memory_stats(device: Any) -> dict[str, Any]:
+    import torch
+
+    if getattr(device, "type", None) != "cuda":
+        return {
+            "device": str(device),
+            "current_allocated_bytes": None,
+            "current_allocated_gib": None,
+            "peak_allocated_bytes": None,
+            "peak_allocated_gib": None,
+            "current_reserved_bytes": None,
+            "current_reserved_gib": None,
+            "peak_reserved_bytes": None,
+            "peak_reserved_gib": None,
+        }
+    torch.cuda.synchronize(device)
+    current_allocated = int(torch.cuda.memory_allocated(device))
+    peak_allocated = int(torch.cuda.max_memory_allocated(device))
+    current_reserved = int(torch.cuda.memory_reserved(device))
+    peak_reserved = int(torch.cuda.max_memory_reserved(device))
+
+    def _to_gib(value: int) -> float:
+        return float(value) / float(1024**3)
+
+    return {
+        "device": str(device),
+        "current_allocated_bytes": current_allocated,
+        "current_allocated_gib": _to_gib(current_allocated),
+        "peak_allocated_bytes": peak_allocated,
+        "peak_allocated_gib": _to_gib(peak_allocated),
+        "current_reserved_bytes": current_reserved,
+        "current_reserved_gib": _to_gib(current_reserved),
+        "peak_reserved_bytes": peak_reserved,
+        "peak_reserved_gib": _to_gib(peak_reserved),
+    }
+
+
+def _existing_dataset_roots(scenario: MetaTrainScenario) -> list[Path]:
+    return _runtime_ops.existing_dataset_roots(scenario)
+
+
+def _stage3_stress_train_config(
+    scenario: MetaTrainScenario,
+    *,
+    batch_size: int,
+    stress_iters: int,
+) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
+    return _runtime_ops.stage3_stress_train_config(
+        scenario,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        scenario_phase_defaults=_scenario_phase_defaults,
+    )
+
+
+def _run_stage3_probe(
+    trainer: PV26Trainer,
+    train_loader: Any,
+    *,
+    scenario: MetaTrainScenario,
+    phase_index: int,
+    phase_name: str,
+    phase_train_config: TrainDefaultsConfig,
+    stress_iters: int,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    return _runtime_ops.run_stage3_probe(
+        trainer,
+        train_loader,
+        scenario=scenario,
+        phase_index=phase_index,
+        phase_name=phase_name,
+        phase_train_config=phase_train_config,
+        stress_iters=stress_iters,
+        is_oom_error=_is_oom_error,
+    )
+
+
+def _stage3_stress_summary(
+    *,
+    scenario_path: Path,
+    phase_index: int,
+    phase: PhaseConfig,
+    trainer: PV26Trainer,
+    train_config: TrainDefaultsConfig,
+    batch_size: int,
+    stress_iters: int,
+    duration_sec: float,
+    status: str,
+    train_summary: dict[str, Any] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    return _runtime_ops.stage3_stress_summary(
+        scenario_path=scenario_path,
+        phase_index=phase_index,
+        phase=phase,
+        trainer=trainer,
+        train_config=train_config,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        duration_sec=duration_sec,
+        status=status,
+        train_summary=train_summary,
+        error=error,
+        json_ready=_json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_stage3_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_stage3_vram_stress(
+        scenario,
+        scenario_path=scenario_path,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=_json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_meta_train_scenario(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+) -> dict[str, Any]:
+    return _runtime_ops.run_meta_train_scenario(
+        scenario,
+        scenario_path=scenario_path,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        resolve_meta_run_dir=_resolve_meta_run_dir,
+        sample_preview_selection_with_logging=_sample_preview_selection_with_logging,
+        load_or_init_meta_manifest=_load_or_init_meta_manifest,
+        phase_entry_is_completed=_phase_entry_is_completed,
+        recover_phase_entry_from_run_dir=_recover_phase_entry_from_run_dir,
+        scenario_snapshot_for_run=_scenario_snapshot_for_run,
+        write_meta_manifest=_write_meta_manifest,
+        write_meta_summary=_write_meta_summary,
+        resolve_phase_selection=_resolve_phase_selection,
+        execute_phase=_execute_phase,
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
