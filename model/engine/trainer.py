@@ -33,42 +33,14 @@ RUN_MANIFEST_VERSION = "pv26-train-run-v1"
 OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TIMING_KEYS = _reporting.TIMING_KEYS
 TENSORBOARD_LOSS_KEYS = _reporting.TENSORBOARD_LOSS_KEYS
-_is_successful_summary = _reporting._is_successful_summary
-_successful_summaries = _reporting._successful_summaries
-_truncate_debug_text = _reporting._truncate_debug_text
-_zero_successful_batches_error = _reporting._zero_successful_batches_error
-_loss_summary = _reporting._loss_summary
-_aggregate_count_tree = _reporting._aggregate_count_tree
-_write_tensorboard_scalars = _reporting._write_tensorboard_scalars
-_select_numeric_scalars = _reporting._select_numeric_scalars
-_loss_mean_scalars = _reporting._loss_mean_scalars
-_tensorboard_val_metric_scalars = _reporting._tensorboard_val_metric_scalars
-_timing_profile_mean_scalars = _reporting._timing_profile_mean_scalars
-_tensorboard_train_step_payload = _reporting._tensorboard_train_step_payload
-_tensorboard_progress_payload = _reporting._tensorboard_progress_payload
-_tensorboard_epoch_payload = _reporting._tensorboard_epoch_payload
-_percentile = _reporting._percentile
-_timing_profile = _reporting._timing_profile
-_format_duration = _reporting._format_duration
-_format_fraction = _reporting._format_fraction
+# Keep only the explicit compatibility shims that the repo still imports or patches
+# from `model.engine.trainer`; internal call sites use helper modules directly.
 _format_epoch_completion_log = _reporting._format_epoch_completion_log
 _format_train_live_detail = _reporting._format_train_live_detail
 _format_train_progress_log = _reporting._format_train_progress_log
-_format_validate_live_detail = _reporting._format_validate_live_detail
-_loss_stats_from_summaries = _reporting._loss_stats_from_summaries
-_sum_counts = _reporting._sum_counts
-_aggregate_assignment_modes = _reporting._aggregate_assignment_modes
-_mean_metric_tree = _reporting._mean_metric_tree
-_run_train_epoch = _epochs.run_train_epoch
-_run_validate_epoch = _epochs.run_validate_epoch
-_run_train_step = _step.run_train_step
-_default_run_dir = _io._default_run_dir
-_now_iso = _io._now_iso
-_write_json = _io._write_json
-_append_jsonl = _io._append_jsonl
-_write_jsonl_rows = _io._write_jsonl_rows
-_json_ready = _io._json_ready
 _maybe_build_summary_writer = _io._maybe_build_summary_writer
+_tensorboard_epoch_payload = _reporting._tensorboard_epoch_payload
+_tensorboard_train_step_payload = _reporting._tensorboard_train_step_payload
 
 
 def _canonical_stage(stage: str) -> str:
@@ -365,7 +337,7 @@ class PV26Trainer:
         wait_sec: float = 0.0,
         profile_device_sync: bool = False,
     ) -> dict[str, Any]:
-        return _run_train_step(
+        return _step.run_train_step(
             self,
             batch,
             wait_sec=wait_sec,
@@ -378,7 +350,7 @@ class PV26Trainer:
         if not self.history:
             raise ValueError("trainer history is empty")
         window = self.history[-last_n:] if last_n is not None else self.history
-        successful_window = _successful_summaries(window)
+        successful_window = _reporting._successful_summaries(window)
         anchor = successful_window[-1] if successful_window else window[-1]
         summary: dict[str, Any] = {
             "steps": len(window),
@@ -394,14 +366,14 @@ class PV26Trainer:
         if not successful_window:
             return summary
         for name in anchor["losses"]:
-            summary["losses"][name] = _loss_summary(window, name)
+            summary["losses"][name] = _reporting._loss_summary(window, name)
         return summary
 
     def save_epoch_history_jsonl(self, path: str | Path) -> Path:
-        return _write_jsonl_rows(path, self.epoch_history)
+        return _io._write_jsonl_rows(path, self.epoch_history)
 
     def save_history_jsonl(self, path: str | Path) -> Path:
-        return _write_jsonl_rows(path, self.history)
+        return _io._write_jsonl_rows(path, self.history)
 
     def checkpoint_state(self) -> dict[str, Any]:
         return _checkpoint.checkpoint_state(
@@ -472,7 +444,7 @@ class PV26Trainer:
         profile_window: int = 20,
         profile_device_sync: bool = False,
     ) -> dict[str, Any]:
-        return _run_train_epoch(
+        return _epochs.run_train_epoch(
             self,
             loader,
             epoch=epoch,
@@ -502,7 +474,7 @@ class PV26Trainer:
         profile_window: int = 20,
         profile_device_sync: bool = False,
     ) -> dict[str, Any]:
-        return _run_validate_epoch(
+        return _epochs.run_validate_epoch(
             self,
             loader,
             epoch=epoch,
@@ -565,16 +537,16 @@ class PV26Trainer:
             log_every_n_steps=log_every_n_steps,
             profile_window=profile_window,
             profile_device_sync=profile_device_sync,
-            default_run_dir_fn=_default_run_dir,
-            now_iso_fn=_now_iso,
-            write_json_fn=_write_json,
-            json_ready_fn=_json_ready,
+            default_run_dir_fn=_io._default_run_dir,
+            now_iso_fn=_io._now_iso,
+            write_json_fn=_io._write_json,
+            json_ready_fn=_io._json_ready,
             maybe_build_summary_writer_fn=_maybe_build_summary_writer,
             optimizer_group_hparams_fn=_optimizer_group_hparams,
             resolve_summary_path_fn=_resolve_summary_path,
             is_better_fn=_is_better,
-            write_tensorboard_scalars_fn=_write_tensorboard_scalars,
-            tensorboard_epoch_payload_fn=_tensorboard_epoch_payload,
+            write_tensorboard_scalars_fn=_reporting._write_tensorboard_scalars,
+            tensorboard_epoch_payload_fn=_reporting._tensorboard_epoch_payload,
             run_manifest_version=RUN_MANIFEST_VERSION,
         )
 
@@ -615,7 +587,17 @@ def run_pv26_tiny_overfit(
 __all__ = [
     "PV26Trainer",
     "STAGE_NAMES",
+    "TIMING_KEYS",
+    "TENSORBOARD_LOSS_KEYS",
     "build_pv26_optimizer",
     "configure_pv26_train_stage",
     "run_pv26_tiny_overfit",
+    "_format_epoch_completion_log",
+    "_format_train_live_detail",
+    "_format_train_progress_log",
+    "_flatten_scalar_tree",
+    "_maybe_build_summary_writer",
+    "_resolve_summary_path",
+    "_tensorboard_epoch_payload",
+    "_tensorboard_train_step_payload",
 ]
