@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
+from common.io import write_json as _write_json
 from common.pv26_schema import OD_CLASSES
 from .image_list import build_sample_uid
 
@@ -82,13 +83,6 @@ class TeacherDatasetTaskResult:
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return path
-
 
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)

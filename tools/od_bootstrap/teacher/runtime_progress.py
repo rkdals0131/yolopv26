@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 import math
 from pathlib import Path
+import time
+from types import MethodType
 from typing import Any
 
-from common.io import append_jsonl as _append_jsonl_file
-from common.io import timestamp_token as _timestamp_token
+from common import io as common_io
 try:
     from rich.console import Console
     from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
@@ -64,7 +66,7 @@ def timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    _append_jsonl_file(path, payload)
+    common_io.append_jsonl(path, payload)
 
 
 def format_duration(seconds: float | None) -> str:
@@ -188,8 +190,8 @@ def emit_log(message: str, *, progress_bar: Any = None) -> None:
     print(message, flush=True)
 
 
-def timestamp_token(*, datetime_cls: Any) -> str:
-    return _timestamp_token(datetime_cls=datetime_cls)
+def timestamp_token(*, datetime_cls: Any = datetime) -> str:
+    return common_io.timestamp_token(datetime_cls=datetime_cls)
 
 
 def build_live_postfix(
@@ -288,7 +290,12 @@ def _render_progress_line(pbar: Any, *, final: bool, time_module: Any) -> str | 
     return progress_str
 
 
-def install_ultralytics_postfix_renderer(pbar: Any, *, time_module: Any, method_type: Any) -> Any:
+def install_ultralytics_postfix_renderer(
+    pbar: Any,
+    *,
+    time_module: Any = time,
+    method_type: Any = MethodType,
+) -> Any:
     if pbar is None or getattr(pbar, "_od_bootstrap_renderer_installed", False):
         return pbar
     if not hasattr(pbar, "_display"):

@@ -1,49 +1,31 @@
 from __future__ import annotations
 
+from collections import deque
 import math
-from datetime import datetime
 import os
 from pathlib import Path
 import shutil
 import time
 from typing import Any, Callable
 
-from common.io import write_json as _write_json_file
-from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
-from .runtime_callbacks import build_teacher_runtime_callbacks as _build_teacher_runtime_callbacks
-from .runtime_artifacts import _refresh_latest_teacher_artifacts
-from .runtime_progress import (
-    append_jsonl as _append_jsonl_impl,
-    build_rich_progress_bar as _build_rich_progress_bar_impl,
-    build_live_postfix as _build_live_postfix_impl,
-    emit_log as _emit_log_impl,
-    format_duration as _format_duration_impl,
-    install_ultralytics_postfix_renderer as _install_ultralytics_postfix_renderer_impl,
-    loader_profile_payload as _loader_profile_payload_impl,
-    set_progress_postfix as _set_progress_postfix_impl,
-    sync_timing_device as _sync_timing_device_impl,
-    timing_profile as _timing_profile_impl,
-    timestamp_token as _timestamp_token_impl,
-)
+from common.io import write_json
+from common.scalars import flatten_scalar_tree
+from . import runtime_progress
+from .runtime_artifacts import refresh_latest_teacher_artifacts
+from .runtime_callbacks import build_teacher_runtime_callbacks
 from .runtime_resume import (
-    _checkpoint_resume_metadata,
-    _coerce_weights_name,
-    _extract_run_dir,
-    _find_latest_resumable_checkpoint,
-    _infer_teacher_root_from_checkpoint,
-    _load_checkpoint_payload,
-    _resolve_resume_argument,
-    _resolve_resume_checkpoint_path,
-    _resume_candidate_sort_key,
+    checkpoint_resume_metadata,
+    coerce_weights_name,
+    extract_run_dir,
+    resolve_resume_argument,
+    resolve_resume_checkpoint_path,
 )
 from .runtime_tensorboard import (
-    _build_epoch_tensorboard_payload,
-    _build_train_step_tensorboard_payload,
-    _maybe_build_summary_writer,
-    _write_tensorboard_scalars,
+    build_epoch_tensorboard_payload,
+    build_train_step_tensorboard_payload,
+    maybe_build_summary_writer,
+    write_tensorboard_scalars,
 )
-from collections import deque
-from types import MethodType
 
 try:
     import torch
@@ -70,71 +52,33 @@ except ImportError:  # pragma: no cover - dependency absence handled in tests wi
     torch_distributed_zero_first = None
     RANK = -1
 
+# Backwards-compatible aliases for existing tests/callers while teacher runtime
+# modules expose a clearer public helper surface.
+_append_jsonl = runtime_progress.append_jsonl
+_build_epoch_tensorboard_payload = build_epoch_tensorboard_payload
+_build_live_postfix = runtime_progress.build_live_postfix
+_build_rich_progress_bar = runtime_progress.build_rich_progress_bar
+_build_train_step_tensorboard_payload = build_train_step_tensorboard_payload
+_checkpoint_resume_metadata = checkpoint_resume_metadata
+_coerce_weights_name = coerce_weights_name
+_emit_log = runtime_progress.emit_log
+_extract_run_dir = extract_run_dir
+_flatten_scalar_tree = flatten_scalar_tree
+_format_duration = runtime_progress.format_duration
+_install_ultralytics_postfix_renderer = runtime_progress.install_ultralytics_postfix_renderer
+_loader_profile_payload = runtime_progress.loader_profile_payload
+_maybe_build_summary_writer = maybe_build_summary_writer
+_refresh_latest_teacher_artifacts = refresh_latest_teacher_artifacts
+_resolve_resume_argument = resolve_resume_argument
+_resolve_resume_checkpoint_path = resolve_resume_checkpoint_path
+_set_progress_postfix = runtime_progress.set_progress_postfix
+_timing_profile = runtime_progress.timing_profile
+_timestamp_token = runtime_progress.timestamp_token
+_write_tensorboard_scalars = write_tensorboard_scalars
+
 
 def _sync_timing_device(device: Any, enabled: bool) -> None:
-    _sync_timing_device_impl(torch, device, enabled)
-
-
-def _timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
-    return _timing_profile_impl(window)
-
-
-def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    _append_jsonl_impl(path, payload)
-
-
-def _format_duration(seconds: float | None) -> str:
-    return _format_duration_impl(seconds)
-
-
-def _emit_log(message: str) -> None:
-    _emit_log_impl(message)
-
-
-def _timestamp_token() -> str:
-    return _timestamp_token_impl(datetime_cls=datetime)
-
-
-def _build_live_postfix(
-    *,
-    elapsed_sec: float,
-    eta_sec: float | None,
-    profile_summary: dict[str, Any],
-) -> str:
-    return _build_live_postfix_impl(
-        elapsed_sec=elapsed_sec,
-        eta_sec=eta_sec,
-        profile_summary=profile_summary,
-    )
-
-
-def _build_rich_progress_bar(
-    iterable: Any,
-    *,
-    total: int | None,
-    description: str,
-) -> Any:
-    return _build_rich_progress_bar_impl(
-        iterable,
-        total=total,
-        description=description,
-    )
-
-
-def _set_progress_postfix(pbar: Any, postfix: str) -> bool:
-    return _set_progress_postfix_impl(pbar, postfix)
-
-
-def _install_ultralytics_postfix_renderer(pbar: Any) -> Any:
-    return _install_ultralytics_postfix_renderer_impl(
-        pbar,
-        time_module=time,
-        method_type=MethodType,
-    )
-
-
-def _loader_profile_payload(loader: Any) -> dict[str, Any]:
-    return _loader_profile_payload_impl(loader)
+    runtime_progress.sync_timing_device(torch, device, enabled)
 
 
 def _build_teacher_dataloader_kwargs(
@@ -212,7 +156,7 @@ def _build_teacher_callbacks(
     *,
     runtime_params: dict[str, Any],
 ) -> dict[str, Callable[[Any], None]]:
-    return _build_teacher_runtime_callbacks(
+    return build_teacher_runtime_callbacks(
         runtime_params=runtime_params,
         time_module=time,
         deque_type=deque,
@@ -222,10 +166,10 @@ def _build_teacher_callbacks(
         build_live_postfix_fn=_build_live_postfix,
         set_progress_postfix_fn=_set_progress_postfix,
         loader_profile_payload_fn=_loader_profile_payload,
-        maybe_build_summary_writer_fn=_maybe_build_summary_writer,
-        write_tensorboard_scalars_fn=_write_tensorboard_scalars,
-        build_train_step_tensorboard_payload_fn=_build_train_step_tensorboard_payload,
-        build_epoch_tensorboard_payload_fn=_build_epoch_tensorboard_payload,
+        maybe_build_summary_writer_fn=maybe_build_summary_writer,
+        write_tensorboard_scalars_fn=write_tensorboard_scalars,
+        build_train_step_tensorboard_payload_fn=build_train_step_tensorboard_payload,
+        build_epoch_tensorboard_payload_fn=build_epoch_tensorboard_payload,
     )
 
 
@@ -330,8 +274,8 @@ def _make_teacher_trainer(
                 try:
                     exists = isinstance(resume, (str, Path)) and Path(resume).exists()
                     requested = Path(ultra_trainer.check_file(resume) if exists else ultra_trainer.get_latest_run())
-                    last = _resolve_resume_checkpoint_path(requested) or requested
-                    metadata = _checkpoint_resume_metadata(last)
+                    last = resolve_resume_checkpoint_path(requested) or requested
+                    metadata = checkpoint_resume_metadata(last)
                     ckpt_args = dict(metadata["train_args"])
                     if not ckpt_args:
                         raise FileNotFoundError(f"resume checkpoint is missing train_args: {last}")
@@ -714,12 +658,12 @@ def train_teacher_with_ultralytics(
     if YOLO is None:
         raise RuntimeError("ultralytics is not installed")
 
-    resolved_weights = _coerce_weights_name(model_size, weights)
+    resolved_weights = coerce_weights_name(model_size, weights)
     log_fn = _emit_log
     trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=log_fn)
     teacher_root = output_root / teacher_name
     train_params = dict(train_params)
-    train_params["resume"] = _resolve_resume_argument(
+    train_params["resume"] = resolve_resume_argument(
         train_params.get("resume", False),
         teacher_name=teacher_name,
         teacher_root=teacher_root,
@@ -738,7 +682,7 @@ def train_teacher_with_ultralytics(
         exist_ok=exist_ok,
     )
     train_result = model.train(trainer=trainer_cls, **train_kwargs)
-    run_dir = _extract_run_dir(train_result, teacher_root / run_name)
+    run_dir = extract_run_dir(train_result, teacher_root / run_name)
     trainer = getattr(model, "trainer", None)
     summary = _build_teacher_train_summary(
         teacher_name=teacher_name,
@@ -751,12 +695,12 @@ def train_teacher_with_ultralytics(
         train_result=train_result,
         trainer=trainer,
     )
-    latest_artifacts = _refresh_latest_teacher_artifacts(teacher_root=teacher_root, run_dir=run_dir, summary=summary)
+    latest_artifacts = refresh_latest_teacher_artifacts(teacher_root=teacher_root, run_dir=run_dir, summary=summary)
     summary["latest_artifacts"] = latest_artifacts
 
     artifact_paths = _teacher_runtime_artifact_paths(run_dir)
     summary_path = artifact_paths["train_summary"]
-    _write_json_file(summary_path, summary)
+    write_json(summary_path, summary)
     latest_summary_path = Path(latest_artifacts["train_summary_path"])
-    _write_json_file(latest_summary_path, summary)
+    write_json(latest_summary_path, summary)
     return summary

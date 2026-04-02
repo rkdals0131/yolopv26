@@ -306,6 +306,11 @@ tools/od_bootstrap/
 `tools/pv26_train_config.py`가 이를 재사용하도록 바뀌었다.
 다만 `now_iso`, `timestamp_token`, `write_json`, path resolve`류는 아직 부분 중복이 남아 있다.
 
+그 다음 wave에서는 `common.paths`에 `resolve_optional_path`, `resolve_latest_root`가 정착했고,
+`common.io`에는 `write_jsonl`이 추가돼 `tools/od_bootstrap/build/`와
+`tools/pv26_train_config.py` 일부 call-site가 공용 helper를 재사용하게 됐다.
+즉, path/JSONL helper는 한 단계 더 정리됐고, 남은 큰 축은 time helper와 `append_jsonl`류다.
+
 ---
 
 ## 5.2 `model/`
@@ -384,7 +389,9 @@ tools/od_bootstrap/
 `2026-04-03` team wave 기준으로는 batch/helper 쪽이 먼저 정리됐다.
 `model/engine/batch.py`가 추가되면서 `move_to_device`, raw batch unwrap,
 lane family metric augmentation이 trainer/evaluator/_trainer_epochs 사이에서 공용화됐다.
-이제 남은 핵심은 anchor grid / anchor-relative decode 같은 geometry 중복과 trainer private re-export mesh다.
+그 다음 wave에서는 `model/engine/_det_geometry.py`가 추가되면서
+anchor grid / anchor-relative decode도 `loss.py`, `postprocess.py`에서 공용화됐다.
+이제 남은 핵심은 trainer private re-export mesh와 더 넓은 public/internal surface 경계다.
 
 ---
 
@@ -442,6 +449,14 @@ tools/
 - UX 자체: 이미 좋음
 - 코드 구조: 아직 한 번 더 정리 가능
 - 우선순위: **중간**
+
+`2026-04-03` 후속 wave 기준으로는 여기서도 실제 진전이 있었다.
+`tools/check_env.py`는 launch/compat facade로 남기고,
+workspace scan은 `tools/check_env_scan.py`,
+action catalog는 `tools/check_env_actions.py`,
+rich rendering은 `tools/check_env_tui.py`로 분리됐다.
+다만 input handling / subprocess launch / resume candidate 흐름은 아직 facade 쪽에 남아 있어
+완전한 얇은 entrypoint까지는 한 번 더 다듬을 여지가 있다.
 
 즉, 이건 “필수 수정”은 아니고 **나중에 덩치 줄이기용**이다.
 
@@ -743,6 +758,12 @@ teacher 폴더는 상위 구조는 좋다.
 
 정도다.
 
+`2026-04-03` 후속 wave 기준으로는 runtime helper/public API 정리의 첫 단계가 들어갔다.
+`ultralytics_runner.py`는 이제 `runtime_progress`, `runtime_tensorboard`,
+`runtime_resume`, `runtime_artifacts`의 public/shared helper 이름을 우선 사용하고,
+underscore alias는 compatibility shim으로만 남겨둔 상태다.
+즉, alias mesh는 줄었지만 runner 자체의 덩치와 DI 인자 수는 아직 남아 있다.
+
 우선순위는 `source/`보다는 약간 낮지만, **분명히 손볼 가치가 있다.**
 
 ---
@@ -832,6 +853,12 @@ teacher 폴더는 상위 구조는 좋다.
 - naming consistency
 
 정도면 충분하다.
+
+`2026-04-03` 후속 wave 기준으로는 low-level IO/path helper 정리가 한 차례 더 진행됐다.
+`common.paths.resolve_latest_root`, `resolve_optional_path`,
+`common.io.write_jsonl`을 build 쪽에서 재사용하도록 맞췄고,
+`final_dataset.py`의 overwrite/publish처럼 정책 차이가 큰 helper는 그대로 로컬에 남겨뒀다.
+즉, 정책이 같은 helper만 공용화하고 나머지는 builder-local로 남기는 방향이 실제 코드에 반영됐다.
 
 ---
 

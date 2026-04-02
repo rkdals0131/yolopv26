@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from common.paths import resolve_path
+from common.io import write_jsonl
+from common.paths import resolve_optional_path, resolve_path
 
 
 @dataclass(frozen=True)
@@ -49,13 +50,6 @@ def _coerce_str(value: Any, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must not be empty")
     return normalized
 
-
-def _resolve_optional_path(value: Any, *, base_dir: Path, field_name: str) -> Path | None:
-    if value in (None, ""):
-        return None
-    return resolve_path(_coerce_str(value, field_name=field_name), base_dir=base_dir)
-
-
 def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
     manifest_path = Path(path).resolve()
     if not manifest_path.is_file():
@@ -92,6 +86,13 @@ def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
         if sample_uid in seen_sample_uids:
             raise ValueError(f"duplicate sample_uid in image list manifest: {sample_uid}")
         seen_sample_uids.add(sample_uid)
+        raw_det_path = payload.get("det_path")
+        det_path = resolve_optional_path(
+            raw_det_path
+            if raw_det_path in (None, "")
+            else _coerce_str(raw_det_path, field_name=f"image_list[{line_index}].det_path"),
+            base_dir=manifest_path.parent,
+        )
 
         entries.append(
             ImageListEntry(
@@ -108,11 +109,7 @@ def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
                 ),
                 dataset_key=dataset_key,
                 split=split,
-                det_path=_resolve_optional_path(
-                    payload.get("det_path"),
-                    base_dir=manifest_path.parent,
-                    field_name=f"image_list[{line_index}].det_path",
-                ),
+                det_path=det_path,
                 source_name=str(payload.get("source_name", "")).strip(),
             )
         )
@@ -164,10 +161,7 @@ def discover_image_list_entries(
 
 
 def write_image_list(path: Path, entries: Iterable[ImageListEntry]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [json.dumps(entry.to_dict(), ensure_ascii=True) for entry in entries]
-    path.write_text(("\n".join(rows) + "\n") if rows else "", encoding="utf-8")
-    return path
+    return write_jsonl(path, (entry.to_dict() for entry in entries))
 
 
 __all__ = [

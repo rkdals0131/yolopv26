@@ -10,14 +10,14 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.teacher.ultralytics_runner import (
-    _build_epoch_tensorboard_payload,
-    _build_train_step_tensorboard_payload,
-    _flatten_scalar_tree,
-    _install_ultralytics_postfix_renderer,
-    _make_teacher_trainer,
-    _resolve_resume_argument,
+from common.scalars import flatten_scalar_tree
+from tools.od_bootstrap.teacher.runtime_progress import install_ultralytics_postfix_renderer
+from tools.od_bootstrap.teacher.runtime_resume import resolve_resume_argument
+from tools.od_bootstrap.teacher.runtime_tensorboard import (
+    build_epoch_tensorboard_payload,
+    build_train_step_tensorboard_payload,
 )
+from tools.od_bootstrap.teacher.ultralytics_runner import _make_teacher_trainer
 
 
 class _FakePbar:
@@ -94,7 +94,7 @@ def _write_checkpoint(path: Path, *, epoch: int, total_epochs: int, resumable: b
 class UltralyticsRunnerTests(unittest.TestCase):
     def test_ultralytics_postfix_renders_at_line_end(self) -> None:
         pbar = _FakeUltralyticsPbar()
-        _install_ultralytics_postfix_renderer(pbar)
+        install_ultralytics_postfix_renderer(pbar)
         with patch("tools.od_bootstrap.teacher.ultralytics_runner.time.time", return_value=123.9):
             pbar.set_bootstrap_postfix(
                 "elapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms"
@@ -155,7 +155,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertFalse(trainer.od_profile_log_path.exists())
 
     def test_epoch_tensorboard_payload_keeps_only_requested_tags(self) -> None:
-        payload = _build_epoch_tensorboard_payload(
+        payload = build_epoch_tensorboard_payload(
             losses={
                 "train/box_loss": 1.25,
                 "train/cls_loss": 2.5,
@@ -181,7 +181,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             },
         )
 
-        scalar_names = {name for name, _ in _flatten_scalar_tree("epoch", payload)}
+        scalar_names = {name for name, _ in flatten_scalar_tree("epoch", payload)}
 
         self.assertEqual(
             scalar_names,
@@ -205,7 +205,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
         )
 
     def test_train_step_tensorboard_payload_keeps_only_requested_tags(self) -> None:
-        payload = _build_train_step_tensorboard_payload(
+        payload = build_train_step_tensorboard_payload(
             losses={
                 "train/box_loss": 1.0,
                 "train/cls_loss": 2.0,
@@ -220,7 +220,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             elapsed_sec=12.5,
         )
 
-        scalar_names = {name for name, _ in _flatten_scalar_tree("train_step", payload)}
+        scalar_names = {name for name, _ in flatten_scalar_tree("train_step", payload)}
 
         self.assertEqual(
             scalar_names,
@@ -247,7 +247,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             _write_checkpoint(resumable_epoch, epoch=70, total_epochs=72, resumable=True)
             latest_run.parent.mkdir(parents=True, exist_ok=True)
             latest_run.write_text("{}", encoding="utf-8")
-            resolved = _resolve_resume_argument(True, teacher_name="signal", teacher_root=teacher_root)
+            resolved = resolve_resume_argument(True, teacher_name="signal", teacher_root=teacher_root)
             self.assertEqual(resolved, str(resumable_epoch))
 
     def test_teacher_trainer_check_resume_allows_epoch_extension(self) -> None:

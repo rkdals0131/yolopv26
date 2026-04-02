@@ -29,12 +29,14 @@
 ## 3순위. 공통 helper 추출과 중복 제거
 
 - [x] `deep_merge_mappings`를 `common.user_config` public helper로 승격하고 `tools/pv26_train_config.py`가 이를 재사용하도록 정리한다.
-- [ ] repo 전반에 흩어진 `now_iso`, `timestamp_token`, `write_json`, `append_jsonl`, `resolve_latest_root`, `resolve_optional_path`를 공통화한다.
-- [ ] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`, path resolve를 흡수한다.
+- [x] `resolve_latest_root`, `resolve_optional_path`를 `common.paths` 공용 helper로 두고 `tools/od_bootstrap/build/`, `tools/pv26_train_config.py`가 이를 재사용하도록 정리한다.
+- [x] `common.io.write_jsonl`을 추가하고 build 내부의 안전한 JSONL/JSON writer call-site가 이를 재사용하도록 정리한다.
+- [ ] repo 전반에 흩어진 `now_iso`, `timestamp_token`, `write_json`, `append_jsonl`를 공통화한다.
+- [ ] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`를 흡수한다.
 - [ ] `common/`은 대공사 대상이 아니라 새 shared helper를 받아주는 착지점으로 사용한다.
 - [ ] repo-wide truly common helper는 `common/`으로 올리고, bootstrap 내부에서만 재사용하는 helper는 `tools/od_bootstrap/...` shared 모듈에 두는 기준을 명확히 한다.
-- [ ] `common/io.py`, `common/paths.py`, `common/config_merge.py`를 확장할지, 아니면 `tools/od_bootstrap/shared_io.py`, `shared_paths.py`를 추가할지 한 방향으로 통일한다.
-- [ ] `tools/od_bootstrap/build/` 내부의 `write_json`, `default_io_workers`, `resolve_latest_root` 같은 low-level IO helper 중 공통화 가능한 부분을 shared helper로 정리한다.
+- [x] `common/io.py`, `common/paths.py` 확장 방향으로 정리하고 build/PV26 call-site가 그 공용 helper를 재사용하게 맞춘다.
+- [x] `tools/od_bootstrap/build/` 내부의 `write_json`, `resolve_latest_root`, `resolve_optional_path` 같은 low-level IO/path helper 중 공통화 가능한 부분을 shared helper로 정리한다.
 - [ ] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다.
 - [ ] source pipeline 쪽에서 existing output summary skeleton, debug-vis manifest write, README/tree markdown render 같은 공통 출력 패턴을 재사용 가능한 helper로 정리한다.
 
@@ -43,10 +45,10 @@
 - [ ] `model/engine/trainer.py`가 `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`의 private helper를 대량 re-export/alias 하는 구조를 줄인다.
 - [ ] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다.
 - [ ] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다.
-- [ ] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
+- [x] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
 - [x] `model/engine/trainer.py`와 `model/engine/evaluator.py`의 `_move_to_device` 중복을 공용 batch helper로 정리한다.
 - [x] `model/engine/_trainer_epochs.py`와 `model/engine/evaluator.py`의 `_raw_batch_for_metrics`, `_augment_lane_family_metrics` 중복을 공용 helper로 정리한다.
-- [ ] anchor grid 생성, anchor-relative box decode 같은 engine 공통 geometry/helper를 shared 모듈로 재배치한다.
+- [x] anchor grid 생성, anchor-relative box decode 같은 engine 공통 geometry/helper를 `model/engine/_det_geometry.py` shared 모듈로 재배치한다.
 - [x] raw batch unwrap, lane family metric augmentation, move-to-device 같은 engine 공통 batch/helper를 `model/engine/batch.py`로 재배치한다.
 - [ ] `model/engine/_trainer_epochs.py`에 몰린 epoch-level runtime/reporting helper를 정리해 파일 덩치를 줄인다.
 - [ ] `model/engine/_loss_spec.py: build_loss_spec()`의 큰 spec builder 흐름을 단계별 helper/contract로 분리해 회귀 범위를 줄인다.
@@ -61,7 +63,7 @@
 ## 6순위. teacher runtime과 `ultralytics_runner.py` 정리
 
 - [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`에서 dataloader kwargs, progress helper, tensorboard helper, resume helper, artifact refresh helper, callback builder, trainer subclass를 한 파일에서 모두 감싸는 구조를 분해한다.
-- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
+- [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
 - [ ] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 또는 `TeacherRuntimeDeps` 같은 객체로 묶는다.
 - [ ] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 - [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
@@ -73,8 +75,9 @@
 
 ## 8순위. `tools/check_env.py` 파일 경계 정리
 
-- [ ] `tools/check_env.py`에서 env check, manifest parsing, workspace scan, action catalog, blockers/advisory 계산, rich TUI render, input handling, subprocess action launch, resume candidate handling을 역할별 모듈로 분리한다.
-- [ ] `tools/check_env.py`는 entrypoint만 남기고 `check_env_scan.py`, `check_env_actions.py`, `check_env_tui.py`, `check_env_launch.py` 같은 파일 경계로 정리한다.
+- [x] `tools/check_env.py`에서 env check, manifest parsing, workspace scan, action catalog, blockers/advisory 계산, rich TUI render를 `check_env_scan.py`, `check_env_actions.py`, `check_env_tui.py`로 분리한다.
+- [ ] `tools/check_env.py`의 input handling, subprocess action launch, resume candidate handling을 추가 launch/helper 레이어로 더 분리한다.
+- [ ] `tools/check_env.py`는 entrypoint/compat facade로 더 경량화하고 필요하면 `check_env_launch.py` 같은 파일 경계로 추가 정리한다.
 
 ## 9순위. `tools/od_bootstrap/build/` 마감 정리
 

@@ -7,6 +7,8 @@ from typing import Any
 
 from common.io import now_iso, write_json
 
+__all__ = ["refresh_latest_teacher_artifacts"]
+
 
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
@@ -32,7 +34,7 @@ def _link_or_copy_file(source: Path, destination: Path) -> str:
             return "copy"
 
 
-def _refresh_latest_teacher_artifacts(
+def refresh_latest_teacher_artifacts(
     *,
     teacher_root: Path,
     run_dir: Path,
@@ -65,3 +67,6 @@ def _refresh_latest_teacher_artifacts(
         "weights_root": str(alias_weights_root),
         "alias_actions": alias_actions,
     }
+
+
+_refresh_latest_teacher_artifacts = refresh_latest_teacher_artifacts

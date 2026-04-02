@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import tempfile
@@ -53,6 +54,36 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                 stdout_isatty=True,
             )
         )
+
+    def test_check_env_main_json_mode_prints_report_without_interactive_loop(self) -> None:
+        from tools import check_env as check_env_module
+
+        report = {
+            "repo_root": "/tmp/repo",
+            "python": "3.11.0",
+            "versions": {
+                "torch": "2.0.0",
+                "torchvision": "0.1.0",
+                "ultralytics": "8.0.0",
+                "numpy": "1.26.0",
+                "scipy": "1.11.0",
+                "PIL": "10.0.0",
+            },
+            "checks": {
+                "torchvision_nms": {"callable": True},
+                "yolo26": {"importable": True, "runtime_load_ok": True},
+            },
+        }
+        stdout = io.StringIO()
+
+        with unittest.mock.patch.object(check_env_module, "check_env", return_value=report):
+            with unittest.mock.patch.object(check_env_module, "_interactive_loop") as interactive_loop:
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = check_env_module.main(["--json"])
+
+        self.assertEqual(exit_code, 0)
+        interactive_loop.assert_not_called()
+        self.assertEqual(json.loads(stdout.getvalue()), report)
 
     def test_check_env_action_catalog_includes_stage3_vram_stress_and_resume(self) -> None:
         from tools.check_env import PipelinePaths, _action_catalog

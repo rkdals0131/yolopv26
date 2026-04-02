@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -67,6 +67,14 @@ def append_jsonl(path: str | Path, payload: Any, *, ensure_ascii: bool = True) -
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=ensure_ascii) + "\n")
+    return output_path
+
+
+def write_jsonl(path: str | Path, rows: Iterable[Any], *, ensure_ascii: bool = True) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = "\n".join(json.dumps(row, ensure_ascii=ensure_ascii) for row in rows)
+    output_path.write_text((serialized + "\n") if serialized else "", encoding="utf-8")
     return output_path
 
 
