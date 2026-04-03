@@ -20,11 +20,18 @@ model/
     heads.py
     trunk.py
   engine/
+    batch.py
+    det_geometry.py
+    trainer_progress.py
+    trainer_reporting.py
+    trainer_runtime.py
     _loss_spec.py
+    _det_geometry.py
     _trainer_checkpoint.py
     _trainer_epochs.py
     _trainer_fit.py
     _trainer_io.py
+    _trainer_progress.py
     _trainer_reporting.py
     _trainer_step.py
     evaluator.py
@@ -105,6 +112,7 @@ docs/
    - trainer / evaluator
 
 - `model/net`은 `trunk.py`와 `heads.py`로 분리돼 있고, `model/engine/trainer.py`는 `_trainer_*` helper들에 구현을 위임한다.
+- `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`는 public/shared engine helper surface고, underscore 파일은 implementation detail로 유지한다.
 - `tools/run_pv26_train.py`는 orchestration-only entrypoint이고, preset/config 해석은 `tools/pv26_train_config.py`, manifest/summary/writeout은 `tools/pv26_train_artifacts.py`가 담당한다.
 - `tools/od_bootstrap/source`는 `shared_*` helper 계층을 공유하고 `aihub.py` / `bdd100k.py`를 coordinator로 둔다.
 

@@ -418,7 +418,10 @@ trainer/test 호출부가 `_trainer_reporting.py` implementation detail 대신 p
 즉, engine 쪽은 public shared module 승격이 실제로 한 번 들어갔고,
 그 다음 wave에서는 `_trainer_epochs.py`의 loader/progress bookkeeping helper 일부가 `_trainer_progress.py`로 빠지면서
 파일 크기가 다시 줄고 epoch loop가 orchestration 중심으로 조금 더 읽히게 됐다.
-이제 남은 핵심은 더 넓은 public/internal surface 경계와 남은 internal shim 정리다.
+그 다음 wave에서는 `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py`가 추가되면서
+public/shared helper 진입점이 `loss.py`, `postprocess.py`, trainer runtime 호출부, 테스트로 확장됐다.
+`model/engine/trainer.py`도 reporting/runtime compatibility alias를 걷어내고 core trainer façade로 다시 좁혀졌다.
+이제 남은 핵심은 engine 내부 helper 분할 자체가 아니라, 이 public/shared surface를 기준으로 유지보수하는 일이다.
 
 ---
 

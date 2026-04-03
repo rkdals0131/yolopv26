@@ -137,6 +137,22 @@ class DocsSyncTests(unittest.TestCase):
         ):
             self.assertIn(fragment, cleanliness_report)
 
+    def test_rank4_engine_surface_docs_track_public_shared_modules(self) -> None:
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
+        implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
+        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
+        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
+
+        for content in (execution_doc, implementation_plan, cleanliness_checklist, cleanliness_report):
+            self.assertIn("model/engine/det_geometry.py", content)
+            self.assertIn("model/engine/train_summary.py", content)
+            self.assertIn("model/engine/trainer_progress.py", content)
+
+        self.assertIn("trainer.py` compatibility shim", execution_doc)
+        self.assertIn("public shared engine surfaces", implementation_plan)
+        self.assertIn("public shared surface를 추가", cleanliness_checklist)
+        self.assertIn("thin compatibility shim", cleanliness_report)
+
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
         self.assertIn("python -m tools.od_bootstrap", readme)

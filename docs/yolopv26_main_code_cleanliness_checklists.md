@@ -48,8 +48,8 @@
 ## 4순위. `model/engine/` 내부 API 경계 정리
 
 - [x] `model/engine/trainer.py`가 `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`의 private helper를 대량 re-export/alias 하는 구조를 줄인다.
-- [ ] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다.
-- [ ] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다.
+- [x] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다. (`model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`가 public/shared surface를 맡는다.)
+- [x] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다. (`loss.py`, `postprocess.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_step.py`, `tools/run_pv26_train.py`, tests가 private module 대신 public/shared engine surface를 우선 사용한다.)
 - [x] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
 - [x] `model/engine/trainer.py`와 `model/engine/evaluator.py`의 `_move_to_device` 중복을 공용 batch helper로 정리한다.
 - [x] `model/engine/_trainer_epochs.py`와 `model/engine/evaluator.py`의 `_raw_batch_for_metrics`, `_augment_lane_family_metrics` 중복을 공용 helper로 정리한다.

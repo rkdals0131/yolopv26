@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - depends on external environment.
     ultralytics_bbox_iou = None
     TaskAlignedAssigner = None
 
-from ._det_geometry import _decode_anchor_relative_boxes, _make_anchor_grid
+from .det_geometry import decode_anchor_relative_boxes, make_anchor_grid
 from .spec import build_loss_spec, render_loss_spec_markdown
 
 
@@ -449,13 +449,13 @@ class PV26MultiTaskLoss(nn.Module):
             and sum(int(height) * int(width) for height, width in feature_shapes) == query_count
         )
         if self.assigner is not None and feature_meta_valid:
-            anchor_points, stride_tensor = _make_anchor_grid(
+            anchor_points, stride_tensor = make_anchor_grid(
                 [(int(height), int(width)) for height, width in feature_shapes],
                 [int(value) for value in feature_strides],
                 dtype=det_pred.dtype,
                 device=det_pred.device,
             )
-            pred_boxes = _decode_anchor_relative_boxes(det_pred[..., :4], anchor_points, stride_tensor)
+            pred_boxes = decode_anchor_relative_boxes(det_pred[..., :4], anchor_points, stride_tensor)
             gt_labels = det_gt["classes"].to(device=det_pred.device, dtype=torch.long).clamp(min=0).unsqueeze(-1)
             gt_bboxes = det_gt["boxes_xyxy"].to(device=det_pred.device, dtype=torch.float32)
             mask_gt = det_valid.unsqueeze(-1) & det_source[:, None, None]
