@@ -263,6 +263,9 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertEqual(len(snapshot_lines), 2)
             self.assertIn("sample_uid", snapshot_lines[0])
             materialized_root = Path(summary["materialization"]["dataset_root"])
+            materialization_summary = json.loads(
+                (materialized_root / "meta" / "materialization_summary.json").read_text(encoding="utf-8")
+            )
             bdd_uid = build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="frame_001")
             traffic_uid = build_sample_uid(dataset_key="aihub_traffic_seoul", split="train", sample_id="frame_001")
             bdd_scene = json.loads(
@@ -285,3 +288,9 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertIn("vehicle", traffic_classes)
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{bdd_uid}.txt").is_file())
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{traffic_uid}.txt").is_file())
+            self.assertEqual(materialization_summary, summary["materialization"])
+            self.assertEqual(materialization_summary["run_id"], materialized_root.name)
+            self.assertEqual(
+                materialization_summary["summary_path"],
+                str(materialized_root / "meta" / "materialization_summary.json"),
+            )

@@ -15,6 +15,8 @@ import yaml
 from common.paths import resolve_latest_root
 from common.pv26_schema import OD_CLASSES
 
+FINAL_DATASET_MANIFEST_NAME = "final_dataset_manifest.json"
+FINAL_DATASET_SUMMARY_NAME = "final_dataset_summary.json"
 FINAL_DATASET_PUBLISH_MARKER = "final_dataset_publish_state.json"
 FINAL_DATASET_RERUN_MODE = "atomic_overwrite"
 
@@ -71,7 +73,10 @@ class FinalDatasetManifest(TypedDict):
 
 class FinalDatasetBuildSummary(TypedDict):
     output_root: str
+    exhaustive_od_root: str
+    aihub_canonical_root: str
     manifest_path: str
+    summary_path: str
     publish_marker_path: str
     rerun_mode: str
     sample_count: int
@@ -150,6 +155,30 @@ def _write_publish_marker(
         payload["dataset_counts"] = dict(sorted(dataset_counts.items()))
     _write_json_replace(marker_path, payload)
     return marker_path
+
+
+def _build_final_dataset_summary(
+    *,
+    output_root: Path,
+    exhaustive_od_root: Path,
+    aihub_canonical_root: Path,
+    publish_marker_path: Path,
+    sample_count: int,
+    dataset_counts: dict[str, int],
+) -> FinalDatasetBuildSummary:
+    manifest_path = output_root / "meta" / FINAL_DATASET_MANIFEST_NAME
+    summary_path = output_root / "meta" / FINAL_DATASET_SUMMARY_NAME
+    return {
+        "output_root": str(output_root),
+        "exhaustive_od_root": str(exhaustive_od_root),
+        "aihub_canonical_root": str(aihub_canonical_root),
+        "manifest_path": str(manifest_path),
+        "summary_path": str(summary_path),
+        "publish_marker_path": str(publish_marker_path),
+        "rerun_mode": FINAL_DATASET_RERUN_MODE,
+        "sample_count": sample_count,
+        "dataset_counts": dict(sorted(dataset_counts.items())),
+    }
 
 
 def _publish_staging_root(*, staging_root: Path, output_root: Path) -> None:
@@ -424,7 +453,7 @@ def build_pv26_exhaustive_od_lane_dataset(
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
         encoding="utf-8",
     )
-    summary: FinalDatasetManifest = {
+    manifest_payload: FinalDatasetManifest = {
         "version": "pv26-exhaustive-od-lane-v2",
         "exhaustive_od_root": str(resolved_exhaustive_root),
         "aihub_canonical_root": str(resolved_aihub_root),
@@ -434,13 +463,8 @@ def build_pv26_exhaustive_od_lane_dataset(
         "rerun_mode": FINAL_DATASET_RERUN_MODE,
         "samples": sample_rows,
     }
-    summary_path = meta_root / "final_dataset_manifest.json"
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    compact_summary_path = meta_root / "final_dataset_summary.json"
-    compact_summary_path.write_text(
-        json.dumps({key: value for key, value in summary.items() if key != "samples"}, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
+    manifest_path = meta_root / FINAL_DATASET_MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     _write_publish_marker(
         staging_root,
         status="ready",
@@ -456,11 +480,13 @@ def build_pv26_exhaustive_od_lane_dataset(
         sample_count=copied_samples,
         dataset_counts=dict(dataset_counts),
     )
-    return {
-        "output_root": str(resolved_output_root),
-        "manifest_path": str(resolved_output_root / "meta" / "final_dataset_manifest.json"),
-        "publish_marker_path": str(publish_marker_path),
-        "rerun_mode": FINAL_DATASET_RERUN_MODE,
-        "sample_count": copied_samples,
-        "dataset_counts": dict(sorted(dataset_counts.items())),
-    }
+    build_summary = _build_final_dataset_summary(
+        output_root=resolved_output_root,
+        exhaustive_od_root=resolved_exhaustive_root,
+        aihub_canonical_root=resolved_aihub_root,
+        publish_marker_path=publish_marker_path,
+        sample_count=copied_samples,
+        dataset_counts=dict(dataset_counts),
+    )
+    _write_json_replace(resolved_output_root / "meta" / FINAL_DATASET_SUMMARY_NAME, build_summary)
+    return build_summary

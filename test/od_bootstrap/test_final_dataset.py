@@ -76,6 +76,7 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertTrue((output_root / "images" / "train" / "od.png").is_file())
             self.assertTrue((output_root / "images" / "train" / "lane.png").is_file())
             manifest = json.loads((output_root / "meta" / "final_dataset_manifest.json").read_text(encoding="utf-8"))
+            compact_summary = json.loads((output_root / "meta" / "final_dataset_summary.json").read_text(encoding="utf-8"))
             publish_marker = json.loads((output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER).read_text(encoding="utf-8"))
             od_scene = json.loads((output_root / "labels_scene" / "train" / "od.json").read_text(encoding="utf-8"))
             lane_scene = json.loads((output_root / "labels_scene" / "train" / "lane.json").read_text(encoding="utf-8"))
@@ -99,7 +100,12 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertEqual(publish_marker["status"], "completed")
             self.assertEqual(publish_marker["rerun_mode"], FINAL_DATASET_RERUN_MODE)
             self.assertEqual(summary["rerun_mode"], FINAL_DATASET_RERUN_MODE)
+            self.assertEqual(summary["exhaustive_od_root"], str(exhaustive_root))
+            self.assertEqual(summary["aihub_canonical_root"], str(lane_root.resolve()))
+            self.assertEqual(summary["summary_path"], str(output_root / "meta" / "final_dataset_summary.json"))
             self.assertEqual(summary["publish_marker_path"], str(output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER))
+            self.assertEqual(compact_summary, summary)
+            self.assertNotIn("samples", compact_summary)
 
     def test_build_pv26_exhaustive_od_lane_dataset_rejects_duplicate_final_sample_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -203,3 +209,4 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertTrue((output_root / "labels_scene" / "train" / "od.json").is_file())
             self.assertTrue((output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER).is_file())
             self.assertEqual(summary["rerun_mode"], FINAL_DATASET_RERUN_MODE)
+            self.assertTrue((output_root / "meta" / "final_dataset_summary.json").is_file())
