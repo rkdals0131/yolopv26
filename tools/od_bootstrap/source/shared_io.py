@@ -7,16 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from common.io import now_iso
-from common.io import write_json_sorted as _common_write_json_sorted
+from common.io import write_json_sorted as write_json
 from common.io import write_text
 
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    _common_write_json_sorted(path, payload)
 
 
 def link_or_copy(source_path: Path, target_path: Path) -> str:

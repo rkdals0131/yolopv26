@@ -11,6 +11,10 @@ from unittest.mock import patch
 
 import torch
 
+from common.io import (
+    append_jsonl as common_append_jsonl,
+    timestamp_token as common_timestamp_token,
+)
 from common.scalars import flatten_scalar_tree
 from tools.od_bootstrap.teacher.runtime_artifacts import (
     build_teacher_runtime_artifact_paths,
@@ -19,7 +23,11 @@ from tools.od_bootstrap.teacher.runtime_artifacts import (
     publish_teacher_train_summary,
 )
 from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
-from tools.od_bootstrap.teacher.runtime_progress import install_ultralytics_postfix_renderer
+from tools.od_bootstrap.teacher.runtime_progress import (
+    append_jsonl as runtime_append_jsonl,
+    install_ultralytics_postfix_renderer,
+    timestamp_token as runtime_timestamp_token,
+)
 from tools.od_bootstrap.teacher.runtime_resume import resolve_resume_argument
 from tools.od_bootstrap.teacher.runtime_tensorboard import (
     build_epoch_tensorboard_payload,
@@ -100,6 +108,10 @@ def _write_checkpoint(path: Path, *, epoch: int, total_epochs: int, resumable: b
 
 
 class UltralyticsRunnerTests(unittest.TestCase):
+    def test_runtime_progress_reuses_common_io_helpers(self) -> None:
+        self.assertIs(runtime_append_jsonl, common_append_jsonl)
+        self.assertIs(runtime_timestamp_token, common_timestamp_token)
+
     def test_ultralytics_postfix_renders_at_line_end(self) -> None:
         pbar = _FakeUltralyticsPbar()
         install_ultralytics_postfix_renderer(pbar)

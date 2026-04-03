@@ -9,7 +9,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from common.io import now_iso as common_now_iso, write_text as common_write_text
+from common.io import (
+    now_iso as common_now_iso,
+    write_json_sorted as common_write_json_sorted,
+    write_text as common_write_text,
+)
 from tools.od_bootstrap.source import __all__ as SOURCE_EXPORTS
 from tools.od_bootstrap.source.constants import DEFAULT_AIHUB_OUTPUT_ROOT, DEFAULT_BDD_ROOT
 from tools.od_bootstrap.source.defaults import build_default_source_prep_config, resolve_source_path
@@ -82,6 +86,7 @@ class SharedSourceHelpersTests(unittest.TestCase):
             )
 
         self.assertIs(now_iso, common_now_iso)
+        self.assertIs(write_json, common_write_json_sorted)
         self.assertIs(write_text, common_write_text)
         self.assertIs(shared_raw_now_iso, raw_now_iso)
 
