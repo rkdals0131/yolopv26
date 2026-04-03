@@ -958,22 +958,22 @@ AIHUB/BDD caller가 같은 manifest contract를 재사용하게 됐다.
 - `common/io.py`, `common/paths.py`, `common/config_merge.py` 확장
 - 또는 `tools/od_bootstrap/shared_io.py`, `shared_paths.py` 추가
 
-`2026-04-03` rank-3 audit 기준으로 production definition 잔량은
-`now_iso` 3곳, `timestamp_token` 2곳, `write_json` 5곳, `append_jsonl` 3곳이다.
+`2026-04-03` rank-3 shim 정리 이후 local helper implementation residue는
+`now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳이다.
 다만 이 숫자를 그대로 “다 common으로 몰아넣으면 된다”로 읽으면 안 된다.
 
 - `model/engine/_trainer_io.py`
 - `tools/od_bootstrap/teacher/runtime_progress.py`
 - `tools/od_bootstrap/source/shared_io.py`
 
-이 셋은 이미 common helper 위에 얹힌 thin compatibility shim에 가깝다.
+이 셋은 이제 common helper direct re-export surface이고, 테스트가 helper identity를 고정한다.
 `2026-04-03` wave 9 follow-up에서는 이 셋이 local wrapper body를 더 줄이고
 direct alias / re-export(`trainer_io`, `runtime_progress`)와 common `read_json` / `ensure_parent_dir`
 재사용(`shared_io`)만 남도록 더 얇아졌다.
 반대로 아래 셋은 아직 로컬 정책/계약 차이가 남아 있다.
 
 - `source/raw_common.py`의 UTC timestamp contract
-- `teacher/calibrate.py`의 `default=str` JSON 직렬화
+- `teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site
 - `build/final_dataset.py`의 overwrite 금지 publish semantics
 
 즉, rank-3에서 해야 할 일은 “개수를 0으로 만들기”보다
