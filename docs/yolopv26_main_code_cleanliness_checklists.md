@@ -5,35 +5,35 @@
 
 ## 1순위. `tools/od_bootstrap/source/` 경계 정리와 private cross-import 제거
 
-- [x] `tools/od_bootstrap/source/bdd100k.py`가 `tools/od_bootstrap/source/aihub.py`의 private/internal helper(`LiveLogger`, `_iter_task_chunks`, `_parallel_chunk_size`, `_default_workers`, `_generate_debug_vis`, `_link_or_copy`, `_write_json`, `_write_text`, `_bbox_to_yolo_line`, `_counter_to_dict`)를 직접 import하지 않도록 정리한다.
-- [x] `tools/od_bootstrap/source/aihub.py`와 `tools/od_bootstrap/source/bdd100k.py`를 형제 pipeline coordinator로 분리하고, 서로의 implementation detail에 의존하지 않게 만든다.
+- [x] `tools/od_bootstrap/source/bdd100k.py`가 `tools/od_bootstrap/source/aihub/pipeline.py`의 private/internal helper(`LiveLogger`, `_iter_task_chunks`, `_parallel_chunk_size`, `_default_workers`, `_generate_debug_vis`, `_link_or_copy`, `_write_json`, `_write_text`, `_bbox_to_yolo_line`, `_counter_to_dict`)를 직접 import하지 않도록 정리한다.
+- [x] `tools/od_bootstrap/source/aihub/pipeline.py`와 `tools/od_bootstrap/source/bdd100k.py`를 형제 pipeline coordinator로 분리하고, 서로의 implementation detail에 의존하지 않게 만든다.
 - [x] `tools/od_bootstrap/source/aihub_lane_worker.py`, `tools/od_bootstrap/source/aihub_traffic_worker.py`, `tools/od_bootstrap/source/aihub_obstacle_worker.py`가 `raw_common.py`나 `aihub_worker_common.py`의 private helper(`_base_scene`, `_counter_to_dict`, `_sample_id`, `_extract_annotations`, `_safe_slug`, `_normalize_text`, `_load_json`)를 직접 import하지 않도록 정리한다.
 - [x] `tools/od_bootstrap/source/` 아래에 `shared_io.py`, `shared_parallel.py`, `shared_scene.py`, `shared_summary.py` 또는 동등한 public shared 모듈을 두고, cross-module 재사용이 필요한 helper는 underscore를 떼서 승격한다.
 - [x] `tools/od_bootstrap/source/types.py`를 pure types 모듈로 되돌리고, 기본 경로 상수나 implementation defaults는 `constants.py` 또는 별도 defaults 모듈로 분리한다.
 - [x] `shared_parallel.py`로 승격된 `LiveLogger`/parallel chunking 위에, existing output summary skeleton을 `shared_resume.py`로, BDD README/tree/source inventory render를 `shared_source_meta.py`로 재배치한다.
 - [x] source pipeline 공통 출력 패턴 중 debug-vis manifest write helper를 `shared_debug.build_debug_vis_manifest()`와 typed manifest rows로 shared public API에 재배치한다.
-- [x] `tools/od_bootstrap/source/aihub.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
+- [x] `tools/od_bootstrap/source/aihub/pipeline.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 - [x] `tools/od_bootstrap/source/bdd100k.py: run_standardization()`의 큰 orchestration 흐름을 단계별 helper로 쪼개 회귀 위험을 줄인다.
 
 ## 2순위. `tools/run_pv26_train.py` 분해
 
 - [x] `tools/run_pv26_train.py`를 stable thin facade로 유지하고, CLI / import surface(`load_meta_train_scenario`, `load_meta_train_resume_scenario`, `run_stage3_vram_stress`, `run_meta_train_scenario`, `main`)는 그대로 노출한다.
-- [x] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train_scenario.py` 계열로 분리한다.
-- [x] phase transition / runtime orchestration은 `tools/pv26_train_runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
+- [x] preset 조립, scenario 로딩, scenario snapshot, resume recovery를 `tools/pv26_train/scenario.py` 계열로 분리한다.
+- [x] phase transition / runtime orchestration은 `tools/pv26_train/runtime.py` 계열로 분리하고, stage 3 VRAM stress probe는 `tools/pv26_train_stress.py` 계열로 분리한다.
 - [x] extraction regression gate를 `test/test_run_pv26_train.py`, `test/test_portability_runtime.py`, `test/test_docs_sync.py`로 고정한다.
-- [x] `tools/run_pv26_train.py`가 `tools/pv26_train_config.py`와 `tools/pv26_train_artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
+- [x] `tools/run_pv26_train.py`가 `tools/pv26_train/config.py`와 `tools/pv26_train/artifacts.py`에서 underscore alias를 대량으로 끌어오는 구조를 정리하고, local helper와 외부 public API의 경계를 명확히 한다.
 - [x] `tools/run_pv26_train.py`의 meta-train preset assembly와 runtime execution을 서로 다른 모듈로 분리한다.
 - [x] `tools/run_pv26_train.py`의 `site.addsitedir(REPO_ROOT)` 의존을 줄이거나 제거해 packaging/entrypoint 경계를 명확히 한다.
 - [x] `tools/run_pv26_train.py: run_meta_train_scenario()`를 phase/helper 단위로 쪼개 회귀 위험을 줄인다.
 
 ## 3순위. 공통 helper 추출과 중복 제거
 
-- [x] `deep_merge_mappings`를 `common.user_config` public helper로 승격하고 `tools/pv26_train_config.py`가 이를 재사용하도록 정리한다.
-- [x] `resolve_latest_root`, `resolve_optional_path`를 `common.paths` 공용 helper로 두고 `tools/od_bootstrap/build/`, `tools/pv26_train_config.py`가 이를 재사용하도록 정리한다.
+- [x] `deep_merge_mappings`를 `common.user_config` public helper로 승격하고 `tools/pv26_train/config.py`가 이를 재사용하도록 정리한다.
+- [x] `resolve_latest_root`, `resolve_optional_path`를 `common.paths` 공용 helper로 두고 `tools/od_bootstrap/build/`, `tools/pv26_train/config.py`가 이를 재사용하도록 정리한다.
 - [x] `common.io.write_jsonl`을 추가하고 build 내부의 안전한 JSONL/JSON writer call-site가 이를 재사용하도록 정리한다.
 - [x] repo 전반에 흩어진 `now_iso`, `timestamp_token`, `write_json`, `append_jsonl`를 공통화한다. thin shim은 direct re-export만 남기고 local 구현은 semantics-sensitive surface로만 제한한다.
 - [x] local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳이다.
-- [x] 위 기준선을 바탕으로 direct re-export surface(`model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`, `tools/od_bootstrap/source/shared_io.py`)와 정책 차이가 있는 local wrapper를 구분해서 줄인다.
+- [x] 위 기준선을 바탕으로 direct re-export surface(`model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime/progress.py`, `tools/od_bootstrap/source/shared/io.py`)와 정책 차이가 있는 local wrapper를 구분해서 줄인다.
 - `2026-04-03` wave 9 follow-up: 위 thin shim 셋은 local wrapper body를 더 줄여서 common alias/re-export만 남기고, 실제 local contract는 `source/raw_common.py`, `teacher/calibrate.py`, `build/final_dataset.py` 쪽으로 한정되게 정리한다.
 - [x] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`를 흡수한다. 다만 `tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract, `tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site, `tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics는 exact residual risk로 남긴다.
 - [x] `common/`은 대공사 대상이 아니라 새 shared helper를 받아주는 착지점으로 사용한다.
@@ -41,8 +41,8 @@
 - [x] `common/io.py`, `common/paths.py` 확장 방향으로 정리하고 build/PV26 call-site가 그 공용 helper를 재사용하게 맞춘다.
 - [x] `build/sweep.py`, `build/debug_vis.py`, `build/teacher_dataset.py`, `source/prepare.py`가 semantics-compatible `common.io` helper(`now_iso`, `timestamp_token`, `write_json`)를 재사용하도록 정리한다.
 - [x] `tools/od_bootstrap/build/` 내부의 `write_json`, `resolve_latest_root`, `resolve_optional_path` 같은 low-level IO/path helper 중 공통화 가능한 부분을 shared helper로 정리한다.
-- [x] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip, tree staging 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다. 정확한 local surface는 `common/io.py`, `tools/od_bootstrap/source/shared_io.py`, `tools/od_bootstrap/source/aihub.py`, `tools/od_bootstrap/build/teacher_dataset.py`, `tools/od_bootstrap/build/final_dataset.py`, `tools/od_bootstrap/teacher/runtime_artifacts.py`, `tools/od_bootstrap/teacher/data_yaml.py`다.
-- `2026-04-03` wave 9 follow-up: `tools/od_bootstrap/source/shared_io.py`는 `link_or_copy` 정책 자체는 local로 두되 `read_json`/parent-dir 준비 같은 low-level helper는 `common.io`를 재사용하도록 유지한다.
+- [x] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip, tree staging 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다. 정확한 local surface는 `common/io.py`, `tools/od_bootstrap/source/shared/io.py`, `tools/od_bootstrap/source/aihub/pipeline.py`, `tools/od_bootstrap/build/teacher_dataset.py`, `tools/od_bootstrap/build/final_dataset.py`, `tools/od_bootstrap/teacher/runtime/artifacts.py`, `tools/od_bootstrap/teacher/data_yaml.py`다.
+- `2026-04-03` wave 9 follow-up: `tools/od_bootstrap/source/shared/io.py`는 `link_or_copy` 정책 자체는 local로 두되 `read_json`/parent-dir 준비 같은 low-level helper는 `common.io`를 재사용하도록 유지한다.
 - [x] source pipeline 쪽에서 existing output summary skeleton, debug-vis manifest write, README/tree markdown render 같은 공통 출력 패턴을 재사용 가능한 helper로 정리한다.
 
 ## 4순위. `model/engine/` 내부 API 경계 정리
@@ -69,8 +69,8 @@
 
 ## 6순위. teacher runtime과 `ultralytics_runner.py` 정리
 
-- [x] `tools/od_bootstrap/teacher/runtime_trainer.py`로 dataloader kwargs/build helper, callback builder, resume/runtime-state helper, trainer subclass/runtime helper family를 옮기고 `ultralytics_runner.py`를 thin orchestration facade로 줄인다.
-- [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
+- [x] `tools/od_bootstrap/teacher/runtime/trainer.py`로 dataloader kwargs/build helper, callback builder, resume/runtime-state helper, trainer subclass/runtime helper family를 옮기고 `ultralytics_runner.py`를 thin orchestration facade로 줄인다.
+- [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime/progress.py`, `runtime/tensorboard.py`, `runtime/resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
 - [x] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 객체로 묶는다.
 - [x] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
@@ -82,9 +82,9 @@
 
 ## 8순위. `tools/check_env.py` 파일 경계 정리
 
-- [x] `tools/check_env.py`에서 env check, manifest parsing, workspace scan, action catalog, blockers/advisory 계산, rich TUI render를 `check_env_scan.py`, `check_env_actions.py`, `check_env_tui.py`로 분리한다.
-- [x] `tools/check_env.py`의 input handling, subprocess action launch, resume candidate handling을 `check_env_launch.py` 레이어로 추가 분리한다.
-- [x] `tools/check_env.py`를 entrypoint/compat facade로 더 경량화하고 `check_env_launch.py` 파일 경계까지 정리한다.
+- [x] `tools/check_env.py`에서 env check, manifest parsing, workspace scan, action catalog, blockers/advisory 계산, rich TUI render를 `check_env/scan.py`, `check_env/actions.py`, `check_env/tui.py`로 분리한다.
+- [x] `tools/check_env.py`의 input handling, subprocess action launch, resume candidate handling을 `check_env/launch.py` 레이어로 추가 분리한다.
+- [x] `tools/check_env.py`를 entrypoint/compat facade로 더 경량화하고 `check_env/launch.py` 파일 경계까지 정리한다.
 
 ## 9순위. `tools/od_bootstrap/build/` 마감 정리
 

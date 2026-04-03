@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .shared_raw import env_path, repo_root, seg_dataset_root
+from .shared.raw import env_path, repo_root, seg_dataset_root
 
 
 DEFAULT_REPO_ROOT = repo_root()

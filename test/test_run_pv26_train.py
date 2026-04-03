@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.pv26_train_artifacts import load_or_init_meta_manifest
+from tools.pv26_train.artifacts import load_or_init_meta_manifest
 from tools.run_pv26_train import (
     PRESET_PATH_ROOT,
     PhaseConfig,
@@ -31,7 +31,7 @@ from tools.run_pv26_train import (
     main,
     run_stage3_vram_stress,
 )
-from tools.pv26_train_config import (
+from tools.pv26_train.config import (
     DatasetConfig,
     MetaTrainScenario,
     PreviewConfig as ScenarioPreviewConfig,

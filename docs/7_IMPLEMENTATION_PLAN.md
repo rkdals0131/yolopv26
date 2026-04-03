@@ -18,7 +18,7 @@
 - implemented: AIHUB / BDD standardization resume scan
 - implemented: failure manifest / QA summary
 - implemented: `tools/od_bootstrap/source` shared helper split and `aihub` / `bdd100k` orchestration cleanup
-- implemented: `tools/run_pv26_train.py` orchestration split into `tools/pv26_train_config.py` and `tools/pv26_train_artifacts.py`
+- implemented: `tools/run_pv26_train.py` orchestration split into `tools/pv26_train/config.py` and `tools/pv26_train/artifacts.py`
 - implemented: `model/engine` trainer helper split into `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`
 - implemented: trainer AMP / grad accumulation / grad clip
 - implemented: trainer auto resume / non-finite / OOM guard
@@ -114,22 +114,22 @@
 - OD bootstrap is implemented as a separate pipeline with `prepare-sources / build-teacher-datasets / train / eval / calibrate / build-exhaustive-od / build-final-dataset` stages
 - `tools/run_pv26_train.py` stays a single CLI entrypoint, but preset/config handling and manifest/writeout concerns are split into helper modules
 - `model/engine/trainer.py` is orchestration-only; step / epoch / fit / checkpoint / reporting logic lives in helper modules
-- `2026-04-03` team wave added `model/engine/batch.py`, promoted `deep_merge_mappings` reuse through `common.user_config`, and extracted source shared helpers into `tools/od_bootstrap/source/shared_resume.py` and `shared_source_meta.py`
+- `2026-04-03` team wave added `model/engine/batch.py`, promoted `deep_merge_mappings` reuse through `common.user_config`, and extracted source shared helpers into `tools/od_bootstrap/source/shared/resume.py` and `shared_source_meta.py`
 - `2026-04-03` follow-up wave added `model/engine/_det_geometry.py`, split `tools/check_env.py` into scan/actions/tui companions, tightened teacher runtime imports around public/shared helpers, and expanded `common.paths` / `common.io` reuse across bootstrap build call sites
-- `2026-04-03` wave 3 narrowed `model/engine/trainer.py` re-export surface, added `tools/check_env_launch.py`, promoted source debug-vis manifest helpers into shared typed surfaces, and grouped teacher callback wiring behind `TeacherRuntimeSupport`
+- `2026-04-03` wave 3 narrowed `model/engine/trainer.py` re-export surface, added `tools/check_env/launch.py`, promoted source debug-vis manifest helpers into shared typed surfaces, and grouped teacher callback wiring behind `TeacherRuntimeSupport`
 - `2026-04-03` wave 4 extended safe `common.io` reuse into more bootstrap call sites, split `_loss_spec.build_loss_spec()` into section builders, decomposed `_make_teacher_trainer()` helper setup, and added `TypedDict` slices in build debug/teacher manifest paths
 - `2026-04-03` wave 5 expanded manifest typing into `exhaustive_od.py` / `final_dataset.py` / `sweep.py` and split `calibrate_class_policy_scenario()` into narrower stage helpers
 - `2026-04-03` wave 6 added `common/train_runtime.py`, routed trainer/teacher runtime helper duplicates through it, promoted `model.engine.trainer_reporting` as a public shared surface, and aligned build/check_env/tests with manifest/summary filename constants
 - `2026-04-03` wave 7 anchored source shared IO/raw shims to common/raw contracts, moved epoch-loop bookkeeping helpers into `_trainer_progress.py`, extracted teacher train-summary publication into `runtime_artifacts.py`, and centralized sorted JSON helper variants in `common.io`
 - `2026-04-03` wave 11 finished the remaining rank-5 build/source contract cleanup by tightening typed image-list/run/job/prediction payload flow across `build/artifacts.py`, `build/sweep_types.py`, `exhaustive_od.py`, `source/types.py`, `final_dataset.py`, and `teacher/policy.py`, then locking publish/source/image rows behind `Literal`/`TypedDict` contracts
-- `2026-04-03` wave 12 closed rank-6/7 cleanup by extracting `tools/od_bootstrap/teacher/runtime_trainer.py` for the remaining dataloader/callback/trainer runtime family, promoting shared progress status helpers into `common/train_runtime.py`, and keeping only framework-specific renderers local.
-- `2026-04-03` follow-up package reorg moved source internals under `tools/od_bootstrap/source/aihub/` + `shared/`, teacher runtime internals under `tools/od_bootstrap/teacher/runtime/`, and tooling internals under `tools/check_env/` + `tools/pv26_train/`, while keeping the old flat module paths as compatibility shims and `tools/check_env.py` / `tools/run_pv26_train.py` as stable entrypoints.
+- `2026-04-03` wave 12 closed rank-6/7 cleanup by extracting `tools/od_bootstrap/teacher/runtime/trainer.py` for the remaining dataloader/callback/trainer runtime family, promoting shared progress status helpers into `common/train_runtime.py`, and keeping only framework-specific renderers local.
+- `2026-04-03` follow-up package reorg moved source internals under `tools/od_bootstrap/source/aihub/` + `shared/`, teacher runtime internals under `tools/od_bootstrap/teacher/runtime/`, and tooling internals under `tools/check_env/` + `tools/pv26_train/`. stable entrypoints는 `tools/check_env.py` / `tools/run_pv26_train.py`만 남기고, flat helper shim은 제거했다.
 - `2026-04-03` wave 10 finished the remaining rank-4 engine boundary cleanup by adding `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py`, routing trainer callers/tests through those public/shared modules as the public shared engine surfaces, and trimming `model/engine/trainer.py` back to the core trainer facade
 
 ## priority-2b extraction review boundary
 
 - `tools/run_pv26_train.py` should remain the stable thin facade for the CLI and the import surface exercised by `test/test_run_pv26_train.py`.
-- completed on `2026-04-03`: `tools/run_pv26_train.py` no longer mass-imports underscore helpers from `tools/pv26_train_config.py` and `tools/pv26_train_artifacts.py`; internal reads go through public module APIs and the old underscore import surface survives only as local compatibility wrappers.
+- completed on `2026-04-03`: `tools/run_pv26_train.py` no longer mass-imports underscore helpers from `tools/pv26_train/config.py` and `tools/pv26_train/artifacts.py`; internal reads go through public module APIs and the old underscore import surface survives only as local compatibility wrappers.
 - scenario / resume recovery responsibilities are the next extraction target:
   - preset lookup and scenario validation
   - scenario snapshot materialization for new runs

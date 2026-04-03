@@ -57,8 +57,8 @@ tools/
     scenario.py
     scenarios.py
   run_pv26_train.py
-  pv26_train_artifacts.py
-  pv26_train_config.py
+  pv26_train/artifacts.py
+  pv26_train/config.py
   od_bootstrap/
     source/
       aihub/
@@ -156,10 +156,10 @@ docs/
 
 - `model/net`은 `trunk.py`와 `heads.py`로 분리돼 있고, `model/engine/trainer.py`는 `_trainer_*` helper들에 구현을 위임한다.
 - `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`는 public/shared engine helper surface고, underscore 파일은 implementation detail로 유지한다.
-- `tools/run_pv26_train.py`는 stable thin entrypoint이고, 실제 구현은 `tools/pv26_train/` 패키지에 둔다. `tools/pv26_train_config.py`, `tools/pv26_train_artifacts.py` 같은 flat 파일은 compatibility shim으로 유지한다.
-- `tools/check_env.py`는 stable thin entrypoint이고, 실제 구현은 `tools/check_env/` 패키지에 둔다. `tools/check_env_actions.py` 같은 flat 파일은 compatibility shim으로 유지한다.
-- `tools/od_bootstrap/source`는 `aihub/`와 `shared/` 패키지에 실제 구현을 두고, `aihub.py`, `shared_io.py` 같은 flat 파일은 compatibility shim으로 유지한다.
-- `tools/od_bootstrap/teacher`는 `runtime/` 패키지에 runtime helper family를 두고, `runtime_progress.py` 같은 flat 파일은 compatibility shim으로 유지한다.
+- `tools/run_pv26_train.py`는 stable thin entrypoint이고, 실제 구현은 `tools/pv26_train/` 패키지에 둔다.
+- `tools/check_env.py`는 stable thin entrypoint이고, 실제 구현은 `tools/check_env/` 패키지에 둔다.
+- `tools/od_bootstrap/source`는 `aihub/`와 `shared/` 패키지에 실제 구현을 두고, `bdd100k.py` / `prepare.py`가 coordinator 역할을 맡는다.
+- `tools/od_bootstrap/teacher`는 `runtime/` 패키지에 runtime helper family를 두고, `ultralytics_runner.py`는 thin orchestration facade로 유지한다.
 
 ## 데이터 흐름
 

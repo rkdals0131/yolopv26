@@ -16,22 +16,22 @@ from common.io import (
     timestamp_token as common_timestamp_token,
 )
 from common.scalars import flatten_scalar_tree
-from tools.od_bootstrap.teacher.runtime_artifacts import (
+from tools.od_bootstrap.teacher.runtime.artifacts import (
     build_teacher_runtime_artifact_paths,
     build_teacher_train_summary,
     finalize_teacher_train_artifacts,
     publish_teacher_train_summary,
     refresh_latest_teacher_artifacts,
 )
-from tools.od_bootstrap.teacher import runtime_trainer
-from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
-from tools.od_bootstrap.teacher.runtime_progress import (
+from tools.od_bootstrap.teacher.runtime import trainer as runtime_trainer
+from tools.od_bootstrap.teacher.runtime.callbacks import TeacherRuntimeSupport
+from tools.od_bootstrap.teacher.runtime.progress import (
     append_jsonl as runtime_append_jsonl,
     install_ultralytics_postfix_renderer,
     timestamp_token as runtime_timestamp_token,
 )
-from tools.od_bootstrap.teacher.runtime_resume import resolve_resume_argument
-from tools.od_bootstrap.teacher.runtime_tensorboard import (
+from tools.od_bootstrap.teacher.runtime.resume import resolve_resume_argument
+from tools.od_bootstrap.teacher.runtime.tensorboard import (
     build_epoch_tensorboard_payload,
     build_train_step_tensorboard_payload,
 )
@@ -146,7 +146,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             "ContiguousDistributedSampler",
             lambda dataset: ("contiguous", dataset),
         ), patch.object(runtime_trainer, "seed_worker", "seed-worker"), patch.object(runtime_trainer, "RANK", 7), patch(
-            "tools.od_bootstrap.teacher.runtime_trainer.os.cpu_count",
+            "tools.od_bootstrap.teacher.runtime.trainer.os.cpu_count",
             return_value=3,
         ):
             kwargs = runtime_trainer.build_teacher_dataloader_kwargs(
@@ -253,7 +253,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             return {}
 
         with patch(
-            "tools.od_bootstrap.teacher.runtime_trainer.build_teacher_runtime_callbacks",
+            "tools.od_bootstrap.teacher.runtime.trainer.build_teacher_runtime_callbacks",
             side_effect=_fake_build_teacher_runtime_callbacks,
         ) as build_callbacks:
             trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=lambda message: None)
@@ -423,7 +423,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             (alias_weights_root / "last.pt").write_text("last-stale", encoding="utf-8")
 
             with patch("pathlib.Path.hardlink_to", side_effect=OSError("no hardlink")), patch(
-                "tools.od_bootstrap.teacher.runtime_artifacts.os.symlink",
+                "tools.od_bootstrap.teacher.runtime.artifacts.os.symlink",
                 side_effect=OSError("no symlink"),
             ):
                 latest_artifacts = refresh_latest_teacher_artifacts(
