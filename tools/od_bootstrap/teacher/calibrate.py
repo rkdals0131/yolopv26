@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import datetime
 from contextlib import nullcontext
 import json
 from pathlib import Path
@@ -10,7 +9,9 @@ from typing import Any
 import torch
 import yaml
 
+from common.io import now_iso as _common_now_iso
 from common.io import read_yaml
+from common.io import write_json as _common_write_json
 
 try:
     from ultralytics import YOLO
@@ -25,16 +26,8 @@ from .calibration_types import CalibrationScenario, CalibrationTeacherConfig, Ha
 
 def _log_calibration(message: str) -> None:
     print(f"[od_bootstrap.calibration] {message}", flush=True)
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
 def _write_json(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")
-    return path
+    return _common_write_json(path, payload, default=str)
 
 
 def _write_yaml(path: Path, payload: dict[str, Any]) -> Path:
@@ -819,7 +812,7 @@ def calibrate_class_policy_scenario(
     *,
     scenario_path: Path,
 ) -> dict[str, Any]:
-    created_at = _now_iso()
+    created_at = _common_now_iso()
     output_root = scenario.run.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 

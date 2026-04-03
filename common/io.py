@@ -62,18 +62,18 @@ def write_json(
     return output_path
 
 
-def append_jsonl(path: str | Path, payload: Any, *, ensure_ascii: bool = True) -> Path:
+def append_jsonl(path: str | Path, payload: Any, *, ensure_ascii: bool = True, sort_keys: bool = False) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=ensure_ascii) + "\n")
+        handle.write(json.dumps(payload, ensure_ascii=ensure_ascii, sort_keys=sort_keys) + "\n")
     return output_path
 
 
-def write_jsonl(path: str | Path, rows: Iterable[Any], *, ensure_ascii: bool = True) -> Path:
+def write_jsonl(path: str | Path, rows: Iterable[Any], *, ensure_ascii: bool = True, sort_keys: bool = False) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = "\n".join(json.dumps(row, ensure_ascii=ensure_ascii) for row in rows)
+    serialized = "\n".join(json.dumps(row, ensure_ascii=ensure_ascii, sort_keys=sort_keys) for row in rows)
     output_path.write_text((serialized + "\n") if serialized else "", encoding="utf-8")
     return output_path
 

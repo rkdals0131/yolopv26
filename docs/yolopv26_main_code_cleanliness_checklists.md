@@ -83,8 +83,8 @@
 
 ## 9순위. `tools/od_bootstrap/build/` 마감 정리
 
-- [ ] `tools/od_bootstrap/build/`의 manifest/helper naming consistency를 맞춘다.
-- [ ] `tools/od_bootstrap/build/`는 구조 자체보다 manifest typing, low-level IO helper 정리, naming consistency에 집중해서 손본다.
+- [x] `tools/od_bootstrap/build/`의 manifest/helper naming consistency를 맞춘다.
+- [x] `tools/od_bootstrap/build/`는 구조 자체보다 manifest typing, low-level IO helper 정리, naming consistency에 집중해서 손본다.
 
 ## 가드레일
 

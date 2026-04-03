@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
@@ -11,6 +11,35 @@ from .shared_summary import counter_to_dict as _counter_to_dict
 
 now_iso = _now_iso
 counter_to_dict = _counter_to_dict
+
+
+class AIHubDebugVisSummary(TypedDict):
+    selection_count: int
+    seed: int
+
+
+class AIHubQADatasetSummary(TypedDict):
+    dataset_key: str
+    processed_samples: int
+    fresh_processed_count: int
+    resume_skipped_count: int
+    failure_count: int
+    empty_scene_count: int
+    traffic_light_count: int
+    traffic_sign_count: int
+    detection_count: int
+    lane_count: int
+    top_held_reasons: list[tuple[str, int]]
+    top_tl_invalid_reasons: list[tuple[str, int]]
+
+
+class AIHubQASummary(TypedDict):
+    version: str
+    generated_at: str
+    output_root: str
+    debug_vis: AIHubDebugVisSummary
+    failure_count: int
+    datasets: list[AIHubQADatasetSummary]
 
 
 def aggregate_results(
@@ -234,7 +263,7 @@ def failure_manifest_markdown(manifest: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> dict[str, Any]:
+def qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> AIHubQASummary:
     return {
         "version": report["version"],
         "generated_at": now_iso(),
@@ -264,7 +293,7 @@ def qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_
     }
 
 
-def qa_summary_markdown(summary: dict[str, Any]) -> str:
+def qa_summary_markdown(summary: AIHubQASummary) -> str:
     lines = [
         "# PV26 AIHUB QA Summary",
         "",

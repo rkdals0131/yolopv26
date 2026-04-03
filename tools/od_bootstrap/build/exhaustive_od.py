@@ -19,6 +19,9 @@ from .artifacts import BoxProvenance
 from .image_list import ImageListEntry
 from ..teacher.policy import apply_policy_to_predictions
 
+EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME = "materialization_manifest.json"
+EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME = "materialization_summary.json"
+
 
 @dataclass(frozen=True)
 class MaterializedSample:
@@ -74,8 +77,32 @@ class ExhaustiveMaterializationManifest(TypedDict):
 class ExhaustiveMaterializationSummary(TypedDict):
     dataset_root: str
     manifest_path: str
+    summary_path: str
+    run_id: str
+    generated_at: str
     sample_count: int
     class_counts: dict[str, int]
+
+
+def _build_materialization_summary(
+    *,
+    dataset_root: Path,
+    run_id: str,
+    created_at: str,
+    sample_count: int,
+    class_counts: dict[str, int],
+) -> ExhaustiveMaterializationSummary:
+    manifest_path = dataset_root / "meta" / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
+    summary_path = dataset_root / "meta" / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
+    return {
+        "dataset_root": str(dataset_root),
+        "manifest_path": str(manifest_path),
+        "summary_path": str(summary_path),
+        "run_id": run_id,
+        "generated_at": created_at,
+        "sample_count": sample_count,
+        "class_counts": dict(sorted(class_counts.items())),
+    }
 
 
 def _bbox_from_scene_detection(detection: dict[str, Any]) -> list[float]:
@@ -336,7 +363,7 @@ def materialize_exhaustive_od_dataset(
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
         encoding="utf-8",
     )
-    manifest: ExhaustiveMaterializationManifest = {
+    manifest_payload: ExhaustiveMaterializationManifest = {
         "version": "od-bootstrap-exhaustive-od-v1",
         "run_id": run_id,
         "generated_at": created_at,
@@ -345,16 +372,15 @@ def materialize_exhaustive_od_dataset(
         "class_counts": dict(sorted(class_counts.items())),
         "samples": sample_rows,
     }
-    manifest_path = meta_root / "materialization_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    summary_path = meta_root / "materialization_summary.json"
-    summary_path.write_text(
-        json.dumps({key: value for key, value in manifest.items() if key != "samples"}, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
+    manifest_path = meta_root / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    summary_payload = _build_materialization_summary(
+        dataset_root=dataset_root,
+        run_id=run_id,
+        created_at=created_at,
+        sample_count=len(materialized),
+        class_counts=dict(class_counts),
     )
-    return {
-        "dataset_root": str(dataset_root),
-        "manifest_path": str(manifest_path),
-        "sample_count": len(materialized),
-        "class_counts": dict(sorted(class_counts.items())),
-    }
+    summary_path = meta_root / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
+    summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    return summary_payload

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import torch
 
 from tools.od_bootstrap.build.checkpoint_audit import TeacherCheckpointSpec, audit_teacher_checkpoints
+from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME
 from tools.od_bootstrap.build.review import canonical_scene_to_overlay_scene, render_overlay, render_review_bundle, select_review_rows
 from tools.od_bootstrap.build.sample_manifest import select_sample_entries, summarize_entries
 from tools.od_bootstrap.build.image_list import ImageListEntry
@@ -181,7 +182,7 @@ class ODBootstrapSampleHelpersTests(unittest.TestCase):
     def test_render_review_bundle_writes_index_for_requested_dataset_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            manifest_path = root / "meta" / "final_dataset_manifest.json"
+            manifest_path = root / "meta" / FINAL_DATASET_MANIFEST_NAME
             output_root = root / "review"
             samples = []
             dataset_keys = [
@@ -238,6 +239,7 @@ class ODBootstrapSampleHelpersTests(unittest.TestCase):
                 )
 
             self.assertEqual(summary["image_count"], 4)
+            self.assertEqual(summary["summary_path"], summary["index_path"])
             self.assertTrue((output_root / "index.json").is_file())
             index_payload = json.loads((output_root / "index.json").read_text(encoding="utf-8"))
             self.assertEqual(len(index_payload["entries"]), 4)

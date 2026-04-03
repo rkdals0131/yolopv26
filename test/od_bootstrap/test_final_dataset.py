@@ -6,8 +6,10 @@ import unittest
 from pathlib import Path
 
 from tools.od_bootstrap.build.final_dataset import (
+    FINAL_DATASET_MANIFEST_NAME,
     FINAL_DATASET_PUBLISH_MARKER,
     FINAL_DATASET_RERUN_MODE,
+    FINAL_DATASET_SUMMARY_NAME,
     build_pv26_exhaustive_od_lane_dataset,
 )
 
@@ -75,7 +77,8 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertTrue((output_root / "labels_scene" / "train" / "lane.json").is_file())
             self.assertTrue((output_root / "images" / "train" / "od.png").is_file())
             self.assertTrue((output_root / "images" / "train" / "lane.png").is_file())
-            manifest = json.loads((output_root / "meta" / "final_dataset_manifest.json").read_text(encoding="utf-8"))
+            manifest = json.loads((output_root / "meta" / FINAL_DATASET_MANIFEST_NAME).read_text(encoding="utf-8"))
+            compact_summary = json.loads((output_root / "meta" / FINAL_DATASET_SUMMARY_NAME).read_text(encoding="utf-8"))
             publish_marker = json.loads((output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER).read_text(encoding="utf-8"))
             od_scene = json.loads((output_root / "labels_scene" / "train" / "od.json").read_text(encoding="utf-8"))
             lane_scene = json.loads((output_root / "labels_scene" / "train" / "lane.json").read_text(encoding="utf-8"))
@@ -99,7 +102,12 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertEqual(publish_marker["status"], "completed")
             self.assertEqual(publish_marker["rerun_mode"], FINAL_DATASET_RERUN_MODE)
             self.assertEqual(summary["rerun_mode"], FINAL_DATASET_RERUN_MODE)
+            self.assertEqual(summary["exhaustive_od_root"], str(exhaustive_root))
+            self.assertEqual(summary["aihub_canonical_root"], str(lane_root.resolve()))
+            self.assertEqual(summary["summary_path"], str(output_root / "meta" / FINAL_DATASET_SUMMARY_NAME))
             self.assertEqual(summary["publish_marker_path"], str(output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER))
+            self.assertEqual(compact_summary, summary)
+            self.assertNotIn("samples", compact_summary)
 
     def test_build_pv26_exhaustive_od_lane_dataset_rejects_duplicate_final_sample_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -157,7 +165,7 @@ class FinalDatasetTests(unittest.TestCase):
             output_root = root / "pv26_exhaustive_od_lane_dataset"
 
             _write_text(output_root / "stale.txt", "old")
-            _write_text(output_root / "meta" / "final_dataset_summary.json", json.dumps({"sample_count": 1}) + "\n")
+            _write_text(output_root / "meta" / FINAL_DATASET_SUMMARY_NAME, json.dumps({"sample_count": 1}) + "\n")
 
             _write_text(exhaustive_root / "images" / "train" / "od_input.png", "od")
             _write_text(
@@ -203,3 +211,4 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertTrue((output_root / "labels_scene" / "train" / "od.json").is_file())
             self.assertTrue((output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER).is_file())
             self.assertEqual(summary["rerun_mode"], FINAL_DATASET_RERUN_MODE)
+            self.assertTrue((output_root / "meta" / FINAL_DATASET_SUMMARY_NAME).is_file())

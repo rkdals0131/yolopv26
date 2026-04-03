@@ -4,7 +4,10 @@ from collections import Counter
 import math
 from typing import Any
 
-from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
+from common.train_runtime import format_duration as _common_format_duration
+from common.train_runtime import quantile as _common_quantile
+from common.train_runtime import timing_profile as _common_timing_profile
+from common.train_runtime import write_tensorboard_scalars as _common_write_tensorboard_scalars
 from ._loss_spec import build_loss_spec
 
 
@@ -103,8 +106,7 @@ def _aggregate_count_tree(summaries: list[dict[str, Any]], key: str) -> dict[str
 
 
 def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> None:
-    for name, value in _flatten_scalar_tree(prefix, payload):
-        writer.add_scalar(name, value, global_step=step)
+    _common_write_tensorboard_scalars(writer, prefix, payload, step)
 
 
 def _select_numeric_scalars(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, float]:
@@ -276,26 +278,109 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def _percentile(values: list[float], quantile: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(float(value) for value in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    position = (len(ordered) - 1) * float(quantile)
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
-    if lower == upper:
-        return ordered[lower]
-    weight = position - lower
-    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+    return _common_quantile(values, quantile)
 
 
 def _timing_profile(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    return _common_timing_profile(
+        summaries,
+        keys=TIMING_KEYS,
+        value_resolver=lambda item, key: item.get("timing", {}).get(key, 0.0),
+    )
+
+
+def _format_duration(seconds: float | None) -> str:
+    return _common_format_duration(seconds, unavailable="n/a")
+
+
+def _format_fraction(current: int, total: int | None) -> str:
+    if total is None:
+        return f"{current}/?"
+    return f"{current}/{total}"
+
+
+def _phase_label(
+    *,
+    phase_index: int | None,
+    phase_count: int | None,
+    phase_name: str | None,
+) -> str:
+    tokens: list[str] = []
+    if phase_index is not None and phase_count is not None:
+        tokens.append(f"phase={_format_fraction(int(phase_index), int(phase_count))}")
+    if phase_name:
+        tokens.append(f"phase_name={phase_name}")
+    return " ".join(tokens)
+
+
+def _train_progress_desc(
+    *,
+    stage: str,
+    phase_index: int | None,
+    phase_count: int | None,
+    phase_name: str | None,
+    epoch: int,
+    epoch_total: int | None,
+    epoch_started_at_iso: str,
+) -> str:
+    tokens = ["[train]"]
+    phase_label = _phase_label(
+        phase_index=phase_index,
+        phase_count=phase_count,
+        phase_name=phase_name,
+    )
+    if phase_label:
+        tokens.append(phase_label)
+    tokens.extend(
+        [
+            f"stage={stage}",
+            f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
+            f"epoch_start={epoch_started_at_iso}",
+        ]
+    )
+    return " ".join(tokens)
+
+
+def _train_progress_postfix(
+    *,
+    batch_index: int,
+    total_batches: int | None,
+    elapsed_sec: float,
+    eta_sec: float | None,
+    losses: dict[str, Any],
+    profile_summary: dict[str, Any],
+) -> str:
+    iteration_profile = profile_summary["iteration_sec"]
+    return " ".join(
+        [
+            f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
+            f"elapsed={_format_duration(elapsed_sec)}",
+            f"eta={_format_duration(eta_sec)}",
+            f"loss={float(losses.get('total', float('nan'))):.4f}",
+            (
+                "iter_ms="
+                f"{iteration_profile['mean'] * 1000.0:.1f}/"
+                f"{iteration_profile['p50'] * 1000.0:.1f}/"
+                f"{iteration_profile['p99'] * 1000.0:.1f}"
+            ),
+            (
+                "timing_ms="
+                f"wait:{profile_summary['wait_sec']['mean'] * 1000.0:.1f},"
+                f"load:{profile_summary['load_sec']['mean'] * 1000.0:.1f},"
+                f"fwd:{profile_summary['forward_sec']['mean'] * 1000.0:.1f},"
+                f"loss:{profile_summary['loss_sec']['mean'] * 1000.0:.1f},"
+                f"bwd:{profile_summary['backward_sec']['mean'] * 1000.0:.1f}"
+            ),
+        ]
+    )
+
+
+def _validation_timing_profile(summaries: list[dict[str, float]]) -> dict[str, Any]:
     if not summaries:
         return {"window_size": 0}
     profile: dict[str, Any] = {"window_size": len(summaries)}
-    for key in TIMING_KEYS:
-        values = [float(item.get("timing", {}).get(key, 0.0)) for item in summaries]
+    for key in ("wait_sec", "evaluate_sec", "iteration_sec"):
+        values = [float(item.get(key, 0.0)) for item in summaries]
         profile[key] = {
             "mean": sum(values) / len(values),
             "p50": _percentile(values, 0.50),
@@ -304,21 +389,121 @@ def _timing_profile(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     return profile
 
 
-def _format_duration(seconds: float | None) -> str:
-    if seconds is None or not math.isfinite(float(seconds)):
-        return "n/a"
-    total_seconds = max(0, int(round(float(seconds))))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
+def _validate_progress_desc(
+    *,
+    stage: str,
+    phase_index: int | None,
+    phase_count: int | None,
+    phase_name: str | None,
+    epoch: int,
+    epoch_total: int | None,
+    epoch_started_at_iso: str,
+) -> str:
+    tokens = ["[val]"]
+    phase_label = _phase_label(
+        phase_index=phase_index,
+        phase_count=phase_count,
+        phase_name=phase_name,
+    )
+    if phase_label:
+        tokens.append(phase_label)
+    tokens.extend(
+        [
+            f"stage={stage}",
+            f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
+            f"epoch_start={epoch_started_at_iso}",
+        ]
+    )
+    return " ".join(tokens)
 
 
-def _format_fraction(current: int, total: int | None) -> str:
-    if total is None:
-        return f"{current}/?"
-    return f"{current}/{total}"
+def _validate_progress_postfix(
+    *,
+    batch_index: int,
+    total_batches: int | None,
+    elapsed_sec: float,
+    eta_sec: float | None,
+    profile_summary: dict[str, Any],
+    batch_summary: dict[str, Any],
+) -> str:
+    iteration_profile = profile_summary["iteration_sec"]
+    losses = dict(batch_summary.get("losses", {}))
+    return " ".join(
+        [
+            f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
+            f"elapsed={_format_duration(elapsed_sec)}",
+            f"eta={_format_duration(eta_sec)}",
+            f"loss={float(losses.get('total', float('nan'))):.4f}",
+            (
+                "iter_ms="
+                f"{iteration_profile['mean'] * 1000.0:.1f}/"
+                f"{iteration_profile['p50'] * 1000.0:.1f}/"
+                f"{iteration_profile['p99'] * 1000.0:.1f}"
+            ),
+            (
+                "timing_ms="
+                f"wait:{profile_summary['wait_sec']['mean'] * 1000.0:.1f},"
+                f"eval:{profile_summary['evaluate_sec']['mean'] * 1000.0:.1f}"
+            ),
+        ]
+    )
+
+
+def _format_validate_progress_log(
+    *,
+    stage: str,
+    phase_index: int | None,
+    phase_count: int | None,
+    phase_name: str | None,
+    epoch: int,
+    epoch_total: int | None,
+    batch_index: int,
+    total_batches: int | None,
+    epoch_started_at_iso: str,
+    elapsed_sec: float,
+    eta_sec: float | None,
+    batch_summary: dict[str, Any],
+    profile_summary: dict[str, Any],
+) -> str:
+    del stage, epoch_started_at_iso
+    header = _join_segments(
+        "[val]",
+        f"phase={_format_fraction(int(phase_index), int(phase_count))}" if phase_index is not None and phase_count is not None else None,
+        phase_name,
+        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
+        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
+    )
+    iteration_profile = profile_summary["iteration_sec"]
+    losses = dict(batch_summary.get("losses", {}))
+    progress_line = _join_segments(
+        _progress_meter(int(batch_index), int(total_batches) if total_batches is not None else None),
+        f"elapsed={_format_duration(elapsed_sec)}",
+        f"eta={_format_duration(eta_sec)}",
+    )
+    loss_primary = _join_segments(
+        "loss",
+        f"det={float(losses.get('det', float('nan'))):.4f}",
+        f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
+        f"lane={float(losses.get('lane', float('nan'))):.4f}",
+        f"total={float(losses.get('total', float('nan'))):.4f}",
+    )
+    loss_secondary = _join_segments(
+        f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
+        f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
+    )
+    return "\n".join(        [
+            header,
+            f"  {progress_line}",
+            f"  {loss_primary}",
+            f"  {loss_secondary}",
+            "  "
+            + _join_segments(
+                "timing_ms",
+                f"eval={profile_summary['evaluate_sec']['mean'] * 1000.0:.3f}",
+                f"total={iteration_profile['mean'] * 1000.0:.3f}",
+            ),
+        ]
+    )
 
 
 def _join_segments(*segments: Any) -> str:

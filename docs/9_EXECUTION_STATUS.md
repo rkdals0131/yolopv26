@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 5까지로 exhaustive/final/sweep manifest typing 확장과 calibrate helper 분해까지 정리했다. 다음은 append_jsonl/time helper 잔여분, _trainer_epochs runtime/reporting, broader public/internal surface, teacher runner bulk 축소, build/source summary row follow-up이다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 6에서는 common/train_runtime 도입, trainer_reporting public surface 승격, teacher runtime shared-helper 재사용, build/review+source QA summary 및 summary/manifest naming contract 정리가 반영됐다. 다음은 broader public/internal surface, 남은 _trainer_epochs runtime/reporting 분해, ultralytics runner bulk 축소, repo-wide common helper residue, build/source 정적 계약 follow-up이다.`
 
 ## 완료된 항목
 
@@ -106,6 +106,11 @@
 - [x] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`에 manifest/item row typing slice 도입
 - [x] `tools/od_bootstrap/build/exhaustive_od.py`, `final_dataset.py`, `sweep.py`에 manifest/prediction row `TypedDict` 확장
 - [x] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`를 stage helper로 분해
+- [x] `tools/od_bootstrap/teacher/runtime_progress.py`, `runtime_tensorboard.py`, `calibrate.py`가 shared runtime/io helper를 우선 사용하도록 정리
+- [x] `tools/od_bootstrap/build/review.py`, `sample_manifest.py`, `source/aihub_reports.py`, `source/bdd100k.py`에 summary/index/QA 계약용 typed summary 레이어 보강
+- [x] `common/train_runtime.py`를 추가하고 `_trainer_io.py`, `_trainer_step.py`, `_trainer_reporting.py`, `teacher/runtime_progress.py`, `teacher/runtime_tensorboard.py`가 duration/timing/tensorboard helper를 재사용하도록 정리
+- [x] `model/engine/trainer_reporting.py` public shared module을 추가하고 `_trainer_reporting.py`에 누락된 progress/reporting helper를 복구해 private cross-import mesh를 한 단계 축소
+- [x] `tools/check_env_scan.py`, `tools/od_bootstrap/cli.py`, build tests가 exhaustive/final summary/manifest filename constant를 재사용하도록 naming contract를 정리
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -115,10 +120,9 @@
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
-- [ ] repo-wide common helper 공통화 잔여분 (`append_jsonl`, 일부 `now_iso`/`timestamp_token`/`write_json` local wrappers)
+- [ ] repo-wide common helper 공통화 잔여분 (`append_jsonl`, 일부 `now_iso`/`timestamp_token`/`write_json` local wrappers, progress helper residue)
 - [ ] `model/engine/` internal API 잔여분 정리 (broader public/internal surface, `_trainer_epochs.py` runtime/reporting)
-- [ ] source debug-vis manifest write helper shared public API 정리
-- [ ] teacher runtime runner 경량화 (runner 덩치 추가 축소)
+- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py` bulk 추가 분해
 - [ ] build/source summary/publish row 정적 계약 보강 (`summary row`, `publish marker`, remaining manifest payload follow-up)
 - [ ] export / ROS 정교화
 
@@ -158,6 +162,11 @@
 - [x] `pytest -q test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_trainer.py test/test_pv26_tiny_overfit.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/od_bootstrap/test_shared_source_helpers.py test/od_bootstrap/test_preprocess_sources.py test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_run_generate_debug_vis.py test/od_bootstrap/test_teacher_dataset.py test/test_aihub_standardize.py test/test_bdd100k_standardize.py test/test_docs_sync.py test/test_portability_runtime.py` (`101 passed`, `2026-04-03`)
 - [x] `python3 -m compileall -q common/io.py common/paths.py model/engine/_loss_spec.py model/engine/trainer.py tools/check_env.py tools/check_env_launch.py tools/od_bootstrap/source/aihub.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/source/aihub_debug.py tools/od_bootstrap/source/shared_debug.py tools/od_bootstrap/source/types.py tools/od_bootstrap/teacher/runtime_callbacks.py tools/od_bootstrap/teacher/ultralytics_runner.py tools/od_bootstrap/build/debug_vis.py tools/od_bootstrap/build/sweep.py tools/od_bootstrap/build/teacher_dataset.py test/test_pv26_loss_spec.py test/od_bootstrap/test_shared_source_helpers.py test/test_portability_runtime.py`
 - [x] `python3 -m pytest test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_run_generate_debug_vis.py test/od_bootstrap/test_teacher_dataset.py test/od_bootstrap/test_preprocess_sources.py -q` (`11 passed`, `2026-04-03`)
+- [x] `python3 -m pytest test/test_common_train_runtime.py test/od_bootstrap/test_sample_helpers.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/test_portability_runtime.py test/test_docs_sync.py -q` (`46 passed`, `2026-04-03`)
+- [x] `python3 -m compileall -q tools/od_bootstrap/build/review.py tools/od_bootstrap/build/sample_manifest.py tools/od_bootstrap/source/aihub_reports.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/teacher/calibrate.py tools/od_bootstrap/teacher/runtime_progress.py tools/od_bootstrap/teacher/runtime_tensorboard.py test/test_common_train_runtime.py test/od_bootstrap/test_sample_helpers.py`
+- [x] `pytest -q test/test_common_train_runtime.py test/od_bootstrap/test_sample_helpers.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/test_portability_runtime.py test/test_docs_sync.py test/test_pv26_trainer.py test/test_pv26_tiny_overfit.py test/test_run_pv26_train.py` (`102 passed`, `2026-04-03`)
+- [x] `python3 -m compileall -q common/io.py common/train_runtime.py model/engine/_trainer_epochs.py model/engine/_trainer_io.py model/engine/_trainer_reporting.py model/engine/_trainer_step.py tools/od_bootstrap/build/review.py tools/od_bootstrap/build/sample_manifest.py tools/od_bootstrap/source/aihub_reports.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/teacher/calibrate.py tools/od_bootstrap/teacher/runtime_progress.py tools/od_bootstrap/teacher/runtime_tensorboard.py test/test_common_train_runtime.py test/od_bootstrap/test_sample_helpers.py`
+- [x] `pytest -q test/test_pv26_trainer.py test/test_pv26_tiny_overfit.py test/test_run_pv26_train.py` (`56 passed`, `2026-04-03`)
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과

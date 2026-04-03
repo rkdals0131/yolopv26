@@ -4,7 +4,8 @@ import math
 from pathlib import Path
 from typing import Any
 
-from common.scalars import flatten_scalar_tree
+from common.train_runtime import maybe_build_summary_writer as _common_maybe_build_summary_writer
+from common.train_runtime import write_tensorboard_scalars as _common_write_tensorboard_scalars
 
 __all__ = [
     "build_epoch_tensorboard_payload",
@@ -15,40 +16,12 @@ __all__ = [
 
 
 def maybe_build_summary_writer(log_dir: Path):
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-    except Exception as exc:  # pragma: no cover - optional dependency.
-        return None, {
-            "enabled": False,
-            "status": "unavailable",
-            "error": str(exc),
-            "log_dir": str(log_dir),
-        }
-    try:
-        writer = SummaryWriter(log_dir=str(log_dir))
-    except Exception as exc:  # pragma: no cover
-        return None, {
-            "enabled": False,
-            "status": "init_failed",
-            "error": str(exc),
-            "log_dir": str(log_dir),
-        }
-    return writer, {
-        "enabled": True,
-        "status": "active",
-        "error": None,
-        "log_dir": str(log_dir),
-    }
+    writer, status = _common_maybe_build_summary_writer(log_dir)
+    return writer, {key: value for key, value in status.items() if key != "purge_step"}
 
 
 def write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
-    if writer is None:
-        return 0
-    count = 0
-    for name, value in flatten_scalar_tree(prefix, payload):
-        writer.add_scalar(name, value, global_step=int(step))
-        count += 1
-    return count
+    return _common_write_tensorboard_scalars(writer, prefix, payload, step)
 
 
 def _coerce_scalar(value: Any) -> float | None:

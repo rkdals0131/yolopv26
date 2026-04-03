@@ -6,7 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, TypedDict
 
 from .raw_common import IMAGE_EXTENSIONS, PairRecord
 from .shared_debug import generate_debug_vis as _generate_debug_vis_impl
@@ -55,6 +55,36 @@ OFFICIAL_SPLIT_SIZES = {
     "val": 10_000,
     "test": 20_000,
 }
+
+
+class BDDDebugVisSummary(TypedDict):
+    selection_count: int
+    seed: int
+
+
+class BDDQADatasetSummary(TypedDict):
+    dataset_key: str
+    processed_samples: int
+    fresh_processed_count: int
+    resume_skipped_count: int
+    failure_count: int
+    empty_scene_count: int
+    detection_count: int
+    traffic_light_count: int
+    traffic_sign_count: int
+    top_held_reasons: list[tuple[str, int]]
+    top_state_hints: list[tuple[str, int]]
+
+
+class BDDQASummary(TypedDict):
+    version: str
+    generated_at: str
+    output_root: str
+    debug_vis: BDDDebugVisSummary
+    failure_count: int
+    dataset: BDDQADatasetSummary
+
+
 BDD_CATEGORY_ALIASES = {
     "bike": "bicycle",
     "motor": "motorcycle",
@@ -612,7 +642,7 @@ def _failure_manifest_markdown(manifest: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> dict[str, Any]:
+def _qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure_manifest: dict[str, Any]) -> BDDQASummary:
     dataset = report["dataset"]
     return {
         "version": PIPELINE_VERSION,
@@ -639,7 +669,7 @@ def _qa_summary(report: dict[str, Any], debug_vis_index: dict[str, Any], failure
     }
 
 
-def _qa_summary_markdown(summary: dict[str, Any]) -> str:
+def _qa_summary_markdown(summary: BDDQASummary) -> str:
     dataset = summary["dataset"]
     lines = [
         "# PV26 BDD100K QA Summary",

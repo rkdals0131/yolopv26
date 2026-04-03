@@ -4,8 +4,9 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypedDict
 
+from common.io import write_json
 from common.overlay import render_overlay
 
 
@@ -15,6 +16,37 @@ DEFAULT_REVIEW_QUOTAS: dict[str, int] = {
     "pv26_exhaustive_aihub_obstacle_seoul": 75,
     "aihub_lane_seoul": 75,
 }
+REVIEW_BUNDLE_INDEX_NAME = "index.json"
+
+
+class ReviewSampleRow(TypedDict):
+    final_sample_id: str
+    source_dataset_key: str
+    split: str
+    scene_path: str
+    image_path: str
+
+
+class ReviewBundleEntry(TypedDict):
+    dataset_key: str
+    split: str
+    final_sample_id: str
+    scene_path: str
+    image_path: str
+    overlay_path: str
+
+
+class ReviewBundleSummary(TypedDict):
+    summary_path: str
+    index_path: str
+    version: str
+    manifest_path: str
+    output_root: str
+    split: str
+    quotas: dict[str, int]
+    seed: int | None
+    image_count: int
+    entries: list[ReviewBundleEntry]
 
 
 def _coerce_bbox(value: Any) -> list[float]:
@@ -138,7 +170,7 @@ def select_review_rows(
     split: str = "val",
     quotas: Mapping[str, int] | None = None,
     seed: int | None = None,
-) -> list[dict[str, Any]]:
+) -> list[ReviewSampleRow]:
     normalized_quotas = _normalize_review_quotas(quotas)
     rows = sorted(
         manifest.get("samples") or [],
@@ -149,7 +181,7 @@ def select_review_rows(
             str(item.get("scene_path") or ""),
         ),
     )
-    rows_by_dataset: dict[str, list[dict[str, Any]]] = {dataset_key: [] for dataset_key in normalized_quotas}
+    rows_by_dataset: dict[str, list[ReviewSampleRow]] = {dataset_key: [] for dataset_key in normalized_quotas}
     for row in rows:
         dataset_key = str(row.get("source_dataset_key") or "").strip()
         if dataset_key not in rows_by_dataset:
@@ -158,7 +190,7 @@ def select_review_rows(
             continue
         rows_by_dataset[dataset_key].append(dict(row))
 
-    selected: list[dict[str, Any]] = []
+    selected: list[ReviewSampleRow] = []
     counts = Counter()
     for dataset_key, target in normalized_quotas.items():
         dataset_rows = rows_by_dataset.get(dataset_key, [])
@@ -187,14 +219,14 @@ def render_review_bundle(
     split: str = "val",
     quotas: Mapping[str, int] | None = None,
     seed: int | None = None,
-) -> dict[str, Any]:
+) -> ReviewBundleSummary:
     resolved_manifest_path = Path(manifest_path).resolve()
     manifest = json.loads(resolved_manifest_path.read_text(encoding="utf-8"))
     selected_rows = select_review_rows(manifest, split=split, quotas=quotas, seed=seed)
     resolved_output_root = Path(output_root).resolve()
     resolved_output_root.mkdir(parents=True, exist_ok=True)
 
-    entries: list[dict[str, Any]] = []
+    entries: list[ReviewBundleEntry] = []
     for row in selected_rows:
         scene_path = Path(str(row["scene_path"])).resolve()
         image_path = Path(str(row["image_path"])).resolve()
@@ -215,7 +247,10 @@ def render_review_bundle(
             }
         )
 
-    summary = {
+    index_path = resolved_output_root / REVIEW_BUNDLE_INDEX_NAME
+    summary: ReviewBundleSummary = {
+        "summary_path": str(index_path),
+        "index_path": str(index_path),
         "version": "od-bootstrap-review-v1",
         "manifest_path": str(resolved_manifest_path),
         "output_root": str(resolved_output_root),
@@ -225,12 +260,15 @@ def render_review_bundle(
         "image_count": len(entries),
         "entries": entries,
     }
-    summary_path = resolved_output_root / "index.json"
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return {
-        "summary_path": str(summary_path),
-        **summary,
-    }
+    write_json(index_path, summary)
+    return summary
 
 
-__all__ = ["DEFAULT_REVIEW_QUOTAS", "canonical_scene_to_overlay_scene", "render_overlay", "render_review_bundle", "select_review_rows"]
+__all__ = [
+    "DEFAULT_REVIEW_QUOTAS",
+    "REVIEW_BUNDLE_INDEX_NAME",
+    "canonical_scene_to_overlay_scene",
+    "render_overlay",
+    "render_review_bundle",
+    "select_review_rows",
+]

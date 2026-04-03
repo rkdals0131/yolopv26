@@ -1,41 +1,35 @@
 from __future__ import annotations
 
-from datetime import datetime
-import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from common.io import append_jsonl as _common_append_jsonl
+from common.io import now_iso as _common_now_iso
+from common.io import timestamp_token as _common_timestamp_token
+from common.io import write_json as _common_write_json
+from common.io import write_jsonl as _common_write_jsonl
+from common.train_runtime import maybe_build_summary_writer as _common_maybe_build_summary_writer
+
 
 def _default_run_dir() -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = _common_timestamp_token()
     return Path("runs") / "pv26_train" / f"pv26_fit_{timestamp}"
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return _common_now_iso()
 
 
 def _write_json(path: str | Path, payload: dict[str, Any]) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    return output_path
+    return _common_write_json(path, payload)
 
 
 def _append_jsonl(path: str | Path, payload: dict[str, Any]) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n")
-    return output_path
+    return _common_append_jsonl(path, payload, sort_keys=True)
 
 
 def _write_jsonl_rows(path: str | Path, rows: Iterable[dict[str, Any]]) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "".join(json.dumps(item, ensure_ascii=True, sort_keys=True) + "\n" for item in rows)
-    output_path.write_text(payload, encoding="utf-8")
-    return output_path
+    return _common_write_jsonl(path, rows, sort_keys=True)
 
 
 def _json_ready(value: Any) -> Any:
@@ -49,33 +43,4 @@ def _json_ready(value: Any) -> Any:
 
 
 def _maybe_build_summary_writer(log_dir: Path, *, purge_step: int | None = None):
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-    except Exception as exc:  # pragma: no cover - optional dependency.
-        return None, {
-            "enabled": False,
-            "status": "unavailable",
-            "error": str(exc),
-            "log_dir": str(log_dir),
-            "purge_step": purge_step,
-        }
-    try:
-        writer_kwargs: dict[str, Any] = {"log_dir": str(log_dir)}
-        if purge_step is not None:
-            writer_kwargs["purge_step"] = int(purge_step)
-        writer = SummaryWriter(**writer_kwargs)
-    except Exception as exc:  # pragma: no cover - filesystem or environment issue.
-        return None, {
-            "enabled": False,
-            "status": "init_failed",
-            "error": str(exc),
-            "log_dir": str(log_dir),
-            "purge_step": purge_step,
-        }
-    return writer, {
-        "enabled": True,
-        "status": "active",
-        "error": None,
-        "log_dir": str(log_dir),
-        "purge_step": purge_step,
-    }
+    return _common_maybe_build_summary_writer(log_dir, purge_step=purge_step)

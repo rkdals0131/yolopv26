@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
-from ._trainer_reporting import _format_epoch_completion_log
+from .trainer_reporting import _format_epoch_completion_log
 
 
 def _best_metric_path(best_metric: str | None, *, has_val_loader: bool) -> str:

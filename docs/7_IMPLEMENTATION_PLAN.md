@@ -119,7 +119,7 @@
 - `2026-04-03` wave 3 narrowed `model/engine/trainer.py` re-export surface, added `tools/check_env_launch.py`, promoted source debug-vis manifest helpers into shared typed surfaces, and grouped teacher callback wiring behind `TeacherRuntimeSupport`
 - `2026-04-03` wave 4 extended safe `common.io` reuse into more bootstrap call sites, split `_loss_spec.build_loss_spec()` into section builders, decomposed `_make_teacher_trainer()` helper setup, and added `TypedDict` slices in build debug/teacher manifest paths
 - `2026-04-03` wave 5 expanded manifest typing into `exhaustive_od.py` / `final_dataset.py` / `sweep.py` and split `calibrate_class_policy_scenario()` into narrower stage helpers
-- `2026-04-03` wave 5 extended manifest typing into `exhaustive_od.py` / `final_dataset.py` / `sweep.py` and split `calibrate_class_policy_scenario()` into narrower stage helpers
+- `2026-04-03` wave 6 added `common/train_runtime.py`, routed trainer/teacher runtime helper duplicates through it, promoted `model.engine.trainer_reporting` as a public shared surface, and aligned build/check_env/tests with manifest/summary filename constants
 
 ## priority-2b extraction review boundary
 
