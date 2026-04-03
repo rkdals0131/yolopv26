@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 
 REQUIRED_TEACHER_ORDER = ("mobility", "signal", "obstacle")
@@ -50,6 +51,23 @@ class ClassPolicy:
     center_y_range: tuple[float, float] | None = None
     aspect_ratio_range: tuple[float, float] | None = None
     area_ratio_range: tuple[float, float] | None = None
+
+
+class TeacherPredictionRow(TypedDict):
+    sample_id: str
+    sample_uid: str
+    image_path: str
+    scene_path: str
+    dataset_key: str
+    split: str
+    teacher_name: str
+    model_version: str
+    class_name: str
+    confidence: float
+    xyxy: list[float]
+    box_index: int
+    image_width: int
+    image_height: int
 
 
 @dataclass(frozen=True)

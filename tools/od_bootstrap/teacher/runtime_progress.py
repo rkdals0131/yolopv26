@@ -6,6 +6,7 @@ from types import MethodType
 from typing import Any
 
 from common.io import append_jsonl, timestamp_token
+from common.train_runtime import join_status_segments as _common_join_status_segments
 from common.train_runtime import format_duration as _common_format_duration
 from common.train_runtime import sync_timing_device as _common_sync_timing_device
 from common.train_runtime import timing_profile as _common_timing_profile
@@ -148,14 +149,12 @@ def build_live_postfix(
     eta_sec: float | None,
     profile_summary: dict[str, Any],
 ) -> str:
-    return "  |  ".join(
-        [
-            f"elapsed={format_duration(elapsed_sec)}",
-            f"eta={format_duration(eta_sec)}",
-            f"iter={profile_summary['iteration_sec']['mean'] * 1000.0:.1f}ms",
-            f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.1f}ms",
-            f"compute={profile_summary['compute_sec']['mean'] * 1000.0:.1f}ms",
-        ]
+    return _common_join_status_segments(
+        f"elapsed={format_duration(elapsed_sec)}",
+        f"eta={format_duration(eta_sec)}",
+        f"iter={profile_summary['iteration_sec']['mean'] * 1000.0:.1f}ms",
+        f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.1f}ms",
+        f"compute={profile_summary['compute_sec']['mean'] * 1000.0:.1f}ms",
     )
 
 

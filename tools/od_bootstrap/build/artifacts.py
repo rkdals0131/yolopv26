@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TypedDict
 
 from common.io import write_json as _write_json, write_jsonl as _write_jsonl
 
@@ -12,6 +12,31 @@ from .image_list import ImageListEntry
 RUN_MANIFEST_VERSION = "od-bootstrap-run-v2"
 JOB_MANIFEST_VERSION = "od-bootstrap-job-v2"
 LABEL_ORIGINS = {"raw_source", "bootstrap"}
+
+
+class RunManifestPayload(TypedDict):
+    run_id: str
+    created_at: str
+    scenario_path: str
+    execution_mode: str
+    run_dir: str
+    image_pool_manifest: str
+    image_count: int
+    teacher_names: tuple[str, ...]
+    manifest_version: str
+
+
+class TeacherJobManifestPayload(TypedDict):
+    run_id: str
+    created_at: str
+    teacher_name: str
+    base_model: str
+    model_version: str
+    checkpoint_path: str
+    classes: tuple[str, ...]
+    image_count: int
+    predictions_path: str
+    manifest_version: str
 
 
 @dataclass(frozen=True)

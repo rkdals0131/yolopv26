@@ -4,7 +4,10 @@ from collections import Counter
 import math
 from typing import Any
 
+from common.train_runtime import build_progress_status as _common_build_progress_status
 from common.train_runtime import format_duration as _common_format_duration
+from common.train_runtime import join_status_segments as _common_join_status_segments
+from common.train_runtime import progress_meter as _common_progress_meter
 from common.train_runtime import quantile as _common_quantile
 from common.train_runtime import timing_profile as _common_timing_profile
 from common.train_runtime import write_tensorboard_scalars as _common_write_tensorboard_scalars
@@ -475,10 +478,13 @@ def _format_validate_progress_log(
     )
     iteration_profile = profile_summary["iteration_sec"]
     losses = dict(batch_summary.get("losses", {}))
-    progress_line = _join_segments(
-        _progress_meter(int(batch_index), int(total_batches) if total_batches is not None else None),
-        f"elapsed={_format_duration(elapsed_sec)}",
-        f"eta={_format_duration(eta_sec)}",
+    progress_line = _common_build_progress_status(
+        current=int(batch_index),
+        total=int(total_batches) if total_batches is not None else None,
+        segments=(
+            f"elapsed={_format_duration(elapsed_sec)}",
+            f"eta={_format_duration(eta_sec)}",
+        ),
     )
     loss_primary = _join_segments(
         "loss",
@@ -507,16 +513,11 @@ def _format_validate_progress_log(
 
 
 def _join_segments(*segments: Any) -> str:
-    return "  |  ".join(str(item) for item in segments if item not in {None, ""})
+    return _common_join_status_segments(*segments)
 
 
 def _progress_meter(current: int, total: int | None, *, width: int = 8) -> str | None:
-    if total is None or int(total) <= 0:
-        return None
-    bounded_current = max(0, min(int(current), int(total)))
-    ratio = float(bounded_current) / float(int(total))
-    filled = min(width, max(0, int(round(ratio * float(width)))))
-    return f"[{'#' * filled}{'.' * (width - filled)}] {ratio * 100.0:3.0f}%"
+    return _common_progress_meter(current, total, width=width)
 
 
 def _format_train_progress_log(
@@ -544,11 +545,14 @@ def _format_train_progress_log(
         f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
     )
     iteration_profile = profile_summary["iteration_sec"]
-    progress_line = _join_segments(
-        _progress_meter(int(batch_index), int(total_batches) if total_batches is not None else None),
-        f"elapsed={_format_duration(elapsed_sec)}",
-        f"eta={_format_duration(eta_sec)}",
-        f"step={int(global_step)}",
+    progress_line = _common_build_progress_status(
+        current=int(batch_index),
+        total=int(total_batches) if total_batches is not None else None,
+        segments=(
+            f"elapsed={_format_duration(elapsed_sec)}",
+            f"eta={_format_duration(eta_sec)}",
+            f"step={int(global_step)}",
+        ),
     )
     loss_primary = _join_segments(
         "loss",

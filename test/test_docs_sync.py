@@ -159,12 +159,39 @@ class DocsSyncTests(unittest.TestCase):
         cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
 
         for content in (execution_doc, cleanliness_checklist, cleanliness_report):
+            self.assertIn("build/artifacts.py", content)
+            self.assertIn("build/sweep_types.py", content)
             self.assertIn("TeacherJobManifestPayload", content)
             self.assertIn("SourcePrepManifest", content)
             self.assertIn("FinalDatasetPublishMarker", content)
 
         self.assertIn("FinalDatasetSourceKind", execution_doc)
         self.assertIn("TeacherPredictionRow", cleanliness_report)
+
+    def test_rank6_rank7_runtime_cleanup_docs_track_runtime_trainer_and_shared_progress_helpers(self) -> None:
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
+        implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
+        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
+        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
+
+        self.assertIn("wave 12 closed rank-6/7 cleanup", implementation_plan)
+        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", implementation_plan)
+        self.assertIn("shared progress status helper", implementation_plan)
+
+        self.assertIn("rank-6/7 runtime cleanup도 마감", execution_doc)
+        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", execution_doc)
+        self.assertIn("join_status_segments()", execution_doc)
+        self.assertIn("framework-specific renderer", execution_doc)
+
+        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", cleanliness_checklist)
+        self.assertIn("join_status_segments()", cleanliness_checklist)
+        self.assertIn("build_progress_status()", cleanliness_checklist)
+        self.assertNotIn("- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`", cleanliness_checklist)
+
+        self.assertIn("TeacherRuntimeSupport", cleanliness_report)
+        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", cleanliness_report)
+        self.assertIn("progress_meter()", cleanliness_report)
+        self.assertIn("shared progress status helper", cleanliness_report)
 
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)

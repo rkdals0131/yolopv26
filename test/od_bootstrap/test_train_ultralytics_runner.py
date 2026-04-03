@@ -23,6 +23,7 @@ from tools.od_bootstrap.teacher.runtime_artifacts import (
     publish_teacher_train_summary,
     refresh_latest_teacher_artifacts,
 )
+from tools.od_bootstrap.teacher import runtime_trainer
 from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
 from tools.od_bootstrap.teacher.runtime_progress import (
     append_jsonl as runtime_append_jsonl,
@@ -91,6 +92,18 @@ class _FakeTrainLoader:
         return 100
 
 
+class _FakeDataloaderDataset(list):
+    collate_fn = "collate"
+
+
+class _FakeGenerator:
+    def __init__(self) -> None:
+        self.seed: int | None = None
+
+    def manual_seed(self, seed: int) -> None:
+        self.seed = int(seed)
+
+
 def _write_checkpoint(path: Path, *, epoch: int, total_epochs: int, resumable: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -112,6 +125,54 @@ class UltralyticsRunnerTests(unittest.TestCase):
     def test_runtime_progress_reuses_common_io_helpers(self) -> None:
         self.assertIs(runtime_append_jsonl, common_append_jsonl)
         self.assertIs(runtime_timestamp_token, common_timestamp_token)
+
+    def test_runtime_trainer_dataloader_kwargs_keep_sampler_and_worker_policy(self) -> None:
+        fake_generator = _FakeGenerator()
+        dataset = _FakeDataloaderDataset(range(5))
+
+        with patch.object(
+            runtime_trainer,
+            "torch",
+            SimpleNamespace(
+                cuda=SimpleNamespace(device_count=lambda: 2),
+                Generator=lambda: fake_generator,
+            ),
+        ), patch.object(
+            runtime_trainer,
+            "distributed",
+            SimpleNamespace(DistributedSampler=lambda dataset, shuffle: ("distributed", dataset, shuffle)),
+        ), patch.object(
+            runtime_trainer,
+            "ContiguousDistributedSampler",
+            lambda dataset: ("contiguous", dataset),
+        ), patch.object(runtime_trainer, "seed_worker", "seed-worker"), patch.object(runtime_trainer, "RANK", 7), patch(
+            "tools.od_bootstrap.teacher.runtime_trainer.os.cpu_count",
+            return_value=3,
+        ):
+            kwargs = runtime_trainer.build_teacher_dataloader_kwargs(
+                dataset,
+                batch=4,
+                workers=10,
+                shuffle=True,
+                rank=2,
+                drop_last=True,
+                pin_memory=True,
+                persistent_workers=True,
+                prefetch_factor=8,
+            )
+
+        self.assertEqual(kwargs["batch_size"], 4)
+        self.assertEqual(kwargs["num_workers"], 3)
+        self.assertEqual(kwargs["sampler"], ("distributed", dataset, True))
+        self.assertFalse(kwargs["shuffle"])
+        self.assertTrue(kwargs["pin_memory"])
+        self.assertEqual(kwargs["collate_fn"], "collate")
+        self.assertEqual(kwargs["worker_init_fn"], "seed-worker")
+        self.assertTrue(kwargs["drop_last"])
+        self.assertEqual(kwargs["prefetch_factor"], 8)
+        self.assertTrue(kwargs["persistent_workers"])
+        self.assertIs(kwargs["generator"], fake_generator)
+        self.assertEqual(fake_generator.seed, 6148914691236517205 + 7)
 
     def test_ultralytics_postfix_renders_at_line_end(self) -> None:
         pbar = _FakeUltralyticsPbar()
@@ -192,7 +253,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             return {}
 
         with patch(
-            "tools.od_bootstrap.teacher.ultralytics_runner.build_teacher_runtime_callbacks",
+            "tools.od_bootstrap.teacher.runtime_trainer.build_teacher_runtime_callbacks",
             side_effect=_fake_build_teacher_runtime_callbacks,
         ) as build_callbacks:
             trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=lambda message: None)

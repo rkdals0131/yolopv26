@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable
 
 import torch
+from common.train_runtime import join_status_segments, progress_meter
 
 try:
     from rich.console import Console, Group
@@ -14,9 +15,6 @@ except Exception:  # pragma: no cover - optional dependency fallback.
     Group = None
     Live = None
     Text = None
-
-from .trainer_reporting import _join_segments, _progress_meter
-
 
 _ProfileBuilder = Callable[[list[dict[str, Any]]], dict[str, Any]]
 
@@ -52,9 +50,9 @@ class _RichProgressBar:
     def _renderable(self) -> Any:
         lines = [
             self._styled_line(
-                _join_segments(
+                join_status_segments(
                     self.desc,
-                    _progress_meter(int(self.current), int(self.total) if self.total is not None else None, width=10),
+                    progress_meter(int(self.current), int(self.total) if self.total is not None else None, width=10),
                     self.status,
                 )
             )
