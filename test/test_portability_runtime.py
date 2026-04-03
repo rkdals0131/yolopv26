@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
+from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_SUMMARY_NAME
+
 
 class PV26PortabilityRuntimeTests(unittest.TestCase):
     def test_standardization_defaults_follow_repo_root(self) -> None:
@@ -358,13 +361,13 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
 
             latest_exhaustive = exhaustive_dataset_root / "run_001" / "meta"
             latest_exhaustive.mkdir(parents=True, exist_ok=True)
-            (latest_exhaustive / "materialization_summary.json").write_text(
+            (latest_exhaustive / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME).write_text(
                 json.dumps({"run_id": "run_001", "sample_count": 200}, indent=2) + "\n",
                 encoding="utf-8",
             )
 
             (final_dataset_root / "meta").mkdir(parents=True, exist_ok=True)
-            (final_dataset_root / "meta" / "final_dataset_summary.json").write_text(
+            (final_dataset_root / "meta" / FINAL_DATASET_SUMMARY_NAME).write_text(
                 json.dumps({"sample_count": 250, "dataset_counts": {"aihub_lane_seoul": 50}, "rerun_mode": "atomic_overwrite"}, indent=2) + "\n",
                 encoding="utf-8",
             )

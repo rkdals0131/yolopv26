@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from tools.od_bootstrap import main as od_bootstrap_main
+from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
 from tools.od_bootstrap.build.image_list import build_sample_uid
 
 
@@ -170,7 +171,7 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             )
             _write_text(det_path, "0 0.312500 0.416667 0.312500 0.416667\n")
             _write_json(
-                run_root / "meta" / "materialization_manifest.json",
+                run_root / "meta" / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
                 {
                     "run_id": run_root.name,
                     "samples": [

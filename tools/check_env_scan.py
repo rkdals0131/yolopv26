@@ -15,7 +15,16 @@ from common.user_config import (
     nested_get,
     resolve_repo_path,
 )
-from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_PUBLISH_MARKER, FINAL_DATASET_RERUN_MODE
+from tools.od_bootstrap.build.exhaustive_od import (
+    EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
+    EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME,
+)
+from tools.od_bootstrap.build.final_dataset import (
+    FINAL_DATASET_MANIFEST_NAME,
+    FINAL_DATASET_PUBLISH_MARKER,
+    FINAL_DATASET_RERUN_MODE,
+    FINAL_DATASET_SUMMARY_NAME,
+)
 from tools.od_bootstrap.presets import (
     build_calibration_preset,
     build_default_source_preset,
@@ -288,16 +297,16 @@ def _teacher_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
 def _exhaustive_summary(dataset_root: Path) -> dict[str, Any] | None:
     meta_root = dataset_root / "meta"
     return _compact_or_manifest(
-        summary_path=meta_root / "materialization_summary.json",
-        manifest_path=meta_root / "materialization_manifest.json",
+        summary_path=meta_root / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME,
+        manifest_path=meta_root / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
     )
 
 
 def _final_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
     meta_root = dataset_root / "meta"
     return _compact_or_manifest(
-        summary_path=meta_root / "final_dataset_summary.json",
-        manifest_path=meta_root / "final_dataset_manifest.json",
+        summary_path=meta_root / FINAL_DATASET_SUMMARY_NAME,
+        manifest_path=meta_root / FINAL_DATASET_MANIFEST_NAME,
     )
 
 
@@ -576,7 +585,10 @@ def _build_calibration_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bo
 def _build_exhaustive_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
     dataset_dir, _ = _latest_child_with_meta(
         paths.exhaustive_dataset_root,
-        ("meta/materialization_summary.json", "meta/materialization_manifest.json"),
+        (
+            f"meta/{EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME}",
+            f"meta/{EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME}",
+        ),
     )
     summary = _exhaustive_summary(dataset_dir) if dataset_dir is not None else None
     if dataset_dir is not None and summary is not None:
@@ -607,7 +619,7 @@ def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, 
     summary = _final_dataset_summary(paths.final_dataset_root)
     marker = _final_dataset_publish_marker(paths.final_dataset_root)
     staging_roots = _final_dataset_staging_roots(paths.final_dataset_root)
-    manifest_path = paths.final_dataset_root / "meta" / "final_dataset_manifest.json"
+    manifest_path = paths.final_dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
     if summary is not None:
         sample_count = _safe_int(summary.get("sample_count"))
         dataset_counts = summary.get("dataset_counts", {})
@@ -641,7 +653,10 @@ def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, 
     return (
         StageRow(
             stage="최종 병합 데이터셋",
-            success_condition=f"`meta/final_dataset_manifest.json` 또는 summary가 존재하고 rerun contract는 `{FINAL_DATASET_RERUN_MODE}`",
+            success_condition=(
+                f"`meta/{FINAL_DATASET_MANIFEST_NAME}` 또는 summary가 존재하고 "
+                f"rerun contract는 `{FINAL_DATASET_RERUN_MODE}`"
+            ),
             current_state=state,
             verdict=verdict,
         ),

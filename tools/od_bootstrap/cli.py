@@ -13,6 +13,7 @@ from tools.od_bootstrap.build.debug_vis import (
     generate_exhaustive_debug_vis,
     generate_teacher_dataset_debug_vis,
 )
+from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
 from tools.od_bootstrap.build.final_dataset import build_pv26_exhaustive_od_lane_dataset
 from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
@@ -292,7 +293,7 @@ def _run_teacher_debug_vis(*, teacher_root: Path, teacher_names: list[str], coun
 
 def _run_exhaustive_debug_vis(*, exhaustive_root: Path, run_name: str | None, count: int, seed: int) -> dict[str, Any]:
     run_root = _resolve_exhaustive_run_root(exhaustive_root, run_name)
-    manifest_path = run_root / "meta" / "materialization_manifest.json"
+    manifest_path = run_root / "meta" / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
     if not manifest_path.is_file():
         raise FileNotFoundError(f"materialization manifest not found: {manifest_path}")
     manifest = _load_json(manifest_path)
