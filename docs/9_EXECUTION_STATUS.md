@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 11 기준으로 rank-5 build/source contract 빈칸도 마감했다. `_trainer_io.py`, `runtime_progress.py`, `source/shared_io.py`는 common helper direct re-export surface로 고정했고, `tools/od_bootstrap/build/contracts.py`가 image-list/run/job/prediction payload typed surface를 맡는다. `exhaustive_od.py`, `final_dataset.py`, `sweep.py`, `teacher/policy.py`는 그 typed contract를 재사용하고, `final_dataset.py`는 publish marker/source/image row를 `Literal`/`TypedDict` 기반으로 고정했다. local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳만 남겼다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 12 기준으로 rank-6/7 runtime cleanup도 마감했다. `tools/od_bootstrap/teacher/runtime_trainer.py`가 dataloader/callback/trainer runtime family를 맡아 `ultralytics_runner.py`를 thin orchestration facade로 줄였고, `common/train_runtime.py`는 duration formatting, device sync timing, tensorboard writer/scalar, rolling timing summary, `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 담당한다. teacher/runtime_progress.py와 model/engine/trainer_progress.py는 framework-specific renderer만 local로 남기고 공용 progress status helper를 재사용한다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다.`
 
 ## 완료된 항목
 
@@ -118,14 +118,13 @@
 - [x] `common.io.write_json_sorted`, `append_jsonl_sorted`, `write_jsonl_sorted`를 추가하고 `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared_io.py`가 이를 재사용하도록 정리
 - [x] `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py` public/shared surface를 추가하고 `loss.py`, `postprocess.py`, trainer runtime/tests가 private module 대신 이를 우선 사용하도록 정리
 - [x] `model/engine/trainer.py` compatibility alias를 core trainer facade만 남기고 줄여 rank-4 public/internal surface 정리를 마감
-- [x] `tools/od_bootstrap/build/contracts.py`를 추가해 image-list/run/job/prediction payload shared typed surface를 고정하고 `final_dataset.py` publish marker/source/image row 계약을 `Literal`/`TypedDict`로 마감
+- [x] `tools/od_bootstrap/build/artifacts.py`, `build/sweep_types.py`, `build/exhaustive_od.py`, `source/types.py`, `build/final_dataset.py`에 image-list/run/job/prediction/source manifest typed surface를 고정하고 `final_dataset.py` publish marker/source/image row 계약을 `Literal`/`TypedDict`로 마감
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] 6순위: `tools/od_bootstrap/teacher/ultralytics_runner.py` bulk 추가 분해
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
@@ -144,6 +143,11 @@
 - [x] `python3 -m pytest test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_docs_sync.py -q`
 - [x] `python3 -m compileall -q model/engine tools/run_pv26_train.py test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_docs_sync.py`
 - [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap/test_shared_source_helpers.py -q` (`21 passed`, `2026-04-03`)
+- [x] `python3 -m pytest -q test/od_bootstrap/test_train_ultralytics_runner.py test/test_common_train_runtime.py test/test_docs_sync.py` (`35 passed`, `2026-04-03`; wave 12 baseline import regression in `build/sweep_types.py` / `build/artifacts.py` payload types fixed in-task)
+- [x] `python3 -m compileall -q tools/od_bootstrap/build/artifacts.py tools/od_bootstrap/build/sweep_types.py test/od_bootstrap/test_train_ultralytics_runner.py test/test_common_train_runtime.py test/test_docs_sync.py`
+- [x] `python3 -m pytest -q test/od_bootstrap/test_sweep_policy.py test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_train_teacher.py test/od_bootstrap/test_train_ultralytics_runner.py test/test_common_train_runtime.py test/test_docs_sync.py` (`46 passed`, `2026-04-03`)
+- [x] `python3 -m pytest -q test/od_bootstrap/test_train_ultralytics_runner.py test/test_common_train_runtime.py test/test_docs_sync.py` (`33 passed`, `2026-04-03`; `runtime_trainer.py` extraction + shared progress status helper 반영 후 재검증)
+- [x] `python3 -m compileall -q common/train_runtime.py model/engine/_trainer_reporting.py model/engine/trainer_progress.py tools/od_bootstrap/teacher/runtime_progress.py tools/od_bootstrap/teacher/runtime_trainer.py tools/od_bootstrap/teacher/ultralytics_runner.py test/od_bootstrap/test_train_ultralytics_runner.py test/test_common_train_runtime.py test/test_docs_sync.py`
 - [x] `python3 -m compileall -q test/test_docs_sync.py test/od_bootstrap/test_shared_source_helpers.py`
 - [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap -q` (`49 passed`)
 - [x] `python3 -m unittest discover -s test -v`

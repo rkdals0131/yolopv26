@@ -65,11 +65,11 @@
 - [x] 최소한 `ExhaustiveSampleRow`, `FinalDatasetSampleRow`, `TeacherPredictionRow` 수준의 `TypedDict`를 더 도입한다.
 - [x] manifest row, sample row, prediction row, summary row에서 key typo, optional field 누락, value 타입 drift, 경로/string 혼합을 정적 계약으로 잡을 수 있게 만든다.
 - [x] source/build 파이프라인에서 자주 오가는 JSON row 계약을 명시적인 타입으로 치환해 IDE 추적성과 리팩토링 안전성을 높인다.
-- [x] `tools/od_bootstrap/build/contracts.py`로 `ImageListEntryPayload`, `RunManifestPayload`, `TeacherJobManifestPayload`, `TeacherPredictionRow` shared typed surface를 두고 `teacher/policy.py`, `sweep.py`, `exhaustive_od.py`가 이를 재사용한다.
+- [x] `build/artifacts.py`, `build/sweep_types.py`, `exhaustive_od.py`, `source/types.py`, `final_dataset.py`에 `ImageListEntryPayload`, `RunManifestPayload`, `TeacherJobManifestPayload`, `TeacherPredictionRow`, `SourcePrepManifest`, `FinalDatasetPublishMarker`, `FinalDatasetSourceKind` typed surface를 두고 `teacher/policy.py`, `sweep.py`, `exhaustive_od.py`, `final_dataset.py`가 이를 재사용한다.
 
 ## 6순위. teacher runtime과 `ultralytics_runner.py` 정리
 
-- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`에서 dataloader kwargs, progress helper, tensorboard helper, resume helper, artifact refresh helper, callback builder, trainer subclass를 한 파일에서 모두 감싸는 구조를 분해한다.
+- [x] `tools/od_bootstrap/teacher/runtime_trainer.py`로 dataloader kwargs/build helper, callback builder, resume/runtime-state helper, trainer subclass/runtime helper family를 옮기고 `ultralytics_runner.py`를 thin orchestration facade로 줄인다.
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
 - [x] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 객체로 묶는다.
 - [x] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
@@ -77,8 +77,8 @@
 
 ## 7순위. teacher runtime과 PV26 trainer runtime의 공통 runtime helper 정리
 
-- [ ] teacher runtime과 PV26 trainer runtime에 중복된 `format_duration`, `sync_timing_device`, tensorboard writer build, tensorboard scalar write, timing profile 요약, progress rendering helper를 공용 runtime helper 계층으로 정리한다.
-- [ ] `common/train_runtime.py` 또는 동등한 공용 레이어를 두고 duration formatting, device sync timing, scalar flatten/write, rolling timing summary, progress helper를 모은다.
+- [x] teacher runtime과 PV26 trainer runtime에 중복된 `format_duration`, `sync_timing_device`, tensorboard writer build, tensorboard scalar write, timing profile 요약, progress rendering helper를 공용 runtime helper 계층으로 정리한다. framework-specific progress renderer만 local 정책으로 남기고, progress status segment/meter helper는 공용화한다.
+- [x] `common/train_runtime.py` 또는 동등한 공용 레이어를 두고 duration formatting, device sync timing, scalar flatten/write, rolling timing summary, progress helper를 모은다. `common/train_runtime.py`가 duration/timing/tensorboard helper와 `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 맡는다.
 
 ## 8순위. `tools/check_env.py` 파일 경계 정리
 

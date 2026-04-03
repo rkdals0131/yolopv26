@@ -3,7 +3,15 @@ from __future__ import annotations
 import types
 import unittest
 
-from common.train_runtime import format_duration, sync_timing_device, timing_profile, write_tensorboard_scalars
+from common.train_runtime import (
+    build_progress_status,
+    format_duration,
+    join_status_segments,
+    progress_meter,
+    sync_timing_device,
+    timing_profile,
+    write_tensorboard_scalars,
+)
 
 
 class _FakeWriter:
@@ -77,6 +85,14 @@ class CommonTrainRuntimeTests(unittest.TestCase):
                 ("train/loss/total", 1.25, 7),
                 ("train/lr", 0.001, 7),
             ],
+        )
+
+    def test_progress_helpers_build_shared_status_segments(self) -> None:
+        self.assertEqual(join_status_segments("elapsed=00:10", None, "", "eta=00:20"), "elapsed=00:10  |  eta=00:20")
+        self.assertEqual(progress_meter(3, 10, width=5), "[##...]  30%")
+        self.assertEqual(
+            build_progress_status(current=3, total=10, width=5, segments=("elapsed=00:10", "eta=00:20")),
+            "[##...]  30%  |  elapsed=00:10  |  eta=00:20",
         )
 
 

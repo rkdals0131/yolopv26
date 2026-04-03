@@ -78,6 +78,29 @@ def format_duration(seconds: float | None, *, unavailable: str = "n/a") -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def join_status_segments(*segments: Any) -> str:
+    return "  |  ".join(str(item) for item in segments if item not in {None, ""})
+
+
+def progress_meter(current: int, total: int | None, *, width: int = 8) -> str | None:
+    if total is None or int(total) <= 0:
+        return None
+    bounded_current = max(0, min(int(current), int(total)))
+    ratio = float(bounded_current) / float(int(total))
+    filled = min(width, max(0, int(round(ratio * float(width)))))
+    return f"[{'#' * filled}{'.' * (width - filled)}] {ratio * 100.0:3.0f}%"
+
+
+def build_progress_status(
+    *,
+    current: int,
+    total: int | None,
+    width: int = 8,
+    segments: Iterable[Any] = (),
+) -> str:
+    return join_status_segments(progress_meter(current, total, width=width), *segments)
+
+
 def maybe_build_summary_writer(log_dir: Path, *, purge_step: int | None = None):
     try:
         from torch.utils.tensorboard import SummaryWriter
@@ -119,4 +142,3 @@ def write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any],
         writer.add_scalar(name, value, global_step=int(step))
         count += 1
     return count
-
