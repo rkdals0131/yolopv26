@@ -11,6 +11,8 @@ __all__ = [
     "build_epoch_tensorboard_payload",
     "build_train_step_tensorboard_payload",
     "maybe_build_summary_writer",
+    "resolve_tensorboard_status",
+    "tensorboard_event_files",
     "write_tensorboard_scalars",
 ]
 
@@ -22,6 +24,27 @@ def maybe_build_summary_writer(log_dir: Path):
 
 def write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
     return _common_write_tensorboard_scalars(writer, prefix, payload, step)
+
+
+def resolve_tensorboard_status(trainer: Any, tensorboard_dir: Path) -> dict[str, Any]:
+    return dict(
+        getattr(
+            trainer,
+            "od_tensorboard_status",
+            {
+                "enabled": False,
+                "status": "unknown_no_callbacks",
+                "error": None,
+                "log_dir": str(tensorboard_dir),
+            },
+        )
+    )
+
+
+def tensorboard_event_files(tensorboard_dir: Path) -> list[str]:
+    if not tensorboard_dir.is_dir():
+        return []
+    return sorted(path.name for path in tensorboard_dir.glob("events.out.tfevents*"))
 
 
 def _coerce_scalar(value: Any) -> float | None:
@@ -176,4 +199,6 @@ def build_train_step_tensorboard_payload(
 _build_epoch_tensorboard_payload = build_epoch_tensorboard_payload
 _build_train_step_tensorboard_payload = build_train_step_tensorboard_payload
 _maybe_build_summary_writer = maybe_build_summary_writer
+_resolve_tensorboard_status = resolve_tensorboard_status
+_tensorboard_event_files = tensorboard_event_files
 _write_tensorboard_scalars = write_tensorboard_scalars
