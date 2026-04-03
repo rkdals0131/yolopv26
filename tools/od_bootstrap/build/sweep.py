@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TypedDict, cast
 
 import torch
 
@@ -22,14 +22,30 @@ from .artifacts import (
     write_teacher_job_manifest,
     write_teacher_predictions,
 )
+from .exhaustive_od import (
+    ExhaustiveMaterializationSummary,
+    TeacherPredictionRow,
+    materialize_exhaustive_od_dataset,
+)
 from .image_list import ImageListEntry, load_image_list
-from .exhaustive_od import materialize_exhaustive_od_dataset
 from ..teacher.policy import row_passes_policy
 from .sweep_types import BootstrapSweepScenario, ClassPolicy, TeacherConfig
 
 
+class ModelCentricSweepSummary(TypedDict):
+    run_id: str
+    run_dir: str
+    image_count: int
+    teacher_names: list[str]
+    class_policy_path: str
+    teacher_jobs: list[dict[str, Any]]
+    materialization: ExhaustiveMaterializationSummary
+
+
 def _log_bootstrap(message: str) -> None:
     print(f"[od_bootstrap.sweep] {message}", flush=True)
+
+
 def _safe_name(value: str) -> str:
     normalized = "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in value.strip())
     return normalized.strip("_") or "od_bootstrap"
@@ -77,8 +93,8 @@ def _extract_teacher_rows(
     batch_entries: list[ImageListEntry],
     results: list[Any],
     class_policy: dict[str, ClassPolicy],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+) -> list[TeacherPredictionRow]:
+    rows: list[TeacherPredictionRow] = []
     entry_by_path = {str(entry.image_path.resolve()): entry for entry in batch_entries}
     for result_index, result in enumerate(results):
         result_path = str(Path(str(getattr(result, "path", ""))).resolve())
@@ -100,13 +116,13 @@ def _extract_teacher_rows(
         xyxy_rows = torch.as_tensor(getattr(boxes, "xyxy", None)).tolist()
         cls_rows = torch.as_tensor(getattr(boxes, "cls", None)).tolist()
         conf_rows = torch.as_tensor(getattr(boxes, "conf", None)).tolist()
-        filtered: list[dict[str, Any]] = []
+        filtered: list[TeacherPredictionRow] = []
         for box_index, (box, cls_index, confidence) in enumerate(zip(xyxy_rows, cls_rows, conf_rows)):
             class_name = str(names.get(int(cls_index), str(int(cls_index))))
             if class_name not in teacher.classes:
                 continue
             policy = class_policy[class_name]
-            row = {
+            row: TeacherPredictionRow = {
                 "sample_id": entry.sample_id,
                 "sample_uid": entry.sample_uid,
                 "image_path": str(entry.image_path),
@@ -132,11 +148,16 @@ def _extract_teacher_rows(
                 continue
             filtered.append(row)
 
-        by_class: dict[str, list[dict[str, Any]]] = {}
+        by_class: dict[str, list[TeacherPredictionRow]] = {}
         for row in filtered:
             by_class.setdefault(str(row["class_name"]), []).append(row)
         for class_name, class_rows in by_class.items():
-            rows.extend(nms_rows(class_rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
+            rows.extend(
+                cast(
+                    list[TeacherPredictionRow],
+                    nms_rows(class_rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)),
+                )
+            )
     return rows
 
 
@@ -145,13 +166,13 @@ def _run_teacher_inference(
     teacher: TeacherConfig,
     entries: tuple[ImageListEntry, ...],
     scenario: BootstrapSweepScenario,
-) -> list[dict[str, Any]]:
+) -> list[TeacherPredictionRow]:
     if YOLO is None:  # pragma: no cover
         raise RuntimeError("ultralytics is not installed")
     if not teacher.checkpoint_path.is_file():
         raise FileNotFoundError(f"teacher checkpoint not found: {teacher.checkpoint_path}")
     model = YOLO(str(teacher.checkpoint_path))
-    rows: list[dict[str, Any]] = []
+    rows: list[TeacherPredictionRow] = []
     total_images = len(entries)
     processed_images = 0
     last_logged = 0
@@ -192,7 +213,11 @@ def _run_teacher_inference(
     return rows
 
 
-def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenario_path: Path) -> dict[str, Any]:
+def run_model_centric_sweep_scenario(
+    scenario: BootstrapSweepScenario,
+    *,
+    scenario_path: Path,
+) -> ModelCentricSweepSummary:
     entries = load_image_list(scenario.image_list.manifest_path)
     created_at = _now_iso()
     run_id = _resolve_run_id(scenario_path)
@@ -215,7 +240,7 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
     write_run_manifest(run_dir, run_manifest)
     write_image_list_snapshot(run_dir, entries)
 
-    predictions_by_sample_uid: dict[str, list[dict[str, Any]]] = {}
+    predictions_by_sample_uid: dict[str, list[TeacherPredictionRow]] = {}
     teacher_jobs: list[dict[str, Any]] = []
     for teacher in scenario.teachers:
         predictions_path = teacher_output_dir(run_dir, teacher.name) / "predictions.jsonl"
@@ -245,7 +270,7 @@ def run_model_centric_sweep_scenario(scenario: BootstrapSweepScenario, *, scenar
         log_fn=_log_bootstrap,
     )
 
-    summary = {
+    summary: ModelCentricSweepSummary = {
         "run_id": run_id,
         "run_dir": str(run_dir),
         "image_count": len(entries),
