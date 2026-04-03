@@ -13,7 +13,7 @@
 - `source/`
   - raw BDD/AIHUB를 canonicalize
   - source prep preset과 canonical bundle typing을 제공한다
-  - 주요 모듈: `aihub.py`, `bdd100k.py`, `prepare.py`, `types.py`
+  - 주요 모듈: `source/aihub/pipeline.py`, `source/aihub/`, `source/shared/`, `bdd100k.py`, `prepare.py`, `types.py`
 - `build/`
   - bootstrap용 image list 생성
   - teacher train dataset 3개 생성
@@ -24,6 +24,7 @@
   - `mobility`, `signal`, `obstacle` teacher를 direct Ultralytics YOLO로 파인튜닝
   - checkpoint evaluation
   - class policy calibration
+  - runtime helper family는 `teacher/runtime/` 아래에 둔다
 - `cli.py`
   - `python -m tools.od_bootstrap` 단일 진입점
 - `presets.py`
