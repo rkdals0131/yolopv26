@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-from model.engine._det_geometry import _decode_anchor_relative_boxes, _make_anchor_grid
+from model.engine.det_geometry import decode_anchor_relative_boxes, make_anchor_grid
 
 
 def _inverse_softplus(value: float) -> float:
@@ -14,7 +14,7 @@ def _inverse_softplus(value: float) -> float:
 
 class PV26DetGeometryTests(unittest.TestCase):
     def test_make_anchor_grid_stacks_feature_levels_in_query_order(self) -> None:
-        anchor_points, stride_tensor = _make_anchor_grid(
+        anchor_points, stride_tensor = make_anchor_grid(
             [(1, 2), (2, 1)],
             [8, 16],
             dtype=torch.float32,
@@ -48,7 +48,7 @@ class PV26DetGeometryTests(unittest.TestCase):
             dtype=torch.float32,
         )
 
-        boxes = _decode_anchor_relative_boxes(logits, anchor_points, stride_tensor)
+        boxes = decode_anchor_relative_boxes(logits, anchor_points, stride_tensor)
         expected = torch.tensor(
             [
                 [

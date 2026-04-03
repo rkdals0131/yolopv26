@@ -6,7 +6,6 @@ from typing import Any, Callable
 
 import torch
 
-from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
 from ..data.target_encoder import encode_pv26_batch
 from . import _trainer_checkpoint as _checkpoint
 from . import _trainer_epochs as _epochs
@@ -17,6 +16,7 @@ from . import trainer_reporting as _reporting
 from .batch import move_batch_to_device
 from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
 from .spec import build_loss_spec
+from .train_summary import resolve_summary_path
 from ..net.trunk import forward_pyramid_features
 
 
@@ -33,14 +33,6 @@ RUN_MANIFEST_VERSION = "pv26-train-run-v1"
 OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TIMING_KEYS = _reporting.TIMING_KEYS
 TENSORBOARD_LOSS_KEYS = _reporting.TENSORBOARD_LOSS_KEYS
-# Keep only the explicit compatibility shims that the repo still imports or patches
-# from `model.engine.trainer`; internal call sites use helper modules directly.
-_format_epoch_completion_log = _reporting._format_epoch_completion_log
-_format_train_live_detail = _reporting._format_train_live_detail
-_format_train_progress_log = _reporting._format_train_progress_log
-_maybe_build_summary_writer = _io._maybe_build_summary_writer
-_tensorboard_epoch_payload = _reporting._tensorboard_epoch_payload
-_tensorboard_train_step_payload = _reporting._tensorboard_train_step_payload
 
 
 def _canonical_stage(stage: str) -> str:
@@ -84,15 +76,6 @@ def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, floa
             values["head_lr"] = float(group.get("lr", values["head_lr"]))
             values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
     return values
-
-
-def _resolve_summary_path(summary: dict[str, Any], path: str) -> float:
-    current: Any = summary
-    for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            raise KeyError(f"summary path not found: {path}")
-        current = current[part]
-    return float(current)
 
 
 def _is_better(candidate: float, current_best: float | None, mode: str) -> bool:
@@ -541,9 +524,9 @@ class PV26Trainer:
             now_iso_fn=_io._now_iso,
             write_json_fn=_io._write_json,
             json_ready_fn=_io._json_ready,
-            maybe_build_summary_writer_fn=_maybe_build_summary_writer,
+            maybe_build_summary_writer_fn=_io._maybe_build_summary_writer,
             optimizer_group_hparams_fn=_optimizer_group_hparams,
-            resolve_summary_path_fn=_resolve_summary_path,
+            resolve_summary_path_fn=resolve_summary_path,
             is_better_fn=_is_better,
             write_tensorboard_scalars_fn=_reporting._write_tensorboard_scalars,
             tensorboard_epoch_payload_fn=_reporting._tensorboard_epoch_payload,
@@ -590,14 +573,7 @@ __all__ = [
     "TIMING_KEYS",
     "TENSORBOARD_LOSS_KEYS",
     "build_pv26_optimizer",
+    "build_pv26_scheduler",
     "configure_pv26_train_stage",
     "run_pv26_tiny_overfit",
-    "_format_epoch_completion_log",
-    "_format_train_live_detail",
-    "_format_train_progress_log",
-    "_flatten_scalar_tree",
-    "_maybe_build_summary_writer",
-    "_resolve_summary_path",
-    "_tensorboard_epoch_payload",
-    "_tensorboard_train_step_payload",
 ]

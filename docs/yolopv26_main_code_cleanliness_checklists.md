@@ -48,8 +48,8 @@
 ## 4순위. `model/engine/` 내부 API 경계 정리
 
 - [x] `model/engine/trainer.py`가 `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`의 private helper를 대량 re-export/alias 하는 구조를 줄인다.
-- [ ] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다.
-- [ ] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다.
+- [x] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다.
+- [x] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다.
 - [x] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
 - [x] `model/engine/trainer.py`와 `model/engine/evaluator.py`의 `_move_to_device` 중복을 공용 batch helper로 정리한다.
 - [x] `model/engine/_trainer_epochs.py`와 `model/engine/evaluator.py`의 `_raw_batch_for_metrics`, `_augment_lane_family_metrics` 중복을 공용 helper로 정리한다.
@@ -57,6 +57,7 @@
 - [x] raw batch unwrap, lane family metric augmentation, move-to-device 같은 engine 공통 batch/helper를 `model/engine/batch.py`로 재배치한다.
 - [x] `model/engine/_trainer_epochs.py`에 몰린 epoch-level runtime/reporting helper를 정리해 파일 덩치를 줄인다.
 - [x] `model/engine/_loss_spec.py: build_loss_spec()`의 큰 spec builder 흐름을 단계별 helper/contract로 분리해 회귀 범위를 줄인다.
+- `2026-04-03` rank-4 follow-up: `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py` public shared surface를 추가하고 `loss.py`, `postprocess.py`, `_trainer_epochs.py`, `tools/run_pv26_train.py`, 테스트가 underscore compatibility shim 대신 해당 모듈을 직접 사용하도록 정리한다.
 
 ## 5순위. manifest row와 느슨한 dict 계약 축소
 

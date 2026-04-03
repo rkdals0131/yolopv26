@@ -15,6 +15,7 @@ from common.io import (
     write_json as common_write_json,
     write_jsonl_sorted as common_write_jsonl_sorted,
 )
+from common.scalars import flatten_scalar_tree
 from common.train_runtime import maybe_build_summary_writer as common_maybe_build_summary_writer
 from model.engine import _trainer_io
 from model.engine.loss import build_loss_spec
@@ -223,7 +224,7 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(_trainer_io._default_run_dir(), Path("runs/pv26_train/pv26_fit_20260403_010203"))
 
     def test_format_train_live_detail_compacts_to_two_lines(self) -> None:
-        from model.engine.trainer import _format_train_live_detail
+        from model.engine.trainer_reporting import _format_train_live_detail
 
         message = _format_train_live_detail(
             losses={
@@ -251,7 +252,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertNotIn("total=1.2500", message)
 
     def test_format_train_progress_log_includes_phase_epoch_and_multiline_groups(self) -> None:
-        from model.engine.trainer import _format_train_progress_log
+        from model.engine.trainer_reporting import _format_train_progress_log
 
         message = _format_train_progress_log(
             stage="stage_2_partial_unfreeze",
@@ -334,8 +335,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  loss  |  det=0.5000", message)
         self.assertIn("  timing_ms  |  eval=30.000", message)
 
-    def test_trainer_reporting_public_module_reexports_progress_helpers(self) -> None:
-        from model.engine import _trainer_reporting as private_reporting
+    def test_trainer_reporting_public_module_exports_progress_helpers(self) -> None:
         from model.engine import trainer_reporting as public_reporting
 
         exported_names = (
@@ -351,20 +351,20 @@ class PV26TrainerTests(unittest.TestCase):
         for name in exported_names:
             with self.subTest(name=name):
                 self.assertIn(name, public_reporting.__all__)
-                self.assertIs(getattr(public_reporting, name), getattr(private_reporting, name))
+                self.assertTrue(callable(getattr(public_reporting, name)))
 
     def test_trainer_progress_helpers_trim_windows_and_force_final_logs(self) -> None:
-        from model.engine._trainer_progress import _should_log_progress, _summarize_progress, _update_timing_window
+        from model.engine.trainer_progress import should_log_progress, summarize_progress, update_timing_window
 
         timing_window: list[dict[str, float]] = []
-        timing_window = _update_timing_window(timing_window, {"iteration_sec": 0.5}, profile_window=2)
-        timing_window = _update_timing_window(timing_window, {"iteration_sec": 1.5}, profile_window=2)
-        timing_window = _update_timing_window(timing_window, {"iteration_sec": 2.0}, profile_window=2)
+        timing_window = update_timing_window(timing_window, {"iteration_sec": 0.5}, profile_window=2)
+        timing_window = update_timing_window(timing_window, {"iteration_sec": 1.5}, profile_window=2)
+        timing_window = update_timing_window(timing_window, {"iteration_sec": 2.0}, profile_window=2)
 
         self.assertEqual(timing_window, [{"iteration_sec": 1.5}, {"iteration_sec": 2.0}])
 
-        with mock.patch("model.engine._trainer_progress.time.perf_counter", return_value=25.0):
-            profile_summary, elapsed_sec, eta_sec = _summarize_progress(
+        with mock.patch("model.engine.trainer_progress.time.perf_counter", return_value=25.0):
+            profile_summary, elapsed_sec, eta_sec = summarize_progress(
                 started_at=10.0,
                 batch_index=3,
                 total_batches=5,
@@ -377,12 +377,12 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(profile_summary["iteration_sec"]["mean"], 1.75)
         self.assertEqual(elapsed_sec, 15.0)
         self.assertEqual(eta_sec, 3.5)
-        self.assertFalse(_should_log_progress(batch_index=1, total_batches=5, log_every_n_steps=2))
-        self.assertTrue(_should_log_progress(batch_index=2, total_batches=5, log_every_n_steps=2))
-        self.assertTrue(_should_log_progress(batch_index=5, total_batches=5, log_every_n_steps=10))
+        self.assertFalse(should_log_progress(batch_index=1, total_batches=5, log_every_n_steps=2))
+        self.assertTrue(should_log_progress(batch_index=2, total_batches=5, log_every_n_steps=2))
+        self.assertTrue(should_log_progress(batch_index=5, total_batches=5, log_every_n_steps=10))
 
     def test_format_epoch_completion_log_is_concise_and_includes_checkpoint_state(self) -> None:
-        from model.engine.trainer import _format_epoch_completion_log
+        from model.engine.trainer_reporting import _format_epoch_completion_log
 
         message = _format_epoch_completion_log(
             phase_index=1,
@@ -407,7 +407,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("checkpoint=last,best", message)
 
     def test_tensorboard_train_step_payload_keeps_only_core_scalars(self) -> None:
-        import model.engine.trainer as pv26_trainer
+        from model.engine import trainer_reporting as trainer_reporting
 
         summary = {
             "successful": True,
@@ -420,7 +420,7 @@ class PV26TrainerTests(unittest.TestCase):
                 "crosswalk": 4.0,
             },
             "optimizer_lrs": {"trunk": 1e-4, "heads": 5e-3, "aux": 1e-3},
-            "timing": {key: 0.1 for key in pv26_trainer.TIMING_KEYS},
+            "timing": {key: 0.1 for key in trainer_reporting.TIMING_KEYS},
             "source_counts": {
                 "det_source_samples": 8,
                 "tl_attr_source_samples": 4,
@@ -444,8 +444,8 @@ class PV26TrainerTests(unittest.TestCase):
             "skipped_reason": None,
         }
 
-        payload = pv26_trainer._tensorboard_train_step_payload(summary)
-        scalar_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("train_step", payload)}
+        payload = trainer_reporting._tensorboard_train_step_payload(summary)
+        scalar_names = {name for name, _ in flatten_scalar_tree("train_step", payload)}
 
         self.assertIn("train_step/loss/total", scalar_names)
         self.assertIn("train_step/profile_sec/iteration_sec", scalar_names)
@@ -456,7 +456,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertNotIn("train_step/det_components/det_obj_loss", scalar_names)
 
     def test_tensorboard_epoch_payload_keeps_named_lr_loss_and_val_metrics_only(self) -> None:
-        import model.engine.trainer as pv26_trainer
+        from model.engine import trainer_reporting as trainer_reporting
 
         epoch_summary = {
             "train": {
@@ -484,8 +484,8 @@ class PV26TrainerTests(unittest.TestCase):
             },
         }
 
-        payload = pv26_trainer._tensorboard_epoch_payload(epoch_summary)
-        scalar_names = {name for name, _ in pv26_trainer._flatten_scalar_tree("epoch", payload)}
+        payload = trainer_reporting._tensorboard_epoch_payload(epoch_summary)
+        scalar_names = {name for name, _ in flatten_scalar_tree("epoch", payload)}
 
         self.assertIn("epoch/lr/trunk", scalar_names)
         self.assertIn("epoch/lr/heads", scalar_names)
@@ -496,6 +496,32 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertNotIn("epoch/train/duration_sec", scalar_names)
         self.assertNotIn("epoch/train/profile_sec/iteration_sec", scalar_names)
         self.assertNotIn("epoch/val/duration_sec", scalar_names)
+
+    def test_trainer_module_exports_runtime_public_surface_only(self) -> None:
+        import model.engine.trainer as pv26_trainer
+
+        for name in (
+            "_format_epoch_completion_log",
+            "_format_train_live_detail",
+            "_format_train_progress_log",
+            "_flatten_scalar_tree",
+            "_maybe_build_summary_writer",
+            "_resolve_summary_path",
+            "_tensorboard_epoch_payload",
+            "_tensorboard_train_step_payload",
+        ):
+            with self.subTest(name=name):
+                self.assertNotIn(name, pv26_trainer.__all__)
+                self.assertFalse(hasattr(pv26_trainer, name))
+
+        self.assertIn("build_pv26_scheduler", pv26_trainer.__all__)
+
+    def test_resolve_summary_path_public_helper_reads_nested_float_values(self) -> None:
+        from model.engine.train_summary import resolve_summary_path
+
+        summary = {"train": {"losses": {"total": {"mean": 1.25}}}}
+
+        self.assertEqual(resolve_summary_path(summary, "train.losses.total.mean"), 1.25)
 
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.engine.trainer import configure_pv26_train_stage
@@ -978,8 +1004,8 @@ class PV26TrainerTests(unittest.TestCase):
     def test_fit_auto_resume_purges_stale_tensorboard_steps_and_continues_step_index(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
+        import model.engine._trainer_io as trainer_io
         from model.net import build_yolo26n_trunk
-        import model.engine.trainer as pv26_trainer
 
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
         writer_calls: list[tuple[Path, int | None, _FakeSummaryWriter]] = []
@@ -997,7 +1023,7 @@ class PV26TrainerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "resume_fit_tb"
-            with mock.patch.object(pv26_trainer, "_maybe_build_summary_writer", side_effect=_fake_build_summary_writer):
+            with mock.patch.object(trainer_io, "_maybe_build_summary_writer", side_effect=_fake_build_summary_writer):
                 trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
                 first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, enable_tensorboard=True)
 

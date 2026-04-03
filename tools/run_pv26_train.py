@@ -36,7 +36,7 @@ from model.data import (
     collate_pv26_samples,
 )
 from model.engine.trainer import PV26Trainer, build_pv26_scheduler
-from model.engine.trainer import _resolve_summary_path
+from model.engine.train_summary import resolve_summary_path
 from model.net import PV26Heads
 from model.net import build_yolo26n_trunk
 try:
@@ -343,7 +343,7 @@ class PhaseTransitionController:
         self._delegate = _runtime_ops.PhaseTransitionController(
             phase=phase,
             selection=selection,
-            resolve_summary_path=_resolve_summary_path,
+            resolve_summary_path=resolve_summary_path,
         )
 
     def __getattr__(self, name: str) -> Any:

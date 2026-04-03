@@ -8,16 +8,6 @@ import torch
 
 from .batch import augment_lane_family_metrics, raw_batch_for_metrics
 from ._trainer_io import _append_jsonl, _now_iso
-from ._trainer_progress import (
-    _build_progress_bar,
-    _emit_progress_message,
-    _next_loader_batch,
-    _safe_len,
-    _should_log_progress,
-    _sync_profile_device,
-    _summarize_progress,
-    _update_timing_window,
-)
 from .trainer_reporting import (
     _aggregate_assignment_modes,
     _aggregate_count_tree,
@@ -39,6 +29,16 @@ from .trainer_reporting import (
     _validate_progress_postfix,
     _validation_timing_profile,
     _zero_successful_batches_error,
+)
+from .trainer_progress import (
+    build_progress_bar,
+    emit_progress_message,
+    next_loader_batch,
+    safe_len,
+    should_log_progress,
+    summarize_progress,
+    sync_profile_device,
+    update_timing_window,
 )
 
 def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -77,10 +77,10 @@ def run_train_epoch(
     step_summaries: list[dict[str, Any]] = []
     timing_window: list[dict[str, Any]] = []
     start_step = trainer.global_step
-    total_batches = max_batches if max_batches is not None else _safe_len(loader)
+    total_batches = max_batches if max_batches is not None else safe_len(loader)
     loader_iter = iter(loader)
     batch_index = 0
-    progress_bar = _build_progress_bar(
+    progress_bar = build_progress_bar(
         total=total_batches,
         desc=_train_progress_desc(
             stage=trainer.stage,
@@ -94,7 +94,7 @@ def run_train_epoch(
     )
     try:
         while max_batches is None or batch_index < max_batches:
-            has_batch, batch, wait_sec = _next_loader_batch(loader_iter)
+            has_batch, batch, wait_sec = next_loader_batch(loader_iter)
             if not has_batch:
                 break
             batch_index += 1
@@ -103,8 +103,8 @@ def run_train_epoch(
                 wait_sec=wait_sec,
                 profile_device_sync=profile_device_sync,
             )
-            timing_window = _update_timing_window(timing_window, step_summary, profile_window=profile_window)
-            profile_summary, elapsed_sec, eta_sec = _summarize_progress(
+            timing_window = update_timing_window(timing_window, step_summary, profile_window=profile_window)
+            profile_summary, elapsed_sec, eta_sec = summarize_progress(
                 started_at=started_at,
                 batch_index=batch_index,
                 total_batches=total_batches,
@@ -123,7 +123,7 @@ def run_train_epoch(
             step_summaries.append(step_summary)
             if step_log_path is not None:
                 _append_jsonl(step_log_path, step_summary)
-            should_log = _should_log_progress(
+            should_log = should_log_progress(
                 batch_index=batch_index,
                 total_batches=total_batches,
                 log_every_n_steps=log_every_n_steps,
@@ -146,7 +146,7 @@ def run_train_epoch(
                     losses=step_summary["losses"],
                     profile_summary=step_summary["profile"],
                 )
-                _emit_progress_message(
+                emit_progress_message(
                     detail_message if progress_bar is not None else _format_train_progress_log(
                         stage=trainer.stage,
                         phase_index=phase_index,
@@ -225,10 +225,10 @@ def run_validate_epoch(
     raw_batches: list[dict[str, Any]] = []
     epoch_predictions: list[dict[str, Any]] = []
     timing_window: list[dict[str, float]] = []
-    total_batches = max_batches if max_batches is not None else _safe_len(loader)
+    total_batches = max_batches if max_batches is not None else safe_len(loader)
     loader_iter = iter(loader)
     batch_index = 0
-    progress_bar = _build_progress_bar(
+    progress_bar = build_progress_bar(
         total=total_batches,
         desc=_validate_progress_desc(
             stage=trainer.stage,
@@ -242,16 +242,16 @@ def run_validate_epoch(
     )
     try:
         while max_batches is None or batch_index < max_batches:
-            has_batch, batch, wait_sec = _next_loader_batch(loader_iter)
+            has_batch, batch, wait_sec = next_loader_batch(loader_iter)
             if not has_batch:
                 break
             batch_index += 1
             raw_batch = raw_batch_for_metrics(batch)
             needs_predictions = raw_batch is not None
-            _sync_profile_device(trainer.device, profile_device_sync)
+            sync_profile_device(trainer.device, profile_device_sync)
             evaluate_started_at = time.perf_counter()
             batch_summary = evaluator.evaluate_batch(batch, include_predictions=needs_predictions)
-            _sync_profile_device(trainer.device, profile_device_sync)
+            sync_profile_device(trainer.device, profile_device_sync)
             evaluate_ended_at = time.perf_counter()
             batch_summary = dict(batch_summary)
             batch_timing = {
@@ -261,15 +261,15 @@ def run_validate_epoch(
             batch_timing["iteration_sec"] = float(batch_timing["wait_sec"]) + float(batch_timing["evaluate_sec"])
             batch_summary["timing"] = batch_timing
             batch_summaries.append(batch_summary)
-            timing_window = _update_timing_window(timing_window, batch_timing, profile_window=profile_window)
-            profile_summary, elapsed_sec, eta_sec = _summarize_progress(
+            timing_window = update_timing_window(timing_window, batch_timing, profile_window=profile_window)
+            profile_summary, elapsed_sec, eta_sec = summarize_progress(
                 started_at=started_at,
                 batch_index=batch_index,
                 total_batches=total_batches,
                 timing_window=timing_window,
                 profile_builder=_validation_timing_profile,
             )
-            should_log = _should_log_progress(
+            should_log = should_log_progress(
                 batch_index=batch_index,
                 total_batches=total_batches,
                 log_every_n_steps=log_every_n_steps,
@@ -294,7 +294,7 @@ def run_validate_epoch(
                     batch_summary=batch_summary,
                     profile_summary=profile_summary,
                 )
-                _emit_progress_message(
+                emit_progress_message(
                     detail_message if progress_bar is not None else _format_validate_progress_log(
                         stage=trainer.stage,
                         phase_index=phase_index,
@@ -324,7 +324,7 @@ def run_validate_epoch(
             phase_name=phase_name,
         )
         phase_prefix = f"{phase_label} " if phase_label else ""
-        _emit_progress_message(
+        emit_progress_message(
             (
                 "[val] "
                 f"{phase_prefix}"
@@ -343,7 +343,7 @@ def run_validate_epoch(
             metrics = _mean_metric_tree(metric_summaries) if metric_summaries else {}
         metrics = augment_lane_family_metrics(metrics)
         metric_summary_ended_at = time.perf_counter()
-        _emit_progress_message(
+        emit_progress_message(
             (
                 "[val] "
                 f"{phase_prefix}"

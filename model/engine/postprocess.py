@@ -13,7 +13,7 @@ from ..data.transform import (
     transform_from_meta,
     unique_point_count,
 )
-from ._det_geometry import _decode_anchor_relative_boxes, _make_anchor_grid
+from .det_geometry import decode_anchor_relative_boxes, make_anchor_grid
 from .spec import build_loss_spec
 
 
@@ -107,13 +107,13 @@ def _decode_detection_rows(
         raise ValueError("det feature metadata does not match detector query count")
 
     transform = transform_from_meta(meta)
-    anchor_points, stride_tensor = _make_anchor_grid(
+    anchor_points, stride_tensor = make_anchor_grid(
         [(int(height), int(width)) for height, width in feature_shapes],
         [int(value) for value in feature_strides],
         dtype=det_rows.dtype,
         device=det_rows.device,
     )
-    boxes = _decode_anchor_relative_boxes(det_rows[:, :4].unsqueeze(0), anchor_points, stride_tensor).squeeze(0)
+    boxes = decode_anchor_relative_boxes(det_rows[:, :4].unsqueeze(0), anchor_points, stride_tensor).squeeze(0)
     obj_scores = det_rows[:, 4].sigmoid()
     cls_scores = det_rows[:, 5:].sigmoid()
     best_cls_scores, class_ids = cls_scores.max(dim=-1)

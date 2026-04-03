@@ -121,6 +121,7 @@
 - `2026-04-03` wave 5 expanded manifest typing into `exhaustive_od.py` / `final_dataset.py` / `sweep.py` and split `calibrate_class_policy_scenario()` into narrower stage helpers
 - `2026-04-03` wave 6 added `common/train_runtime.py`, routed trainer/teacher runtime helper duplicates through it, promoted `model.engine.trainer_reporting` as a public shared surface, and aligned build/check_env/tests with manifest/summary filename constants
 - `2026-04-03` wave 7 anchored source shared IO/raw shims to common/raw contracts, moved epoch-loop bookkeeping helpers into `_trainer_progress.py`, extracted teacher train-summary publication into `runtime_artifacts.py`, and centralized sorted JSON helper variants in `common.io`
+- `2026-04-03` rank-4 follow-up promoted `model/engine/det_geometry.py`, `model/engine/train_summary.py`, and `model/engine/trainer_progress.py` as public shared engine surfaces, while `trainer.py` shed the remaining reporting/tensorboard/summary compatibility exports and `tools/run_pv26_train.py` + tests switched to the shared modules directly
 
 ## priority-2b extraction review boundary
 
