@@ -14,7 +14,6 @@ from .raw_common import (
     _extract_image_size,
     _extract_points,
     _extract_tl_state,
-    _extract_annotations,
     _normalize_text,
     _now_iso,
     _probe_image_size,
@@ -63,9 +62,7 @@ def extract_tl_state(annotation: dict[str, Any]) -> str:
 def normalize_text(value: Any) -> str:
     return _normalize_text(value)
 
-
-def now_iso() -> str:
-    return _now_iso()
+now_iso = _now_iso
 
 
 def probe_image_size(path: Path) -> tuple[int, int]:
