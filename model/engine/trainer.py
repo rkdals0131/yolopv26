@@ -12,8 +12,8 @@ from . import _trainer_checkpoint as _checkpoint
 from . import _trainer_epochs as _epochs
 from . import _trainer_fit as _fit
 from . import _trainer_io as _io
-from . import _trainer_reporting as _reporting
 from . import _trainer_step as _step
+from . import trainer_reporting as _reporting
 from .batch import move_batch_to_device
 from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
 from .spec import build_loss_spec

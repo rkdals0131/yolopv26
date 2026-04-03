@@ -277,7 +277,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  timing_ms  |  load=20.000", message)
 
     def test_format_validate_progress_log_includes_phase_epoch_and_eval_timing(self) -> None:
-        from model.engine._trainer_reporting import _format_validate_progress_log
+        from model.engine.trainer_reporting import _format_validate_progress_log
 
         message = _format_validate_progress_log(
             stage="stage_2_partial_unfreeze",

@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from ._trainer_reporting import _tensorboard_train_step_payload, _write_tensorboard_scalars
+from .trainer_reporting import _tensorboard_train_step_payload, _write_tensorboard_scalars
 from .loss import PV26DetAssignmentUnavailable
 
 

@@ -14,7 +14,7 @@ from ._trainer_progress import (
     _should_use_rich_progress,
     _sync_profile_device,
 )
-from ._trainer_reporting import (
+from .trainer_reporting import (
     _aggregate_assignment_modes,
     _aggregate_count_tree,
     _format_fraction,

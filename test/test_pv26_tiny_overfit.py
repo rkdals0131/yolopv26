@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 from model.data.transform import TrainAugmentationConfig, apply_train_augmentations
-from model.engine._trainer_reporting import _loss_stats_from_summaries
+from model.engine.trainer_reporting import _loss_stats_from_summaries
 from runtime_support import has_yolo26_runtime
 from tools.od_bootstrap.source.aihub import run_standardization as run_aihub_standardization
 
