@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from common.io import now_iso, write_json
+from common.io import now_iso, remove_path, write_json
 from .runtime_tensorboard import resolve_tensorboard_status, tensorboard_event_files
 
 __all__ = [
@@ -16,19 +16,12 @@ __all__ = [
     "refresh_latest_teacher_artifacts",
 ]
 
-
-def _remove_path(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-        return
-    if path.is_dir():
-        shutil.rmtree(path)
-
-
 def _link_or_copy_file(source: Path, destination: Path) -> str:
+    """Refresh alias weights locally: hardlink first, then symlink, then copy."""
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() or destination.is_symlink():
-        _remove_path(destination)
+        remove_path(destination)
     try:
         destination.hardlink_to(source)
         return "hardlink"

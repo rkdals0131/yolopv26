@@ -21,6 +21,7 @@ from tools.od_bootstrap.teacher.runtime_artifacts import (
     build_teacher_train_summary,
     finalize_teacher_train_artifacts,
     publish_teacher_train_summary,
+    refresh_latest_teacher_artifacts,
 )
 from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
 from tools.od_bootstrap.teacher.runtime_progress import (
@@ -343,6 +344,38 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertTrue(Path(latest_artifacts["train_summary_path"]).is_file())
             latest_payload = json.loads(Path(latest_artifacts["train_summary_path"]).read_text(encoding="utf-8"))
             self.assertEqual(latest_payload["run_dir"], str(run_dir))
+
+    def test_refresh_latest_teacher_artifacts_replaces_existing_aliases_and_falls_back_to_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            teacher_root = root / "runs" / "mobility"
+            run_dir = teacher_root / "20260403_000001"
+            best_checkpoint = run_dir / "weights" / "best.pt"
+            last_checkpoint = run_dir / "weights" / "last.pt"
+            best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            best_checkpoint.write_text("best-new", encoding="utf-8")
+            last_checkpoint.write_text("last-new", encoding="utf-8")
+
+            alias_weights_root = teacher_root / "weights"
+            alias_weights_root.mkdir(parents=True, exist_ok=True)
+            (alias_weights_root / "best.pt").write_text("best-stale", encoding="utf-8")
+            (alias_weights_root / "last.pt").write_text("last-stale", encoding="utf-8")
+
+            with patch("pathlib.Path.hardlink_to", side_effect=OSError("no hardlink")), patch(
+                "tools.od_bootstrap.teacher.runtime_artifacts.os.symlink",
+                side_effect=OSError("no symlink"),
+            ):
+                latest_artifacts = refresh_latest_teacher_artifacts(
+                    teacher_root=teacher_root,
+                    run_dir=run_dir,
+                    summary={"teacher_name": "mobility"},
+                )
+
+            self.assertEqual(latest_artifacts["alias_actions"], {"best.pt": "copy", "last.pt": "copy"})
+            self.assertEqual((alias_weights_root / "best.pt").read_text(encoding="utf-8"), "best-new")
+            self.assertEqual((alias_weights_root / "last.pt").read_text(encoding="utf-8"), "last-new")
+            latest_run_payload = json.loads((teacher_root / "latest_run.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest_run_payload["alias_actions"], {"best.pt": "copy", "last.pt": "copy"})
 
     def test_resolve_resume_argument_prefers_resumable_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

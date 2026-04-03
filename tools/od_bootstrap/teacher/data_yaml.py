@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from common.io import ensure_parent_dir, remove_path
+
 
 @dataclass(frozen=True)
 class TeacherDatasetLayout:
@@ -18,18 +20,12 @@ class TeacherDatasetLayout:
     train_split: str = "train"
     val_split: str = "val"
 
-
-def _ensure_parent(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
 def _link_or_copy_tree(source: Path, destination: Path) -> None:
+    """Stage split directories locally: replace stale paths, symlink when possible, else copy."""
+
     if destination.exists() or destination.is_symlink():
-        if destination.is_symlink() or destination.is_file():
-            destination.unlink()
-        else:
-            shutil.rmtree(destination)
-    _ensure_parent(destination)
+        remove_path(destination)
+    ensure_parent_dir(destination)
     try:
         os.symlink(source, destination, target_is_directory=True)
     except OSError:

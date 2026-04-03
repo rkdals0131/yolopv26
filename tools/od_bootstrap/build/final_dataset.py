@@ -12,6 +12,7 @@ from typing import Any, TypedDict
 
 import yaml
 
+from common.io import write_json as _write_common_json
 from common.paths import resolve_latest_root
 from common.pv26_schema import OD_CLASSES
 
@@ -86,7 +87,10 @@ class FinalDatasetBuildSummary(TypedDict):
 def _default_io_workers() -> int:
     return max(1, min(8, os.cpu_count() or 1))
 
+
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> None:
+    """Keep final-dataset image publication local: hardlink/copy only and never overwrite."""
+
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
         raise FileExistsError(f"target path already exists: {target_path}")
@@ -107,15 +111,13 @@ def _copy_json(source_path: Path, target_path: Path) -> None:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise FileExistsError(f"target path already exists: {path}")
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    _write_common_json(path, payload)
 
 
 def _write_json_replace(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    _write_common_json(path, payload)
 
 
 def _copy_optional(source_path: Path, target_path: Path) -> bool:
