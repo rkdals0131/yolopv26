@@ -6,8 +6,15 @@ import shutil
 from typing import Any
 
 from common.io import now_iso, write_json
+from .runtime_tensorboard import resolve_tensorboard_status, tensorboard_event_files
 
-__all__ = ["refresh_latest_teacher_artifacts"]
+__all__ = [
+    "build_teacher_runtime_artifact_paths",
+    "build_teacher_train_summary",
+    "finalize_teacher_train_artifacts",
+    "publish_teacher_train_summary",
+    "refresh_latest_teacher_artifacts",
+]
 
 
 def _remove_path(path: Path) -> None:
@@ -32,6 +39,77 @@ def _link_or_copy_file(source: Path, destination: Path) -> str:
         except OSError:
             shutil.copy2(source, destination)
             return "copy"
+
+
+def build_teacher_runtime_artifact_paths(run_dir: Path) -> dict[str, Path]:
+    tensorboard_dir = run_dir / "tensorboard"
+    return {
+        "best_checkpoint": run_dir / "weights" / "best.pt",
+        "last_checkpoint": run_dir / "weights" / "last.pt",
+        "profile_log": run_dir / "profile_log.jsonl",
+        "profile_summary": run_dir / "profile_summary.json",
+        "tensorboard_dir": tensorboard_dir,
+        "train_summary": run_dir / "train_summary.json",
+    }
+
+
+def build_teacher_train_summary(
+    *,
+    teacher_name: str,
+    resolved_weights: str,
+    dataset_yaml: Path,
+    teacher_root: Path,
+    run_dir: Path,
+    runtime_params: dict[str, Any],
+    train_kwargs: dict[str, Any],
+    train_result: Any,
+    trainer: Any,
+) -> dict[str, Any]:
+    artifact_paths = build_teacher_runtime_artifact_paths(run_dir)
+    tensorboard_dir = artifact_paths["tensorboard_dir"]
+    return {
+        "teacher_name": teacher_name,
+        "weights": resolved_weights,
+        "dataset_yaml": str(dataset_yaml),
+        "teacher_root": str(teacher_root),
+        "run_dir": str(run_dir),
+        "best_checkpoint": str(artifact_paths["best_checkpoint"]),
+        "last_checkpoint": str(artifact_paths["last_checkpoint"]),
+        "profile_log_path": str(artifact_paths["profile_log"]),
+        "profile_summary_path": str(artifact_paths["profile_summary"]),
+        "tensorboard_dir": str(tensorboard_dir),
+        "tensorboard_status": resolve_tensorboard_status(trainer, tensorboard_dir),
+        "tensorboard_event_files": tensorboard_event_files(tensorboard_dir),
+        "runtime": dict(runtime_params),
+        "train_kwargs": train_kwargs,
+        "train_result_type": type(train_result).__name__,
+    }
+
+
+def publish_teacher_train_summary(*, summary_path: Path, summary: dict[str, Any]) -> Path:
+    write_json(summary_path, summary)
+    return summary_path
+
+
+def finalize_teacher_train_artifacts(
+    *,
+    teacher_root: Path,
+    run_dir: Path,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    latest_artifacts = refresh_latest_teacher_artifacts(
+        teacher_root=teacher_root,
+        run_dir=run_dir,
+        summary=summary,
+    )
+    summary["latest_artifacts"] = latest_artifacts
+    artifact_paths = build_teacher_runtime_artifact_paths(run_dir)
+    publish_teacher_train_summary(summary_path=artifact_paths["train_summary"], summary=summary)
+    publish_teacher_train_summary(
+        summary_path=Path(latest_artifacts["train_summary_path"]),
+        summary=summary,
+    )
+    return latest_artifacts
 
 
 def refresh_latest_teacher_artifacts(
@@ -70,3 +148,7 @@ def refresh_latest_teacher_artifacts(
 
 
 _refresh_latest_teacher_artifacts = refresh_latest_teacher_artifacts
+_build_teacher_runtime_artifact_paths = build_teacher_runtime_artifact_paths
+_build_teacher_train_summary = build_teacher_train_summary
+_finalize_teacher_train_artifacts = finalize_teacher_train_artifacts
+_publish_teacher_train_summary = publish_teacher_train_summary
