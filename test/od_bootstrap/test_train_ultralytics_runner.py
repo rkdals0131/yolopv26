@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,12 @@ from unittest.mock import patch
 import torch
 
 from common.scalars import flatten_scalar_tree
+from tools.od_bootstrap.teacher.runtime_artifacts import (
+    build_teacher_runtime_artifact_paths,
+    build_teacher_train_summary,
+    finalize_teacher_train_artifacts,
+    publish_teacher_train_summary,
+)
 from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
 from tools.od_bootstrap.teacher.runtime_progress import install_ultralytics_postfix_renderer
 from tools.od_bootstrap.teacher.runtime_resume import resolve_resume_argument
@@ -268,6 +275,62 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 "train_step/elapsed_sec",
             },
         )
+
+    def test_runtime_artifact_helpers_build_and_publish_teacher_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "runs" / "mobility" / "20260403_000001"
+            (run_dir / "weights").mkdir(parents=True, exist_ok=True)
+            tensorboard_dir = run_dir / "tensorboard"
+            tensorboard_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "weights" / "best.pt").write_text("best", encoding="utf-8")
+            (run_dir / "weights" / "last.pt").write_text("last", encoding="utf-8")
+            (tensorboard_dir / "events.out.tfevents.fake").write_text("", encoding="utf-8")
+
+            paths = build_teacher_runtime_artifact_paths(run_dir)
+            self.assertEqual(paths["train_summary"], run_dir / "train_summary.json")
+            self.assertEqual(paths["tensorboard_dir"], tensorboard_dir)
+
+            trainer = SimpleNamespace(
+                od_tensorboard_status={
+                    "enabled": True,
+                    "status": "active",
+                    "error": None,
+                    "log_dir": str(tensorboard_dir),
+                }
+            )
+            summary = build_teacher_train_summary(
+                teacher_name="mobility",
+                resolved_weights="yolo26s.pt",
+                dataset_yaml=Path(temp_dir) / "dataset.yaml",
+                teacher_root=run_dir.parent,
+                run_dir=run_dir,
+                runtime_params={"profile_window": 5},
+                train_kwargs={"epochs": 2, "project": str(run_dir.parent)},
+                train_result=SimpleNamespace(save_dir=run_dir),
+                trainer=trainer,
+            )
+
+            self.assertEqual(summary["tensorboard_status"]["status"], "active")
+            self.assertEqual(summary["tensorboard_event_files"], ["events.out.tfevents.fake"])
+            self.assertEqual(summary["best_checkpoint"], str(run_dir / "weights" / "best.pt"))
+            self.assertEqual(summary["train_result_type"], "SimpleNamespace")
+
+            summary_path = publish_teacher_train_summary(summary_path=paths["train_summary"], summary=summary)
+            self.assertEqual(summary_path, run_dir / "train_summary.json")
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["run_dir"], str(run_dir))
+            self.assertEqual(payload["tensorboard_event_files"], ["events.out.tfevents.fake"])
+
+            latest_artifacts = finalize_teacher_train_artifacts(
+                teacher_root=run_dir.parent,
+                run_dir=run_dir,
+                summary=summary,
+            )
+            self.assertIn("latest_artifacts", summary)
+            self.assertEqual(summary["latest_artifacts"], latest_artifacts)
+            self.assertTrue(Path(latest_artifacts["train_summary_path"]).is_file())
+            latest_payload = json.loads(Path(latest_artifacts["train_summary_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(latest_payload["run_dir"], str(run_dir))
 
     def test_resolve_resume_argument_prefers_resumable_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

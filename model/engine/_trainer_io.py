@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
-from common.io import append_jsonl as _common_append_jsonl
+from common.io import append_jsonl_sorted as _common_append_jsonl_sorted
 from common.io import now_iso as _common_now_iso
 from common.io import timestamp_token as _common_timestamp_token
 from common.io import write_json as _common_write_json
-from common.io import write_jsonl as _common_write_jsonl
+from common.io import write_jsonl_sorted as _common_write_jsonl_sorted
 from common.train_runtime import maybe_build_summary_writer as _common_maybe_build_summary_writer
 
 
@@ -25,11 +25,11 @@ def _write_json(path: str | Path, payload: dict[str, Any]) -> Path:
 
 
 def _append_jsonl(path: str | Path, payload: dict[str, Any]) -> Path:
-    return _common_append_jsonl(path, payload, sort_keys=True)
+    return _common_append_jsonl_sorted(path, payload)
 
 
 def _write_jsonl_rows(path: str | Path, rows: Iterable[dict[str, Any]]) -> Path:
-    return _common_write_jsonl(path, rows, sort_keys=True)
+    return _common_write_jsonl_sorted(path, rows)
 
 
 def _json_ready(value: Any) -> Any:

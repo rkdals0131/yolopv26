@@ -62,6 +62,24 @@ def write_json(
     return output_path
 
 
+def write_json_sorted(
+    path: str | Path,
+    payload: Any,
+    *,
+    indent: int | None = 2,
+    ensure_ascii: bool = True,
+    default: Any | None = None,
+) -> Path:
+    return write_json(
+        path,
+        payload,
+        indent=indent,
+        ensure_ascii=ensure_ascii,
+        default=default,
+        sort_keys=True,
+    )
+
+
 def append_jsonl(path: str | Path, payload: Any, *, ensure_ascii: bool = True, sort_keys: bool = False) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,12 +88,20 @@ def append_jsonl(path: str | Path, payload: Any, *, ensure_ascii: bool = True, s
     return output_path
 
 
+def append_jsonl_sorted(path: str | Path, payload: Any, *, ensure_ascii: bool = True) -> Path:
+    return append_jsonl(path, payload, ensure_ascii=ensure_ascii, sort_keys=True)
+
+
 def write_jsonl(path: str | Path, rows: Iterable[Any], *, ensure_ascii: bool = True, sort_keys: bool = False) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = "\n".join(json.dumps(row, ensure_ascii=ensure_ascii, sort_keys=sort_keys) for row in rows)
     output_path.write_text((serialized + "\n") if serialized else "", encoding="utf-8")
     return output_path
+
+
+def write_jsonl_sorted(path: str | Path, rows: Iterable[Any], *, ensure_ascii: bool = True) -> Path:
+    return write_jsonl(path, rows, ensure_ascii=ensure_ascii, sort_keys=True)
 
 
 def write_text(path: str | Path, contents: str) -> Path:

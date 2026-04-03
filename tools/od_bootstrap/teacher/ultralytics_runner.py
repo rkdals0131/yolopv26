@@ -8,10 +8,15 @@ import shutil
 import time
 from typing import Any, Callable
 
-from common.io import write_json
 from common.scalars import flatten_scalar_tree
 from . import runtime_progress
-from .runtime_artifacts import refresh_latest_teacher_artifacts
+from .runtime_artifacts import (
+    build_teacher_runtime_artifact_paths,
+    build_teacher_train_summary,
+    finalize_teacher_train_artifacts,
+    publish_teacher_train_summary,
+    refresh_latest_teacher_artifacts,
+)
 from .runtime_callbacks import TeacherRuntimeSupport, build_teacher_runtime_callbacks
 from .runtime_resume import (
     checkpoint_resume_metadata,
@@ -24,6 +29,8 @@ from .runtime_tensorboard import (
     build_epoch_tensorboard_payload,
     build_train_step_tensorboard_payload,
     maybe_build_summary_writer,
+    resolve_tensorboard_status,
+    tensorboard_event_files,
     write_tensorboard_scalars,
 )
 
@@ -58,20 +65,26 @@ _append_jsonl = runtime_progress.append_jsonl
 _build_epoch_tensorboard_payload = build_epoch_tensorboard_payload
 _build_live_postfix = runtime_progress.build_live_postfix
 _build_rich_progress_bar = runtime_progress.build_rich_progress_bar
+_build_teacher_runtime_artifact_paths = build_teacher_runtime_artifact_paths
+_build_teacher_train_summary = build_teacher_train_summary
 _build_train_step_tensorboard_payload = build_train_step_tensorboard_payload
 _checkpoint_resume_metadata = checkpoint_resume_metadata
 _coerce_weights_name = coerce_weights_name
 _emit_log = runtime_progress.emit_log
 _extract_run_dir = extract_run_dir
+_finalize_teacher_train_artifacts = finalize_teacher_train_artifacts
 _flatten_scalar_tree = flatten_scalar_tree
 _format_duration = runtime_progress.format_duration
 _install_ultralytics_postfix_renderer = runtime_progress.install_ultralytics_postfix_renderer
 _loader_profile_payload = runtime_progress.loader_profile_payload
 _maybe_build_summary_writer = maybe_build_summary_writer
+_publish_teacher_train_summary = publish_teacher_train_summary
 _refresh_latest_teacher_artifacts = refresh_latest_teacher_artifacts
 _resolve_resume_argument = resolve_resume_argument
 _resolve_resume_checkpoint_path = resolve_resume_checkpoint_path
+_resolve_tensorboard_status = resolve_tensorboard_status
 _set_progress_postfix = runtime_progress.set_progress_postfix
+_tensorboard_event_files = tensorboard_event_files
 _timing_profile = runtime_progress.timing_profile
 _timestamp_token = runtime_progress.timestamp_token
 _write_tensorboard_scalars = write_tensorboard_scalars
@@ -192,73 +205,6 @@ def _build_teacher_train_kwargs(
         "pretrained": True,
         **train_params,
     }
-
-
-def _teacher_runtime_artifact_paths(run_dir: Path) -> dict[str, Path]:
-    tensorboard_dir = run_dir / "tensorboard"
-    return {
-        "best_checkpoint": run_dir / "weights" / "best.pt",
-        "last_checkpoint": run_dir / "weights" / "last.pt",
-        "profile_log": run_dir / "profile_log.jsonl",
-        "profile_summary": run_dir / "profile_summary.json",
-        "tensorboard_dir": tensorboard_dir,
-        "train_summary": run_dir / "train_summary.json",
-    }
-
-
-def _resolve_tensorboard_status(trainer: Any, tensorboard_dir: Path) -> dict[str, Any]:
-    return dict(
-        getattr(
-            trainer,
-            "od_tensorboard_status",
-            {
-                "enabled": False,
-                "status": "unknown_no_callbacks",
-                "error": None,
-                "log_dir": str(tensorboard_dir),
-            },
-        )
-    )
-
-
-def _build_teacher_train_summary(
-    *,
-    teacher_name: str,
-    resolved_weights: str,
-    dataset_yaml: Path,
-    teacher_root: Path,
-    run_dir: Path,
-    runtime_params: dict[str, Any],
-    train_kwargs: dict[str, Any],
-    train_result: Any,
-    trainer: Any,
-) -> dict[str, Any]:
-    artifact_paths = _teacher_runtime_artifact_paths(run_dir)
-    tensorboard_dir = artifact_paths["tensorboard_dir"]
-    tensorboard_status = _resolve_tensorboard_status(trainer, tensorboard_dir)
-    tensorboard_event_files = (
-        sorted(path.name for path in tensorboard_dir.glob("events.out.tfevents*"))
-        if tensorboard_dir.is_dir()
-        else []
-    )
-    return {
-        "teacher_name": teacher_name,
-        "weights": resolved_weights,
-        "dataset_yaml": str(dataset_yaml),
-        "teacher_root": str(teacher_root),
-        "run_dir": str(run_dir),
-        "best_checkpoint": str(artifact_paths["best_checkpoint"]),
-        "last_checkpoint": str(artifact_paths["last_checkpoint"]),
-        "profile_log_path": str(artifact_paths["profile_log"]),
-        "profile_summary_path": str(artifact_paths["profile_summary"]),
-        "tensorboard_dir": str(tensorboard_dir),
-        "tensorboard_status": tensorboard_status,
-        "tensorboard_event_files": tensorboard_event_files,
-        "runtime": dict(runtime_params),
-        "train_kwargs": train_kwargs,
-        "train_result_type": type(train_result).__name__,
-    }
-
 
 def _require_teacher_trainer_dependencies() -> None:
     if DetectionTrainer is None or torch_distributed_zero_first is None or ultra_trainer is None:
@@ -728,12 +674,5 @@ def train_teacher_with_ultralytics(
         train_result=train_result,
         trainer=trainer,
     )
-    latest_artifacts = refresh_latest_teacher_artifacts(teacher_root=teacher_root, run_dir=run_dir, summary=summary)
-    summary["latest_artifacts"] = latest_artifacts
-
-    artifact_paths = _teacher_runtime_artifact_paths(run_dir)
-    summary_path = artifact_paths["train_summary"]
-    write_json(summary_path, summary)
-    latest_summary_path = Path(latest_artifacts["train_summary_path"])
-    write_json(latest_summary_path, summary)
+    _finalize_teacher_train_artifacts(teacher_root=teacher_root, run_dir=run_dir, summary=summary)
     return summary

@@ -38,9 +38,14 @@ from ._trainer_reporting import (
     _zero_successful_batches_error,
 )
 
+successful_summaries = _successful_summaries
+loss_summary = _loss_summary
+
 __all__ = [
     "TIMING_KEYS",
     "TENSORBOARD_LOSS_KEYS",
+    "successful_summaries",
+    "loss_summary",
     "_aggregate_assignment_modes",
     "_aggregate_count_tree",
     "_format_duration",

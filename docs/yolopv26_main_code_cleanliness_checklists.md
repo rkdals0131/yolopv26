@@ -51,7 +51,7 @@
 - [x] `model/engine/_trainer_epochs.py`와 `model/engine/evaluator.py`의 `_raw_batch_for_metrics`, `_augment_lane_family_metrics` 중복을 공용 helper로 정리한다.
 - [x] anchor grid 생성, anchor-relative box decode 같은 engine 공통 geometry/helper를 `model/engine/_det_geometry.py` shared 모듈로 재배치한다.
 - [x] raw batch unwrap, lane family metric augmentation, move-to-device 같은 engine 공통 batch/helper를 `model/engine/batch.py`로 재배치한다.
-- [ ] `model/engine/_trainer_epochs.py`에 몰린 epoch-level runtime/reporting helper를 정리해 파일 덩치를 줄인다.
+- [x] `model/engine/_trainer_epochs.py`에 몰린 epoch-level runtime/reporting helper를 정리해 파일 덩치를 줄인다.
 - [x] `model/engine/_loss_spec.py: build_loss_spec()`의 큰 spec builder 흐름을 단계별 helper/contract로 분리해 회귀 범위를 줄인다.
 
 ## 5순위. manifest row와 느슨한 dict 계약 축소
