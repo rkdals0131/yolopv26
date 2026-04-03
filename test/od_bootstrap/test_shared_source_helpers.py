@@ -20,14 +20,14 @@ from tools.od_bootstrap.source import __all__ as SOURCE_EXPORTS
 from tools.od_bootstrap.source.constants import DEFAULT_AIHUB_OUTPUT_ROOT, DEFAULT_BDD_ROOT
 from tools.od_bootstrap.source.defaults import build_default_source_prep_config, resolve_source_path
 from tools.od_bootstrap.source.raw_common import PairRecord, _now_iso as raw_now_iso
-from tools.od_bootstrap.source.shared_debug import build_debug_vis_manifest
-from tools.od_bootstrap.source.shared_io import link_or_copy, load_json, now_iso, write_json, write_text
-from tools.od_bootstrap.source.shared_parallel import LiveLogger, default_workers, iter_task_chunks, parallel_chunk_size
-from tools.od_bootstrap.source.shared_raw import extract_annotations, now_iso as shared_raw_now_iso, normalize_text, safe_slug
-from tools.od_bootstrap.source.shared_resume import count_held_annotation_reasons, load_existing_scene_output
-from tools.od_bootstrap.source.shared_scene import bbox_to_yolo_line, build_base_scene, sample_id
-from tools.od_bootstrap.source.shared_source_meta import build_bdd_inventory, build_bdd_source_inventory, tree_markdown
-from tools.od_bootstrap.source.shared_summary import counter_to_dict
+from tools.od_bootstrap.source.shared.debug import build_debug_vis_manifest
+from tools.od_bootstrap.source.shared.io import link_or_copy, load_json, now_iso, write_json, write_text
+from tools.od_bootstrap.source.shared.parallel import LiveLogger, default_workers, iter_task_chunks, parallel_chunk_size
+from tools.od_bootstrap.source.shared.raw import extract_annotations, now_iso as shared_raw_now_iso, normalize_text, safe_slug
+from tools.od_bootstrap.source.shared.resume import count_held_annotation_reasons, load_existing_scene_output
+from tools.od_bootstrap.source.shared.scene import bbox_to_yolo_line, build_base_scene, sample_id
+from tools.od_bootstrap.source.shared.source_meta import build_bdd_inventory, build_bdd_source_inventory, tree_markdown
+from tools.od_bootstrap.source.shared.summary import counter_to_dict
 
 
 class SharedSourceHelpersTests(unittest.TestCase):
@@ -36,13 +36,7 @@ class SharedSourceHelpersTests(unittest.TestCase):
             {
                 "constants",
                 "defaults",
-                "shared_io",
-                "shared_parallel",
-                "shared_raw",
-                "shared_resume",
-                "shared_scene",
-                "shared_source_meta",
-                "shared_summary",
+                "shared",
                 "types",
             }.issubset(set(SOURCE_EXPORTS))
         )

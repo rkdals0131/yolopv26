@@ -4,7 +4,9 @@ import ast
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.source import aihub_lane_worker, aihub_obstacle_worker, aihub_traffic_worker
+from tools.od_bootstrap.source.aihub import lane_worker as aihub_lane_worker
+from tools.od_bootstrap.source.aihub import obstacle_worker as aihub_obstacle_worker
+from tools.od_bootstrap.source.aihub import traffic_worker as aihub_traffic_worker
 
 
 class AIHubWorkerModuleCleanupTests(unittest.TestCase):

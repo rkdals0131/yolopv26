@@ -240,8 +240,8 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         )
         console = Console(file=io.StringIO())
 
-        with unittest.mock.patch("tools.check_env_launch._default_stage3_stress_batch_size", return_value=40):
-            with unittest.mock.patch("tools.check_env_launch._ascii_input", side_effect=["48", "18"]):
+        with unittest.mock.patch("tools.check_env.launch._default_stage3_stress_batch_size", return_value=40):
+            with unittest.mock.patch("tools.check_env.launch._ascii_input", side_effect=["48", "18"]):
                 resolved = _resolve_stage3_stress_action(console, action)
 
         self.assertIsNotNone(resolved)

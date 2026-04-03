@@ -96,13 +96,13 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("priority-2b extraction review boundary", implementation_plan)
         self.assertIn("stable thin facade", implementation_plan)
 
-        self.assertIn("tools/pv26_train_scenario.py", cleanliness_checklist)
-        self.assertIn("tools/pv26_train_runtime.py", cleanliness_checklist)
+        self.assertIn("tools/pv26_train/scenario.py", cleanliness_checklist)
+        self.assertIn("tools/pv26_train/runtime.py", cleanliness_checklist)
         self.assertIn("tools/pv26_train_stress.py", cleanliness_checklist)
 
         self.assertIn("run_pv26_train.py         # stable thin facade / CLI entrypoint", cleanliness_report)
-        self.assertIn("pv26_train_scenario.py", cleanliness_report)
-        self.assertIn("pv26_train_runtime.py", cleanliness_report)
+        self.assertIn("pv26_train/scenario.py", cleanliness_report)
+        self.assertIn("pv26_train/runtime.py", cleanliness_report)
         self.assertIn("pv26_train_stress.py", cleanliness_report)
         self.assertIn("pv26_train/", architecture_doc)
         self.assertIn("check_env/", architecture_doc)
@@ -117,7 +117,7 @@ class DocsSyncTests(unittest.TestCase):
             execution_doc,
         )
         self.assertIn(
-            "`common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`",
+            "`common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`",
             execution_doc,
         )
 
@@ -131,11 +131,11 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("`build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_report)
         for fragment in (
             "`common/io.py`",
-            "`source/shared_io.py`",
-            "`source/aihub.py`",
+            "`source/shared/io.py`",
+            "`source/aihub/pipeline.py`",
             "`build/teacher_dataset.py`",
             "`build/final_dataset.py`",
-            "`teacher/runtime_artifacts.py`",
+            "`teacher/runtime/artifacts.py`",
             "`teacher/data_yaml.py`",
         ):
             self.assertIn(fragment, cleanliness_report)
@@ -178,21 +178,21 @@ class DocsSyncTests(unittest.TestCase):
         cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
 
         self.assertIn("wave 12 closed rank-6/7 cleanup", implementation_plan)
-        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", implementation_plan)
+        self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", implementation_plan)
         self.assertIn("shared progress status helper", implementation_plan)
 
         self.assertIn("rank-6/7 runtime cleanup도 마감", execution_doc)
-        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", execution_doc)
+        self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", execution_doc)
         self.assertIn("join_status_segments()", execution_doc)
         self.assertIn("framework-specific renderer", execution_doc)
 
-        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", cleanliness_checklist)
+        self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", cleanliness_checklist)
         self.assertIn("join_status_segments()", cleanliness_checklist)
         self.assertIn("build_progress_status()", cleanliness_checklist)
         self.assertNotIn("- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`", cleanliness_checklist)
 
         self.assertIn("TeacherRuntimeSupport", cleanliness_report)
-        self.assertIn("tools/od_bootstrap/teacher/runtime_trainer.py", cleanliness_report)
+        self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", cleanliness_report)
         self.assertIn("progress_meter()", cleanliness_report)
         self.assertIn("shared progress status helper", cleanliness_report)
 
