@@ -9,6 +9,7 @@ from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, TextIO
 
+from common.io import now_iso, write_text
 from common.pv26_schema import (
     AIHUB_LANE_DATASET_KEY,
     AIHUB_OBSTACLE_DATASET_KEY,
@@ -45,34 +46,26 @@ from .shared_debug import (
     generate_debug_vis as _generate_debug_vis_impl,
     select_debug_vis_summaries as _select_debug_vis_summaries_impl,
 )
-from .shared_io import (
-    link_or_copy as _link_or_copy,
-    load_json as _load_json,
-    write_json as _write_json,
-    write_text as _write_text,
-)
+from .shared_io import load_json, write_json
 from .shared_parallel import (
     LiveLogger,
     PARALLEL_INFLIGHT_CHUNKS_PER_WORKER,
     PARALLEL_SUBMIT_LOG_INTERVAL,
     PARALLEL_WAIT_HEARTBEAT_SECONDS,
-    default_workers as _default_workers,
-    iter_task_chunks as _iter_task_chunks,
-    parallel_chunk_size as _parallel_chunk_size,
+    default_workers,
+    iter_task_chunks,
+    parallel_chunk_size,
 )
 from .shared_raw import (
     discover_pairs as _discover_pairs,
     env_path as _env_path,
     extract_annotations as _extract_annotations,
     normalize_text as _normalize_text,
-    now_iso as _now_iso,
     repo_root as _repo_root,
     safe_slug as _safe_slug,
     seg_dataset_root as _seg_dataset_root,
 )
 from .shared_reports import det_class_map_yaml as _det_class_map_yaml
-from .shared_scene import bbox_to_yolo_line as _bbox_to_yolo_line
-from .shared_summary import counter_to_dict as _counter_to_dict
 from .types import DebugVisOutputs, DebugVisSummaryRow
 
 PIPELINE_VERSION = "pv26-aihub-standardize-v1"
@@ -166,7 +159,7 @@ def _extract_archives_if_needed(dataset_root: Path, cache_root: Path, logger: Li
         else:
             with tarfile.open(archive_path) as archive_file:
                 archive_file.extractall(target_dir)
-        done_marker.write_text("ok\n", encoding="utf-8")
+        write_text(done_marker, "ok\n")
         completed += 1
         logger.progress(completed, {"archives": completed}, force=True)
 
@@ -203,63 +196,10 @@ def _generate_debug_vis(
         obstacle_dataset_key=OUTPUT_OBSTACLE_KEY,
         logger=logger,
         debug_vis_dirname=DEBUG_VIS_DIRNAME,
-        now_iso_fn=_now_iso,
-        write_json_fn=_write_json,
-        load_json_fn=_load_json,
+        now_iso_fn=now_iso,
+        write_json_fn=write_json,
+        load_json_fn=load_json,
         prepare_scene_fn=_prepare_debug_scene_for_overlay,
-    )
-
-
-def default_worker_count() -> int:
-    return _default_workers()
-
-
-def parallel_chunk_size(total_tasks: int, workers: int) -> int:
-    return _parallel_chunk_size(total_tasks, workers)
-
-
-def iter_task_chunks(tasks: list[Any], chunk_size: int) -> Any:
-    return _iter_task_chunks(tasks, chunk_size)
-
-
-def bbox_to_yolo_line(class_id: int, bbox: dict[str, Any], width: int, height: int) -> str:
-    return _bbox_to_yolo_line(class_id, bbox, width, height)
-
-
-def counter_to_dict(counter: Any) -> dict[str, int]:
-    return _counter_to_dict(counter)
-
-
-def link_or_copy_file(source_path: Path, destination_path: Path) -> str:
-    return _link_or_copy(source_path, destination_path)
-
-
-def write_json_file(path: Path, payload: Any) -> None:
-    _write_json(path, payload)
-
-
-def write_text_file(path: Path, content: str) -> None:
-    _write_text(path, content)
-
-
-def det_class_map_yaml() -> str:
-    return _det_class_map_yaml()
-
-
-def generate_debug_vis_outputs(
-    output_root: Path,
-    summaries: list[DebugVisSummaryRow],
-    *,
-    debug_vis_count: int,
-    debug_vis_seed: int,
-    logger: LiveLogger,
-) -> DebugVisOutputs:
-    return _generate_debug_vis(
-        output_root,
-        summaries,
-        debug_vis_count=debug_vis_count,
-        debug_vis_seed=debug_vis_seed,
-        logger=logger,
     )
 
 
@@ -459,30 +399,30 @@ def _write_standardization_outputs(
     failure_json = meta_root / "failure_manifest.json"
     failure_md = meta_root / "failure_manifest.md"
 
-    write_json_file(conversion_json, conversion_report)
+    write_json(conversion_json, conversion_report)
     logger.progress(1, {"files_written": 1}, force=True)
-    write_text_file(conversion_md, _conversion_report_markdown(conversion_report))
+    write_text(conversion_md, _conversion_report_markdown(conversion_report))
     logger.progress(2, {"files_written": 2}, force=True)
-    write_json_file(inventory_json, source_inventory)
+    write_json(inventory_json, source_inventory)
     logger.progress(3, {"files_written": 3}, force=True)
-    write_text_file(inventory_md, _source_inventory_markdown(source_inventory))
+    write_text(inventory_md, _source_inventory_markdown(source_inventory))
     logger.progress(4, {"files_written": 4}, force=True)
-    write_text_file(det_map_yaml_path, det_class_map_yaml())
+    write_text(det_map_yaml_path, _det_class_map_yaml())
     logger.progress(5, {"files_written": 5}, force=True)
-    write_text_file(scene_map_yaml, _scene_class_map_yaml())
+    write_text(scene_map_yaml, _scene_class_map_yaml())
     logger.progress(6, {"files_written": 6}, force=True)
     failure_manifest = {
         "version": PIPELINE_VERSION,
-        "generated_at": _now_iso(),
+        "generated_at": now_iso(),
         "failure_count": len(failures),
         "items": failures,
     }
-    write_json_file(failure_json, failure_manifest)
+    write_json(failure_json, failure_manifest)
     logger.progress(7, {"files_written": 7}, force=True)
-    write_text_file(failure_md, _failure_manifest_markdown(failure_manifest))
+    write_text(failure_md, _failure_manifest_markdown(failure_manifest))
     logger.progress(8, {"files_written": 8}, force=True)
 
-    debug_vis_outputs = generate_debug_vis_outputs(
+    debug_vis_outputs = _generate_debug_vis(
         output_root,
         summaries,
         debug_vis_count=debug_vis_count,
@@ -495,13 +435,13 @@ def _write_standardization_outputs(
         "resume/실패/debug-vis 선택 결과를 묶어 full-dataset 전처리 전 QA summary를 남깁니다.",
         total=2,
     )
-    debug_vis_index = _load_json(debug_vis_outputs["debug_vis_index"])
+    debug_vis_index = load_json(debug_vis_outputs["debug_vis_index"])
     qa_json = meta_root / "qa_summary.json"
     qa_md = meta_root / "qa_summary.md"
     qa_summary = _qa_summary(conversion_report, debug_vis_index, failure_manifest)
-    write_json_file(qa_json, qa_summary)
+    write_json(qa_json, qa_summary)
     logger.progress(1, {"files_written": 1}, force=True)
-    write_text_file(qa_md, _qa_summary_markdown(qa_summary))
+    write_text(qa_md, _qa_summary_markdown(qa_summary))
     logger.progress(2, {"files_written": 2}, force=True)
 
     return {
@@ -542,7 +482,7 @@ def run_standardization(
     traffic_root = traffic_root.resolve()
     docs_root = docs_root.resolve()
     output_root = output_root.resolve()
-    workers = workers or default_worker_count()
+    workers = workers or default_workers()
 
     logger = LiveLogger(log_stream)
     logger.info(f"pv26_aihub_standardize version={PIPELINE_VERSION}")

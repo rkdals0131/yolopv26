@@ -4,18 +4,14 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from common.io import write_text
+from common.io import now_iso, write_text
 from common.pv26_schema import (
     AIHUB_LANE_DATASET_KEY,
     AIHUB_OBSTACLE_DATASET_KEY,
     AIHUB_TRAFFIC_DATASET_KEY,
 )
 
-from .shared_io import now_iso as _now_iso
-from .shared_summary import counter_to_dict as _counter_to_dict
-
-now_iso = _now_iso
-counter_to_dict = _counter_to_dict
+from .shared_summary import counter_to_dict
 
 README_TREE_DEPTH = 3
 MAX_TREE_LINES = 96
@@ -46,7 +42,7 @@ def _inventory_image_json_archives(dataset_root: Path) -> dict[str, Any]:
             "present": True,
             "images": images,
             "json_files": json_files,
-            "archives": _counter_to_dict(archives),
+            "archives": counter_to_dict(archives),
         }
     return inventory
 
@@ -89,7 +85,7 @@ def _inventory_traffic_root(dataset_root: Path) -> dict[str, Any]:
             "raw_images": raw_images,
             "crop_images": crop_images,
             "json_files": json_files,
-            "archives": _counter_to_dict(archives),
+            "archives": counter_to_dict(archives),
         }
     return inventory
 

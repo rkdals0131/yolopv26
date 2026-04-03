@@ -9,9 +9,7 @@ from typing import Any
 import torch
 import yaml
 
-from common.io import now_iso as _common_now_iso
-from common.io import read_yaml
-from common.io import write_json as _common_write_json
+from common.io import now_iso, read_yaml, write_json, write_text
 
 try:
     from ultralytics import YOLO
@@ -26,14 +24,10 @@ from .calibration_types import CalibrationScenario, CalibrationTeacherConfig, Ha
 
 def _log_calibration(message: str) -> None:
     print(f"[od_bootstrap.calibration] {message}", flush=True)
-def _write_json(path: Path, payload: dict[str, Any]) -> Path:
-    return _common_write_json(path, payload, default=str)
 
 
 def _write_yaml(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-    return path
+    return write_text(path, yaml.safe_dump(payload, sort_keys=False))
 
 
 def _prediction_sort_key(row: dict[str, Any]) -> float:
@@ -582,7 +576,7 @@ def _prepare_teacher_calibration_inputs(
                 "predict_iou": float(scenario.run.predict_iou),
             },
         }
-        _write_json(teacher_dir / "summary.json", teacher_summary)
+        write_json(teacher_dir / "summary.json", teacher_summary, default=str)
         teacher_summaries.append(teacher_summary)
         samples_by_teacher[teacher.name] = samples
         _log_calibration(
@@ -757,7 +751,7 @@ def _write_calibration_outputs(
     teacher_by_class: dict[str, CalibrationTeacherConfig],
 ) -> dict[str, Any]:
     class_policy_path = _write_yaml(output_root / "class_policy.yaml", class_policy_payload)
-    hard_negative_manifest_path = _write_json(
+    hard_negative_manifest_path = write_json(
         output_root / "hard_negative_manifest.json",
         _build_hard_negative_manifest_payload(
             scenario=scenario,
@@ -768,6 +762,7 @@ def _write_calibration_outputs(
             created_at=created_at,
             scenario_path=scenario_path,
         ),
+        default=str,
     )
     report = {
         "scenario_path": str(scenario_path),
@@ -793,7 +788,7 @@ def _write_calibration_outputs(
         "teachers": teacher_summaries,
         "classes": report_classes,
     }
-    report_path = _write_json(output_root / "calibration_report.json", report)
+    report_path = write_json(output_root / "calibration_report.json", report, default=str)
     _log_calibration(f"class policy written to {class_policy_path}")
     _log_calibration(f"hard-negative manifest written to {hard_negative_manifest_path}")
     _log_calibration(f"report written to {report_path}")
@@ -812,7 +807,7 @@ def calibrate_class_policy_scenario(
     *,
     scenario_path: Path,
 ) -> dict[str, Any]:
-    created_at = _common_now_iso()
+    created_at = now_iso()
     output_root = scenario.run.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
