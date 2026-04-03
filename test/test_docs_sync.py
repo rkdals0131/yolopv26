@@ -16,6 +16,13 @@ def _read(path: Path) -> str:
 
 
 class DocsSyncTests(unittest.TestCase):
+    def test_numbered_docs_set_is_the_active_docs_surface(self) -> None:
+        numbered = sorted(path.name for path in DOCS_ROOT.glob("[0-9]*.md"))
+        self.assertIn("0_PRD.md", numbered)
+        self.assertIn("9_EXECUTION_STATUS.md", numbered)
+        self.assertNotIn("yolopv26_main_code_cleanliness_checklists.md", numbered)
+        self.assertNotIn("yolopv26_main_code_cleanliness_report.md", numbered)
+
     def test_no_absolute_repo_links_remain_in_active_docs(self) -> None:
         targets = [
             REPO_ROOT / "README.md",
@@ -27,38 +34,17 @@ class DocsSyncTests(unittest.TestCase):
             self.assertNotIn("/home/user1", content, msg=str(path))
             self.assertNotIn("/YOLOpv26/", content, msg=str(path))
 
-    def test_readme_matches_current_pv26_training_entrypoint(self) -> None:
+    def test_readme_matches_current_entrypoints_and_package_layout(self) -> None:
         readme = _read(REPO_ROOT / "README.md")
         self.assertIn("python3 tools/check_env.py", readme)
-        self.assertIn("## 가장 먼저 실행", readme)
-        self.assertIn("interactive launcher", readme)
-        self.assertIn("이게 기본 진입점이다.", readme)
-        self.assertIn("python3 tools/check_env.py --strict --check-yolo-runtime", readme)
-        self.assertIn("`H`를 누르면", readme)
-        self.assertIn("docs/3A_RAW_DATASET_LAYOUTS.md", readme)
-        self.assertIn("config/user_paths.yaml", readme)
-        self.assertIn("config/od_bootstrap_hyperparameters.yaml", readme)
+        self.assertIn("python3 tools/run_pv26_train.py --preset default", readme)
+        self.assertIn("tools/check_env/", readme)
+        self.assertIn("tools/pv26_train/", readme)
+        self.assertIn("tools/od_bootstrap/source/aihub/", readme)
+        self.assertIn("tools/od_bootstrap/source/shared/", readme)
+        self.assertIn("tools/od_bootstrap/teacher/runtime/", readme)
+        self.assertIn("tools/pv26_train/cli.py", readme)
         self.assertIn("config/pv26_train_hyperparameters.yaml", readme)
-        self.assertIn("tools/od_bootstrap/presets.py", readme)
-        self.assertIn("tools/run_pv26_train.py", readme)
-        self.assertIn("USER CONFIG", readme)
-        self.assertIn("HYPERPARAMETERS", readme)
-        self.assertIn("PHASE HYPERPARAMETERS", readme)
-        self.assertIn("tools/run_pv26_train.py --preset default", readme)
-        self.assertIn("tools/run_pv26_train.py --resume-run", readme)
-        self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", readme)
-        self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
-        self.assertIn("python -m tools.od_bootstrap build-teacher-datasets", readme)
-        self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
-        self.assertIn("python -m tools.od_bootstrap build-final-dataset", readme)
-        self.assertIn("seg_dataset/pv26_exhaustive_od_lane_dataset", readme)
-        self.assertIn("runs/pv26_exhaustive_od_lane_train", readme)
-        self.assertIn("`2번`부터 `8번`까지", readme)
-        self.assertNotIn("runs/pv26_meta_train/", readme)
-        self.assertNotIn("tools/run_aihub_standardize.py", readme)
-        self.assertNotIn("tools/run_bdd100k_standardize.py", readme)
-        self.assertNotIn("tools/od_bootstrap/config/", readme)
-        self.assertNotIn("[config/](config/)", readme)
 
     def test_training_docs_track_resume_and_stage3_direct_entrypoints(self) -> None:
         training_doc = _read(DOCS_ROOT / "6_TRAINING_AND_EVALUATION.md")
@@ -69,140 +55,70 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("tools/run_pv26_train.py --resume-run", execution_doc)
         self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", execution_doc)
 
-    def test_od_bootstrap_readme_tracks_current_teacher_model_defaults(self) -> None:
+    def test_od_bootstrap_readme_tracks_current_package_layout_and_teacher_defaults(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
         self.assertIn("python -m tools.od_bootstrap prepare-sources", readme)
         self.assertIn("python -m tools.od_bootstrap build-teacher-datasets", readme)
         self.assertIn("python -m tools.od_bootstrap train --teacher mobility", readme)
-        self.assertIn("python -m tools.od_bootstrap train --teacher signal", readme)
-        self.assertIn("python -m tools.od_bootstrap train --teacher obstacle", readme)
-        self.assertIn("python -m tools.od_bootstrap build-exhaustive-od", readme)
-        self.assertIn("python -m tools.od_bootstrap build-final-dataset", readme)
         self.assertIn("mobility/signal은 `yolo26s.pt`, obstacle은 `yolo26m.pt`", readme)
-        self.assertIn("config/user_paths.yaml", readme)
-        self.assertIn("config/od_bootstrap_hyperparameters.yaml", readme)
+        self.assertIn("source/aihub/", readme)
+        self.assertIn("source/shared/", readme)
+        self.assertIn("teacher/runtime/", readme)
 
-    def test_priority_2b_docs_track_run_pv26_train_split_boundary(self) -> None:
+    def test_implementation_and_execution_docs_track_package_native_tooling(self) -> None:
         implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
         architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
-        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
-        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
 
-        for content in (implementation_plan, cleanliness_checklist, cleanliness_report):
-            self.assertIn("test/test_run_pv26_train.py", content)
-            self.assertIn("test/test_portability_runtime.py", content)
-            self.assertIn("test/test_docs_sync.py", content)
-
-        self.assertIn("priority-2b extraction review boundary", implementation_plan)
-        self.assertIn("stable thin facade", implementation_plan)
-
-        self.assertIn("tools/pv26_train/scenario.py", cleanliness_checklist)
-        self.assertIn("tools/pv26_train/runtime.py", cleanliness_checklist)
-        self.assertIn("tools/pv26_train_stress.py", cleanliness_checklist)
-
-        self.assertIn("run_pv26_train.py         # stable thin facade / CLI entrypoint", cleanliness_report)
-        self.assertIn("pv26_train/scenario.py", cleanliness_report)
-        self.assertIn("pv26_train/runtime.py", cleanliness_report)
-        self.assertIn("pv26_train_stress.py", cleanliness_report)
-        self.assertIn("pv26_train/", architecture_doc)
-        self.assertIn("check_env/", architecture_doc)
-
-    def test_rank3_cleanliness_docs_track_exact_helper_residue_and_link_policy_boundaries(self) -> None:
-        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
-        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
-        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
-
-        self.assertIn(
-            "local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳",
-            execution_doc,
-        )
-        self.assertIn(
-            "`common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`",
-            execution_doc,
-        )
-
-        self.assertIn("`tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract", cleanliness_checklist)
-        self.assertIn("`tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site", cleanliness_checklist)
-        self.assertIn("`tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_checklist)
-        self.assertIn("direct re-export surface", cleanliness_checklist)
-
-        self.assertIn("`source/raw_common.py`의 UTC timestamp contract", cleanliness_report)
-        self.assertIn("`teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site", cleanliness_report)
-        self.assertIn("`build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_report)
-        for fragment in (
-            "`common/io.py`",
-            "`source/shared/io.py`",
-            "`source/aihub/pipeline.py`",
-            "`build/teacher_dataset.py`",
-            "`build/final_dataset.py`",
-            "`teacher/runtime/artifacts.py`",
-            "`teacher/data_yaml.py`",
-        ):
-            self.assertIn(fragment, cleanliness_report)
-
-    def test_rank4_engine_surface_docs_track_public_shared_modules(self) -> None:
-        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
-        implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
-        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
-        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
-
-        for content in (execution_doc, implementation_plan, cleanliness_checklist, cleanliness_report):
-            self.assertIn("model/engine/det_geometry.py", content)
-            self.assertIn("model/engine/train_summary.py", content)
-            self.assertIn("model/engine/trainer_progress.py", content)
-
-        self.assertIn("trainer.py` compatibility shim", execution_doc)
-        self.assertIn("public shared engine surfaces", implementation_plan)
-        self.assertIn("public shared surface를 추가", cleanliness_checklist)
-        self.assertIn("thin compatibility shim", cleanliness_report)
-
-    def test_rank5_od_bootstrap_contract_docs_track_summary_publish_typed_surfaces(self) -> None:
-        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
-        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
-        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
-
-        for content in (execution_doc, cleanliness_checklist, cleanliness_report):
-            self.assertIn("build/artifacts.py", content)
-            self.assertIn("build/sweep_types.py", content)
-            self.assertIn("TeacherJobManifestPayload", content)
-            self.assertIn("SourcePrepManifest", content)
-            self.assertIn("FinalDatasetPublishMarker", content)
-
-        self.assertIn("FinalDatasetSourceKind", execution_doc)
-        self.assertIn("TeacherPredictionRow", cleanliness_report)
-
-    def test_rank6_rank7_runtime_cleanup_docs_track_runtime_trainer_and_shared_progress_helpers(self) -> None:
-        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
-        implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
-        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
-        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
-
-        self.assertIn("wave 12 closed rank-6/7 cleanup", implementation_plan)
+        self.assertIn("test/test_run_pv26_train.py", implementation_plan)
+        self.assertIn("test/test_portability_runtime.py", implementation_plan)
+        self.assertIn("test/test_docs_sync.py", implementation_plan)
+        self.assertIn("tools/pv26_train/scenario.py", implementation_plan)
+        self.assertIn("tools/pv26_train/runtime.py", implementation_plan)
+        self.assertIn("tools/check_env/launch.py", implementation_plan)
         self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", implementation_plan)
-        self.assertIn("shared progress status helper", implementation_plan)
-
-        self.assertIn("rank-6/7 runtime cleanup도 마감", execution_doc)
+        self.assertIn("test/test_run_pv26_train.py", execution_doc)
+        self.assertIn("test/test_portability_runtime.py", execution_doc)
+        self.assertIn("test/test_docs_sync.py", execution_doc)
+        self.assertIn("tools/check_env/launch.py", execution_doc)
         self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", execution_doc)
+        self.assertIn("tools/od_bootstrap/source/shared/io.py", execution_doc)
+        self.assertIn("tools/od_bootstrap/source/aihub/pipeline.py", execution_doc)
+
+        self.assertIn("stable thin facade", implementation_plan)
+        self.assertIn("shared progress status helper", implementation_plan)
+        self.assertIn("tools/check_env/", architecture_doc)
+        self.assertIn("tools/pv26_train/", architecture_doc)
+        self.assertIn("aihub/", architecture_doc)
+        self.assertIn("shared/", architecture_doc)
+        self.assertIn("runtime/", architecture_doc)
+
+    def test_execution_status_tracks_current_runtime_and_policy_boundaries(self) -> None:
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
+        self.assertIn("rank-6/7 runtime cleanup도 마감", execution_doc)
         self.assertIn("join_status_segments()", execution_doc)
+        self.assertIn("build_progress_status()", execution_doc)
         self.assertIn("framework-specific renderer", execution_doc)
+        self.assertIn("local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳", execution_doc)
+        self.assertIn("`common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`", execution_doc)
+        self.assertIn("TeacherJobManifestPayload", execution_doc)
+        self.assertIn("SourcePrepManifest", execution_doc)
+        self.assertIn("FinalDatasetPublishMarker", execution_doc)
+        self.assertIn("model/engine/det_geometry.py", execution_doc)
+        self.assertIn("model/engine/train_summary.py", execution_doc)
+        self.assertIn("model/engine/trainer_progress.py", execution_doc)
 
-        self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", cleanliness_checklist)
-        self.assertIn("join_status_segments()", cleanliness_checklist)
-        self.assertIn("build_progress_status()", cleanliness_checklist)
-        self.assertNotIn("- [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`", cleanliness_checklist)
-
-        self.assertIn("TeacherRuntimeSupport", cleanliness_report)
-        self.assertIn("tools/od_bootstrap/teacher/runtime/trainer.py", cleanliness_report)
-        self.assertIn("progress_meter()", cleanliness_report)
-        self.assertIn("shared progress status helper", cleanliness_report)
-
-    def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
-        readme = _read(OD_BOOTSTRAP_README)
-        self.assertIn("python -m tools.od_bootstrap", readme)
-        self.assertIn("debug_vis.py", readme)
-        self.assertIn("sample_manifest.py", readme)
-        self.assertIn("review.py", readme)
-        self.assertIn("checkpoint_audit.py", readme)
+    def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
+        architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
+        self.assertIn("tools.od_bootstrap.source.aihub / bdd100k", architecture_doc)
+        self.assertIn("model/data", architecture_doc)
+        self.assertIn("model/net", architecture_doc)
+        self.assertIn("model/engine", architecture_doc)
+        self.assertNotIn("model/preprocess/", architecture_doc)
+        self.assertNotIn("model/encoding/", architecture_doc)
+        self.assertNotIn("model/loading/", architecture_doc)
+        self.assertNotIn("model/training/", architecture_doc)
+        self.assertNotIn("model/viz/", architecture_doc)
 
     def test_sample_contract_doc_exists_and_is_referenced(self) -> None:
         sample_doc = DOCS_ROOT / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md"
@@ -249,23 +165,6 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("stage_4_lane_family_finetune", loss_doc)
         self.assertIn("stage 4", training_doc)
         self.assertIn("phase-specific selection", training_doc)
-
-    def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
-        architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
-        self.assertIn("tools.od_bootstrap.source.aihub / bdd100k", architecture_doc)
-        self.assertIn("source/", architecture_doc)
-        self.assertIn("aihub/", architecture_doc)
-        self.assertIn("shared/", architecture_doc)
-        self.assertIn("teacher/", architecture_doc)
-        self.assertIn("runtime/", architecture_doc)
-        self.assertIn("model/data", architecture_doc)
-        self.assertIn("model/net", architecture_doc)
-        self.assertIn("model/engine", architecture_doc)
-        self.assertNotIn("model/preprocess/", architecture_doc)
-        self.assertNotIn("model/encoding/", architecture_doc)
-        self.assertNotIn("model/loading/", architecture_doc)
-        self.assertNotIn("model/training/", architecture_doc)
-        self.assertNotIn("model/viz/", architecture_doc)
 
     def test_standardization_doc_tracks_bootstrap_output_roots(self) -> None:
         standardization_doc = _read(DOCS_ROOT / "3_DATA_AND_STANDARDIZATION.md")

@@ -48,7 +48,7 @@ python3 tools/check_env.py --strict --check-yolo-runtime
 - bootstrap 숫자 파라미터는 [config/od_bootstrap_hyperparameters.yaml](config/od_bootstrap_hyperparameters.yaml)에서 수정한다.
 - PV26 train 숫자 파라미터는 [config/pv26_train_hyperparameters.yaml](config/pv26_train_hyperparameters.yaml)에서 수정한다.
 - 출력 경로를 바꾸면 bootstrap 단계 사이 연결도 같이 바뀌어야 한다. 이게 귀찮으면 기본값을 그대로 쓰는 편이 낫다.
-- preset 로직이 실제로 이 두 파일을 어떻게 읽는지 확인하려면 [tools/od_bootstrap/presets.py](tools/od_bootstrap/presets.py)와 [tools/run_pv26_train.py](tools/run_pv26_train.py)를 보면 된다.
+- preset 로직이 실제로 이 두 파일을 어떻게 읽는지 확인하려면 [tools/od_bootstrap/presets.py](tools/od_bootstrap/presets.py)와 [tools/pv26_train/cli.py](tools/pv26_train/cli.py)를 보면 된다.
 
 ## 바로 쓰는 명령어
 
@@ -168,8 +168,8 @@ python3 tools/run_pv26_train.py --preset default
 ## 저장소 구성
 
 - [model/](model/): PV26 runtime data/net/engine 코드
-- [tools/](tools/): 실행 스크립트와 bootstrap 파이프라인
-- [docs/](docs/): 설계 문서와 작업 기록
+- [tools/](tools/): stable entrypoint(`check_env.py`, `run_pv26_train.py`)와 package-based internal tooling(`tools/check_env/`, `tools/pv26_train/`, `tools/od_bootstrap/source/aihub/`, `tools/od_bootstrap/source/shared/`, `tools/od_bootstrap/teacher/runtime/`)
+- [docs/](docs/): 번호가 붙은 설계/상태 문서
 - [test/](test/): 테스트 코드
 
 ## 참고 문서

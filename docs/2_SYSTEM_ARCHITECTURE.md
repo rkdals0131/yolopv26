@@ -57,8 +57,6 @@ tools/
     scenario.py
     scenarios.py
   run_pv26_train.py
-  pv26_train/artifacts.py
-  pv26_train/config.py
   od_bootstrap/
     source/
       aihub/
@@ -82,26 +80,11 @@ tools/
         scene.py
         source_meta.py
         summary.py
-      aihub.py
-      aihub_debug.py
-      aihub_lane_worker.py
-      aihub_obstacle_worker.py
-      aihub_reports.py
-      aihub_source_meta.py
-      aihub_traffic_worker.py
-      aihub_worker_common.py
       bdd100k.py
       constants.py
       defaults.py
       prepare.py
       raw_common.py
-      shared_debug.py
-      shared_io.py
-      shared_parallel.py
-      shared_raw.py
-      shared_reports.py
-      shared_scene.py
-      shared_summary.py
       types.py
     build/
       checkpoint_audit.py
