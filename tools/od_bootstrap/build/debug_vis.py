@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Callable, Mapping, Sequence, TypedDict, cast
+from typing import Callable, Mapping, Sequence, TypedDict
 
 try:
     from PIL import Image
@@ -18,11 +18,13 @@ from common.io import now_iso as _now_iso
 from common.io import write_json as _write_json
 from common.overlay import render_overlay
 from .review import canonical_scene_to_overlay_scene
-from .image_list import build_sample_uid, load_image_list
+from .image_list import ImageListEntry, build_sample_uid, load_image_list
 
 
 DEFAULT_DEBUG_VIS_COUNT = 20
 DEFAULT_DEBUG_VIS_SEED = 26
+
+
 class DebugSelectionRow(TypedDict, total=False):
     dataset_key: str
     dataset_root: str
@@ -43,16 +45,33 @@ class OverlayItem(TypedDict, total=False):
     class_name: str
 
 
+class OverlayPolylineItem(TypedDict, total=False):
+    class_name: str
+    points: list[list[float]]
+    p1: list[float]
+    p2: list[float]
+
+
+class OverlayPolygonItem(TypedDict):
+    points: list[list[float]]
+
+
+class DebugRectangleItem(TypedDict, total=False):
+    bbox: list[float]
+    color: str
+    label: str
+
+
 class OverlayScene(TypedDict):
     image: OverlayImage
     detections: list[OverlayItem]
     traffic_lights: list[OverlayItem]
     traffic_signs: list[OverlayItem]
-    lanes: list[dict[str, Any]]
-    stop_lines: list[dict[str, Any]]
-    crosswalks: list[dict[str, Any]]
-    ignored_regions: list[dict[str, Any]]
-    debug_rectangles: list[dict[str, Any]]
+    lanes: list[OverlayPolylineItem]
+    stop_lines: list[OverlayPolylineItem]
+    crosswalks: list[OverlayPolygonItem]
+    ignored_regions: list[OverlayPolygonItem]
+    debug_rectangles: list[DebugRectangleItem]
 
 
 class DebugVisItem(TypedDict, total=False):
@@ -84,22 +103,77 @@ class DebugVisResult(TypedDict):
     debug_vis_dir: Path
     debug_vis_manifest: Path
     selection_count: int
+
+
+def _selection_str(row: Mapping[str, object] | DebugSelectionRow, key: str) -> str:
+    value = row.get(key)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _selection_optional_str(row: Mapping[str, object] | DebugSelectionRow, key: str) -> str | None:
+    value = row.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _debug_selection_row_from_mapping(row: Mapping[str, object] | DebugSelectionRow) -> DebugSelectionRow:
+    normalized: DebugSelectionRow = {}
+    for key in (
+        "dataset_key",
+        "dataset_root",
+        "image_path",
+        "output_label_path",
+        "sample_id",
+        "sample_uid",
+        "scene_path",
+        "source_dataset_key",
+        "source_image_path",
+        "split",
+    ):
+        text = _selection_str(row, key)
+        if text:
+            normalized[key] = text
+    det_path = _selection_optional_str(row, "det_path")
+    if det_path is not None:
+        normalized["det_path"] = det_path
+    return normalized
+
+
+def _debug_selection_row_from_image_list_entry(entry: ImageListEntry) -> DebugSelectionRow:
+    row: DebugSelectionRow = {
+        "dataset_key": entry.dataset_key,
+        "dataset_root": str(entry.dataset_root),
+        "image_path": str(entry.image_path),
+        "sample_id": entry.sample_id,
+        "sample_uid": entry.sample_uid,
+        "scene_path": str(entry.scene_path),
+        "split": entry.split,
+    }
+    if entry.det_path is not None:
+        row["det_path"] = str(entry.det_path)
+    return row
+
+
 def _reset_debug_vis_dir(debug_vis_dir: Path) -> None:
     if debug_vis_dir.exists():
         shutil.rmtree(debug_vis_dir)
     debug_vis_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _stable_selection_key(seed: int, row: Mapping[str, Any] | DebugSelectionRow) -> tuple[str, str, str]:
-    dataset_key = str(row.get("dataset_key") or row.get("source_dataset_key") or "").strip()
-    split = str(row.get("split") or "").strip()
-    sample_id = str(row.get("sample_uid") or row.get("sample_id") or "").strip()
+def _stable_selection_key(seed: int, row: Mapping[str, object] | DebugSelectionRow) -> tuple[str, str, str]:
+    dataset_key = _selection_str(row, "dataset_key") or _selection_str(row, "source_dataset_key")
+    split = _selection_str(row, "split")
+    sample_id = _selection_str(row, "sample_uid") or _selection_str(row, "sample_id")
     digest = hashlib.sha256(f"{seed}:{dataset_key}:{split}:{sample_id}".encode("utf-8")).hexdigest()
     return digest, split, sample_id
 
 
-def _copy_debug_row(row: DebugSelectionRow) -> DebugSelectionRow:
-    return cast(DebugSelectionRow, dict(row))
+def _copy_debug_row(row: Mapping[str, object] | DebugSelectionRow) -> DebugSelectionRow:
+    return _debug_selection_row_from_mapping(row)
 
 
 def _select_debug_rows(rows: Sequence[DebugSelectionRow], *, count: int, seed: int) -> list[DebugSelectionRow]:
@@ -107,7 +181,7 @@ def _select_debug_rows(rows: Sequence[DebugSelectionRow], *, count: int, seed: i
         return []
     grouped: dict[str, list[DebugSelectionRow]] = defaultdict(list)
     for row in rows:
-        dataset_key = str(row.get("dataset_key") or row.get("source_dataset_key") or "").strip() or "default"
+        dataset_key = _selection_str(row, "dataset_key") or _selection_str(row, "source_dataset_key") or "default"
         grouped[dataset_key].append(_copy_debug_row(row))
     for dataset_key, items in grouped.items():
         items.sort(key=lambda item: _stable_selection_key(seed, {"dataset_key": dataset_key, **item}))
@@ -186,26 +260,26 @@ def _teacher_overlay_scene(*, image_path: Path, label_path: Path, class_names: S
     return overlay_scene
 
 
-def _resolve_sample_uid(row: Mapping[str, Any] | DebugSelectionRow) -> str:
-    sample_uid = str(row.get("sample_uid") or "").strip()
+def _resolve_sample_uid(row: Mapping[str, object] | DebugSelectionRow) -> str:
+    sample_uid = _selection_str(row, "sample_uid")
     if sample_uid:
         return sample_uid
     return build_sample_uid(
-        dataset_key=str(row.get("dataset_key") or row.get("source_dataset_key") or "default"),
-        split=str(row.get("split") or "unknown"),
-        sample_id=str(row.get("sample_id") or "sample"),
+        dataset_key=_selection_str(row, "dataset_key") or _selection_str(row, "source_dataset_key") or "default",
+        split=_selection_str(row, "split") or "unknown",
+        sample_id=_selection_str(row, "sample_id") or "sample",
     )
 
 
-def _overlay_path_for_row(debug_vis_dir: Path, row: Mapping[str, Any] | DebugSelectionRow) -> Path:
+def _overlay_path_for_row(debug_vis_dir: Path, row: Mapping[str, object] | DebugSelectionRow) -> Path:
     return debug_vis_dir / f"{_resolve_sample_uid(row)}.png"
 
 
-def _resolve_canonical_dataset_root(row: Mapping[str, Any] | DebugSelectionRow, *, canonical_root: Path) -> Path:
-    dataset_root = str(row.get("dataset_root") or "").strip()
+def _resolve_canonical_dataset_root(row: Mapping[str, object] | DebugSelectionRow, *, canonical_root: Path) -> Path:
+    dataset_root = _selection_str(row, "dataset_root")
     if dataset_root:
         return Path(dataset_root).resolve()
-    dataset_key = str(row.get("dataset_key") or row.get("source_dataset_key") or "").strip()
+    dataset_key = _selection_str(row, "dataset_key") or _selection_str(row, "source_dataset_key")
     if dataset_key == "bdd100k_det_100k":
         return (canonical_root / "bdd100k_det_100k").resolve()
     return (canonical_root / "aihub_standardized").resolve()
@@ -220,11 +294,11 @@ def _render_canonical_debug_item(row: DebugSelectionRow, *, output_root: Path) -
     return {
         "sample_id": str(row.get("sample_id") or ""),
         "sample_uid": _resolve_sample_uid(row),
-        "dataset_key": str(row.get("dataset_key") or row.get("source_dataset_key") or ""),
-        "split": str(row.get("split") or ""),
+        "dataset_key": _selection_str(row, "dataset_key") or _selection_str(row, "source_dataset_key"),
+        "split": _selection_str(row, "split"),
         "source_image_path": str(image_path),
         "source_scene_path": str(scene_path),
-        "source_det_path": str(row.get("det_path") or "") or None,
+        "source_det_path": _selection_optional_str(row, "det_path"),
         "overlay_path": str(overlay_path),
     }
 
@@ -244,8 +318,8 @@ def _render_teacher_debug_item(
         "teacher_name": teacher_name,
         "sample_id": str(row.get("sample_id") or ""),
         "sample_uid": _resolve_sample_uid(row),
-        "dataset_key": str(row.get("source_dataset_key") or row.get("dataset_key") or ""),
-        "split": str(row.get("split") or ""),
+        "dataset_key": _selection_str(row, "source_dataset_key") or _selection_str(row, "dataset_key"),
+        "split": _selection_str(row, "split"),
         "source_image_path": str(image_path),
         "source_label_path": str(label_path),
         "overlay_path": str(overlay_path),
@@ -305,7 +379,7 @@ def generate_canonical_debug_vis(
     log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, DebugVisResult]:
     canonical_root = canonical_root.resolve()
-    rows = [cast(DebugSelectionRow, entry.to_dict()) for entry in load_image_list(image_list_manifest_path)]
+    rows = [_debug_selection_row_from_image_list_entry(entry) for entry in load_image_list(image_list_manifest_path)]
     grouped_rows: dict[Path, list[DebugSelectionRow]] = {
         dataset_root.resolve(): []
         for dataset_root in (
