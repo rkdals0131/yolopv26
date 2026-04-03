@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_SUMMARY_NAME
@@ -248,6 +249,56 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertEqual(resolved.argv[-4:], ("--stress-batch-size", "48", "--stress-iters", "18"))
         self.assertIn("batch_size=48", resolved.command_display)
         self.assertIn("stress_iters=18", resolved.command_display)
+
+    def test_check_env_launch_runs_pv26_from_repo_root(self) -> None:
+        from rich.console import Console
+        from tools.check_env import ActionSpec, PipelinePaths, WorkspaceSnapshot
+        from tools.check_env.launch import _run_subprocess_action
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            snapshot = WorkspaceSnapshot(
+                paths=PipelinePaths(
+                    repo_root=root,
+                    raw_bdd_root=root / "bdd_raw",
+                    raw_aihub_root=root / "aihub_raw",
+                    bootstrap_root=root / "bootstrap",
+                    teacher_dataset_root=root / "teacher_datasets",
+                    teacher_train_root=root / "teacher_train",
+                    teacher_eval_root=root / "teacher_eval",
+                    calibration_root=root / "calibration",
+                    exhaustive_run_root=root / "exhaustive_runs",
+                    exhaustive_dataset_root=root / "exhaustive",
+                    final_dataset_root=root / "final_dataset",
+                    pv26_run_root=root / "pv26_runs",
+                    user_paths_config_path=root / "config" / "user_paths.yaml",
+                    od_hyperparameters_config_path=root / "config" / "od.yaml",
+                    pv26_hyperparameters_config_path=root / "config" / "pv26.yaml",
+                ),
+                rows=(),
+                flags={},
+                recommendation="",
+                notes=(),
+            )
+            action = ActionSpec(
+                key="C",
+                label="PV26 기본 학습",
+                command_display="python3 tools/run_pv26_train.py --preset default",
+                argv=(sys.executable, "tools/run_pv26_train.py", "--preset", "default"),
+                output_hint=str(root / "runs"),
+            )
+            console = Console(file=io.StringIO())
+
+            with unittest.mock.patch("tools.check_env.launch._confirm", return_value=True), unittest.mock.patch(
+                "tools.check_env.launch._pause_to_continue",
+                return_value=True,
+            ), unittest.mock.patch(
+                "tools.check_env.launch.subprocess.run",
+                return_value=SimpleNamespace(returncode=0),
+            ) as mocked_run:
+                _run_subprocess_action(console, snapshot, action, config_line_factory=lambda _: [])
+
+        mocked_run.assert_called_once_with(action.argv, cwd=str(root), check=False)
 
     def test_manifest_header_loader_reads_prefix_without_full_samples_array(self) -> None:
         from tools.check_env import _manifest_header
