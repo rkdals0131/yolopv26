@@ -5,35 +5,35 @@ import time
 from typing import Any
 
 import torch
-try:
-    from rich.console import Console, Group
-    from rich.live import Live
-    from rich.text import Text
-except Exception:  # pragma: no cover - optional dependency fallback.
-    Console = None
-    Group = None
-    Live = None
-    Text = None
 
 from .batch import augment_lane_family_metrics, raw_batch_for_metrics
 from ._trainer_io import _append_jsonl, _now_iso
+from ._trainer_progress import (
+    _emit_progress_message,
+    _RichProgressBar,
+    _should_use_rich_progress,
+    _sync_profile_device,
+)
 from ._trainer_reporting import (
     _aggregate_assignment_modes,
     _aggregate_count_tree,
-    _format_duration,
     _format_fraction,
     _format_train_live_detail,
     _format_train_progress_log,
+    _format_validate_progress_log,
     _format_validate_live_detail,
     _is_successful_summary,
-    _join_segments,
     _loss_stats_from_summaries,
     _mean_metric_tree,
-    _percentile,
-    _progress_meter,
+    _phase_label,
     _successful_summaries,
     _sum_counts,
     _timing_profile,
+    _train_progress_desc,
+    _train_progress_postfix,
+    _validate_progress_desc,
+    _validate_progress_postfix,
+    _validation_timing_profile,
     _zero_successful_batches_error,
 )
 
@@ -59,281 +59,6 @@ def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
     if all("image" in batch for batch in batches):
         merged["image"] = torch.cat([batch["image"] for batch in batches], dim=0)
     return merged
-
-
-def _progress_console() -> Any:
-    if Console is None:
-        return None
-    return Console(stderr=True)
-
-
-def _should_use_rich_progress() -> bool:
-    console = _progress_console()
-    return bool(
-        console is not None
-        and getattr(console, "is_terminal", False)
-        and Group is not None
-        and Live is not None
-        and Text is not None
-    )
-
-
-class _RichProgressBar:
-    def __init__(self, *, total: int | None, desc: str) -> None:
-        if Group is None or Live is None or Text is None:
-            raise RuntimeError("rich progress backend is unavailable")
-        console = _progress_console()
-        if console is None:
-            raise RuntimeError("rich console backend is unavailable")
-        self.console = console
-        self.total = total
-        self.desc = str(desc)
-        self.current = 0
-        self.status = ""
-        self.detail = ""
-        self._live = Live(
-            self._renderable(),
-            console=self.console,
-            transient=False,
-            auto_refresh=False,
-        )
-        self._live.start()
-        self._closed = False
-
-    def _renderable(self) -> Any:
-        lines = [
-            self._styled_line(
-                _join_segments(
-                    self.desc,
-                    _progress_meter(int(self.current), int(self.total) if self.total is not None else None, width=10),
-                    self.status,
-                )
-            )
-        ]
-        if self.detail:
-            for line in str(self.detail).splitlines():
-                if not line:
-                    continue
-                detail_line = Text("  ")
-                detail_line.append_text(self._styled_line(line))
-                lines.append(detail_line)
-        return Group(*lines)
-
-    def _styled_line(self, line: str) -> Text:
-        output = Text(no_wrap=False)
-        for index, segment in enumerate(part for part in str(line).split("  |  ") if part):
-            if index > 0:
-                output.append("  |  ")
-            output.append_text(self._styled_segment(segment))
-        return output
-
-    def _styled_segment(self, segment: str) -> Text:
-        output = Text()
-        value = str(segment)
-        if not value:
-            return output
-        output.append(value)
-        return output
-
-    def _refresh(self) -> None:
-        if self._closed:
-            return
-        self._live.update(self._renderable(), refresh=True)
-
-    def update(self, advance: int = 1) -> None:
-        self.current += int(advance)
-        self._refresh()
-
-    def set_postfix_str(self, value: str, refresh: bool = True) -> None:
-        self.status = str(value)
-        if refresh:
-            self._refresh()
-
-    def set_detail(self, value: str) -> None:
-        self.detail = str(value)
-        self._refresh()
-
-    def write(self, message: str) -> None:
-        self.console.print(message, soft_wrap=True, markup=False)
-        self._refresh()
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._live.stop()
-        self._closed = True
-
-
-def _sync_profile_device(device: torch.device, enabled: bool) -> None:
-    if enabled and device.type == "cuda":
-        torch.cuda.synchronize(device)
-
-
-def _phase_label(
-    *,
-    phase_index: int | None,
-    phase_count: int | None,
-    phase_name: str | None,
-) -> str:
-    return _join_segments(
-        f"phase={_format_fraction(int(phase_index), int(phase_count))}" if phase_index is not None and phase_count is not None else None,
-        phase_name,
-    )
-
-
-def _train_progress_desc(
-    *,
-    stage: str,
-    phase_index: int | None,
-    phase_count: int | None,
-    phase_name: str | None,
-    epoch: int,
-    epoch_total: int | None,
-    epoch_started_at_iso: str,
-) -> str:
-    return _join_segments(
-        "[train]",
-        _phase_label(
-            phase_index=phase_index,
-            phase_count=phase_count,
-            phase_name=phase_name,
-        ),
-        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-    )
-
-
-def _train_progress_postfix(
-    *,
-    batch_index: int,
-    total_batches: int | None,
-    elapsed_sec: float,
-    eta_sec: float | None,
-    losses: dict[str, Any],
-    profile_summary: dict[str, Any],
-) -> str:
-    return _join_segments(
-        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-        f"loss={float(losses.get('total', float('nan'))):.4f}",
-        f"eta={_format_duration(eta_sec)}",
-    )
-
-
-def _validation_timing_profile(summaries: list[dict[str, float]]) -> dict[str, Any]:
-    if not summaries:
-        return {"window_size": 0}
-    profile: dict[str, Any] = {"window_size": len(summaries)}
-    for key in ("wait_sec", "evaluate_sec", "iteration_sec"):
-        values = [float(item.get(key, 0.0)) for item in summaries]
-        profile[key] = {
-            "mean": sum(values) / len(values),
-            "p50": _percentile(values, 0.50),
-            "p99": _percentile(values, 0.99),
-        }
-    return profile
-
-
-def _validate_progress_desc(
-    *,
-    stage: str,
-    phase_index: int | None,
-    phase_count: int | None,
-    phase_name: str | None,
-    epoch: int,
-    epoch_total: int | None,
-    epoch_started_at_iso: str,
-) -> str:
-    return _join_segments(
-        "[val]",
-        _phase_label(
-            phase_index=phase_index,
-            phase_count=phase_count,
-            phase_name=phase_name,
-        ),
-        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-    )
-
-
-def _validate_progress_postfix(
-    *,
-    batch_index: int,
-    total_batches: int | None,
-    elapsed_sec: float,
-    eta_sec: float | None,
-    profile_summary: dict[str, Any],
-    batch_summary: dict[str, Any],
-) -> str:
-    losses = dict(batch_summary.get("losses", {}))
-    return _join_segments(
-        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-        f"loss={float(losses.get('total', float('nan'))):.4f}",
-        f"eta={_format_duration(eta_sec)}",
-    )
-
-
-def _format_validate_progress_log(
-    *,
-    stage: str,
-    phase_index: int | None,
-    phase_count: int | None,
-    phase_name: str | None,
-    epoch: int,
-    epoch_total: int | None,
-    batch_index: int,
-    total_batches: int | None,
-    epoch_started_at_iso: str,
-    elapsed_sec: float,
-    eta_sec: float | None,
-    batch_summary: dict[str, Any],
-    profile_summary: dict[str, Any],
-) -> str:
-    header = _join_segments(
-        "[val]",
-        _phase_label(
-            phase_index=phase_index,
-            phase_count=phase_count,
-            phase_name=phase_name,
-        ),
-        f"epoch={_format_fraction(int(epoch), int(epoch_total) if epoch_total is not None else None)}",
-        f"iter={_format_fraction(int(batch_index), int(total_batches) if total_batches is not None else None)}",
-    )
-    iteration_profile = profile_summary["iteration_sec"]
-    losses = dict(batch_summary.get("losses", {}))
-    return "\n".join(
-        [
-            header,
-            "  "
-            + _join_segments(
-                f"elapsed={_format_duration(elapsed_sec)}",
-                f"eta={_format_duration(eta_sec)}",
-                f"total={float(losses.get('total', float('nan'))):.4f}",
-            ),
-            "  "
-            + _join_segments(
-                "loss",
-                f"det={float(losses.get('det', float('nan'))):.4f}",
-                f"tl={float(losses.get('tl_attr', float('nan'))):.4f}",
-                f"lane={float(losses.get('lane', float('nan'))):.4f}",
-                f"stop={float(losses.get('stop_line', float('nan'))):.4f}",
-                f"cross={float(losses.get('crosswalk', float('nan'))):.4f}",
-            ),
-            "  "
-            + _join_segments(
-                "timing_ms",
-                f"eval={profile_summary['evaluate_sec']['mean'] * 1000.0:.3f}",
-                f"total={iteration_profile['mean'] * 1000.0:.3f}",
-            ),
-        ]
-    )
-
-
-def _emit_progress_message(message: str, *, progress_bar: Any = None) -> None:
-    if progress_bar is not None and hasattr(progress_bar, "set_detail"):
-        progress_bar.set_detail(message)
-        return
-    if progress_bar is not None and hasattr(progress_bar, "write"):
-        progress_bar.write(message)
-        return
-    print(message, flush=True)
 
 
 def run_train_epoch(

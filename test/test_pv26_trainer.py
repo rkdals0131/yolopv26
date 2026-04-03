@@ -276,6 +276,46 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  loss  |  total=1.2500", message)
         self.assertIn("  timing_ms  |  load=20.000", message)
 
+    def test_format_validate_progress_log_includes_phase_epoch_and_eval_timing(self) -> None:
+        from model.engine._trainer_reporting import _format_validate_progress_log
+
+        message = _format_validate_progress_log(
+            stage="stage_2_partial_unfreeze",
+            phase_index=2,
+            phase_count=3,
+            phase_name="partial_unfreeze",
+            epoch=4,
+            epoch_total=8,
+            batch_index=12,
+            total_batches=165,
+            epoch_started_at_iso="2026-03-26T12:34:56",
+            elapsed_sec=125.0,
+            eta_sec=333.0,
+            batch_summary={
+                "losses": {
+                    "total": 1.25,
+                    "det": 0.5,
+                    "tl_attr": 0.1,
+                    "lane": 0.3,
+                    "stop_line": 0.2,
+                    "crosswalk": 0.15,
+                }
+            },
+            profile_summary={
+                "iteration_sec": {"mean": 0.25, "p50": 0.2, "p99": 0.4},
+                "wait_sec": {"mean": 0.01, "p50": 0.01, "p99": 0.01},
+                "evaluate_sec": {"mean": 0.03, "p50": 0.03, "p99": 0.03},
+            },
+        )
+
+        self.assertIn("phase=2/3", message)
+        self.assertIn("epoch=4/8", message)
+        self.assertIn("iter=12/165", message)
+        self.assertIn("partial_unfreeze", message)
+        self.assertGreaterEqual(message.count("\n"), 2)
+        self.assertIn("  loss  |  det=0.5000", message)
+        self.assertIn("  timing_ms  |  eval=30.000", message)
+
     def test_format_epoch_completion_log_is_concise_and_includes_checkpoint_state(self) -> None:
         from model.engine.trainer import _format_epoch_completion_log
 
