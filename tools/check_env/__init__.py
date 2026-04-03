@@ -8,7 +8,7 @@ from typing import Any, Sequence
 
 from rich.console import Console
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 site.addsitedir(str(REPO_ROOT))
 
 from .actions import (  # noqa: E402

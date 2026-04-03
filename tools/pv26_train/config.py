@@ -15,7 +15,7 @@ from common.paths import resolve_optional_path, resolve_path
 from common.user_config import deep_merge_mappings, nested_get, resolve_repo_path, resolve_repo_paths
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
 DEFAULT_PRESET_NAME = "default"

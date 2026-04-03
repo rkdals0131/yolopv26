@@ -34,7 +34,7 @@ from tools.od_bootstrap.presets import (
     build_teacher_eval_preset,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TEACHER_NAMES = ("mobility", "signal", "obstacle")
 STAGE_ICON = {
     "OK": "✅",
