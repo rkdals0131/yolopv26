@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 from common.boxes import box_size, iou, nms_rows
 
-from ..build.sweep_types import ClassPolicy
+from ..build.sweep_types import ClassPolicy, TeacherPredictionRow
 
 
 def class_policy_to_dict(policy: ClassPolicy) -> dict[str, Any]:
@@ -124,7 +124,7 @@ def _resolve_cross_class_iou_threshold(
 
 def row_passes_geometry_priors(
     *,
-    row: dict[str, Any],
+    row: TeacherPredictionRow,
     policy: ClassPolicy,
     image_width: int,
     image_height: int,
@@ -152,7 +152,7 @@ def row_passes_geometry_priors(
 
 def row_passes_policy(
     *,
-    row: dict[str, Any],
+    row: TeacherPredictionRow,
     policy: ClassPolicy,
     dataset_key: str,
     image_width: int,
@@ -172,15 +172,15 @@ def row_passes_policy(
 
 def apply_policy_to_predictions(
     *,
-    rows: Iterable[dict[str, Any]],
+    rows: Iterable[TeacherPredictionRow],
     class_policy: dict[str, ClassPolicy],
     dataset_key: str,
     image_width: int,
     image_height: int,
     raw_boxes_by_class: dict[str, list[list[float]]] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[TeacherPredictionRow]:
     raw_boxes = raw_boxes_by_class or {}
-    filtered_predictions: list[dict[str, Any]] = []
+    filtered_predictions: list[TeacherPredictionRow] = []
     for row in rows:
         class_name = str(row["class_name"])
         policy = class_policy[class_name]
@@ -204,14 +204,14 @@ def apply_policy_to_predictions(
             continue
         filtered_predictions.append(row)
 
-    predictions_by_class: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    predictions_by_class: dict[str, list[TeacherPredictionRow]] = defaultdict(list)
     for row in filtered_predictions:
         predictions_by_class[str(row["class_name"])].append(row)
-    per_class_kept: list[dict[str, Any]] = []
+    per_class_kept: list[TeacherPredictionRow] = []
     for class_name, class_rows in predictions_by_class.items():
         per_class_kept.extend(nms_rows(class_rows, iou_threshold=float(class_policy[class_name].nms_iou_threshold)))
 
-    accepted: list[dict[str, Any]] = []
+    accepted: list[TeacherPredictionRow] = []
     for row in sorted(per_class_kept, key=lambda item: float(item["confidence"]), reverse=True):
         class_name = str(row["class_name"])
         policy = class_policy[class_name]

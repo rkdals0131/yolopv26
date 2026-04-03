@@ -153,6 +153,19 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("public shared surface를 추가", cleanliness_checklist)
         self.assertIn("thin compatibility shim", cleanliness_report)
 
+    def test_rank5_od_bootstrap_contract_docs_track_summary_publish_typed_surfaces(self) -> None:
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
+        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
+        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
+
+        for content in (execution_doc, cleanliness_checklist, cleanliness_report):
+            self.assertIn("TeacherJobManifestPayload", content)
+            self.assertIn("SourcePrepManifest", content)
+            self.assertIn("FinalDatasetPublishMarker", content)
+
+        self.assertIn("FinalDatasetSourceKind", execution_doc)
+        self.assertIn("TeacherPredictionRow", cleanliness_report)
+
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
         self.assertIn("python -m tools.od_bootstrap", readme)

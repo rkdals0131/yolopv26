@@ -53,9 +53,41 @@ class SourcePrepResult:
     bundle: CanonicalSourceBundle
     manifest_path: Path
     image_list_manifest_path: Path
-    canonical_debug_vis_manifest_paths: dict[str, Path]
+    canonical_debug_vis_manifest_paths: "CanonicalDebugVisManifestPaths"
     bdd_outputs: dict[str, Path]
     aihub_outputs: dict[str, Path]
+
+
+class SourcePrepRawRoots(TypedDict):
+    bdd_root: str
+    aihub_root: str
+    aihub_lane_root: str
+    aihub_obstacle_root: str
+    aihub_traffic_root: str
+
+
+class SourcePrepCanonicalRoots(TypedDict):
+    bdd_root: str
+    aihub_root: str
+
+
+class CanonicalDebugVisManifestPaths(TypedDict):
+    bdd100k_det_100k: Path
+    aihub_standardized: Path
+
+
+class SourcePrepManifest(TypedDict):
+    version: str
+    generated_at: str
+    raw_roots: SourcePrepRawRoots
+    canonical_roots: SourcePrepCanonicalRoots
+    bootstrap_source_keys: list[str]
+    excluded_source_keys: list[str]
+    workers: int
+    force_reprocess: bool
+    write_source_readmes: bool
+    debug_vis_count: int
+    debug_vis_seed: int
 
 
 class DebugVisSummaryRow(TypedDict):
@@ -97,13 +129,17 @@ __all__ = [
     "BOOTSTRAP_SOURCE_KEYS",
     "EXCLUDED_SOURCE_KEYS",
     "CanonicalSourceBundle",
+    "CanonicalDebugVisManifestPaths",
     "DEFAULT_AIHUB_DOCS_ROOT",
     "DEFAULT_DEBUG_VIS_SEED",
     "DebugVisManifest",
     "DebugVisManifestItem",
     "DebugVisOutputs",
     "DebugVisSummaryRow",
+    "SourcePrepCanonicalRoots",
     "SourcePrepConfig",
+    "SourcePrepManifest",
+    "SourcePrepRawRoots",
     "SourcePrepResult",
     "SourceRoots",
 ]

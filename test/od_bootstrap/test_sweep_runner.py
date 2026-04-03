@@ -13,6 +13,7 @@ import torch
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
 from tools.od_bootstrap.build.image_list import ImageListEntry, build_sample_uid
 from tools.od_bootstrap.build.sweep import _extract_teacher_rows, run_model_centric_sweep_scenario
+from tools.od_bootstrap.build.artifacts import JOB_MANIFEST_VERSION
 from tools.od_bootstrap.build.sweep_types import ClassPolicy, TeacherConfig
 from tools.od_bootstrap.presets import build_sweep_preset
 
@@ -253,6 +254,12 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             run_dir = Path(summary["run_dir"])
 
             self.assertEqual(summary["teacher_names"], ["mobility", "signal", "obstacle"])
+            self.assertEqual([row["teacher_name"] for row in summary["teacher_jobs"]], ["mobility", "signal", "obstacle"])
+            self.assertEqual(summary["teacher_jobs"][0]["manifest_version"], JOB_MANIFEST_VERSION)
+            self.assertEqual(
+                summary["teacher_jobs"][0]["predictions_path"],
+                str(run_dir / "teachers" / "mobility" / "predictions.jsonl"),
+            )
             self.assertTrue((run_dir / "manifest.json").is_file())
             self.assertTrue((run_dir / "image_list.jsonl").is_file())
             self.assertTrue((run_dir / "teachers" / "mobility" / "job_manifest.json").is_file())
