@@ -70,7 +70,7 @@ class FinalDatasetManifest(TypedDict):
     output_root: str
     sample_count: int
     dataset_counts: dict[str, int]
-    rerun_mode: str
+    rerun_mode: FinalDatasetRerunMode
     samples: list[FinalDatasetSampleRow]
 
 
@@ -81,7 +81,7 @@ class FinalDatasetBuildSummary(TypedDict):
     manifest_path: str
     summary_path: str
     publish_marker_path: str
-    rerun_mode: str
+    rerun_mode: FinalDatasetRerunMode
     sample_count: int
     dataset_counts: dict[str, int]
 

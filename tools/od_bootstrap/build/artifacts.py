@@ -73,6 +73,7 @@ class TeacherJobManifest:
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
+
 def teacher_output_dir(run_dir: Path, teacher_name: str) -> Path:
     return run_dir / "teachers" / teacher_name
 

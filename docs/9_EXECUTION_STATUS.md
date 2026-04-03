@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 9 기준으로 rank-3 빈칸도 마감했다. `_trainer_io.py`, `runtime_progress.py`, `source/shared_io.py`는 common helper direct re-export surface로 고정했고, local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳만 남겼다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 11 기준으로 rank-5 build/source contract 빈칸도 마감했다. `_trainer_io.py`, `runtime_progress.py`, `source/shared_io.py`는 common helper direct re-export surface로 고정했고, `tools/od_bootstrap/build/contracts.py`가 image-list/run/job/prediction payload typed surface를 맡는다. `exhaustive_od.py`, `final_dataset.py`, `sweep.py`, `teacher/policy.py`는 그 typed contract를 재사용하고, `final_dataset.py`는 publish marker/source/image row를 `Literal`/`TypedDict` 기반으로 고정했다. local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳만 남겼다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다.`
 
 ## 완료된 항목
 
@@ -118,6 +118,7 @@
 - [x] `common.io.write_json_sorted`, `append_jsonl_sorted`, `write_jsonl_sorted`를 추가하고 `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared_io.py`가 이를 재사용하도록 정리
 - [x] `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py` public/shared surface를 추가하고 `loss.py`, `postprocess.py`, trainer runtime/tests가 private module 대신 이를 우선 사용하도록 정리
 - [x] `model/engine/trainer.py` compatibility alias를 core trainer facade만 남기고 줄여 rank-4 public/internal surface 정리를 마감
+- [x] `tools/od_bootstrap/build/contracts.py`를 추가해 image-list/run/job/prediction payload shared typed surface를 고정하고 `final_dataset.py` publish marker/source/image row 계약을 `Literal`/`TypedDict`로 마감
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
