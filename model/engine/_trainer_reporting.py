@@ -8,7 +8,7 @@ from common.train_runtime import format_duration as _common_format_duration
 from common.train_runtime import quantile as _common_quantile
 from common.train_runtime import timing_profile as _common_timing_profile
 from common.train_runtime import write_tensorboard_scalars as _common_write_tensorboard_scalars
-from ._loss_spec import build_loss_spec
+from .spec import build_loss_spec
 
 
 TIMING_KEYS = (
