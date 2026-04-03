@@ -316,6 +316,53 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("  loss  |  det=0.5000", message)
         self.assertIn("  timing_ms  |  eval=30.000", message)
 
+    def test_trainer_reporting_public_module_reexports_progress_helpers(self) -> None:
+        from model.engine import _trainer_reporting as private_reporting
+        from model.engine import trainer_reporting as public_reporting
+
+        exported_names = (
+            "_phase_label",
+            "_train_progress_desc",
+            "_train_progress_postfix",
+            "_validation_timing_profile",
+            "_validate_progress_desc",
+            "_validate_progress_postfix",
+            "_format_validate_progress_log",
+        )
+
+        for name in exported_names:
+            with self.subTest(name=name):
+                self.assertIn(name, public_reporting.__all__)
+                self.assertIs(getattr(public_reporting, name), getattr(private_reporting, name))
+
+    def test_trainer_progress_helpers_trim_windows_and_force_final_logs(self) -> None:
+        from model.engine._trainer_progress import _should_log_progress, _summarize_progress, _update_timing_window
+
+        timing_window: list[dict[str, float]] = []
+        timing_window = _update_timing_window(timing_window, {"iteration_sec": 0.5}, profile_window=2)
+        timing_window = _update_timing_window(timing_window, {"iteration_sec": 1.5}, profile_window=2)
+        timing_window = _update_timing_window(timing_window, {"iteration_sec": 2.0}, profile_window=2)
+
+        self.assertEqual(timing_window, [{"iteration_sec": 1.5}, {"iteration_sec": 2.0}])
+
+        with mock.patch("model.engine._trainer_progress.time.perf_counter", return_value=25.0):
+            profile_summary, elapsed_sec, eta_sec = _summarize_progress(
+                started_at=10.0,
+                batch_index=3,
+                total_batches=5,
+                timing_window=timing_window,
+                profile_builder=lambda items: {
+                    "iteration_sec": {"mean": sum(item["iteration_sec"] for item in items) / len(items)}
+                },
+            )
+
+        self.assertEqual(profile_summary["iteration_sec"]["mean"], 1.75)
+        self.assertEqual(elapsed_sec, 15.0)
+        self.assertEqual(eta_sec, 3.5)
+        self.assertFalse(_should_log_progress(batch_index=1, total_batches=5, log_every_n_steps=2))
+        self.assertTrue(_should_log_progress(batch_index=2, total_batches=5, log_every_n_steps=2))
+        self.assertTrue(_should_log_progress(batch_index=5, total_batches=5, log_every_n_steps=10))
+
     def test_format_epoch_completion_log_is_concise_and_includes_checkpoint_state(self) -> None:
         from model.engine.trainer import _format_epoch_completion_log
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from typing import Callable
 from typing import Any
 
 import torch
@@ -17,10 +19,20 @@ except Exception:  # pragma: no cover - optional dependency fallback.
 from .trainer_reporting import _join_segments, _progress_meter
 
 
+_ProfileBuilder = Callable[[list[dict[str, Any]]], dict[str, Any]]
+
+
 def _progress_console() -> Any:
     if Console is None:
         return None
     return Console(stderr=True)
+
+
+def _safe_len(loader: Any) -> int | None:
+    try:
+        return int(len(loader))
+    except Exception:
+        return None
 
 
 def _should_use_rich_progress() -> bool:
@@ -118,6 +130,53 @@ class _RichProgressBar:
             return
         self._live.stop()
         self._closed = True
+
+
+def _build_progress_bar(*, total: int | None, desc: str) -> _RichProgressBar | None:
+    if not _should_use_rich_progress():
+        return None
+    return _RichProgressBar(total=total, desc=desc)
+
+
+def _next_loader_batch(loader_iter: Any) -> tuple[bool, Any, float]:
+    fetch_started_at = time.perf_counter()
+    try:
+        batch = next(loader_iter)
+    except StopIteration:
+        return False, None, 0.0
+    fetch_ended_at = time.perf_counter()
+    return True, batch, max(0.0, fetch_ended_at - fetch_started_at)
+
+
+def _update_timing_window(window: list[dict[str, Any]], item: dict[str, Any], *, profile_window: int) -> list[dict[str, Any]]:
+    window.append(item)
+    return window[-max(1, int(profile_window)) :]
+
+
+def _summarize_progress(
+    *,
+    started_at: float,
+    batch_index: int,
+    total_batches: int | None,
+    timing_window: list[dict[str, Any]],
+    profile_builder: _ProfileBuilder,
+) -> tuple[dict[str, Any], float, float | None]:
+    elapsed_sec = max(0.0, time.perf_counter() - started_at)
+    remaining_batches = None
+    if total_batches is not None:
+        remaining_batches = max(0, int(total_batches) - int(batch_index))
+    profile_summary = profile_builder(list(timing_window))
+    eta_sec = None
+    if remaining_batches is not None:
+        eta_sec = float(profile_summary["iteration_sec"]["mean"]) * float(remaining_batches)
+    return profile_summary, elapsed_sec, eta_sec
+
+
+def _should_log_progress(*, batch_index: int, total_batches: int | None, log_every_n_steps: int) -> bool:
+    should_log = int(batch_index) % max(1, int(log_every_n_steps)) == 0
+    if total_batches is not None and int(batch_index) == int(total_batches):
+        should_log = True
+    return should_log
 
 
 def _emit_progress_message(message: str, *, progress_bar: Any = None) -> None:

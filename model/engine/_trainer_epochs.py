@@ -9,10 +9,14 @@ import torch
 from .batch import augment_lane_family_metrics, raw_batch_for_metrics
 from ._trainer_io import _append_jsonl, _now_iso
 from ._trainer_progress import (
+    _build_progress_bar,
     _emit_progress_message,
-    _RichProgressBar,
-    _should_use_rich_progress,
+    _next_loader_batch,
+    _safe_len,
+    _should_log_progress,
     _sync_profile_device,
+    _summarize_progress,
+    _update_timing_window,
 )
 from .trainer_reporting import (
     _aggregate_assignment_modes,
@@ -36,14 +40,6 @@ from .trainer_reporting import (
     _validation_timing_profile,
     _zero_successful_batches_error,
 )
-
-
-def _safe_len(loader: Any) -> int | None:
-    try:
-        return int(len(loader))
-    except Exception:
-        return None
-
 
 def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
     if not batches:
@@ -84,44 +80,37 @@ def run_train_epoch(
     total_batches = max_batches if max_batches is not None else _safe_len(loader)
     loader_iter = iter(loader)
     batch_index = 0
-    progress_bar = None
-    if _should_use_rich_progress():
-        progress_bar = _RichProgressBar(
-            total=total_batches,
-            desc=_train_progress_desc(
-                stage=trainer.stage,
-                phase_index=phase_index,
-                phase_count=phase_count,
-                phase_name=phase_name,
-                epoch=epoch,
-                epoch_total=epoch_total,
-                epoch_started_at_iso=epoch_started_at_iso,
-            ),
-        )
+    progress_bar = _build_progress_bar(
+        total=total_batches,
+        desc=_train_progress_desc(
+            stage=trainer.stage,
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
+            epoch=epoch,
+            epoch_total=epoch_total,
+            epoch_started_at_iso=epoch_started_at_iso,
+        ),
+    )
     try:
         while max_batches is None or batch_index < max_batches:
-            fetch_started_at = time.perf_counter()
-            try:
-                batch = next(loader_iter)
-            except StopIteration:
+            has_batch, batch, wait_sec = _next_loader_batch(loader_iter)
+            if not has_batch:
                 break
-            fetch_ended_at = time.perf_counter()
             batch_index += 1
             step_summary = trainer.train_step(
                 batch,
-                wait_sec=max(0.0, fetch_ended_at - fetch_started_at),
+                wait_sec=wait_sec,
                 profile_device_sync=profile_device_sync,
             )
-            timing_window.append(step_summary)
-            timing_window = timing_window[-max(1, int(profile_window)) :]
-            elapsed_sec = max(0.0, time.perf_counter() - started_at)
-            remaining_batches = None
-            if total_batches is not None:
-                remaining_batches = max(0, int(total_batches) - batch_index)
-            profile_summary = _timing_profile(list(timing_window))
-            eta_sec = None
-            if remaining_batches is not None:
-                eta_sec = float(profile_summary["iteration_sec"]["mean"]) * float(remaining_batches)
+            timing_window = _update_timing_window(timing_window, step_summary, profile_window=profile_window)
+            profile_summary, elapsed_sec, eta_sec = _summarize_progress(
+                started_at=started_at,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                timing_window=timing_window,
+                profile_builder=_timing_profile,
+            )
             step_summary["progress"] = {
                 "epoch": int(epoch),
                 "iteration": int(batch_index),
@@ -134,9 +123,11 @@ def run_train_epoch(
             step_summaries.append(step_summary)
             if step_log_path is not None:
                 _append_jsonl(step_log_path, step_summary)
-            should_log = batch_index % max(1, int(log_every_n_steps)) == 0
-            if total_batches is not None and batch_index == total_batches:
-                should_log = True
+            should_log = _should_log_progress(
+                batch_index=batch_index,
+                total_batches=total_batches,
+                log_every_n_steps=log_every_n_steps,
+            )
             if progress_bar is not None:
                 progress_bar.update(1)
                 progress_bar.set_postfix_str(
@@ -237,28 +228,23 @@ def run_validate_epoch(
     total_batches = max_batches if max_batches is not None else _safe_len(loader)
     loader_iter = iter(loader)
     batch_index = 0
-    progress_bar = None
-    if _should_use_rich_progress():
-        progress_bar = _RichProgressBar(
-            total=total_batches,
-            desc=_validate_progress_desc(
-                stage=trainer.stage,
-                phase_index=phase_index,
-                phase_count=phase_count,
-                phase_name=phase_name,
-                epoch=epoch,
-                epoch_total=epoch_total,
-                epoch_started_at_iso=epoch_started_at_iso,
-            ),
-        )
+    progress_bar = _build_progress_bar(
+        total=total_batches,
+        desc=_validate_progress_desc(
+            stage=trainer.stage,
+            phase_index=phase_index,
+            phase_count=phase_count,
+            phase_name=phase_name,
+            epoch=epoch,
+            epoch_total=epoch_total,
+            epoch_started_at_iso=epoch_started_at_iso,
+        ),
+    )
     try:
         while max_batches is None or batch_index < max_batches:
-            fetch_started_at = time.perf_counter()
-            try:
-                batch = next(loader_iter)
-            except StopIteration:
+            has_batch, batch, wait_sec = _next_loader_batch(loader_iter)
+            if not has_batch:
                 break
-            fetch_ended_at = time.perf_counter()
             batch_index += 1
             raw_batch = raw_batch_for_metrics(batch)
             needs_predictions = raw_batch is not None
@@ -269,25 +255,25 @@ def run_validate_epoch(
             evaluate_ended_at = time.perf_counter()
             batch_summary = dict(batch_summary)
             batch_timing = {
-                "wait_sec": max(0.0, fetch_ended_at - fetch_started_at),
+                "wait_sec": wait_sec,
                 "evaluate_sec": max(0.0, evaluate_ended_at - evaluate_started_at),
             }
             batch_timing["iteration_sec"] = float(batch_timing["wait_sec"]) + float(batch_timing["evaluate_sec"])
             batch_summary["timing"] = batch_timing
             batch_summaries.append(batch_summary)
-            timing_window.append(batch_timing)
-            timing_window = timing_window[-max(1, int(profile_window)) :]
-            elapsed_sec = max(0.0, time.perf_counter() - started_at)
-            remaining_batches = None
-            if total_batches is not None:
-                remaining_batches = max(0, int(total_batches) - batch_index)
-            profile_summary = _validation_timing_profile(list(timing_window))
-            eta_sec = None
-            if remaining_batches is not None:
-                eta_sec = float(profile_summary["iteration_sec"]["mean"]) * float(remaining_batches)
-            should_log = batch_index % max(1, int(log_every_n_steps)) == 0
-            if total_batches is not None and batch_index == total_batches:
-                should_log = True
+            timing_window = _update_timing_window(timing_window, batch_timing, profile_window=profile_window)
+            profile_summary, elapsed_sec, eta_sec = _summarize_progress(
+                started_at=started_at,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                timing_window=timing_window,
+                profile_builder=_validation_timing_profile,
+            )
+            should_log = _should_log_progress(
+                batch_index=batch_index,
+                total_batches=total_batches,
+                log_every_n_steps=log_every_n_steps,
+            )
             if progress_bar is not None:
                 progress_bar.update(1)
                 progress_bar.set_postfix_str(
