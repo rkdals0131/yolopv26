@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 import unittest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ModuleLayoutCompatTests(unittest.TestCase):
@@ -27,6 +30,9 @@ class ModuleLayoutCompatTests(unittest.TestCase):
         self.assertIs(config_old, config_new)
         self.assertTrue(callable(run_old.load_meta_train_scenario))
         self.assertTrue(hasattr(config_old, "MetaTrainScenario"))
+        expected_repo_root = REPO_ROOT
+        self.assertEqual(run_new.REPO_ROOT, expected_repo_root)
+        self.assertEqual(config_new.REPO_ROOT, expected_repo_root)
 
     def test_od_bootstrap_source_and_teacher_runtime_packages_keep_legacy_shims(self) -> None:
         source_aihub = importlib.import_module("tools.od_bootstrap.source.aihub")
@@ -38,6 +44,14 @@ class ModuleLayoutCompatTests(unittest.TestCase):
         self.assertTrue(callable(source_aihub.run_standardization))
         self.assertIs(shared_old, shared_new)
         self.assertIs(runtime_old, runtime_new)
+
+    def test_check_env_package_uses_repo_root_not_tools_root(self) -> None:
+        check_env_pkg = importlib.import_module("tools.check_env")
+        scan_new = importlib.import_module("tools.check_env.scan")
+        expected_repo_root = REPO_ROOT
+
+        self.assertEqual(check_env_pkg.REPO_ROOT, expected_repo_root)
+        self.assertEqual(scan_new.REPO_ROOT, expected_repo_root)
 
 
 if __name__ == "__main__":

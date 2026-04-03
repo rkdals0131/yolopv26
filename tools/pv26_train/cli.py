@@ -10,7 +10,7 @@ import sys
 from types import MethodType
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ensure_repo_root_on_path() -> None:
