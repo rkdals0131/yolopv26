@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from common.io import append_jsonl_sorted as _common_append_jsonl_sorted
 from common.io import now_iso as _common_now_iso
@@ -16,20 +16,16 @@ def _default_run_dir() -> Path:
     return Path("runs") / "pv26_train" / f"pv26_fit_{timestamp}"
 
 
-def _now_iso() -> str:
-    return _common_now_iso()
+_now_iso = _common_now_iso
 
 
-def _write_json(path: str | Path, payload: dict[str, Any]) -> Path:
-    return _common_write_json(path, payload)
+_write_json = _common_write_json
 
 
-def _append_jsonl(path: str | Path, payload: dict[str, Any]) -> Path:
-    return _common_append_jsonl_sorted(path, payload)
+_append_jsonl = _common_append_jsonl_sorted
 
 
-def _write_jsonl_rows(path: str | Path, rows: Iterable[dict[str, Any]]) -> Path:
-    return _common_write_jsonl_sorted(path, rows)
+_write_jsonl_rows = _common_write_jsonl_sorted
 
 
 def _json_ready(value: Any) -> Any:
@@ -42,5 +38,4 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
-def _maybe_build_summary_writer(log_dir: Path, *, purge_step: int | None = None):
-    return _common_maybe_build_summary_writer(log_dir, purge_step=purge_step)
+_maybe_build_summary_writer = _common_maybe_build_summary_writer

@@ -130,6 +130,8 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         encoded = _make_encoded_batch(batch_size=1, q_det=2)
         predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions["det"] = torch.full((1, 2, 12), float("nan"), dtype=torch.float32, requires_grad=True)
+        predictions["tl_attr"] = torch.full((1, 2, 4), float("nan"), dtype=torch.float32, requires_grad=True)
         predictions.pop("det_feature_shapes")
         predictions.pop("det_feature_strides")
 
@@ -140,6 +142,28 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertEqual(criterion.last_det_positive_count, 0)
         self.assertEqual(float(losses["det"].detach().cpu()), 0.0)
         self.assertEqual(float(losses["tl_attr"].detach().cpu()), 0.0)
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["lane"].grad)
+
+    def test_zero_weight_lane_family_aux_losses_skip_non_finite_heads(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions["stop_line"] = torch.full((1, 6, 9), float("nan"), dtype=torch.float32, requires_grad=True)
+        predictions["crosswalk"] = torch.full((1, 4, 17), float("nan"), dtype=torch.float32, requires_grad=True)
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"stop_line": 0.0, "crosswalk": 0.0},
+        )
+        losses = criterion(predictions, encoded)
+
+        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "disabled")
+        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "disabled")
+        self.assertTrue(torch.isfinite(losses["stop_line"]))
+        self.assertTrue(torch.isfinite(losses["crosswalk"]))
         self.assertTrue(torch.isfinite(losses["total"]))
         losses["total"].backward()
         self.assertIsNotNone(predictions["lane"].grad)
@@ -212,7 +236,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertEqual(criterion.last_det_assignment_mode, "task_aligned")
         self.assertEqual(criterion.last_lane_assignment_modes["lane"], "hungarian")
         self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
-        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "hungarian")
+        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "disabled")
 
         self.assertTrue(torch.isfinite(losses["total"]))
         self.assertTrue(torch.isfinite(losses["det"]))
@@ -254,7 +278,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertEqual(criterion.last_det_assignment_mode, "zero_positive")
         self.assertEqual(criterion.last_lane_assignment_modes["lane"], "hungarian")
         self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
-        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "hungarian")
+        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "disabled")
 
         self.assertTrue(torch.isfinite(losses["total"]))
         self.assertEqual(float(losses["total"].detach().cpu()), 0.0)
@@ -440,6 +464,8 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         encoded = _make_encoded_batch(batch_size=1, q_det=2)
         predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions["det"] = torch.full((1, 2, 12), float("nan"), dtype=torch.float32, requires_grad=True)
+        predictions["tl_attr"] = torch.full((1, 2, 4), float("nan"), dtype=torch.float32, requires_grad=True)
         predictions.pop("det_feature_shapes")
         predictions.pop("det_feature_strides")
         criterion = PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup")
@@ -466,7 +492,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertEqual(criterion.last_det_assignment_mode, "task_aligned")
         self.assertEqual(criterion.last_lane_assignment_modes["lane"], "hungarian")
         self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
-        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "hungarian")
+        self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "disabled")
 
         self.assertTrue(torch.isfinite(losses["total"]))
         losses["total"].backward()

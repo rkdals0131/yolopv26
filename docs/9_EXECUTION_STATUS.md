@@ -136,6 +136,7 @@
 
 - production helper residue는 `now_iso` 3곳 (`common/io.py`, `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/raw_common.py`), `timestamp_token` 2곳 (`common/io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`), `write_json` 5곳 (`common/io.py`, `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared_io.py`, `tools/od_bootstrap/teacher/calibrate.py`, `tools/od_bootstrap/build/final_dataset.py`), `append_jsonl` 3곳 (`common/io.py`, `model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`)이다.
 - `model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`, `tools/od_bootstrap/source/shared_io.py`는 common helper 위에 얹힌 thin compatibility shim이고, 실제 contract 차이는 `tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract, `tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화, `tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics에 남아 있다.
+- `2026-04-03` wave 9 follow-up으로 `model/engine/_trainer_io.py`는 common `now_iso`/`write_json`/`append_jsonl_sorted`/`write_jsonl_sorted`를 직접 alias하고, `tools/od_bootstrap/teacher/runtime_progress.py`는 common `append_jsonl`/`timestamp_token` 재export만 남겼으며, `tools/od_bootstrap/source/shared_io.py`는 common `read_json`/`ensure_parent_dir`를 재사용하면서도 `existing` skip + hardlink/copy policy는 local로 유지한다.
 - policy-sensitive `link_or_copy`는 `common/io.py`, `tools/od_bootstrap/source/shared_io.py`, `tools/od_bootstrap/source/aihub.py`, `tools/od_bootstrap/build/teacher_dataset.py`, `tools/od_bootstrap/build/final_dataset.py`, `tools/od_bootstrap/teacher/runtime_artifacts.py`, `tools/od_bootstrap/teacher/data_yaml.py`에 걸쳐 서로 다른 overwrite/existing/symlink/hardlink/tree-staging 정책을 가진다. 이 차이는 local 유지가 맞고, 공통화 대상은 low-level atomic/json helper까지만 제한한다.
 
 ## 최근 검증
@@ -154,12 +155,15 @@
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_balanced_sampler.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_trainer.py' -v`
+- [x] `python3 -m pytest test/test_pv26_trainer.py -k trainer_io_reuses_common_helper_aliases -q` (`1 passed`, `2026-04-03`)
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_evaluator.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_eval_metrics.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_postprocess.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_tiny_overfit.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
+- [x] `python3 -m pytest test/od_bootstrap/test_shared_source_helpers.py -k shared_io_round_trips_and_reuses_existing_outputs -q` (`1 passed`, `2026-04-03`)
+- [x] `python3 -m pytest test/od_bootstrap/test_train_ultralytics_runner.py -k runtime_progress_reuses_common_io_helpers -q` (`1 passed`, `2026-04-03`)
 - [x] `python3 -m unittest discover -s test -p 'test_portability_runtime.py' -v`
 - [x] `python3 tools/check_env.py`
 - [x] `python3 tools/run_pv26_train.py --preset default`

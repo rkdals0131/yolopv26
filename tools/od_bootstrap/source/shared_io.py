@@ -1,29 +1,25 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any
 
+from common.io import ensure_parent_dir
 from common.io import now_iso
+from common.io import read_json as load_json
 from common.io import write_json_sorted as write_json
 from common.io import write_text
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def link_or_copy(source_path: Path, target_path: Path) -> str:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    if target_path.exists():
+    target = ensure_parent_dir(target_path)
+    if target.exists():
         return "existing"
     try:
-        os.link(source_path, target_path)
+        os.link(source_path, target)
         return "hardlink"
     except OSError:
-        shutil.copy2(source_path, target_path)
+        shutil.copy2(source_path, target)
         return "copy"
 
 

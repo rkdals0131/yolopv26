@@ -44,7 +44,8 @@ def _zero_graph(*tensors: torch.Tensor) -> torch.Tensor:
     for tensor in tensors:
         if not isinstance(tensor, torch.Tensor):
             continue
-        term = tensor.sum() * 0.0
+        safe_tensor = torch.where(torch.isfinite(tensor), tensor, torch.zeros_like(tensor))
+        term = safe_tensor.sum() * 0.0
         zero = term if zero is None else zero + term
     if zero is None:
         zero = torch.tensor(0.0)
@@ -235,6 +236,9 @@ class PV26MultiTaskLoss(nn.Module):
             or float(self.loss_weights.get("tl_attr", 0.0)) > 0.0
         )
 
+    def _task_loss_enabled(self, task_name: str) -> bool:
+        return bool(float(self.loss_weights.get(task_name, 0.0)) > 0.0)
+
     def _run_task_aligned_assigner(
         self,
         pred_scores: torch.Tensor,
@@ -346,6 +350,11 @@ class PV26MultiTaskLoss(nn.Module):
             "det_cls_unmatched_neg_count": 0,
         }
         det_assignment: dict[str, torch.Tensor | str] | None = None
+        self.last_lane_assignment_modes = {
+            "lane": "disabled" if not self._task_loss_enabled("lane") else "uninitialized",
+            "stop_line": "disabled" if not self._task_loss_enabled("stop_line") else "uninitialized",
+            "crosswalk": "disabled" if not self._task_loss_enabled("crosswalk") else "uninitialized",
+        }
         if self._detector_losses_enabled():
             det_assignment = self._build_det_assignment(predictions, encoded)
             self.last_det_assignment_mode = str(det_assignment["mode"])
@@ -357,9 +366,17 @@ class PV26MultiTaskLoss(nn.Module):
             self.last_det_positive_count = 0
             det = _zero_graph(predictions["det"])
             tl_attr = _zero_graph(predictions["tl_attr"])
-        lane = self._lane_loss(predictions["lane"], encoded)
-        stop_line = self._stop_line_loss(predictions["stop_line"], encoded)
-        crosswalk = self._crosswalk_loss(predictions["crosswalk"], encoded)
+        lane = self._lane_loss(predictions["lane"], encoded) if self._task_loss_enabled("lane") else _zero_graph(predictions["lane"])
+        stop_line = (
+            self._stop_line_loss(predictions["stop_line"], encoded)
+            if self._task_loss_enabled("stop_line")
+            else _zero_graph(predictions["stop_line"])
+        )
+        crosswalk = (
+            self._crosswalk_loss(predictions["crosswalk"], encoded)
+            if self._task_loss_enabled("crosswalk")
+            else _zero_graph(predictions["crosswalk"])
+        )
 
         total = (
             self.loss_weights["det"] * det
