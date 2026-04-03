@@ -110,7 +110,7 @@ class DocsSyncTests(unittest.TestCase):
         cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
 
         self.assertIn(
-            "production helper residue는 `now_iso` 3곳, `timestamp_token` 2곳, `write_json` 5곳, `append_jsonl` 3곳",
+            "local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳",
             execution_doc,
         )
         self.assertIn(
@@ -119,12 +119,12 @@ class DocsSyncTests(unittest.TestCase):
         )
 
         self.assertIn("`tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract", cleanliness_checklist)
-        self.assertIn("`tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화", cleanliness_checklist)
+        self.assertIn("`tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site", cleanliness_checklist)
         self.assertIn("`tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_checklist)
-        self.assertIn("thin compatibility shim", cleanliness_checklist)
+        self.assertIn("direct re-export surface", cleanliness_checklist)
 
         self.assertIn("`source/raw_common.py`의 UTC timestamp contract", cleanliness_report)
-        self.assertIn("`teacher/calibrate.py`의 `default=str` JSON 직렬화", cleanliness_report)
+        self.assertIn("`teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site", cleanliness_report)
         self.assertIn("`build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_report)
         for fragment in (
             "`common/io.py`",
