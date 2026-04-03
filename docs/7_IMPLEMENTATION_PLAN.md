@@ -120,6 +120,7 @@
 - `2026-04-03` wave 4 extended safe `common.io` reuse into more bootstrap call sites, split `_loss_spec.build_loss_spec()` into section builders, decomposed `_make_teacher_trainer()` helper setup, and added `TypedDict` slices in build debug/teacher manifest paths
 - `2026-04-03` wave 5 expanded manifest typing into `exhaustive_od.py` / `final_dataset.py` / `sweep.py` and split `calibrate_class_policy_scenario()` into narrower stage helpers
 - `2026-04-03` wave 6 added `common/train_runtime.py`, routed trainer/teacher runtime helper duplicates through it, promoted `model.engine.trainer_reporting` as a public shared surface, and aligned build/check_env/tests with manifest/summary filename constants
+- `2026-04-03` wave 7 anchored source shared IO/raw shims to common/raw contracts, moved epoch-loop bookkeeping helpers into `_trainer_progress.py`, extracted teacher train-summary publication into `runtime_artifacts.py`, and centralized sorted JSON helper variants in `common.io`
 
 ## priority-2b extraction review boundary
 
