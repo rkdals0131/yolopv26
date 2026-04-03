@@ -1,12 +1,3 @@
-from __future__ import annotations
-
-from collections import Counter
-
-
-def counter_to_dict(counter: Counter[str]) -> dict[str, int]:
-    return {key: counter[key] for key in sorted(counter)}
-
-
-__all__ = [
-    "counter_to_dict",
-]
+from importlib import import_module as _import_module
+import sys as _sys
+_sys.modules[__name__] = _import_module("tools.od_bootstrap.source.shared.summary")

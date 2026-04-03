@@ -84,6 +84,7 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_priority_2b_docs_track_run_pv26_train_split_boundary(self) -> None:
         implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
+        architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
         cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
         cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
 
@@ -103,6 +104,8 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("pv26_train_scenario.py", cleanliness_report)
         self.assertIn("pv26_train_runtime.py", cleanliness_report)
         self.assertIn("pv26_train_stress.py", cleanliness_report)
+        self.assertIn("pv26_train/", architecture_doc)
+        self.assertIn("check_env/", architecture_doc)
 
     def test_rank3_cleanliness_docs_track_exact_helper_residue_and_link_policy_boundaries(self) -> None:
         execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
@@ -250,6 +253,11 @@ class DocsSyncTests(unittest.TestCase):
     def test_system_architecture_tracks_runtime_not_contract_gap(self) -> None:
         architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
         self.assertIn("tools.od_bootstrap.source.aihub / bdd100k", architecture_doc)
+        self.assertIn("source/", architecture_doc)
+        self.assertIn("aihub/", architecture_doc)
+        self.assertIn("shared/", architecture_doc)
+        self.assertIn("teacher/", architecture_doc)
+        self.assertIn("runtime/", architecture_doc)
         self.assertIn("model/data", architecture_doc)
         self.assertIn("model/net", architecture_doc)
         self.assertIn("model/engine", architecture_doc)

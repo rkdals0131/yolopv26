@@ -5,13 +5,13 @@ from pathlib import Path
 import time
 from typing import Any
 
-from . import runtime_progress
-from .runtime_artifacts import (
+from .runtime import progress as runtime_progress
+from .runtime.artifacts import (
     build_teacher_train_summary,
     finalize_teacher_train_artifacts,
 )
-from .runtime_resume import coerce_weights_name, extract_run_dir, resolve_resume_argument
-from .runtime_trainer import make_teacher_trainer as _make_teacher_trainer
+from .runtime.resume import coerce_weights_name, extract_run_dir, resolve_resume_argument
+from .runtime.trainer import make_teacher_trainer as _make_teacher_trainer
 
 try:
     from ultralytics import YOLO
