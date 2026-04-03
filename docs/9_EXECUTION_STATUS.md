@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 4까지로 safe common.io call-site 확장, _loss_spec builder 분해, _make_teacher_trainer helper 분해, build/debug manifest typing slice까지 정리했다. 다음은 append_jsonl/time helper 잔여분, _trainer_epochs, calibrate split, exhaustive/final/sweep manifest typing 확장이다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 5까지로 exhaustive/final/sweep manifest typing 확장과 calibrate helper 분해까지 정리했다. 다음은 append_jsonl/time helper 잔여분, _trainer_epochs runtime/reporting, broader public/internal surface, teacher runner bulk 축소, build/source summary row follow-up이다.`
 
 ## 완료된 항목
 
@@ -104,6 +104,8 @@
 - [x] `model/engine/_loss_spec.py`를 section builder 구조로 분해하고 fresh-copy regression을 고정
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()` helper 분해
 - [x] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`에 manifest/item row typing slice 도입
+- [x] `tools/od_bootstrap/build/exhaustive_od.py`, `final_dataset.py`, `sweep.py`에 manifest/prediction row `TypedDict` 확장
+- [x] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`를 stage helper로 분해
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -116,8 +118,8 @@
 - [ ] repo-wide common helper 공통화 잔여분 (`append_jsonl`, 일부 `now_iso`/`timestamp_token`/`write_json` local wrappers)
 - [ ] `model/engine/` internal API 잔여분 정리 (broader public/internal surface, `_trainer_epochs.py` runtime/reporting)
 - [ ] source debug-vis manifest write helper shared public API 정리
-- [ ] teacher runtime runner 경량화 (`_make_teacher_trainer`, calibrate split, runner 덩치 축소)
-- [ ] build/source manifest typing (`TypedDict`) 확장 (`exhaustive_od.py`, `final_dataset.py`, `sweep.py`)
+- [ ] teacher runtime runner 경량화 (runner 덩치 추가 축소)
+- [ ] build/source summary/publish row 정적 계약 보강 (`summary row`, `publish marker`, remaining manifest payload follow-up)
 - [ ] export / ROS 정교화
 
 ## 최근 검증
@@ -155,6 +157,7 @@
 - [x] `python3 -m compileall -q model/engine/trainer.py tools/check_env.py tools/check_env_launch.py tools/od_bootstrap/source/aihub.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/source/types.py tools/od_bootstrap/teacher/runtime_callbacks.py tools/od_bootstrap/teacher/ultralytics_runner.py`
 - [x] `pytest -q test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_trainer.py test/test_pv26_tiny_overfit.py test/od_bootstrap/test_train_ultralytics_runner.py test/od_bootstrap/test_train_teacher.py test/od_bootstrap/test_shared_source_helpers.py test/od_bootstrap/test_preprocess_sources.py test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_run_generate_debug_vis.py test/od_bootstrap/test_teacher_dataset.py test/test_aihub_standardize.py test/test_bdd100k_standardize.py test/test_docs_sync.py test/test_portability_runtime.py` (`101 passed`, `2026-04-03`)
 - [x] `python3 -m compileall -q common/io.py common/paths.py model/engine/_loss_spec.py model/engine/trainer.py tools/check_env.py tools/check_env_launch.py tools/od_bootstrap/source/aihub.py tools/od_bootstrap/source/bdd100k.py tools/od_bootstrap/source/aihub_debug.py tools/od_bootstrap/source/shared_debug.py tools/od_bootstrap/source/types.py tools/od_bootstrap/teacher/runtime_callbacks.py tools/od_bootstrap/teacher/ultralytics_runner.py tools/od_bootstrap/build/debug_vis.py tools/od_bootstrap/build/sweep.py tools/od_bootstrap/build/teacher_dataset.py test/test_pv26_loss_spec.py test/od_bootstrap/test_shared_source_helpers.py test/test_portability_runtime.py`
+- [x] `python3 -m pytest test/od_bootstrap/test_sweep_runner.py test/od_bootstrap/test_run_generate_debug_vis.py test/od_bootstrap/test_teacher_dataset.py test/od_bootstrap/test_preprocess_sources.py -q` (`11 passed`, `2026-04-03`)
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
 - [x] detector assignment 통합 후 targeted tests 재통과
