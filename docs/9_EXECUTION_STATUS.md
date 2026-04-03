@@ -115,7 +115,8 @@
 - [x] `model/engine/_trainer_epochs.py`의 loader/progress bookkeeping helper를 `_trainer_progress.py`로 이동해 epoch loop를 orchestration 중심으로 축소
 - [x] `tools/od_bootstrap/teacher/runtime_artifacts.py`가 teacher train summary / latest artifact publication을 맡고 `ultralytics_runner.py`가 이를 호출하도록 분리
 - [x] `common.io.write_json_sorted`, `append_jsonl_sorted`, `write_jsonl_sorted`를 추가하고 `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared_io.py`가 이를 재사용하도록 정리
-- [x] `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py` public shared module을 추가하고 `trainer.py` compatibility shim / `loss.py` / `postprocess.py` / `_trainer_epochs.py` / `tools/run_pv26_train.py` / 테스트 import 경계를 해당 public surface로 재정렬
+- [x] `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py` public/shared surface를 추가하고 `loss.py`, `postprocess.py`, trainer runtime/tests가 private module 대신 이를 우선 사용하도록 정리
+- [x] `model/engine/trainer.py` compatibility alias를 core trainer facade만 남기고 줄여 rank-4 public/internal surface 정리를 마감
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -139,8 +140,8 @@
 
 ## 최근 검증
 
-- [x] `python3 -m pytest test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py -q` (`86 passed`, `2026-04-03`)
-- [x] `python3 -m compileall -q model/engine tools/run_pv26_train.py test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_run_pv26_train.py test/test_portability_runtime.py test/test_docs_sync.py`
+- [x] `python3 -m pytest test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_docs_sync.py -q`
+- [x] `python3 -m compileall -q model/engine tools/run_pv26_train.py test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_docs_sync.py`
 - [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap/test_shared_source_helpers.py -q` (`21 passed`, `2026-04-03`)
 - [x] `python3 -m compileall -q test/test_docs_sync.py test/od_bootstrap/test_shared_source_helpers.py`
 - [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap -q` (`49 passed`)
