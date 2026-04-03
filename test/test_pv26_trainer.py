@@ -9,6 +9,14 @@ from unittest import mock
 import torch
 import torch.nn as nn
 
+from common.io import (
+    append_jsonl_sorted as common_append_jsonl_sorted,
+    now_iso as common_now_iso,
+    write_json as common_write_json,
+    write_jsonl_sorted as common_write_jsonl_sorted,
+)
+from common.train_runtime import maybe_build_summary_writer as common_maybe_build_summary_writer
+from model.engine import _trainer_io
 from model.engine.loss import build_loss_spec
 from runtime_support import has_yolo26_runtime
 
@@ -204,6 +212,16 @@ class _FakeSummaryWriter:
 
 
 class PV26TrainerTests(unittest.TestCase):
+    def test_trainer_io_reuses_common_helper_aliases(self) -> None:
+        self.assertIs(_trainer_io._now_iso, common_now_iso)
+        self.assertIs(_trainer_io._write_json, common_write_json)
+        self.assertIs(_trainer_io._append_jsonl, common_append_jsonl_sorted)
+        self.assertIs(_trainer_io._write_jsonl_rows, common_write_jsonl_sorted)
+        self.assertIs(_trainer_io._maybe_build_summary_writer, common_maybe_build_summary_writer)
+
+        with mock.patch.object(_trainer_io, "_common_timestamp_token", return_value="20260403_010203"):
+            self.assertEqual(_trainer_io._default_run_dir(), Path("runs/pv26_train/pv26_fit_20260403_010203"))
+
     def test_format_train_live_detail_compacts_to_two_lines(self) -> None:
         from model.engine.trainer import _format_train_live_detail
 

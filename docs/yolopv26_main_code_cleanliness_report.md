@@ -952,14 +952,14 @@ AIHUB/BDD caller가 같은 manifest contract를 재사용하게 됐다.
 - `resolve_optional_path`
 - `deep_merge_mappings`
 
-이건 지금 정말 여러 곳에 있었다.
-이번 wave는 `common/io.py` 확장 + bootstrap-side thin shim 유지로 정리했다.
+이건 지금 정말 여러 곳에 있다.  
+최소한 아래 둘 중 하나는 필요하다.
 
 - `common/io.py`, `common/paths.py`, `common/config_merge.py` 확장
 - 또는 `tools/od_bootstrap/shared_io.py`, `shared_paths.py` 추가
 
-`2026-04-03` rank-3 shim 정리 이후 local helper implementation residue는
-`now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳이다.
+`2026-04-03` rank-3 audit 기준으로 production definition 잔량은
+`now_iso` 3곳, `timestamp_token` 2곳, `write_json` 5곳, `append_jsonl` 3곳이다.
 다만 이 숫자를 그대로 “다 common으로 몰아넣으면 된다”로 읽으면 안 된다.
 
 - `model/engine/_trainer_io.py`
@@ -973,12 +973,11 @@ direct alias / re-export(`trainer_io`, `runtime_progress`)와 common `read_json`
 반대로 아래 셋은 아직 로컬 정책/계약 차이가 남아 있다.
 
 - `source/raw_common.py`의 UTC timestamp contract
-- `teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site
+- `teacher/calibrate.py`의 `default=str` JSON 직렬화
 - `build/final_dataset.py`의 overwrite 금지 publish semantics
 
 즉, rank-3에서 해야 할 일은 “개수를 0으로 만들기”보다
-shim과 policy-sensitive wrapper를 분리해서 문서/코드 기준선을 고정하는 쪽에 더 가까웠다.
-그리고 이번 closeout에서는 그 기준선을 테스트까지 포함해 잠갔다.
+shim과 policy-sensitive wrapper를 분리해서 문서/코드 기준선을 고정하는 쪽에 더 가깝다.
 
 ### B. source pipeline 공통골격
 

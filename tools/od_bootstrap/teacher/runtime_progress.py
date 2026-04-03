@@ -5,7 +5,7 @@ import time
 from types import MethodType
 from typing import Any
 
-from common import io as common_io
+from common.io import append_jsonl, timestamp_token
 from common.train_runtime import format_duration as _common_format_duration
 from common.train_runtime import sync_timing_device as _common_sync_timing_device
 from common.train_runtime import timing_profile as _common_timing_profile
@@ -26,9 +26,6 @@ def sync_timing_device(torch_module: Any, device: Any, enabled: bool) -> None:
 
 def timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
     return _common_timing_profile(window, keys=("iteration_sec", "wait_sec", "compute_sec"))
-
-
-append_jsonl = common_io.append_jsonl
 
 
 def format_duration(seconds: float | None) -> str:
@@ -143,9 +140,6 @@ def emit_log(message: str, *, progress_bar: Any = None) -> None:
         progress_bar.write(message)
         return
     print(message, flush=True)
-
-
-timestamp_token = common_io.timestamp_token
 
 
 def build_live_postfix(
