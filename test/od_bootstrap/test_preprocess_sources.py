@@ -65,10 +65,32 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             ):
                 result = prepare_od_bootstrap_sources(config)
 
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(result.bundle.bootstrap_source_keys, ("bdd100k_det_100k", "aihub_traffic_seoul", "aihub_obstacle_seoul"))
             self.assertEqual(result.bundle.excluded_source_keys, ("aihub_lane_seoul",))
-            self.assertEqual(json.loads(result.manifest_path.read_text(encoding="utf-8"))["bootstrap_source_keys"], ["bdd100k_det_100k", "aihub_traffic_seoul", "aihub_obstacle_seoul"])
+            self.assertEqual(manifest["bootstrap_source_keys"], ["bdd100k_det_100k", "aihub_traffic_seoul", "aihub_obstacle_seoul"])
+            self.assertEqual(
+                manifest["raw_roots"],
+                {
+                    "bdd_root": str(bdd_root.resolve()),
+                    "aihub_root": str(aihub_root.resolve()),
+                    "aihub_lane_root": str((aihub_root / AIHUB_LANE_DIRNAME).resolve()),
+                    "aihub_obstacle_root": str((aihub_root / AIHUB_OBSTACLE_DIRNAME).resolve()),
+                    "aihub_traffic_root": str((aihub_root / AIHUB_TRAFFIC_DIRNAME).resolve()),
+                },
+            )
+            self.assertEqual(
+                manifest["canonical_roots"],
+                {
+                    "bdd_root": str((output_root / "canonical" / "bdd100k_det_100k").resolve()),
+                    "aihub_root": str((output_root / "canonical" / "aihub_standardized").resolve()),
+                },
+            )
             self.assertTrue(result.image_list_manifest_path.is_file())
+            self.assertEqual(
+                sorted(result.canonical_debug_vis_manifest_paths.keys()),
+                ["aihub_standardized", "bdd100k_det_100k"],
+            )
 
             mock_bdd.assert_called_once()
             mock_aihub.assert_called_once()

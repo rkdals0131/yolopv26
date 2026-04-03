@@ -48,7 +48,8 @@
 ## 4순위. `model/engine/` 내부 API 경계 정리
 
 - [x] `model/engine/trainer.py`가 `_trainer_checkpoint.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_io.py`, `_trainer_reporting.py`, `_trainer_step.py`의 private helper를 대량 re-export/alias 하는 구조를 줄인다.
-- [x] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다. (`model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`가 public/shared surface를 맡는다.)
+- [x] rank-4 정리는 `model/engine/`에 public shared surface를 추가하고, underscore helper를 실제 internal-only로 되돌리는 방향으로 진행한다.
+- [x] `model/engine/`에서 public surface와 internal surface를 분리하고, underscore helper는 실제로 파일 내부 전용이 되도록 정리한다. (`model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`가 public/shared surface를 맡는다.)
 - [x] `model/engine/` 안의 private cross-import mesh를 줄이고, shared internal API가 필요하면 public shared 모듈로 승격한다. (`loss.py`, `postprocess.py`, `_trainer_epochs.py`, `_trainer_fit.py`, `_trainer_step.py`, `tools/run_pv26_train.py`, tests가 private module 대신 public/shared engine surface를 우선 사용한다.)
 - [x] `model/engine/loss.py`와 `model/engine/postprocess.py`의 `_make_anchor_grid`, `_decode_anchor_relative_boxes` 중복을 공용 geometry helper로 정리한다.
 - [x] `model/engine/trainer.py`와 `model/engine/evaluator.py`의 `_move_to_device` 중복을 공용 batch helper로 정리한다.
@@ -60,11 +61,11 @@
 
 ## 5순위. manifest row와 느슨한 dict 계약 축소
 
-- [ ] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`, `exhaustive_od.py`, `final_dataset.py`, `sweep.py`에서 JSON manifest row를 `dict[str, Any]` 중심으로 느슨하게 돌리는 구조를 줄인다.
+- [x] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`, `exhaustive_od.py`, `final_dataset.py`, `sweep.py`에서 JSON manifest row를 `dict[str, Any]` 중심으로 느슨하게 돌리는 구조를 줄인다.
 - [x] `debug_vis.py`, `teacher_dataset.py`에서 `DebugVisItemRow`/`TeacherDatasetManifestRow` 수준의 `TypedDict`를 도입한다.
 - [x] 최소한 `ExhaustiveSampleRow`, `FinalDatasetSampleRow`, `TeacherPredictionRow` 수준의 `TypedDict`를 더 도입한다.
-- [ ] manifest row, sample row, prediction row, summary row에서 key typo, optional field 누락, value 타입 drift, 경로/string 혼합을 정적 계약으로 잡을 수 있게 만든다.
-- [ ] source/build 파이프라인에서 자주 오가는 JSON row 계약을 명시적인 타입으로 치환해 IDE 추적성과 리팩토링 안전성을 높인다.
+- [x] manifest row, sample row, prediction row, summary row에서 key typo, optional field 누락, value 타입 drift, 경로/string 혼합을 정적 계약으로 잡을 수 있게 만든다.
+- [x] source/build 파이프라인에서 자주 오가는 JSON row 계약을 `TeacherJobManifestPayload`, `SourcePrepManifest`, `FinalDatasetPublishMarker`/`FinalDatasetSourceKind` 같은 명시적인 타입으로 치환해 IDE 추적성과 리팩토링 안전성을 높인다.
 
 ## 6순위. teacher runtime과 `ultralytics_runner.py` 정리
 

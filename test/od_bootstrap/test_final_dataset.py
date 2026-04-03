@@ -100,6 +100,14 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertEqual(lane_scene["image"]["file_name"], "lane.png")
             self.assertEqual(lane_scene["image"]["original_file_name"], "lane_source.png")
             self.assertEqual(publish_marker["status"], "completed")
+            self.assertEqual(publish_marker["sample_count"], 2)
+            self.assertEqual(
+                publish_marker["dataset_counts"],
+                {
+                    "aihub_lane_seoul": 1,
+                    "pv26_exhaustive_bdd100k_det_100k": 1,
+                },
+            )
             self.assertEqual(publish_marker["rerun_mode"], FINAL_DATASET_RERUN_MODE)
             self.assertEqual(summary["rerun_mode"], FINAL_DATASET_RERUN_MODE)
             self.assertEqual(summary["exhaustive_od_root"], str(exhaustive_root))

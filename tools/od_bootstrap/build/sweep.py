@@ -16,6 +16,7 @@ from common.io import timestamp_token as _timestamp_token
 from .artifacts import (
     RunManifest,
     TeacherJobManifest,
+    TeacherJobManifestPayload,
     teacher_output_dir,
     write_image_list_snapshot,
     write_run_manifest,
@@ -24,12 +25,11 @@ from .artifacts import (
 )
 from .exhaustive_od import (
     ExhaustiveMaterializationSummary,
-    TeacherPredictionRow,
     materialize_exhaustive_od_dataset,
 )
 from .image_list import ImageListEntry, load_image_list
 from ..teacher.policy import row_passes_policy
-from .sweep_types import BootstrapSweepScenario, ClassPolicy, TeacherConfig
+from .sweep_types import BootstrapSweepScenario, ClassPolicy, TeacherConfig, TeacherPredictionRow
 
 
 class ModelCentricSweepSummary(TypedDict):
@@ -38,7 +38,7 @@ class ModelCentricSweepSummary(TypedDict):
     image_count: int
     teacher_names: list[str]
     class_policy_path: str
-    teacher_jobs: list[dict[str, Any]]
+    teacher_jobs: list[TeacherJobManifestPayload]
     materialization: ExhaustiveMaterializationSummary
 
 
@@ -241,7 +241,7 @@ def run_model_centric_sweep_scenario(
     write_image_list_snapshot(run_dir, entries)
 
     predictions_by_sample_uid: dict[str, list[TeacherPredictionRow]] = {}
-    teacher_jobs: list[dict[str, Any]] = []
+    teacher_jobs: list[TeacherJobManifestPayload] = []
     for teacher in scenario.teachers:
         predictions_path = teacher_output_dir(run_dir, teacher.name) / "predictions.jsonl"
         job_manifest = _build_teacher_job_manifest(

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import time
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 import yaml
 
@@ -20,11 +20,13 @@ FINAL_DATASET_MANIFEST_NAME = "final_dataset_manifest.json"
 FINAL_DATASET_SUMMARY_NAME = "final_dataset_summary.json"
 FINAL_DATASET_PUBLISH_MARKER = "final_dataset_publish_state.json"
 FINAL_DATASET_RERUN_MODE = "atomic_overwrite"
+FinalDatasetPublishStatus = Literal["building", "ready", "completed"]
+FinalDatasetSourceKind = Literal["exhaustive_od", "lane"]
 
 
 class FinalDatasetPublishMarker(TypedDict, total=False):
     artifact: str
-    status: str
+    status: FinalDatasetPublishStatus
     rerun_mode: str
     final_output_root: str
     staging_root: str
@@ -34,7 +36,7 @@ class FinalDatasetPublishMarker(TypedDict, total=False):
 
 class FinalSampleOwner(TypedDict):
     scene_path: str
-    source_kind: str
+    source_kind: FinalDatasetSourceKind
 
 
 class FinalizeSampleTask(TypedDict):
@@ -46,14 +48,14 @@ class FinalizeSampleTask(TypedDict):
     image_output_path: Path
     copy_images: bool
     final_sample_id: str
-    source_kind: str
+    source_kind: FinalDatasetSourceKind
     dataset_key: str
     split: str
 
 
 class FinalDatasetSampleRow(TypedDict):
     final_sample_id: str
-    source_kind: str
+    source_kind: FinalDatasetSourceKind
     source_dataset_key: str
     split: str
     scene_path: str
@@ -138,7 +140,7 @@ def _staging_root_for(output_root: Path) -> Path:
 def _write_publish_marker(
     root: Path,
     *,
-    status: str,
+    status: FinalDatasetPublishStatus,
     final_output_root: Path,
     sample_count: int | None = None,
     dataset_counts: dict[str, int] | None = None,
@@ -205,7 +207,7 @@ def _reserve_final_sample_id(
     *,
     seen_ids: dict[str, FinalSampleOwner],
     scene_path: Path,
-    source_kind: str,
+    source_kind: FinalDatasetSourceKind,
 ) -> None:
     existing = seen_ids.get(final_sample_id)
     if existing is not None:
@@ -251,7 +253,7 @@ def _build_final_scene(
     *,
     scene: dict[str, Any],
     final_sample_id: str,
-    source_kind: str,
+    source_kind: FinalDatasetSourceKind,
     original_image_name: str,
     final_image_name: str,
 ) -> dict[str, Any]:
@@ -276,7 +278,7 @@ def _finalize_sample_task(
     image_output_path: Path,
     copy_images: bool,
     final_sample_id: str,
-    source_kind: str,
+    source_kind: FinalDatasetSourceKind,
     dataset_key: str,
     split: str,
 ) -> FinalDatasetSampleRow:

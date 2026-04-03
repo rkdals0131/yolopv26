@@ -105,6 +105,7 @@
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()` helper 분해
 - [x] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`에 manifest/item row typing slice 도입
 - [x] `tools/od_bootstrap/build/exhaustive_od.py`, `final_dataset.py`, `sweep.py`에 manifest/prediction row `TypedDict` 확장
+- [x] `tools/od_bootstrap/build/artifacts.py`, `source/types.py`, `build/final_dataset.py`에 `TeacherJobManifestPayload`, `SourcePrepManifest`, `FinalDatasetPublishMarker`/`FinalDatasetSourceKind`를 추가해 summary/publish/source manifest 계약을 고정
 - [x] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`를 stage helper로 분해
 - [x] `tools/od_bootstrap/teacher/runtime_progress.py`, `runtime_tensorboard.py`, `calibrate.py`가 shared runtime/io helper를 우선 사용하도록 정리
 - [x] `tools/od_bootstrap/build/review.py`, `sample_manifest.py`, `source/aihub_reports.py`, `source/bdd100k.py`에 summary/index/QA 계약용 typed summary 레이어 보강
@@ -115,7 +116,7 @@
 - [x] `model/engine/_trainer_epochs.py`의 loader/progress bookkeeping helper를 `_trainer_progress.py`로 이동해 epoch loop를 orchestration 중심으로 축소
 - [x] `tools/od_bootstrap/teacher/runtime_artifacts.py`가 teacher train summary / latest artifact publication을 맡고 `ultralytics_runner.py`가 이를 호출하도록 분리
 - [x] `common.io.write_json_sorted`, `append_jsonl_sorted`, `write_jsonl_sorted`를 추가하고 `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared_io.py`가 이를 재사용하도록 정리
-- [x] `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py` public/shared surface를 추가하고 `loss.py`, `postprocess.py`, trainer runtime/tests가 private module 대신 이를 우선 사용하도록 정리
+- [x] `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py` public/shared surface를 추가하고 `loss.py`, `postprocess.py`, trainer runtime/tests가 private module 대신 이를 우선 사용하도록 정리
 - [x] `model/engine/trainer.py` compatibility alias를 core trainer facade만 남기고 줄여 rank-4 public/internal surface 정리를 마감
 - [x] unit test 통과
 - [x] real-data regression 통과
@@ -124,7 +125,6 @@
 ## 다음 작업
 
 - [ ] 6순위: `tools/od_bootstrap/teacher/ultralytics_runner.py` bulk 추가 분해
-- [ ] 5순위: build/source summary/publish row 정적 계약 보강 (`summary row`, `publish marker`, remaining manifest payload follow-up)
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화

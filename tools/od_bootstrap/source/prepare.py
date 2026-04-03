@@ -18,8 +18,10 @@ from .constants import (
 )
 from .defaults import build_default_source_prep_config
 from .types import (
+    CanonicalDebugVisManifestPaths,
     CanonicalSourceBundle,
     SourcePrepConfig,
+    SourcePrepManifest,
     SourcePrepResult,
     SourceRoots,
 )
@@ -69,7 +71,7 @@ def prepare_od_bootstrap_sources(config: SourcePrepConfig) -> SourcePrepResult:
         write_dataset_readmes=config.write_source_readmes,
     )
 
-    manifest = {
+    manifest: SourcePrepManifest = {
         "version": "od-bootstrap-source-prep-v1",
         "generated_at": _now_iso(),
         "raw_roots": {
@@ -109,14 +111,15 @@ def prepare_od_bootstrap_sources(config: SourcePrepConfig) -> SourcePrepResult:
         debug_vis_count=int(config.debug_vis_count),
         debug_vis_seed=int(config.debug_vis_seed),
     )
+    canonical_debug_vis_manifest_paths: CanonicalDebugVisManifestPaths = {
+        "bdd100k_det_100k": Path(str(canonical_debug_vis_outputs["bdd100k_det_100k"]["debug_vis_manifest"])),
+        "aihub_standardized": Path(str(canonical_debug_vis_outputs["aihub_standardized"]["debug_vis_manifest"])),
+    }
     return SourcePrepResult(
         bundle=bundle,
         manifest_path=manifest_path,
         image_list_manifest_path=image_list_manifest_path,
-        canonical_debug_vis_manifest_paths={
-            dataset_name: Path(str(payload["debug_vis_manifest"]))
-            for dataset_name, payload in canonical_debug_vis_outputs.items()
-        },
+        canonical_debug_vis_manifest_paths=canonical_debug_vis_manifest_paths,
         bdd_outputs=bdd_outputs,
         aihub_outputs=aihub_outputs,
     )
