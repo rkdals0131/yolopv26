@@ -41,12 +41,47 @@ model/
     spec.py
     trainer.py
 tools/
+  check_env/
+    __init__.py
+    actions.py
+    launch.py
+    scan.py
+    tui.py
   check_env.py
+  pv26_train/
+    __init__.py
+    artifacts.py
+    cli.py
+    config.py
+    runtime.py
+    scenario.py
+    scenarios.py
   run_pv26_train.py
   pv26_train_artifacts.py
   pv26_train_config.py
   od_bootstrap/
     source/
+      aihub/
+        __init__.py
+        debug.py
+        lane_worker.py
+        obstacle_worker.py
+        reports.py
+        source_meta.py
+        traffic_worker.py
+        worker_common.py
+        workers.py
+      shared/
+        __init__.py
+        debug.py
+        io.py
+        parallel.py
+        raw.py
+        reports.py
+        resume.py
+        scene.py
+        source_meta.py
+        summary.py
       aihub.py
       aihub_debug.py
       aihub_lane_worker.py
@@ -82,6 +117,14 @@ tools/
       calibrate.py
       eval.py
       policy.py
+      runtime/
+        __init__.py
+        artifacts.py
+        callbacks.py
+        progress.py
+        resume.py
+        tensorboard.py
+        trainer.py
       train.py
       ultralytics_runner.py
     cli.py
@@ -113,8 +156,10 @@ docs/
 
 - `model/net`은 `trunk.py`와 `heads.py`로 분리돼 있고, `model/engine/trainer.py`는 `_trainer_*` helper들에 구현을 위임한다.
 - `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`는 public/shared engine helper surface고, underscore 파일은 implementation detail로 유지한다.
-- `tools/run_pv26_train.py`는 orchestration-only entrypoint이고, preset/config 해석은 `tools/pv26_train_config.py`, manifest/summary/writeout은 `tools/pv26_train_artifacts.py`가 담당한다.
-- `tools/od_bootstrap/source`는 `shared_*` helper 계층을 공유하고 `aihub.py` / `bdd100k.py`를 coordinator로 둔다.
+- `tools/run_pv26_train.py`는 stable thin entrypoint이고, 실제 구현은 `tools/pv26_train/` 패키지에 둔다. `tools/pv26_train_config.py`, `tools/pv26_train_artifacts.py` 같은 flat 파일은 compatibility shim으로 유지한다.
+- `tools/check_env.py`는 stable thin entrypoint이고, 실제 구현은 `tools/check_env/` 패키지에 둔다. `tools/check_env_actions.py` 같은 flat 파일은 compatibility shim으로 유지한다.
+- `tools/od_bootstrap/source`는 `aihub/`와 `shared/` 패키지에 실제 구현을 두고, `aihub.py`, `shared_io.py` 같은 flat 파일은 compatibility shim으로 유지한다.
+- `tools/od_bootstrap/teacher`는 `runtime/` 패키지에 runtime helper family를 두고, `runtime_progress.py` 같은 flat 파일은 compatibility shim으로 유지한다.
 
 ## 데이터 흐름
 

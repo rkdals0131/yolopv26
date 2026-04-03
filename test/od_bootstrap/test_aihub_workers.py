@@ -28,48 +28,48 @@ class AIHubWorkerModuleCleanupTests(unittest.TestCase):
         self.assertIs(aihub_obstacle_worker.obstacle_worker, aihub_obstacle_worker._obstacle_worker)
 
     def test_aihub_workers_imports_public_worker_symbols(self) -> None:
-        module_path = Path(__file__).resolve().parents[2] / "tools/od_bootstrap/source/aihub_workers.py"
+        module_path = Path(__file__).resolve().parents[2] / "tools/od_bootstrap/source/aihub/workers.py"
         imported_names = self._imported_names(module_path)
 
-        self.assertEqual(imported_names["aihub_lane_worker"], ("lane_worker",))
+        self.assertEqual(imported_names["lane_worker"], ("lane_worker",))
         self.assertEqual(
-            imported_names["aihub_obstacle_worker"],
+            imported_names["obstacle_worker"],
             ("obstacle_worker", "prepare_debug_scene_for_overlay"),
         )
-        self.assertEqual(imported_names["aihub_traffic_worker"], ("combo_name", "traffic_worker"))
+        self.assertEqual(imported_names["traffic_worker"], ("combo_name", "traffic_worker"))
 
     def test_support_modules_use_public_shared_helpers(self) -> None:
         source_root = Path(__file__).resolve().parents[2] / "tools/od_bootstrap/source"
         module_expectations = {
-            "aihub_lane_worker.py": {
-                "shared_io": ("link_or_copy", "load_json", "write_json"),
-                "shared_raw": ("extract_annotations", "extract_attribute_map", "extract_points", "normalize_text", "safe_slug"),
-                "shared_scene": ("DEFAULT_SCENE_VERSION", "build_base_scene", "sample_id"),
-                "shared_summary": ("counter_to_dict",),
+            "aihub/lane_worker.py": {
+                "shared.io": ("link_or_copy", "load_json", "write_json"),
+                "shared.raw": ("extract_annotations", "extract_attribute_map", "extract_points", "normalize_text", "safe_slug"),
+                "shared.scene": ("DEFAULT_SCENE_VERSION", "build_base_scene", "sample_id"),
+                "shared.summary": ("counter_to_dict",),
             },
-            "aihub_obstacle_worker.py": {
-                "shared_io": ("link_or_copy", "load_json", "write_json", "write_text"),
-                "shared_raw": ("extract_annotations", "normalize_text", "safe_slug"),
-                "shared_scene": ("DEFAULT_SCENE_VERSION", "bbox_to_yolo_line", "build_base_scene", "sample_id"),
-                "shared_summary": ("counter_to_dict",),
+            "aihub/obstacle_worker.py": {
+                "shared.io": ("link_or_copy", "load_json", "write_json", "write_text"),
+                "shared.raw": ("extract_annotations", "normalize_text", "safe_slug"),
+                "shared.scene": ("DEFAULT_SCENE_VERSION", "bbox_to_yolo_line", "build_base_scene", "sample_id"),
+                "shared.summary": ("counter_to_dict",),
             },
-            "aihub_traffic_worker.py": {
-                "shared_io": ("link_or_copy", "load_json", "write_json", "write_text"),
-                "shared_raw": ("extract_annotations", "extract_bbox", "extract_tl_state", "normalize_text", "safe_slug"),
-                "shared_scene": ("DEFAULT_SCENE_VERSION", "bbox_to_yolo_line", "build_base_scene", "sample_id"),
-                "shared_summary": ("counter_to_dict",),
+            "aihub/traffic_worker.py": {
+                "shared.io": ("link_or_copy", "load_json", "write_json", "write_text"),
+                "shared.raw": ("extract_annotations", "extract_bbox", "extract_tl_state", "normalize_text", "safe_slug"),
+                "shared.scene": ("DEFAULT_SCENE_VERSION", "bbox_to_yolo_line", "build_base_scene", "sample_id"),
+                "shared.summary": ("counter_to_dict",),
             },
-            "aihub_workers.py": {
-                "shared_io": ("load_json",),
-                "shared_raw": ("normalize_text", "safe_slug"),
-                "shared_resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
-                "shared_scene": ("sample_id",),
-                "shared_summary": ("counter_to_dict",),
+            "aihub/workers.py": {
+                "shared.io": ("load_json",),
+                "shared.raw": ("normalize_text", "safe_slug"),
+                "shared.resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
+                "shared.scene": ("sample_id",),
+                "shared.summary": ("counter_to_dict",),
             },
             "bdd100k.py": {
-                "shared_debug": ("generate_debug_vis",),
-                "shared_io": ("link_or_copy", "load_json", "write_json", "write_text"),
-                "shared_parallel": (
+                "shared.debug": ("generate_debug_vis",),
+                "shared.io": ("link_or_copy", "load_json", "write_json", "write_text"),
+                "shared.parallel": (
                     "PARALLEL_INFLIGHT_CHUNKS_PER_WORKER",
                     "PARALLEL_SUBMIT_LOG_INTERVAL",
                     "PARALLEL_WAIT_HEARTBEAT_SECONDS",
@@ -78,17 +78,17 @@ class AIHubWorkerModuleCleanupTests(unittest.TestCase):
                     "iter_task_chunks",
                     "parallel_chunk_size",
                 ),
-                "shared_raw": ("env_path", "now_iso", "probe_image_size", "repo_root", "safe_slug", "seg_dataset_root"),
-                "shared_resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
-                "shared_reports": ("det_class_map_yaml",),
-                "shared_scene": ("bbox_to_yolo_line",),
-                "shared_source_meta": (
+                "shared.raw": ("env_path", "now_iso", "probe_image_size", "repo_root", "safe_slug", "seg_dataset_root"),
+                "shared.resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
+                "shared.reports": ("det_class_map_yaml",),
+                "shared.scene": ("bbox_to_yolo_line",),
+                "shared.source_meta": (
                     "bdd_readme",
                     "bdd_source_inventory_markdown",
                     "build_bdd_inventory",
                     "build_bdd_source_inventory",
                 ),
-                "shared_summary": ("counter_to_dict",),
+                "shared.summary": ("counter_to_dict",),
             },
         }
 

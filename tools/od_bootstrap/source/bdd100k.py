@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any, TextIO, TypedDict
 
 from .raw_common import IMAGE_EXTENSIONS, PairRecord
-from .shared_debug import generate_debug_vis as _generate_debug_vis_impl
-from .shared_io import link_or_copy as _link_or_copy, load_json as _load_json, write_json as _write_json, write_text as _write_text
-from .shared_parallel import (
+from .shared.debug import generate_debug_vis as _generate_debug_vis_impl
+from .shared.io import link_or_copy as _link_or_copy, load_json as _load_json, write_json as _write_json, write_text as _write_text
+from .shared.parallel import (
     PARALLEL_INFLIGHT_CHUNKS_PER_WORKER,
     PARALLEL_SUBMIT_LOG_INTERVAL,
     PARALLEL_WAIT_HEARTBEAT_SECONDS,
@@ -20,20 +20,20 @@ from .shared_parallel import (
     iter_task_chunks as _iter_task_chunks,
     parallel_chunk_size as _parallel_chunk_size,
 )
-from .shared_raw import env_path as _env_path, now_iso as _now_iso, probe_image_size as _probe_image_size, repo_root as _repo_root, safe_slug as _safe_slug, seg_dataset_root as _seg_dataset_root
-from .shared_resume import (
+from .shared.raw import env_path as _env_path, now_iso as _now_iso, probe_image_size as _probe_image_size, repo_root as _repo_root, safe_slug as _safe_slug, seg_dataset_root as _seg_dataset_root
+from .shared.resume import (
     count_held_annotation_reasons as _count_held_annotation_reasons,
     load_existing_scene_output as _load_existing_scene_output,
 )
-from .shared_reports import det_class_map_yaml as _det_class_map_yaml
-from .shared_scene import bbox_to_yolo_line as _bbox_to_yolo_line
-from .shared_source_meta import (
+from .shared.reports import det_class_map_yaml as _det_class_map_yaml
+from .shared.scene import bbox_to_yolo_line as _bbox_to_yolo_line
+from .shared.source_meta import (
     bdd_readme as _bdd_readme,
     bdd_source_inventory_markdown as _source_inventory_markdown,
     build_bdd_inventory as _build_bdd_inventory,
     build_bdd_source_inventory as _build_source_inventory,
 )
-from .shared_summary import counter_to_dict as _counter_to_dict
+from .shared.summary import counter_to_dict as _counter_to_dict
 from .types import DebugVisOutputs, DebugVisSummaryRow
 from common.pv26_schema import BDD100K_DATASET_KEY, OD_CLASSES, OD_CLASS_TO_ID, TL_BITS
 

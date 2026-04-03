@@ -5,6 +5,7 @@ __all__ = [
     "defaults",
     "prepare",
     "raw_common",
+    "shared",
     "shared_debug",
     "shared_io",
     "shared_parallel",
