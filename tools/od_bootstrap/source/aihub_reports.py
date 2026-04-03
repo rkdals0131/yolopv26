@@ -4,13 +4,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
+from common.io import now_iso
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-from .shared_io import now_iso as _now_iso
-from .shared_summary import counter_to_dict as _counter_to_dict
-
-now_iso = _now_iso
-counter_to_dict = _counter_to_dict
+from .shared_summary import counter_to_dict
 
 
 class AIHubDebugVisSummary(TypedDict):
@@ -134,9 +131,9 @@ def aggregate_results(
                     split: {key: value for key, value in sorted(counts.items())}
                     for split, counts in sorted(split_counts.items())
                 },
-                "det_class_counts": _counter_to_dict(det_class_counts),
-                "lane_class_counts": _counter_to_dict(lane_class_counts),
-                "lane_type_counts": _counter_to_dict(lane_type_counts),
+                "det_class_counts": counter_to_dict(det_class_counts),
+                "lane_class_counts": counter_to_dict(lane_class_counts),
+                "lane_type_counts": counter_to_dict(lane_type_counts),
                 "stop_line_count": total_stop_lines,
                 "crosswalk_count": total_crosswalks,
                 "traffic_light_count": total_lights,
@@ -144,10 +141,10 @@ def aggregate_results(
                 "detection_count": total_dets,
                 "tl_attr_valid_count": total_tl_valid,
                 "tl_attr_invalid_count": total_tl_invalid,
-                "tl_combo_counts": _counter_to_dict(tl_combo_counts),
-                "tl_invalid_reason_counts": _counter_to_dict(tl_invalid_reason_counts),
-                "held_reason_counts": _counter_to_dict(held_reason_counts),
-                "image_materialization": _counter_to_dict(materialization_counts),
+                "tl_combo_counts": counter_to_dict(tl_combo_counts),
+                "tl_invalid_reason_counts": counter_to_dict(tl_invalid_reason_counts),
+                "held_reason_counts": counter_to_dict(held_reason_counts),
+                "image_materialization": counter_to_dict(materialization_counts),
                 "empty_scene_count": empty_scene_count,
             }
         )

@@ -32,13 +32,14 @@
 - [x] `resolve_latest_root`, `resolve_optional_path`를 `common.paths` 공용 helper로 두고 `tools/od_bootstrap/build/`, `tools/pv26_train_config.py`가 이를 재사용하도록 정리한다.
 - [x] `common.io.write_jsonl`을 추가하고 build 내부의 안전한 JSONL/JSON writer call-site가 이를 재사용하도록 정리한다.
 - [ ] repo 전반에 흩어진 `now_iso`, `timestamp_token`, `write_json`, `append_jsonl`를 공통화한다.
-- [ ] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`를 흡수한다.
+- [ ] production helper residue `now_iso` 3곳, `timestamp_token` 2곳, `write_json` 5곳, `append_jsonl` 3곳을 기준선으로 삼고, thin compatibility shim(`model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`, `tools/od_bootstrap/source/shared_io.py`)과 정책 차이가 있는 local wrapper를 구분해서 줄인다.
+- [ ] `common/`에 이미 받아줄 자리가 있는데도 로컬 중복으로 남아 있는 `write_json`, `append_jsonl`, `now_iso`, `timestamp_token`를 흡수한다. 다만 `tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract, `tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화, `tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics는 즉시 흡수 대상이 아니라 exact residual risk로 기록한 뒤 다룬다.
 - [ ] `common/`은 대공사 대상이 아니라 새 shared helper를 받아주는 착지점으로 사용한다.
 - [ ] repo-wide truly common helper는 `common/`으로 올리고, bootstrap 내부에서만 재사용하는 helper는 `tools/od_bootstrap/...` shared 모듈에 두는 기준을 명확히 한다.
 - [x] `common/io.py`, `common/paths.py` 확장 방향으로 정리하고 build/PV26 call-site가 그 공용 helper를 재사용하게 맞춘다.
 - [x] `build/sweep.py`, `build/debug_vis.py`, `build/teacher_dataset.py`, `source/prepare.py`가 semantics-compatible `common.io` helper(`now_iso`, `timestamp_token`, `write_json`)를 재사용하도록 정리한다.
 - [x] `tools/od_bootstrap/build/` 내부의 `write_json`, `resolve_latest_root`, `resolve_optional_path` 같은 low-level IO/path helper 중 공통화 가능한 부분을 shared helper로 정리한다.
-- [ ] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다.
+- [ ] `link_or_copy`류 helper는 symlink fallback, hardlink/copy, overwrite 금지, existing이면 skip, tree staging 같은 정책 차이를 유지하고, low-level atomic/json/helper만 공통화한다. 정확한 local surface는 `common/io.py`, `tools/od_bootstrap/source/shared_io.py`, `tools/od_bootstrap/source/aihub.py`, `tools/od_bootstrap/build/teacher_dataset.py`, `tools/od_bootstrap/build/final_dataset.py`, `tools/od_bootstrap/teacher/runtime_artifacts.py`, `tools/od_bootstrap/teacher/data_yaml.py`다.
 - [x] source pipeline 쪽에서 existing output summary skeleton, debug-vis manifest write, README/tree markdown render 같은 공통 출력 패턴을 재사용 가능한 helper로 정리한다.
 
 ## 4순위. `model/engine/` 내부 API 경계 정리

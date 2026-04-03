@@ -62,6 +62,8 @@ def extract_tl_state(annotation: dict[str, Any]) -> str:
 def normalize_text(value: Any) -> str:
     return _normalize_text(value)
 
+
+# Preserve raw-source UTC timestamps; this intentionally differs from common.io.now_iso.
 now_iso = _now_iso
 
 

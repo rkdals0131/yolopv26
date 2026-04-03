@@ -37,6 +37,21 @@ def read_yaml(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def ensure_parent_dir(path: str | Path) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return output_path
+
+
+def remove_path(path: str | Path) -> None:
+    target_path = Path(path)
+    if target_path.is_symlink() or target_path.is_file():
+        target_path.unlink()
+        return
+    if target_path.is_dir():
+        shutil.rmtree(target_path)
+
+
 def write_json(
     path: str | Path,
     payload: Any,
@@ -46,8 +61,7 @@ def write_json(
     default: Any | None = None,
     sort_keys: bool = False,
 ) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = ensure_parent_dir(path)
     output_path.write_text(
         json.dumps(
             payload,
@@ -81,8 +95,7 @@ def write_json_sorted(
 
 
 def append_jsonl(path: str | Path, payload: Any, *, ensure_ascii: bool = True, sort_keys: bool = False) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = ensure_parent_dir(path)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=ensure_ascii, sort_keys=sort_keys) + "\n")
     return output_path
@@ -93,8 +106,7 @@ def append_jsonl_sorted(path: str | Path, payload: Any, *, ensure_ascii: bool = 
 
 
 def write_jsonl(path: str | Path, rows: Iterable[Any], *, ensure_ascii: bool = True, sort_keys: bool = False) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = ensure_parent_dir(path)
     serialized = "\n".join(json.dumps(row, ensure_ascii=ensure_ascii, sort_keys=sort_keys) for row in rows)
     output_path.write_text((serialized + "\n") if serialized else "", encoding="utf-8")
     return output_path
@@ -105,18 +117,18 @@ def write_jsonl_sorted(path: str | Path, rows: Iterable[Any], *, ensure_ascii: b
 
 
 def write_text(path: str | Path, contents: str) -> Path:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = ensure_parent_dir(path)
     output_path.write_text(contents, encoding="utf-8")
     return output_path
 
 
 def link_or_copy(source_path: str | Path, target_path: str | Path) -> None:
+    """Replace the target with a symlink when possible, else copy the file."""
+
     source = Path(source_path)
-    target = Path(target_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    target = ensure_parent_dir(target_path)
     if target.exists() or target.is_symlink():
-        target.unlink()
+        remove_path(target)
     try:
         target.symlink_to(source.resolve())
     except OSError:

@@ -11,7 +11,12 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from tools.od_bootstrap.teacher.data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
+from tools.od_bootstrap.teacher.data_yaml import (
+    TeacherDatasetLayout,
+    build_teacher_data_yaml,
+    resolve_teacher_dataset_root,
+    stage_teacher_dataset_layout,
+)
 from tools.od_bootstrap.presets import build_teacher_train_preset
 from tools.od_bootstrap.teacher.train import run_teacher_train_scenario
 
@@ -110,6 +115,30 @@ class TeacherTrainTests(unittest.TestCase):
             content = data_yaml.read_text(encoding="utf-8")
             self.assertIn("vehicle", content)
             self.assertIn("images/train", content)
+
+    def test_stage_teacher_dataset_layout_replaces_stale_paths_and_copies_without_symlink_support(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "source"
+            staging_root = root / "staging"
+            for split in ("train", "val"):
+                _write_text(source_root / "images" / split / f"{split}.jpg", f"{split}-img")
+                _write_text(source_root / "labels" / split / f"{split}.txt", f"{split}-label\n")
+
+            (staging_root / "images").mkdir(parents=True, exist_ok=True)
+            (staging_root / "images" / "train").write_text("stale-file", encoding="utf-8")
+            (staging_root / "labels" / "train").mkdir(parents=True, exist_ok=True)
+            (staging_root / "labels" / "train" / "stale.txt").write_text("stale-dir", encoding="utf-8")
+
+            layout = TeacherDatasetLayout(source_root=source_root, staging_root=staging_root)
+            with patch("tools.od_bootstrap.teacher.data_yaml.os.symlink", side_effect=OSError("no symlink")):
+                staged_root = stage_teacher_dataset_layout(layout)
+
+            self.assertEqual(staged_root, staging_root.resolve())
+            self.assertTrue((staged_root / "images" / "train" / "train.jpg").is_file())
+            self.assertTrue((staged_root / "labels" / "train" / "train.txt").is_file())
+            self.assertFalse((staged_root / "images" / "train").is_symlink())
+            self.assertFalse((staged_root / "labels" / "train" / "stale.txt").exists())
 
     def test_run_teacher_train_scenario_writes_summary_and_uses_ultralytics_weights(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

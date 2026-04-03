@@ -11,15 +11,24 @@ from unittest.mock import patch
 
 import torch
 
+from common.io import (
+    append_jsonl as common_append_jsonl,
+    timestamp_token as common_timestamp_token,
+)
 from common.scalars import flatten_scalar_tree
 from tools.od_bootstrap.teacher.runtime_artifacts import (
     build_teacher_runtime_artifact_paths,
     build_teacher_train_summary,
     finalize_teacher_train_artifacts,
     publish_teacher_train_summary,
+    refresh_latest_teacher_artifacts,
 )
 from tools.od_bootstrap.teacher.runtime_callbacks import TeacherRuntimeSupport
-from tools.od_bootstrap.teacher.runtime_progress import install_ultralytics_postfix_renderer
+from tools.od_bootstrap.teacher.runtime_progress import (
+    append_jsonl as runtime_append_jsonl,
+    install_ultralytics_postfix_renderer,
+    timestamp_token as runtime_timestamp_token,
+)
 from tools.od_bootstrap.teacher.runtime_resume import resolve_resume_argument
 from tools.od_bootstrap.teacher.runtime_tensorboard import (
     build_epoch_tensorboard_payload,
@@ -100,6 +109,10 @@ def _write_checkpoint(path: Path, *, epoch: int, total_epochs: int, resumable: b
 
 
 class UltralyticsRunnerTests(unittest.TestCase):
+    def test_runtime_progress_reuses_common_io_helpers(self) -> None:
+        self.assertIs(runtime_append_jsonl, common_append_jsonl)
+        self.assertIs(runtime_timestamp_token, common_timestamp_token)
+
     def test_ultralytics_postfix_renders_at_line_end(self) -> None:
         pbar = _FakeUltralyticsPbar()
         install_ultralytics_postfix_renderer(pbar)
@@ -331,6 +344,38 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertTrue(Path(latest_artifacts["train_summary_path"]).is_file())
             latest_payload = json.loads(Path(latest_artifacts["train_summary_path"]).read_text(encoding="utf-8"))
             self.assertEqual(latest_payload["run_dir"], str(run_dir))
+
+    def test_refresh_latest_teacher_artifacts_replaces_existing_aliases_and_falls_back_to_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            teacher_root = root / "runs" / "mobility"
+            run_dir = teacher_root / "20260403_000001"
+            best_checkpoint = run_dir / "weights" / "best.pt"
+            last_checkpoint = run_dir / "weights" / "last.pt"
+            best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            best_checkpoint.write_text("best-new", encoding="utf-8")
+            last_checkpoint.write_text("last-new", encoding="utf-8")
+
+            alias_weights_root = teacher_root / "weights"
+            alias_weights_root.mkdir(parents=True, exist_ok=True)
+            (alias_weights_root / "best.pt").write_text("best-stale", encoding="utf-8")
+            (alias_weights_root / "last.pt").write_text("last-stale", encoding="utf-8")
+
+            with patch("pathlib.Path.hardlink_to", side_effect=OSError("no hardlink")), patch(
+                "tools.od_bootstrap.teacher.runtime_artifacts.os.symlink",
+                side_effect=OSError("no symlink"),
+            ):
+                latest_artifacts = refresh_latest_teacher_artifacts(
+                    teacher_root=teacher_root,
+                    run_dir=run_dir,
+                    summary={"teacher_name": "mobility"},
+                )
+
+            self.assertEqual(latest_artifacts["alias_actions"], {"best.pt": "copy", "last.pt": "copy"})
+            self.assertEqual((alias_weights_root / "best.pt").read_text(encoding="utf-8"), "best-new")
+            self.assertEqual((alias_weights_root / "last.pt").read_text(encoding="utf-8"), "last-new")
+            latest_run_payload = json.loads((teacher_root / "latest_run.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest_run_payload["alias_actions"], {"best.pt": "copy", "last.pt": "copy"})
 
     def test_resolve_resume_argument_prefers_resumable_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

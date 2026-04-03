@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 import time
 from types import MethodType
@@ -19,6 +18,8 @@ except Exception:  # pragma: no cover - optional dependency fallback.
     BarColumn = None
     TaskProgressColumn = None
     TextColumn = None
+
+
 def sync_timing_device(torch_module: Any, device: Any, enabled: bool) -> None:
     _common_sync_timing_device(torch_module, device, enabled)
 
@@ -27,8 +28,7 @@ def timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
     return _common_timing_profile(window, keys=("iteration_sec", "wait_sec", "compute_sec"))
 
 
-def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    common_io.append_jsonl(path, payload)
+append_jsonl = common_io.append_jsonl
 
 
 def format_duration(seconds: float | None) -> str:
@@ -145,8 +145,7 @@ def emit_log(message: str, *, progress_bar: Any = None) -> None:
     print(message, flush=True)
 
 
-def timestamp_token(*, datetime_cls: Any = datetime) -> str:
-    return common_io.timestamp_token(datetime_cls=datetime_cls)
+timestamp_token = common_io.timestamp_token
 
 
 def build_live_postfix(
