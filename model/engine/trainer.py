@@ -350,7 +350,7 @@ class PV26Trainer:
         if not self.history:
             raise ValueError("trainer history is empty")
         window = self.history[-last_n:] if last_n is not None else self.history
-        successful_window = _reporting._successful_summaries(window)
+        successful_window = _reporting.successful_summaries(window)
         anchor = successful_window[-1] if successful_window else window[-1]
         summary: dict[str, Any] = {
             "steps": len(window),
@@ -366,7 +366,7 @@ class PV26Trainer:
         if not successful_window:
             return summary
         for name in anchor["losses"]:
-            summary["losses"][name] = _reporting._loss_summary(window, name)
+            summary["losses"][name] = _reporting.loss_summary(window, name)
         return summary
 
     def save_epoch_history_jsonl(self, path: str | Path) -> Path:
