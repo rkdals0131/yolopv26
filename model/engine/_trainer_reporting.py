@@ -4,7 +4,10 @@ from collections import Counter
 import math
 from typing import Any
 
-from common.scalars import flatten_scalar_tree as _flatten_scalar_tree
+from common.train_runtime import format_duration as _common_format_duration
+from common.train_runtime import quantile as _common_quantile
+from common.train_runtime import timing_profile as _common_timing_profile
+from common.train_runtime import write_tensorboard_scalars as _common_write_tensorboard_scalars
 from ._loss_spec import build_loss_spec
 
 
@@ -103,8 +106,7 @@ def _aggregate_count_tree(summaries: list[dict[str, Any]], key: str) -> dict[str
 
 
 def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> None:
-    for name, value in _flatten_scalar_tree(prefix, payload):
-        writer.add_scalar(name, value, global_step=step)
+    _common_write_tensorboard_scalars(writer, prefix, payload, step)
 
 
 def _select_numeric_scalars(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, float]:
@@ -276,43 +278,19 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def _percentile(values: list[float], quantile: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(float(value) for value in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    position = (len(ordered) - 1) * float(quantile)
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
-    if lower == upper:
-        return ordered[lower]
-    weight = position - lower
-    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+    return _common_quantile(values, quantile)
 
 
 def _timing_profile(summaries: list[dict[str, Any]]) -> dict[str, Any]:
-    if not summaries:
-        return {"window_size": 0}
-    profile: dict[str, Any] = {"window_size": len(summaries)}
-    for key in TIMING_KEYS:
-        values = [float(item.get("timing", {}).get(key, 0.0)) for item in summaries]
-        profile[key] = {
-            "mean": sum(values) / len(values),
-            "p50": _percentile(values, 0.50),
-            "p99": _percentile(values, 0.99),
-        }
-    return profile
+    return _common_timing_profile(
+        summaries,
+        keys=TIMING_KEYS,
+        value_resolver=lambda item, key: item.get("timing", {}).get(key, 0.0),
+    )
 
 
 def _format_duration(seconds: float | None) -> str:
-    if seconds is None or not math.isfinite(float(seconds)):
-        return "n/a"
-    total_seconds = max(0, int(round(float(seconds))))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
+    return _common_format_duration(seconds, unavailable="n/a")
 
 
 def _format_fraction(current: int, total: int | None) -> str:

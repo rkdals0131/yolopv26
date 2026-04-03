@@ -239,6 +239,7 @@ class ODBootstrapSampleHelpersTests(unittest.TestCase):
                 )
 
             self.assertEqual(summary["image_count"], 4)
+            self.assertEqual(summary["summary_path"], summary["index_path"])
             self.assertTrue((output_root / "index.json").is_file())
             index_payload = json.loads((output_root / "index.json").read_text(encoding="utf-8"))
             self.assertEqual(len(index_payload["entries"]), 4)

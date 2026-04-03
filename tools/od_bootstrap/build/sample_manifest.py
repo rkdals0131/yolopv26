@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, TypedDict
 
 from .image_list import ImageListEntry, load_image_list, write_image_list
 
@@ -12,6 +12,18 @@ DEFAULT_SAMPLE_QUOTAS: dict[str, dict[str, int]] = {
     "aihub_traffic_seoul": {"train": 500, "val": 200},
     "aihub_obstacle_seoul": {"train": 500, "val": 200},
 }
+
+
+class SampleManifestSummary(TypedDict):
+    image_count: int
+    dataset_counts: dict[str, int]
+    split_counts: dict[str, int]
+
+
+class SampleManifestBuildResult(SampleManifestSummary):
+    input_manifest_path: str
+    output_manifest_path: str
+    quotas: dict[str, dict[str, int]]
 
 
 def _normalize_sample_quotas(quotas: Mapping[str, Mapping[str, int]] | None) -> dict[str, dict[str, int]]:
@@ -64,13 +76,13 @@ def select_sample_entries(
     return tuple(selected)
 
 
-def summarize_entries(entries: list[ImageListEntry] | tuple[ImageListEntry, ...]) -> dict[str, object]:
+def summarize_entries(entries: list[ImageListEntry] | tuple[ImageListEntry, ...]) -> SampleManifestSummary:
     dataset_counts = Counter()
     split_counts = Counter()
     for entry in entries:
         dataset_counts[str(entry.dataset_key)] += 1
         split_counts[(str(entry.dataset_key), str(entry.split))] += 1
-    return {
+    summary: SampleManifestSummary = {
         "image_count": len(entries),
         "dataset_counts": dict(sorted(dataset_counts.items())),
         "split_counts": {
@@ -78,6 +90,7 @@ def summarize_entries(entries: list[ImageListEntry] | tuple[ImageListEntry, ...]
             for (dataset_key, split), count in sorted(split_counts.items())
         },
     }
+    return summary
 
 
 def build_sample_manifest(
@@ -85,7 +98,7 @@ def build_sample_manifest(
     input_manifest_path: Path,
     output_manifest_path: Path,
     quotas: Mapping[str, Mapping[str, int]] | None = None,
-) -> dict[str, object]:
+) -> SampleManifestBuildResult:
     entries = load_image_list(input_manifest_path)
     selected_entries = select_sample_entries(entries, quotas=quotas)
     write_image_list(output_manifest_path, selected_entries)

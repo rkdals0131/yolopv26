@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-import math
 from pathlib import Path
 import time
 from types import MethodType
 from typing import Any
 
 from common import io as common_io
+from common.train_runtime import format_duration as _common_format_duration
+from common.train_runtime import sync_timing_device as _common_sync_timing_device
+from common.train_runtime import timing_profile as _common_timing_profile
 try:
     from rich.console import Console
     from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
@@ -17,52 +19,12 @@ except Exception:  # pragma: no cover - optional dependency fallback.
     BarColumn = None
     TaskProgressColumn = None
     TextColumn = None
-
-
 def sync_timing_device(torch_module: Any, device: Any, enabled: bool) -> None:
-    if not enabled or torch_module is None or not torch_module.cuda.is_available():
-        return
-    device_type = getattr(device, "type", None)
-    if device_type != "cuda":
-        return
-    try:
-        torch_module.cuda.synchronize(device)
-    except Exception:
-        torch_module.cuda.synchronize()
-
-
-def _quantile(values: list[float], fraction: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(float(item) for item in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    index = max(0.0, min(float(len(ordered) - 1), float(len(ordered) - 1) * float(fraction)))
-    lower = int(math.floor(index))
-    upper = int(math.ceil(index))
-    if lower == upper:
-        return ordered[lower]
-    ratio = index - lower
-    return ordered[lower] * (1.0 - ratio) + ordered[upper] * ratio
-
-
-def _profile_stats(values: list[float]) -> dict[str, float]:
-    if not values:
-        return {"mean": 0.0, "p50": 0.0, "p99": 0.0}
-    return {
-        "mean": sum(float(item) for item in values) / len(values),
-        "p50": _quantile(values, 0.5),
-        "p99": _quantile(values, 0.99),
-    }
+    _common_sync_timing_device(torch_module, device, enabled)
 
 
 def timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
-    return {
-        "window_size": len(window),
-        "iteration_sec": _profile_stats([item["iteration_sec"] for item in window]),
-        "wait_sec": _profile_stats([item["wait_sec"] for item in window]),
-        "compute_sec": _profile_stats([item["compute_sec"] for item in window]),
-    }
+    return _common_timing_profile(window, keys=("iteration_sec", "wait_sec", "compute_sec"))
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -70,14 +32,7 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
 
 
 def format_duration(seconds: float | None) -> str:
-    if seconds is None:
-        return "unknown"
-    total_seconds = max(0, int(round(float(seconds))))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
+    return _common_format_duration(seconds, unavailable="unknown")
 
 
 def _progress_console(*, console: Any = None) -> Any:

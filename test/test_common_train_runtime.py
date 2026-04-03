@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import types
+import unittest
+
+from common.train_runtime import format_duration, sync_timing_device, timing_profile, write_tensorboard_scalars
+
+
+class _FakeWriter:
+    def __init__(self) -> None:
+        self.scalars: list[tuple[str, float, int]] = []
+
+    def add_scalar(self, name: str, value: float, *, global_step: int) -> None:
+        self.scalars.append((name, value, global_step))
+
+
+class _FakeCudaModule:
+    def __init__(self, *, available: bool = True, fail_with_device: bool = False) -> None:
+        self._available = available
+        self._fail_with_device = fail_with_device
+        self.calls: list[object] = []
+        self.cuda = self
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def synchronize(self, device: object | None = None) -> None:
+        self.calls.append(device)
+        if self._fail_with_device and device is not None:
+            raise RuntimeError("device-specific sync unavailable")
+
+
+class CommonTrainRuntimeTests(unittest.TestCase):
+    def test_format_duration_supports_custom_unavailable_labels(self) -> None:
+        self.assertEqual(format_duration(None), "n/a")
+        self.assertEqual(format_duration(float("nan")), "n/a")
+        self.assertEqual(format_duration(None, unavailable="unknown"), "unknown")
+        self.assertEqual(format_duration(61.2), "01:01")
+
+    def test_timing_profile_accepts_custom_value_resolver(self) -> None:
+        profile = timing_profile(
+            [{"timing": {"wait_sec": 0.1, "iteration_sec": 0.5}}, {"timing": {"wait_sec": 0.3, "iteration_sec": 0.9}}],
+            keys=("wait_sec", "iteration_sec"),
+            value_resolver=lambda item, key: item["timing"][key],
+        )
+
+        self.assertEqual(profile["window_size"], 2)
+        self.assertAlmostEqual(profile["wait_sec"]["mean"], 0.2)
+        self.assertAlmostEqual(profile["iteration_sec"]["p50"], 0.7)
+
+    def test_sync_timing_device_handles_cuda_only_and_generic_fallback(self) -> None:
+        fake_torch = _FakeCudaModule(fail_with_device=True)
+
+        sync_timing_device(fake_torch, types.SimpleNamespace(type="cuda"), True)
+        self.assertEqual(len(fake_torch.calls), 2)
+        self.assertEqual(fake_torch.calls[0], types.SimpleNamespace(type="cuda"))
+        self.assertIsNone(fake_torch.calls[1])
+
+        cpu_torch = _FakeCudaModule()
+        sync_timing_device(cpu_torch, types.SimpleNamespace(type="cpu"), True)
+        self.assertEqual(cpu_torch.calls, [])
+
+    def test_write_tensorboard_scalars_flattens_payload(self) -> None:
+        writer = _FakeWriter()
+
+        count = write_tensorboard_scalars(
+            writer,
+            "train",
+            {"loss": {"total": 1.25}, "lr": 0.001},
+            7,
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            writer.scalars,
+            [
+                ("train/loss/total", 1.25, 7),
+                ("train/lr", 0.001, 7),
+            ],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
