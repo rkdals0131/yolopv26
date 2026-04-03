@@ -16,7 +16,12 @@ from .debug_vis import DEFAULT_DEBUG_VIS_SEED, DebugSelectionRow, generate_teach
 from ..source.types import BOOTSTRAP_SOURCE_KEYS, CanonicalSourceBundle
 
 
-TEACHER_DATASET_SPECS = {
+class TeacherDatasetSpecPayload(TypedDict):
+    source_dataset_keys: tuple[str, ...]
+    class_names: tuple[str, ...]
+
+
+TEACHER_DATASET_SPECS: dict[str, TeacherDatasetSpecPayload] = {
     "mobility": {
         "source_dataset_keys": ("bdd100k_det_100k",),
         "class_names": ("vehicle", "bike", "pedestrian"),
@@ -79,6 +84,8 @@ class TeacherDatasetTaskResult:
     manifest_row: "TeacherDatasetManifestRow"
     detection_count: int
     class_counts: dict[str, int]
+
+
 class TeacherDatasetManifestRow(TypedDict):
     teacher_name: str
     source_dataset_key: str
@@ -111,6 +118,8 @@ class TeacherDatasetManifest(TypedDict):
     class_counts: dict[str, int]
     bootstrap_source_keys: list[str]
     samples: list[TeacherDatasetManifestRow]
+
+
 def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
@@ -245,6 +254,7 @@ def _discover_teacher_tasks(
 def _process_teacher_task(
     task: TeacherDatasetTask,
     *,
+    teacher_name: str,
     class_to_local_id: dict[str, int],
     copy_images: bool,
 ) -> TeacherDatasetTaskResult:
@@ -270,7 +280,7 @@ def _process_teacher_task(
     task.label_dst.parent.mkdir(parents=True, exist_ok=True)
     task.label_dst.write_text(("\n".join(filtered_rows) + "\n") if filtered_rows else "", encoding="utf-8")
     manifest_row: TeacherDatasetManifestRow = {
-        "teacher_name": "",
+        "teacher_name": teacher_name,
         "source_dataset_key": task.source_dataset_key,
         "split": task.split,
         "sample_id": task.sample_id,
@@ -327,6 +337,7 @@ def build_teacher_dataset(
                 executor.submit(
                     _process_teacher_task,
                     task,
+                    teacher_name=resolved_spec.name,
                     class_to_local_id=class_to_local_id,
                     copy_images=config.copy_images,
                 )
@@ -338,11 +349,7 @@ def build_teacher_dataset(
                 detection_count += task_result.detection_count
                 for class_name, count in task_result.class_counts.items():
                     class_counts[class_name] += count
-                manifest_row: TeacherDatasetManifestRow = {
-                    **task_result.manifest_row,
-                    "teacher_name": resolved_spec.name,
-                }
-                manifest_rows.append(manifest_row)
+                manifest_rows.append(task_result.manifest_row)
 
                 if log_fn is not None and (completed == total_tasks or completed == 1 or completed % log_every == 0):
                     elapsed = max(time.monotonic() - start_time, 1e-6)

@@ -529,6 +529,153 @@ def _load_policy_template_from_path(path: Path) -> dict[str, ClassPolicy]:
     }
 
 
+def _resolve_policy_template(scenario: CalibrationScenario) -> dict[str, ClassPolicy]:
+    policy_template = dict(_build_default_policy_template(scenario))
+    if scenario.policy_template is not None:
+        policy_template.update(scenario.policy_template)
+        return policy_template
+    if scenario.policy_template_path is not None:
+        policy_template.update(_load_policy_template_from_path(scenario.policy_template_path.resolve()))
+    return policy_template
+
+
+def _prepare_teacher_calibration_inputs(
+    *,
+    scenario: CalibrationScenario,
+    output_root: Path,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, dict[str, dict[str, Any]]],
+    dict[str, CalibrationTeacherConfig],
+]:
+    teacher_summaries: list[dict[str, Any]] = []
+    samples_by_teacher: dict[str, dict[str, dict[str, Any]]] = {}
+    teacher_by_class: dict[str, CalibrationTeacherConfig] = {}
+    for teacher in scenario.teachers:
+        teacher_dir = output_root / "teachers" / teacher.name
+        teacher_dir.mkdir(parents=True, exist_ok=True)
+        predictions_path = teacher_dir / "predictions.jsonl"
+        resolved_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
+        _log_calibration(f"teacher={teacher.name} calibration start checkpoint={teacher.checkpoint_path}")
+        prediction_count, samples = _run_teacher_predictions_for_images(
+            teacher=teacher,
+            scenario=scenario,
+            image_paths=_collect_sample_images(teacher),
+            predictions_path=predictions_path,
+            log_fn=_log_calibration,
+        )
+        _log_calibration(f"teacher={teacher.name} loading ground truth for {len(samples)} samples")
+        for sample in samples.values():
+            sample["ground_truth"] = _load_ground_truth_by_class(
+                teacher,
+                sample_id=str(sample["sample_id"]),
+                width=int(sample["width"]),
+                height=int(sample["height"]),
+            )
+        teacher_summary = {
+            "teacher_name": teacher.name,
+            "model_version": teacher.model_version,
+            "checkpoint_path": str(teacher.checkpoint_path),
+            "dataset_root": str(teacher.dataset.root),
+            "split": teacher.dataset.split,
+            "sample_count": len(samples),
+            "prediction_count": int(prediction_count),
+            "predictions_path": str(predictions_path),
+            "resolved_runtime": {
+                "imgsz": resolved_imgsz,
+                "batch_size": int(scenario.run.batch_size),
+                "device": scenario.run.device,
+                "predict_conf": float(scenario.run.predict_conf),
+                "predict_iou": float(scenario.run.predict_iou),
+            },
+        }
+        _write_json(teacher_dir / "summary.json", teacher_summary)
+        teacher_summaries.append(teacher_summary)
+        samples_by_teacher[teacher.name] = samples
+        _log_calibration(
+            f"teacher={teacher.name} calibration ready samples={len(samples)} predictions={prediction_count}"
+        )
+        for class_name in teacher.classes:
+            teacher_by_class[class_name] = teacher
+    return teacher_summaries, samples_by_teacher, teacher_by_class
+
+
+def _select_class_policy(
+    *,
+    scenario: CalibrationScenario,
+    class_name: str,
+    teacher: CalibrationTeacherConfig,
+    teacher_samples: dict[str, dict[str, Any]],
+    policy_template: dict[str, ClassPolicy],
+    hard_negative_samples: dict[str, dict[str, Any]],
+) -> tuple[ClassPolicy, dict[str, Any]]:
+    base_policy = policy_template[class_name]
+    class_min_precision = float(
+        scenario.search.min_precision_by_class.get(class_name, scenario.search.min_precision)
+    )
+    candidates: list[dict[str, Any]] = []
+    candidate_count = (
+        len(scenario.search.score_thresholds)
+        * len(scenario.search.nms_iou_thresholds)
+        * len(scenario.search.min_box_sizes)
+    )
+    _log_calibration(
+        f"class={class_name} search start teacher={teacher.name} samples={len(teacher_samples)} "
+        f"candidates={candidate_count} min_precision={class_min_precision:.2f}"
+    )
+    for score_threshold in scenario.search.score_thresholds:
+        for nms_iou_threshold in scenario.search.nms_iou_thresholds:
+            for min_box_size in scenario.search.min_box_sizes:
+                candidate_policy = replace(
+                    base_policy,
+                    score_threshold=float(score_threshold),
+                    nms_iou_threshold=float(nms_iou_threshold),
+                    min_box_size=int(min_box_size),
+                )
+                candidates.append(
+                    _evaluate_candidate(
+                        samples=teacher_samples,
+                        class_name=class_name,
+                        match_iou=float(scenario.search.match_iou),
+                        class_policy=policy_template,
+                        target_policy=candidate_policy,
+                        dataset_key=teacher.dataset.source_dataset_key,
+                        hard_negative_samples=hard_negative_samples,
+                    )
+                )
+    best_candidate = _select_best_candidate(candidates=candidates, min_precision=class_min_precision)
+    selected_policy = replace(
+        base_policy,
+        score_threshold=float(best_candidate["score_threshold"]),
+        nms_iou_threshold=float(best_candidate["nms_iou_threshold"]),
+        min_box_size=int(best_candidate["min_box_size"]),
+    )
+    _log_calibration(
+        f"class={class_name} selected score={best_candidate['score_threshold']:.2f} "
+        f"nms={best_candidate['nms_iou_threshold']:.2f} min_box={best_candidate['min_box_size']} "
+        f"precision={best_candidate['precision']:.4f} recall={best_candidate['recall']:.4f}"
+    )
+    return selected_policy, {
+        "selected_policy": class_policy_to_dict(selected_policy),
+        "metrics": {
+            "precision": best_candidate["precision"],
+            "recall": best_candidate["recall"],
+            "f0_5": best_candidate["f0_5"],
+            "tp": best_candidate["tp"],
+            "fp": best_candidate["fp"],
+            "fn": best_candidate["fn"],
+            "ground_truth_count": best_candidate["ground_truth_count"],
+            "raw_prediction_count": best_candidate["raw_prediction_count"],
+            "hard_negative_sample_count": best_candidate["hard_negative_sample_count"],
+            "hard_negative_failures": best_candidate["hard_negative_failures"],
+            "hard_negative_prediction_count": best_candidate["hard_negative_prediction_count"],
+        },
+        "meets_precision_floor": bool(best_candidate["meets_precision_floor"]),
+        "min_precision_target": class_min_precision,
+        "candidate_count": len(candidates),
+    }
+
+
 def _build_hard_negative_manifest_payload(
     *,
     scenario: CalibrationScenario,
@@ -601,152 +748,21 @@ def _build_hard_negative_manifest_payload(
     }
 
 
-def calibrate_class_policy_scenario(
-    scenario: CalibrationScenario,
+def _write_calibration_outputs(
     *,
+    scenario: CalibrationScenario,
     scenario_path: Path,
+    created_at: str,
+    output_root: Path,
+    policy_template: dict[str, ClassPolicy],
+    class_policy_payload: dict[str, Any],
+    teacher_summaries: list[dict[str, Any]],
+    report_classes: dict[str, Any],
+    hard_negative_config: HardNegativeConfig,
+    input_hard_negative_manifest: dict[str, list[dict[str, Any]]],
+    samples_by_teacher: dict[str, dict[str, dict[str, Any]]],
+    teacher_by_class: dict[str, CalibrationTeacherConfig],
 ) -> dict[str, Any]:
-    created_at = _now_iso()
-    output_root = scenario.run.output_root.resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
-
-    teacher_summaries: list[dict[str, Any]] = []
-    samples_by_teacher: dict[str, dict[str, dict[str, Any]]] = {}
-    teacher_by_class: dict[str, CalibrationTeacherConfig] = {}
-    policy_template = dict(_build_default_policy_template(scenario))
-    if scenario.policy_template is not None:
-        policy_template.update(scenario.policy_template)
-    elif scenario.policy_template_path is not None:
-        policy_template.update(_load_policy_template_from_path(scenario.policy_template_path.resolve()))
-    _log_calibration(f"scenario={scenario_path}")
-    _log_calibration(f"output_root={output_root}")
-
-    for teacher in scenario.teachers:
-        teacher_dir = output_root / "teachers" / teacher.name
-        teacher_dir.mkdir(parents=True, exist_ok=True)
-        predictions_path = teacher_dir / "predictions.jsonl"
-        resolved_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
-        _log_calibration(f"teacher={teacher.name} calibration start checkpoint={teacher.checkpoint_path}")
-        prediction_count, samples = _run_teacher_predictions_for_images(
-            teacher=teacher,
-            scenario=scenario,
-            image_paths=_collect_sample_images(teacher),
-            predictions_path=predictions_path,
-            log_fn=_log_calibration,
-        )
-        _log_calibration(f"teacher={teacher.name} loading ground truth for {len(samples)} samples")
-        for sample in samples.values():
-            sample["ground_truth"] = _load_ground_truth_by_class(
-                teacher,
-                sample_id=str(sample["sample_id"]),
-                width=int(sample["width"]),
-                height=int(sample["height"]),
-            )
-        teacher_summary = {
-            "teacher_name": teacher.name,
-            "model_version": teacher.model_version,
-            "checkpoint_path": str(teacher.checkpoint_path),
-            "dataset_root": str(teacher.dataset.root),
-            "split": teacher.dataset.split,
-            "sample_count": len(samples),
-            "prediction_count": int(prediction_count),
-            "predictions_path": str(predictions_path),
-            "resolved_runtime": {
-                "imgsz": resolved_imgsz,
-                "batch_size": int(scenario.run.batch_size),
-                "device": scenario.run.device,
-                "predict_conf": float(scenario.run.predict_conf),
-                "predict_iou": float(scenario.run.predict_iou),
-            },
-        }
-        _write_json(teacher_dir / "summary.json", teacher_summary)
-        teacher_summaries.append(teacher_summary)
-        samples_by_teacher[teacher.name] = samples
-        _log_calibration(
-            f"teacher={teacher.name} calibration ready samples={len(samples)} predictions={prediction_count}"
-        )
-        for class_name in teacher.classes:
-            teacher_by_class[class_name] = teacher
-
-    hard_negative_config = _resolve_hard_negative_config(scenario)
-    if hard_negative_config.manifest_path is not None:
-        _log_calibration(f"hard-negative input manifest={hard_negative_config.manifest_path}")
-    input_hard_negative_manifest, hard_negative_samples_by_class = _collect_hard_negative_samples_by_class(
-        scenario=scenario,
-        teacher_by_class=teacher_by_class,
-    )
-
-    report_classes: dict[str, Any] = {}
-    class_policy_payload: dict[str, Any] = {}
-    for class_name in sorted(teacher_by_class):
-        teacher = teacher_by_class[class_name]
-        teacher_samples = samples_by_teacher[teacher.name]
-        base_policy = policy_template[class_name]
-        class_min_precision = float(scenario.search.min_precision_by_class.get(class_name, scenario.search.min_precision))
-        candidates: list[dict[str, Any]] = []
-        candidate_count = (
-            len(scenario.search.score_thresholds)
-            * len(scenario.search.nms_iou_thresholds)
-            * len(scenario.search.min_box_sizes)
-        )
-        _log_calibration(
-            f"class={class_name} search start teacher={teacher.name} samples={len(teacher_samples)} "
-            f"candidates={candidate_count} min_precision={class_min_precision:.2f}"
-        )
-        for score_threshold in scenario.search.score_thresholds:
-            for nms_iou_threshold in scenario.search.nms_iou_thresholds:
-                for min_box_size in scenario.search.min_box_sizes:
-                    candidate_policy = replace(
-                        base_policy,
-                        score_threshold=float(score_threshold),
-                        nms_iou_threshold=float(nms_iou_threshold),
-                        min_box_size=int(min_box_size),
-                    )
-                    candidates.append(
-                        _evaluate_candidate(
-                            samples=teacher_samples,
-                            class_name=class_name,
-                            match_iou=float(scenario.search.match_iou),
-                            class_policy=policy_template,
-                            target_policy=candidate_policy,
-                            dataset_key=teacher.dataset.source_dataset_key,
-                            hard_negative_samples=hard_negative_samples_by_class.get(class_name, {}),
-                        )
-                    )
-        best_candidate = _select_best_candidate(candidates=candidates, min_precision=class_min_precision)
-        selected_policy = replace(
-            base_policy,
-            score_threshold=float(best_candidate["score_threshold"]),
-            nms_iou_threshold=float(best_candidate["nms_iou_threshold"]),
-            min_box_size=int(best_candidate["min_box_size"]),
-        )
-        policy_template[class_name] = selected_policy
-        class_policy_payload[class_name] = class_policy_to_dict(selected_policy)
-        report_classes[class_name] = {
-            "selected_policy": class_policy_payload[class_name],
-            "metrics": {
-                "precision": best_candidate["precision"],
-                "recall": best_candidate["recall"],
-                "f0_5": best_candidate["f0_5"],
-                "tp": best_candidate["tp"],
-                "fp": best_candidate["fp"],
-                "fn": best_candidate["fn"],
-                "ground_truth_count": best_candidate["ground_truth_count"],
-                "raw_prediction_count": best_candidate["raw_prediction_count"],
-                "hard_negative_sample_count": best_candidate["hard_negative_sample_count"],
-                "hard_negative_failures": best_candidate["hard_negative_failures"],
-                "hard_negative_prediction_count": best_candidate["hard_negative_prediction_count"],
-            },
-            "meets_precision_floor": bool(best_candidate["meets_precision_floor"]),
-            "min_precision_target": class_min_precision,
-            "candidate_count": len(candidates),
-        }
-        _log_calibration(
-            f"class={class_name} selected score={best_candidate['score_threshold']:.2f} "
-            f"nms={best_candidate['nms_iou_threshold']:.2f} min_box={best_candidate['min_box_size']} "
-            f"precision={best_candidate['precision']:.4f} recall={best_candidate['recall']:.4f}"
-        )
-
     class_policy_path = _write_yaml(output_root / "class_policy.yaml", class_policy_payload)
     hard_negative_manifest_path = _write_json(
         output_root / "hard_negative_manifest.json",
@@ -766,7 +782,11 @@ def calibrate_class_policy_scenario(
         "output_root": str(output_root),
         "class_policy_path": str(class_policy_path),
         "hard_negative": {
-            "input_manifest_path": str(hard_negative_config.manifest_path) if hard_negative_config.manifest_path is not None else None,
+            "input_manifest_path": (
+                str(hard_negative_config.manifest_path)
+                if hard_negative_config.manifest_path is not None
+                else None
+            ),
             "input_sample_count_by_class": {
                 class_name: len(samples)
                 for class_name, samples in sorted(input_hard_negative_manifest.items())
@@ -790,4 +810,63 @@ def calibrate_class_policy_scenario(
         "hard_negative_manifest_path": str(hard_negative_manifest_path),
         "report_path": str(report_path),
         "classes": report_classes,
+        "teachers": teacher_summaries,
     }
+
+
+def calibrate_class_policy_scenario(
+    scenario: CalibrationScenario,
+    *,
+    scenario_path: Path,
+) -> dict[str, Any]:
+    created_at = _now_iso()
+    output_root = scenario.run.output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    policy_template = _resolve_policy_template(scenario)
+    _log_calibration(f"scenario={scenario_path}")
+    _log_calibration(f"output_root={output_root}")
+
+    teacher_summaries, samples_by_teacher, teacher_by_class = _prepare_teacher_calibration_inputs(
+        scenario=scenario,
+        output_root=output_root,
+    )
+
+    hard_negative_config = _resolve_hard_negative_config(scenario)
+    if hard_negative_config.manifest_path is not None:
+        _log_calibration(f"hard-negative input manifest={hard_negative_config.manifest_path}")
+    input_hard_negative_manifest, hard_negative_samples_by_class = _collect_hard_negative_samples_by_class(
+        scenario=scenario,
+        teacher_by_class=teacher_by_class,
+    )
+
+    report_classes: dict[str, Any] = {}
+    class_policy_payload: dict[str, Any] = {}
+    for class_name in sorted(teacher_by_class):
+        teacher = teacher_by_class[class_name]
+        selected_policy, report_entry = _select_class_policy(
+            scenario=scenario,
+            class_name=class_name,
+            teacher=teacher,
+            teacher_samples=samples_by_teacher[teacher.name],
+            policy_template=policy_template,
+            hard_negative_samples=hard_negative_samples_by_class.get(class_name, {}),
+        )
+        policy_template[class_name] = selected_policy
+        class_policy_payload[class_name] = report_entry["selected_policy"]
+        report_classes[class_name] = report_entry
+
+    return _write_calibration_outputs(
+        scenario=scenario,
+        scenario_path=scenario_path,
+        created_at=created_at,
+        output_root=output_root,
+        policy_template=policy_template,
+        class_policy_payload=class_policy_payload,
+        teacher_summaries=teacher_summaries,
+        report_classes=report_classes,
+        hard_negative_config=hard_negative_config,
+        input_hard_negative_manifest=input_hard_negative_manifest,
+        samples_by_teacher=samples_by_teacher,
+        teacher_by_class=teacher_by_class,
+    )

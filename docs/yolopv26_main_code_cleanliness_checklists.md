@@ -58,7 +58,7 @@
 
 - [ ] `tools/od_bootstrap/build/debug_vis.py`, `teacher_dataset.py`, `exhaustive_od.py`, `final_dataset.py`, `sweep.py`에서 JSON manifest row를 `dict[str, Any]` 중심으로 느슨하게 돌리는 구조를 줄인다.
 - [x] `debug_vis.py`, `teacher_dataset.py`에서 `DebugVisItemRow`/`TeacherDatasetManifestRow` 수준의 `TypedDict`를 도입한다.
-- [ ] 최소한 `ExhaustiveSampleRow`, `FinalDatasetSampleRow`, `TeacherPredictionRow` 수준의 `TypedDict`를 더 도입한다.
+- [x] 최소한 `ExhaustiveSampleRow`, `FinalDatasetSampleRow`, `TeacherPredictionRow` 수준의 `TypedDict`를 더 도입한다.
 - [ ] manifest row, sample row, prediction row, summary row에서 key typo, optional field 누락, value 타입 drift, 경로/string 혼합을 정적 계약으로 잡을 수 있게 만든다.
 - [ ] source/build 파이프라인에서 자주 오가는 JSON row 계약을 명시적인 타입으로 치환해 IDE 추적성과 리팩토링 안전성을 높인다.
 
@@ -67,7 +67,7 @@
 - [ ] `tools/od_bootstrap/teacher/ultralytics_runner.py`에서 dataloader kwargs, progress helper, tensorboard helper, resume helper, artifact refresh helper, callback builder, trainer subclass를 한 파일에서 모두 감싸는 구조를 분해한다.
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py`가 `runtime_progress.py`, `runtime_tensorboard.py`, `runtime_resume.py`, `runtime_artifacts.py`의 private helper를 alias import하는 구조를 public shared API 중심으로 바꾼다.
 - [x] `tools/od_bootstrap/teacher/build_teacher_runtime_callbacks()`의 과도한 dependency injection 인자를 `TeacherRuntimeSupport` 객체로 묶는다.
-- [ ] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
+- [x] `tools/od_bootstrap/teacher/calibrate.py: calibrate_class_policy_scenario()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 - [x] `tools/od_bootstrap/teacher/ultralytics_runner.py: _make_teacher_trainer()`의 큰 orchestration 흐름을 단계별 helper로 쪼갠다.
 
 ## 7순위. teacher runtime과 PV26 trainer runtime의 공통 runtime helper 정리

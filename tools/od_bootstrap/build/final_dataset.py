@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -17,6 +17,65 @@ from common.pv26_schema import OD_CLASSES
 
 FINAL_DATASET_PUBLISH_MARKER = "final_dataset_publish_state.json"
 FINAL_DATASET_RERUN_MODE = "atomic_overwrite"
+
+
+class FinalDatasetPublishMarker(TypedDict, total=False):
+    artifact: str
+    status: str
+    rerun_mode: str
+    final_output_root: str
+    staging_root: str
+    sample_count: int
+    dataset_counts: dict[str, int]
+
+
+class FinalSampleOwner(TypedDict):
+    scene_path: str
+    source_kind: str
+
+
+class FinalizeSampleTask(TypedDict):
+    scene_output_path: Path
+    final_scene: dict[str, Any]
+    det_source_path: Path | None
+    det_output_path: Path
+    source_image_path: Path
+    image_output_path: Path
+    copy_images: bool
+    final_sample_id: str
+    source_kind: str
+    dataset_key: str
+    split: str
+
+
+class FinalDatasetSampleRow(TypedDict):
+    final_sample_id: str
+    source_kind: str
+    source_dataset_key: str
+    split: str
+    scene_path: str
+    det_path: str | None
+    image_path: str
+
+
+class FinalDatasetManifest(TypedDict):
+    version: str
+    exhaustive_od_root: str
+    aihub_canonical_root: str
+    output_root: str
+    sample_count: int
+    dataset_counts: dict[str, int]
+    rerun_mode: str
+    samples: list[FinalDatasetSampleRow]
+
+
+class FinalDatasetBuildSummary(TypedDict):
+    output_root: str
+    manifest_path: str
+    publish_marker_path: str
+    rerun_mode: str
+    sample_count: int
+    dataset_counts: dict[str, int]
 
 
 def _default_io_workers() -> int:
@@ -42,14 +101,14 @@ def _copy_json(source_path: Path, target_path: Path) -> None:
     target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise FileExistsError(f"target path already exists: {path}")
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
-def _write_json_replace(path: Path, payload: dict[str, Any]) -> None:
+def _write_json_replace(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
@@ -78,7 +137,7 @@ def _write_publish_marker(
     dataset_counts: dict[str, int] | None = None,
 ) -> Path:
     marker_path = root / "meta" / FINAL_DATASET_PUBLISH_MARKER
-    payload: dict[str, Any] = {
+    payload: FinalDatasetPublishMarker = {
         "artifact": "pv26_final_dataset",
         "status": status,
         "rerun_mode": FINAL_DATASET_RERUN_MODE,
@@ -113,7 +172,7 @@ def _publish_staging_root(*, staging_root: Path, output_root: Path) -> None:
 def _reserve_final_sample_id(
     final_sample_id: str,
     *,
-    seen_ids: dict[str, dict[str, str]],
+    seen_ids: dict[str, FinalSampleOwner],
     scene_path: Path,
     source_kind: str,
 ) -> None:
@@ -189,7 +248,7 @@ def _finalize_sample_task(
     source_kind: str,
     dataset_key: str,
     split: str,
-) -> dict[str, Any]:
+) -> FinalDatasetSampleRow:
     _write_json(scene_output_path, final_scene)
     has_det = False
     if det_source_path is not None:
@@ -213,7 +272,7 @@ def build_pv26_exhaustive_od_lane_dataset(
     output_root: Path,
     copy_images: bool = False,
     log_fn: Any | None = None,
-) -> dict[str, Any]:
+) -> FinalDatasetBuildSummary:
     resolved_exhaustive_root = resolve_latest_root(exhaustive_od_root)
     resolved_aihub_root = aihub_canonical_root.resolve()
     resolved_output_root = output_root.resolve()
@@ -225,10 +284,10 @@ def build_pv26_exhaustive_od_lane_dataset(
     )
 
     dataset_counts = Counter()
-    sample_rows: list[dict[str, Any]] = []
-    seen_final_sample_ids: dict[str, dict[str, str]] = {}
-    exhaustive_tasks: list[dict[str, Any]] = []
-    lane_tasks: list[dict[str, Any]] = []
+    sample_rows: list[FinalDatasetSampleRow] = []
+    seen_final_sample_ids: dict[str, FinalSampleOwner] = {}
+    exhaustive_tasks: list[FinalizeSampleTask] = []
+    lane_tasks: list[FinalizeSampleTask] = []
 
     if log_fn is not None:
         log_fn(f"finalize output_root={resolved_output_root}")
@@ -326,13 +385,13 @@ def build_pv26_exhaustive_od_lane_dataset(
 
     workers = _default_io_workers()
 
-    def _run_tasks(tasks: list[dict[str, Any]], *, stage_name: str) -> None:
+    def _run_tasks(tasks: list[FinalizeSampleTask], *, stage_name: str) -> None:
         if not tasks:
             return
         start_time = time.monotonic()
         completed = 0
         log_every = max(250, workers * 50)
-        stage_rows: list[dict[str, Any]] = []
+        stage_rows: list[FinalDatasetSampleRow] = []
         if log_fn is not None:
             log_fn(f"finalize {stage_name} start samples={len(tasks)} workers={workers}")
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"finalize_{stage_name}") as executor:
@@ -365,7 +424,7 @@ def build_pv26_exhaustive_od_lane_dataset(
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
         encoding="utf-8",
     )
-    summary = {
+    summary: FinalDatasetManifest = {
         "version": "pv26-exhaustive-od-lane-v2",
         "exhaustive_od_root": str(resolved_exhaustive_root),
         "aihub_canonical_root": str(resolved_aihub_root),

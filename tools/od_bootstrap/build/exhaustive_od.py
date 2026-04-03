@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, TypedDict
 
 import yaml
 
@@ -29,6 +29,53 @@ class MaterializedSample:
     image_path: Path
     raw_detection_count: int
     bootstrap_detection_count: int
+
+
+class TeacherPredictionRow(TypedDict):
+    sample_id: str
+    sample_uid: str
+    image_path: str
+    scene_path: str
+    dataset_key: str
+    split: str
+    teacher_name: str
+    model_version: str
+    class_name: str
+    confidence: float
+    xyxy: list[float]
+    box_index: int
+    image_width: int
+    image_height: int
+
+
+class ExhaustiveSampleRow(TypedDict):
+    sample_id: str
+    sample_uid: str
+    source_dataset_key: str
+    exhaustive_dataset_key: str
+    split: str
+    scene_path: str
+    det_path: str
+    image_path: str
+    raw_detection_count: int
+    bootstrap_detection_count: int
+
+
+class ExhaustiveMaterializationManifest(TypedDict):
+    version: str
+    run_id: str
+    generated_at: str
+    dataset_root: str
+    sample_count: int
+    class_counts: dict[str, int]
+    samples: list[ExhaustiveSampleRow]
+
+
+class ExhaustiveMaterializationSummary(TypedDict):
+    dataset_root: str
+    manifest_path: str
+    sample_count: int
+    class_counts: dict[str, int]
 
 
 def _bbox_from_scene_detection(detection: dict[str, Any]) -> list[float]:
@@ -96,13 +143,13 @@ def _raw_provenance(*, run_id: str, created_at: str) -> BoxProvenance:
 def _materialize_sample(
     *,
     entry: ImageListEntry,
-    predictions_by_sample_uid: dict[str, list[dict[str, Any]]],
+    predictions_by_sample_uid: dict[str, list[TeacherPredictionRow]],
     class_policy: dict[str, Any],
     dataset_root: Path,
     run_id: str,
     created_at: str,
     copy_images: bool,
-) -> tuple[MaterializedSample, dict[str, int], dict[str, Any]]:
+) -> tuple[MaterializedSample, dict[str, int], ExhaustiveSampleRow]:
     class_counts = Counter()
     scene = json.loads(entry.scene_path.read_text(encoding="utf-8"))
     source_dataset_key = str(scene.get("source", {}).get("dataset") or entry.dataset_key)
@@ -206,7 +253,7 @@ def _materialize_sample(
         raw_detection_count=len(raw_detections),
         bootstrap_detection_count=len(kept_predictions),
     )
-    sample_row = {
+    sample_row: ExhaustiveSampleRow = {
         "sample_id": entry.sample_id,
         "sample_uid": entry.sample_uid,
         "source_dataset_key": source_dataset_key,
@@ -224,19 +271,19 @@ def _materialize_sample(
 def materialize_exhaustive_od_dataset(
     *,
     image_entries: Iterable[ImageListEntry],
-    predictions_by_sample_uid: dict[str, list[dict[str, Any]]],
+    predictions_by_sample_uid: dict[str, list[TeacherPredictionRow]],
     class_policy: dict[str, Any],
     output_root: Path,
     run_id: str,
     created_at: str,
     copy_images: bool,
     log_fn: Any | None = None,
-) -> dict[str, Any]:
+) -> ExhaustiveMaterializationSummary:
     dataset_root = output_root.resolve() / run_id
     dataset_root.mkdir(parents=True, exist_ok=True)
 
     class_counts = Counter()
-    sample_rows: list[dict[str, Any]] = []
+    sample_rows: list[ExhaustiveSampleRow] = []
     materialized: list[MaterializedSample] = []
     entries = tuple(image_entries)
     total_entries = len(entries)
@@ -289,7 +336,7 @@ def materialize_exhaustive_od_dataset(
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
         encoding="utf-8",
     )
-    manifest = {
+    manifest: ExhaustiveMaterializationManifest = {
         "version": "od-bootstrap-exhaustive-od-v1",
         "run_id": run_id,
         "generated_at": created_at,

@@ -86,6 +86,7 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
             self.assertEqual(signal_manifest["log_every"], 1)
             self.assertEqual(signal_manifest["debug_vis_count"], 1)
             self.assertEqual(signal_manifest["debug_vis_seed"], 26)
+            self.assertEqual(signal_manifest["samples"][0]["teacher_name"], "signal")
             self.assertEqual(signal_manifest["samples"][0]["image_action"], "hardlink")
             self.assertTrue(signal.debug_vis_manifest_path.is_file())
             debug_vis_manifest = json.loads(signal.debug_vis_manifest_path.read_text(encoding="utf-8"))
