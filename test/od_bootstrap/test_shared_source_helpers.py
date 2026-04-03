@@ -9,11 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from common.io import (
-    now_iso as common_now_iso,
-    write_json_sorted as common_write_json_sorted,
-    write_text as common_write_text,
-)
+from common.io import link_or_copy as common_link_or_copy, now_iso as common_now_iso, write_text as common_write_text
 from tools.od_bootstrap.source import __all__ as SOURCE_EXPORTS
 from tools.od_bootstrap.source.constants import DEFAULT_AIHUB_OUTPUT_ROOT, DEFAULT_BDD_ROOT
 from tools.od_bootstrap.source.defaults import build_default_source_prep_config, resolve_source_path
@@ -86,9 +82,24 @@ class SharedSourceHelpersTests(unittest.TestCase):
             )
 
         self.assertIs(now_iso, common_now_iso)
-        self.assertIs(write_json, common_write_json_sorted)
         self.assertIs(write_text, common_write_text)
         self.assertIs(shared_raw_now_iso, raw_now_iso)
+
+    def test_shared_link_policy_stays_distinct_from_common_io_overwrite_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_source = root / "first.txt"
+            second_source = root / "second.txt"
+            target_path = root / "artifact.txt"
+            first_source.write_text("first\n", encoding="utf-8")
+            second_source.write_text("second\n", encoding="utf-8")
+
+            self.assertIn(link_or_copy(first_source, target_path), {"hardlink", "copy"})
+            self.assertEqual(link_or_copy(second_source, target_path), "existing")
+            self.assertEqual(target_path.read_text(encoding="utf-8"), "first\n")
+
+            common_link_or_copy(second_source, target_path)
+            self.assertEqual(target_path.read_text(encoding="utf-8"), "second\n")
 
     def test_shared_parallel_helpers_log_progress_and_chunk_work(self) -> None:
         stream = io.StringIO()

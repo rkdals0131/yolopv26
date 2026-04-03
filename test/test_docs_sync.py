@@ -104,6 +104,39 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("pv26_train_runtime.py", cleanliness_report)
         self.assertIn("pv26_train_stress.py", cleanliness_report)
 
+    def test_rank3_cleanliness_docs_track_exact_helper_residue_and_link_policy_boundaries(self) -> None:
+        execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
+        cleanliness_checklist = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_checklists.md")
+        cleanliness_report = _read(DOCS_ROOT / "yolopv26_main_code_cleanliness_report.md")
+
+        self.assertIn(
+            "production helper residue는 `now_iso` 3곳, `timestamp_token` 2곳, `write_json` 5곳, `append_jsonl` 3곳",
+            execution_doc,
+        )
+        self.assertIn(
+            "`common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`",
+            execution_doc,
+        )
+
+        self.assertIn("`tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract", cleanliness_checklist)
+        self.assertIn("`tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화", cleanliness_checklist)
+        self.assertIn("`tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_checklist)
+        self.assertIn("thin compatibility shim", cleanliness_checklist)
+
+        self.assertIn("`source/raw_common.py`의 UTC timestamp contract", cleanliness_report)
+        self.assertIn("`teacher/calibrate.py`의 `default=str` JSON 직렬화", cleanliness_report)
+        self.assertIn("`build/final_dataset.py`의 overwrite 금지 publish semantics", cleanliness_report)
+        for fragment in (
+            "`common/io.py`",
+            "`source/shared_io.py`",
+            "`source/aihub.py`",
+            "`build/teacher_dataset.py`",
+            "`build/final_dataset.py`",
+            "`teacher/runtime_artifacts.py`",
+            "`teacher/data_yaml.py`",
+        ):
+            self.assertIn(fragment, cleanliness_report)
+
     def test_od_bootstrap_readme_mentions_current_debug_vis_and_review_tooling(self) -> None:
         readme = _read(OD_BOOTSTRAP_README)
         self.assertIn("python -m tools.od_bootstrap", readme)

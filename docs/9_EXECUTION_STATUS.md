@@ -10,7 +10,7 @@
 
 - 날짜: `2026-04-03`
 - phase: `phase 17 od-bootstrap-pipeline`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 7까지로 source shared helper shim 정리, _trainer_epochs helper extraction, teacher train-summary publication 분리, sorted JSON helper 공통화까지 반영됐다. 다음 wave는 3순위 빈칸을 먼저 닫는다: repo-wide now_iso/timestamp_token/write_json/append_jsonl 공통화, common vs tools/od_bootstrap shared helper 경계 명확화, policy-sensitive link_or_copy는 local 유지라는 기준 고정이 최우선이다.`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 7까지로 source shared helper shim 정리, _trainer_epochs helper extraction, teacher train-summary publication 분리, sorted JSON helper 공통화까지 반영됐다. 다음 wave는 3순위 빈칸을 먼저 닫는다: production helper residue는 `now_iso` 3곳, `timestamp_token` 2곳, `write_json` 5곳, `append_jsonl` 3곳이며 thin compatibility shim과 policy-sensitive local wrapper를 구분해서 줄여야 한다. 특히 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화, `build/final_dataset.py` overwrite 금지 publish semantics는 아직 drop-in common helper로 치환할 수 없다. `link_or_copy`는 `common/io.py`, `source/shared_io.py`, `source/aihub.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime_artifacts.py`, `teacher/data_yaml.py`에 남아 있는 local 정책 차이를 문서에 고정한 뒤 low-level helper만 공통화하는 것이 최우선이다.`
 
 ## 완료된 항목
 
@@ -132,8 +132,16 @@
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
 - [ ] export / ROS 정교화
 
+## rank-3 잔여 리스크 기준
+
+- production helper residue는 `now_iso` 3곳 (`common/io.py`, `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/raw_common.py`), `timestamp_token` 2곳 (`common/io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`), `write_json` 5곳 (`common/io.py`, `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared_io.py`, `tools/od_bootstrap/teacher/calibrate.py`, `tools/od_bootstrap/build/final_dataset.py`), `append_jsonl` 3곳 (`common/io.py`, `model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`)이다.
+- `model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime_progress.py`, `tools/od_bootstrap/source/shared_io.py`는 common helper 위에 얹힌 thin compatibility shim이고, 실제 contract 차이는 `tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract, `tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화, `tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics에 남아 있다.
+- policy-sensitive `link_or_copy`는 `common/io.py`, `tools/od_bootstrap/source/shared_io.py`, `tools/od_bootstrap/source/aihub.py`, `tools/od_bootstrap/build/teacher_dataset.py`, `tools/od_bootstrap/build/final_dataset.py`, `tools/od_bootstrap/teacher/runtime_artifacts.py`, `tools/od_bootstrap/teacher/data_yaml.py`에 걸쳐 서로 다른 overwrite/existing/symlink/hardlink/tree-staging 정책을 가진다. 이 차이는 local 유지가 맞고, 공통화 대상은 low-level atomic/json helper까지만 제한한다.
+
 ## 최근 검증
 
+- [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap/test_shared_source_helpers.py -q` (`21 passed`, `2026-04-03`)
+- [x] `python3 -m compileall -q test/test_docs_sync.py test/od_bootstrap/test_shared_source_helpers.py`
 - [x] `python3 -m pytest test/test_docs_sync.py test/od_bootstrap -q` (`49 passed`)
 - [x] `python3 -m unittest discover -s test -v`
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
