@@ -35,7 +35,7 @@ from tools.od_bootstrap.teacher.runtime.tensorboard import (
     build_epoch_tensorboard_payload,
     build_train_step_tensorboard_payload,
 )
-from tools.od_bootstrap.teacher.ultralytics_runner import _make_teacher_trainer
+from tools.od_bootstrap.teacher.ultralytics_runner import _make_teacher_trainer, train_teacher_with_ultralytics
 
 
 class _FakePbar:
@@ -450,6 +450,28 @@ class UltralyticsRunnerTests(unittest.TestCase):
             latest_run.write_text("{}", encoding="utf-8")
             resolved = resolve_resume_argument(True, teacher_name="signal", teacher_root=teacher_root)
             self.assertEqual(resolved, str(resumable_epoch))
+
+    def test_train_teacher_with_ultralytics_checks_resume_path_before_trainer_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_yaml = Path(temp_dir) / "dataset.yaml"
+            dataset_yaml.write_text("path: dataset\n", encoding="utf-8")
+            output_root = Path(temp_dir) / "runs"
+
+            with patch("tools.od_bootstrap.teacher.ultralytics_runner.YOLO", object), patch(
+                "tools.od_bootstrap.teacher.ultralytics_runner._make_teacher_trainer",
+                side_effect=AssertionError("trainer dependencies should not be checked first"),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "no last.pt exists under"):
+                    train_teacher_with_ultralytics(
+                        teacher_name="signal",
+                        dataset_yaml=dataset_yaml,
+                        output_root=output_root,
+                        model_size="s",
+                        weights=None,
+                        train_params={"resume": True},
+                        runtime_params={},
+                        exist_ok=False,
+                    )
 
     def test_teacher_trainer_check_resume_allows_epoch_extension(self) -> None:
         runtime_params = {

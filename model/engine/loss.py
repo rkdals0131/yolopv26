@@ -58,6 +58,17 @@ def _mean_or_zero(values: list[torch.Tensor], *graph_tensors: torch.Tensor) -> t
     return _zero_graph(*graph_tensors)
 
 
+def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(predictions)
+    for key in ("det", "tl_attr", "lane", "stop_line", "crosswalk"):
+        value = normalized.get(key)
+        if isinstance(value, torch.Tensor) and value.dtype != torch.float32:
+            # Keep AMP/autocast in the model forward path, but evaluate loss geometry
+            # and matching in float32 for numerical stability.
+            normalized[key] = value.to(dtype=torch.float32)
+    return normalized
+
+
 def _smoothness_regularizer(points: torch.Tensor) -> torch.Tensor:
     if points.shape[1] < 3:
         return points.sum() * 0.0
@@ -340,6 +351,7 @@ class PV26MultiTaskLoss(nn.Module):
         return det_source, class_mask, allow_objectness, allow_unmatched_class
 
     def forward(self, predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
+        predictions = _loss_precision_predictions(predictions)
         self.last_det_loss_breakdown = {
             "det_obj_loss": 0.0,
             "det_cls_matched_loss": 0.0,

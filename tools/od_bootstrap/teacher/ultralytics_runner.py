@@ -58,8 +58,6 @@ def train_teacher_with_ultralytics(
         raise RuntimeError("ultralytics is not installed")
 
     resolved_weights = coerce_weights_name(model_size, weights)
-    log_fn = _emit_log
-    trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=log_fn)
     teacher_root = output_root / teacher_name
     train_params = dict(train_params)
     train_params["resume"] = resolve_resume_argument(
@@ -67,6 +65,8 @@ def train_teacher_with_ultralytics(
         teacher_name=teacher_name,
         teacher_root=teacher_root,
     )
+    log_fn = _emit_log
+    trainer_cls, callbacks = _make_teacher_trainer(runtime_params=runtime_params, log_fn=log_fn)
     model_source = train_params["resume"] if train_params["resume"] else resolved_weights
     model = YOLO(model_source)
     if hasattr(model, "add_callback"):

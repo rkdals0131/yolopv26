@@ -163,6 +163,30 @@ class PV26BalancedSamplerTests(unittest.TestCase):
                 self.assertEqual(dataset.records[index].split, "train")
             self.assertEqual(counts, {"bdd100k": 6, "aihub_traffic": 6, "aihub_obstacle": 3, "aihub_lane": 5})
 
+    def test_balanced_batch_sampler_epoch_length_ignores_zero_ratio_groups(self) -> None:
+        dataset = _ToyCanonicalDataset(
+            dataset_keys=(
+                ("bdd100k_det_100k", 8),
+                ("aihub_lane_seoul", 2),
+            ),
+        )
+        sampler = PV26BalancedBatchSampler(
+            dataset,
+            batch_size=4,
+            split="train",
+            seed=7,
+            ratios={
+                "bdd100k": 0.0,
+                "aihub_traffic": 0.0,
+                "aihub_obstacle": 0.0,
+                "aihub_lane": 1.0,
+            },
+        )
+
+        self.assertEqual(len(sampler), 1)
+        only_batch = next(iter(sampler))
+        self.assertTrue(all(dataset.records[index].dataset_key == "aihub_lane_seoul" for index in only_batch))
+
     def test_balanced_dataloader_respects_split_filter(self) -> None:
         dataset = _ToyCanonicalDataset()
         loader = build_pv26_train_dataloader(dataset, batch_size=20, num_batches=1, split="val", seed=11)

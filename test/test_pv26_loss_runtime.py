@@ -168,6 +168,48 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["lane"].grad)
 
+    def test_stage4_promotes_half_precision_lane_predictions_to_float32_for_loss(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions["lane"] = predictions["lane"].detach().to(dtype=torch.float16).requires_grad_(True)
+
+        observed: dict[str, torch.dtype] = {}
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"stop_line": 0.0, "crosswalk": 0.0},
+        )
+        original_build_query_assignment = criterion._build_query_assignment
+
+        def _record_dtype(
+            pred_rows: torch.Tensor,
+            target_rows: torch.Tensor,
+            valid_mask: torch.Tensor,
+            source_mask: torch.Tensor,
+            *,
+            task_name: str,
+            cost_builder,
+        ):
+            observed[task_name] = pred_rows.dtype
+            return original_build_query_assignment(
+                pred_rows,
+                target_rows,
+                valid_mask,
+                source_mask,
+                task_name=task_name,
+                cost_builder=cost_builder,
+            )
+
+        criterion._build_query_assignment = _record_dtype  # type: ignore[method-assign]
+        losses = criterion(predictions, encoded)
+
+        self.assertEqual(observed["lane"], torch.float32)
+        self.assertTrue(torch.isfinite(losses["lane"]))
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["lane"].grad)
+
     def test_task_aligned_assignment_promotes_amp_inputs_to_float32(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

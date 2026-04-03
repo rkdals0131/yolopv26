@@ -4,22 +4,10 @@ The public package surface intentionally re-exports only the stable engine
 entry points; underscore-prefixed helper modules remain internal.
 """
 
-from .batch import augment_lane_family_metrics, move_batch_to_device, raw_batch_for_metrics
-from .evaluator import PV26Evaluator
-from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
-from .metrics import PV26MetricConfig, summarize_pv26_metrics
-from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
-from .spec import SPEC_VERSION, build_loss_spec, render_loss_spec_markdown
-from .trainer import (
-    PV26Trainer,
-    STAGE_NAMES,
-    TIMING_KEYS,
-    TENSORBOARD_LOSS_KEYS,
-    build_pv26_optimizer,
-    build_pv26_scheduler,
-    configure_pv26_train_stage,
-    run_pv26_tiny_overfit,
-)
+from __future__ import annotations
+
+from importlib import import_module
+
 
 __all__ = [
     "PV26DetAssignmentUnavailable",
@@ -44,3 +32,41 @@ __all__ = [
     "run_pv26_tiny_overfit",
     "summarize_pv26_metrics",
 ]
+
+_EXPORTS = {
+    "augment_lane_family_metrics": ("batch", "augment_lane_family_metrics"),
+    "move_batch_to_device": ("batch", "move_batch_to_device"),
+    "raw_batch_for_metrics": ("batch", "raw_batch_for_metrics"),
+    "PV26Evaluator": ("evaluator", "PV26Evaluator"),
+    "PV26DetAssignmentUnavailable": ("loss", "PV26DetAssignmentUnavailable"),
+    "PV26MultiTaskLoss": ("loss", "PV26MultiTaskLoss"),
+    "PV26MetricConfig": ("metrics", "PV26MetricConfig"),
+    "summarize_pv26_metrics": ("metrics", "summarize_pv26_metrics"),
+    "PV26PostprocessConfig": ("postprocess", "PV26PostprocessConfig"),
+    "postprocess_pv26_batch": ("postprocess", "postprocess_pv26_batch"),
+    "SPEC_VERSION": ("spec", "SPEC_VERSION"),
+    "build_loss_spec": ("spec", "build_loss_spec"),
+    "render_loss_spec_markdown": ("spec", "render_loss_spec_markdown"),
+    "PV26Trainer": ("trainer", "PV26Trainer"),
+    "STAGE_NAMES": ("trainer", "STAGE_NAMES"),
+    "TIMING_KEYS": ("trainer", "TIMING_KEYS"),
+    "TENSORBOARD_LOSS_KEYS": ("trainer", "TENSORBOARD_LOSS_KEYS"),
+    "build_pv26_optimizer": ("trainer", "build_pv26_optimizer"),
+    "build_pv26_scheduler": ("trainer", "build_pv26_scheduler"),
+    "configure_pv26_train_stage": ("trainer", "configure_pv26_train_stage"),
+    "run_pv26_tiny_overfit": ("trainer", "run_pv26_tiny_overfit"),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    value = getattr(import_module(f".{module_name}", __name__), attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

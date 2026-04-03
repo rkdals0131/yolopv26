@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import torch
+
 from tools.pv26_train.artifacts import load_or_init_meta_manifest
 from tools.run_pv26_train import (
     PRESET_PATH_ROOT,
@@ -18,6 +20,7 @@ from tools.run_pv26_train import (
     PhaseTransitionController,
     PreviewConfig,
     SelectionConfig,
+    _build_phase_train_loaders,
     _build_arg_parser,
     _build_postprocess_config,
     _phase_manifest_extra,
@@ -595,6 +598,111 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         stop_state = controller.observe_epoch(_summary(4, 0.4515))
         self.assertIsNotNone(stop_state)
         self.assertEqual(stop_state["reason"], "plateau")
+
+    def test_stage4_build_phase_train_loaders_filter_to_lane_family_dataset(self) -> None:
+        class _FakeDataset:
+            def __init__(self) -> None:
+                self.records = []
+                self.samples = []
+                for split in ("train", "val"):
+                    for dataset_key in ("bdd100k_det_100k", "aihub_lane_seoul"):
+                        for index in range(2):
+                            record = SimpleNamespace(
+                                dataset_key=dataset_key,
+                                split=split,
+                                sample_id=f"{dataset_key}_{split}_{index}",
+                            )
+                            self.records.append(record)
+                            self.samples.append(
+                                {
+                                    "image": torch.zeros((3, 608, 800), dtype=torch.float32),
+                                    "det_targets": {
+                                        "boxes_xyxy": torch.zeros((0, 4), dtype=torch.float32),
+                                        "classes": torch.zeros((0,), dtype=torch.long),
+                                    },
+                                    "tl_attr_targets": {
+                                        "bits": torch.zeros((0, 4), dtype=torch.float32),
+                                        "is_traffic_light": torch.zeros((0,), dtype=torch.bool),
+                                        "collapse_reason": [],
+                                    },
+                                    "lane_targets": {
+                                        "lanes": [],
+                                        "stop_lines": [],
+                                        "crosswalks": [],
+                                    },
+                                    "source_mask": {
+                                        "det": dataset_key != "aihub_lane_seoul",
+                                        "tl_attr": False,
+                                        "lane": dataset_key == "aihub_lane_seoul",
+                                        "stop_line": dataset_key == "aihub_lane_seoul",
+                                        "crosswalk": dataset_key == "aihub_lane_seoul",
+                                    },
+                                    "valid_mask": {
+                                        "det": torch.zeros((0,), dtype=torch.bool),
+                                        "tl_attr": torch.zeros((0,), dtype=torch.bool),
+                                        "lane": torch.zeros((0,), dtype=torch.bool),
+                                        "stop_line": torch.zeros((0,), dtype=torch.bool),
+                                        "crosswalk": torch.zeros((0,), dtype=torch.bool),
+                                    },
+                                    "meta": {
+                                        "sample_id": record.sample_id,
+                                        "dataset_key": dataset_key,
+                                        "split": split,
+                                        "image_path": f"/tmp/{record.sample_id}.jpg",
+                                        "raw_hw": (720, 1280),
+                                        "network_hw": (608, 800),
+                                        "transform": {
+                                            "scale": 0.625,
+                                            "pad_left": 0,
+                                            "pad_top": 79,
+                                            "pad_right": 0,
+                                            "pad_bottom": 79,
+                                            "resized_hw": (450, 800),
+                                        },
+                                        "det_supervised_classes": [],
+                                        "det_supervised_class_ids": [],
+                                        "det_allow_objectness_negatives": False,
+                                        "det_allow_unmatched_class_negatives": False,
+                                    },
+                                }
+                            )
+
+            def __len__(self) -> int:
+                return len(self.records)
+
+            def __getitem__(self, index: int) -> dict:
+                return self.samples[index]
+
+        phase = PhaseConfig(
+            name="lane_family_finetune",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=4,
+            max_epochs=12,
+            patience=3,
+            min_improvement_pct=0.25,
+            selection=SelectionConfig(metric_path="val.metrics.lane_family.mean_f1", mode="max", eps=1.0e-8),
+            loss_weights={"det": 0.0, "tl_attr": 0.0, "lane": 1.5, "stop_line": 1.25, "crosswalk": 1.0},
+            freeze_policy="lane_family_heads_only",
+        )
+        train_config = TrainDefaultsConfig(
+            batch_size=2,
+            num_workers=0,
+            persistent_workers=False,
+            prefetch_factor=None,
+            sampler_ratios={
+                "bdd100k": 0.0,
+                "aihub_traffic": 0.0,
+                "aihub_lane": 1.0,
+                "aihub_obstacle": 0.0,
+            },
+        )
+
+        train_loader, val_loader = _build_phase_train_loaders(_FakeDataset(), train_config=train_config, phase=phase)
+        train_batch = next(iter(train_loader))
+        val_batch = next(iter(val_loader))
+
+        self.assertTrue(all(item["dataset_key"] == "aihub_lane_seoul" for item in train_batch["meta"]))
+        self.assertTrue(all(item["dataset_key"] == "aihub_lane_seoul" for item in val_batch["meta"]))
 
     def test_sample_preview_selection_uses_record_metadata_before_loading_samples(self) -> None:
         class _FakeDataset:

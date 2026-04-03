@@ -315,11 +315,11 @@ def _detector_metrics(
                     bucket = _det_box_bucket(pred["box_xyxy"], config=config)
                     bucket_counts[bucket]["fp"] += 1
                     bucket_counts[bucket]["records"].append((float(pred["score"]), 0))
+            for gt_index, gt in enumerate(gt_rows):
+                if gt_index not in matched_gt:
+                    bucket_counts[_det_box_bucket(gt["box_xyxy"], config=config)]["fn"] += 1
 
         class_fn = gt_count - class_tp
-        for gt_index, gt in enumerate(gt_rows):
-            if gt_index not in matched_gt:
-                bucket_counts[_det_box_bucket(gt["box_xyxy"], config=config)]["fn"] += 1
         ap50 = _compute_ap(records, gt_count)
         if gt_count > 0:
             map_candidates.append(ap50)

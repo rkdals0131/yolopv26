@@ -22,6 +22,7 @@ def _ensure_repo_root_on_path() -> None:
 _ensure_repo_root_on_path()
 
 from common.overlay import render_overlay
+from common.pv26_schema import SOURCE_MASK_BY_DATASET
 from common.user_config import (
     load_user_hyperparameters_config,
     load_user_paths_config,
@@ -78,6 +79,19 @@ META_MANIFEST_VERSION = "pv26-meta-train-v1"
 # ===== USER CONFIG =====
 # ===== HYPERPARAMETERS =====
 # ===== PHASE HYPERPARAMETERS =====
+
+
+class _DatasetRecordView:
+    def __init__(self, dataset: Any, indices: list[int]) -> None:
+        self._dataset = dataset
+        self._indices = list(indices)
+        self.records = [dataset.records[index] for index in self._indices]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index: int) -> Any:
+        return self._dataset[self._indices[index]]
 
 
 def _resolve_backbone_weights(train_config: TrainDefaultsConfig) -> str:
@@ -376,15 +390,45 @@ def _configure_torch_multiprocessing() -> None:
         pass
 
 
+def _is_lane_family_only_phase(phase: PhaseConfig | None) -> bool:
+    if phase is None:
+        return False
+    if str(phase.freeze_policy or "") == "lane_family_heads_only":
+        return True
+    return str(phase.stage) == "stage_4_lane_family_finetune"
+
+
+def _dataset_for_phase(dataset: PV26CanonicalDataset, *, phase: PhaseConfig | None) -> PV26CanonicalDataset:
+    if not _is_lane_family_only_phase(phase):
+        return dataset
+    allowed_dataset_keys = {
+        dataset_key
+        for dataset_key, source_mask in SOURCE_MASK_BY_DATASET.items()
+        if any(bool(source_mask.get(task_name, False)) for task_name in ("lane", "stop_line", "crosswalk"))
+    }
+    selected_indices = [
+        index
+        for index, record in enumerate(dataset.records)
+        if str(record.dataset_key) in allowed_dataset_keys
+    ]
+    if not selected_indices:
+        raise ValueError(f"phase {phase.stage} requires lane-family samples, but none were found in the canonical dataset index")
+    if len(selected_indices) == len(dataset.records):
+        return dataset
+    return _DatasetRecordView(dataset, selected_indices)
+
+
 def _build_phase_train_loaders(
     dataset: PV26CanonicalDataset,
     *,
     train_config: TrainDefaultsConfig,
+    phase: PhaseConfig | None = None,
 ) -> tuple[Any, Any]:
+    loader_dataset = _dataset_for_phase(dataset, phase=phase)
     train_batches = train_config_api.resolve_train_batch_limit(train_config.train_batches)
     val_batches = train_config_api.resolve_val_batch_limit(train_config.val_batches)
     train_loader = build_pv26_train_dataloader(
-        dataset,
+        loader_dataset,
         batch_size=train_config.batch_size,
         num_batches=train_batches,
         ratios=train_config.sampler_ratios,
@@ -399,7 +443,7 @@ def _build_phase_train_loaders(
     val_loader = None
     if val_batches != 0:
         val_loader = build_pv26_eval_dataloader(
-            dataset,
+            loader_dataset,
             batch_size=train_config.batch_size,
             num_batches=val_batches,
             split="val",
@@ -666,7 +710,7 @@ def _execute_phase(
     phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
     phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
     _log_meta_train(f"building loaders for phase_{phase_index} at {phase_run_dir}")
-    train_loader, val_loader = _build_phase_train_loaders(dataset, train_config=phase_train_config)
+    train_loader, val_loader = _build_phase_train_loaders(dataset, train_config=phase_train_config, phase=phase)
     controller = PhaseTransitionController(phase=phase, selection=phase_selection)
     controller.replay(train_artifacts.read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
 

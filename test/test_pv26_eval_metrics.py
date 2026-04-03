@@ -189,6 +189,92 @@ class PV26EvalMetricsTests(unittest.TestCase):
         self.assertEqual(summary["crosswalk"]["tp"], 1)
         self.assertGreater(summary["crosswalk"]["mean_polygon_iou"], 0.8)
 
+    def test_detector_size_bucket_fn_accumulates_unmatched_gt_across_samples(self) -> None:
+        sample0_meta = _identity_meta() | {"sample_id": "sample_0"}
+        sample1_meta = _identity_meta() | {"sample_id": "sample_1"}
+        raw_batch = {
+            "image": torch.zeros((2, 3, 608, 800), dtype=torch.float32),
+            "det_targets": [
+                {
+                    "boxes_xyxy": torch.tensor([[10.0, 10.0, 20.0, 20.0]], dtype=torch.float32),
+                    "classes": torch.tensor([5], dtype=torch.long),
+                },
+                {
+                    "boxes_xyxy": torch.tensor([[100.0, 100.0, 160.0, 220.0]], dtype=torch.float32),
+                    "classes": torch.tensor([5], dtype=torch.long),
+                },
+            ],
+            "tl_attr_targets": [
+                {
+                    "bits": torch.tensor([[1.0, 0.0, 0.0, 1.0]], dtype=torch.float32),
+                    "is_traffic_light": torch.tensor([True], dtype=torch.bool),
+                    "collapse_reason": ["valid"],
+                },
+                {
+                    "bits": torch.tensor([[1.0, 0.0, 0.0, 1.0]], dtype=torch.float32),
+                    "is_traffic_light": torch.tensor([True], dtype=torch.bool),
+                    "collapse_reason": ["valid"],
+                },
+            ],
+            "lane_targets": [
+                {"lanes": [], "stop_lines": [], "crosswalks": []},
+                {"lanes": [], "stop_lines": [], "crosswalks": []},
+            ],
+            "source_mask": [
+                {"det": True, "tl_attr": True, "lane": False, "stop_line": False, "crosswalk": False},
+                {"det": True, "tl_attr": True, "lane": False, "stop_line": False, "crosswalk": False},
+            ],
+            "valid_mask": [
+                {
+                    "det": torch.tensor([True], dtype=torch.bool),
+                    "tl_attr": torch.tensor([True], dtype=torch.bool),
+                    "lane": torch.zeros((0,), dtype=torch.bool),
+                    "stop_line": torch.zeros((0,), dtype=torch.bool),
+                    "crosswalk": torch.zeros((0,), dtype=torch.bool),
+                },
+                {
+                    "det": torch.tensor([True], dtype=torch.bool),
+                    "tl_attr": torch.tensor([True], dtype=torch.bool),
+                    "lane": torch.zeros((0,), dtype=torch.bool),
+                    "stop_line": torch.zeros((0,), dtype=torch.bool),
+                    "crosswalk": torch.zeros((0,), dtype=torch.bool),
+                },
+            ],
+            "meta": [sample0_meta, sample1_meta],
+        }
+        predictions = [
+            {
+                "meta": sample0_meta,
+                "detections": [],
+                "lanes": [],
+                "stop_lines": [],
+                "crosswalks": [],
+            },
+            {
+                "meta": sample1_meta,
+                "detections": [
+                    {
+                        "box_xyxy": [100.0, 100.0, 160.0, 220.0],
+                        "score": 0.95,
+                        "class_id": 5,
+                        "class_name": "traffic_light",
+                        "tl_attr_scores": {"red": 0.95, "yellow": 0.05, "green": 0.05, "arrow": 0.90},
+                    }
+                ],
+                "lanes": [],
+                "stop_lines": [],
+                "crosswalks": [],
+            },
+        ]
+
+        summary = summarize_pv26_metrics(predictions, raw_batch, config=PV26MetricConfig())
+
+        self.assertEqual(summary["detector"]["per_class"]["traffic_light"]["fn"], 1)
+        self.assertEqual(summary["detector"]["size_buckets"]["tiny"]["gt_count"], 1)
+        self.assertEqual(summary["detector"]["size_buckets"]["tiny"]["fn"], 1)
+        self.assertEqual(summary["detector"]["size_buckets"]["tiny"]["tp"], 0)
+        self.assertEqual(summary["detector"]["size_buckets"]["medium_plus"]["tp"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

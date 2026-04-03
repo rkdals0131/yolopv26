@@ -122,7 +122,10 @@ class PV26BalancedBatchSampler(BatchSampler):
         if sum(self.batch_counts.values()) != self.batch_size:
             raise AssertionError("balanced sampler batch counts must sum to batch size")
 
-        self.num_batches = num_batches or max(1, math.ceil(eligible_count / batch_size))
+        sampled_count = sum(len(grouped_indices[group]) for group in self.batch_counts)
+        if sampled_count <= 0:
+            raise ValueError("balanced sampler found no samples for the configured positive-ratio groups")
+        self.num_batches = num_batches or max(1, math.ceil(sampled_count / batch_size))
 
         base_rng = random.Random(seed)
         self._cursors: dict[str, _GroupCursor] = {}
