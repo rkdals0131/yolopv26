@@ -34,7 +34,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("A", "Exhaustive OD 생성", "python -m tools.od_bootstrap build-exhaustive-od", (python_exe, "-m", "tools.od_bootstrap", "build-exhaustive-od"), str(paths.exhaustive_dataset_root)),
         ActionSpec("B", "최종 병합 데이터셋 생성", "python -m tools.od_bootstrap build-final-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-final-dataset"), str(paths.final_dataset_root), rerun_contract="overwrite: staging build 후 final root swap"),
         ActionSpec("C", "PV26 기본 학습", "python3 tools/run_pv26_train.py --preset default", (python_exe, "tools/run_pv26_train.py", "--preset", "default"), str(paths.pv26_run_root)),
-        ActionSpec("D", "PV26 stage_3 VRAM stress", "interactive: batch/iter 입력 후 stage_3 peak VRAM probe", (), "TUI result panel only (no checkpoints / no run dir)", rerun_contract="short probe only: stage_3 train loop 일부만 실행"),
+        ActionSpec("D", "PV26 phase VRAM stress", "interactive: phase/batch/iter 입력 후 short VRAM probe", (), "TUI result panel only (no checkpoints / no run dir)", rerun_contract="short probe only: 선택한 phase train loop 일부만 실행"),
         ActionSpec("E", "PV26 exact resume", "interactive: resumable run 목록에서 골라 same run dir exact resume", (), str(paths.pv26_run_root), rerun_contract="exact resume only: same run dir / same scenario"),
         ActionSpec("F", "PV26 TorchScript export", "interactive: completed PV26 run 선택 후 adjacent TorchScript export", (), str(paths.pv26_run_root)),
         ActionSpec("G", "Mobility teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "mobility" / "weights")),
@@ -121,7 +121,7 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
     if action.key == "B":
         return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
     if action.key == "D":
-        return "stage_3는 현재 전체 학습 단계 중 VRAM 상한을 보는 가장 좋은 proxy입니다. stage_4는 trunk/lane-family만 학습하므로 보통 더 낮습니다."
+        return "기본은 stage_3지만, 이제 phase별 probe를 실행할 수 있습니다. stage_3가 대체로 VRAM 상한 proxy이고 stage_4는 보통 더 가볍습니다."
     if action.key == "E":
         return "resume는 exact resume only입니다. batch_size 변경이나 best/epoch 재시작은 별도 흐름으로 다루는 편이 안전합니다."
     if action.key == "K":
@@ -175,7 +175,7 @@ def _pv26_action_config_lines() -> list[str]:
         phase_train = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
         phase_selection = _resolve_phase_selection(scenario.selection, phase)
         lines.append(
-            f"- phase_{phase_index} {phase.name}: epochs={phase.min_epochs}-{phase.max_epochs}, patience={phase.patience}, metric={phase_selection.metric_path}({phase_selection.mode}), trunk_lr={phase_train.trunk_lr}, head_lr={phase_train.head_lr}"
+            f"- phase_{phase_index} {phase.name}: epochs={phase.min_epochs}-{phase.max_epochs}, patience={phase.patience}, metric={phase_selection.metric_path}({phase_selection.mode}), batch={phase_train.batch_size}, trunk_lr={phase_train.trunk_lr}, head_lr={phase_train.head_lr}"
         )
     return lines
 

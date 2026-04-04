@@ -38,18 +38,26 @@ from .tui import (
     _render_help,
     _render_retrain_candidates,
     _render_resume_candidates,
-    _render_stage3_stress_result,
+    _render_phase_stress_result,
 )
 
 
-def _default_stage3_stress_batch_size() -> int:
+def _default_phase_stress_batch_size(stage: str = "stage_3_end_to_end_finetune") -> int:
     try:
-        from tools.run_pv26_train import load_meta_train_scenario
+        from tools.run_pv26_train import _scenario_phase_defaults, load_meta_train_scenario
 
         scenario = load_meta_train_scenario("default")
-        return int(scenario.train_defaults.batch_size)
+        phase = next((item for item in scenario.phases if str(item.stage) == str(stage)), None)
+        if phase is None:
+            return int(scenario.train_defaults.batch_size)
+        phase_train = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+        return int(phase_train.batch_size)
     except Exception:
         return 40
+
+
+def _default_stage3_stress_batch_size() -> int:
+    return _default_phase_stress_batch_size("stage_3_end_to_end_finetune")
 
 
 def _ascii_input(console: Console, prompt: str) -> str | None:
@@ -116,23 +124,52 @@ def _prompt_positive_int(console: Console, prompt: str, *, default: int) -> int 
         return value
 
 
-def _resolve_stage3_stress_action(console: Console, action: ActionSpec) -> ActionSpec | None:
-    default_batch_size = _default_stage3_stress_batch_size()
+def _prompt_stress_stage(console: Console) -> str | None:
+    while True:
+        raw = _ascii_input(
+            console,
+            "stress stage (1=stage_1, 2=stage_2, 3=stage_3, 4=stage_4, Enter=3, Q=취소) > ",
+        )
+        if raw is None:
+            return None
+        if raw == "":
+            return "stage_3_end_to_end_finetune"
+        if raw.upper() == "Q":
+            return None
+        mapping = {
+            "1": "stage_1_frozen_trunk_warmup",
+            "2": "stage_2_partial_unfreeze",
+            "3": "stage_3_end_to_end_finetune",
+            "4": "stage_4_lane_family_finetune",
+        }
+        stage = mapping.get(raw)
+        if stage is not None:
+            return stage
+        console.print("[yellow]1-4 중 하나만 입력하세요.[/yellow]")
+
+
+def _resolve_phase_stress_action(console: Console, action: ActionSpec) -> ActionSpec | None:
+    stage = _prompt_stress_stage(console)
+    if stage is None:
+        return None
+    default_batch_size = _default_phase_stress_batch_size(stage)
     batch_size = _prompt_positive_int(
         console,
-        f"stage_3 stress batch size (Enter={default_batch_size}, Q=취소) > ",
+        f"{stage} stress batch size (Enter={default_batch_size}, Q=취소) > ",
         default=default_batch_size,
     )
     if batch_size is None:
         return None
     stress_iters = _prompt_positive_int(
         console,
-        "stage_3 stress iterations (Enter=12, 권장 10-20, Q=취소) > ",
+        "phase stress iterations (Enter=12, 권장 10-20, Q=취소) > ",
         default=12,
     )
     if stress_iters is None:
         return None
     argv = tuple(action.argv) + (
+        "--stress-stage",
+        stage,
         "--stress-batch-size",
         str(batch_size),
         "--stress-iters",
@@ -140,7 +177,7 @@ def _resolve_stage3_stress_action(console: Console, action: ActionSpec) -> Actio
     )
     command_display = (
         "interactive: "
-        f"stage_3 peak VRAM probe (batch_size={batch_size}, stress_iters={stress_iters})"
+        f"{stage} VRAM probe (batch_size={batch_size}, stress_iters={stress_iters})"
     )
     return ActionSpec(
         key=action.key,
@@ -150,6 +187,17 @@ def _resolve_stage3_stress_action(console: Console, action: ActionSpec) -> Actio
         output_hint=action.output_hint,
         rerun_contract=action.rerun_contract,
     )
+
+
+def _resolve_stage3_stress_action(console: Console, action: ActionSpec) -> ActionSpec | None:
+    return _resolve_phase_stress_action(console, action)
+
+
+def _argv_flag_value(argv: tuple[str, ...], flag: str) -> str | None:
+    for index, value in enumerate(argv):
+        if value == flag and index + 1 < len(argv):
+            return argv[index + 1]
+    return None
 
 
 def _render_panel(text: str, *, title: str, border_style: str) -> Panel:
@@ -165,7 +213,7 @@ def _run_stage3_stress_probe(
     snapshot: WorkspaceSnapshot,
     action: ActionSpec,
 ) -> bool:
-    resolved_action = _resolve_stage3_stress_action(console, action)
+    resolved_action = _resolve_phase_stress_action(console, action)
     if resolved_action is None:
         return True
 
@@ -184,28 +232,29 @@ def _run_stage3_stress_probe(
     if not _confirm(console):
         return True
 
-    console.print("[bold green]stage_3 VRAM stress probe를 시작합니다. 진행 로그가 아래에 이어집니다.[/bold green]")
-    from tools.run_pv26_train import PRESET_PATH_ROOT, load_meta_train_scenario, run_stage3_vram_stress
+    console.print("[bold green]PV26 phase VRAM stress probe를 시작합니다. 진행 로그가 아래에 이어집니다.[/bold green]")
+    from tools.run_pv26_train import PRESET_PATH_ROOT, load_meta_train_scenario, run_phase_vram_stress
 
     try:
         scenario = load_meta_train_scenario("default")
-        result = run_stage3_vram_stress(
+        result = run_phase_vram_stress(
             scenario,
             scenario_path=PRESET_PATH_ROOT / "default",
-            batch_size=int(resolved_action.argv[-3]),
-            stress_iters=int(resolved_action.argv[-1]),
+            stage=_argv_flag_value(resolved_action.argv, "--stress-stage"),
+            batch_size=int(_argv_flag_value(resolved_action.argv, "--stress-batch-size") or "0"),
+            stress_iters=int(_argv_flag_value(resolved_action.argv, "--stress-iters") or "0"),
         )
     except KeyboardInterrupt:
         console.print("\n[red]실행 중단됨[/red]")
         return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
     except SystemExit as exc:
-        console.print(_render_panel(str(exc), title="Stage 3 VRAM Probe 실패", border_style="red"))
+        console.print(_render_panel(str(exc), title="PV26 Phase VRAM Probe 실패", border_style="red"))
         return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
     except Exception as exc:
-        console.print(_render_panel(str(exc), title="Stage 3 VRAM Probe 예외", border_style="red"))
+        console.print(_render_panel(str(exc), title="PV26 Phase VRAM Probe 예외", border_style="red"))
         return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
 
-    _render_stage3_stress_result(console, result)
+    _render_phase_stress_result(console, result)
     return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
 
 

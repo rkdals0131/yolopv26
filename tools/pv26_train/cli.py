@@ -987,6 +987,31 @@ def run_stage3_vram_stress(
     )
 
 
+def run_phase_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    stage: str | None = None,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_phase_vram_stress(
+        scenario,
+        scenario_path=scenario_path,
+        stage=stage,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=train_artifacts.json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
 def run_meta_train_scenario(
     scenario: MetaTrainScenario,
     *,
@@ -1031,7 +1056,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stage3-vram-stress",
         action="store_true",
-        help="Run a short stage-3 training probe and report peak CUDA VRAM usage.",
+        help="Run a short phase training probe and report peak CUDA VRAM usage. Defaults to stage_3.",
     )
     parser.add_argument(
         "--resume-run",
@@ -1066,6 +1091,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Number of short train iterations to run for --stage3-vram-stress.",
+    )
+    parser.add_argument(
+        "--stress-stage",
+        choices=stage_names,
+        default=None,
+        help="Override stage for --stage3-vram-stress. Defaults to stage_3_end_to_end_finetune.",
     )
     return parser
 
@@ -1137,9 +1168,10 @@ def _run_cli_command(
     run_options: dict[str, Any],
 ) -> dict[str, Any]:
     if bool(args.stage3_vram_stress):
-        return run_stage3_vram_stress(
+        return run_phase_vram_stress(
             scenario,
             scenario_path=scenario_path,
+            stage=args.stress_stage,
             batch_size=args.stress_batch_size,
             stress_iters=args.stress_iters,
         )

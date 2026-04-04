@@ -15,6 +15,7 @@ class ModuleLayoutCompatTests(unittest.TestCase):
 
         self.assertTrue(callable(check_env_pkg.check_env))
         self.assertTrue(callable(check_env_pkg.scan_workspace_status))
+        self.assertTrue(callable(launch_new._resolve_phase_stress_action))
         self.assertTrue(callable(launch_new._resolve_stage3_stress_action))
         with self.assertRaises(ModuleNotFoundError):
             importlib.import_module("tools.check_env_scan")

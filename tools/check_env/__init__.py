@@ -18,8 +18,10 @@ from .actions import (  # noqa: E402
 )
 from .launch import (  # noqa: E402
     _ascii_input,
+    _default_phase_stress_batch_size,
     _default_stage3_stress_batch_size,
     _interactive_loop,
+    _resolve_phase_stress_action,
     _resolve_stage3_stress_action,
 )
 from .scan import (  # noqa: E402
@@ -48,9 +50,11 @@ __all__ = [
     "_ascii_input",
     "_action_catalog",
     "_action_config_lines",
+    "_default_phase_stress_batch_size",
     "_default_stage3_stress_batch_size",
     "_interactive_loop",
     "_manifest_header",
+    "_resolve_phase_stress_action",
     "_scan_pv26_export_candidates",
     "_scan_pv26_retrain_candidates",
     "_resolve_stage3_stress_action",

@@ -35,6 +35,7 @@ from tools.run_pv26_train import (
     load_meta_train_resume_scenario,
     load_meta_train_scenario,
     main,
+    run_phase_vram_stress,
     run_stage3_vram_stress,
 )
 from tools.pv26_train.config import (
@@ -81,6 +82,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             "load_meta_train_scenario",
             "main",
             "run_meta_train_scenario",
+            "run_phase_vram_stress",
             "run_stage3_vram_stress",
         }
 
@@ -986,7 +988,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         loaded_scenario = SimpleNamespace()
 
         with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario) as mocked_load:
-            with patch("tools.run_pv26_train.run_stage3_vram_stress", return_value={"status": "ok", "mode": "stage3_vram_stress"}) as mocked_stress:
+            with patch("tools.run_pv26_train.run_phase_vram_stress", return_value={"status": "ok", "mode": "phase_vram_stress"}) as mocked_stress:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     main(
@@ -994,6 +996,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "--preset",
                             "default",
                             "--stage3-vram-stress",
+                            "--stress-stage",
+                            "stage_2_partial_unfreeze",
                             "--stress-batch-size",
                             "24",
                             "--stress-iters",
@@ -1005,10 +1009,11 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         mocked_stress.assert_called_once_with(
             loaded_scenario,
             scenario_path=PRESET_PATH_ROOT / "default",
+            stage="stage_2_partial_unfreeze",
             batch_size=24,
             stress_iters=16,
         )
-        self.assertIn('"mode": "stage3_vram_stress"', buffer.getvalue())
+        self.assertIn('"mode": "phase_vram_stress"', buffer.getvalue())
 
     def test_arg_parser_keeps_resume_and_stage3_runtime_flags(self) -> None:
         parser = _build_arg_parser()
@@ -1020,6 +1025,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                 "--resume-run",
                 "/tmp/existing_run",
                 "--stage3-vram-stress",
+                "--stress-stage",
+                "stage_4_lane_family_finetune",
                 "--stress-batch-size",
                 "24",
                 "--stress-iters",
@@ -1030,6 +1037,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(args.preset, "default")
         self.assertEqual(args.resume_run, "/tmp/existing_run")
         self.assertTrue(args.stage3_vram_stress)
+        self.assertEqual(args.stress_stage, "stage_4_lane_family_finetune")
         self.assertEqual(args.stress_batch_size, 24)
         self.assertEqual(args.stress_iters, 16)
 
@@ -1070,8 +1078,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
         with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario):
             with patch(
-                "tools.run_pv26_train.run_stage3_vram_stress",
-                return_value={"status": "oom", "mode": "stage3_vram_stress"},
+                "tools.run_pv26_train.run_phase_vram_stress",
+                return_value={"status": "oom", "mode": "phase_vram_stress"},
             ):
                 with self.assertRaises(SystemExit) as exc_info:
                     with redirect_stdout(io.StringIO()):
@@ -1181,8 +1189,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
         captured_train_config: dict[str, object] = {}
 
-        def fake_build_phase_train_loaders(dataset, *, train_config):
+        def fake_build_phase_train_loaders(dataset, *, train_config, phase=None):
             captured_train_config["train_config"] = train_config
+            captured_train_config["phase"] = phase
             return object(), None
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1236,6 +1245,81 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(train_config.batch_size, 32)
         self.assertEqual(train_config.train_batches, 12)
         self.assertEqual(train_config.val_batches, 0)
+        self.assertEqual(captured_train_config["phase"].stage, "stage_3_end_to_end_finetune")
+        self.assertEqual(result["status"], "ok")
+
+    def test_run_phase_vram_stress_uses_phase_override_batch_size_by_default(self) -> None:
+        class FakeCudaDevice:
+            type = "cuda"
+
+            def __str__(self) -> str:
+                return "cuda:0"
+
+        class FakeTrainer:
+            def __init__(self) -> None:
+                self.device = FakeCudaDevice()
+                self.oom_guard = True
+
+            def train_epoch(self, *args, **kwargs) -> dict[str, object]:
+                return {"loss": 1.0}
+
+        captured_train_config: dict[str, object] = {}
+
+        def fake_build_phase_train_loaders(dataset, *, train_config, phase=None):
+            captured_train_config["train_config"] = train_config
+            captured_train_config["phase"] = phase
+            return object(), None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=Path(tmpdir)),
+                run=RunConfig(run_root=Path(tmpdir) / "runs"),
+                train_defaults=TrainDefaultsConfig(batch_size=16),
+                selection=SelectionConfig(),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(
+                    PhaseConfig(
+                        name="head_warmup",
+                        stage="stage_1_frozen_trunk_warmup",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                        min_improvement_pct=0.25,
+                        overrides={"batch_size": 10},
+                    ),
+                ),
+            )
+            mock_torch = SimpleNamespace(
+                cuda=SimpleNamespace(
+                    empty_cache=lambda: None,
+                    reset_peak_memory_stats=lambda device: None,
+                )
+            )
+
+            with patch.dict("sys.modules", {"torch": mock_torch}):
+                with patch("tools.run_pv26_train._configure_torch_multiprocessing"):
+                    with patch("tools.run_pv26_train.PV26CanonicalDataset", return_value=SimpleNamespace(records=[])):
+                        with patch(
+                            "tools.run_pv26_train._build_phase_train_loaders",
+                            side_effect=fake_build_phase_train_loaders,
+                        ):
+                            with patch("tools.run_pv26_train._build_phase_trainer", return_value=FakeTrainer()):
+                                with patch(
+                                    "tools.run_pv26_train._cuda_memory_stats",
+                                    return_value={"device": "cuda:0"},
+                                ):
+                                    result = run_phase_vram_stress(
+                                        scenario,
+                                        scenario_path=Path(tmpdir) / "default",
+                                        stage="stage_1_frozen_trunk_warmup",
+                                        batch_size=None,
+                                        stress_iters=6,
+                                    )
+
+        train_config = captured_train_config["train_config"]
+        self.assertEqual(train_config.batch_size, 10)
+        self.assertEqual(train_config.train_batches, 6)
+        self.assertEqual(captured_train_config["phase"].stage, "stage_1_frozen_trunk_warmup")
         self.assertEqual(result["status"], "ok")
 
 

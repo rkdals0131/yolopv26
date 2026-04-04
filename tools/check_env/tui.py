@@ -17,7 +17,7 @@ def _format_gib(value: Any) -> str:
     return f"{float(value):.2f} GiB"
 
 
-def _render_stage3_stress_result(console: Console, result: dict[str, Any]) -> None:
+def _render_phase_stress_result(console: Console, result: dict[str, Any]) -> None:
     memory = result.get("memory", {}) if isinstance(result.get("memory"), dict) else {}
     train_summary = result.get("train_summary", {}) if isinstance(result.get("train_summary"), dict) else {}
     lines = [
@@ -49,7 +49,11 @@ def _render_stage3_stress_result(console: Console, result: dict[str, Any]) -> No
         lines.append(f"recommendation: {recommendation}")
     status = str(result.get("status") or "")
     border_style = "green" if status == "ok" else "yellow"
-    console.print(Panel("\n".join(lines), title="Stage 3 VRAM Probe", border_style=border_style))
+    console.print(Panel("\n".join(lines), title="PV26 Phase VRAM Probe", border_style=border_style))
+
+
+def _render_stage3_stress_result(console: Console, result: dict[str, Any]) -> None:
+    _render_phase_stress_result(console, result)
 
 
 def _render_dashboard(console: Console, snapshot: WorkspaceSnapshot, actions: tuple[ActionSpec, ...]) -> None:

@@ -202,14 +202,15 @@ def apply_selected_phase_window_to_manifest(
         phase_entry["phase_state"] = None
 
 
-def stage3_stress_train_config(
+def phase_vram_stress_train_config(
     scenario: MetaTrainScenario,
     *,
+    stage: str,
     batch_size: int,
     stress_iters: int,
     scenario_phase_defaults: Callable[[TrainDefaultsConfig, Any], TrainDefaultsConfig],
 ) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
-    phase_index, phase = find_phase_by_stage(scenario, stage="stage_3_end_to_end_finetune")
+    phase_index, phase = find_phase_by_stage(scenario, stage=stage)
     phase_train_config = scenario_phase_defaults(scenario.train_defaults, phase.overrides)
     phase_train_config = replace(
         phase_train_config,
@@ -222,6 +223,22 @@ def stage3_stress_train_config(
         prefetch_factor=None,
     )
     return phase_index, phase, phase_train_config
+
+
+def stage3_stress_train_config(
+    scenario: MetaTrainScenario,
+    *,
+    batch_size: int,
+    stress_iters: int,
+    scenario_phase_defaults: Callable[[TrainDefaultsConfig, Any], TrainDefaultsConfig],
+) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
+    return phase_vram_stress_train_config(
+        scenario,
+        stage="stage_3_end_to_end_finetune",
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        scenario_phase_defaults=scenario_phase_defaults,
+    )
 
 
 def run_stage3_probe(
@@ -302,6 +319,43 @@ def stage3_stress_summary(
     return result
 
 
+def phase_vram_stress_summary(
+    *,
+    scenario_path: Path,
+    phase_index: int,
+    phase: PhaseConfig,
+    trainer: Any,
+    train_config: TrainDefaultsConfig,
+    batch_size: int,
+    stress_iters: int,
+    duration_sec: float,
+    status: str,
+    train_summary: dict[str, Any] | None,
+    error: str | None,
+    json_ready: Callable[[Any], Any],
+    cuda_memory_stats: Callable[[Any], dict[str, Any]],
+) -> dict[str, Any]:
+    result = stage3_stress_summary(
+        scenario_path=scenario_path,
+        phase_index=phase_index,
+        phase=phase,
+        trainer=trainer,
+        train_config=train_config,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        duration_sec=duration_sec,
+        status=status,
+        train_summary=train_summary,
+        error=error,
+        json_ready=json_ready,
+        cuda_memory_stats=cuda_memory_stats,
+    )
+    result["mode"] = "phase_vram_stress"
+    if status == "oom":
+        result["recommendation"] = "reduce batch_size or choose a lighter phase and rerun the VRAM probe"
+    return result
+
+
 def run_stage3_vram_stress(
     scenario: MetaTrainScenario,
     *,
@@ -317,39 +371,77 @@ def run_stage3_vram_stress(
     json_ready: Callable[[Any], Any],
     cuda_memory_stats: Callable[[Any], dict[str, Any]],
 ) -> dict[str, Any]:
+    return run_phase_vram_stress(
+        scenario,
+        scenario_path=scenario_path,
+        stage="stage_3_end_to_end_finetune",
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=configure_torch_multiprocessing,
+        log_meta_train=log_meta_train,
+        canonical_dataset_cls=canonical_dataset_cls,
+        build_phase_train_loaders=build_phase_train_loaders,
+        build_phase_trainer=build_phase_trainer,
+        scenario_phase_defaults=scenario_phase_defaults,
+        json_ready=json_ready,
+        cuda_memory_stats=cuda_memory_stats,
+    )
+
+
+def run_phase_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    stage: str | None = None,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+    configure_torch_multiprocessing: Callable[[], None],
+    log_meta_train: Callable[[str], None],
+    canonical_dataset_cls: Any,
+    build_phase_train_loaders: Callable[..., tuple[Any, Any]],
+    build_phase_trainer: Callable[[PhaseConfig, TrainDefaultsConfig], Any],
+    scenario_phase_defaults: Callable[[TrainDefaultsConfig, Any], TrainDefaultsConfig],
+    json_ready: Callable[[Any], Any],
+    cuda_memory_stats: Callable[[Any], dict[str, Any]],
+) -> dict[str, Any]:
+    resolved_stage = str(stage or "stage_3_end_to_end_finetune")
     configure_torch_multiprocessing()
-    resolved_batch_size = int(batch_size) if batch_size is not None else int(scenario.train_defaults.batch_size)
     resolved_stress_iters = int(stress_iters) if stress_iters is not None else 12
-    if resolved_batch_size <= 0:
-        raise ValueError("stress batch size must be > 0")
     if resolved_stress_iters <= 0:
         raise ValueError("stress iterations must be > 0")
 
     dataset_roots = existing_dataset_roots(scenario)
-    phase_index, phase, phase_train_config = stage3_stress_train_config(
+    phase_index, phase = find_phase_by_stage(scenario, stage=resolved_stage)
+    phase_defaults = scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+    resolved_batch_size = int(batch_size) if batch_size is not None else int(phase_defaults.batch_size)
+    if resolved_batch_size <= 0:
+        raise ValueError("stress batch size must be > 0")
+    phase_index, phase, phase_train_config = phase_vram_stress_train_config(
         scenario,
+        stage=resolved_stage,
         batch_size=resolved_batch_size,
         stress_iters=resolved_stress_iters,
         scenario_phase_defaults=scenario_phase_defaults,
     )
 
-    log_meta_train(f"loading scenario for stage3 stress: {scenario_path}")
+    log_meta_train(f"loading scenario for phase stress: {scenario_path}")
     log_meta_train(f"dataset roots: {[str(path) for path in dataset_roots]}")
-    log_meta_train("building canonical dataset index for stage3 stress")
+    log_meta_train("building canonical dataset index for phase stress")
     dataset = canonical_dataset_cls(
         dataset_roots,
         progress_callback=log_meta_train,
     )
     log_meta_train(
-        f"stage3 stress config: batch_size={resolved_batch_size}, stress_iters={resolved_stress_iters}, "
-        f"device={phase_train_config.device}, backbone={phase_train_config.backbone_variant}"
+        f"phase stress config: stage={phase.stage}, batch_size={resolved_batch_size}, "
+        f"stress_iters={resolved_stress_iters}, device={phase_train_config.device}, "
+        f"backbone={phase_train_config.backbone_variant}"
     )
-    log_meta_train("stage3 stress loader override: num_workers=0, persistent_workers=False, prefetch_factor=None")
-    train_loader, _ = build_phase_train_loaders(dataset, train_config=phase_train_config)
+    log_meta_train("phase stress loader override: num_workers=0, persistent_workers=False, prefetch_factor=None")
+    train_loader, _ = build_phase_train_loaders(dataset, train_config=phase_train_config, phase=phase)
     trainer = build_phase_trainer(phase, phase_train_config)
     trainer.oom_guard = False
     if trainer.device.type != "cuda":
-        raise SystemExit(f"stage3 VRAM stress requires a CUDA device, got device={trainer.device}")
+        raise SystemExit(f"phase VRAM stress requires a CUDA device, got device={trainer.device}")
 
     run_started_at = time.perf_counter()
     status, train_summary, error = run_stage3_probe(
@@ -363,7 +455,7 @@ def run_stage3_vram_stress(
         is_oom_error=is_oom_error,
     )
     duration_sec = max(0.0, time.perf_counter() - run_started_at)
-    return stage3_stress_summary(
+    return phase_vram_stress_summary(
         scenario_path=scenario_path,
         phase_index=phase_index,
         phase=phase,

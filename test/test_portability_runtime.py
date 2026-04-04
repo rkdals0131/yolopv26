@@ -147,7 +147,7 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         stress_action = next(item for item in actions if item.key == "D")
         self.assertIn("interactive", stress_action.command_display)
         self.assertEqual(stress_action.argv, ())
-        self.assertIn("stage_3", stress_action.label)
+        self.assertIn("phase", stress_action.label.lower())
         resume_action = next(item for item in actions if item.key == "E")
         self.assertIn("resume", resume_action.command_display)
         self.assertEqual(resume_action.argv, ())
@@ -396,20 +396,24 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
 
         action = ActionSpec(
             key="D",
-            label="PV26 stage_3 VRAM stress",
+            label="PV26 phase VRAM stress",
             command_display="python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>",
             argv=("python3", "tools/run_pv26_train.py", "--preset", "default", "--stage3-vram-stress"),
             output_hint="stdout only",
         )
         console = Console(file=io.StringIO())
 
-        with unittest.mock.patch("tools.check_env.launch._default_stage3_stress_batch_size", return_value=40):
-            with unittest.mock.patch("tools.check_env.launch._ascii_input", side_effect=["48", "18"]):
+        with unittest.mock.patch("tools.check_env.launch._default_phase_stress_batch_size", return_value=40):
+            with unittest.mock.patch("tools.check_env.launch._ascii_input", side_effect=["4", "48", "18"]):
                 resolved = _resolve_stage3_stress_action(console, action)
 
         self.assertIsNotNone(resolved)
         assert resolved is not None
-        self.assertEqual(resolved.argv[-4:], ("--stress-batch-size", "48", "--stress-iters", "18"))
+        self.assertEqual(
+            resolved.argv[-6:],
+            ("--stress-stage", "stage_4_lane_family_finetune", "--stress-batch-size", "48", "--stress-iters", "18"),
+        )
+        self.assertIn("stage_4_lane_family_finetune", resolved.command_display)
         self.assertIn("batch_size=48", resolved.command_display)
         self.assertIn("stress_iters=18", resolved.command_display)
 
