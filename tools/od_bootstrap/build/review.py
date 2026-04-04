@@ -8,6 +8,7 @@ from typing import Any, Mapping, TypedDict
 
 from common.io import write_json
 from common.overlay import render_overlay
+from .final_dataset_stats import FINAL_DATASET_FOCUS_NAMES, select_final_dataset_focus_rows
 
 
 DEFAULT_REVIEW_QUOTAS: dict[str, int] = {
@@ -47,6 +48,11 @@ class ReviewBundleSummary(TypedDict):
     seed: int | None
     image_count: int
     entries: list[ReviewBundleEntry]
+
+
+class FinalDatasetReviewSummary(ReviewBundleSummary):
+    dataset_root: str
+    focus: str
 
 
 def _coerce_bbox(value: Any) -> list[float]:
@@ -264,11 +270,75 @@ def render_review_bundle(
     return summary
 
 
+def render_final_dataset_review_bundle(
+    *,
+    dataset_root: Path,
+    output_root: Path,
+    focus: str,
+    split: str = "val",
+    count: int = 50,
+    seed: int | None = None,
+) -> FinalDatasetReviewSummary:
+    normalized_focus = str(focus).strip()
+    if normalized_focus not in FINAL_DATASET_FOCUS_NAMES:
+        raise ValueError(
+            f"unsupported final dataset focus: {focus}; expected one of {FINAL_DATASET_FOCUS_NAMES}"
+        )
+    selected_rows = select_final_dataset_focus_rows(
+        dataset_root=dataset_root,
+        focus=normalized_focus,
+        split=split,
+        count=count,
+        seed=seed,
+    )
+    resolved_output_root = Path(output_root).resolve()
+    resolved_output_root.mkdir(parents=True, exist_ok=True)
+    entries: list[ReviewBundleEntry] = []
+    for row in selected_rows:
+        scene_path = Path(str(row["scene_path"])).resolve()
+        image_path = Path(str(row["image_path"])).resolve()
+        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+        overlay_scene = canonical_scene_to_overlay_scene(scene, image_path=image_path)
+        dataset_key = str(row["source_dataset_key"])
+        sample_id = str(row["final_sample_id"])
+        output_path = resolved_output_root / dataset_key / f"{sample_id}.png"
+        render_overlay(overlay_scene, output_path)
+        entries.append(
+            {
+                "dataset_key": dataset_key,
+                "split": str(row["split"]),
+                "final_sample_id": sample_id,
+                "scene_path": str(scene_path),
+                "image_path": str(image_path),
+                "overlay_path": str(output_path),
+            }
+        )
+    index_path = resolved_output_root / REVIEW_BUNDLE_INDEX_NAME
+    summary: FinalDatasetReviewSummary = {
+        "summary_path": str(index_path),
+        "index_path": str(index_path),
+        "version": "od-bootstrap-final-review-v1",
+        "manifest_path": str((Path(dataset_root).resolve() / "meta" / "final_dataset_manifest.json").resolve()),
+        "dataset_root": str(Path(dataset_root).resolve()),
+        "output_root": str(resolved_output_root),
+        "focus": normalized_focus,
+        "split": split,
+        "quotas": {normalized_focus: int(count)},
+        "seed": int(seed) if seed is not None else None,
+        "image_count": len(entries),
+        "entries": entries,
+    }
+    write_json(index_path, summary)
+    return summary
+
+
 __all__ = [
+    "FINAL_DATASET_FOCUS_NAMES",
     "DEFAULT_REVIEW_QUOTAS",
     "REVIEW_BUNDLE_INDEX_NAME",
     "canonical_scene_to_overlay_scene",
     "render_overlay",
+    "render_final_dataset_review_bundle",
     "render_review_bundle",
     "select_review_rows",
 ]

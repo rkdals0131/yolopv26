@@ -26,9 +26,12 @@ from tools.run_pv26_train import (
     _phase_manifest_extra,
     _configure_torch_multiprocessing,
     _phase_entry_is_completed,
+    _phase_entry_is_terminal,
     _recover_phase_entry_from_run_dir,
     _sample_preview_selection,
     _scenario_phase_defaults,
+    load_meta_train_derived_scenario,
+    load_meta_train_resume_context,
     load_meta_train_resume_scenario,
     load_meta_train_scenario,
     main,
@@ -495,6 +498,100 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "exact resume only supports incomplete runs"):
                 load_meta_train_resume_scenario(run_dir, preset_name="default")
 
+    def test_load_meta_train_resume_context_reads_selected_phase_window_and_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "derived_resume"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "selected_phase_window": {
+                            "selected_phase_indices": [3, 4],
+                            "start_phase_stage": "stage_3_end_to_end_finetune",
+                            "end_phase_stage": "stage_4_lane_family_finetune",
+                        },
+                        "lineage": {
+                            "mode": "derived_run",
+                            "source_run_dir": "/tmp/source_run",
+                            "seed_checkpoint_path": "/tmp/source_run/phase_3/checkpoints/best.pt",
+                        },
+                        "phases": [
+                            {"name": "head_warmup", "stage": "stage_1_frozen_trunk_warmup", "status": "skipped"},
+                            {"name": "partial_unfreeze", "stage": "stage_2_partial_unfreeze", "status": "skipped"},
+                            {"name": "end_to_end_finetune", "stage": "stage_3_end_to_end_finetune", "status": "pending"},
+                            {"name": "lane_family_finetune", "stage": "stage_4_lane_family_finetune", "status": "pending"},
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            context = load_meta_train_resume_context(run_dir)
+
+        self.assertEqual(context["selected_phase_window"]["selected_phase_indices"], [3, 4])
+        self.assertEqual(context["lineage"]["mode"], "derived_run")
+
+    def test_load_meta_train_derived_scenario_uses_current_config_and_source_seed_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_run_dir = Path(temp_dir) / "source_run"
+            phase3_checkpoint = source_run_dir / "phase_3" / "checkpoints" / "best.pt"
+            phase3_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            phase3_checkpoint.write_text("checkpoint", encoding="utf-8")
+            (source_run_dir / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "phases": [
+                            {"name": "head_warmup", "stage": "stage_1_frozen_trunk_warmup", "status": "completed"},
+                            {"name": "partial_unfreeze", "stage": "stage_2_partial_unfreeze", "status": "completed"},
+                            {
+                                "name": "end_to_end_finetune",
+                                "stage": "stage_3_end_to_end_finetune",
+                                "status": "completed",
+                                "best_checkpoint_path": str(phase3_checkpoint),
+                            },
+                            {"name": "lane_family_finetune", "stage": "stage_4_lane_family_finetune", "status": "completed"},
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            derived_scenario, scenario_path, derived_options = load_meta_train_derived_scenario(
+                source_run_dir,
+                preset_name="default",
+                start_stage="stage_3_end_to_end_finetune",
+                end_stage="stage_4_lane_family_finetune",
+            )
+
+        self.assertEqual(scenario_path, PRESET_PATH_ROOT / "default")
+        self.assertIsNone(derived_scenario.run.run_dir)
+        self.assertIn("source_run", derived_scenario.run.run_name_prefix)
+        self.assertEqual(derived_options["selected_phase_indices"], (3, 4))
+        self.assertEqual(derived_options["initial_best_checkpoint"], phase3_checkpoint.resolve())
+        self.assertEqual(derived_options["lineage"]["source_run_dir"], str(source_run_dir.resolve()))
+        self.assertEqual(derived_options["lineage"]["seed_checkpoint_source"], "phase_3 best.pt")
+
+    def test_phase_entry_is_terminal_treats_skipped_as_terminal(self) -> None:
+        phase = PhaseConfig(
+            name="lane_family_finetune",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=1,
+            max_epochs=1,
+            patience=1,
+            min_improvement_pct=0.25,
+        )
+        entry = {"status": "skipped", "run_dir": "/tmp/unused"}
+
+        self.assertTrue(_phase_entry_is_terminal(entry, phase))
+
     def test_load_meta_train_resume_scenario_loads_compatible_legacy_manifest(self) -> None:
         scenario = load_meta_train_scenario("default")
         scenario_mapping = scenario_to_mapping(scenario)
@@ -802,7 +899,13 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                         main(["--preset", "default"])
 
             mocked_load.assert_called_once_with("default")
-            mocked_run.assert_called_once_with(loaded_scenario, scenario_path=PRESET_PATH_ROOT / "default")
+            mocked_run.assert_called_once_with(
+                loaded_scenario,
+                scenario_path=PRESET_PATH_ROOT / "default",
+                selected_phase_indices=None,
+                initial_best_checkpoint=None,
+                lineage=None,
+            )
             self.assertIn('"status": "ok"', buffer.getvalue())
 
     def test_main_accepts_resume_run_argument(self) -> None:
@@ -813,15 +916,70 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             return_value=(loaded_scenario, PRESET_PATH_ROOT / "default"),
         ) as mocked_resume:
             with patch(
+                "tools.run_pv26_train.load_meta_train_resume_context",
+                return_value={"selected_phase_window": None, "lineage": None},
+            ) as mocked_resume_context:
+                with patch(
+                    "tools.run_pv26_train.run_meta_train_scenario",
+                    return_value={"status": "ok", "scenario_path": str(PRESET_PATH_ROOT / "default")},
+                ) as mocked_run:
+                    buffer = io.StringIO()
+                    with redirect_stdout(buffer):
+                        main(["--resume-run", "/tmp/existing_run"])
+
+        mocked_resume.assert_called_once_with("/tmp/existing_run", preset_name="default")
+        mocked_resume_context.assert_called_once_with("/tmp/existing_run")
+        mocked_run.assert_called_once_with(
+            loaded_scenario,
+            scenario_path=PRESET_PATH_ROOT / "default",
+            selected_phase_indices=None,
+            initial_best_checkpoint=None,
+            lineage=None,
+        )
+        self.assertIn('"status": "ok"', buffer.getvalue())
+
+    def test_main_accepts_derive_run_argument(self) -> None:
+        loaded_scenario = SimpleNamespace()
+        derived_options = {
+            "selected_phase_indices": (3, 3),
+            "initial_best_checkpoint": Path("/tmp/source_run/phase_3/checkpoints/best.pt"),
+            "lineage": {"mode": "derived_run"},
+        }
+
+        with patch(
+            "tools.run_pv26_train.load_meta_train_derived_scenario",
+            return_value=(loaded_scenario, PRESET_PATH_ROOT / "default", derived_options),
+        ) as mocked_derive:
+            with patch(
                 "tools.run_pv26_train.run_meta_train_scenario",
                 return_value={"status": "ok", "scenario_path": str(PRESET_PATH_ROOT / "default")},
             ) as mocked_run:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    main(["--resume-run", "/tmp/existing_run"])
+                    main(
+                        [
+                            "--derive-run",
+                            "/tmp/source_run",
+                            "--start-stage",
+                            "stage_3_end_to_end_finetune",
+                            "--end-stage",
+                            "stage_3_end_to_end_finetune",
+                        ]
+                    )
 
-        mocked_resume.assert_called_once_with("/tmp/existing_run", preset_name="default")
-        mocked_run.assert_called_once_with(loaded_scenario, scenario_path=PRESET_PATH_ROOT / "default")
+        mocked_derive.assert_called_once_with(
+            "/tmp/source_run",
+            preset_name="default",
+            start_stage="stage_3_end_to_end_finetune",
+            end_stage="stage_3_end_to_end_finetune",
+        )
+        mocked_run.assert_called_once_with(
+            loaded_scenario,
+            scenario_path=PRESET_PATH_ROOT / "default",
+            selected_phase_indices=(3, 3),
+            initial_best_checkpoint=Path("/tmp/source_run/phase_3/checkpoints/best.pt"),
+            lineage={"mode": "derived_run"},
+        )
         self.assertIn('"status": "ok"', buffer.getvalue())
 
     def test_main_dispatches_stage3_vram_stress_mode(self) -> None:
@@ -875,9 +1033,37 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(args.stress_batch_size, 24)
         self.assertEqual(args.stress_iters, 16)
 
+    def test_arg_parser_accepts_derive_run_and_stage_window(self) -> None:
+        parser = _build_arg_parser()
+
+        args = parser.parse_args(
+            [
+                "--preset",
+                "default",
+                "--derive-run",
+                "/tmp/source_run",
+                "--start-stage",
+                "stage_3_end_to_end_finetune",
+                "--end-stage",
+                "stage_4_lane_family_finetune",
+            ]
+        )
+
+        self.assertEqual(args.derive_run, "/tmp/source_run")
+        self.assertEqual(args.start_stage, "stage_3_end_to_end_finetune")
+        self.assertEqual(args.end_stage, "stage_4_lane_family_finetune")
+
     def test_main_rejects_resume_run_with_stage3_vram_stress(self) -> None:
         with self.assertRaisesRegex(SystemExit, "--resume-run cannot be combined with --stage3-vram-stress"):
             main(["--resume-run", "/tmp/existing_run", "--stage3-vram-stress"])
+
+    def test_main_rejects_derive_run_with_stage3_vram_stress(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "--derive-run cannot be combined with --stage3-vram-stress"):
+            main(["--derive-run", "/tmp/source_run", "--stage3-vram-stress"])
+
+    def test_main_rejects_resume_run_with_derive_run(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "--resume-run cannot be combined with --derive-run"):
+            main(["--resume-run", "/tmp/existing_run", "--derive-run", "/tmp/source_run"])
 
     def test_main_exits_with_code_2_when_stage3_vram_stress_reports_non_ok_status(self) -> None:
         loaded_scenario = SimpleNamespace()

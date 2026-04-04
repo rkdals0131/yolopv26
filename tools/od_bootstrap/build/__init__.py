@@ -4,6 +4,7 @@ __all__ = [
     "debug_vis",
     "exhaustive_od",
     "final_dataset",
+    "final_dataset_stats",
     "image_list",
     "review",
     "sample_manifest",

@@ -61,6 +61,8 @@ def build_meta_manifest_template(
     run_dir: Path,
     meta_manifest_version: str,
     scenario_snapshot: dict[str, Any] | None = None,
+    selected_phase_window: dict[str, Any] | None = None,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_snapshot = _normalize_scenario_snapshot(scenario_snapshot, run_dir=run_dir)
     manifest = {
@@ -96,6 +98,10 @@ def build_meta_manifest_template(
             for index, phase in enumerate(scenario.phases)
         ],
     }
+    if selected_phase_window is not None:
+        manifest["selected_phase_window"] = json_ready(selected_phase_window)
+    if lineage is not None:
+        manifest["lineage"] = json_ready(lineage)
     if normalized_snapshot is not None:
         manifest["scenario_snapshot"] = normalized_snapshot
     return manifest
@@ -108,6 +114,8 @@ def load_or_init_meta_manifest(
     run_dir: Path,
     meta_manifest_version: str,
     scenario_snapshot: dict[str, Any] | None = None,
+    selected_phase_window: dict[str, Any] | None = None,
+    lineage: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     manifest_path = run_dir / "meta_manifest.json"
     normalized_snapshot = _normalize_scenario_snapshot(scenario_snapshot, run_dir=run_dir)
@@ -117,6 +125,14 @@ def load_or_init_meta_manifest(
             manifest["scenario_snapshot"] = normalized_snapshot
             manifest["updated_at"] = now_iso()
             write_json(manifest_path, manifest)
+        if selected_phase_window is not None and not isinstance(manifest.get("selected_phase_window"), dict):
+            manifest["selected_phase_window"] = json_ready(selected_phase_window)
+            manifest["updated_at"] = now_iso()
+            write_json(manifest_path, manifest)
+        if lineage is not None and not isinstance(manifest.get("lineage"), dict):
+            manifest["lineage"] = json_ready(lineage)
+            manifest["updated_at"] = now_iso()
+            write_json(manifest_path, manifest)
         return manifest, manifest_path
     manifest = build_meta_manifest_template(
         scenario=scenario,
@@ -124,6 +140,8 @@ def load_or_init_meta_manifest(
         run_dir=run_dir,
         meta_manifest_version=meta_manifest_version,
         scenario_snapshot=normalized_snapshot,
+        selected_phase_window=selected_phase_window,
+        lineage=lineage,
     )
     write_json(manifest_path, manifest)
     return manifest, manifest_path
@@ -137,6 +155,8 @@ def write_meta_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
 def write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
     phases = manifest.get("phases", [])
     completed = [phase for phase in phases if phase.get("status") == "completed"]
+    skipped = [phase for phase in phases if phase.get("status") == "skipped"]
+    executable = [phase for phase in phases if phase.get("status") != "skipped"]
     latest_phase = None
     if completed:
         latest_phase = completed[-1]
@@ -151,6 +171,9 @@ def write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
         "run_dir": manifest["run_dir"],
         "train_defaults": manifest.get("train_defaults", {}),
         "completed_phases": len(completed),
+        "skipped_phases": len(skipped),
+        "completed_selected_phases": len(completed),
+        "total_selected_phases": len(executable),
         "total_phases": len(phases),
         "active_phase_index": manifest.get("active_phase_index"),
         "active_phase_name": manifest.get("active_phase_name"),
@@ -158,6 +181,10 @@ def write_meta_summary(run_dir: Path, manifest: dict[str, Any]) -> None:
         "phases": phases,
         "updated_at": manifest["updated_at"],
     }
+    if isinstance(manifest.get("selected_phase_window"), dict):
+        summary["selected_phase_window"] = json_ready(manifest["selected_phase_window"])
+    if isinstance(manifest.get("lineage"), dict):
+        summary["lineage"] = json_ready(manifest["lineage"])
     if isinstance(latest_phase, dict):
         backbone = latest_phase.get("backbone", {})
         postprocess = latest_phase.get("postprocess", {})
@@ -186,6 +213,8 @@ def phase_summary_indicates_complete(phase_run_dir: Path, phase: Any) -> bool:
 
 
 def recover_phase_entry_from_run_dir(entry: dict[str, Any], phase: Any) -> dict[str, Any] | None:
+    if str(entry.get("status") or "") == "skipped":
+        return None
     phase_run_dir = Path(entry["run_dir"])
     if not phase_summary_indicates_complete(phase_run_dir, phase):
         return None
@@ -220,3 +249,11 @@ def phase_entry_is_completed(entry: dict[str, Any], phase: Any) -> bool:
         return True
     phase_run_dir = Path(entry["run_dir"])
     return phase_summary_indicates_complete(phase_run_dir, phase)
+
+
+def phase_entry_is_skipped(entry: dict[str, Any]) -> bool:
+    return str(entry.get("status") or "") == "skipped"
+
+
+def phase_entry_is_terminal(entry: dict[str, Any], phase: Any) -> bool:
+    return phase_entry_is_skipped(entry) or phase_entry_is_completed(entry, phase)

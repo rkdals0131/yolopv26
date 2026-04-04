@@ -48,6 +48,8 @@
 9. `python -m tools.od_bootstrap calibrate`
 10. `python -m tools.od_bootstrap build-exhaustive-od`
 11. `python -m tools.od_bootstrap build-final-dataset`
+11A. `python -m tools.od_bootstrap analyze-final-dataset`
+11B. `python -m tools.od_bootstrap review-final-dataset --focus traffic_light --split val --count 50`
 12. `python3 tools/run_pv26_train.py --preset default`
 
 출력:
@@ -62,6 +64,8 @@
 - exhaustive OD run metadata: `runs/od_bootstrap/<run_id>/`
 - exhaustive OD dataset: `seg_dataset/pv26_od_bootstrap/exhaustive_od/<run_id>/`
 - final merged dataset: `seg_dataset/pv26_exhaustive_od_lane_dataset/`
+- final dataset stats: `seg_dataset/pv26_exhaustive_od_lane_dataset/meta/final_dataset_stats.json`
+- final dataset review bundle: `seg_dataset/pv26_exhaustive_od_lane_dataset/meta/review/<focus>/<split>/`
 - PV26 final train outputs: `runs/pv26_exhaustive_od_lane_train/<meta_run_name>/`
 
 provenance 필드:
@@ -82,3 +86,4 @@ provenance 필드:
 - calibration preset은 `hard_negative_manifest.json`을 재사용할 수 있다
 - final dataset preset은 exhaustive OD 최신 run을 자동으로 집어온다
 - materialized exhaustive OD 산출물은 `sample_uid = <dataset_key>__<split>__<sample_id>` 기준으로 파일명을 만든다
+- final dataset stats는 `labels_scene/**/*.json`을 truth source로 다시 스캔해 class/task 분포와 manifest path audit를 만든다

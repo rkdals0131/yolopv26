@@ -38,6 +38,7 @@ class DocsSyncTests(unittest.TestCase):
         readme = _read(REPO_ROOT / "README.md")
         self.assertIn("python3 tools/check_env.py", readme)
         self.assertIn("python3 tools/run_pv26_train.py --preset default", readme)
+        self.assertIn("python3 tools/run_pv26_train.py --derive-run", readme)
         self.assertIn("tools/check_env/", readme)
         self.assertIn("tools/pv26_train/", readme)
         self.assertIn("tools/od_bootstrap/source/aihub/", readme)
@@ -51,8 +52,10 @@ class DocsSyncTests(unittest.TestCase):
         execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
 
         self.assertIn("tools/run_pv26_train.py --resume-run", training_doc)
+        self.assertIn("tools/run_pv26_train.py --derive-run", training_doc)
         self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", training_doc)
         self.assertIn("tools/run_pv26_train.py --resume-run", execution_doc)
+        self.assertIn("tools/run_pv26_train.py --derive-run", execution_doc)
         self.assertIn("tools/run_pv26_train.py --preset default --stage3-vram-stress", execution_doc)
 
     def test_od_bootstrap_readme_tracks_current_package_layout_and_teacher_defaults(self) -> None:

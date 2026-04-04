@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_SUMMARY_NAME
+from tools.od_bootstrap.build.final_dataset_stats import FINAL_DATASET_STATS_NAME
 
 
 class PV26PortabilityRuntimeTests(unittest.TestCase):
@@ -133,6 +134,12 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("resume", resume_action.command_display)
         self.assertEqual(resume_action.argv, ())
         self.assertIn("resume", resume_action.label.lower())
+        retrain_action = next(item for item in actions if item.key == "K")
+        self.assertIn("retrain", retrain_action.label.lower())
+        self.assertEqual(retrain_action.argv, ())
+        stats_action = next(item for item in actions if item.key == "L")
+        self.assertIn("stats", stats_action.label.lower())
+        self.assertEqual(stats_action.argv, ())
         export_action = next(item for item in actions if item.key == "F")
         self.assertIn("TorchScript", export_action.label)
         self.assertEqual(export_action.argv, ())
@@ -204,6 +211,87 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertEqual([item.run_name for item in candidates], ["run_active"])
         self.assertEqual(candidates[0].resume_source, "phase_2 last.pt")
         self.assertEqual(candidates[0].next_phase_stage, "stage_2_partial_unfreeze")
+
+    def test_scan_pv26_resume_candidates_supports_skipped_phases_and_lineage_seed(self) -> None:
+        from tools.check_env import _scan_pv26_resume_candidates
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "pv26_runs"
+            derived_run = run_root / "run_derived"
+            seed_checkpoint = root / "seed" / "best.pt"
+            seed_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            seed_checkpoint.write_text("checkpoint", encoding="utf-8")
+            derived_run.mkdir(parents=True, exist_ok=True)
+            (derived_run / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "updated_at": "2026-04-05T08:00:00",
+                        "lineage": {
+                            "mode": "derived_run",
+                            "seed_checkpoint_path": str(seed_checkpoint),
+                        },
+                        "phases": [
+                            {"name": "head_warmup", "stage": "stage_1_frozen_trunk_warmup", "status": "skipped"},
+                            {"name": "partial_unfreeze", "stage": "stage_2_partial_unfreeze", "status": "skipped"},
+                            {"name": "end_to_end_finetune", "stage": "stage_3_end_to_end_finetune", "status": "pending"},
+                            {"name": "lane_family_finetune", "stage": "stage_4_lane_family_finetune", "status": "pending"},
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            candidates = _scan_pv26_resume_candidates(run_root)
+
+        self.assertEqual([item.run_name for item in candidates], ["run_derived"])
+        self.assertEqual(candidates[0].completed_phases, 0)
+        self.assertEqual(candidates[0].total_phases, 2)
+        self.assertEqual(candidates[0].next_phase_stage, "stage_3_end_to_end_finetune")
+        self.assertEqual(candidates[0].resume_source, "lineage seed checkpoint")
+
+    def test_scan_pv26_retrain_candidates_finds_runs_with_seed_checkpoints(self) -> None:
+        from tools.check_env import _scan_pv26_retrain_candidates
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "pv26_runs"
+            candidate_run = run_root / "run_done"
+            phase3_checkpoint = candidate_run / "phase_3" / "checkpoints" / "best.pt"
+            phase3_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            phase3_checkpoint.write_text("checkpoint", encoding="utf-8")
+            (candidate_run / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "updated_at": "2026-04-05T08:10:00",
+                        "phases": [
+                            {"name": "head_warmup", "stage": "stage_1_frozen_trunk_warmup", "status": "completed"},
+                            {"name": "partial_unfreeze", "stage": "stage_2_partial_unfreeze", "status": "completed"},
+                            {
+                                "name": "end_to_end_finetune",
+                                "stage": "stage_3_end_to_end_finetune",
+                                "status": "completed",
+                                "best_checkpoint_path": str(phase3_checkpoint),
+                            },
+                            {"name": "lane_family_finetune", "stage": "stage_4_lane_family_finetune", "status": "completed"},
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            candidates = _scan_pv26_retrain_candidates(run_root)
+
+        self.assertEqual([item.run_name for item in candidates], ["run_done"])
+        self.assertIn("stage_3_end_to_end_finetune", candidates[0].available_seed_stages)
 
     def test_action_config_lines_include_teacher_and_pv26_hyperparameters(self) -> None:
         from tools.check_env import ActionSpec, _action_config_lines
@@ -357,6 +445,109 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
 
         mocked_run.assert_called_once_with(action.argv, cwd=str(root), check=False)
 
+    def test_check_env_launch_renders_final_dataset_stats_from_existing_file(self) -> None:
+        from rich.console import Console
+        from tools.check_env import ActionSpec, PipelinePaths, WorkspaceSnapshot
+        from tools.check_env.launch import _run_final_dataset_stats
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            final_dataset_root = root / "final_dataset"
+            (final_dataset_root / "meta").mkdir(parents=True, exist_ok=True)
+            (final_dataset_root / "meta" / FINAL_DATASET_STATS_NAME).write_text(
+                json.dumps(
+                    {
+                        "dataset_root": str(final_dataset_root),
+                        "sample_count": 3,
+                        "dataset_counts": {"aihub_lane_seoul": 3},
+                        "split_counts": {"train": 2, "val": 1},
+                        "source_kind_counts": {"lane": 3},
+                        "presence_counts": {"lane": 3},
+                        "detector": {
+                            "classes": {
+                                "vehicle": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                                "bike": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                                "pedestrian": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                                "traffic_cone": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                                "obstacle": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                                "traffic_light": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                                "sign": {"image_count": 0, "instance_count": 0, "split_image_counts": {}},
+                            },
+                            "traffic_light_bbox_buckets": {},
+                        },
+                        "traffic_light_attr": {
+                            "valid_count": 0,
+                            "invalid_count": 0,
+                            "valid_image_count": 0,
+                            "combo_counts": {},
+                            "bit_positive_counts": {},
+                            "invalid_reason_counts": {},
+                        },
+                        "lane": {
+                            "classes": {"white_lane": {"image_count": 0, "instance_count": 0}, "yellow_lane": {"image_count": 1, "instance_count": 1}, "blue_lane": {"image_count": 0, "instance_count": 0}},
+                            "types": {"solid": {"image_count": 1, "instance_count": 1}, "dotted": {"image_count": 0, "instance_count": 0}, "missing": {"image_count": 0, "instance_count": 0}},
+                        },
+                        "stop_line": {"image_count": 0, "instance_count": 0},
+                        "crosswalk": {"image_count": 0, "instance_count": 0},
+                        "audit": {
+                            "manifest_found": True,
+                            "manifest_sample_count": 3,
+                            "scanned_scene_count": 3,
+                            "manifest_scene_path_valid_count": 3,
+                            "manifest_scene_path_invalid_count": 0,
+                            "manifest_image_path_valid_count": 3,
+                            "manifest_image_path_invalid_count": 0,
+                            "manifest_det_path_present_count": 0,
+                            "manifest_det_path_valid_count": 0,
+                            "manifest_det_path_invalid_count": 0,
+                            "manifest_source_dataset_counts": {"aihub_lane_seoul": 3},
+                            "scanned_source_dataset_counts": {"aihub_lane_seoul": 3},
+                            "rebuild_needed": False,
+                        },
+                        "warnings": [],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            snapshot = WorkspaceSnapshot(
+                paths=PipelinePaths(
+                    repo_root=root,
+                    raw_bdd_root=root / "bdd_raw",
+                    raw_aihub_root=root / "aihub_raw",
+                    bootstrap_root=root / "bootstrap",
+                    teacher_dataset_root=root / "teacher_datasets",
+                    teacher_train_root=root / "teacher_train",
+                    teacher_eval_root=root / "teacher_eval",
+                    calibration_root=root / "calibration",
+                    exhaustive_run_root=root / "exhaustive_runs",
+                    exhaustive_dataset_root=root / "exhaustive",
+                    final_dataset_root=final_dataset_root,
+                    pv26_run_root=root / "pv26_runs",
+                    user_paths_config_path=root / "config" / "user_paths.yaml",
+                    od_hyperparameters_config_path=root / "config" / "od.yaml",
+                    pv26_hyperparameters_config_path=root / "config" / "pv26.yaml",
+                ),
+                rows=(),
+                flags={"final_dataset": True},
+                recommendation="",
+                notes=(),
+            )
+            action = ActionSpec(
+                key="L",
+                label="최종 데이터셋 full stats",
+                command_display="interactive",
+                argv=(),
+                output_hint=str(final_dataset_root / "meta"),
+            )
+            console = Console(file=io.StringIO())
+
+            with unittest.mock.patch("tools.check_env.launch._pause_to_continue", return_value=True):
+                result = _run_final_dataset_stats(console, snapshot, action)
+
+        self.assertTrue(result)
+
     def test_manifest_header_loader_reads_prefix_without_full_samples_array(self) -> None:
         from tools.check_env import _manifest_header
 
@@ -479,6 +670,37 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                 json.dumps({"sample_count": 250, "dataset_counts": {"aihub_lane_seoul": 50}, "rerun_mode": "atomic_overwrite"}, indent=2) + "\n",
                 encoding="utf-8",
             )
+            (final_dataset_root / "meta" / FINAL_DATASET_STATS_NAME).write_text(
+                json.dumps(
+                    {
+                        "sample_count": 250,
+                        "presence_counts": {"det": 22},
+                        "detector": {
+                            "classes": {
+                                "vehicle": {"image_count": 20, "instance_count": 30},
+                                "bike": {"image_count": 0, "instance_count": 0},
+                                "pedestrian": {"image_count": 0, "instance_count": 0},
+                                "traffic_cone": {"image_count": 0, "instance_count": 0},
+                                "obstacle": {"image_count": 0, "instance_count": 0},
+                                "traffic_light": {
+                                    "image_count": 15,
+                                    "instance_count": 18,
+                                    "split_image_counts": {"val": 6},
+                                },
+                                "sign": {"image_count": 2, "instance_count": 2},
+                            }
+                        },
+                        "audit": {
+                            "manifest_det_path_present_count": 80,
+                            "manifest_scene_path_invalid_count": 3,
+                        },
+                        "warnings": ["manifest_paths_stale"],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             (final_dataset_root / "meta" / "final_dataset_publish_state.json").write_text(
                 json.dumps({"status": "completed", "rerun_mode": "atomic_overwrite"}, indent=2) + "\n",
                 encoding="utf-8",
@@ -537,6 +759,11 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("mobility 100", row_map["Teacher dataset"].current_state)
         self.assertEqual(row_map["Calibration"].verdict, "OK")
         self.assertEqual(row_map["PV26 학습 run"].verdict, "OK")
+        self.assertEqual(row_map["최종 병합 데이터셋"].verdict, "WARN")
+        self.assertIn("det_images=22", row_map["최종 병합 데이터셋"].current_state)
+        self.assertIn("tl_val=6", row_map["최종 병합 데이터셋"].current_state)
+        self.assertIn("stale_scene_paths=3", row_map["최종 병합 데이터셋"].current_state)
+        self.assertIn("warnings=manifest_paths_stale", row_map["최종 병합 데이터셋"].current_state)
         self.assertIn("rerun=atomic_overwrite", row_map["최종 병합 데이터셋"].current_state)
         self.assertIn("publish=completed", row_map["최종 병합 데이터셋"].current_state)
         self.assertIn("phases=4/4", row_map["PV26 학습 run"].current_state)

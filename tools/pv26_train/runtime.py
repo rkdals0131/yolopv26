@@ -133,6 +133,75 @@ def existing_dataset_roots(scenario: MetaTrainScenario) -> list[Path]:
     return dataset_roots
 
 
+def normalize_selected_phase_indices(
+    scenario: MetaTrainScenario,
+    *,
+    selected_phase_indices: tuple[int, ...] | list[int] | None,
+) -> tuple[int, ...]:
+    total = len(scenario.phases)
+    if selected_phase_indices is None:
+        return tuple(range(1, total + 1))
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for raw_value in selected_phase_indices:
+        phase_index = int(raw_value)
+        if phase_index < 1 or phase_index > total:
+            raise ValueError(f"selected phase index out of range: {phase_index}")
+        if phase_index in seen:
+            continue
+        ordered.append(phase_index)
+        seen.add(phase_index)
+    if not ordered:
+        raise ValueError("selected phase indices must not be empty")
+    return tuple(ordered)
+
+
+def selected_phase_window(
+    scenario: MetaTrainScenario,
+    *,
+    selected_phase_indices: tuple[int, ...] | list[int] | None,
+) -> dict[str, Any] | None:
+    selected = normalize_selected_phase_indices(
+        scenario,
+        selected_phase_indices=selected_phase_indices,
+    )
+    all_indices = tuple(range(1, len(scenario.phases) + 1))
+    if selected == all_indices:
+        return None
+    start_index = min(selected)
+    end_index = max(selected)
+    return {
+        "selected_phase_indices": list(selected),
+        "start_phase_index": int(start_index),
+        "start_phase_name": scenario.phases[start_index - 1].name,
+        "start_phase_stage": scenario.phases[start_index - 1].stage,
+        "end_phase_index": int(end_index),
+        "end_phase_name": scenario.phases[end_index - 1].name,
+        "end_phase_stage": scenario.phases[end_index - 1].stage,
+    }
+
+
+def apply_selected_phase_window_to_manifest(
+    manifest: dict[str, Any],
+    *,
+    selected_phase_indices: tuple[int, ...],
+) -> None:
+    phases = manifest.get("phases")
+    if not isinstance(phases, list):
+        return
+    selected = set(int(value) for value in selected_phase_indices)
+    for phase_index, phase_entry in enumerate(phases, start=1):
+        if not isinstance(phase_entry, dict):
+            continue
+        if phase_index in selected:
+            continue
+        if str(phase_entry.get("status") or "") == "completed":
+            continue
+        phase_entry["status"] = "skipped"
+        phase_entry["promotion_reason"] = "window_excluded"
+        phase_entry["phase_state"] = None
+
+
 def stage3_stress_train_config(
     scenario: MetaTrainScenario,
     *,
@@ -328,9 +397,22 @@ def run_meta_train_scenario(
     write_meta_summary: Callable[[Path, dict[str, Any]], None],
     resolve_phase_selection: Callable[[Any, PhaseConfig], Any],
     execute_phase: Callable[..., dict[str, Any]],
+    phase_entry_is_terminal: Callable[[dict[str, Any], PhaseConfig], bool] | None = None,
+    selected_phase_indices: tuple[int, ...] | list[int] | None = None,
+    initial_best_checkpoint: Path | None = None,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     configure_torch_multiprocessing()
     dataset_roots = existing_dataset_roots(scenario)
+    selected_indices = normalize_selected_phase_indices(
+        scenario,
+        selected_phase_indices=selected_phase_indices,
+    )
+    phase_window = selected_phase_window(
+        scenario,
+        selected_phase_indices=selected_indices,
+    )
+    is_terminal = phase_entry_is_terminal or phase_entry_is_completed
 
     log_meta_train(f"loading scenario: {scenario_path}")
     log_meta_train(f"dataset roots: {[str(path) for path in dataset_roots]}")
@@ -360,16 +442,32 @@ def run_meta_train_scenario(
         run_dir=run_dir,
         meta_manifest_version="pv26-meta-train-v1",
         scenario_snapshot=scenario_snapshot,
+        selected_phase_window=phase_window,
+        lineage=lineage,
     )
+    apply_selected_phase_window_to_manifest(
+        manifest,
+        selected_phase_indices=selected_indices,
+    )
+    if phase_window is not None:
+        manifest["selected_phase_window"] = dict(phase_window)
+    if lineage is not None and not isinstance(manifest.get("lineage"), dict):
+        manifest["lineage"] = dict(lineage)
     if all(
-        phase_entry_is_completed(entry, phase)
+        is_terminal(entry, phase)
         for entry, phase in zip(manifest["phases"], scenario.phases)
     ):
-        raise SystemExit(f"exact resume only supports incomplete runs: {run_dir}")
+        raise SystemExit(f"selected phase window already complete: {run_dir}")
+    write_meta_manifest(manifest_path, manifest)
+    write_meta_summary(run_dir, manifest)
 
-    previous_best_checkpoint: Path | None = None
+    previous_best_checkpoint: Path | None = initial_best_checkpoint
     for phase_index, phase in enumerate(scenario.phases, start=1):
         phase_entry = manifest["phases"][phase_index - 1]
+        if phase_index not in selected_indices:
+            if str(phase_entry.get("status") or "") != "completed":
+                phase_entry["status"] = "skipped"
+            continue
         if phase_entry_is_completed(phase_entry, phase):
             recovered_entry = recover_phase_entry_from_run_dir(phase_entry, phase)
             if recovered_entry is not None:
@@ -439,6 +537,9 @@ def run_meta_train_scenario(
         "meta_manifest_path": str(manifest_path),
         "summary_path": str(run_dir / "summary.json"),
         "completed_phases": len([phase_entry for phase_entry in manifest["phases"] if phase_entry["status"] == "completed"]),
+        "skipped_phases": len([phase_entry for phase_entry in manifest["phases"] if phase_entry["status"] == "skipped"]),
+        "selected_phase_window": phase_window,
+        "lineage": lineage,
         "phases": manifest["phases"],
         "final_checkpoint_path": previous_best_checkpoint,
     }

@@ -21,10 +21,12 @@ from .actions import (
 )
 from .scan import (
     Pv26ExportCandidate,
+    RetrainCandidate,
     ResumeCandidate,
     WorkspaceSnapshot,
     _resolve_pipeline_paths,
     _scan_pv26_export_candidates,
+    _scan_pv26_retrain_candidates,
     _scan_pv26_resume_candidates,
     check_env,
     scan_workspace_status,
@@ -32,7 +34,9 @@ from .scan import (
 from .tui import (
     _render_dashboard,
     _render_export_candidates,
+    _render_final_dataset_stats,
     _render_help,
+    _render_retrain_candidates,
     _render_resume_candidates,
     _render_stage3_stress_result,
 )
@@ -221,6 +225,69 @@ def _select_export_candidate(console: Console, candidates: list[Pv26ExportCandid
         console.print("[yellow]목록에 있는 번호만 입력하세요.[/yellow]")
 
 
+def _select_retrain_candidate(console: Console, candidates: list[RetrainCandidate]) -> RetrainCandidate | None:
+    while True:
+        raw = _ascii_input(console, f"retrain 번호 선택 (1-{len(candidates)}, Enter=취소) > ")
+        if raw is None or raw == "":
+            return None
+        if not raw.isdigit():
+            console.print("[yellow]숫자만 입력하세요.[/yellow]")
+            continue
+        index = int(raw)
+        if 1 <= index <= len(candidates):
+            return candidates[index - 1]
+        console.print("[yellow]목록에 있는 번호만 입력하세요.[/yellow]")
+
+
+def _phase_stage_entries() -> list[tuple[int, str, str]]:
+    from tools.run_pv26_train import load_meta_train_scenario
+
+    scenario = load_meta_train_scenario("default")
+    return [
+        (phase_index, str(phase.name), str(phase.stage))
+        for phase_index, phase in enumerate(scenario.phases, start=1)
+    ]
+
+
+def _prompt_phase_window(console: Console) -> tuple[str, str] | None:
+    phase_entries = _phase_stage_entries()
+    console.print(
+        _render_panel(
+            "\n".join(
+                f"{phase_index}. {phase_name} ({phase_stage})"
+                for phase_index, phase_name, phase_stage in phase_entries
+            ),
+            title="Stage Window",
+            border_style="cyan",
+        )
+    )
+    while True:
+        raw_start = _ascii_input(console, f"start stage 번호 선택 (1-{len(phase_entries)}, Enter=취소) > ")
+        if raw_start is None or raw_start == "":
+            return None
+        if not raw_start.isdigit():
+            console.print("[yellow]숫자만 입력하세요.[/yellow]")
+            continue
+        start_index = int(raw_start)
+        if not 1 <= start_index <= len(phase_entries):
+            console.print("[yellow]목록에 있는 번호만 입력하세요.[/yellow]")
+            continue
+        break
+    while True:
+        raw_end = _ascii_input(console, f"end stage 번호 선택 ({start_index}-{len(phase_entries)}, Enter=취소) > ")
+        if raw_end is None or raw_end == "":
+            return None
+        if not raw_end.isdigit():
+            console.print("[yellow]숫자만 입력하세요.[/yellow]")
+            continue
+        end_index = int(raw_end)
+        if not start_index <= end_index <= len(phase_entries):
+            console.print("[yellow]start 이상, 마지막 stage 이하 번호만 입력하세요.[/yellow]")
+            continue
+        break
+    return phase_entries[start_index - 1][2], phase_entries[end_index - 1][2]
+
+
 def _run_subprocess_action(
     console: Console,
     snapshot: WorkspaceSnapshot,
@@ -306,6 +373,111 @@ def _run_pv26_resume(console: Console, snapshot: WorkspaceSnapshot, action: Acti
         extra_lines=extra_lines,
         config_line_factory=None,
     )
+
+
+def _run_pv26_retrain(console: Console, snapshot: WorkspaceSnapshot, action: ActionSpec) -> bool:
+    candidates = _scan_pv26_retrain_candidates(snapshot.paths.pv26_run_root)
+    console.clear(home=True)
+    if not candidates:
+        console.print(
+            _render_panel(
+                f"retrain 가능한 source run이 없습니다.\n검색 위치: {snapshot.paths.pv26_run_root}",
+                title=f"{action.key} {action.label}",
+                border_style="yellow",
+            )
+        )
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+
+    _render_retrain_candidates(console, candidates)
+    selected = _select_retrain_candidate(console, candidates)
+    if selected is None:
+        return True
+    phase_window = _prompt_phase_window(console)
+    if phase_window is None:
+        return True
+    start_stage, end_stage = phase_window
+    resolved_action = ActionSpec(
+        key=action.key,
+        label=f"{action.label}: {selected.run_name}",
+        command_display=(
+            "python3 tools/run_pv26_train.py "
+            f"--preset default --derive-run {selected.run_dir} "
+            f"--start-stage {start_stage} --end-stage {end_stage}"
+        ),
+        argv=(
+            sys.executable,
+            "tools/run_pv26_train.py",
+            "--preset",
+            "default",
+            "--derive-run",
+            str(selected.run_dir),
+            "--start-stage",
+            start_stage,
+            "--end-stage",
+            end_stage,
+        ),
+        output_hint=str(snapshot.paths.pv26_run_root),
+        rerun_contract=action.rerun_contract,
+    )
+    extra_lines = [
+        f"- source run: {selected.run_dir}",
+        f"- latest stage: {selected.latest_phase_stage or 'unknown'}",
+        f"- stage window: {start_stage} -> {end_stage}",
+        "- config source: current preset/default + current user YAML",
+    ]
+    return _run_subprocess_action(
+        console,
+        snapshot,
+        resolved_action,
+        extra_lines=extra_lines,
+        config_line_factory=None,
+    )
+
+
+def _run_final_dataset_stats(console: Console, snapshot: WorkspaceSnapshot, action: ActionSpec) -> bool:
+    from tools.od_bootstrap.build.final_dataset_stats import analyze_final_dataset, load_final_dataset_stats
+
+    dataset_root = snapshot.paths.final_dataset_root
+    stats = load_final_dataset_stats(dataset_root)
+    generated = False
+    if stats is None:
+        console.clear(home=True)
+        lines = [
+            f"🎯 작업: {action.label}",
+            f"- dataset root: {dataset_root}",
+            "- final_dataset_stats.json이 없어서 labels_scene 전체를 다시 스캔합니다.",
+        ]
+        advisory = _action_advisory(action, snapshot)
+        if advisory is not None:
+            lines.append(f"- 주의: {advisory}")
+        console.print(_render_panel("\n".join(lines), title=f"{action.key} 실행 확인", border_style="cyan"))
+        if not _confirm(console):
+            return True
+        console.print("[bold green]final dataset full stats를 생성합니다.[/bold green]")
+        try:
+            stats = analyze_final_dataset(dataset_root=dataset_root, write_artifacts=True)
+            generated = True
+        except KeyboardInterrupt:
+            console.print("\n[red]실행 중단됨[/red]")
+            return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+        except Exception as exc:
+            console.print(_render_panel(str(exc), title="Final Dataset Stats 실패", border_style="red"))
+            return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+    if not isinstance(stats, dict):
+        console.print(_render_panel("stats payload를 읽지 못했습니다.", title="Final Dataset Stats 실패", border_style="red"))
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+
+    console.clear(home=True)
+    if generated:
+        console.print(
+            _render_panel(
+                f"stats_path: {stats.get('stats_path')}\nstats_markdown_path: {stats.get('stats_markdown_path')}",
+                title="Final Dataset Stats 생성 완료",
+                border_style="green",
+            )
+        )
+    _render_final_dataset_stats(console, stats)
+    return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
 
 
 def _run_pv26_export(console: Console, snapshot: WorkspaceSnapshot, action: ActionSpec) -> bool:
@@ -443,6 +615,10 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
         return _run_stage3_stress_probe(console, snapshot, action)
     if action.key == "E":
         return _run_pv26_resume(console, snapshot, action)
+    if action.key == "K":
+        return _run_pv26_retrain(console, snapshot, action)
+    if action.key == "L":
+        return _run_final_dataset_stats(console, snapshot, action)
     if action.key == "F":
         return _run_pv26_export(console, snapshot, action)
     if action.key in {"G", "I", "J"}:
@@ -458,7 +634,7 @@ def _interactive_loop(console: Console) -> int:
         actions = _action_catalog(snapshot.paths)
         _render_dashboard(console, snapshot, actions)
 
-        raw = _ascii_input(console, "선택 (1-9/A-J/H/R/Q) > ")
+        raw = _ascii_input(console, "선택 (1-9/A-L/H/R/Q) > ")
         if raw is None:
             return 0
         if raw == "":

@@ -12,6 +12,11 @@ from tools.od_bootstrap.build.final_dataset import (
     FINAL_DATASET_SUMMARY_NAME,
     build_pv26_exhaustive_od_lane_dataset,
 )
+from tools.od_bootstrap.build.final_dataset_stats import (
+    FINAL_DATASET_STATS_MARKDOWN_NAME,
+    FINAL_DATASET_STATS_NAME,
+    analyze_final_dataset,
+)
 
 
 def _write_text(path: Path, contents: str) -> None:
@@ -79,6 +84,7 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertTrue((output_root / "images" / "train" / "lane.png").is_file())
             manifest = json.loads((output_root / "meta" / FINAL_DATASET_MANIFEST_NAME).read_text(encoding="utf-8"))
             compact_summary = json.loads((output_root / "meta" / FINAL_DATASET_SUMMARY_NAME).read_text(encoding="utf-8"))
+            stats_summary = json.loads((output_root / "meta" / FINAL_DATASET_STATS_NAME).read_text(encoding="utf-8"))
             publish_marker = json.loads((output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER).read_text(encoding="utf-8"))
             od_scene = json.loads((output_root / "labels_scene" / "train" / "od.json").read_text(encoding="utf-8"))
             lane_scene = json.loads((output_root / "labels_scene" / "train" / "lane.json").read_text(encoding="utf-8"))
@@ -134,8 +140,13 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertEqual(summary["aihub_canonical_root"], str(lane_root.resolve()))
             self.assertEqual(summary["summary_path"], str(output_root / "meta" / FINAL_DATASET_SUMMARY_NAME))
             self.assertEqual(summary["publish_marker_path"], str(output_root / "meta" / FINAL_DATASET_PUBLISH_MARKER))
+            self.assertEqual(summary["stats_path"], str(output_root / "meta" / FINAL_DATASET_STATS_NAME))
+            self.assertEqual(summary["stats_markdown_path"], str(output_root / "meta" / FINAL_DATASET_STATS_MARKDOWN_NAME))
             self.assertEqual(compact_summary, summary)
             self.assertNotIn("samples", compact_summary)
+            self.assertEqual(stats_summary["sample_count"], 2)
+            self.assertEqual(stats_summary["detector"]["classes"]["vehicle"]["instance_count"], 0)
+            self.assertEqual(stats_summary["lane"]["classes"]["white_lane"]["instance_count"], 0)
 
     def test_build_pv26_exhaustive_od_lane_dataset_rejects_duplicate_final_sample_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -184,6 +195,61 @@ class FinalDatasetTests(unittest.TestCase):
                     output_root=output_root,
                     copy_images=True,
                 )
+
+    def test_analyze_final_dataset_reports_lane_only_and_stale_manifest_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "pv26_exhaustive_od_lane_dataset"
+            image_path = dataset_root / "images" / "val" / "lane_001.png"
+            scene_path = dataset_root / "labels_scene" / "val" / "lane_001.json"
+            _write_text(image_path, "lane-image")
+            _write_text(
+                scene_path,
+                json.dumps(
+                    {
+                        "image": {"file_name": image_path.name, "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_lane_seoul", "split": "val", "final_sample_id": "lane_001"},
+                        "detections": [],
+                        "lanes": [{"class_name": "yellow_lane", "source_style": "solid", "points": [[0, 0], [10, 10]]}],
+                        "stop_lines": [{"points": [[0, 0], [20, 0]]}],
+                        "crosswalks": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+            )
+            _write_text(
+                dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME,
+                json.dumps(
+                    {
+                        "version": "test",
+                        "sample_count": 1,
+                        "dataset_counts": {"aihub_lane_seoul": 1},
+                        "samples": [
+                            {
+                                "final_sample_id": "lane_001",
+                                "source_dataset_key": "aihub_lane_seoul",
+                                "split": "val",
+                                "scene_path": str(root / ".staging" / "labels_scene" / "val" / "lane_001.json"),
+                                "image_path": str(root / ".staging" / "images" / "val" / "lane_001.png"),
+                                "det_path": None,
+                            }
+                        ],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+            )
+
+            stats = analyze_final_dataset(dataset_root=dataset_root, write_artifacts=True)
+
+        self.assertEqual(stats["sample_count"], 1)
+        self.assertEqual(stats["dataset_counts"], {"aihub_lane_seoul": 1})
+        self.assertEqual(stats["lane"]["classes"]["yellow_lane"]["instance_count"], 1)
+        self.assertEqual(stats["stop_line"]["instance_count"], 1)
+        self.assertIn("lane_only_final_dataset", stats["warnings"])
+        self.assertIn("manifest_paths_stale", stats["warnings"])
+        self.assertTrue(stats["audit"]["rebuild_needed"])
 
     def test_build_pv26_exhaustive_od_lane_dataset_atomically_replaces_existing_output_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

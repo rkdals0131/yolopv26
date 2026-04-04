@@ -62,6 +62,7 @@ from .config import (
     DEFAULT_RUN_ROOT,
     EntryConfig,
     MetaTrainScenario,
+    PHASE_STAGE_ORDER,
     PhaseConfig,
     PreviewConfig,
     SelectionConfig,
@@ -324,12 +325,43 @@ def load_meta_train_resume_scenario(
     )
 
 
+def load_meta_train_resume_context(run_dir: str | Path) -> dict[str, Any]:
+    return _scenario_ops.load_meta_train_resume_context(
+        run_dir,
+        read_json=train_artifacts.read_json,
+    )
+
+
+def load_meta_train_derived_scenario(
+    source_run_dir: str | Path,
+    *,
+    preset_name: str,
+    start_stage: str,
+    end_stage: str,
+) -> tuple[MetaTrainScenario, Path, dict[str, Any]]:
+    return _scenario_ops.load_meta_train_derived_scenario(
+        source_run_dir,
+        preset_name=preset_name,
+        start_stage=start_stage,
+        end_stage=end_stage,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+        load_meta_train_scenario=load_meta_train_scenario,
+        read_json=train_artifacts.read_json,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
+    )
+
+
 def _phase_entry_is_completed(entry: dict[str, Any], phase: Any) -> bool:
     return train_artifacts.phase_entry_is_completed(entry, phase)
 
 
 def _recover_phase_entry_from_run_dir(entry: dict[str, Any], phase: Any) -> dict[str, Any] | None:
     return train_artifacts.recover_phase_entry_from_run_dir(entry, phase)
+
+
+def _phase_entry_is_terminal(entry: dict[str, Any], phase: Any) -> bool:
+    return train_artifacts.phase_entry_is_terminal(entry, phase)
 
 
 def _scenario_phase_defaults(
@@ -959,6 +991,9 @@ def run_meta_train_scenario(
     scenario: MetaTrainScenario,
     *,
     scenario_path: Path,
+    selected_phase_indices: tuple[int, ...] | list[int] | None = None,
+    initial_best_checkpoint: Path | None = None,
+    lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _runtime_ops.run_meta_train_scenario(
         scenario,
@@ -971,16 +1006,21 @@ def run_meta_train_scenario(
         load_or_init_meta_manifest=train_artifacts.load_or_init_meta_manifest,
         phase_entry_is_completed=_phase_entry_is_completed,
         recover_phase_entry_from_run_dir=_recover_phase_entry_from_run_dir,
+        phase_entry_is_terminal=_phase_entry_is_terminal,
         scenario_snapshot_for_run=_scenario_snapshot_for_run,
         write_meta_manifest=train_artifacts.write_meta_manifest,
         write_meta_summary=train_artifacts.write_meta_summary,
         resolve_phase_selection=train_config_api.resolve_phase_selection,
         execute_phase=_execute_phase,
+        selected_phase_indices=selected_phase_indices,
+        initial_best_checkpoint=initial_best_checkpoint,
+        lineage=lineage,
     )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     preset_names = tuple(sorted(_build_meta_train_presets().keys()))
+    stage_names = tuple(str(stage) for stage in PHASE_STAGE_ORDER)
     parser = argparse.ArgumentParser(description="Run the PV26 meta-train scenario.")
     parser.add_argument(
         "--preset",
@@ -999,6 +1039,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Resume an existing incomplete meta-train run directory exactly in place.",
     )
     parser.add_argument(
+        "--derive-run",
+        default=None,
+        help="Start a new derived meta-train run from an existing source run directory.",
+    )
+    parser.add_argument(
+        "--start-stage",
+        choices=stage_names,
+        default=None,
+        help="Start stage for --derive-run.",
+    )
+    parser.add_argument(
+        "--end-stage",
+        choices=stage_names,
+        default=None,
+        help="End stage for --derive-run.",
+    )
+    parser.add_argument(
         "--stress-batch-size",
         type=int,
         default=None,
@@ -1014,11 +1071,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate_cli_args(args: argparse.Namespace) -> None:
-    if bool(args.stage3_vram_stress) and args.resume_run is not None:
-        raise SystemExit("--resume-run cannot be combined with --stage3-vram-stress")
+    if bool(args.stage3_vram_stress):
+        if args.resume_run is not None:
+            raise SystemExit("--resume-run cannot be combined with --stage3-vram-stress")
+        if args.derive_run is not None:
+            raise SystemExit("--derive-run cannot be combined with --stage3-vram-stress")
+    if args.resume_run is not None and args.derive_run is not None:
+        raise SystemExit("--resume-run cannot be combined with --derive-run")
+    if args.resume_run is None and (args.start_stage is not None or args.end_stage is not None) and args.derive_run is None:
+        raise SystemExit("--start-stage/--end-stage require --derive-run")
 
 
-def _load_cli_scenario(args: argparse.Namespace) -> tuple[MetaTrainScenario, Path]:
+def _load_cli_scenario(args: argparse.Namespace) -> tuple[MetaTrainScenario, Path, dict[str, Any]]:
     preset_name = str(args.preset)
     if args.resume_run is not None:
         scenario, scenario_path = load_meta_train_resume_scenario(
@@ -1026,8 +1090,43 @@ def _load_cli_scenario(args: argparse.Namespace) -> tuple[MetaTrainScenario, Pat
             preset_name=preset_name,
         )
         _log_meta_train(f"resuming exact meta-train run: {scenario.run.run_dir}")
-        return scenario, scenario_path
-    return load_meta_train_scenario(preset_name), _default_scenario_path(preset_name)
+        resume_context = load_meta_train_resume_context(args.resume_run)
+        selected_window = resume_context.get("selected_phase_window")
+        selected_phase_indices = None
+        if isinstance(selected_window, dict):
+            raw_indices = selected_window.get("selected_phase_indices")
+            if isinstance(raw_indices, list):
+                selected_phase_indices = tuple(int(value) for value in raw_indices)
+        lineage = resume_context.get("lineage")
+        initial_best_checkpoint = None
+        if isinstance(lineage, dict):
+            seed_checkpoint = lineage.get("seed_checkpoint_path")
+            if seed_checkpoint not in {None, ""}:
+                initial_best_checkpoint = Path(str(seed_checkpoint)).expanduser().resolve()
+        return scenario, scenario_path, {
+            "selected_phase_indices": selected_phase_indices,
+            "initial_best_checkpoint": initial_best_checkpoint,
+            "lineage": lineage if isinstance(lineage, dict) else None,
+        }
+    if args.derive_run is not None:
+        start_stage = str(args.start_stage or PHASE_STAGE_ORDER[0])
+        end_stage = str(args.end_stage or PHASE_STAGE_ORDER[-1])
+        scenario, scenario_path, derived_options = load_meta_train_derived_scenario(
+            args.derive_run,
+            preset_name=preset_name,
+            start_stage=start_stage,
+            end_stage=end_stage,
+        )
+        _log_meta_train(
+            "starting derived meta-train run from "
+            f"{Path(args.derive_run).expanduser().resolve()} with stage window {start_stage} -> {end_stage}"
+        )
+        return scenario, scenario_path, derived_options
+    return load_meta_train_scenario(preset_name), _default_scenario_path(preset_name), {
+        "selected_phase_indices": None,
+        "initial_best_checkpoint": None,
+        "lineage": None,
+    }
 
 
 def _run_cli_command(
@@ -1035,6 +1134,7 @@ def _run_cli_command(
     *,
     scenario: MetaTrainScenario,
     scenario_path: Path,
+    run_options: dict[str, Any],
 ) -> dict[str, Any]:
     if bool(args.stage3_vram_stress):
         return run_stage3_vram_stress(
@@ -1042,8 +1142,14 @@ def _run_cli_command(
             scenario_path=scenario_path,
             batch_size=args.stress_batch_size,
             stress_iters=args.stress_iters,
+        )
+    return run_meta_train_scenario(
+        scenario,
+        scenario_path=scenario_path,
+        selected_phase_indices=run_options.get("selected_phase_indices"),
+        initial_best_checkpoint=run_options.get("initial_best_checkpoint"),
+        lineage=run_options.get("lineage"),
     )
-    return run_meta_train_scenario(scenario, scenario_path=scenario_path)
 
 
 def _raise_for_cli_failure(
@@ -1058,11 +1164,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
     _validate_cli_args(args)
-    scenario, scenario_path = _load_cli_scenario(args)
+    scenario, scenario_path, run_options = _load_cli_scenario(args)
     summary = _run_cli_command(
         args,
         scenario=scenario,
         scenario_path=scenario_path,
+        run_options=run_options,
     )
     print(json.dumps(train_artifacts.json_ready(summary), indent=2, ensure_ascii=True))
     _raise_for_cli_failure(args, summary)

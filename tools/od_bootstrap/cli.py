@@ -16,6 +16,8 @@ from tools.od_bootstrap.build.debug_vis import (
 )
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME, build_pv26_exhaustive_od_lane_dataset
+from tools.od_bootstrap.build.final_dataset_stats import analyze_final_dataset
+from tools.od_bootstrap.build.review import render_final_dataset_review_bundle
 from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
 from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
@@ -113,6 +115,19 @@ def _build_parser() -> argparse.ArgumentParser:
     finalize = subparsers.add_parser("build-final-dataset", help="Build the final exhaustive OD lane dataset.")
     _add_common_path_overrides(finalize)
     finalize.set_defaults(handler=_run_final_dataset)
+
+    analyze_final = subparsers.add_parser("analyze-final-dataset", help="Scan final dataset class/task stats and audit manifest integrity.")
+    analyze_final.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
+    analyze_final.set_defaults(handler=_run_analyze_final_dataset)
+
+    review_final = subparsers.add_parser("review-final-dataset", help="Render focused final-dataset overlay review samples.")
+    review_final.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
+    review_final.add_argument("--focus", required=True, help="Focus target such as traffic_light, lane, stop_line, crosswalk, tl_attr, or a detector class.")
+    review_final.add_argument("--split", default="val", help="Dataset split to review.")
+    review_final.add_argument("--count", type=int, default=50, help="Maximum number of review overlays to render.")
+    review_final.add_argument("--seed", type=int, default=DEFAULT_DEBUG_VIS_SEED, help="Sampling seed.")
+    review_final.add_argument("--output-root", type=Path, default=None, help="Override the review output root.")
+    review_final.set_defaults(handler=_run_review_final_dataset)
 
     debug_vis = subparsers.add_parser("generate-debug-vis", help="Render bootstrap debug visualizations.")
     debug_vis.add_argument(
@@ -237,6 +252,44 @@ def _run_final_dataset(args: argparse.Namespace) -> int:
         output_root=preset.output_root,
         copy_images=preset.copy_images,
         log_fn=lambda message: print(message, flush=True),
+    )
+    _print_json(result)
+    return 0
+
+
+def _resolve_final_root_override(path: Path | None) -> Path:
+    if path is not None:
+        return Path(path).resolve()
+    return build_final_dataset_preset().output_root.resolve()
+
+
+def _run_analyze_final_dataset(args: argparse.Namespace) -> int:
+    final_root = _resolve_final_root_override(args.final_root)
+    result = analyze_final_dataset(dataset_root=final_root, write_artifacts=True)
+    _print_json(result)
+    return 0
+
+
+def _run_review_final_dataset(args: argparse.Namespace) -> int:
+    final_root = _resolve_final_root_override(args.final_root)
+    focus = str(args.focus).strip()
+    split = str(args.split).strip()
+    count = int(args.count)
+    seed = int(args.seed)
+    if count <= 0:
+        raise SystemExit("--count must be > 0")
+    output_root = (
+        Path(args.output_root).resolve()
+        if args.output_root is not None
+        else final_root / "meta" / "review" / focus / split
+    )
+    result = render_final_dataset_review_bundle(
+        dataset_root=final_root,
+        output_root=output_root,
+        focus=focus,
+        split=split,
+        count=count,
+        seed=seed,
     )
     _print_json(result)
     return 0

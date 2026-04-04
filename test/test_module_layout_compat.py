@@ -23,10 +23,14 @@ class ModuleLayoutCompatTests(unittest.TestCase):
         run_old = importlib.import_module("tools.run_pv26_train")
         run_new = importlib.import_module("tools.pv26_train.cli")
         config_new = importlib.import_module("tools.pv26_train.config")
+        scenario_shim = importlib.import_module("tools.pv26_train.scenario")
+        scenarios_new = importlib.import_module("tools.pv26_train.scenarios")
 
         self.assertIs(run_old, run_new)
         self.assertTrue(callable(run_old.load_meta_train_scenario))
         self.assertTrue(hasattr(config_new, "MetaTrainScenario"))
+        self.assertIs(scenario_shim.load_meta_train_scenario, scenarios_new.load_meta_train_scenario)
+        self.assertIs(scenario_shim.build_meta_train_presets, scenarios_new.build_meta_train_presets)
         expected_repo_root = REPO_ROOT
         self.assertEqual(run_new.REPO_ROOT, expected_repo_root)
         self.assertEqual(config_new.REPO_ROOT, expected_repo_root)

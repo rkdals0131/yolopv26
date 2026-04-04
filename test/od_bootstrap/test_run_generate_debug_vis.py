@@ -12,6 +12,7 @@ from PIL import Image
 from tools.od_bootstrap import main as od_bootstrap_main
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME
+from tools.od_bootstrap.build.final_dataset_stats import FINAL_DATASET_STATS_NAME
 from tools.od_bootstrap.build.image_list import build_sample_uid
 
 
@@ -275,3 +276,101 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             self.assertEqual(len(overlay_files), 1)
             self.assertEqual(sorted(path.name for path in debug_vis_dir.iterdir()), [overlay_files[0].name])
             self.assertTrue(Path(manifest_payload["items"][0]["overlay_path"]).is_file())
+
+    def test_analyze_final_dataset_writes_stats_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            final_root = root / "pv26_exhaustive_od_lane_dataset"
+            image_path = final_root / "images" / "val" / "tl_001.png"
+            scene_path = final_root / "labels_scene" / "val" / "tl_001.json"
+            _make_image(image_path, 64, 48, "#666666")
+            _write_json(
+                scene_path,
+                {
+                    "image": {"file_name": image_path.name, "width": 64, "height": 48},
+                    "source": {"dataset": "pv26_exhaustive_aihub_traffic_seoul", "split": "val", "source_kind": "exhaustive_od"},
+                    "detections": [{"class_name": "traffic_light", "bbox": [10, 10, 20, 20]}],
+                    "traffic_lights": [{"tl_bits": [1, 0, 0, 0], "tl_attr_valid": True}],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+            _write_json(
+                final_root / "meta" / FINAL_DATASET_MANIFEST_NAME,
+                {
+                    "version": "test",
+                    "samples": [
+                        {
+                            "final_sample_id": "tl_001",
+                            "source_dataset_key": "pv26_exhaustive_aihub_traffic_seoul",
+                            "split": "val",
+                            "scene_path": str(scene_path),
+                            "image_path": str(image_path),
+                            "det_path": None,
+                        }
+                    ],
+                },
+            )
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = od_bootstrap_main(
+                    [
+                        "analyze-final-dataset",
+                        "--final-root",
+                        str(final_root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            stats_payload = json.loads((final_root / "meta" / FINAL_DATASET_STATS_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(stats_payload["detector"]["classes"]["traffic_light"]["instance_count"], 1)
+            self.assertEqual(stats_payload["traffic_light_attr"]["valid_count"], 1)
+            self.assertIn('"sample_count": 1', buffer.getvalue())
+
+    def test_review_final_dataset_renders_focus_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            final_root = root / "pv26_exhaustive_od_lane_dataset"
+            image_path = final_root / "images" / "val" / "veh_001.png"
+            scene_path = final_root / "labels_scene" / "val" / "veh_001.json"
+            _make_image(image_path, 64, 48, "#777777")
+            _write_json(
+                scene_path,
+                {
+                    "image": {"file_name": image_path.name, "width": 64, "height": 48},
+                    "source": {"dataset": "pv26_exhaustive_bdd100k_det_100k", "split": "val", "source_kind": "exhaustive_od"},
+                    "detections": [{"class_name": "vehicle", "bbox": [5, 5, 30, 30]}],
+                    "traffic_lights": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = od_bootstrap_main(
+                    [
+                        "review-final-dataset",
+                        "--final-root",
+                        str(final_root),
+                        "--focus",
+                        "vehicle",
+                        "--split",
+                        "val",
+                        "--count",
+                        "1",
+                        "--seed",
+                        "7",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            index_path = final_root / "meta" / "review" / "vehicle" / "val" / "index.json"
+            index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+            self.assertEqual(index_payload["focus"], "vehicle")
+            self.assertEqual(index_payload["image_count"], 1)
+            self.assertTrue(Path(index_payload["entries"][0]["overlay_path"]).is_file())
+            self.assertIn('"focus": "vehicle"', buffer.getvalue())

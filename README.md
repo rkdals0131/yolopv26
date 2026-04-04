@@ -70,6 +70,12 @@ python3 tools/run_pv26_train.py --preset default
 python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>
 ```
 
+기존 run을 source로 삼아 새 derived run을 만들고 특정 stage window만 다시 학습하려면 아래처럼 `--derive-run`을 사용한다.
+
+```bash
+python3 tools/run_pv26_train.py --derive-run runs/pv26_exhaustive_od_lane_train/<source_run_name> --start-stage stage_3_end_to_end_finetune --end-stage stage_3_end_to_end_finetune
+```
+
 현재 stage 3 경로의 peak VRAM 상한만 빠르게 확인하려면 아래 direct probe도 사용할 수 있다.
 
 ```bash

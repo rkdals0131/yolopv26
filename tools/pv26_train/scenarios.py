@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -384,3 +385,185 @@ def load_meta_train_resume_scenario(
         scenario_to_mapping=scenario_to_mapping,
         validate_meta_train_scenario=validate_meta_train_scenario,
     )
+
+
+def load_meta_train_resume_context(
+    run_dir: str | Path,
+    *,
+    read_json: Callable[[Path], dict[str, Any]],
+) -> dict[str, Any]:
+    resolved_run_dir = Path(run_dir).expanduser().resolve()
+    manifest = load_meta_resume_manifest(resolved_run_dir, read_json=read_json)
+    return {
+        "selected_phase_window": manifest.get("selected_phase_window"),
+        "lineage": manifest.get("lineage"),
+    }
+
+
+def stage_index_bounds(
+    scenario: MetaTrainScenario,
+    *,
+    start_stage: str,
+    end_stage: str,
+) -> tuple[int, int]:
+    start_index: int | None = None
+    end_index: int | None = None
+    for index, phase_config in enumerate(scenario.phases, start=1):
+        if str(phase_config.stage) == str(start_stage):
+            start_index = index
+        if str(phase_config.stage) == str(end_stage):
+            end_index = index
+    if start_index is None:
+        raise SystemExit(f"unknown start stage: {start_stage}")
+    if end_index is None:
+        raise SystemExit(f"unknown end stage: {end_stage}")
+    if end_index < start_index:
+        raise SystemExit(
+            f"invalid stage window: end_stage={end_stage} comes before start_stage={start_stage}"
+        )
+    return start_index, end_index
+
+
+def resolve_phase_best_checkpoint(
+    run_dir: Path,
+    phase_entry: dict[str, Any],
+    *,
+    phase_index: int,
+) -> Path | None:
+    checkpoint_value = phase_entry.get("best_checkpoint_path")
+    if checkpoint_value not in {None, ""}:
+        checkpoint_path = Path(str(checkpoint_value)).expanduser().resolve()
+        if checkpoint_path.is_file():
+            return checkpoint_path
+    fallback = run_dir / f"phase_{phase_index}" / "checkpoints" / "best.pt"
+    if fallback.is_file():
+        return fallback.resolve()
+    return None
+
+
+def resolve_derived_seed_checkpoint(
+    source_run_dir: str | Path,
+    *,
+    start_phase_index: int,
+    read_json: Callable[[Path], dict[str, Any]],
+) -> tuple[Path | None, str | None]:
+    resolved_run_dir = Path(source_run_dir).expanduser().resolve()
+    manifest = load_meta_resume_manifest(resolved_run_dir, read_json=read_json)
+    phases = manifest.get("phases")
+    if not isinstance(phases, list):
+        raise SystemExit(f"source run has invalid phases payload: {resolved_run_dir}")
+    if start_phase_index <= len(phases):
+        same_phase_checkpoint = resolve_phase_best_checkpoint(
+            resolved_run_dir,
+            phases[start_phase_index - 1],
+            phase_index=start_phase_index,
+        )
+        if same_phase_checkpoint is not None:
+            return same_phase_checkpoint, f"phase_{start_phase_index} best.pt"
+    if start_phase_index <= 1:
+        return None, None
+    for phase_index in range(start_phase_index - 1, 0, -1):
+        checkpoint_path = resolve_phase_best_checkpoint(
+            resolved_run_dir,
+            phases[phase_index - 1],
+            phase_index=phase_index,
+        )
+        if checkpoint_path is not None:
+            return checkpoint_path, f"phase_{phase_index} best.pt -> phase_{start_phase_index}"
+    raise SystemExit(
+        "source run does not have a usable seed checkpoint for "
+        f"start phase {start_phase_index}: {resolved_run_dir}"
+    )
+
+
+def build_derived_run_name_prefix(
+    scenario: MetaTrainScenario,
+    *,
+    source_run_dir: Path,
+    start_stage: str,
+    end_stage: str,
+) -> str:
+    stage_suffix = f"{start_stage}_to_{end_stage}" if start_stage != end_stage else start_stage
+    return (
+        f"{scenario.run.run_name_prefix}_derived_{source_run_dir.name}_{stage_suffix}"
+    )
+
+
+def load_meta_train_derived_scenario(
+    source_run_dir: str | Path,
+    *,
+    preset_name: str,
+    start_stage: str,
+    end_stage: str,
+    repo_root: Path,
+    preset_path_root: Path,
+    load_meta_train_scenario: Callable[[str], MetaTrainScenario],
+    read_json: Callable[[Path], dict[str, Any]],
+    validate_meta_train_scenario: Callable[[MetaTrainScenario], Any],
+) -> tuple[MetaTrainScenario, Path, dict[str, Any]]:
+    scenario = load_meta_train_scenario(preset_name)
+    validate_meta_train_scenario(scenario)
+    resolved_source_run_dir = Path(source_run_dir).expanduser().resolve()
+    if not resolved_source_run_dir.is_dir():
+        raise SystemExit(f"derived source run directory does not exist: {resolved_source_run_dir}")
+    start_phase_index, end_phase_index = stage_index_bounds(
+        scenario,
+        start_stage=start_stage,
+        end_stage=end_stage,
+    )
+    seed_checkpoint_path, seed_description = resolve_derived_seed_checkpoint(
+        resolved_source_run_dir,
+        start_phase_index=start_phase_index,
+        read_json=read_json,
+    )
+    manifest = load_meta_resume_manifest(resolved_source_run_dir, read_json=read_json)
+    lineage = {
+        "mode": "derived_run",
+        "source_run_dir": str(resolved_source_run_dir),
+        "source_run_name": resolved_source_run_dir.name,
+        "source_run_status": str(manifest.get("status") or "unknown"),
+        "seed_checkpoint_path": str(seed_checkpoint_path) if seed_checkpoint_path is not None else None,
+        "seed_checkpoint_source": seed_description,
+        "start_stage": start_stage,
+        "end_stage": end_stage,
+    }
+    derived_run = replace(
+        scenario.run,
+        run_dir=None,
+        run_name_prefix=build_derived_run_name_prefix(
+            scenario,
+            source_run_dir=resolved_source_run_dir,
+            start_stage=start_stage,
+            end_stage=end_stage,
+        ),
+    )
+    derived_scenario = replace(scenario, run=derived_run)
+    scenario_path = default_scenario_path(preset_name, preset_path_root=preset_path_root)
+    return derived_scenario, scenario_path, {
+        "selected_phase_indices": tuple(range(start_phase_index, end_phase_index + 1)),
+        "initial_best_checkpoint": seed_checkpoint_path,
+        "lineage": lineage,
+    }
+
+
+__all__ = [
+    "build_derived_run_name_prefix",
+    "build_meta_train_presets",
+    "default_scenario_path",
+    "load_legacy_resume_scenario",
+    "load_meta_resume_manifest",
+    "load_meta_train_derived_scenario",
+    "load_meta_train_resume_context",
+    "load_meta_train_resume_scenario",
+    "load_meta_train_scenario",
+    "load_resume_scenario_from_snapshot",
+    "manifest_phase_signature",
+    "preset_key",
+    "resolve_derived_seed_checkpoint",
+    "resolve_phase_best_checkpoint",
+    "resolve_scenario_path",
+    "resume_scenario_path",
+    "scenario_phase_signature",
+    "scenario_snapshot_for_run",
+    "stage_index_bounds",
+]

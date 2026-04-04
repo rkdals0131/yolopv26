@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-04-05`
-- phase: `phase 18 road-marking-rewrite-complete`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 12 기준으로 rank-6/7 runtime cleanup도 마감했다. `tools/od_bootstrap/teacher/runtime/trainer.py`가 dataloader/callback/trainer runtime family를 맡아 `ultralytics_runner.py`를 thin orchestration facade로 줄였고, `common/train_runtime.py`는 duration formatting, device sync timing, tensorboard writer/scalar, rolling timing summary, `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 담당한다. teacher/runtime/progress.py와 model/engine/trainer_progress.py는 framework-specific renderer만 local로 남기고 공용 progress status helper를 재사용한다. source internals는 `tools/od_bootstrap/source/aihub/` + `shared/` 패키지로, tool internals는 `tools/check_env/` + `tools/pv26_train/` 패키지로 정리됐고 stable entrypoint는 `tools/check_env.py`, `tools/run_pv26_train.py`만 유지한다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다. phase A에서는 lane pooled MLP를 shared spatial fusion stem + row-anchor query decoder로 교체했고, phase B에서는 stop_line pooled MLP를 geometry memory + small query decoder로 교체해 `2 endpoints + width` contract를 도입했으며, phase C에서는 crosswalk pooled MLP를 같은 geometry memory 위의 small query decoder로 교체해 `4-corner quad` contract를 도입했다. phase D에서는 checkpoint metadata/architecture generation gate, shape-aware partial weight migration, crosswalk-inclusive raw-head TorchScript export metadata를 추가해 road-marking rewrite wave를 마감했다.`
+- phase: `phase 19 pv26-derived-retrain-runtime`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 12 기준으로 rank-6/7 runtime cleanup도 마감했다. `tools/od_bootstrap/teacher/runtime/trainer.py`가 dataloader/callback/trainer runtime family를 맡아 `ultralytics_runner.py`를 thin orchestration facade로 줄였고, `common/train_runtime.py`는 duration formatting, device sync timing, tensorboard writer/scalar, rolling timing summary, `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 담당한다. teacher/runtime/progress.py와 model/engine/trainer_progress.py는 framework-specific renderer만 local로 남기고 공용 progress status helper를 재사용한다. source internals는 `tools/od_bootstrap/source/aihub/` + `shared/` 패키지로, tool internals는 `tools/check_env/` + `tools/pv26_train/` 패키지로 정리됐고 stable entrypoint는 `tools/check_env.py`, `tools/run_pv26_train.py`만 유지한다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다. phase A에서는 lane pooled MLP를 shared spatial fusion stem + row-anchor query decoder로 교체했고, phase B에서는 stop_line pooled MLP를 geometry memory + small query decoder로 교체해 `2 endpoints + width` contract를 도입했으며, phase C에서는 crosswalk pooled MLP를 같은 geometry memory 위의 small query decoder로 교체해 `4-corner quad` contract를 도입했다. phase D에서는 checkpoint metadata/architecture generation gate, shape-aware partial weight migration, crosswalk-inclusive raw-head TorchScript export metadata를 추가해 road-marking rewrite wave를 마감했다. phase 19에서는 completed/incomplete source run을 seed로 새 derived run을 만들고 선택한 stage window만 current preset/user config로 다시 학습하는 retrain/fine-tune 경로를 `tools/run_pv26_train.py --derive-run ...`과 `tools/check_env/launch.py` interactive action으로 추가했다. exact resume는 same run dir contract를 그대로 유지하고, retrain은 lineage/selected phase window를 manifest/summary에 기록하는 별도 flow로 분리했다.`
 
 ## 완료된 항목
 
@@ -134,6 +134,9 @@
 - [x] exact resume old-generation rejection 추가
 - [x] shape-aware partial weight migration 경로 추가
 - [x] crosswalk-inclusive TorchScript raw-head export metadata 추가
+- [x] derived retrain/fine-tune CLI (`--derive-run`, `--start-stage`, `--end-stage`) 추가
+- [x] derived run phase-window manifest/summary/lineage 기록 추가
+- [x] check_env retrain candidate scan / launcher action 추가
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
@@ -275,6 +278,7 @@
 - PV26 meta-train preset is `default` only
 - PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py`, `tools/run_pv26_train.py --preset default`, `run_pv26_tiny_overfit()` 기준으로 유지한다
 - exact resume CLI는 `tools/run_pv26_train.py --resume-run <existing_run_dir>` 기준으로 유지한다
+- derived retrain/fine-tune CLI는 `tools/run_pv26_train.py --derive-run <source_run_dir> --start-stage <STAGE> --end-stage <STAGE>` 기준으로 유지한다
 - stage 3 VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다
 - engine 공통 batch helper는 `model/engine/batch.py`를 기준선으로 두고, trainer/evaluator/_trainer_epochs에서 중복을 다시 만들지 않는다
 - detector geometry helper는 `model/engine/_det_geometry.py`를 기준선으로 두고 `loss.py`, `postprocess.py`가 이를 재사용한다

@@ -15,6 +15,11 @@ import yaml
 from common.io import write_json as _write_common_json
 from common.paths import resolve_latest_root
 from common.pv26_schema import OD_CLASSES
+from .final_dataset_stats import (
+    FINAL_DATASET_STATS_MARKDOWN_NAME,
+    FINAL_DATASET_STATS_NAME,
+    analyze_final_dataset,
+)
 
 FINAL_DATASET_MANIFEST_NAME = "final_dataset_manifest.json"
 FINAL_DATASET_SUMMARY_NAME = "final_dataset_summary.json"
@@ -81,9 +86,12 @@ class FinalDatasetBuildSummary(TypedDict):
     manifest_path: str
     summary_path: str
     publish_marker_path: str
+    stats_path: str
+    stats_markdown_path: str
     rerun_mode: FinalDatasetRerunMode
     sample_count: int
     dataset_counts: dict[str, int]
+    warnings: list[str]
 
 
 def _default_io_workers() -> int:
@@ -167,8 +175,11 @@ def _build_final_dataset_summary(
     exhaustive_od_root: Path,
     aihub_canonical_root: Path,
     publish_marker_path: Path,
+    stats_path: Path,
+    stats_markdown_path: Path,
     sample_count: int,
     dataset_counts: dict[str, int],
+    warnings: list[str],
 ) -> FinalDatasetBuildSummary:
     manifest_path = output_root / "meta" / FINAL_DATASET_MANIFEST_NAME
     summary_path = output_root / "meta" / FINAL_DATASET_SUMMARY_NAME
@@ -179,9 +190,12 @@ def _build_final_dataset_summary(
         "manifest_path": str(manifest_path),
         "summary_path": str(summary_path),
         "publish_marker_path": str(publish_marker_path),
+        "stats_path": str(stats_path),
+        "stats_markdown_path": str(stats_markdown_path),
         "rerun_mode": FINAL_DATASET_RERUN_MODE,
         "sample_count": sample_count,
         "dataset_counts": dict(sorted(dataset_counts.items())),
+        "warnings": list(warnings),
     }
 
 
@@ -503,13 +517,17 @@ def build_pv26_exhaustive_od_lane_dataset(
         sample_count=copied_samples,
         dataset_counts=dict(dataset_counts),
     )
+    stats_payload = analyze_final_dataset(dataset_root=resolved_output_root, write_artifacts=True)
     build_summary = _build_final_dataset_summary(
         output_root=resolved_output_root,
         exhaustive_od_root=resolved_exhaustive_root,
         aihub_canonical_root=resolved_aihub_root,
         publish_marker_path=publish_marker_path,
+        stats_path=resolved_output_root / "meta" / FINAL_DATASET_STATS_NAME,
+        stats_markdown_path=resolved_output_root / "meta" / FINAL_DATASET_STATS_MARKDOWN_NAME,
         sample_count=copied_samples,
         dataset_counts=dict(dataset_counts),
+        warnings=list(stats_payload.get("warnings", [])),
     )
     _write_json_replace(resolved_output_root / "meta" / FINAL_DATASET_SUMMARY_NAME, build_summary)
     return build_summary

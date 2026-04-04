@@ -40,6 +40,8 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("G", "Mobility teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "mobility" / "weights")),
         ActionSpec("I", "Signal teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "signal" / "weights")),
         ActionSpec("J", "Obstacle teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "obstacle" / "weights")),
+        ActionSpec("K", "PV26 retrain / fine-tune", "interactive: source run 선택 후 stage window derived run", (), str(paths.pv26_run_root), rerun_contract="derived run only: source run + selected stage window / current config"),
+        ActionSpec("L", "최종 데이터셋 full stats", "interactive: final dataset class/task/audit 통계 표시", (), str(paths.final_dataset_root / "meta")),
     )
 
 
@@ -91,6 +93,14 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
     elif action.key == "E":
         if not flags.get("pv26_runtime", False):
             blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
+    elif action.key == "K":
+        if not flags.get("pv26_runtime", False):
+            blockers.append("PV26 retrain/fine-tune에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
+        if not flags.get("final_dataset", False):
+            blockers.append("최종 병합 데이터셋이 아직 없습니다.")
+    elif action.key == "L":
+        if not flags.get("final_dataset", False):
+            blockers.append("최종 병합 데이터셋이 아직 없습니다.")
     elif action.key == "F":
         if not flags.get("pv26_runtime", False):
             blockers.append("PV26 TorchScript export에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
@@ -114,6 +124,10 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
         return "stage_3는 현재 전체 학습 단계 중 VRAM 상한을 보는 가장 좋은 proxy입니다. stage_4는 trunk/lane-family만 학습하므로 보통 더 낮습니다."
     if action.key == "E":
         return "resume는 exact resume only입니다. batch_size 변경이나 best/epoch 재시작은 별도 흐름으로 다루는 편이 안전합니다."
+    if action.key == "K":
+        return "retrain은 새 derived run을 만듭니다. 숫자 파라미터는 config를 그대로 읽고, launcher에서는 source run과 stage window만 고릅니다."
+    if action.key == "L":
+        return "stats 파일이 있으면 그대로 읽고, 없으면 final dataset labels_scene를 다시 스캔해 생성합니다."
     if action.key == "F":
         return "선택한 run의 final checkpoint 옆에 best.torchscript.pt / .meta.json을 씁니다."
     if action.key in {"G", "I", "J"}:
@@ -183,7 +197,7 @@ def _teacher_export_config_lines(action: ActionSpec) -> list[str]:
 def _action_config_lines(action: ActionSpec) -> list[str]:
     if action.key in {"3", "4", "5"}:
         return _teacher_action_config_lines(action)
-    if action.key == "C":
+    if action.key in {"C", "K"}:
         return _pv26_action_config_lines()
     if action.key in {"G", "I", "J"}:
         return _teacher_export_config_lines(action)

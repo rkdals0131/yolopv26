@@ -99,6 +99,8 @@
 - trainer preset은 stage 1~4 phase chain을 기준으로 확장된다.
 - `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원한다. legacy/dev preset과 legacy dataset mapping key는 더 이상 지원하지 않는다.
 - exact in-place resume는 `python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>` 경로를 기준으로 유지한다.
+- derived retrain/fine-tune는 `python3 tools/run_pv26_train.py --derive-run runs/pv26_exhaustive_od_lane_train/<source_run_name> --start-stage <STAGE> --end-stage <STAGE>` 경로를 기준으로 유지한다.
+- derived run은 source run의 checkpoint를 seed로 쓰되, epoch/sampler/loss/freeze 숫자 파라미터는 현재 preset + user YAML을 그대로 다시 읽는다.
 - `tools/check_env.py` interactive launcher는 `stage_3` peak VRAM stress probe를 제공하고, batch size / short iter 수를 받아 현재 backbone/stage 경로로 메모리 상한을 빠르게 확인할 수 있다.
 - direct CLI probe는 `python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 형식으로 유지한다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.

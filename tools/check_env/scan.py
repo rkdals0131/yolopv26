@@ -26,6 +26,7 @@ from tools.od_bootstrap.build.final_dataset import (
     FINAL_DATASET_RERUN_MODE,
     FINAL_DATASET_SUMMARY_NAME,
 )
+from tools.od_bootstrap.build.final_dataset_stats import FINAL_DATASET_STATS_NAME
 from tools.od_bootstrap.presets import (
     build_calibration_preset,
     build_default_source_preset,
@@ -91,6 +92,19 @@ class ResumeCandidate:
     next_phase_name: str
     next_phase_stage: str
     resume_source: str
+    updated_at: str | None
+
+
+@dataclass(frozen=True)
+class RetrainCandidate:
+    run_dir: Path
+    run_name: str
+    status: str
+    latest_phase_name: str | None
+    latest_phase_stage: str | None
+    completed_phases: int
+    total_executable_phases: int
+    available_seed_stages: tuple[str, ...]
     updated_at: str | None
 
 
@@ -323,6 +337,10 @@ def _final_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
         summary_path=meta_root / FINAL_DATASET_SUMMARY_NAME,
         manifest_path=meta_root / FINAL_DATASET_MANIFEST_NAME,
     )
+
+
+def _final_dataset_stats(dataset_root: Path) -> dict[str, Any] | None:
+    return _json_load_if_exists(dataset_root / "meta" / FINAL_DATASET_STATS_NAME)
 
 
 def _final_dataset_publish_marker(dataset_root: Path) -> dict[str, Any] | None:
@@ -632,6 +650,7 @@ def _build_exhaustive_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, boo
 
 def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
     summary = _final_dataset_summary(paths.final_dataset_root)
+    stats = _final_dataset_stats(paths.final_dataset_root)
     marker = _final_dataset_publish_marker(paths.final_dataset_root)
     staging_roots = _final_dataset_staging_roots(paths.final_dataset_root)
     manifest_path = paths.final_dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
@@ -641,6 +660,25 @@ def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, 
         state = f"samples={sample_count}"
         if isinstance(dataset_counts, dict) and dataset_counts:
             state += " | " + ", ".join(f"{key}={_safe_int(value)}" for key, value in sorted(dataset_counts.items()))
+        verdict = "OK"
+        if isinstance(stats, dict):
+            detector = stats.get("detector", {})
+            detector_classes = detector.get("classes", {}) if isinstance(detector, dict) else {}
+            traffic_light = detector_classes.get("traffic_light", {}) if isinstance(detector_classes, dict) else {}
+            tl_val = _safe_int(traffic_light.get("split_image_counts", {}).get("val")) if isinstance(traffic_light, dict) else 0
+            presence_counts = stats.get("presence_counts", {}) if isinstance(stats.get("presence_counts"), dict) else {}
+            det_images = _safe_int(presence_counts.get("det"))
+            audit = stats.get("audit", {}) if isinstance(stats.get("audit"), dict) else {}
+            warnings = [str(item) for item in stats.get("warnings", [])] if isinstance(stats.get("warnings"), list) else []
+            state += f" | det_images={det_images} | tl_val={tl_val}"
+            if audit:
+                det_present = _safe_int(audit.get("manifest_det_path_present_count"))
+                scene_invalid = _safe_int(audit.get("manifest_scene_path_invalid_count"))
+                state += f" | det_paths={det_present} | stale_scene_paths={scene_invalid}"
+            if warnings:
+                state += " | warnings=" + ",".join(warnings[:3])
+            if warnings:
+                verdict = "WARN"
         rerun_mode = None
         if isinstance(marker, dict):
             rerun_mode = str(marker.get("rerun_mode") or "").strip() or None
@@ -652,7 +690,6 @@ def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, 
             status = str(marker.get("status") or "").strip()
             if status:
                 state += f" | publish={status}"
-        verdict = "OK"
         ready = True
     else:
         has_any = manifest_path.exists()
@@ -747,18 +784,39 @@ def _phase_run_dir(run_dir: Path, phase_entry: dict[str, Any], *, phase_index: i
     return run_dir / f"phase_{phase_index}"
 
 
-def _resume_source_for_phase(run_dir: Path, phases: list[dict[str, Any]], *, phase_index: int) -> str | None:
+def _phase_best_checkpoint(run_dir: Path, phase_entry: dict[str, Any], *, phase_index: int) -> Path | None:
+    checkpoint_value = phase_entry.get("best_checkpoint_path")
+    if checkpoint_value not in {None, ""}:
+        checkpoint_path = Path(str(checkpoint_value)).expanduser().resolve()
+        if checkpoint_path.is_file():
+            return checkpoint_path
+    fallback = _phase_run_dir(run_dir, phase_entry, phase_index=phase_index) / "checkpoints" / "best.pt"
+    if fallback.is_file():
+        return fallback.resolve()
+    return None
+
+
+def _resume_source_for_phase(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    phases: list[dict[str, Any]],
+    *,
+    phase_index: int,
+) -> str | None:
     phase_entry = phases[phase_index - 1]
     phase_run_dir = _phase_run_dir(run_dir, phase_entry, phase_index=phase_index)
     last_checkpoint = phase_run_dir / "checkpoints" / "last.pt"
     if last_checkpoint.is_file():
         return f"phase_{phase_index} last.pt"
-    if phase_index <= 1:
-        return None
-    previous_entry = phases[phase_index - 2]
-    previous_best = previous_entry.get("best_checkpoint_path")
-    if previous_best not in {None, ""} and Path(previous_best).is_file():
-        return f"phase_{phase_index - 1} best.pt -> phase_{phase_index}"
+    for previous_index in range(phase_index - 1, 0, -1):
+        previous_entry = phases[previous_index - 1]
+        if _phase_best_checkpoint(run_dir, previous_entry, phase_index=previous_index) is not None:
+            return f"phase_{previous_index} best.pt -> phase_{phase_index}"
+    lineage = manifest.get("lineage")
+    if isinstance(lineage, dict):
+        seed_checkpoint = lineage.get("seed_checkpoint_path")
+        if seed_checkpoint not in {None, ""} and Path(str(seed_checkpoint)).expanduser().is_file():
+            return "lineage seed checkpoint"
     return None
 
 
@@ -777,20 +835,25 @@ def _resume_candidate_from_run_dir(run_dir: Path) -> ResumeCandidate | None:
     if status == "completed":
         return None
     completed_phases = 0
+    total_executable_phases = 0
     next_phase_index: int | None = None
     next_phase_entry: dict[str, Any] | None = None
     for index, entry in enumerate(phases, start=1):
         if not isinstance(entry, dict):
             return None
-        if str(entry.get("status") or "") == "completed":
+        entry_status = str(entry.get("status") or "")
+        if entry_status == "skipped":
+            continue
+        total_executable_phases += 1
+        if entry_status == "completed":
             completed_phases += 1
             continue
-        next_phase_index = index
-        next_phase_entry = entry
-        break
+        if next_phase_index is None:
+            next_phase_index = index
+            next_phase_entry = entry
     if next_phase_index is None or next_phase_entry is None:
         return None
-    resume_source = _resume_source_for_phase(run_dir, phases, phase_index=next_phase_index)
+    resume_source = _resume_source_for_phase(run_dir, manifest, phases, phase_index=next_phase_index)
     if resume_source is None:
         return None
     updated_at = manifest.get("updated_at")
@@ -800,10 +863,56 @@ def _resume_candidate_from_run_dir(run_dir: Path) -> ResumeCandidate | None:
         run_name=run_dir.name,
         status=status,
         completed_phases=completed_phases,
-        total_phases=len(phases),
+        total_phases=total_executable_phases,
         next_phase_name=str(next_phase_entry.get("name") or f"phase_{next_phase_index}"),
         next_phase_stage=str(next_phase_entry.get("stage") or "unknown"),
         resume_source=resume_source,
+        updated_at=updated_at_text,
+    )
+
+
+def _retrain_candidate_from_run_dir(run_dir: Path) -> RetrainCandidate | None:
+    manifest_path = run_dir / "meta_manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = _json_load(manifest_path)
+    except Exception:
+        return None
+    phases = manifest.get("phases")
+    if not isinstance(phases, list) or not phases:
+        return None
+    available_seed_stages: list[str] = []
+    latest_phase_name: str | None = None
+    latest_phase_stage: str | None = None
+    completed_phases = 0
+    total_executable_phases = 0
+    for phase_index, entry in enumerate(phases, start=1):
+        if not isinstance(entry, dict):
+            return None
+        entry_status = str(entry.get("status") or "")
+        if entry_status != "skipped":
+            total_executable_phases += 1
+        checkpoint_path = _phase_best_checkpoint(run_dir, entry, phase_index=phase_index)
+        if checkpoint_path is not None:
+            available_seed_stages.append(str(entry.get("stage") or f"phase_{phase_index}"))
+        if entry_status == "completed":
+            completed_phases += 1
+            latest_phase_name = str(entry.get("name") or f"phase_{phase_index}")
+            latest_phase_stage = str(entry.get("stage") or f"phase_{phase_index}")
+    if not available_seed_stages:
+        return None
+    updated_at = manifest.get("updated_at")
+    updated_at_text = str(updated_at) if updated_at not in {None, ""} else None
+    return RetrainCandidate(
+        run_dir=run_dir,
+        run_name=run_dir.name,
+        status=str(manifest.get("status") or "unknown"),
+        latest_phase_name=latest_phase_name,
+        latest_phase_stage=latest_phase_stage,
+        completed_phases=completed_phases,
+        total_executable_phases=total_executable_phases,
+        available_seed_stages=tuple(available_seed_stages),
         updated_at=updated_at_text,
     )
 
@@ -858,6 +967,25 @@ def _scan_pv26_resume_candidates(run_root: Path) -> list[ResumeCandidate]:
     candidates: list[ResumeCandidate] = []
     for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
         candidate = _resume_candidate_from_run_dir(child)
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            item.updated_at or "",
+            item.run_dir.stat().st_mtime_ns if item.run_dir.exists() else 0,
+            item.run_name,
+        ),
+        reverse=True,
+    )
+
+
+def _scan_pv26_retrain_candidates(run_root: Path) -> list[RetrainCandidate]:
+    if not run_root.is_dir():
+        return []
+    candidates: list[RetrainCandidate] = []
+    for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
+        candidate = _retrain_candidate_from_run_dir(child)
         if candidate is not None:
             candidates.append(candidate)
     return sorted(
