@@ -42,7 +42,7 @@
 
 ## 고정 원칙
 
-1. trunk는 `yolo26s.pt` reuse를 유지한다.
+1. trunk는 `yolo26s.pt`를 권장 기본값으로 유지하되, `yolo26n.pt` / `yolo26s.pt` variant compatibility는 계속 유지한다.
 2. `P3 / P4 / P5`를 spatial하게 fuse한 뒤 각 task가 그 spatial memory를 읽는다.
 3. lane과 road marking은 같은 pooled vector를 공유하지 않는다.
 4. lane은 `row-anchor x / visibility`로 바꾼다.
@@ -94,8 +94,8 @@ image
 
 ### lane query decoder
 
-- query count는 `20`으로 고정한다.
-- learned query embedding `20 x 256`을 사용한다.
+- query count는 `24`로 고정한다.
+- learned query embedding `24 x 256`을 사용한다.
 - decoder block 수는 `2`로 고정한다.
 - 각 decoder block은
   - self-attention
@@ -106,7 +106,7 @@ image
 
 ### lane internal contract
 
-- lane output shape는 `B x 20 x 38`이다.
+- lane output shape는 `B x 24 x 38`이다.
 - lane row layout:
 
 | Slice | Meaning |
@@ -132,8 +132,14 @@ image
 - GT lane point는 `y` descending으로 정렬한다.
 - 각 anchor row마다 GT polyline과 교차하는 segment를 찾아 `x`를 선형 보간한다.
 - 해당 anchor row를 덮는 segment가 없으면 `visibility = 0`, `x = 0`으로 채우고 regression mask에서 제외한다.
-- raw lane visibility가 있으면 같은 segment에서 visibility도 선형 보간한 뒤 `>= 0.5`를 visible로 본다.
-- raw lane visibility가 없으면 해당 source row 전체를 invalid로 두지 않고, point span 안에서만 `visibility = 1`로 처리한다.
+- visibility source policy는 아래 둘 중 하나만 허용한다.
+  - source annotation이 실제 visibility를 제공하면 standardization 단계부터 canonical scene에 그대로 보존한다.
+  - source annotation이 실제 visibility를 제공하지 않으면 canonical scene에는 `point-span 기반 pseudo-visibility`만 기록한다.
+- downstream 문서와 코드에서는 위 둘을 구분해서 부른다.
+  - 실제 source visibility가 있으면 `raw visibility`
+  - 실제 source visibility가 없고 geometry에서 만든 값이면 `pseudo-visibility`
+- source visibility가 있으면 같은 segment에서 visibility도 선형 보간한 뒤 `>= 0.5`를 visible로 본다.
+- source visibility가 없으면 point span 안에서만 `visibility = 1`로 처리한다.
 - `x` loss는 `GT visibility = 1` anchor에서만 계산한다.
 - invisible anchor의 `x` 값은 contract padding일 뿐 의미 있는 supervision 대상이 아니다.
 
@@ -152,11 +158,21 @@ image
   - visible-anchor masked SmoothL1 on `x`
   - visibility BCE
   - second-difference smoothness regularizer on predicted anchor sequence
+  - visibility total-variation regularizer on anchor visibility logits
+
+### lane span continuity rule
+
+- lane span은 visibility가 담당한다.
+- 대신 구현은 아래 두 개를 같이 쓴다.
+  - training: visibility total-variation regularizer
+  - postprocess: 가장 긴 contiguous visible run만 채택
+- 따라서 `1, 1, 0, 1, 0, 1` 같은 fragmented visibility는 학습과 decode 양쪽에서 억제한다.
 
 ### lane postprocess
 
 - `visibility sigmoid > lane_visibility_threshold` anchor만 active anchor로 사용한다.
-- active anchor가 `2`개 미만이면 해당 query는 버린다.
+- active anchor는 threshold 통과 anchor 전체가 아니라, threshold 통과 anchor 중 가장 긴 contiguous run만 사용한다.
+- contiguous run 기준 active anchor가 `2`개 미만이면 해당 query는 버린다.
 - active anchor의 `(x, y_anchor)`를 raw-space로 inverse transform해서 `points_xy`로 내보낸다.
 - lane dedupe는 다음 세 조건을 함께 본다.
   - visible-anchor overlap ratio
@@ -202,19 +218,22 @@ image
 
 - GT stop line points는 left-to-right로 정렬한다.
 - polyline 전체를 대표하는 line segment는 first point / last point로 잡는다.
-- `width`는 GT polyline point가 `2`개뿐이면 fixed default `6.0`을 쓰고, `3`개 이상이면 point-to-segment mean perpendicular distance의 `2x`로 잡는다.
-- default width는 network-space 기준이다.
+- `width`는 GT polyline point가 `3`개 이상일 때만 supervised target으로 계산한다.
+- supervised width는 point-to-segment mean perpendicular distance의 `2x`로 잡는다.
+- GT polyline point가 `2`개뿐이면 predicted `width`는 auxiliary prior only로 취급하고 matching/loss에서 제외한다.
+- default prior width는 network-space `6.0`을 사용하되, 이 값은 target label이 아니라 decode/dedupe 보조 prior다.
+- encoded batch는 stop_line row별 width-valid mask를 별도로 유지한다.
 
 ### stop_line matching / loss
 
 - stop_line cost:
   - endpoint L1
-  - width L1
+  - width-valid row에서만 width L1
   - line angle / line length cost
 - stop_line loss:
   - objectness BCE
   - endpoint SmoothL1
-  - width SmoothL1
+  - width-valid row에서만 width SmoothL1
   - line angle / line length regularizer
 
 ### stop_line postprocess
@@ -299,10 +318,14 @@ image
   - shape-compatible shared blocks
 - lane / stop_line / crosswalk predictor는 새 generation에서 random init을 기본으로 한다.
 - migration load는 strict `load_state_dict()`가 아니라 shape-aware partial load를 별도 경로로 제공해야 한다.
+- migration helper는 existing `load_matching_state_dict()` 재사용을 기본 경로로 한다.
 
 ## Export / Runtime Rule
 
-- TorchScript export metadata는 lane / stop_line / crosswalk shape 변경을 반영해야 한다.
+- current raw-head export는 crosswalk tensor와 metadata가 빠져 있으므로, rewrite generation에서는 raw-head export contract 자체를 갱신한다.
+- TorchScript raw-head export metadata는 det / tl_attr / lane / stop_line / crosswalk shape를 모두 반영해야 한다.
+- 이 wave에서는 postprocess 포함 export contract를 새로 만들지 않는다.
+- 즉 export는 계속 raw heads를 내보내되, 누락된 crosswalk를 포함한 complete raw-head surface로 정리한다.
 - ROS/export consumer는 internal tensor shape를 직접 읽지 않고, postprocess 이후 public `points_xy` surface만 읽는 것을 기준으로 한다.
 - public output schema를 먼저 깨는 방향은 허용하지 않는다.
 
