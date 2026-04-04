@@ -7,7 +7,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from tools.od_bootstrap.build.debug_vis import generate_canonical_debug_vis
+from tools.od_bootstrap.build.debug_vis import generate_canonical_debug_vis, generate_final_dataset_debug_vis
+from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME
 from tools.od_bootstrap.build.image_list import ImageListEntry, build_sample_uid, write_image_list
 
 
@@ -66,6 +67,64 @@ class ODBootstrapBuildDebugVisTests(unittest.TestCase):
                 self.assertEqual(manifest["selection_count"], 1)
                 self.assertEqual(manifest["items"][0]["dataset_key"], dataset_key)
                 self.assertTrue(Path(manifest["items"][0]["overlay_path"]).is_file())
+
+    def test_generate_final_dataset_debug_vis_writes_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "pv26_exhaustive_od_lane_dataset"
+            image_path = dataset_root / "images" / "train" / "final_001.png"
+            scene_path = dataset_root / "labels_scene" / "train" / "final_001.json"
+            _make_image(image_path, 640, 360, "#333333")
+            _write_json(
+                scene_path,
+                {
+                    "version": "test",
+                    "image": {
+                        "file_name": image_path.name,
+                        "width": 640,
+                        "height": 360,
+                    },
+                    "source": {
+                        "dataset": "aihub_lane_seoul",
+                        "split": "train",
+                        "final_sample_id": "final_001",
+                    },
+                    "detections": [{"class_name": "vehicle", "bbox": [10, 20, 120, 160]}],
+                    "lanes": [{"class_name": "white_lane", "points": [[0, 0], [100, 100]]}],
+                },
+            )
+            manifest_rows = [
+                {
+                    "final_sample_id": "final_001",
+                    "source_dataset_key": "aihub_lane_seoul",
+                    "split": "train",
+                    "scene_path": str(scene_path),
+                    "image_path": str(image_path),
+                }
+            ]
+            _write_json(
+                dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME,
+                {
+                    "version": "test",
+                    "output_root": str(dataset_root),
+                    "sample_count": 1,
+                    "dataset_counts": {"aihub_lane_seoul": 1},
+                    "samples": manifest_rows,
+                },
+            )
+
+            outputs = generate_final_dataset_debug_vis(
+                dataset_root=dataset_root,
+                manifest_rows=manifest_rows,
+                debug_vis_count=1,
+                debug_vis_seed=7,
+            )
+
+            manifest = json.loads(outputs["debug_vis_manifest"].read_text(encoding="utf-8"))
+            self.assertEqual(outputs["selection_count"], 1)
+            self.assertEqual(manifest["selection_count"], 1)
+            self.assertEqual(manifest["items"][0]["dataset_key"], "aihub_lane_seoul")
+            self.assertTrue(Path(manifest["items"][0]["overlay_path"]).is_file())
 
     def _make_canonical_entry(
         self,

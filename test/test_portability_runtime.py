@@ -100,7 +100,7 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertEqual(exit_code, 7)
         interactive_loop.assert_called_once()
 
-    def test_check_env_action_catalog_includes_stage3_vram_stress_and_resume(self) -> None:
+    def test_check_env_action_catalog_includes_export_and_resume_actions(self) -> None:
         from tools.check_env import PipelinePaths, _action_catalog
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -133,6 +133,12 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("resume", resume_action.command_display)
         self.assertEqual(resume_action.argv, ())
         self.assertIn("resume", resume_action.label.lower())
+        export_action = next(item for item in actions if item.key == "F")
+        self.assertIn("TorchScript", export_action.label)
+        self.assertEqual(export_action.argv, ())
+        teacher_export_action = next(item for item in actions if item.key == "G")
+        self.assertIn("Mobility", teacher_export_action.label)
+        self.assertEqual(teacher_export_action.argv, ())
 
     def test_scan_pv26_resume_candidates_filters_completed_runs(self) -> None:
         from tools.check_env import _scan_pv26_resume_candidates
@@ -226,6 +232,57 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertTrue(any("dataset roots:" in line for line in pv26_lines))
         self.assertTrue(any("phase_1" in line for line in pv26_lines))
         self.assertTrue(any("preview:" in line for line in pv26_lines))
+
+        export_lines = _action_config_lines(
+            ActionSpec(
+                key="G",
+                label="Mobility teacher TorchScript export",
+                command_display="interactive",
+                argv=(),
+                output_hint="unused",
+            )
+        )
+        self.assertTrue(any("checkpoint:" in line for line in export_lines))
+        self.assertTrue(any("format=torchscript" in line for line in export_lines))
+
+    def test_scan_pv26_export_candidates_filters_completed_runs_with_checkpoints(self) -> None:
+        from tools.check_env import _scan_pv26_export_candidates
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_root = root / "pv26_runs"
+            completed = run_root / "run_done"
+            incomplete = run_root / "run_active"
+            checkpoint = completed / "phase_4" / "checkpoints" / "best.pt"
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            incomplete.mkdir(parents=True, exist_ok=True)
+            (completed / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "final_checkpoint_path": str(checkpoint),
+                        "latest_phase_stage": "stage_4_lane_family_finetune",
+                        "latest_selection_metric_path": "val.metrics.lane_family.mean_f1",
+                        "latest_backbone_variant": "s",
+                        "updated_at": "2026-04-04T01:02:03",
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (incomplete / "summary.json").write_text(
+                json.dumps({"status": "running"}, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+            )
+
+            candidates = _scan_pv26_export_candidates(run_root)
+
+        self.assertEqual([item.run_name for item in candidates], ["run_done"])
+        self.assertEqual(candidates[0].checkpoint_path, checkpoint.resolve())
+        self.assertEqual(candidates[0].artifact_path, checkpoint.with_suffix(".torchscript.pt").resolve())
 
     def test_stage3_stress_action_resolution_appends_runtime_parameters(self) -> None:
         from rich.console import Console

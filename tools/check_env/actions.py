@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import sys
 
+from tools.model_export import artifact_paths_for_checkpoint
 from .scan import PipelinePaths, TEACHER_NAMES, WorkspaceSnapshot
 from tools.od_bootstrap.presets import build_teacher_train_preset
+from tools.od_bootstrap.presets import build_teacher_eval_preset
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,10 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("C", "PV26 기본 학습", "python3 tools/run_pv26_train.py --preset default", (python_exe, "tools/run_pv26_train.py", "--preset", "default"), str(paths.pv26_run_root)),
         ActionSpec("D", "PV26 stage_3 VRAM stress", "interactive: batch/iter 입력 후 stage_3 peak VRAM probe", (), "TUI result panel only (no checkpoints / no run dir)", rerun_contract="short probe only: stage_3 train loop 일부만 실행"),
         ActionSpec("E", "PV26 exact resume", "interactive: resumable run 목록에서 골라 same run dir exact resume", (), str(paths.pv26_run_root), rerun_contract="exact resume only: same run dir / same scenario"),
+        ActionSpec("F", "PV26 TorchScript export", "interactive: completed PV26 run 선택 후 adjacent TorchScript export", (), str(paths.pv26_run_root)),
+        ActionSpec("G", "Mobility teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "mobility" / "weights")),
+        ActionSpec("I", "Signal teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "signal" / "weights")),
+        ActionSpec("J", "Obstacle teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "obstacle" / "weights")),
     )
 
 
@@ -85,6 +91,17 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
     elif action.key == "E":
         if not flags.get("pv26_runtime", False):
             blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
+    elif action.key == "F":
+        if not flags.get("pv26_runtime", False):
+            blockers.append("PV26 TorchScript export에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
+        if not flags.get("pv26_export_available", False):
+            blockers.append("export 가능한 completed PV26 run이 없습니다.")
+    elif action.key in {"G", "I", "J"}:
+        teacher_name = {"G": "mobility", "I": "signal", "J": "obstacle"}[action.key]
+        if not flags.get("runtime_core", False):
+            blockers.append("teacher TorchScript export에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
+        if not flags.get(f"teacher_train.{teacher_name}", False):
+            blockers.append(f"{teacher_name} teacher stable checkpoint가 아직 없습니다.")
     return blockers
 
 
@@ -97,6 +114,10 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
         return "stage_3는 현재 전체 학습 단계 중 VRAM 상한을 보는 가장 좋은 proxy입니다. stage_4는 trunk/lane-family만 학습하므로 보통 더 낮습니다."
     if action.key == "E":
         return "resume는 exact resume only입니다. batch_size 변경이나 best/epoch 재시작은 별도 흐름으로 다루는 편이 안전합니다."
+    if action.key == "F":
+        return "선택한 run의 final checkpoint 옆에 best.torchscript.pt / .meta.json을 씁니다."
+    if action.key in {"G", "I", "J"}:
+        return "teacher별 stable weights/best.pt 옆에 best.torchscript.pt / .meta.json을 씁니다."
     return None
 
 
@@ -145,9 +166,25 @@ def _pv26_action_config_lines() -> list[str]:
     return lines
 
 
+def _teacher_export_config_lines(action: ActionSpec) -> list[str]:
+    teacher_name = {"G": "mobility", "I": "signal", "J": "obstacle"}[action.key]
+    train_scenario = build_teacher_train_preset(teacher_name)
+    eval_scenario = build_teacher_eval_preset(teacher_name)
+    artifact_path, meta_path = artifact_paths_for_checkpoint(eval_scenario.model.checkpoint_path)
+    return [
+        f"- teacher={teacher_name}, classes={', '.join(train_scenario.model.class_names)}",
+        f"- checkpoint: {eval_scenario.model.checkpoint_path}",
+        f"- export: {artifact_path}",
+        f"- meta: {meta_path}",
+        f"- imgsz={eval_scenario.eval.imgsz}, device=auto, format=torchscript",
+    ]
+
+
 def _action_config_lines(action: ActionSpec) -> list[str]:
     if action.key in {"3", "4", "5"}:
         return _teacher_action_config_lines(action)
     if action.key == "C":
         return _pv26_action_config_lines()
+    if action.key in {"G", "I", "J"}:
+        return _teacher_export_config_lines(action)
     return []

@@ -24,10 +24,12 @@ from .launch import (  # noqa: E402
 )
 from .scan import (  # noqa: E402
     PipelinePaths,
+    Pv26ExportCandidate,
     ResumeCandidate,
     StageRow,
     WorkspaceSnapshot,
     _manifest_header,
+    _scan_pv26_export_candidates,
     _scan_pv26_resume_candidates,
     check_env,
     scan_workspace_status,
@@ -36,6 +38,7 @@ from .scan import (  # noqa: E402
 __all__ = [
     "ActionSpec",
     "PipelinePaths",
+    "Pv26ExportCandidate",
     "ResumeCandidate",
     "StageRow",
     "WorkspaceSnapshot",
@@ -45,6 +48,7 @@ __all__ = [
     "_default_stage3_stress_batch_size",
     "_interactive_loop",
     "_manifest_header",
+    "_scan_pv26_export_candidates",
     "_resolve_stage3_stress_action",
     "_scan_pv26_resume_candidates",
     "_should_run_interactive",

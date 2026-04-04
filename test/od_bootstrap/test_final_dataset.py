@@ -91,6 +91,26 @@ class FinalDatasetTests(unittest.TestCase):
             self.assertEqual(manifest["samples"][0]["final_sample_id"], "od")
             self.assertEqual(manifest["samples"][1]["final_sample_id"], "lane")
             self.assertIsNone(manifest["samples"][1]["det_path"])
+            self.assertEqual(
+                manifest["samples"][0]["scene_path"],
+                str((output_root / "labels_scene" / "train" / "od.json").resolve()),
+            )
+            self.assertEqual(
+                manifest["samples"][0]["image_path"],
+                str((output_root / "images" / "train" / "od.png").resolve()),
+            )
+            self.assertEqual(
+                manifest["samples"][0]["det_path"],
+                str((output_root / "labels_det" / "train" / "od.txt").resolve()),
+            )
+            self.assertEqual(
+                manifest["samples"][1]["scene_path"],
+                str((output_root / "labels_scene" / "train" / "lane.json").resolve()),
+            )
+            self.assertEqual(
+                manifest["samples"][1]["image_path"],
+                str((output_root / "images" / "train" / "lane.png").resolve()),
+            )
             self.assertEqual(od_scene["source"]["final_sample_id"], "od")
             self.assertEqual(od_scene["source"]["source_kind"], "exhaustive_od")
             self.assertEqual(od_scene["image"]["file_name"], "od.png")

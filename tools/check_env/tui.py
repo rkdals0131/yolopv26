@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .actions import ActionSpec
-from .scan import ResumeCandidate, STAGE_ICON, WorkspaceSnapshot
+from .scan import Pv26ExportCandidate, ResumeCandidate, STAGE_ICON, WorkspaceSnapshot
 
 
 def _format_gib(value: Any) -> str:
@@ -114,6 +114,7 @@ def _render_help(console: Console, snapshot: WorkspaceSnapshot) -> None:
                     f"- bootstrap 전용 설명: {snapshot.paths.repo_root / 'tools' / 'od_bootstrap' / 'README.md'}",
                     "- 코드에서 빠른 조절 지점을 찾고 싶으면 `USER CONFIG`, `HYPERPARAMETERS`, `PHASE HYPERPARAMETERS`를 검색하세요.",
                     "- `E` resume는 exact resume only입니다. 같은 run을 그대로 이어서만 재개합니다.",
+                    "- `F/G/I/J` export는 checkpoint 옆에 TorchScript artifact와 .meta.json을 씁니다.",
                     "- 입력은 숫자/영문만 받습니다. yes/no 또는 y/n만 사용하세요.",
                 ]
             ),
@@ -140,6 +141,28 @@ def _render_resume_candidates(console: Console, candidates: list[ResumeCandidate
             f"{item.completed_phases}/{item.total_phases}",
             f"{item.next_phase_name} ({item.next_phase_stage})",
             item.resume_source,
+            item.updated_at or "-",
+        )
+    console.print(table)
+
+
+def _render_export_candidates(console: Console, candidates: list[Pv26ExportCandidate]) -> None:
+    table = Table(box=box.SIMPLE_HEAVY, title="PV26 TorchScript Export Candidates")
+    table.add_column("번호", justify="right", style="bold cyan")
+    table.add_column("Run")
+    table.add_column("Checkpoint")
+    table.add_column("Stage")
+    table.add_column("Backbone")
+    table.add_column("Selection")
+    table.add_column("Updated")
+    for index, item in enumerate(candidates, start=1):
+        table.add_row(
+            str(index),
+            item.run_name,
+            item.checkpoint_path.name,
+            item.latest_phase_stage or "-",
+            item.latest_backbone_variant or "-",
+            item.latest_selection_metric_path or "-",
             item.updated_at or "-",
         )
     console.print(table)

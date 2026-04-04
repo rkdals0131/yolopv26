@@ -11,6 +11,7 @@ from PIL import Image
 
 from tools.od_bootstrap import main as od_bootstrap_main
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
+from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME
 from tools.od_bootstrap.build.image_list import build_sample_uid
 
 
@@ -212,6 +213,62 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             debug_vis_dir = run_root / "meta" / "debug_vis"
             manifest_path = run_root / "meta" / "debug_vis_manifest.json"
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest_payload["selection_count"], 1)
+            overlay_files = sorted(debug_vis_dir.glob("*.png"))
+            self.assertEqual(len(overlay_files), 1)
+            self.assertEqual(sorted(path.name for path in debug_vis_dir.iterdir()), [overlay_files[0].name])
+            self.assertTrue(Path(manifest_payload["items"][0]["overlay_path"]).is_file())
+
+    def test_final_mode_renders_from_existing_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            final_root = root / "pv26_exhaustive_od_lane_dataset"
+            image_path = final_root / "images" / "train" / "final_001.png"
+            scene_path = final_root / "labels_scene" / "train" / "final_001.json"
+            _make_image(image_path, 64, 48, "#555555")
+            _write_json(
+                scene_path,
+                {
+                    "image": {"file_name": image_path.name, "width": 64, "height": 48},
+                    "source": {"dataset": "aihub_lane_seoul", "split": "train", "final_sample_id": "final_001"},
+                    "detections": [{"class_name": "vehicle", "bbox": [10, 10, 30, 30]}],
+                },
+            )
+            _write_json(
+                final_root / "meta" / FINAL_DATASET_MANIFEST_NAME,
+                {
+                    "version": "test",
+                    "samples": [
+                        {
+                            "final_sample_id": "final_001",
+                            "source_dataset_key": "aihub_lane_seoul",
+                            "split": "train",
+                            "scene_path": str(root / ".pv26_exhaustive_od_lane_dataset.staging.1" / "labels_scene" / "train" / "final_001.json"),
+                            "image_path": str(root / ".pv26_exhaustive_od_lane_dataset.staging.1" / "images" / "train" / "final_001.png"),
+                        }
+                    ],
+                },
+            )
+
+            with redirect_stdout(io.StringIO()):
+                exit_code = od_bootstrap_main(
+                    [
+                        "generate-debug-vis",
+                        "--mode",
+                        "final",
+                        "--final-root",
+                        str(final_root),
+                        "--count",
+                        "1",
+                        "--seed",
+                        "26",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            debug_vis_dir = final_root / "meta" / "debug_vis"
+            manifest_path = final_root / "meta" / "debug_vis_manifest.json"
             manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest_payload["selection_count"], 1)
             overlay_files = sorted(debug_vis_dir.glob("*.png"))

@@ -7,6 +7,11 @@ from typing import Callable
 from rich.console import Console
 from rich.panel import Panel
 
+from tools.model_export import artifact_paths_for_checkpoint
+from tools.model_export import export_pv26_torchscript
+from tools.model_export import export_teacher_torchscript
+from tools.od_bootstrap.presets import build_teacher_eval_preset
+
 from .actions import (
     ActionSpec,
     _action_advisory,
@@ -15,15 +20,18 @@ from .actions import (
     _action_config_lines,
 )
 from .scan import (
+    Pv26ExportCandidate,
     ResumeCandidate,
     WorkspaceSnapshot,
     _resolve_pipeline_paths,
+    _scan_pv26_export_candidates,
     _scan_pv26_resume_candidates,
     check_env,
     scan_workspace_status,
 )
 from .tui import (
     _render_dashboard,
+    _render_export_candidates,
     _render_help,
     _render_resume_candidates,
     _render_stage3_stress_result,
@@ -199,6 +207,20 @@ def _select_resume_candidate(console: Console, candidates: list[ResumeCandidate]
         console.print("[yellow]목록에 있는 번호만 입력하세요.[/yellow]")
 
 
+def _select_export_candidate(console: Console, candidates: list[Pv26ExportCandidate]) -> Pv26ExportCandidate | None:
+    while True:
+        raw = _ascii_input(console, f"export 번호 선택 (1-{len(candidates)}, Enter=취소) > ")
+        if raw is None or raw == "":
+            return None
+        if not raw.isdigit():
+            console.print("[yellow]숫자만 입력하세요.[/yellow]")
+            continue
+        index = int(raw)
+        if 1 <= index <= len(candidates):
+            return candidates[index - 1]
+        console.print("[yellow]목록에 있는 번호만 입력하세요.[/yellow]")
+
+
 def _run_subprocess_action(
     console: Console,
     snapshot: WorkspaceSnapshot,
@@ -286,6 +308,125 @@ def _run_pv26_resume(console: Console, snapshot: WorkspaceSnapshot, action: Acti
     )
 
 
+def _run_pv26_export(console: Console, snapshot: WorkspaceSnapshot, action: ActionSpec) -> bool:
+    candidates = _scan_pv26_export_candidates(snapshot.paths.pv26_run_root)
+    console.clear(home=True)
+    if not candidates:
+        console.print(
+            _render_panel(
+                f"export 가능한 completed PV26 run이 없습니다.\n검색 위치: {snapshot.paths.pv26_run_root}",
+                title=f"{action.key} {action.label}",
+                border_style="yellow",
+            )
+        )
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+
+    _render_export_candidates(console, candidates)
+    selected = _select_export_candidate(console, candidates)
+    if selected is None:
+        return True
+
+    console.clear(home=True)
+    existing_text = "existing=yes" if selected.artifact_path.is_file() and selected.meta_path.is_file() else "existing=no"
+    lines = [
+        f"🎯 작업: {action.label}",
+        f"- run: {selected.run_name}",
+        f"- checkpoint: {selected.checkpoint_path}",
+        f"- output: {selected.artifact_path}",
+        f"- meta: {selected.meta_path}",
+        f"- stage: {selected.latest_phase_stage or 'unknown'}",
+        f"- selection: {selected.latest_selection_metric_path or 'unknown'}",
+        f"- backbone: {selected.latest_backbone_variant or 'unknown'}",
+        f"- 상태: {existing_text}",
+    ]
+    console.print(_render_panel("\n".join(lines), title=f"{action.key} 실행 확인", border_style="cyan"))
+    if not _confirm(console):
+        return True
+
+    console.print("[bold green]PV26 TorchScript export를 시작합니다.[/bold green]")
+    try:
+        result = export_pv26_torchscript(
+            checkpoint_path=selected.checkpoint_path,
+            overwrite=True,
+        )
+    except KeyboardInterrupt:
+        console.print("\n[red]실행 중단됨[/red]")
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+    except Exception as exc:
+        console.print(_render_panel(str(exc), title="PV26 TorchScript Export 실패", border_style="red"))
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+
+    console.print(
+        _render_panel(
+            "\n".join(
+                [
+                    f"checkpoint: {result['checkpoint_path']}",
+                    f"artifact: {result['artifact_path']}",
+                    f"meta: {result['meta_path']}",
+                    f"variant: {result.get('checkpoint_variant') or 'unknown'}",
+                    "다시 스캔해서 상태를 갱신합니다.",
+                ]
+            ),
+            title="PV26 TorchScript Export 완료",
+            border_style="green",
+        )
+    )
+    return _pause_to_continue(console, prompt="Enter=상태 새로고침, Q=종료 > ")
+
+
+def _run_teacher_export(console: Console, snapshot: WorkspaceSnapshot, action: ActionSpec) -> bool:
+    teacher_name = {"G": "mobility", "I": "signal", "J": "obstacle"}[action.key]
+    scenario = build_teacher_eval_preset(teacher_name)
+    checkpoint_path = scenario.model.checkpoint_path
+    artifact_path, meta_path = artifact_paths_for_checkpoint(checkpoint_path)
+    console.clear(home=True)
+    lines = [
+        f"🎯 작업: {action.label}",
+        f"- teacher: {teacher_name}",
+        f"- checkpoint: {checkpoint_path}",
+        f"- output: {artifact_path}",
+        f"- meta: {meta_path}",
+        f"- classes: {', '.join(scenario.model.class_names)}",
+        f"- imgsz: {scenario.eval.imgsz}",
+    ]
+    console.print(_render_panel("\n".join(lines), title=f"{action.key} 실행 확인", border_style="cyan"))
+    if not _confirm(console):
+        return True
+
+    console.print("[bold green]teacher TorchScript export를 시작합니다.[/bold green]")
+    try:
+        result = export_teacher_torchscript(
+            teacher_name=teacher_name,
+            checkpoint_path=checkpoint_path,
+            class_names=scenario.model.class_names,
+            imgsz=scenario.eval.imgsz,
+            overwrite=True,
+        )
+    except KeyboardInterrupt:
+        console.print("\n[red]실행 중단됨[/red]")
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+    except Exception as exc:
+        console.print(_render_panel(str(exc), title="Teacher TorchScript Export 실패", border_style="red"))
+        return _pause_to_continue(console, prompt="Enter=메인으로 복귀, Q=종료 > ")
+
+    console.print(
+        _render_panel(
+            "\n".join(
+                [
+                    f"teacher: {result['teacher_name']}",
+                    f"artifact: {result['artifact_path']}",
+                    f"meta: {result['meta_path']}",
+                    f"device: {result['device']}",
+                    "다시 스캔해서 상태를 갱신합니다.",
+                ]
+            ),
+            title="Teacher TorchScript Export 완료",
+            border_style="green",
+        )
+    )
+    return _pause_to_continue(console, prompt="Enter=상태 새로고침, Q=종료 > ")
+
+
 def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapshot) -> bool:
     blockers = _action_blockers(action, snapshot)
     if blockers:
@@ -302,6 +443,10 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
         return _run_stage3_stress_probe(console, snapshot, action)
     if action.key == "E":
         return _run_pv26_resume(console, snapshot, action)
+    if action.key == "F":
+        return _run_pv26_export(console, snapshot, action)
+    if action.key in {"G", "I", "J"}:
+        return _run_teacher_export(console, snapshot, action)
     return _run_subprocess_action(console, snapshot, action)
 
 
@@ -313,7 +458,7 @@ def _interactive_loop(console: Console) -> int:
         actions = _action_catalog(snapshot.paths)
         _render_dashboard(console, snapshot, actions)
 
-        raw = _ascii_input(console, "선택 (1-9/A-E/H/R/Q) > ")
+        raw = _ascii_input(console, "선택 (1-9/A-J/H/R/Q) > ")
         if raw is None:
             return 0
         if raw == "":

@@ -298,6 +298,24 @@ def _finalize_sample_task(
     }
 
 
+def _manifest_row_for_output_root(*, row: FinalDatasetSampleRow, output_root: Path) -> FinalDatasetSampleRow:
+    split = str(row["split"])
+    final_sample_id = str(row["final_sample_id"])
+    image_suffix = Path(str(row["image_path"])).suffix.lower()
+    manifest_row: FinalDatasetSampleRow = {
+        "final_sample_id": final_sample_id,
+        "source_kind": row["source_kind"],
+        "source_dataset_key": str(row["source_dataset_key"]),
+        "split": split,
+        "scene_path": str((output_root / "labels_scene" / split / f"{final_sample_id}.json").resolve()),
+        "det_path": None,
+        "image_path": str((output_root / "images" / split / f"{final_sample_id}{image_suffix}").resolve()),
+    }
+    if row["det_path"] is not None:
+        manifest_row["det_path"] = str((output_root / "labels_det" / split / f"{final_sample_id}.txt").resolve())
+    return manifest_row
+
+
 def build_pv26_exhaustive_od_lane_dataset(
     *,
     exhaustive_od_root: Path,
@@ -450,6 +468,7 @@ def build_pv26_exhaustive_od_lane_dataset(
     _run_tasks(exhaustive_tasks, stage_name="exhaustive_od")
     _run_tasks(lane_tasks, stage_name="lane")
     copied_samples = len(sample_rows)
+    manifest_rows = [_manifest_row_for_output_root(row=row, output_root=resolved_output_root) for row in sample_rows]
 
     meta_root = staging_root / "meta"
     meta_root.mkdir(parents=True, exist_ok=True)
@@ -465,7 +484,7 @@ def build_pv26_exhaustive_od_lane_dataset(
         "sample_count": copied_samples,
         "dataset_counts": dict(sorted(dataset_counts.items())),
         "rerun_mode": FINAL_DATASET_RERUN_MODE,
-        "samples": sample_rows,
+        "samples": manifest_rows,
     }
     manifest_path = meta_root / FINAL_DATASET_MANIFEST_NAME
     manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")

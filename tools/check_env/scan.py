@@ -15,6 +15,7 @@ from common.user_config import (
     nested_get,
     resolve_repo_path,
 )
+from tools.model_export import artifact_paths_for_checkpoint
 from tools.od_bootstrap.build.exhaustive_od import (
     EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
     EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME,
@@ -90,6 +91,20 @@ class ResumeCandidate:
     next_phase_name: str
     next_phase_stage: str
     resume_source: str
+    updated_at: str | None
+
+
+@dataclass(frozen=True)
+class Pv26ExportCandidate:
+    run_dir: Path
+    run_name: str
+    checkpoint_path: Path
+    artifact_path: Path
+    meta_path: Path
+    status: str
+    latest_phase_stage: str | None
+    latest_selection_metric_path: str | None
+    latest_backbone_variant: str | None
     updated_at: str | None
 
 
@@ -711,6 +726,20 @@ def _build_pv26_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
     )
 
 
+def _artifact_pair_exists(checkpoint_path: Path) -> tuple[bool, Path, Path]:
+    artifact_path, meta_path = artifact_paths_for_checkpoint(checkpoint_path)
+    return artifact_path.is_file() and meta_path.is_file(), artifact_path, meta_path
+
+
+def _teacher_export_status(paths: PipelinePaths) -> dict[str, bool]:
+    status: dict[str, bool] = {}
+    for teacher_name in TEACHER_NAMES:
+        checkpoint_path = paths.teacher_train_root / teacher_name / "weights" / "best.pt"
+        exported, _, _ = _artifact_pair_exists(checkpoint_path)
+        status[f"teacher_export.{teacher_name}"] = exported
+    return status
+
+
 def _phase_run_dir(run_dir: Path, phase_entry: dict[str, Any], *, phase_index: int) -> Path:
     raw_run_dir = phase_entry.get("run_dir")
     if raw_run_dir not in {None, ""}:
@@ -779,12 +808,75 @@ def _resume_candidate_from_run_dir(run_dir: Path) -> ResumeCandidate | None:
     )
 
 
+def _pv26_export_candidate_from_run_dir(run_dir: Path) -> Pv26ExportCandidate | None:
+    summary_path = run_dir / "summary.json"
+    if not summary_path.is_file():
+        return None
+    try:
+        summary = _json_load(summary_path)
+    except Exception:
+        return None
+    status = str(summary.get("status") or "unknown")
+    if status != "completed":
+        return None
+    checkpoint_value = summary.get("final_checkpoint_path")
+    if checkpoint_value in {None, ""}:
+        return None
+    checkpoint_path = Path(str(checkpoint_value)).expanduser().resolve()
+    if not checkpoint_path.is_file():
+        return None
+    _, artifact_path, meta_path = _artifact_pair_exists(checkpoint_path)
+    updated_at = summary.get("updated_at")
+    updated_at_text = str(updated_at) if updated_at not in {None, ""} else None
+    return Pv26ExportCandidate(
+        run_dir=run_dir,
+        run_name=run_dir.name,
+        checkpoint_path=checkpoint_path,
+        artifact_path=artifact_path,
+        meta_path=meta_path,
+        status=status,
+        latest_phase_stage=(
+            str(summary.get("latest_phase_stage")) if summary.get("latest_phase_stage") not in {None, ""} else None
+        ),
+        latest_selection_metric_path=(
+            str(summary.get("latest_selection_metric_path"))
+            if summary.get("latest_selection_metric_path") not in {None, ""}
+            else None
+        ),
+        latest_backbone_variant=(
+            str(summary.get("latest_backbone_variant"))
+            if summary.get("latest_backbone_variant") not in {None, ""}
+            else None
+        ),
+        updated_at=updated_at_text,
+    )
+
+
 def _scan_pv26_resume_candidates(run_root: Path) -> list[ResumeCandidate]:
     if not run_root.is_dir():
         return []
     candidates: list[ResumeCandidate] = []
     for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
         candidate = _resume_candidate_from_run_dir(child)
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            item.updated_at or "",
+            item.run_dir.stat().st_mtime_ns if item.run_dir.exists() else 0,
+            item.run_name,
+        ),
+        reverse=True,
+    )
+
+
+def _scan_pv26_export_candidates(run_root: Path) -> list[Pv26ExportCandidate]:
+    if not run_root.is_dir():
+        return []
+    candidates: list[Pv26ExportCandidate] = []
+    for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
+        candidate = _pv26_export_candidate_from_run_dir(child)
         if candidate is not None:
             candidates.append(candidate)
     return sorted(
@@ -827,6 +919,14 @@ def _recommendation(flags: dict[str, bool]) -> str:
         return "B로 최종 병합 데이터셋을 만드세요."
     if not flags.get("pv26_train", False):
         return "C로 PV26 기본 학습을 돌리면 됩니다."
+    if flags.get("pv26_export_available", False) and not flags.get("pv26_export.latest", False):
+        return "F로 최신 완료 PV26 run을 TorchScript로 export하세요."
+    if flags.get("teacher_train.mobility", False) and not flags.get("teacher_export.mobility", False):
+        return "G로 mobility teacher를 TorchScript export하세요."
+    if flags.get("teacher_train.signal", False) and not flags.get("teacher_export.signal", False):
+        return "I로 signal teacher를 TorchScript export하세요."
+    if flags.get("teacher_train.obstacle", False) and not flags.get("teacher_export.obstacle", False):
+        return "J로 obstacle teacher를 TorchScript export하세요."
     return "상태는 좋아 보입니다. 필요한 메뉴만 골라 실행하면 됩니다."
 
 
@@ -869,10 +969,33 @@ def scan_workspace_status(report: dict[str, Any], *, paths: PipelinePaths | None
     rows.append(pv26_row)
     flags.update(pv26_flags)
 
+    teacher_export_flags = _teacher_export_status(resolved_paths)
+    flags.update(teacher_export_flags)
+    pv26_export_candidates = _scan_pv26_export_candidates(resolved_paths.pv26_run_root)
+    flags["pv26_export_available"] = bool(pv26_export_candidates)
+    if pv26_export_candidates:
+        latest_candidate = pv26_export_candidates[0]
+        exported, _, _ = _artifact_pair_exists(latest_candidate.checkpoint_path)
+        flags["pv26_export.latest"] = exported
+    else:
+        flags["pv26_export.latest"] = False
+
     if flags.get("source_prep", False):
         notes.append("manifest 안 절대경로가 다른 머신 경로여도, 현재 config 기준 실제 파일을 우선 판정합니다.")
     if not flags.get("calibration", False):
         notes.append("calibration이 없어도 exhaustive OD는 fallback class policy로 실행할 수 있습니다.")
+    missing_teacher_exports = [
+        teacher_name
+        for teacher_name in TEACHER_NAMES
+        if flags.get(f"teacher_train.{teacher_name}", False) and not flags.get(f"teacher_export.{teacher_name}", False)
+    ]
+    if missing_teacher_exports:
+        notes.append(
+            "teacher TorchScript export 미생성: "
+            + ", ".join(missing_teacher_exports)
+        )
+    if flags.get("pv26_export_available", False) and not flags.get("pv26_export.latest", False):
+        notes.append("latest completed PV26 run에 TorchScript export가 없습니다. F 메뉴로 생성할 수 있습니다.")
 
     return WorkspaceSnapshot(
         paths=resolved_paths,

@@ -18,6 +18,7 @@ from common.io import now_iso as _now_iso
 from common.io import write_json as _write_json
 from common.overlay import render_overlay
 from .review import canonical_scene_to_overlay_scene
+from .final_dataset import FINAL_DATASET_MANIFEST_NAME
 from .image_list import ImageListEntry, build_sample_uid, load_image_list
 
 
@@ -496,6 +497,89 @@ def generate_exhaustive_debug_vis(
             "version": "od-bootstrap-exhaustive-debug-vis-v1",
             "generated_at": _now_iso(),
             "dataset_root": str(dataset_root),
+            "selection_count": len(items),
+            "seed": int(debug_vis_seed),
+            "items": items,
+        },
+    )
+
+
+def _debug_selection_row_from_final_dataset_row(row: Mapping[str, object]) -> DebugSelectionRow:
+    dataset_key = _selection_str(row, "source_dataset_key")
+    split = _selection_str(row, "split")
+    sample_id = _selection_str(row, "final_sample_id")
+    return {
+        "dataset_key": dataset_key,
+        "image_path": _selection_str(row, "image_path"),
+        "scene_path": _selection_str(row, "scene_path"),
+        "sample_id": sample_id,
+        "sample_uid": build_sample_uid(
+            dataset_key=dataset_key or "default",
+            split=split or "unknown",
+            sample_id=sample_id or "sample",
+        ),
+        "split": split,
+    }
+
+
+def _resolve_final_dataset_scene_path(*, dataset_root: Path, row: Mapping[str, object]) -> Path:
+    scene_path = Path(_selection_str(row, "scene_path")).resolve()
+    if scene_path.is_file():
+        return scene_path
+    split = _selection_str(row, "split")
+    sample_id = _selection_str(row, "final_sample_id")
+    fallback_path = (dataset_root / "labels_scene" / split / f"{sample_id}.json").resolve()
+    if fallback_path.is_file():
+        return fallback_path
+    raise FileNotFoundError(f"final dataset scene not found: {scene_path}")
+
+
+def _resolve_final_dataset_image_path(*, dataset_root: Path, row: Mapping[str, object]) -> Path:
+    image_path = Path(_selection_str(row, "image_path")).resolve()
+    if image_path.is_file():
+        return image_path
+    split = _selection_str(row, "split")
+    image_name = image_path.name
+    fallback_path = (dataset_root / "images" / split / image_name).resolve()
+    if fallback_path.is_file():
+        return fallback_path
+    raise FileNotFoundError(f"final dataset image not found: {image_path}")
+
+
+def generate_final_dataset_debug_vis(
+    *,
+    dataset_root: Path,
+    manifest_rows: Sequence[Mapping[str, object] | DebugSelectionRow],
+    debug_vis_count: int,
+    debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
+    log_fn: Callable[[str], None] | None = None,
+) -> DebugVisResult:
+    dataset_root = dataset_root.resolve()
+    debug_vis_dir = dataset_root / "meta" / "debug_vis"
+    manifest_path = dataset_root / "meta" / "debug_vis_manifest.json"
+    _reset_debug_vis_dir(debug_vis_dir)
+    selection_rows: list[DebugSelectionRow] = []
+    for row in manifest_rows:
+        selection_row = _debug_selection_row_from_final_dataset_row(row)
+        selection_row["scene_path"] = str(_resolve_final_dataset_scene_path(dataset_root=dataset_root, row=row))
+        selection_row["image_path"] = str(_resolve_final_dataset_image_path(dataset_root=dataset_root, row=row))
+        selection_rows.append(selection_row)
+    selected = _select_debug_rows(selection_rows, count=debug_vis_count, seed=debug_vis_seed)
+    items = _render_selected_rows(
+        selected,
+        stage_name=f"final:{dataset_root.name}",
+        log_fn=log_fn,
+        render_fn=lambda row, output_root=debug_vis_dir: _render_canonical_debug_item(row, output_root=output_root),
+    )
+    return _build_debug_vis_result(
+        manifest_path=manifest_path,
+        debug_vis_dir=debug_vis_dir,
+        items=items,
+        payload={
+            "version": "od-bootstrap-final-debug-vis-v1",
+            "generated_at": _now_iso(),
+            "dataset_root": str(dataset_root),
+            "final_dataset_manifest_path": str((dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME).resolve()),
             "selection_count": len(items),
             "seed": int(debug_vis_seed),
             "items": items,

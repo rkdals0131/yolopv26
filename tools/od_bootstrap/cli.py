@@ -11,10 +11,11 @@ from tools.od_bootstrap.build.debug_vis import (
     DEFAULT_DEBUG_VIS_SEED,
     generate_canonical_debug_vis,
     generate_exhaustive_debug_vis,
+    generate_final_dataset_debug_vis,
     generate_teacher_dataset_debug_vis,
 )
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
-from tools.od_bootstrap.build.final_dataset import build_pv26_exhaustive_od_lane_dataset
+from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME, build_pv26_exhaustive_od_lane_dataset
 from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
 from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
@@ -116,7 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
     debug_vis = subparsers.add_parser("generate-debug-vis", help="Render bootstrap debug visualizations.")
     debug_vis.add_argument(
         "--mode",
-        choices=("canonical", "teacher", "exhaustive", "all"),
+        choices=("canonical", "teacher", "exhaustive", "final", "all"),
         default="canonical",
         help="Which debug-vis target to render.",
     )
@@ -124,6 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     debug_vis.add_argument("--teacher-root", type=Path, default=None, help="Override the teacher dataset root.")
     debug_vis.add_argument("--teacher", action="append", default=None, help="Teacher name to render. Repeatable.")
     debug_vis.add_argument("--exhaustive-root", type=Path, default=None, help="Override the exhaustive OD root.")
+    debug_vis.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
     debug_vis.add_argument("--run", type=str, default=None, help="Sweep run directory name. Default: latest.")
     debug_vis.add_argument("--count", type=int, default=DEFAULT_DEBUG_VIS_COUNT)
     debug_vis.add_argument("--seed", type=int, default=DEFAULT_DEBUG_VIS_SEED)
@@ -314,10 +316,37 @@ def _run_exhaustive_debug_vis(*, exhaustive_root: Path, run_name: str | None, co
     }
 
 
+def _run_final_debug_vis(*, final_root: Path, count: int, seed: int) -> dict[str, Any]:
+    dataset_root = final_root.resolve()
+    manifest_path = dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"final dataset manifest not found: {manifest_path}")
+    manifest = _load_json(manifest_path)
+    sample_rows = [dict(item) for item in manifest.get("samples") or []]
+    result = generate_final_dataset_debug_vis(
+        dataset_root=dataset_root,
+        manifest_rows=sample_rows,
+        debug_vis_count=count,
+        debug_vis_seed=seed,
+        log_fn=lambda message: print(message, flush=True),
+    )
+    return {
+        "dataset_root": str(dataset_root),
+        "debug_vis_dir": str(result["debug_vis_dir"]),
+        "debug_vis_manifest_path": str(result["debug_vis_manifest"]),
+        "selection_count": int(result["selection_count"]),
+    }
+
+
 def _run_debug_vis(args: argparse.Namespace) -> int:
     bootstrap_root = Path(args.bootstrap_root).resolve() if args.bootstrap_root is not None else build_default_source_preset().output_root
     teacher_root = Path(args.teacher_root).resolve() if args.teacher_root is not None else bootstrap_root / "teacher_datasets"
     exhaustive_root = Path(args.exhaustive_root).resolve() if args.exhaustive_root is not None else bootstrap_root / "exhaustive_od"
+    final_root = (
+        Path(args.final_root).resolve()
+        if args.final_root is not None
+        else build_final_dataset_preset().output_root
+    )
     count = int(args.count)
     seed = int(args.seed)
 
@@ -344,6 +373,8 @@ def _run_debug_vis(args: argparse.Namespace) -> int:
                 seed=seed,
             )
         }
+    elif args.mode == "final":
+        result = {"final": _run_final_debug_vis(final_root=final_root, count=count, seed=seed)}
     else:
         result = {
             "canonical": _run_canonical_debug_vis(bootstrap_root=bootstrap_root, count=count, seed=seed),
@@ -362,6 +393,11 @@ def _run_debug_vis(args: argparse.Namespace) -> int:
                     count=count,
                     seed=seed,
                 )
+            except FileNotFoundError:
+                pass
+        if final_root.is_dir():
+            try:
+                result["final"] = _run_final_debug_vis(final_root=final_root, count=count, seed=seed)
             except FileNotFoundError:
                 pass
 
