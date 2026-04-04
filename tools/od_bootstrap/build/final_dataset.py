@@ -145,6 +145,22 @@ def _staging_root_for(output_root: Path) -> Path:
     return parent / f".{output_root.name}.staging.{os.getpid()}.{stamp}"
 
 
+def _resolve_exhaustive_dataset_root(exhaustive_od_root: Path) -> Path:
+    resolved_root = resolve_latest_root(exhaustive_od_root)
+    if (resolved_root / "labels_scene").is_dir():
+        return resolved_root
+    candidates = sorted(
+        (
+            child for child in resolved_root.iterdir()
+            if child.is_dir() and (child / "labels_scene").is_dir()
+        ),
+        key=lambda item: item.name,
+    )
+    if candidates:
+        return candidates[-1].resolve()
+    return resolved_root
+
+
 def _write_publish_marker(
     root: Path,
     *,
@@ -338,7 +354,7 @@ def build_pv26_exhaustive_od_lane_dataset(
     copy_images: bool = False,
     log_fn: Any | None = None,
 ) -> FinalDatasetBuildSummary:
-    resolved_exhaustive_root = resolve_latest_root(exhaustive_od_root)
+    resolved_exhaustive_root = _resolve_exhaustive_dataset_root(exhaustive_od_root)
     resolved_aihub_root = aihub_canonical_root.resolve()
     resolved_output_root = output_root.resolve()
     staging_root = _staging_root_for(resolved_output_root)

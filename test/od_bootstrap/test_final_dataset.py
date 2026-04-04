@@ -25,6 +25,78 @@ def _write_text(path: Path, contents: str) -> None:
 
 
 class FinalDatasetTests(unittest.TestCase):
+    def test_build_final_dataset_selects_latest_exhaustive_run_from_parent_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            exhaustive_parent = root / "exhaustive_od"
+            older_root = exhaustive_parent / "20260327_000000_model_centric"
+            latest_root = exhaustive_parent / "20260328_000000_model_centric"
+            lane_root = root / "canonical" / "aihub_standardized"
+            output_root = root / "pv26_exhaustive_od_lane_dataset"
+
+            _write_text(older_root / "images" / "train" / "old_input.png", "old")
+            _write_text(
+                older_root / "labels_scene" / "train" / "old.json",
+                json.dumps(
+                    {
+                        "image": {"file_name": "old_input.png", "width": 640, "height": 480},
+                        "source": {
+                            "dataset": "pv26_exhaustive_bdd100k_det_100k",
+                            "split": "train",
+                            "bootstrap_sample_uid": "old",
+                        },
+                        "detections": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+            )
+            _write_text(older_root / "labels_det" / "train" / "old.txt", "")
+
+            _write_text(latest_root / "images" / "train" / "latest_input.png", "latest")
+            _write_text(
+                latest_root / "labels_scene" / "train" / "latest.json",
+                json.dumps(
+                    {
+                        "image": {"file_name": "latest_input.png", "width": 640, "height": 480},
+                        "source": {
+                            "dataset": "pv26_exhaustive_bdd100k_det_100k",
+                            "split": "train",
+                            "bootstrap_sample_uid": "latest",
+                        },
+                        "detections": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+            )
+            _write_text(latest_root / "labels_det" / "train" / "latest.txt", "")
+
+            _write_text(lane_root / "images" / "train" / "lane_source.png", "lane")
+            _write_text(
+                lane_root / "labels_scene" / "train" / "lane.json",
+                json.dumps(
+                    {
+                        "image": {"file_name": "lane_source.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                        "detections": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+            )
+
+            summary = build_pv26_exhaustive_od_lane_dataset(
+                exhaustive_od_root=exhaustive_parent,
+                aihub_canonical_root=lane_root,
+                output_root=output_root,
+                copy_images=True,
+            )
+
+            self.assertEqual(summary["exhaustive_od_root"], str(latest_root.resolve()))
+            self.assertTrue((output_root / "labels_scene" / "train" / "latest.json").is_file())
+            self.assertFalse((output_root / "labels_scene" / "train" / "old.json").exists())
+
     def test_build_pv26_exhaustive_od_lane_dataset_merges_lane_samples(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
