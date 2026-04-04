@@ -6,6 +6,40 @@ from typing import Any, Callable
 import torch
 
 from .loss import PV26MultiTaskLoss
+from .spec import build_loss_spec
+from ..net import load_matching_state_dict
+
+
+CHECKPOINT_FORMAT_VERSION = 2
+ARCHITECTURE_GENERATION = "pv26-road-marking-v3"
+SPEC_VERSION = str(build_loss_spec()["version"])
+
+
+def _checkpoint_metadata(trainer: Any) -> dict[str, Any]:
+    describe = getattr(trainer.heads, "describe", None)
+    head_summary = describe() if callable(describe) else None
+    return {
+        "checkpoint_format_version": CHECKPOINT_FORMAT_VERSION,
+        "architecture_generation": ARCHITECTURE_GENERATION,
+        "spec_version": SPEC_VERSION,
+        "head_summary": head_summary,
+    }
+
+
+def _require_exact_resume_compatible(checkpoint: dict[str, Any], path: str | Path) -> None:
+    metadata = checkpoint.get("checkpoint_metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError(
+            "exact resume unsupported for checkpoints without checkpoint_metadata; "
+            f"use weights-only migration instead: {path}"
+        )
+    generation = str(metadata.get("architecture_generation") or "")
+    if generation != ARCHITECTURE_GENERATION:
+        raise RuntimeError(
+            "exact resume unsupported for checkpoint architecture generation "
+            f"{generation or 'unknown'}; expected {ARCHITECTURE_GENERATION}. "
+            f"Use weights-only migration instead: {path}"
+        )
 
 
 def checkpoint_state(
@@ -28,6 +62,7 @@ def checkpoint_state(
         "accumulate_steps": int(trainer.accumulate_steps),
         "grad_clip_norm": trainer.grad_clip_norm,
         "amp_enabled": bool(trainer.amp_enabled),
+        "checkpoint_metadata": _checkpoint_metadata(trainer),
     }
     criterion_config = criterion_config_from_instance_fn(trainer.criterion, trainer.stage)
     if criterion_config is not None:
@@ -67,6 +102,7 @@ def load_checkpoint(
     build_optimizer_fn: Callable[..., torch.optim.Optimizer],
 ) -> dict[str, Any]:
     checkpoint = torch.load(path, map_location=map_location or trainer.device)
+    _require_exact_resume_compatible(checkpoint, path)
     checkpoint_stage = canonical_stage_fn(str(checkpoint.get("stage", trainer.stage)))
     optimizer_hparams = optimizer_group_hparams_fn(trainer.optimizer)
     current_criterion_config = criterion_config_from_instance_fn(trainer.criterion, trainer.stage)
@@ -115,6 +151,9 @@ def load_model_weights(
     map_location: str | torch.device | None = None,
 ) -> dict[str, Any]:
     checkpoint = torch.load(path, map_location=map_location or trainer.device)
-    trainer.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
-    trainer.heads.load_state_dict(checkpoint["heads_state_dict"])
+    adapter_report = load_matching_state_dict(trainer.adapter.raw_model, checkpoint["adapter_state_dict"])
+    heads_report = load_matching_state_dict(trainer.heads, checkpoint["heads_state_dict"])
+    checkpoint["load_policy"] = "shape_aware_partial"
+    checkpoint["adapter_load_report"] = adapter_report
+    checkpoint["heads_load_report"] = heads_report
     return checkpoint

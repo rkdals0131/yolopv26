@@ -11,6 +11,15 @@ from runtime_support import has_yolo26_runtime
 
 OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TL_CLASS_ID = OD_CLASSES.index("traffic_light")
+LANE_QUERY_COUNT = int(build_loss_spec()["heads"]["lane"]["query_count"])
+LANE_ANCHOR_COUNT = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_VECTOR_DIM = int(build_loss_spec()["heads"]["lane"]["shape"].split(" x ")[-1])
+STOP_LINE_QUERY_COUNT = int(build_loss_spec()["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = int(build_loss_spec()["heads"]["stop_line"]["shape"].split(" x ")[-1])
+CROSSWALK_QUERY_COUNT = int(build_loss_spec()["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = int(build_loss_spec()["heads"]["crosswalk"]["shape"].split(" x ")[-1])
+LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
@@ -21,12 +30,13 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     tl_bits = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
     tl_mask = torch.zeros((batch_size, 3), dtype=torch.bool)
 
-    lane = torch.zeros((batch_size, 12, 54), dtype=torch.float32)
-    stop_line = torch.zeros((batch_size, 6, 9), dtype=torch.float32)
-    crosswalk = torch.zeros((batch_size, 4, 17), dtype=torch.float32)
-    lane_valid = torch.zeros((batch_size, 12), dtype=torch.bool)
-    stop_line_valid = torch.zeros((batch_size, 6), dtype=torch.bool)
-    crosswalk_valid = torch.zeros((batch_size, 4), dtype=torch.bool)
+    lane = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+    stop_line = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+    crosswalk = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
+    lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_width_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    crosswalk_valid = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT), dtype=torch.bool)
 
     for batch_index in range(batch_size):
         det_boxes[batch_index, 0] = torch.tensor([40.0, 50.0, 120.0, 180.0])
@@ -40,16 +50,18 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         lane[batch_index, 0, 0] = 1.0
         lane[batch_index, 0, 1] = 1.0
         lane[batch_index, 0, 4] = 1.0
-        lane[batch_index, 0, 6:38] = torch.linspace(0.0, 31.0, 32)
-        lane[batch_index, 0, 38:54] = 1.0
+        lane[batch_index, 0, LANE_X_SLICE] = torch.linspace(120.0, 270.0, LANE_ANCHOR_COUNT)
+        lane[batch_index, 0, LANE_VIS_SLICE] = 1.0
         lane_valid[batch_index, 0] = True
 
         stop_line[batch_index, 0, 0] = 1.0
-        stop_line[batch_index, 0, 1:9] = torch.linspace(0.0, 7.0, 8)
+        stop_line[batch_index, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0])
+        stop_line[batch_index, 0, 5] = 12.0
         stop_line_valid[batch_index, 0] = True
+        stop_line_width_valid[batch_index, 0] = True
 
         crosswalk[batch_index, 0, 0] = 1.0
-        crosswalk[batch_index, 0, 1:17] = torch.linspace(0.0, 15.0, 16)
+        crosswalk[batch_index, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0])
         crosswalk_valid[batch_index, 0] = True
 
     return {
@@ -75,6 +87,7 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
             "crosswalk_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_valid": lane_valid,
             "stop_line_valid": stop_line_valid,
+            "stop_line_width_valid": stop_line_width_valid,
             "crosswalk_valid": crosswalk_valid,
         },
         "meta": [
@@ -110,9 +123,9 @@ class _StaticHeads(nn.Module):
         q_det = 76 * 100 + 38 * 50 + 19 * 25
         det = torch.zeros((1, q_det, 12), dtype=torch.float32)
         tl_attr = torch.zeros((1, q_det, 4), dtype=torch.float32)
-        lane = torch.zeros((1, 12, 54), dtype=torch.float32)
-        stop_line = torch.zeros((1, 6, 9), dtype=torch.float32)
-        crosswalk = torch.zeros((1, 4, 17), dtype=torch.float32)
+        lane = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+        stop_line = torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+        crosswalk = torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
 
         det[0, 1020, :4] = torch.tensor([1.8, 1.4, 1.8, 1.4], dtype=torch.float32)
         det[0, 1020, 4] = 8.0
@@ -126,16 +139,15 @@ class _StaticHeads(nn.Module):
         lane[0, 0, 0] = 8.0
         lane[0, 0, 2] = 6.0
         lane[0, 0, 5] = 6.0
-        lane[0, 0, 6:38] = torch.linspace(120.0, 300.0, 32)
-        lane[0, 0, 38:54] = 8.0
+        lane[0, 0, LANE_X_SLICE] = torch.linspace(120.0, 270.0, LANE_ANCHOR_COUNT)
+        lane[0, 0, LANE_VIS_SLICE] = 8.0
 
         stop_line[0, 0, 0] = 8.0
-        stop_line[0, 0, 1:9] = torch.tensor([100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0])
+        stop_line[0, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0])
+        stop_line[0, 0, 5] = 10.0
 
         crosswalk[0, 0, 0] = 8.0
-        crosswalk[0, 0, 1:17] = torch.tensor(
-            [200.0, 400.0, 260.0, 400.0, 320.0, 400.0, 380.0, 400.0, 380.0, 480.0, 320.0, 480.0, 260.0, 480.0, 200.0, 480.0]
-        )
+        crosswalk[0, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0])
 
         return {
             "det": det,

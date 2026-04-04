@@ -47,6 +47,21 @@ def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
 
 
+def _trainable_parameters_from_modules(modules: list[torch.nn.Module]) -> list[torch.nn.Parameter]:
+    parameters: list[torch.nn.Parameter] = []
+    seen: set[int] = set()
+    for module in modules:
+        for parameter in module.parameters():
+            if not parameter.requires_grad:
+                continue
+            parameter_id = id(parameter)
+            if parameter_id in seen:
+                continue
+            seen.add(parameter_id)
+            parameters.append(parameter)
+    return parameters
+
+
 def _set_module_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
     for parameter in module.parameters():
         parameter.requires_grad = requires_grad
@@ -153,12 +168,23 @@ def configure_pv26_train_stage(
     elif policy == "lane_family_heads_only":
         adapter.freeze_trunk()
         _set_module_requires_grad(heads, False)
-        lane_family_modules = [
-            getattr(heads, "lane_head", None),
-            getattr(heads, "stop_line_head", None),
-            getattr(heads, "crosswalk_head", None),
-        ]
-        if all(isinstance(module, torch.nn.Module) for module in lane_family_modules):
+        lane_family_modules: list[torch.nn.Module] = []
+        lane_family_getter = getattr(heads, "lane_family_modules", None)
+        if callable(lane_family_getter):
+            lane_family_modules = [
+                module for module in lane_family_getter() if isinstance(module, torch.nn.Module)
+            ]
+        if not lane_family_modules:
+            lane_family_modules = [
+                module
+                for module in (
+                    getattr(heads, "lane_head", None),
+                    getattr(heads, "stop_line_head", None),
+                    getattr(heads, "crosswalk_head", None),
+                )
+                if isinstance(module, torch.nn.Module)
+            ]
+        if lane_family_modules and all(isinstance(module, torch.nn.Module) for module in lane_family_modules):
             for module in lane_family_modules:
                 _set_module_requires_grad(module, True)
             head_policy = "lane_family_only"
@@ -186,11 +212,23 @@ def configure_pv26_train_stage(
         tl_attr_heads = getattr(heads, "tl_attr_heads")
         if isinstance(tl_attr_heads, torch.nn.Module):
             stage_summary["trainable_tl_attr_head_params"] = _count_parameters(_trainable_parameters(tl_attr_heads))
-    lane_family_trainable = 0
-    for attr_name in ("lane_head", "stop_line_head", "crosswalk_head"):
-        module = getattr(heads, attr_name, None)
-        if isinstance(module, torch.nn.Module):
-            lane_family_trainable += _count_parameters(_trainable_parameters(module))
+    lane_family_modules_for_summary: list[torch.nn.Module] = []
+    lane_family_getter = getattr(heads, "lane_family_modules", None)
+    if callable(lane_family_getter):
+        lane_family_modules_for_summary = [
+            module for module in lane_family_getter() if isinstance(module, torch.nn.Module)
+        ]
+    if not lane_family_modules_for_summary:
+        lane_family_modules_for_summary = [
+            module
+            for module in (
+                getattr(heads, "lane_head", None),
+                getattr(heads, "stop_line_head", None),
+                getattr(heads, "crosswalk_head", None),
+            )
+            if isinstance(module, torch.nn.Module)
+        ]
+    lane_family_trainable = _count_parameters(_trainable_parameters_from_modules(lane_family_modules_for_summary))
     if lane_family_trainable:
         stage_summary["trainable_lane_family_head_params"] = lane_family_trainable
     if policy == "lane_family_heads_only":

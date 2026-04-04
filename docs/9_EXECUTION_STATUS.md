@@ -9,8 +9,8 @@
 ## 현재 기준
 
 - 날짜: `2026-04-05`
-- phase: `phase 18 road-marking-head-rewrite-design`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 12 기준으로 rank-6/7 runtime cleanup도 마감했다. `tools/od_bootstrap/teacher/runtime/trainer.py`가 dataloader/callback/trainer runtime family를 맡아 `ultralytics_runner.py`를 thin orchestration facade로 줄였고, `common/train_runtime.py`는 duration formatting, device sync timing, tensorboard writer/scalar, rolling timing summary, `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 담당한다. teacher/runtime/progress.py와 model/engine/trainer_progress.py는 framework-specific renderer만 local로 남기고 공용 progress status helper를 재사용한다. source internals는 `tools/od_bootstrap/source/aihub/` + `shared/` 패키지로, tool internals는 `tools/check_env/` + `tools/pv26_train/` 패키지로 정리됐고 stable entrypoint는 `tools/check_env.py`, `tools/run_pv26_train.py`만 유지한다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다. 다음 architecture wave는 pooled lane-family MLP 제거를 목표로 한 docs-first rewrite이며, 설계 기준은 `docs/13_ROAD_MARKING_HEAD_REWRITE_DESIGN.md`, 실행 기준은 `docs/13A_ROAD_MARKING_HEAD_REWRITE_CHECKLIST.md`로 고정한다.`
+- phase: `phase 18 road-marking-rewrite-complete`
+- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 12 기준으로 rank-6/7 runtime cleanup도 마감했다. `tools/od_bootstrap/teacher/runtime/trainer.py`가 dataloader/callback/trainer runtime family를 맡아 `ultralytics_runner.py`를 thin orchestration facade로 줄였고, `common/train_runtime.py`는 duration formatting, device sync timing, tensorboard writer/scalar, rolling timing summary, `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 담당한다. teacher/runtime/progress.py와 model/engine/trainer_progress.py는 framework-specific renderer만 local로 남기고 공용 progress status helper를 재사용한다. source internals는 `tools/od_bootstrap/source/aihub/` + `shared/` 패키지로, tool internals는 `tools/check_env/` + `tools/pv26_train/` 패키지로 정리됐고 stable entrypoint는 `tools/check_env.py`, `tools/run_pv26_train.py`만 유지한다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다. phase A에서는 lane pooled MLP를 shared spatial fusion stem + row-anchor query decoder로 교체했고, phase B에서는 stop_line pooled MLP를 geometry memory + small query decoder로 교체해 `2 endpoints + width` contract를 도입했으며, phase C에서는 crosswalk pooled MLP를 같은 geometry memory 위의 small query decoder로 교체해 `4-corner quad` contract를 도입했다. phase D에서는 checkpoint metadata/architecture generation gate, shape-aware partial weight migration, crosswalk-inclusive raw-head TorchScript export metadata를 추가해 road-marking rewrite wave를 마감했다.`
 
 ## 완료된 항목
 
@@ -121,16 +121,28 @@
 - [x] `tools/od_bootstrap/build/artifacts.py`, `build/sweep_types.py`, `build/exhaustive_od.py`, `source/types.py`, `build/final_dataset.py`에 image-list/run/job/prediction/source manifest typed surface를 고정하고 `final_dataset.py` publish marker/source/image row 계약을 `Literal`/`TypedDict`로 마감
 - [x] `docs/13_ROAD_MARKING_HEAD_REWRITE_DESIGN.md`로 lane row-anchor + road-marking spatial geometry rewrite 설계 고정
 - [x] `docs/13A_ROAD_MARKING_HEAD_REWRITE_CHECKLIST.md`로 sequential implementation / validation checklist 고정
+- [x] lane head를 shared spatial fusion stem + row-anchor query decoder 경로로 전환
+- [x] lane target/loss/postprocess를 `24 x 38` row-anchor contract로 전환
+- [x] canonical lane visibility를 raw/pseudo source policy로 구분해 loader까지 전달
+- [x] stop_line head를 geometry memory + small query decoder 경로로 전환
+- [x] stop_line target/loss/postprocess를 `8 x 6` endpoints+width contract로 전환
+- [x] stop_line width-valid mask를 encoded batch contract에 추가
+- [x] crosswalk head를 geometry memory + small query decoder 경로로 전환
+- [x] crosswalk target/loss/postprocess를 `8 x 9` quad contract로 전환
+- [x] crosswalk dedupe를 polygon IoU 기준으로 추가
+- [x] checkpoint metadata / architecture generation gate 추가
+- [x] exact resume old-generation rejection 추가
+- [x] shape-aware partial weight migration 경로 추가
+- [x] crosswalk-inclusive TorchScript raw-head export metadata 추가
 - [x] unit test 통과
 - [x] real-data regression 통과
 - [x] git commit 생성
 
 ## 다음 작업
 
-- [ ] phase A lane row-anchor rewrite 착수
-- [ ] phase B stop_line spatial geometry rewrite 착수
-- [ ] phase C crosswalk quad rewrite 착수
-- [ ] architecture break 이후 checkpoint/export hardening
+- [x] phase B stop_line spatial geometry rewrite 착수
+- [x] phase C crosswalk quad rewrite 착수
+- [x] architecture break 이후 checkpoint/export hardening
 - [ ] full exhaustive dataset 실제 실행과 teacher checkpoint alias 정리
 - [ ] exhaustive OD 결과 품질 검토와 calibration 재조정
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
@@ -146,6 +158,17 @@
 
 ## 최근 검증
 
+- [x] `python3 -m pytest -q test/test_pv26_trainer.py test/test_model_export.py test/test_run_pv26_train.py` (`69 passed`, `2026-04-05`)
+- [x] `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_loader.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py test/test_docs_sync.py test/test_model_export.py test/test_run_pv26_train.py test/test_portability_runtime.py test/test_aihub_standardize.py` (`139 passed`, `2026-04-05`)
+- [x] `python3 -m compileall -q model/engine model/data model/net tools/model_export tools/od_bootstrap/source/aihub/lane_worker.py test/test_pv26_heads.py test/test_pv26_loader.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py test/test_model_export.py`
+- [x] `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py` (`61 passed`, `2026-04-05`, crosswalk quad rewrite 포함)
+- [x] `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_loader.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py test/test_docs_sync.py test/test_run_pv26_train.py test/test_portability_runtime.py test/test_aihub_standardize.py` (`129 passed`, `2026-04-05`)
+- [x] `python3 -m compileall -q model/engine model/data model/net tools/od_bootstrap/source/aihub/lane_worker.py test/test_pv26_heads.py test/test_pv26_loader.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py`
+- [x] `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py` (`61 passed`, `2026-04-05`)
+- [x] `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_loader.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py` (`64 passed`, `2026-04-05`)
+- [x] `python3 -m pytest -q test/test_docs_sync.py test/test_pv26_tiny_overfit.py` (`16 passed`, `2026-04-05`)
+- [x] `python3 -m pytest -q test/test_run_pv26_train.py test/test_portability_runtime.py test/test_aihub_standardize.py` (`52 passed`, `2026-04-05`)
+- [x] `python3 -m compileall -q model/engine model/data model/net tools/od_bootstrap/source/aihub/lane_worker.py tools/model_export/pv26_torchscript.py test/test_pv26_heads.py test/test_pv26_loader.py test/test_pv26_target_encoder.py test/test_pv26_loss_spec.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_pv26_evaluator.py test/test_pv26_trainer.py`
 - [x] `python3 -m pytest -q test/test_docs_sync.py` (`13 passed`, `2026-04-05`)
 - [x] `python3 -m pytest test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_docs_sync.py -q`
 - [x] `python3 -m compileall -q model/engine tools/run_pv26_train.py test/test_pv26_det_geometry.py test/test_pv26_trainer.py test/test_docs_sync.py`

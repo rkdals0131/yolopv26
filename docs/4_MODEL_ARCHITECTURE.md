@@ -80,18 +80,20 @@ input image
 ## lane family heads
 
 - lane head
-  - fixed query count `12`
+  - fixed query count `24`
   - color logits
   - type logits
-  - 16-point polyline
+  - 16 anchor-row x coordinates
   - visibility logits
 - stop-line head
-  - fixed query count `6`
-  - 4-point polyline
+  - fixed query count `8`
+  - `2 endpoints + width`
 - crosswalk head
-  - fixed query count `4`
-  - 8-point polygon
-- 현재 skeleton 구현은 pooled pyramid embedding 위의 query MLP head다.
+  - fixed query count `8`
+  - 4-corner quad
+- 현재 runtime은 lane만 pooled MLP를 벗어나 `P3/P4/P5 -> channel projection -> P3 해상도 fuse -> row-anchor query decoder` 경로를 사용한다.
+- stop-line은 `shared spatial fusion stem -> geometry memory -> small query decoder` 경로를 사용한다.
+- crosswalk도 `shared spatial fusion stem -> geometry memory -> small query decoder` 경로를 사용한다.
 - runtime은 trunk adapter가 resolve한 실제 pyramid channel을 head construction에 전달한다.
 
 ## 구현 규칙
@@ -117,4 +119,7 @@ input image
 
 - Ultralytics wrapper를 그대로 사용하되, detect head 직전까지를 trunk adapter로 분리한다.
 - partial load helper는 key 이름과 tensor shape가 모두 맞는 항목만 자동으로 로드한다.
+- lane branch는 shared spatial fusion stem과 row-anchor query decoder를 사용한다.
+- stop-line branch는 geometry memory와 task-specific small query decoder를 사용한다.
+- crosswalk branch도 geometry memory와 task-specific small query decoder를 사용한다.
 - phase 4에서는 lane family 개선을 위해 late-stage selection 기준을 lane family metric 쪽으로 전환할 수 있게 설계한다.

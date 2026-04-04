@@ -9,9 +9,22 @@ from pathlib import Path
 import torch
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES
+from model.engine.loss import build_loss_spec
 from model.data import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
 from tools.od_bootstrap.source.aihub import run_standardization as run_aihub_standardization
 from tools.od_bootstrap.source.bdd100k import run_standardization as run_bdd_standardization
+
+
+SPEC = build_loss_spec()
+LANE_QUERY_COUNT = int(SPEC["heads"]["lane"]["query_count"])
+LANE_ANCHOR_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_VECTOR_DIM = int(SPEC["heads"]["lane"]["shape"].split(" x ")[-1])
+STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = int(SPEC["heads"]["stop_line"]["shape"].split(" x ")[-1])
+CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = int(SPEC["heads"]["crosswalk"]["shape"].split(" x ")[-1])
+LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
 def _make_image(path: Path, width: int, height: int, color: str) -> None:
@@ -69,9 +82,9 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(tuple(encoded["det_gt"]["valid_mask"].shape), (4, 4))
             self.assertEqual(tuple(encoded["tl_attr_gt_bits"].shape), (4, 4, 4))
             self.assertEqual(tuple(encoded["tl_attr_gt_mask"].shape), (4, 4))
-            self.assertEqual(tuple(encoded["lane"].shape), (4, 12, 54))
-            self.assertEqual(tuple(encoded["stop_line"].shape), (4, 6, 9))
-            self.assertEqual(tuple(encoded["crosswalk"].shape), (4, 4, 17))
+            self.assertEqual(tuple(encoded["lane"].shape), (4, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
+            self.assertEqual(tuple(encoded["stop_line"].shape), (4, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM))
+            self.assertEqual(tuple(encoded["crosswalk"].shape), (4, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM))
 
             keyed_index = {
                 (item["dataset_key"], item["split"]): index
@@ -125,8 +138,13 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertEqual(float(first_lane[0]), 1.0)
             self.assertEqual(first_lane[1:4].tolist().count(1.0), 1)
             self.assertEqual(first_lane[4:6].tolist().count(1.0), 1)
-            self.assertTrue(torch.all(first_lane[38:54] == 1.0))
+            self.assertGreaterEqual(int(first_lane[LANE_VIS_SLICE].sum().item()), 2)
+            visible_x = first_lane[LANE_X_SLICE][first_lane[LANE_VIS_SLICE] > 0.5]
+            self.assertGreaterEqual(int(visible_x.numel()), 2)
+            self.assertTrue(torch.all(visible_x > 0.0))
             self.assertEqual(float(encoded["stop_line"][lane_index, 0, 0]), 1.0)
+            self.assertEqual(float(encoded["stop_line"][lane_index, 0, 5]), -1.0)
+            self.assertFalse(bool(encoded["mask"]["stop_line_width_valid"][lane_index, 0]))
             self.assertEqual(float(encoded["crosswalk"][lane_index, 0, 0]), 1.0)
 
             self.assertEqual(encoded["mask"]["det_source"].tolist(), [False, True, True, True])
@@ -147,10 +165,11 @@ class PV26TargetEncoderTests(unittest.TestCase):
             lane_index = keyed_index[("aihub_lane_seoul", "train")]
 
             self.assertEqual(encoded["mask"]["lane_valid"][lane_index][:2].tolist(), [True, True])
-            self.assertEqual(encoded["mask"]["lane_valid"][lane_index][2:].tolist(), [False] * 10)
+            self.assertEqual(encoded["mask"]["lane_valid"][lane_index][2:].tolist(), [False] * (LANE_QUERY_COUNT - 2))
             self.assertTrue(torch.all(encoded["lane"][lane_index, 2:, :] == 0.0))
-            self.assertEqual(encoded["mask"]["stop_line_valid"][lane_index].tolist(), [True, False, False, False, False, False])
-            self.assertEqual(encoded["mask"]["crosswalk_valid"][lane_index].tolist(), [True, False, False, False])
+            self.assertEqual(encoded["mask"]["stop_line_valid"][lane_index].tolist(), [True] + [False] * (STOP_LINE_QUERY_COUNT - 1))
+            self.assertEqual(encoded["mask"]["stop_line_width_valid"][lane_index].tolist(), [False] + [False] * (STOP_LINE_QUERY_COUNT - 1))
+            self.assertEqual(encoded["mask"]["crosswalk_valid"][lane_index].tolist(), [True] + [False] * (CROSSWALK_QUERY_COUNT - 1))
             self.assertTrue(torch.all(encoded["stop_line"][lane_index, 1:, :] == 0.0))
             self.assertTrue(torch.all(encoded["crosswalk"][lane_index, 1:, :] == 0.0))
 

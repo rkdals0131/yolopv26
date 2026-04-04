@@ -126,3 +126,31 @@ def test_teacher_export_writes_adjacent_artifact_and_metadata(
     assert metadata["class_names"] == ["vehicle", "bike", "pedestrian"]
     assert metadata["input"]["height"] == 640
     assert metadata["input"]["width"] == 640
+
+
+def test_pv26_export_metadata_includes_crosswalk_and_checkpoint_metadata(tmp_path: Path) -> None:
+    metadata = pv26_exporter.export_metadata(
+        checkpoint_path=tmp_path / "best.pt",
+        output_path=tmp_path / "best.torchscript.pt",
+        trunk_weights=tmp_path / "yolo26s.pt",
+        input_height=608,
+        input_width=800,
+        det_shape=[1, 9975, 12],
+        tl_attr_shape=[1, 9975, 4],
+        lane_shape=[1, 24, 38],
+        stop_line_shape=[1, 8, 6],
+        crosswalk_shape=[1, 8, 9],
+        od_classes=["vehicle"],
+        tl_bits=["red"],
+        lane_classes=["white_lane"],
+        lane_types=["solid"],
+        det_feature_shapes=[[76, 100], [38, 50], [19, 25]],
+        det_feature_strides=[8, 16, 32],
+        example_info={"kind": "random"},
+        verification=[],
+        checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
+    )
+
+    assert metadata["outputs"]["crosswalk"]["shape"] == ["batch", 8, 9]
+    assert metadata["outputs"]["crosswalk"]["format"] == "score_quad"
+    assert metadata["checkpoint_metadata"]["architecture_generation"] == "pv26-road-marking-v3"

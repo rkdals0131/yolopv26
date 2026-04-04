@@ -125,6 +125,8 @@ class PV26LoaderTests(unittest.TestCase):
             self.assertEqual(lane_sample["valid_mask"]["lane"].tolist(), [True, True])
             self.assertEqual(lane_sample["valid_mask"]["stop_line"].tolist(), [True])
             self.assertEqual(lane_sample["valid_mask"]["crosswalk"].tolist(), [True])
+            self.assertTrue(torch.all(lane_sample["lane_targets"]["lanes"][0]["visibility"] == 1.0))
+            self.assertTrue(torch.all(lane_sample["lane_targets"]["lanes"][1]["visibility"] == 1.0))
 
             obstacle_sample = keyed[("aihub_obstacle_seoul", "train")]
             self.assertEqual(obstacle_sample["source_mask"]["det"], True)

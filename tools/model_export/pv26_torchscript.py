@@ -83,13 +83,14 @@ class Pv26TorchscriptExportWrapper(torch.nn.Module):
             outputs.append(current)
         return [outputs[index] for index in self.feature_source_indices]
 
-    def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         predictions = self.heads(self._forward_pyramid_features(image))
         return (
             predictions["det"],
             predictions["tl_attr"],
             predictions["lane"],
             predictions["stop_line"],
+            predictions["crosswalk"],
         )
 
 
@@ -253,6 +254,7 @@ def export_metadata(
     tl_attr_shape: list[int],
     lane_shape: list[int],
     stop_line_shape: list[int],
+    crosswalk_shape: list[int],
     od_classes: list[str],
     tl_bits: list[str],
     lane_classes: list[str],
@@ -261,6 +263,7 @@ def export_metadata(
     det_feature_strides: list[int],
     example_info: dict[str, Any],
     verification: list[ExportVerification],
+    checkpoint_metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "format_version": 2,
@@ -297,7 +300,12 @@ def export_metadata(
             "stop_line": {
                 "shape": ["batch"] + stop_line_shape[1:],
                 "dtype": "float32",
-                "format": "score_polyline",
+                "format": "score_endpoints_width",
+            },
+            "crosswalk": {
+                "shape": ["batch"] + crosswalk_shape[1:],
+                "dtype": "float32",
+                "format": "score_quad",
             },
         },
         "od_classes": od_classes,
@@ -307,6 +315,7 @@ def export_metadata(
         "det_feature_shapes": det_feature_shapes,
         "det_feature_strides": det_feature_strides,
         "trace_example": example_info,
+        "checkpoint_metadata": checkpoint_metadata or {},
         "verification": [
             {
                 "name": item.name,
@@ -435,6 +444,7 @@ def export_pv26_torchscript(
         tensor_report("tl_attr", eager_out[1], scripted_out[1], atol=atol, rtol=rtol),
         tensor_report("lane", eager_out[2], scripted_out[2], atol=atol, rtol=rtol),
         tensor_report("stop_line", eager_out[3], scripted_out[3], atol=atol, rtol=rtol),
+        tensor_report("crosswalk", eager_out[4], scripted_out[4], atol=atol, rtol=rtol),
     ]
     failed = [item for item in verification if not item.allclose]
     if failed:
@@ -454,6 +464,7 @@ def export_pv26_torchscript(
         tl_attr_shape=[int(v) for v in eager_out[1].shape],
         lane_shape=[int(v) for v in eager_out[2].shape],
         stop_line_shape=[int(v) for v in eager_out[3].shape],
+        crosswalk_shape=[int(v) for v in eager_out[4].shape],
         od_classes=od_classes or list(DEFAULT_OD_CLASSES),
         tl_bits=tl_bits or list(DEFAULT_TL_BITS),
         lane_classes=lane_classes,
@@ -462,6 +473,7 @@ def export_pv26_torchscript(
         det_feature_strides=feature_strides,
         example_info=example_info,
         verification=verification,
+        checkpoint_metadata=checkpoint.get("checkpoint_metadata") if isinstance(checkpoint.get("checkpoint_metadata"), dict) else None,
     )
     with meta_path.open("w", encoding="utf-8") as fp:
         json.dump(meta, fp, indent=2)

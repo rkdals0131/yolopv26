@@ -40,6 +40,33 @@ def _lane_class_from_color(color: str) -> tuple[str | None, str | None]:
     return None, "lane_color_unmapped"
 
 
+def _coerce_lane_visibility(raw_visibility: Any, point_count: int) -> list[int] | None:
+    if isinstance(raw_visibility, (list, tuple)) and len(raw_visibility) == point_count:
+        values: list[int] = []
+        for item in raw_visibility:
+            try:
+                values.append(1 if float(item) >= 0.5 else 0)
+            except (TypeError, ValueError):
+                return None
+        return values
+    return None
+
+
+def _extract_lane_visibility(annotation: dict[str, Any], attributes: dict[str, Any], point_count: int) -> tuple[list[int], str]:
+    candidates = (
+        annotation.get("visibility"),
+        annotation.get("point_visibility"),
+        annotation.get("pointVisible"),
+        attributes.get("visibility"),
+        attributes.get("lane_visibility"),
+    )
+    for candidate in candidates:
+        visibility = _coerce_lane_visibility(candidate, point_count)
+        if visibility is not None:
+            return visibility, "raw"
+    return [1] * point_count, "pseudo"
+
+
 def lane_worker(task: StandardizeTask) -> dict[str, Any]:
     pair = task.pair
     assert pair.image_path is not None
@@ -72,6 +99,7 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
             attributes = extract_attribute_map(annotation)
             lane_color = normalize_text(attributes.get("lane_color"))
             lane_type = normalize_text(attributes.get("lane_type"))
+            visibility, visibility_source = _extract_lane_visibility(annotation, attributes, len(points))
             class_name, error_reason = _lane_class_from_color(lane_color)
             if len(points) < 2:
                 held_reason_counts["lane_requires_two_points"] += 1
@@ -93,11 +121,12 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
                     "class_name": class_name,
                     "source_style": lane_type or None,
                     "points": points,
-                    "visibility": [1] * len(points),
+                    "visibility": visibility,
                     "meta": {
                         "dataset_label": raw_class,
                         "raw_color": lane_color,
                         "raw_type": lane_type,
+                        "visibility_source": visibility_source,
                     },
                 }
             )

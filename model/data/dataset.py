@@ -134,6 +134,19 @@ def _lane_color_index(item: dict[str, Any]) -> int:
     return LANE_CLASSES.index(class_name) if class_name in LANE_CLASSES else -1
 
 
+def _lane_visibility_tensor(item: dict[str, Any], point_count: int) -> torch.FloatTensor:
+    raw_visibility = item.get("visibility")
+    if isinstance(raw_visibility, torch.Tensor):
+        visibility = raw_visibility.to(dtype=torch.float32).reshape(-1)
+    elif isinstance(raw_visibility, (list, tuple)):
+        visibility = torch.tensor(raw_visibility, dtype=torch.float32).reshape(-1)
+    else:
+        visibility = torch.ones(point_count, dtype=torch.float32)
+    if visibility.numel() != point_count:
+        visibility = torch.ones(point_count, dtype=torch.float32)
+    return visibility.clamp(0.0, 1.0)
+
+
 def _build_geometry_rows(
     items: list[dict[str, Any]],
     *,
@@ -150,6 +163,7 @@ def _build_geometry_rows(
         if with_lane_attributes:
             row["color"] = _lane_color_index(item)
             row["lane_type"] = _lane_type_index(item)
+            row["visibility"] = _lane_visibility_tensor(item, len(transformed))
         rows.append(row)
         valid.append(unique_point_count(transformed) >= min_unique_points)
     return rows, torch.tensor(valid, dtype=torch.bool)

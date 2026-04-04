@@ -11,6 +11,15 @@ from runtime_support import has_yolo26_runtime
 OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TL_CLASS_ID = OD_CLASSES.index("traffic_light")
 SIGN_CLASS_ID = OD_CLASSES.index("sign")
+LANE_QUERY_COUNT = int(build_loss_spec()["heads"]["lane"]["query_count"])
+LANE_ANCHOR_COUNT = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_VECTOR_DIM = int(build_loss_spec()["heads"]["lane"]["shape"].split(" x ")[-1])
+STOP_LINE_QUERY_COUNT = int(build_loss_spec()["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = int(build_loss_spec()["heads"]["stop_line"]["shape"].split(" x ")[-1])
+CROSSWALK_QUERY_COUNT = int(build_loss_spec()["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = int(build_loss_spec()["heads"]["crosswalk"]["shape"].split(" x ")[-1])
+LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
 def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
@@ -21,12 +30,13 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     tl_bits = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
     tl_mask = torch.zeros((batch_size, 3), dtype=torch.bool)
 
-    lane = torch.zeros((batch_size, 12, 54), dtype=torch.float32)
-    stop_line = torch.zeros((batch_size, 6, 9), dtype=torch.float32)
-    crosswalk = torch.zeros((batch_size, 4, 17), dtype=torch.float32)
-    lane_valid = torch.zeros((batch_size, 12), dtype=torch.bool)
-    stop_line_valid = torch.zeros((batch_size, 6), dtype=torch.bool)
-    crosswalk_valid = torch.zeros((batch_size, 4), dtype=torch.bool)
+    lane = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+    stop_line = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+    crosswalk = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
+    lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_width_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    crosswalk_valid = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT), dtype=torch.bool)
 
     for batch_index in range(batch_size):
         det_boxes[batch_index, 0] = torch.tensor([40.0, 50.0, 120.0, 180.0])
@@ -40,16 +50,18 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         lane[batch_index, 0, 0] = 1.0
         lane[batch_index, 0, 1] = 1.0
         lane[batch_index, 0, 4] = 1.0
-        lane[batch_index, 0, 6:38] = torch.linspace(0.0, 31.0, 32)
-        lane[batch_index, 0, 38:54] = 1.0
+        lane[batch_index, 0, LANE_X_SLICE] = torch.linspace(120.0, 270.0, LANE_ANCHOR_COUNT)
+        lane[batch_index, 0, LANE_VIS_SLICE] = 1.0
         lane_valid[batch_index, 0] = True
 
         stop_line[batch_index, 0, 0] = 1.0
-        stop_line[batch_index, 0, 1:9] = torch.linspace(0.0, 7.0, 8)
+        stop_line[batch_index, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0])
+        stop_line[batch_index, 0, 5] = 12.0
         stop_line_valid[batch_index, 0] = True
+        stop_line_width_valid[batch_index, 0] = True
 
         crosswalk[batch_index, 0, 0] = 1.0
-        crosswalk[batch_index, 0, 1:17] = torch.linspace(0.0, 15.0, 16)
+        crosswalk[batch_index, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0])
         crosswalk_valid[batch_index, 0] = True
 
     return {
@@ -75,6 +87,7 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
             "crosswalk_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_valid": lane_valid,
             "stop_line_valid": stop_line_valid,
+            "stop_line_width_valid": stop_line_width_valid,
             "crosswalk_valid": crosswalk_valid,
         },
         "meta": [{"sample_id": f"sample_{index}"} for index in range(batch_size)],
@@ -85,9 +98,9 @@ def _zero_predictions(batch_size: int, q_det: int) -> dict[str, torch.Tensor]:
     return {
         "det": torch.zeros((batch_size, q_det, 12), dtype=torch.float32, requires_grad=True),
         "tl_attr": torch.zeros((batch_size, q_det, 4), dtype=torch.float32, requires_grad=True),
-        "lane": torch.zeros((batch_size, 12, 54), dtype=torch.float32, requires_grad=True),
-        "stop_line": torch.zeros((batch_size, 6, 9), dtype=torch.float32, requires_grad=True),
-        "crosswalk": torch.zeros((batch_size, 4, 17), dtype=torch.float32, requires_grad=True),
+        "lane": torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32, requires_grad=True),
+        "stop_line": torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32, requires_grad=True),
+        "crosswalk": torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32, requires_grad=True),
         "det_feature_shapes": [(1, q_det)],
         "det_feature_strides": [8],
     }
@@ -151,8 +164,8 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         encoded = _make_encoded_batch(batch_size=1, q_det=2)
         predictions = _zero_predictions(batch_size=1, q_det=2)
-        predictions["stop_line"] = torch.full((1, 6, 9), float("nan"), dtype=torch.float32, requires_grad=True)
-        predictions["crosswalk"] = torch.full((1, 4, 17), float("nan"), dtype=torch.float32, requires_grad=True)
+        predictions["stop_line"] = torch.full((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), float("nan"), dtype=torch.float32, requires_grad=True)
+        predictions["crosswalk"] = torch.full((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), float("nan"), dtype=torch.float32, requires_grad=True)
 
         criterion = PV26MultiTaskLoss(
             stage="stage_4_lane_family_finetune",
@@ -269,9 +282,9 @@ class PV26LossRuntimeTests(unittest.TestCase):
         predictions = _zero_predictions(batch_size=2, q_det=8)
         predictions["det"] = torch.randn(2, 8, 12, requires_grad=True)
         predictions["tl_attr"] = torch.randn(2, 8, 4, requires_grad=True)
-        predictions["lane"] = torch.randn(2, 12, 54, requires_grad=True)
-        predictions["stop_line"] = torch.randn(2, 6, 9, requires_grad=True)
-        predictions["crosswalk"] = torch.randn(2, 4, 17, requires_grad=True)
+        predictions["lane"] = torch.randn(2, LANE_QUERY_COUNT, LANE_VECTOR_DIM, requires_grad=True)
+        predictions["stop_line"] = torch.randn(2, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM, requires_grad=True)
+        predictions["crosswalk"] = torch.randn(2, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM, requires_grad=True)
 
         criterion = PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup")
         losses = criterion(predictions, encoded)
@@ -310,9 +323,9 @@ class PV26LossRuntimeTests(unittest.TestCase):
         predictions = {
             "det": torch.randn(1, 8, 12, requires_grad=True),
             "tl_attr": torch.randn(1, 8, 4, requires_grad=True),
-            "lane": torch.randn(1, 12, 54, requires_grad=True),
-            "stop_line": torch.randn(1, 6, 9, requires_grad=True),
-            "crosswalk": torch.randn(1, 4, 17, requires_grad=True),
+            "lane": torch.randn(1, LANE_QUERY_COUNT, LANE_VECTOR_DIM, requires_grad=True),
+            "stop_line": torch.randn(1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM, requires_grad=True),
+            "crosswalk": torch.randn(1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM, requires_grad=True),
         }
 
         criterion = PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup")
@@ -340,9 +353,9 @@ class PV26LossRuntimeTests(unittest.TestCase):
                 },
                 "tl_attr_gt_bits": torch.tensor([[[1.0, 0.0, 0.0, 1.0]]], dtype=torch.float32),
                 "tl_attr_gt_mask": torch.tensor([[True]], dtype=torch.bool),
-                "lane": torch.zeros((1, 12, 54), dtype=torch.float32),
-                "stop_line": torch.zeros((1, 6, 9), dtype=torch.float32),
-                "crosswalk": torch.zeros((1, 4, 17), dtype=torch.float32),
+                "lane": torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32),
+                "stop_line": torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32),
+                "crosswalk": torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32),
                 "mask": {
                     "det_source": torch.tensor([True], dtype=torch.bool),
                     "det_supervised_class_mask": torch.ones((1, len(OD_CLASSES)), dtype=torch.bool),
@@ -352,9 +365,10 @@ class PV26LossRuntimeTests(unittest.TestCase):
                     "lane_source": torch.tensor([False], dtype=torch.bool),
                     "stop_line_source": torch.tensor([False], dtype=torch.bool),
                     "crosswalk_source": torch.tensor([False], dtype=torch.bool),
-                    "lane_valid": torch.zeros((1, 12), dtype=torch.bool),
-                    "stop_line_valid": torch.zeros((1, 6), dtype=torch.bool),
-                    "crosswalk_valid": torch.zeros((1, 4), dtype=torch.bool),
+                    "lane_valid": torch.zeros((1, LANE_QUERY_COUNT), dtype=torch.bool),
+                    "stop_line_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                    "stop_line_width_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                    "crosswalk_valid": torch.zeros((1, CROSSWALK_QUERY_COUNT), dtype=torch.bool),
                 },
                 "meta": [{"sample_id": f"class_{class_id}"}],
             }
@@ -386,9 +400,9 @@ class PV26LossRuntimeTests(unittest.TestCase):
             },
             "tl_attr_gt_bits": torch.zeros((1, 1, 4), dtype=torch.float32),
             "tl_attr_gt_mask": torch.zeros((1, 1), dtype=torch.bool),
-            "lane": torch.zeros((1, 12, 54), dtype=torch.float32),
-            "stop_line": torch.zeros((1, 6, 9), dtype=torch.float32),
-            "crosswalk": torch.zeros((1, 4, 17), dtype=torch.float32),
+            "lane": torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32),
+            "stop_line": torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32),
+            "crosswalk": torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32),
             "mask": {
                 "det_source": torch.tensor([True], dtype=torch.bool),
                 "det_supervised_class_mask": torch.tensor([[False, False, False, False, False, True, True]], dtype=torch.bool),
@@ -398,9 +412,10 @@ class PV26LossRuntimeTests(unittest.TestCase):
                 "lane_source": torch.tensor([False], dtype=torch.bool),
                 "stop_line_source": torch.tensor([False], dtype=torch.bool),
                 "crosswalk_source": torch.tensor([False], dtype=torch.bool),
-                "lane_valid": torch.zeros((1, 12), dtype=torch.bool),
-                "stop_line_valid": torch.zeros((1, 6), dtype=torch.bool),
-                "crosswalk_valid": torch.zeros((1, 4), dtype=torch.bool),
+                "lane_valid": torch.zeros((1, LANE_QUERY_COUNT), dtype=torch.bool),
+                "stop_line_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                "stop_line_width_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                "crosswalk_valid": torch.zeros((1, CROSSWALK_QUERY_COUNT), dtype=torch.bool),
             },
             "meta": [{"sample_id": "partial_det"}],
         }
@@ -432,9 +447,9 @@ class PV26LossRuntimeTests(unittest.TestCase):
             },
             "tl_attr_gt_bits": torch.zeros((1, 1, 4), dtype=torch.float32),
             "tl_attr_gt_mask": torch.zeros((1, 1), dtype=torch.bool),
-            "lane": torch.zeros((1, 12, 54), dtype=torch.float32),
-            "stop_line": torch.zeros((1, 6, 9), dtype=torch.float32),
-            "crosswalk": torch.zeros((1, 4, 17), dtype=torch.float32),
+            "lane": torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32),
+            "stop_line": torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32),
+            "crosswalk": torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32),
             "mask": {
                 "det_source": torch.tensor([True], dtype=torch.bool),
                 "det_supervised_class_mask": torch.tensor([[False, False, False, False, False, True, True]], dtype=torch.bool),
@@ -444,9 +459,10 @@ class PV26LossRuntimeTests(unittest.TestCase):
                 "lane_source": torch.tensor([False], dtype=torch.bool),
                 "stop_line_source": torch.tensor([False], dtype=torch.bool),
                 "crosswalk_source": torch.tensor([False], dtype=torch.bool),
-                "lane_valid": torch.zeros((1, 12), dtype=torch.bool),
-                "stop_line_valid": torch.zeros((1, 6), dtype=torch.bool),
-                "crosswalk_valid": torch.zeros((1, 4), dtype=torch.bool),
+                "lane_valid": torch.zeros((1, LANE_QUERY_COUNT), dtype=torch.bool),
+                "stop_line_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                "stop_line_width_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                "crosswalk_valid": torch.zeros((1, CROSSWALK_QUERY_COUNT), dtype=torch.bool),
             },
             "meta": [{"sample_id": "stress_det"}],
         }

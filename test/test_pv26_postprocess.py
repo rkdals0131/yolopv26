@@ -5,7 +5,20 @@ import unittest
 
 import torch
 
+from model.engine.loss import build_loss_spec
 from model.engine.postprocess import PV26PostprocessConfig, postprocess_pv26_batch
+
+
+SPEC = build_loss_spec()
+LANE_QUERY_COUNT = int(SPEC["heads"]["lane"]["query_count"])
+LANE_ANCHOR_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_VECTOR_DIM = int(SPEC["heads"]["lane"]["shape"].split(" x ")[-1])
+STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = int(SPEC["heads"]["stop_line"]["shape"].split(" x ")[-1])
+CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = int(SPEC["heads"]["crosswalk"]["shape"].split(" x ")[-1])
+LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
 def _inverse_softplus(value: float) -> float:
@@ -58,9 +71,9 @@ def _make_prediction_batch() -> dict[str, torch.Tensor | list]:
     q_det = 76 * 100 + 38 * 50 + 19 * 25
     det = torch.zeros((1, q_det, 12), dtype=torch.float32)
     tl_attr = torch.zeros((1, q_det, 4), dtype=torch.float32)
-    lane = torch.zeros((1, 12, 54), dtype=torch.float32)
-    stop_line = torch.zeros((1, 6, 9), dtype=torch.float32)
-    crosswalk = torch.zeros((1, 4, 17), dtype=torch.float32)
+    lane = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+    stop_line = torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+    crosswalk = torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
 
     high = _inverse_softplus(5.0)
     det[0, 1020, :4] = torch.tensor([high, high, high, high], dtype=torch.float32)
@@ -80,53 +93,25 @@ def _make_prediction_batch() -> dict[str, torch.Tensor | list]:
     lane[0, 0, 0] = 8.0
     lane[0, 0, 2] = 6.0
     lane[0, 0, 5] = 6.0
-    lane[0, 0, 6:38] = torch.tensor(
-        [
-            120.0,
-            520.0,
-            130.0,
-            500.0,
-            140.0,
-            480.0,
-            150.0,
-            460.0,
-            160.0,
-            440.0,
-            170.0,
-            420.0,
-            180.0,
-            400.0,
-            190.0,
-            380.0,
-            200.0,
-            360.0,
-            210.0,
-            340.0,
-            220.0,
-            320.0,
-            230.0,
-            300.0,
-            240.0,
-            280.0,
-            250.0,
-            260.0,
-            260.0,
-            240.0,
-            270.0,
-            220.0,
-        ],
-        dtype=torch.float32,
-    )
-    lane[0, 0, 38:54] = 8.0
+    lane[0, 0, LANE_X_SLICE] = torch.linspace(120.0, 270.0, LANE_ANCHOR_COUNT, dtype=torch.float32)
+    lane[0, 0, LANE_VIS_SLICE] = 8.0
+    lane[0, 1, 0] = 7.5
+    lane[0, 1, 2] = 5.8
+    lane[0, 1, 5] = 5.8
+    lane[0, 1, LANE_X_SLICE] = torch.linspace(123.0, 273.0, LANE_ANCHOR_COUNT, dtype=torch.float32)
+    lane[0, 1, LANE_VIS_SLICE] = 7.0
 
     stop_line[0, 0, 0] = 8.0
-    stop_line[0, 0, 1:9] = torch.tensor([100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0], dtype=torch.float32)
+    stop_line[0, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0], dtype=torch.float32)
+    stop_line[0, 0, 5] = 10.0
+    stop_line[0, 1, 0] = 7.0
+    stop_line[0, 1, 1:5] = torch.tensor([104.0, 500.0, 344.0, 500.0], dtype=torch.float32)
+    stop_line[0, 1, 5] = 9.0
 
     crosswalk[0, 0, 0] = 8.0
-    crosswalk[0, 0, 1:17] = torch.tensor(
-        [200.0, 400.0, 260.0, 400.0, 320.0, 400.0, 380.0, 400.0, 380.0, 480.0, 320.0, 480.0, 260.0, 480.0, 200.0, 480.0],
-        dtype=torch.float32,
-    )
+    crosswalk[0, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0], dtype=torch.float32)
+    crosswalk[0, 1, 0] = 7.0
+    crosswalk[0, 1, 1:9] = torch.tensor([204.0, 404.0, 384.0, 404.0, 384.0, 484.0, 204.0, 484.0], dtype=torch.float32)
 
     return {
         "det": det,

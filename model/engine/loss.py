@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+from PIL import Image, ImageDraw
 from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn as nn
@@ -22,6 +24,15 @@ SPEC = build_loss_spec()
 TL_BITS = tuple(SPEC["model_contract"]["tl_bits"])
 OD_CLASSES = tuple(SPEC["model_contract"]["od_classes"])
 TL_CLASS_ID = OD_CLASSES.index("traffic_light")
+LANE_COLOR_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["color_logits"])
+LANE_TYPE_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["type_logits"])
+LANE_ANCHOR_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_COLOR_SLICE = slice(1, 1 + LANE_COLOR_DIM)
+LANE_TYPE_SLICE = slice(LANE_COLOR_SLICE.stop, LANE_COLOR_SLICE.stop + LANE_TYPE_DIM)
+LANE_X_SLICE = slice(LANE_TYPE_SLICE.stop, LANE_TYPE_SLICE.stop + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
+STOP_LINE_WIDTH_INDEX = 5
+CROSSWALK_CORNER_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["quad_corners"])
 STAGE_LOSS_WEIGHTS = {
     stage["name"]: dict(stage["loss_weights"]) for stage in SPEC["training_schedule"]
 }
@@ -76,10 +87,42 @@ def _smoothness_regularizer(points: torch.Tensor) -> torch.Tensor:
     return second.abs().mean()
 
 
+def _visibility_total_variation(logits: torch.Tensor) -> torch.Tensor:
+    if logits.shape[1] < 2:
+        return logits.sum() * 0.0
+    probabilities = logits.sigmoid()
+    return (probabilities[:, 1:] - probabilities[:, :-1]).abs().mean()
+
+
 def _polygon_shape_regularizer(points: torch.Tensor) -> torch.Tensor:
     rolled = torch.roll(points, shifts=-1, dims=1)
     edge_lengths = torch.linalg.norm(rolled - points, dim=-1)
     return (edge_lengths - edge_lengths.mean(dim=1, keepdim=True)).abs().mean()
+
+
+def _polygon_iou(points_a: torch.Tensor, points_b: torch.Tensor) -> float:
+    polygon_a = points_a.detach().cpu().numpy().astype(np.float32).reshape(-1, 2)
+    polygon_b = points_b.detach().cpu().numpy().astype(np.float32).reshape(-1, 2)
+    min_x = int(np.floor(min(float(polygon_a[:, 0].min()), float(polygon_b[:, 0].min()))))
+    min_y = int(np.floor(min(float(polygon_a[:, 1].min()), float(polygon_b[:, 1].min()))))
+    max_x = int(np.ceil(max(float(polygon_a[:, 0].max()), float(polygon_b[:, 0].max()))))
+    max_y = int(np.ceil(max(float(polygon_a[:, 1].max()), float(polygon_b[:, 1].max()))))
+    width = max(1, max_x - min_x + 3)
+    height = max(1, max_y - min_y + 3)
+
+    def rasterize(points: np.ndarray) -> np.ndarray:
+        canvas = Image.new("1", (width, height), 0)
+        shifted = [(float(x - min_x + 1.0), float(y - min_y + 1.0)) for x, y in points]
+        ImageDraw.Draw(canvas).polygon(shifted, outline=1, fill=1)
+        return np.asarray(canvas, dtype=bool)
+
+    mask_a = rasterize(polygon_a)
+    mask_b = rasterize(polygon_b)
+    intersection = float(np.logical_and(mask_a, mask_b).sum())
+    union = float(np.logical_or(mask_a, mask_b).sum())
+    if union <= 0.0:
+        return 0.0
+    return intersection / union
 
 
 def _bbox_iou(pred_boxes: torch.Tensor, target_boxes: torch.Tensor, *, ciou: bool = False) -> torch.Tensor:
@@ -148,37 +191,49 @@ def _hungarian_match(cost_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
 
 
 def _lane_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> torch.Tensor:
-    pred_points = pred_rows[:, 6:38].view(pred_rows.shape[0], 16, 2)
-    gt_points = gt_rows[:, 6:38].view(gt_rows.shape[0], 16, 2)
-    points_cost = (pred_points[:, None] - gt_points[None]).abs().mean(dim=(2, 3))
+    pred_x = pred_rows[:, LANE_X_SLICE]
+    gt_x = gt_rows[:, LANE_X_SLICE]
+    gt_visibility = gt_rows[:, LANE_VIS_SLICE] > 0.5
+    x_diff = (pred_x[:, None] - gt_x[None]).abs()
+    x_mask = gt_visibility[None].to(dtype=pred_rows.dtype)
+    points_cost = (x_diff * x_mask).sum(dim=-1) / x_mask.sum(dim=-1).clamp(min=1.0)
 
-    color_targets = gt_rows[:, 1:4].argmax(dim=-1)
-    type_targets = gt_rows[:, 4:6].argmax(dim=-1)
-    color_cost = -F.log_softmax(pred_rows[:, 1:4], dim=-1)[:, color_targets]
-    type_cost = -F.log_softmax(pred_rows[:, 4:6], dim=-1)[:, type_targets]
+    color_targets = gt_rows[:, LANE_COLOR_SLICE].argmax(dim=-1)
+    type_targets = gt_rows[:, LANE_TYPE_SLICE].argmax(dim=-1)
+    color_cost = -F.log_softmax(pred_rows[:, LANE_COLOR_SLICE], dim=-1)[:, color_targets]
+    type_cost = -F.log_softmax(pred_rows[:, LANE_TYPE_SLICE], dim=-1)[:, type_targets]
     vis_cost = F.binary_cross_entropy_with_logits(
-        pred_rows[:, None, 38:54].expand(-1, gt_rows.shape[0], -1),
-        gt_rows[None, :, 38:54].expand(pred_rows.shape[0], -1, -1),
+        pred_rows[:, None, LANE_VIS_SLICE].expand(-1, gt_rows.shape[0], -1),
+        gt_rows[None, :, LANE_VIS_SLICE].expand(pred_rows.shape[0], -1, -1),
         reduction="none",
     ).mean(dim=-1)
     return 3.0 * points_cost + 1.0 * color_cost + 0.5 * type_cost + 0.5 * vis_cost
 
 
 def _stop_line_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> torch.Tensor:
-    pred_points = pred_rows[:, 1:9].view(pred_rows.shape[0], 4, 2)
-    gt_points = gt_rows[:, 1:9].view(gt_rows.shape[0], 4, 2)
+    pred_points = pred_rows[:, 1:5].view(pred_rows.shape[0], 2, 2)
+    gt_points = gt_rows[:, 1:5].view(gt_rows.shape[0], 2, 2)
     points_cost = (pred_points[:, None] - gt_points[None]).abs().mean(dim=(2, 3))
     angle_length_cost = _batched_angle_length_cost(pred_points[:, None], gt_points[None])
-    return 4.0 * points_cost + 0.5 * angle_length_cost
+    pred_width = F.softplus(pred_rows[:, STOP_LINE_WIDTH_INDEX])
+    gt_width = gt_rows[:, STOP_LINE_WIDTH_INDEX].clamp(min=0.0)
+    gt_width_valid = gt_rows[:, STOP_LINE_WIDTH_INDEX] >= 0.0
+    width_cost = (pred_width[:, None] - gt_width[None]).abs() * gt_width_valid[None].to(dtype=pred_rows.dtype)
+    return 4.0 * points_cost + 0.5 * angle_length_cost + 0.5 * width_cost
 
 
 def _crosswalk_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> torch.Tensor:
-    pred_points = pred_rows[:, 1:17].view(pred_rows.shape[0], 8, 2)
-    gt_points = gt_rows[:, 1:17].view(gt_rows.shape[0], 8, 2)
+    pred_points = pred_rows[:, 1:9].view(pred_rows.shape[0], CROSSWALK_CORNER_COUNT, 2)
+    gt_points = gt_rows[:, 1:9].view(gt_rows.shape[0], CROSSWALK_CORNER_COUNT, 2)
     points_cost = (pred_points[:, None] - gt_points[None]).abs().mean(dim=(2, 3))
-    pred_boxes = _batched_box_from_points(pred_points)
-    gt_boxes = _batched_box_from_points(gt_points)
-    overlap = _bbox_iou(pred_boxes[:, None, :], gt_boxes[None, :, :]).squeeze(-1)
+    overlap = torch.zeros(
+        (pred_rows.shape[0], gt_rows.shape[0]),
+        device=pred_rows.device,
+        dtype=pred_rows.dtype,
+    )
+    for pred_index in range(pred_rows.shape[0]):
+        for gt_index in range(gt_rows.shape[0]):
+            overlap[pred_index, gt_index] = float(_polygon_iou(pred_points[pred_index], gt_points[gt_index]))
     return 3.0 * points_cost + (1.0 - overlap)
 
 
@@ -658,23 +713,33 @@ class PV26MultiTaskLoss(nn.Module):
             return obj_loss
 
         assigned_target = assignment["assigned_target"]
-        color_target = assigned_target[..., 1:4].argmax(dim=-1)
-        type_target = assigned_target[..., 4:6].argmax(dim=-1)
-        color_loss = F.cross_entropy(lane_pred[..., 1:4][valid], color_target[valid], reduction="mean")
-        type_loss = F.cross_entropy(lane_pred[..., 4:6][valid], type_target[valid], reduction="mean")
-        points_loss = F.l1_loss(lane_pred[..., 6:38][valid], assigned_target[..., 6:38][valid], reduction="mean")
+        color_target = assigned_target[..., LANE_COLOR_SLICE].argmax(dim=-1)
+        type_target = assigned_target[..., LANE_TYPE_SLICE].argmax(dim=-1)
+        color_loss = F.cross_entropy(lane_pred[..., LANE_COLOR_SLICE][valid], color_target[valid], reduction="mean")
+        type_loss = F.cross_entropy(lane_pred[..., LANE_TYPE_SLICE][valid], type_target[valid], reduction="mean")
+        pred_x = lane_pred[..., LANE_X_SLICE][valid]
+        target_x = assigned_target[..., LANE_X_SLICE][valid]
+        target_vis = assigned_target[..., LANE_VIS_SLICE][valid]
+        x_mask = target_vis > 0.5
+        if bool(x_mask.any()):
+            x_loss_matrix = F.smooth_l1_loss(pred_x, target_x, reduction="none")
+            points_loss = (x_loss_matrix * x_mask.to(dtype=lane_pred.dtype)).sum() / x_mask.to(dtype=lane_pred.dtype).sum().clamp(min=1.0)
+        else:
+            points_loss = _zero_graph(pred_x, target_x)
         vis_loss = F.binary_cross_entropy_with_logits(
-            lane_pred[..., 38:54][valid],
-            assigned_target[..., 38:54][valid],
+            lane_pred[..., LANE_VIS_SLICE][valid],
+            target_vis,
             reduction="mean",
         )
-        smoothness = _smoothness_regularizer(lane_pred[..., 6:38][valid].view(-1, 16, 2))
-        return obj_loss + color_loss + 0.5 * type_loss + 5.0 * points_loss + vis_loss + 0.25 * smoothness
+        smoothness = _smoothness_regularizer(pred_x.unsqueeze(-1))
+        visibility_tv = _visibility_total_variation(lane_pred[..., LANE_VIS_SLICE][valid])
+        return obj_loss + color_loss + 0.5 * type_loss + 5.0 * points_loss + vis_loss + 0.25 * smoothness + 0.1 * visibility_tv
 
     def _stop_line_loss(self, stop_pred: torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)
         stop_source = encoded["mask"]["stop_line_source"].to(device=stop_pred.device, dtype=torch.bool)
         stop_valid = encoded["mask"]["stop_line_valid"].to(device=stop_pred.device, dtype=torch.bool)
+        stop_width_valid = encoded["mask"]["stop_line_width_valid"].to(device=stop_pred.device, dtype=torch.bool)
         assignment = self._build_query_assignment(
             stop_pred,
             stop_target,
@@ -697,11 +762,24 @@ class PV26MultiTaskLoss(nn.Module):
             return obj_loss
 
         assigned_target = assignment["assigned_target"]
-        points_pred = stop_pred[..., 1:9][valid].view(-1, 4, 2)
-        points_target = assigned_target[..., 1:9][valid].view(-1, 4, 2)
-        points_loss = F.l1_loss(points_pred, points_target, reduction="mean")
-        straightness = _smoothness_regularizer(points_pred)
-        return obj_loss + 6.0 * points_loss + 0.5 * straightness
+        points_pred = stop_pred[..., 1:5][valid].view(-1, 2, 2)
+        points_target = assigned_target[..., 1:5][valid].view(-1, 2, 2)
+        points_loss = F.smooth_l1_loss(points_pred, points_target, reduction="mean")
+        angle_length = _batched_angle_length_cost(points_pred, points_target).mean()
+        matched_rows = torch.nonzero(valid, as_tuple=False)
+        matched_gt_idx = assignment["matched_target_idx"][valid]
+        width_valid_mask = stop_width_valid[matched_rows[:, 0], matched_gt_idx]
+        if bool(width_valid_mask.any()):
+            width_pred = F.softplus(stop_pred[..., STOP_LINE_WIDTH_INDEX][valid][width_valid_mask])
+            width_target = assigned_target[..., STOP_LINE_WIDTH_INDEX][valid][width_valid_mask].clamp(min=0.0)
+            width_loss = F.smooth_l1_loss(
+                width_pred,
+                width_target,
+                reduction="mean",
+            )
+        else:
+            width_loss = _zero_graph(stop_pred[..., STOP_LINE_WIDTH_INDEX][valid])
+        return obj_loss + 6.0 * points_loss + width_loss + 0.5 * angle_length
 
     def _crosswalk_loss(self, cross_pred: torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
         cross_target = encoded["crosswalk"].to(device=cross_pred.device, dtype=torch.float32)
@@ -729,9 +807,9 @@ class PV26MultiTaskLoss(nn.Module):
             return obj_loss
 
         assigned_target = assignment["assigned_target"]
-        points_pred = cross_pred[..., 1:17][valid].view(-1, 8, 2)
-        points_target = assigned_target[..., 1:17][valid].view(-1, 8, 2)
-        points_loss = F.l1_loss(points_pred, points_target, reduction="mean")
+        points_pred = cross_pred[..., 1:9][valid].view(-1, CROSSWALK_CORNER_COUNT, 2)
+        points_target = assigned_target[..., 1:9][valid].view(-1, CROSSWALK_CORNER_COUNT, 2)
+        points_loss = F.smooth_l1_loss(points_pred, points_target, reduction="mean")
         shape = _polygon_shape_regularizer(points_pred)
         return obj_loss + 4.0 * points_loss + 0.5 * shape
 

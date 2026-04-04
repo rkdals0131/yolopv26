@@ -9,6 +9,7 @@ from unittest import mock
 import torch
 import torch.nn as nn
 
+from model.engine import _trainer_checkpoint
 from common.io import (
     append_jsonl_sorted as common_append_jsonl_sorted,
     now_iso as common_now_iso,
@@ -24,6 +25,15 @@ from runtime_support import has_yolo26_runtime
 
 OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TL_CLASS_ID = OD_CLASSES.index("traffic_light")
+LANE_QUERY_COUNT = int(build_loss_spec()["heads"]["lane"]["query_count"])
+LANE_ANCHOR_COUNT = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_VECTOR_DIM = int(build_loss_spec()["heads"]["lane"]["shape"].split(" x ")[-1])
+STOP_LINE_QUERY_COUNT = int(build_loss_spec()["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = int(build_loss_spec()["heads"]["stop_line"]["shape"].split(" x ")[-1])
+CROSSWALK_QUERY_COUNT = int(build_loss_spec()["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = int(build_loss_spec()["heads"]["crosswalk"]["shape"].split(" x ")[-1])
+LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
 def _default_components_for_test(matched_count: int, unmatched_count: int) -> dict[str, float | int]:
@@ -46,12 +56,13 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     tl_bits = torch.zeros((batch_size, 3, 4), dtype=torch.float32)
     tl_mask = torch.zeros((batch_size, 3), dtype=torch.bool)
 
-    lane = torch.zeros((batch_size, 12, 54), dtype=torch.float32)
-    stop_line = torch.zeros((batch_size, 6, 9), dtype=torch.float32)
-    crosswalk = torch.zeros((batch_size, 4, 17), dtype=torch.float32)
-    lane_valid = torch.zeros((batch_size, 12), dtype=torch.bool)
-    stop_line_valid = torch.zeros((batch_size, 6), dtype=torch.bool)
-    crosswalk_valid = torch.zeros((batch_size, 4), dtype=torch.bool)
+    lane = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+    stop_line = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+    crosswalk = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
+    lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_width_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    crosswalk_valid = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT), dtype=torch.bool)
 
     for batch_index in range(batch_size):
         det_boxes[batch_index, 0] = torch.tensor([40.0, 50.0, 120.0, 180.0])
@@ -65,16 +76,18 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         lane[batch_index, 0, 0] = 1.0
         lane[batch_index, 0, 1] = 1.0
         lane[batch_index, 0, 4] = 1.0
-        lane[batch_index, 0, 6:38] = torch.linspace(0.0, 31.0, 32)
-        lane[batch_index, 0, 38:54] = 1.0
+        lane[batch_index, 0, LANE_X_SLICE] = torch.linspace(120.0, 270.0, LANE_ANCHOR_COUNT)
+        lane[batch_index, 0, LANE_VIS_SLICE] = 1.0
         lane_valid[batch_index, 0] = True
 
         stop_line[batch_index, 0, 0] = 1.0
-        stop_line[batch_index, 0, 1:9] = torch.linspace(0.0, 7.0, 8)
+        stop_line[batch_index, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0])
+        stop_line[batch_index, 0, 5] = 12.0
         stop_line_valid[batch_index, 0] = True
+        stop_line_width_valid[batch_index, 0] = True
 
         crosswalk[batch_index, 0, 0] = 1.0
-        crosswalk[batch_index, 0, 1:17] = torch.linspace(0.0, 15.0, 16)
+        crosswalk[batch_index, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0])
         crosswalk_valid[batch_index, 0] = True
 
     return {
@@ -100,6 +113,7 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
             "crosswalk_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_valid": lane_valid,
             "stop_line_valid": stop_line_valid,
+            "stop_line_width_valid": stop_line_width_valid,
             "crosswalk_valid": crosswalk_valid,
         },
         "meta": [{"sample_id": f"sample_{index}"} for index in range(batch_size)],
@@ -562,6 +576,8 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
         self.assertFalse(any(parameter.requires_grad for parameter in heads.det_heads.parameters()))
         self.assertFalse(any(parameter.requires_grad for parameter in heads.tl_attr_heads.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.spatial_fusion_stem.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.geometry_memory.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
@@ -644,6 +660,54 @@ class PV26TrainerTests(unittest.TestCase):
             )
             self.assertEqual(checkpoint["criterion_config"]["stage"], "stage_1_frozen_trunk_warmup")
             self.assertAlmostEqual(float(reloaded_trainer.criterion.det_cls_negative_weight), 0.2)
+            self.assertEqual(
+                checkpoint["checkpoint_metadata"]["architecture_generation"],
+                _trainer_checkpoint.ARCHITECTURE_GENERATION,
+            )
+
+    def test_load_checkpoint_rejects_incompatible_architecture_generation_for_exact_resume(self) -> None:
+        from model.engine.trainer import PV26Trainer
+        from model.net import PV26Heads
+
+        trainer = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = trainer.save_checkpoint(Path(temp_dir) / "resume_break.pt")
+            payload = torch.load(checkpoint_path, map_location="cpu")
+            payload["checkpoint_metadata"]["architecture_generation"] = "pv26-pre-road-marking"
+            torch.save(payload, checkpoint_path)
+
+            reloaded = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+            with self.assertRaisesRegex(RuntimeError, "exact resume unsupported"):
+                reloaded.load_checkpoint(checkpoint_path, map_location="cpu")
+
+    def test_load_model_weights_uses_shape_aware_partial_load_for_migration(self) -> None:
+        from model.engine.trainer import PV26Trainer
+        from model.net import PV26Heads
+
+        source = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+        target = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+
+        checkpoint_payload = {
+            "adapter_state_dict": source.adapter.raw_model.state_dict(),
+            "heads_state_dict": source.heads.state_dict(),
+        }
+        checkpoint_payload["heads_state_dict"]["det_heads.0.block.0.weight"] = torch.full_like(
+            checkpoint_payload["heads_state_dict"]["det_heads.0.block.0.weight"],
+            7.0,
+        )
+        checkpoint_payload["heads_state_dict"]["lane_head.predictor.weight"] = torch.ones((1, 1), dtype=torch.float32)
+
+        original_lane_predictor = target.heads.lane_head.predictor.weight.detach().clone()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "migration.pt"
+            torch.save(checkpoint_payload, checkpoint_path)
+            loaded = target.load_model_weights(checkpoint_path, map_location="cpu")
+
+        self.assertEqual(loaded["load_policy"], "shape_aware_partial")
+        self.assertIn("lane_head.predictor.weight", loaded["heads_load_report"]["skipped_shape_keys"])
+        self.assertAlmostEqual(float(target.heads.det_heads[0].block[0].weight.detach().flatten()[0]), 7.0)
+        self.assertTrue(torch.equal(target.heads.lane_head.predictor.weight.detach(), original_lane_predictor))
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
@@ -822,9 +886,9 @@ class PV26TrainerTests(unittest.TestCase):
         trainer.forward_encoded_batch = lambda encoded: {  # type: ignore[method-assign]
             "det": torch.zeros((1, 2, 12), requires_grad=True),
             "tl_attr": torch.zeros((1, 2, 4), requires_grad=True),
-            "lane": torch.zeros((1, 12, 54), requires_grad=True),
-            "stop_line": torch.zeros((1, 6, 9), requires_grad=True),
-            "crosswalk": torch.zeros((1, 4, 17), requires_grad=True),
+            "lane": torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), requires_grad=True),
+            "stop_line": torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), requires_grad=True),
+            "crosswalk": torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), requires_grad=True),
         }
 
         summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=2))

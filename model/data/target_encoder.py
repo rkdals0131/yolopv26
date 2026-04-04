@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from common.pv26_schema import OD_CLASSES
+from .transform import NETWORK_HW
 from ..engine.spec import build_loss_spec
 
 
@@ -12,12 +13,20 @@ SPEC = build_loss_spec()
 LANE_QUERY_COUNT = int(SPEC["heads"]["lane"]["query_count"])
 STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
 CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
-LANE_POINT_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["polyline_points"])
-STOP_LINE_POINT_COUNT = int(SPEC["heads"]["stop_line"]["target_encoding"]["polyline_points"])
-CROSSWALK_POINT_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["polygon_points"])
-LANE_VECTOR_SIZE = 54
-STOP_LINE_VECTOR_SIZE = 9
-CROSSWALK_VECTOR_SIZE = 17
+LANE_ANCHOR_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["anchor_rows"])
+CROSSWALK_POINT_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["quad_corners"])
+LANE_COLOR_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["color_logits"])
+LANE_TYPE_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["type_logits"])
+LANE_X_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["x_coordinates"])
+LANE_VIS_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["visibility_logits"])
+LANE_COLOR_SLICE = slice(1, 1 + LANE_COLOR_DIM)
+LANE_TYPE_SLICE = slice(LANE_COLOR_SLICE.stop, LANE_COLOR_SLICE.stop + LANE_TYPE_DIM)
+LANE_X_SLICE = slice(LANE_TYPE_SLICE.stop, LANE_TYPE_SLICE.stop + LANE_X_DIM)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_VIS_DIM)
+LANE_VECTOR_SIZE = LANE_VIS_SLICE.stop
+STOP_LINE_VECTOR_SIZE = 6
+CROSSWALK_VECTOR_SIZE = 9
+LANE_ANCHOR_ROWS = torch.linspace(float(NETWORK_HW[0] - 1), 0.0, LANE_ANCHOR_COUNT, dtype=torch.float32)
 
 
 def _as_float_tensor(points: Any) -> torch.FloatTensor:
@@ -62,12 +71,25 @@ def _resample_points(points_xy: Any, target_count: int) -> torch.FloatTensor:
     return torch.stack(resampled, dim=0)
 
 
-def _sort_lane_points(points_xy: Any) -> torch.FloatTensor:
+def _coerce_lane_visibility(visibility: Any, point_count: int) -> torch.FloatTensor:
+    if isinstance(visibility, torch.Tensor):
+        values = visibility.to(dtype=torch.float32).reshape(-1)
+    elif isinstance(visibility, (list, tuple)):
+        values = torch.tensor(visibility, dtype=torch.float32).reshape(-1)
+    else:
+        values = torch.ones(point_count, dtype=torch.float32)
+    if values.numel() != point_count:
+        values = torch.ones(point_count, dtype=torch.float32)
+    return values.clamp(0.0, 1.0)
+
+
+def _sort_lane_points(points_xy: Any, visibility: Any = None) -> tuple[torch.FloatTensor, torch.FloatTensor]:
     points = _as_float_tensor(points_xy).reshape(-1, 2)
+    lane_visibility = _coerce_lane_visibility(visibility, int(points.shape[0]))
     if points.shape[0] <= 1:
-        return points
+        return points, lane_visibility
     order = torch.argsort(points[:, 1], descending=True)
-    return points[order]
+    return points[order], lane_visibility[order]
 
 
 def _sort_stop_line_points(points_xy: Any) -> torch.FloatTensor:
@@ -76,6 +98,21 @@ def _sort_stop_line_points(points_xy: Any) -> torch.FloatTensor:
         return points
     order = torch.argsort(points[:, 0], descending=False)
     return points[order]
+
+
+def _estimate_stop_line_width(points: torch.FloatTensor) -> tuple[float, bool]:
+    if points.shape[0] < 3:
+        return -1.0, False
+    start = points[0]
+    end = points[-1]
+    line = end - start
+    length = float(torch.linalg.norm(line).item())
+    if length <= 1.0e-6:
+        return -1.0, False
+    unit = line / length
+    normal = torch.tensor([-unit[1], unit[0]], dtype=torch.float32)
+    distances = torch.abs((points - start) @ normal)
+    return float(distances.mean().item() * 2.0), True
 
 
 def _sort_crosswalk_points(points_xy: Any) -> torch.FloatTensor:
@@ -113,6 +150,49 @@ def _crosswalk_sort_key(row: dict[str, Any]) -> tuple[float, float]:
     return (-float(center[1]), float(center[0]))
 
 
+def _interpolate_lane_anchor_targets(
+    points: torch.FloatTensor,
+    visibility: torch.FloatTensor,
+    anchor_rows: torch.FloatTensor,
+) -> tuple[torch.FloatTensor, torch.FloatTensor, torch.BoolTensor]:
+    x_targets = torch.zeros(anchor_rows.shape[0], dtype=torch.float32)
+    vis_targets = torch.zeros(anchor_rows.shape[0], dtype=torch.float32)
+    anchor_hits = torch.zeros(anchor_rows.shape[0], dtype=torch.bool)
+    if points.shape[0] == 0:
+        return x_targets, vis_targets, anchor_hits
+    if points.shape[0] == 1:
+        closest = int(torch.argmin((anchor_rows - points[0, 1]).abs()).item())
+        x_targets[closest] = float(points[0, 0])
+        vis_targets[closest] = float(visibility[0])
+        anchor_hits[closest] = True
+        return x_targets, vis_targets.clamp(0.0, 1.0), anchor_hits
+
+    for point_index in range(points.shape[0] - 1):
+        p0 = points[point_index]
+        p1 = points[point_index + 1]
+        v0 = visibility[point_index]
+        v1 = visibility[point_index + 1]
+        y0 = float(p0[1])
+        y1 = float(p1[1])
+        lower = min(y0, y1) - 1.0e-6
+        upper = max(y0, y1) + 1.0e-6
+        anchor_mask = (~anchor_hits) & (anchor_rows >= lower) & (anchor_rows <= upper)
+        anchor_indices = torch.nonzero(anchor_mask, as_tuple=False).flatten()
+        if anchor_indices.numel() == 0:
+            continue
+        if abs(y1 - y0) <= 1.0e-6:
+            x_targets[anchor_indices] = (p0[0] + p1[0]) * 0.5
+            vis_targets[anchor_indices] = torch.maximum(v0, v1)
+            anchor_hits[anchor_indices] = True
+            continue
+        rows = anchor_rows[anchor_indices]
+        ratios = (rows - p0[1]) / (p1[1] - p0[1])
+        x_targets[anchor_indices] = p0[0] + ratios * (p1[0] - p0[0])
+        vis_targets[anchor_indices] = v0 + ratios * (v1 - v0)
+        anchor_hits[anchor_indices] = True
+    return x_targets, vis_targets.clamp(0.0, 1.0), anchor_hits
+
+
 def _sample_label(sample_meta: Any, batch_index: int) -> str:
     if isinstance(sample_meta, dict):
         dataset_key = str(sample_meta.get("dataset_key") or "unknown_dataset")
@@ -137,19 +217,25 @@ def _encode_lane_rows(
 
     sorted_rows = sorted(enumerate(rows), key=lambda item: _lane_sort_key(item[1]))
     for query_index, (source_index, row) in enumerate(sorted_rows[:LANE_QUERY_COUNT]):
-        points = _sort_lane_points(row.get("points_xy", []))
+        points, visibility = _sort_lane_points(row.get("points_xy", []), row.get("visibility"))
         color_index = int(row.get("color", -1))
         lane_type_index = int(row.get("lane_type", -1))
-        is_valid = bool(valid_mask[source_index]) and color_index >= 0 and lane_type_index >= 0
+        anchor_x, anchor_visibility, anchor_hits = _interpolate_lane_anchor_targets(points, visibility, LANE_ANCHOR_ROWS)
+        visible_anchor_mask = anchor_hits & (anchor_visibility >= 0.5)
+        is_valid = (
+            bool(valid_mask[source_index])
+            and color_index >= 0
+            and lane_type_index >= 0
+            and int(visible_anchor_mask.sum().item()) >= 2
+        )
         if not is_valid:
             continue
 
-        resampled = _resample_points(points, LANE_POINT_COUNT)
         encoded[query_index, 0] = 1.0
-        encoded[query_index, 1 + color_index] = 1.0
-        encoded[query_index, 4 + lane_type_index] = 1.0
-        encoded[query_index, 6:38] = resampled.flatten()
-        encoded[query_index, 38:54] = 1.0
+        encoded[query_index, LANE_COLOR_SLICE.start + color_index] = 1.0
+        encoded[query_index, LANE_TYPE_SLICE.start + lane_type_index] = 1.0
+        encoded[query_index, LANE_X_SLICE] = anchor_x
+        encoded[query_index, LANE_VIS_SLICE] = visible_anchor_mask.to(dtype=torch.float32)
         row_valid[query_index] = True
     return encoded, row_valid
 
@@ -158,22 +244,28 @@ def _encode_stop_line_rows(
     rows: list[dict[str, Any]],
     valid_mask: torch.BoolTensor,
     source_enabled: bool,
-) -> tuple[torch.FloatTensor, torch.BoolTensor]:
+) -> tuple[torch.FloatTensor, torch.BoolTensor, torch.BoolTensor]:
     encoded = torch.zeros((STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_SIZE), dtype=torch.float32)
     row_valid = torch.zeros(STOP_LINE_QUERY_COUNT, dtype=torch.bool)
+    width_valid = torch.zeros(STOP_LINE_QUERY_COUNT, dtype=torch.bool)
     if not source_enabled:
-        return encoded, row_valid
+        return encoded, row_valid, width_valid
 
     sorted_rows = sorted(enumerate(rows), key=lambda item: _stop_line_sort_key(item[1]))
     for query_index, (source_index, row) in enumerate(sorted_rows[:STOP_LINE_QUERY_COUNT]):
         if not bool(valid_mask[source_index]):
             continue
         points = _sort_stop_line_points(row.get("points_xy", []))
-        resampled = _resample_points(points, STOP_LINE_POINT_COUNT)
+        if points.shape[0] < 2:
+            continue
+        width, has_width = _estimate_stop_line_width(points)
         encoded[query_index, 0] = 1.0
-        encoded[query_index, 1:9] = resampled.flatten()
+        encoded[query_index, 1:3] = points[0]
+        encoded[query_index, 3:5] = points[-1]
+        encoded[query_index, 5] = width
         row_valid[query_index] = True
-    return encoded, row_valid
+        width_valid[query_index] = has_width
+    return encoded, row_valid, width_valid
 
 
 def _encode_crosswalk_rows(
@@ -193,7 +285,7 @@ def _encode_crosswalk_rows(
         points = _sort_crosswalk_points(row.get("points_xy", []))
         resampled = _resample_points(points, CROSSWALK_POINT_COUNT)
         encoded[query_index, 0] = 1.0
-        encoded[query_index, 1:17] = resampled.flatten()
+        encoded[query_index, 1:9] = resampled.flatten()
         row_valid[query_index] = True
     return encoded, row_valid
 
@@ -220,6 +312,7 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
     lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
     stop_line_encoded = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_SIZE), dtype=torch.float32)
     stop_line_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_width_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
     crosswalk_encoded = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_SIZE), dtype=torch.float32)
     crosswalk_valid = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT), dtype=torch.bool)
 
@@ -279,13 +372,14 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
         lane_encoded[batch_index] = lane_rows
         lane_valid[batch_index] = lane_rows_valid
 
-        stop_rows, stop_rows_valid = _encode_stop_line_rows(
+        stop_rows, stop_rows_valid, stop_rows_width_valid = _encode_stop_line_rows(
             sample_lane["stop_lines"],
             sample_valid["stop_line"],
             bool(stop_line_source[batch_index]),
         )
         stop_line_encoded[batch_index] = stop_rows
         stop_line_valid[batch_index] = stop_rows_valid
+        stop_line_width_valid[batch_index] = stop_rows_width_valid
 
         cross_rows, cross_rows_valid = _encode_crosswalk_rows(
             sample_lane["crosswalks"],
@@ -318,6 +412,7 @@ def encode_pv26_batch(batch: dict[str, Any]) -> dict[str, Any]:
             "crosswalk_source": crosswalk_source,
             "lane_valid": lane_valid,
             "stop_line_valid": stop_line_valid,
+            "stop_line_width_valid": stop_line_width_valid,
             "crosswalk_valid": crosswalk_valid,
         },
         "meta": meta,

@@ -5,7 +5,7 @@ from typing import Any
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v6"
+SPEC_VERSION = "pv26-loss-v9"
 LossSpec = dict[str, Any]
 
 
@@ -99,33 +99,34 @@ def _build_heads() -> dict[str, Any]:
             ],
         },
         "lane": {
-            "shape": "B x 12 x 54",
-            "query_count": 12,
+            "shape": "B x 24 x 38",
+            "query_count": 24,
             "target_encoding": {
                 "objectness": 1,
                 "color_logits": 3,
                 "type_logits": 2,
-                "polyline_points": 16,
-                "point_coordinates": 32,
+                "anchor_rows": 16,
+                "x_coordinates": 16,
                 "visibility_logits": 16,
             },
         },
         "stop_line": {
-            "shape": "B x 6 x 9",
-            "query_count": 6,
+            "shape": "B x 8 x 6",
+            "query_count": 8,
             "target_encoding": {
                 "objectness": 1,
-                "polyline_points": 4,
-                "point_coordinates": 8,
+                "endpoints": 2,
+                "point_coordinates": 4,
+                "width": 1,
             },
         },
         "crosswalk": {
-            "shape": "B x 4 x 17",
-            "query_count": 4,
+            "shape": "B x 8 x 9",
+            "query_count": 8,
             "target_encoding": {
                 "objectness": 1,
-                "polygon_points": 8,
-                "point_coordinates": 16,
+                "quad_corners": 4,
+                "point_coordinates": 8,
             },
         },
     }
@@ -153,7 +154,7 @@ def _build_sample_contract() -> dict[str, Any]:
             "collapse_reason": "list[str] aligned 1:1 with det_targets",
         },
         "lane_targets": {
-            "lanes": "list[{points_xy: float32[P,2], color: int, lane_type: int}]",
+            "lanes": "list[{points_xy: float32[P,2], color: int, lane_type: int, visibility: float32[P]}]",
             "stop_lines": "list[{points_xy: float32[P,2]}]",
             "crosswalks": "list[{points_xy: float32[P,2]}]",
         },
@@ -200,13 +201,16 @@ def _build_encoded_batch_contract() -> dict[str, Any]:
         "det_gt": "detector-native GT batch derived from N_gt_det",
         "tl_attr_gt_bits": "float32[B, N_gt_det_max, 4]",
         "tl_attr_gt_mask": "bool[B, N_gt_det_max]",
-        "lane": "float32[B, 12, 54]",
-        "stop_line": "float32[B, 6, 9]",
-        "crosswalk": "float32[B, 4, 17]",
+        "lane": "float32[B, 24, 38]",
+        "stop_line": "float32[B, 8, 6]",
+        "crosswalk": "float32[B, 8, 9]",
         "det_supervision": {
             "det_supervised_class_mask": "bool[B, C_det] with at least one true class for det_source rows",
             "det_allow_objectness_negatives": "bool[B]",
             "det_allow_unmatched_class_negatives": "bool[B]",
+        },
+        "geometry_masks": {
+            "stop_line_width_valid": "bool[B, 8]",
         },
         "det_assignment_binding": "computed inside loss and maps Q_det positives to N_gt_det indices",
     }
@@ -256,14 +260,15 @@ def _build_transform_contract() -> dict[str, Any]:
 def _build_canonical_target_rules() -> dict[str, Any]:
     return {
         "lane": [
-            "Sort bottom-to-top, then resample by arc length to 16 points.",
+            "Sort bottom-to-top, then project to 16 fixed anchor rows.",
             "Keep original color and solid/dotted attributes in metadata.",
+            "Preserve source visibility when available; otherwise derive pseudo-visibility from point span.",
         ],
         "stop_line": [
-            "Sort left-to-right, then resample to 4 points.",
+            "Sort left-to-right, then encode as endpoints + optional width.",
         ],
         "crosswalk": [
-            "Order contour clockwise, then resample to 8 polygon points.",
+            "Order contour clockwise, then downsample to 4-corner quad.",
         ],
         "external_contract": [
             "Training/inference IO stays AIHUB-compatible.",
@@ -377,24 +382,26 @@ def _build_losses() -> dict[str, Any]:
                 "objectness": 1.0,
                 "color_ce": 1.0,
                 "type_ce": 0.5,
-                "points_l1": 5.0,
+                "anchor_x_smooth_l1": 5.0,
                 "visibility_bce": 1.0,
                 "smoothness": 0.25,
+                "visibility_tv": 0.1,
             },
         },
         "stop_line": {
             "type": "matched_query_loss",
             "subterms": {
                 "objectness": 1.0,
-                "points_l1": 6.0,
-                "straightness": 0.5,
+                "endpoints_smooth_l1": 6.0,
+                "width_smooth_l1": 1.0,
+                "angle_length": 0.5,
             },
         },
         "crosswalk": {
             "type": "matched_query_loss",
             "subterms": {
                 "objectness": 1.0,
-                "polygon_l1": 4.0,
+                "corner_smooth_l1": 4.0,
                 "shape_regularizer": 0.5,
             },
         },
@@ -407,7 +414,7 @@ def _build_matching() -> dict[str, Any]:
         "lane": {
             "matcher": "hungarian",
             "costs": {
-                "points_l1": 3.0,
+                "anchor_x_l1": 3.0,
                 "color_ce": 1.0,
                 "type_ce": 0.5,
                 "visibility_bce": 0.5,
@@ -416,14 +423,15 @@ def _build_matching() -> dict[str, Any]:
         "stop_line": {
             "matcher": "hungarian",
             "costs": {
-                "points_l1": 4.0,
+                "endpoints_l1": 4.0,
+                "width_l1": 0.5,
                 "angle_length_cost": 0.5,
             },
         },
         "crosswalk": {
             "matcher": "hungarian",
             "costs": {
-                "polygon_l1": 3.0,
+                "corner_l1": 3.0,
                 "polygon_overlap_cost": 1.0,
             },
         },
@@ -454,12 +462,12 @@ def _build_validation() -> dict[str, Any]:
             "lane type accuracy",
         ],
         "stop_line": [
-            "point distance",
+            "centerline point distance",
             "segment angle error",
         ],
         "crosswalk": [
             "polygon IoU",
-            "vertex distance",
+            "corner distance",
         ],
     }
 

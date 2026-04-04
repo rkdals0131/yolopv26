@@ -13,11 +13,11 @@
 - TL attr
   - 4-bit sigmoid attribute
 - lane
-  - 16-point polyline
+  - 16 anchor-row x / visibility
 - stop-line
-  - 4-point polyline
+  - 2 endpoints + width
 - crosswalk
-  - 8-point polygon
+  - 4-corner quad
 
 ## internal target encoding
 
@@ -27,14 +27,15 @@
   - objectness
   - color logits 3
   - type logits 2
-  - points 16
+  - anchor-row x 16
   - visibility logits 16
 - stop-line
   - objectness
-  - points 4
+  - endpoints 2
+  - width 1
 - crosswalk
   - objectness
-  - polygon points 8
+  - quad corners 4
 
 ## matching policy
 
@@ -113,20 +114,22 @@ L_total = λ_det * L_det
 - objectness `1.0`
 - color CE `1.0`
 - type CE `0.5`
-- points L1 `5.0`
+- anchor x SmoothL1 `5.0`
 - visibility BCE `1.0`
 - smoothness `0.25`
+- visibility TV `0.1`
 
 ## stop-line loss
 
 - objectness `1.0`
-- points L1 `6.0`
-- straightness `0.5`
+- endpoints SmoothL1 `6.0`
+- width SmoothL1 `1.0`
+- angle/length `0.5`
 
 ## crosswalk loss
 
 - objectness `1.0`
-- polygon L1 `4.0`
+- corner SmoothL1 `4.0`
 - shape regularizer `0.5`
 
 ## dataset masking
@@ -166,7 +169,10 @@ L_total = λ_det * L_det
 - current runtime은 full train/eval 경로에서 finite loss, backward, validation, prediction bundle decode를 모두 지원한다.
 - detector matching은 task-aligned assigner 기준으로 동작한다.
 - TL attr supervision은 matched detector positive의 GT index를 재사용한다.
-- lane family는 Hungarian matching 기준으로 objectness와 geometry target을 query에 재배치한다.
+- lane은 Hungarian matching 기준 row-anchor target을 query에 재배치한다.
+- lane x regression은 visible anchor에서만 계산한다.
+- stop-line은 Hungarian matching 기준 endpoint+width geometry target을 query에 재배치한다.
+- crosswalk는 Hungarian matching 기준 quad target을 query에 재배치한다.
 - inference postprocess는 raw detector slot output을 prediction bundle로 decode한다.
 - evaluator의 `predict_batch()`는 postprocess-only 경계고, loss/assigner를 호출하지 않는다.
 - evaluator의 `evaluate_batch(compute_loss=False)`는 metrics/predictions만 계산하고 loss는 비운다.
