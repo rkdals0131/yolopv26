@@ -54,7 +54,19 @@ def _default_stage3_stress_batch_size() -> int:
 
 def _ascii_input(console: Console, prompt: str) -> str | None:
     try:
-        raw = input(prompt).strip()
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        stdin_buffer = getattr(sys.stdin, "buffer", None)
+        if stdin_buffer is not None:
+            raw_bytes = stdin_buffer.readline()
+            if raw_bytes == b"":
+                return None
+            raw = raw_bytes.decode("utf-8", errors="ignore").strip()
+        else:
+            raw = sys.stdin.readline()
+            if raw == "":
+                return None
+            raw = raw.strip()
     except EOFError:
         return None
     except KeyboardInterrupt:

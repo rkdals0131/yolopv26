@@ -16,6 +16,24 @@ from tools.od_bootstrap.build.final_dataset_stats import FINAL_DATASET_STATS_NAM
 
 
 class PV26PortabilityRuntimeTests(unittest.TestCase):
+    def test_ascii_input_ignores_invalid_utf8_bytes(self) -> None:
+        from rich.console import Console
+        from tools.check_env.launch import _ascii_input
+
+        class _FakeStdin:
+            def __init__(self, payload: bytes) -> None:
+                self.buffer = io.BytesIO(payload)
+
+        console = Console(file=io.StringIO())
+        stdout = io.StringIO()
+
+        with unittest.mock.patch.object(sys, "stdin", _FakeStdin(b"\xff\xfe yes\n")):
+            with unittest.mock.patch.object(sys, "stdout", stdout):
+                raw = _ascii_input(console, "yes/no > ")
+
+        self.assertEqual(raw, "yes")
+        self.assertEqual(stdout.getvalue(), "yes/no > ")
+
     def test_standardization_defaults_follow_repo_root(self) -> None:
         from tools.od_bootstrap.source import aihub, bdd100k
 

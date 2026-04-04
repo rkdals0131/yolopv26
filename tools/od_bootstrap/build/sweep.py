@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from pathlib import Path
+import numpy as np
+from PIL import Image
+import time
 from typing import Any, Iterable, TypedDict, cast
 
 import torch
@@ -13,6 +18,7 @@ except ImportError:  # pragma: no cover
 from common.boxes import nms_rows
 from common.io import now_iso as _now_iso
 from common.io import timestamp_token as _timestamp_token
+from common.train_runtime import format_duration, join_status_segments, timing_profile
 from .artifacts import (
     RunManifest,
     TeacherJobManifest,
@@ -64,6 +70,18 @@ def _batched(items: Iterable[ImageListEntry], batch_size: int) -> Iterable[list[
             batch = []
     if batch:
         yield batch
+
+
+def _decode_image_array(path: Path) -> np.ndarray:
+    with Image.open(path) as image:
+        return np.array(image.convert("RGB"), copy=True)
+
+
+def _submit_decode_batch(
+    executor: ThreadPoolExecutor,
+    batch_entries: list[ImageListEntry],
+) -> list[Any]:
+    return [executor.submit(_decode_image_array, entry.image_path) for entry in batch_entries]
 
 
 def _build_teacher_job_manifest(
@@ -176,40 +194,103 @@ def _run_teacher_inference(
     total_images = len(entries)
     processed_images = 0
     last_logged = 0
+    start_time = time.perf_counter()
     batch_size = max(1, int(scenario.run.batch_size))
-    log_every_images = max(batch_size * 50, 500)
+    decode_workers = max(1, min(int(scenario.run.decode_workers), batch_size))
+    profile_window = deque(maxlen=max(1, int(scenario.run.profile_window)))
+    log_every_images = max(batch_size * 10, 320)
+    batches = tuple(_batched(entries, batch_size))
     _log_bootstrap(
-        f"teacher={teacher.name} inference start images={total_images} batch={batch_size} checkpoint={teacher.checkpoint_path}"
+        f"teacher={teacher.name} inference start images={total_images} batch={batch_size} "
+        f"decode_workers={decode_workers} profile_window={profile_window.maxlen} checkpoint={teacher.checkpoint_path}"
     )
-    for batch_entries in _batched(entries, batch_size):
-        results = model.predict(
-            source=[str(entry.image_path) for entry in batch_entries],
-            imgsz=scenario.run.imgsz,
-            device=scenario.run.device,
-            conf=scenario.run.predict_conf,
-            iou=scenario.run.predict_iou,
-            verbose=False,
-            save=False,
-            stream=False,
-        )
-        rows.extend(
-            _extract_teacher_rows(
-                teacher=teacher,
-                batch_entries=batch_entries,
-                results=list(results),
-                class_policy=scenario.class_policy,
+    if not batches:
+        return rows
+    with ThreadPoolExecutor(max_workers=decode_workers, thread_name_prefix="od_decode") as decode_executor:
+        pending_futures = _submit_decode_batch(decode_executor, batches[0])
+        pending_entries = batches[0]
+        for batch_index, _ in enumerate(batches):
+            batch_started_at = time.perf_counter()
+            decode_started_at = batch_started_at
+            batch_images = [future.result() for future in pending_futures]
+            decode_finished_at = time.perf_counter()
+
+            next_batch_index = batch_index + 1
+            if next_batch_index < len(batches):
+                pending_entries = batches[next_batch_index]
+                pending_futures = _submit_decode_batch(decode_executor, pending_entries)
+            else:
+                pending_entries = []
+                pending_futures = []
+
+            infer_started_at = time.perf_counter()
+            results = model.predict(
+                source=batch_images,
+                imgsz=scenario.run.imgsz,
+                device=scenario.run.device,
+                conf=scenario.run.predict_conf,
+                iou=scenario.run.predict_iou,
+                verbose=False,
+                save=False,
+                stream=False,
             )
-        )
-        processed_images += len(batch_entries)
-        if (
-            processed_images == total_images
-            or processed_images == len(batch_entries)
-            or processed_images - last_logged >= log_every_images
-        ):
-            last_logged = processed_images
-            _log_bootstrap(
-                f"teacher={teacher.name} inference progress {processed_images}/{total_images} images predictions={len(rows)}"
+            infer_finished_at = time.perf_counter()
+            postprocess_started_at = infer_finished_at
+            current_batch_entries = batches[batch_index]
+            rows.extend(
+                _extract_teacher_rows(
+                    teacher=teacher,
+                    batch_entries=current_batch_entries,
+                    results=list(results),
+                    class_policy=scenario.class_policy,
+                )
             )
+            batch_finished_at = time.perf_counter()
+            profile_window.append(
+                {
+                    "iteration_sec": max(0.0, batch_finished_at - batch_started_at),
+                    "decode_sec": max(0.0, decode_finished_at - decode_started_at),
+                    "infer_sec": max(0.0, infer_finished_at - infer_started_at),
+                    "postprocess_sec": max(0.0, batch_finished_at - postprocess_started_at),
+                }
+            )
+            processed_images += len(current_batch_entries)
+            if (
+                processed_images == total_images
+                or processed_images == len(current_batch_entries)
+                or processed_images - last_logged >= log_every_images
+            ):
+                last_logged = processed_images
+                profile_summary = timing_profile(
+                    list(profile_window),
+                    keys=("iteration_sec", "decode_sec", "infer_sec", "postprocess_sec"),
+                )
+                iteration_profile = profile_summary["iteration_sec"]
+                remaining_images = max(0, total_images - processed_images)
+                eta_sec = float(iteration_profile["mean"]) * (remaining_images / float(batch_size)) if processed_images else None
+                elapsed_sec = max(0.0, time.perf_counter() - start_time)
+                profile_postfix = join_status_segments(
+                    f"elapsed={format_duration(elapsed_sec)}",
+                    f"eta={format_duration(eta_sec)}",
+                    (
+                        "iter_ms="
+                        f"{iteration_profile['mean'] * 1000.0:.1f}/"
+                        f"{iteration_profile['p50'] * 1000.0:.1f}/"
+                        f"{iteration_profile['p99'] * 1000.0:.1f}"
+                    ),
+                    (
+                        "timing_ms="
+                        f"decode:{profile_summary['decode_sec']['mean'] * 1000.0:.1f},"
+                        f"infer:{profile_summary['infer_sec']['mean'] * 1000.0:.1f},"
+                        f"post:{profile_summary['postprocess_sec']['mean'] * 1000.0:.1f},"
+                        f"gap:{max(0.0, (iteration_profile['mean'] - profile_summary['decode_sec']['mean'] - profile_summary['infer_sec']['mean'] - profile_summary['postprocess_sec']['mean']) * 1000.0):.1f}"
+                    ),
+                )
+                _log_bootstrap(
+                    f"teacher={teacher.name} inference progress {processed_images}/{total_images} images "
+                    f"predictions={len(rows)} "
+                    f"{profile_postfix}"
+                )
     return rows
 
 

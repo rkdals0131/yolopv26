@@ -15,6 +15,8 @@ class RunConfig:
     device: str = "cuda:0"
     imgsz: int = 640
     batch_size: int = 8
+    decode_workers: int = 4
+    profile_window: int = 20
     predict_conf: float = 0.001
     predict_iou: float = 0.99
 

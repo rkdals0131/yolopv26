@@ -851,6 +851,14 @@ def build_sweep_preset() -> BootstrapSweepScenario:
                 exhaustive_run.get("batch_size", 8),
                 field_name="od_bootstrap.exhaustive_od.run.batch_size",
             ),
+            decode_workers=_coerce_int(
+                exhaustive_run.get("decode_workers", 4),
+                field_name="od_bootstrap.exhaustive_od.run.decode_workers",
+            ),
+            profile_window=_coerce_int(
+                exhaustive_run.get("profile_window", 20),
+                field_name="od_bootstrap.exhaustive_od.run.profile_window",
+            ),
             predict_conf=_coerce_float(
                 exhaustive_run.get("predict_conf", 0.001),
                 field_name="od_bootstrap.exhaustive_od.run.predict_conf",

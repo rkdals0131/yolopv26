@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import unittest
@@ -28,6 +29,10 @@ TEST_CLASS_POLICY = {
     "obstacle": ClassPolicy(score_threshold=0.25, nms_iou_threshold=0.55, min_box_size=4),
 }
 
+_ONE_BY_ONE_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1xkAAAAASUVORK5CYII="
+)
+
 
 def _build_isolated_sweep_preset(*, calibration_root: Path):
     with patch(
@@ -45,7 +50,7 @@ class _FakeYOLO:
         self.checkpoint_path = checkpoint_path
 
     def predict(self, **kwargs):
-        source = [Path(item) for item in kwargs["source"]]
+        source = list(kwargs["source"])
         names = {0: "vehicle", 1: "bike", 2: "pedestrian"}
         checkpoint_name = Path(self.checkpoint_path).name
         if "signal" in checkpoint_name:
@@ -53,7 +58,8 @@ class _FakeYOLO:
         elif "obstacle" in checkpoint_name:
             names = {0: "traffic_cone", 1: "obstacle"}
         results = []
-        for image_path in source:
+        for index, item in enumerate(source):
+            image_path = item if isinstance(item, (str, Path)) else f"image{index}.jpg"
             if "mobility" in checkpoint_name:
                 boxes = SimpleNamespace(
                     xyxy=torch.tensor([[305.0, 305.0, 365.0, 385.0]]),
@@ -138,8 +144,8 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             for path in (bdd_scene_dir, bdd_det_dir, bdd_image_root, traffic_scene_dir, traffic_det_dir, traffic_image_root):
                 path.mkdir(parents=True, exist_ok=True)
 
-            (bdd_image_root / "frame_001.png").write_bytes(b"bdd")
-            (traffic_image_root / "frame_001.png").write_bytes(b"traffic")
+            (bdd_image_root / "frame_001.png").write_bytes(_ONE_BY_ONE_PNG)
+            (traffic_image_root / "frame_001.png").write_bytes(_ONE_BY_ONE_PNG)
 
             (bdd_scene_dir / "frame_001.json").write_text(
                 json.dumps(
