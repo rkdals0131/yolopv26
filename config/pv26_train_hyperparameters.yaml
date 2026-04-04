@@ -61,6 +61,7 @@ pv26_train:
           patience: 2
           min_improvement_pct: 2.0
           overrides:
+            batch_size: 32
             trunk_lr: 5.0e-5
             head_lr: 3.0e-3
         - name: partial_unfreeze
@@ -70,6 +71,7 @@ pv26_train:
           patience: 2
           min_improvement_pct: 0.5
           overrides:
+            batch_size: 24
             trunk_lr: 3.0e-5
             head_lr: 8.0e-4
         - name: end_to_end_finetune
@@ -79,6 +81,7 @@ pv26_train:
           patience: 3
           min_improvement_pct: 0.25
           overrides:
+            batch_size: 16
             trunk_lr: 1.0e-5
             head_lr: 4.0e-4
         - name: lane_family_finetune
@@ -99,6 +102,7 @@ pv26_train:
             crosswalk: 1.0
           freeze_policy: lane_family_heads_only
           overrides:
+            batch_size: 32
             trunk_lr: 0.0
             head_lr: 2.0e-4
             sampler_ratios:
