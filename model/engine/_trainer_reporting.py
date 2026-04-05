@@ -10,6 +10,7 @@ from common.train_runtime import join_status_segments as _common_join_status_seg
 from common.train_runtime import progress_meter as _common_progress_meter
 from common.train_runtime import quantile as _common_quantile
 from common.train_runtime import timing_profile as _common_timing_profile
+from common.train_runtime import write_tensorboard_histograms as _common_write_tensorboard_histograms
 from common.train_runtime import write_tensorboard_scalars as _common_write_tensorboard_scalars
 from .spec import build_loss_spec
 
@@ -112,6 +113,10 @@ def _write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any]
     _common_write_tensorboard_scalars(writer, prefix, payload, step)
 
 
+def _write_tensorboard_histograms(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> None:
+    _common_write_tensorboard_histograms(writer, prefix, payload, step)
+
+
 def _select_numeric_scalars(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, float]:
     output: dict[str, float] = {}
     for key in keys:
@@ -124,6 +129,17 @@ def _select_numeric_scalars(payload: dict[str, Any], keys: tuple[str, ...]) -> d
             if math.isfinite(numeric):
                 output[key] = numeric
     return output
+
+
+def _total_scalar(payload: dict[str, Any]) -> dict[str, float]:
+    value = payload.get("total")
+    if isinstance(value, dict):
+        value = value.get("mean")
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if math.isfinite(numeric):
+            return {"total": numeric}
+    return {}
 
 
 def _loss_mean_scalars(payload: dict[str, Any]) -> dict[str, float]:
@@ -175,35 +191,12 @@ def _stage_weighted_losses(stage: str | None, losses: dict[str, Any]) -> dict[st
 
 def _tensorboard_val_metric_scalars(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
-        "detector": _select_numeric_scalars(
-            metrics.get("detector", {}),
-            ("precision", "recall", "f1", "map50"),
-        ),
-        "detector_size_buckets": {
-            bucket_name: _select_numeric_scalars(payload, ("precision", "recall", "f1", "ap50"))
-            for bucket_name, payload in metrics.get("detector", {}).get("size_buckets", {}).items()
-            if isinstance(payload, dict)
-        },
-        "traffic_light": _select_numeric_scalars(
-            metrics.get("traffic_light", {}),
-            ("combo_accuracy", "mean_f1"),
-        ),
-        "lane": _select_numeric_scalars(
-            metrics.get("lane", {}),
-            ("precision", "recall", "f1", "mean_point_distance", "color_accuracy", "type_accuracy"),
-        ),
-        "stop_line": _select_numeric_scalars(
-            metrics.get("stop_line", {}),
-            ("precision", "recall", "f1", "mean_point_distance", "mean_angle_error"),
-        ),
-        "crosswalk": _select_numeric_scalars(
-            metrics.get("crosswalk", {}),
-            ("precision", "recall", "f1", "mean_polygon_iou", "mean_vertex_distance"),
-        ),
-        "lane_family": _select_numeric_scalars(
-            metrics.get("lane_family", {}),
-            ("mean_f1", "min_f1"),
-        ),
+        "detector": _select_numeric_scalars(metrics.get("detector", {}), ("map50", "map50_95")),
+        "traffic_light": _select_numeric_scalars(metrics.get("traffic_light", {}), ("combo_accuracy",)),
+        "lane": _select_numeric_scalars(metrics.get("lane", {}), ("mean_point_distance",)),
+        "stop_line": _select_numeric_scalars(metrics.get("stop_line", {}), ("mean_angle_error",)),
+        "crosswalk": _select_numeric_scalars(metrics.get("crosswalk", {}), ("mean_polygon_iou",)),
+        "lane_family": _select_numeric_scalars(metrics.get("lane_family", {}), ("mean_f1",)),
     }
 
 
@@ -223,10 +216,10 @@ def _timing_profile_mean_scalars(profile: dict[str, Any]) -> dict[str, float]:
 
 def _tensorboard_train_step_payload(summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
-        "profile_sec": _select_numeric_scalars(summary["timing"], TIMING_KEYS),
+        "profile_sec": _select_numeric_scalars(summary["timing"], ("iteration_sec",)),
     }
     if summary["successful"]:
-        payload["loss"] = _select_numeric_scalars(summary["losses"], TENSORBOARD_LOSS_KEYS)
+        payload["loss"] = _total_scalar(summary["losses"])
         weighted = _stage_weighted_losses(str(summary.get("stage")), summary["losses"])
         if weighted:
             payload["loss_weighted"] = weighted
@@ -258,24 +251,21 @@ def _tensorboard_progress_payload(
 
 def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
     payload = {
-        "train": {
-            "loss_mean": _loss_mean_scalars(epoch_summary["train"]["losses"]),
-        },
-        "lr": _select_numeric_scalars(epoch_summary["train"].get("optimizer_lrs", {}), ("trunk", "heads")),
+        "lr": _select_numeric_scalars(
+            epoch_summary.get("train", {}).get("optimizer_lrs", {}),
+            ("trunk", "heads"),
+        ),
     }
-    weighted_train = _weighted_loss_mean_scalars(epoch_summary["train"]["losses"])
-    if weighted_train:
-        payload["train"]["loss_weighted_mean"] = weighted_train
     val_summary = epoch_summary.get("val")
     if isinstance(val_summary, dict):
         payload["val"] = {
-            "loss_mean": _loss_mean_scalars(val_summary.get("losses", {})),
+            "loss": _total_scalar(val_summary.get("losses", {})),
         }
         weighted_val = _weighted_loss_mean_scalars(val_summary.get("losses", {}))
         if weighted_val:
-            payload["val"]["loss_weighted_mean"] = weighted_val
+            payload["val"]["loss_weighted"] = weighted_val
         val_metrics = _tensorboard_val_metric_scalars(val_summary.get("metrics", {}))
-        if any(val_metrics.values()):
+        if val_metrics:
             payload["val"]["metrics"] = val_metrics
     return payload
 

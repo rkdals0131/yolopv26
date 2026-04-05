@@ -34,6 +34,7 @@ from ._trainer_reporting import (
     _validate_progress_desc,
     _validate_progress_postfix,
     _weighted_loss_mean_scalars,
+    _write_tensorboard_histograms,
     _write_tensorboard_scalars,
     _zero_successful_batches_error,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "_validate_progress_desc",
     "_validate_progress_postfix",
     "_weighted_loss_mean_scalars",
+    "_write_tensorboard_histograms",
     "_write_tensorboard_scalars",
     "_zero_successful_batches_error",
 ]

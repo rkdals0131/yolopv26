@@ -345,6 +345,117 @@ def _detector_metrics(
     return summary
 
 
+def summarize_pv26_tensorboard_histograms(
+    predictions: list[dict[str, Any]],
+    batch: dict[str, Any],
+    *,
+    config: PV26MetricConfig | None = None,
+) -> dict[str, Any]:
+    config = config or PV26MetricConfig()
+    gt_samples = _extract_gt_samples(batch)
+    detector_prediction_confidence: list[float] = []
+    detector_per_class_confidence: dict[str, list[float]] = {class_name: [] for class_name in OD_CLASSES}
+    detector_matched_positive_iou: list[float] = []
+    traffic_light_attr_confidence: list[float] = []
+    lane_point_distances: list[float] = []
+    stop_line_angle_errors: list[float] = []
+    crosswalk_polygon_ious: list[float] = []
+
+    for pred_sample, gt_sample in zip(predictions, gt_samples):
+        for class_id, class_name in enumerate(OD_CLASSES):
+            gt_rows = [row for row in gt_sample["detections"] if int(row["class_id"]) == class_id]
+            pred_rows = [row for row in pred_sample["detections"] if int(row["class_id"]) == class_id]
+            matched_gt: set[int] = set()
+            for pred in sorted(pred_rows, key=lambda item: float(item["score"]), reverse=True):
+                score = float(pred["score"])
+                detector_prediction_confidence.append(score)
+                detector_per_class_confidence[class_name].append(score)
+                best_iou = 0.0
+                best_gt_index = -1
+                for gt_index, gt in enumerate(gt_rows):
+                    if gt_index in matched_gt:
+                        continue
+                    iou = _box_iou(pred["box_xyxy"], gt["box_xyxy"])
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_gt_index = gt_index
+                if best_gt_index >= 0 and best_iou >= config.det_iou_threshold:
+                    matched_gt.add(best_gt_index)
+                    detector_matched_positive_iou.append(best_iou)
+
+        gt_rows = [
+            row
+            for row in gt_sample["detections"]
+            if row["class_name"] == "traffic_light" and bool(row.get("tl_valid"))
+        ]
+        pred_rows = [row for row in pred_sample["detections"] if row["class_name"] == "traffic_light"]
+        matched_gt: set[int] = set()
+        for pred in sorted(pred_rows, key=lambda item: float(item["score"]), reverse=True):
+            best_iou = 0.0
+            best_gt_index = -1
+            for gt_index, gt in enumerate(gt_rows):
+                if gt_index in matched_gt:
+                    continue
+                iou = _box_iou(pred["box_xyxy"], gt["box_xyxy"])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_gt_index = gt_index
+            if best_gt_index >= 0 and best_iou >= config.tl_iou_threshold:
+                matched_gt.add(best_gt_index)
+                attr_scores = pred["tl_attr_scores"]
+                values = [float(attr_scores[bit]) for bit in TL_BITS if bit in attr_scores]
+                if values:
+                    traffic_light_attr_confidence.append(sum(values) / len(values))
+
+        lane_point_distances.extend(
+            _collect_lane_family_histogram_values(
+                pred_sample,
+                gt_sample,
+                field_name="lanes",
+                target_count=16,
+                match_threshold=config.lane_match_threshold,
+            )
+        )
+        stop_line_angle_errors.extend(
+            _collect_lane_family_histogram_values(
+                pred_sample,
+                gt_sample,
+                field_name="stop_lines",
+                target_count=4,
+                match_threshold=config.stop_line_match_threshold,
+            )
+        )
+        crosswalk_polygon_ious.extend(
+            _collect_lane_family_histogram_values(
+                pred_sample,
+                gt_sample,
+                field_name="crosswalks",
+                target_count=8,
+                iou_threshold=config.crosswalk_iou_threshold,
+            )
+        )
+
+    return {
+        "detector": {
+            "prediction_confidence": detector_prediction_confidence,
+            "per_class_confidence": detector_per_class_confidence,
+            "matched_positive_iou": detector_matched_positive_iou,
+        },
+        "traffic_light": {
+            "attr_confidence": traffic_light_attr_confidence,
+        },
+        "lane": {
+            "mean_point_distance": lane_point_distances,
+        },
+        "stop_line": {
+            "mean_angle_error": stop_line_angle_errors,
+        },
+        "crosswalk": {
+            "mean_polygon_iou": crosswalk_polygon_ious,
+        },
+    }
+
+
 def _tl_metrics(
     predictions: list[dict[str, Any]],
     gt_samples: list[dict[str, Any]],
@@ -489,6 +600,48 @@ def _lane_family_metrics(
     return summary
 
 
+def _collect_lane_family_histogram_values(
+    pred_sample: dict[str, Any],
+    gt_sample: dict[str, Any],
+    *,
+    field_name: str,
+    target_count: int,
+    match_threshold: float | None = None,
+    iou_threshold: float | None = None,
+) -> list[float]:
+    values: list[float] = []
+    pred_rows = list(pred_sample[field_name])
+    gt_rows = list(gt_sample[field_name])
+
+    if field_name == "crosswalks":
+        similarity_matrix = np.zeros((len(pred_rows), len(gt_rows)), dtype=np.float32)
+        for pred_index, pred in enumerate(pred_rows):
+            for gt_index, gt in enumerate(gt_rows):
+                similarity_matrix[pred_index, gt_index] = _polygon_iou(pred["points_xy"], gt["points_xy"])
+        matches = _hungarian_from_similarity(similarity_matrix, min_similarity=float(iou_threshold or 0.0))
+    else:
+        cost_matrix = np.zeros((len(pred_rows), len(gt_rows)), dtype=np.float32)
+        for pred_index, pred in enumerate(pred_rows):
+            for gt_index, gt in enumerate(gt_rows):
+                cost_matrix[pred_index, gt_index] = _mean_point_distance(
+                    pred["points_xy"],
+                    gt["points_xy"],
+                    target_count,
+                )
+        matches = _hungarian_from_cost(cost_matrix, max_cost=float(match_threshold or 0.0))
+
+    for pred_index, gt_index in matches:
+        pred = pred_rows[pred_index]
+        gt = gt_rows[gt_index]
+        if field_name == "lanes":
+            values.append(_mean_point_distance(pred["points_xy"], gt["points_xy"], target_count))
+        elif field_name == "stop_lines":
+            values.append(_segment_angle_error(pred["points_xy"], gt["points_xy"], target_count))
+        elif field_name == "crosswalks":
+            values.append(_polygon_iou(pred["points_xy"], gt["points_xy"]))
+    return values
+
+
 def summarize_pv26_metrics(
     predictions: list[dict[str, Any]],
     batch: dict[str, Any],
@@ -497,13 +650,25 @@ def summarize_pv26_metrics(
 ) -> dict[str, Any]:
     config = config or PV26MetricConfig()
     gt_samples = _extract_gt_samples(batch)
-    return {
-        "detector": _detector_metrics(
+    detector_summary = _detector_metrics(
+        predictions,
+        gt_samples,
+        config=config,
+        iou_threshold=config.det_iou_threshold,
+    )
+    detector_thresholds = [0.50 + 0.05 * index for index in range(10)]
+    detector_map50_95 = sum(
+        _detector_metrics(
             predictions,
             gt_samples,
             config=config,
-            iou_threshold=config.det_iou_threshold,
-        ),
+            iou_threshold=threshold,
+        )["map50"]
+        for threshold in detector_thresholds
+    ) / len(detector_thresholds)
+    detector_summary["map50_95"] = detector_map50_95
+    return {
+        "detector": detector_summary,
         "traffic_light": _tl_metrics(
             predictions,
             gt_samples,
@@ -537,4 +702,5 @@ def summarize_pv26_metrics(
 __all__ = [
     "PV26MetricConfig",
     "summarize_pv26_metrics",
+    "summarize_pv26_tensorboard_histograms",
 ]

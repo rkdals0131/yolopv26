@@ -142,3 +142,27 @@ def write_tensorboard_scalars(writer: Any, prefix: str, payload: dict[str, Any],
         writer.add_scalar(name, value, global_step=int(step))
         count += 1
     return count
+
+
+def write_tensorboard_histograms(writer: Any, prefix: str, payload: dict[str, Any], step: int) -> int:
+    if writer is None:
+        return 0
+    count = 0
+    for name, value in flatten_histogram_tree(prefix, payload):
+        writer.add_histogram(name, value, global_step=int(step))
+        count += 1
+    return count
+
+
+def flatten_histogram_tree(prefix: str, payload: Any) -> list[tuple[str, Any]]:
+    histograms: list[tuple[str, Any]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            next_prefix = f"{prefix}/{key}" if prefix else str(key)
+            histograms.extend(flatten_histogram_tree(next_prefix, value))
+        return histograms
+    if payload is None or isinstance(payload, (str, bytes)):
+        return histograms
+    if isinstance(payload, (list, tuple)) and len(payload) == 0:
+        return histograms
+    return [(prefix, payload)]

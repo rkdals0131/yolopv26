@@ -209,12 +209,20 @@ class _FakeSummaryWriter:
     def __init__(self, log_dir: str) -> None:
         self.log_dir = log_dir
         self.scalars: list[tuple[str, float, int]] = []
+        self.histograms: list[tuple[str, object, int]] = []
+        self.graphs: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.flushed = False
         self.closed = False
         self.layouts: list[dict] = []
 
     def add_scalar(self, name: str, value: float, global_step: int) -> None:
         self.scalars.append((name, float(value), int(global_step)))
+
+    def add_histogram(self, name: str, value: object, global_step: int) -> None:
+        self.histograms.append((name, value, int(global_step)))
+
+    def add_graph(self, *args: object, **kwargs: object) -> None:
+        self.graphs.append((args, kwargs))
 
     def add_custom_scalars(self, layout: dict) -> None:
         self.layouts.append(layout)
@@ -424,6 +432,7 @@ class PV26TrainerTests(unittest.TestCase):
         from model.engine import trainer_reporting as trainer_reporting
 
         summary = {
+            "stage": "stage_1_frozen_trunk_warmup",
             "successful": True,
             "losses": {
                 "total": 10.0,
@@ -462,6 +471,11 @@ class PV26TrainerTests(unittest.TestCase):
         scalar_names = {name for name, _ in flatten_scalar_tree("train_step", payload)}
 
         self.assertIn("train_step/loss/total", scalar_names)
+        self.assertIn("train_step/loss_weighted/det", scalar_names)
+        self.assertIn("train_step/loss_weighted/tl_attr", scalar_names)
+        self.assertIn("train_step/loss_weighted/lane", scalar_names)
+        self.assertIn("train_step/loss_weighted/stop_line", scalar_names)
+        self.assertIn("train_step/loss_weighted/crosswalk", scalar_names)
         self.assertIn("train_step/profile_sec/iteration_sec", scalar_names)
         self.assertNotIn("train_step/lr/trunk", scalar_names)
         self.assertNotIn("train_step/health/gradient_scale", scalar_names)
@@ -474,26 +488,31 @@ class PV26TrainerTests(unittest.TestCase):
 
         epoch_summary = {
             "train": {
-                "losses": {
-                    "total": {"mean": 1.0},
-                    "det": {"mean": 0.2},
-                },
-                "duration_sec": 12.5,
-                "timing_profile": {
-                    "iteration_sec": {"mean": 0.4},
-                },
                 "optimizer_lrs": {"trunk": 1e-4, "heads": 5e-4},
             },
             "val": {
                 "losses": {
                     "total": {"mean": 0.8},
                     "det": {"mean": 0.1},
+                    "tl_attr": {"mean": 0.05},
+                    "lane": {"mean": 0.2},
+                    "stop_line": {"mean": 0.15},
+                    "crosswalk": {"mean": 0.12},
+                    "weighted": {
+                        "det": {"mean": 0.1},
+                        "tl_attr": {"mean": 0.025},
+                        "lane": {"mean": 0.3},
+                        "stop_line": {"mean": 0.225},
+                        "crosswalk": {"mean": 0.12},
+                    },
                 },
-                "duration_sec": 3.0,
                 "metrics": {
-                    "detector": {"precision": 0.5, "recall": 0.4, "f1": 0.44, "map50": 0.6},
-                    "traffic_light": {"combo_accuracy": 0.75, "mean_f1": 0.7},
-                    "lane": {"precision": 0.8, "recall": 0.7, "f1": 0.74},
+                    "detector": {"map50": 0.6, "map50_95": 0.4},
+                    "traffic_light": {"combo_accuracy": 0.75},
+                    "lane": {"mean_point_distance": 2.5},
+                    "stop_line": {"mean_angle_error": 3.0},
+                    "crosswalk": {"mean_polygon_iou": 0.82},
+                    "lane_family": {"mean_f1": 0.71},
                 },
             },
         }
@@ -503,13 +522,20 @@ class PV26TrainerTests(unittest.TestCase):
 
         self.assertIn("epoch/lr/trunk", scalar_names)
         self.assertIn("epoch/lr/heads", scalar_names)
-        self.assertIn("epoch/train/loss_mean/total", scalar_names)
-        self.assertIn("epoch/val/loss_mean/total", scalar_names)
+        self.assertIn("epoch/val/loss/total", scalar_names)
+        self.assertIn("epoch/val/loss_weighted/det", scalar_names)
         self.assertIn("epoch/val/metrics/detector/map50", scalar_names)
-        self.assertIn("epoch/val/metrics/lane/f1", scalar_names)
+        self.assertIn("epoch/val/metrics/detector/map50_95", scalar_names)
+        self.assertIn("epoch/val/metrics/traffic_light/combo_accuracy", scalar_names)
+        self.assertIn("epoch/val/metrics/lane/mean_point_distance", scalar_names)
+        self.assertIn("epoch/val/metrics/stop_line/mean_angle_error", scalar_names)
+        self.assertIn("epoch/val/metrics/crosswalk/mean_polygon_iou", scalar_names)
+        self.assertIn("epoch/val/metrics/lane_family/mean_f1", scalar_names)
+        self.assertNotIn("epoch/train/loss", scalar_names)
         self.assertNotIn("epoch/train/duration_sec", scalar_names)
         self.assertNotIn("epoch/train/profile_sec/iteration_sec", scalar_names)
-        self.assertNotIn("epoch/val/duration_sec", scalar_names)
+        self.assertNotIn("epoch/val/metrics/detector/precision", scalar_names)
+        self.assertNotIn("epoch/val/metrics/lane/f1", scalar_names)
 
     def test_trainer_module_exports_runtime_public_surface_only(self) -> None:
         import model.engine.trainer as pv26_trainer
@@ -1103,6 +1129,8 @@ class PV26TrainerTests(unittest.TestCase):
         second_train_steps = [step for name, _, step in writer_calls[1][2].scalars if name == "train_step/loss/total"]
         self.assertEqual(first_train_steps, [1])
         self.assertEqual(second_train_steps, [2])
+        self.assertEqual(len(writer_calls[0][2].graphs), 1)
+        self.assertEqual(len(writer_calls[1][2].graphs), 1)
         self.assertEqual(second["tensorboard"]["purge_step"], 2)
 
 

@@ -1,0 +1,84 @@
+# TensorBoard Surface
+
+- **PV26 trainer**
+  - 기록 위치: `runs/.../phase_<N>/tensorboard`
+  - train_step (prefix `train_step/`): scalars only
+    - `loss/total`
+    - `loss/det`, `loss/tl_attr`, `loss/lane`, `loss/stop_line`, `loss/crosswalk`
+    - `loss_weighted/det`, `loss_weighted/tl_attr`, `loss_weighted/lane`, `loss_weighted/stop_line`, `loss_weighted/crosswalk`
+    - `profile_sec/wait_sec`, `profile_sec/load_sec`, `profile_sec/forward_sec`, `profile_sec/loss_sec`, `profile_sec/backward_sec`, `profile_sec/iteration_sec`
+  - epoch (prefix `epoch/`):
+    - `train/loss_mean/total`, `train/loss_mean/{det,tl_attr,lane,stop_line,crosswalk}`
+    - `train/loss_weighted_mean/{det,tl_attr,lane,stop_line,crosswalk}`
+    - `lr/trunk`, `lr/heads`
+    - `val/loss_mean/total`, `val/loss_mean/{det,tl_attr,lane,stop_line,crosswalk}`
+    - `val/loss_weighted_mean/{det,tl_attr,lane,stop_line,crosswalk}`
+    - `val/metrics/detector/{precision,recall,f1,map50}`
+    - `val/metrics/detector_size_buckets/<bucket>/{precision,recall,f1,ap50}`
+    - `val/metrics/traffic_light/{combo_accuracy,mean_f1}`
+    - `val/metrics/lane/{precision,recall,f1,mean_point_distance,color_accuracy,type_accuracy}`
+    - `val/metrics/stop_line/{precision,recall,f1,mean_point_distance,mean_angle_error}`
+    - `val/metrics/crosswalk/{precision,recall,f1,mean_polygon_iou,mean_vertex_distance}`
+    - `val/metrics/lane_family/{mean_f1,min_f1}`
+
+- **OD bootstrap teacher**
+  - 기록 위치: `runs/mobility/<run>/tensorboard`
+  - train_step (prefix `train_step/`):
+    - `loss/box_loss`, `loss/cls_loss`, `loss/dfl_loss`
+    - `profile_sec/iteration_mean`, `profile_sec/iteration_p50`, `profile_sec/iteration_p99`
+    - `profile_sec/wait_mean`, `profile_sec/compute_mean`
+    - `elapsed_sec`
+  - epoch (prefix `epoch/`):
+    - `train/{box_loss,cls_loss,dfl_loss}`
+    - `lr/pg0`
+    - `profile_sec/{iteration_mean,wait_mean,compute_mean}`
+    - `precision`, `recall`, `f1`, `mAP50`, `mAP50_95`
+    - `val/{box_loss,cls_loss,dfl_loss}`
+
+- **유저가 원하는 것**
+  - model graph 1개
+    - whole model
+  - histogram
+    - `prediction confidence`
+    - `per-class confidence`
+    - `matched positive IoU`
+    - `traffic light attr confidence`
+    - `lane family geometry quality`
+  - scalar
+    - `train_step`
+      - `loss/total`
+      - `loss_weighted`
+        - `det`
+        - `tl_attr`
+        - `lane`
+        - `stop_line`
+        - `crosswalk`
+      - `profile_sec/iteration_sec`
+    - `epoch`
+      - `lr`
+        - `trunk`
+        - `heads`
+      - `val`
+        - `loss/total`
+        - `loss_weighted`
+          - `det`
+          - `tl_attr`
+          - `lane`
+          - `stop_line`
+          - `crosswalk`
+        - `metrics`
+          - `detector`
+            - `map50`
+            - `map50_95`
+          - `traffic_light`
+            - `combo_accuracy`
+          - `lane`
+            - `mean_point_distance`
+          - `stop_line`
+            - `mean_angle_error`
+          - `crosswalk`
+            - `mean_polygon_iou`
+          - `lane_family`
+            - `mean_f1`
+            - `min_f1`
+  - 목표: 큰 수치만 보고, 세부 디버그 항목은 숨긴다

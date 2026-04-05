@@ -8,6 +8,7 @@ import torch
 
 from .batch import augment_lane_family_metrics, raw_batch_for_metrics
 from ._trainer_io import _append_jsonl, _now_iso
+from .metrics import PV26MetricConfig, summarize_pv26_metrics, summarize_pv26_tensorboard_histograms
 from .trainer_reporting import (
     _aggregate_assignment_modes,
     _aggregate_count_tree,
@@ -336,12 +337,21 @@ def run_validate_epoch(
             progress_bar=progress_bar,
         )
         metrics = {}
+        merged_raw_batch: dict[str, Any] | None = None
         if raw_batches:
-            metrics = summarize_pv26_metrics(epoch_predictions, _merge_raw_batches(raw_batches))
+            merged_raw_batch = _merge_raw_batches(raw_batches)
+            metrics = summarize_pv26_metrics(epoch_predictions, merged_raw_batch)
         else:
             metric_summaries = [item["metrics"] for item in batch_summaries if item.get("metrics")]
             metrics = _mean_metric_tree(metric_summaries) if metric_summaries else {}
         metrics = augment_lane_family_metrics(metrics)
+        tensorboard_histograms = {}
+        if merged_raw_batch is not None:
+            tensorboard_histograms = summarize_pv26_tensorboard_histograms(
+                epoch_predictions,
+                merged_raw_batch,
+                config=PV26MetricConfig(),
+            )
         metric_summary_ended_at = time.perf_counter()
         emit_progress_message(
             (
@@ -363,6 +373,7 @@ def run_validate_epoch(
             "losses": _loss_stats_from_summaries(batch_summaries),
             "counts": _sum_counts(batch_summaries),
             "metrics": metrics,
+            "tensorboard_histograms": tensorboard_histograms,
         }
     finally:
         if progress_bar is not None:

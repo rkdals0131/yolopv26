@@ -4,7 +4,11 @@ import unittest
 
 import torch
 
-from model.engine.metrics import PV26MetricConfig, summarize_pv26_metrics
+from model.engine.metrics import (
+    PV26MetricConfig,
+    summarize_pv26_metrics,
+    summarize_pv26_tensorboard_histograms,
+)
 
 
 def _identity_meta() -> dict:
@@ -166,6 +170,7 @@ class PV26EvalMetricsTests(unittest.TestCase):
         self.assertAlmostEqual(summary["detector"]["precision"], 2.0 / 3.0, places=6)
         self.assertAlmostEqual(summary["detector"]["recall"], 1.0, places=6)
         self.assertAlmostEqual(summary["detector"]["map50"], 1.0, places=6)
+        self.assertAlmostEqual(summary["detector"]["map50_95"], 1.0, places=6)
         self.assertEqual(summary["detector"]["per_class"]["traffic_light"]["tp"], 1)
         self.assertEqual(summary["detector"]["per_class"]["sign"]["tp"], 1)
         self.assertEqual(summary["detector"]["per_class"]["vehicle"]["fp"], 1)
@@ -188,6 +193,23 @@ class PV26EvalMetricsTests(unittest.TestCase):
 
         self.assertEqual(summary["crosswalk"]["tp"], 1)
         self.assertGreater(summary["crosswalk"]["mean_polygon_iou"], 0.8)
+
+    def test_tensorboard_histogram_summary_collects_core_distributions(self) -> None:
+        histograms = summarize_pv26_tensorboard_histograms(
+            make_prediction_bundle(),
+            make_raw_sample_batch(),
+            config=PV26MetricConfig(),
+        )
+
+        self.assertEqual(len(histograms["detector"]["prediction_confidence"]), 3)
+        self.assertEqual(histograms["detector"]["per_class_confidence"]["traffic_light"], [0.95])
+        self.assertEqual(histograms["detector"]["per_class_confidence"]["sign"], [0.9])
+        self.assertEqual(histograms["detector"]["per_class_confidence"]["vehicle"], [0.7])
+        self.assertEqual(len(histograms["detector"]["matched_positive_iou"]), 2)
+        self.assertEqual(len(histograms["traffic_light"]["attr_confidence"]), 1)
+        self.assertEqual(len(histograms["lane"]["mean_point_distance"]), 1)
+        self.assertEqual(len(histograms["stop_line"]["mean_angle_error"]), 1)
+        self.assertEqual(len(histograms["crosswalk"]["mean_polygon_iou"]), 1)
 
     def test_detector_size_bucket_fn_accumulates_unmatched_gt_across_samples(self) -> None:
         sample0_meta = _identity_meta() | {"sample_id": "sample_0"}

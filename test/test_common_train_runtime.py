@@ -10,6 +10,7 @@ from common.train_runtime import (
     progress_meter,
     sync_timing_device,
     timing_profile,
+    write_tensorboard_histograms,
     write_tensorboard_scalars,
 )
 
@@ -17,9 +18,13 @@ from common.train_runtime import (
 class _FakeWriter:
     def __init__(self) -> None:
         self.scalars: list[tuple[str, float, int]] = []
+        self.histograms: list[tuple[str, object, int]] = []
 
     def add_scalar(self, name: str, value: float, *, global_step: int) -> None:
         self.scalars.append((name, value, global_step))
+
+    def add_histogram(self, name: str, value: object, *, global_step: int) -> None:
+        self.histograms.append((name, value, global_step))
 
 
 class _FakeCudaModule:
@@ -84,6 +89,36 @@ class CommonTrainRuntimeTests(unittest.TestCase):
             [
                 ("train/loss/total", 1.25, 7),
                 ("train/lr", 0.001, 7),
+            ],
+        )
+
+    def test_write_tensorboard_histograms_flattens_payload(self) -> None:
+        writer = _FakeWriter()
+
+        count = write_tensorboard_histograms(
+            writer,
+            "epoch/val",
+            {
+                "detector": {
+                    "prediction_confidence": [0.9, 0.8],
+                    "per_class_confidence": {
+                        "traffic_light": [0.95],
+                    },
+                },
+                "lane": {
+                    "mean_point_distance": [1.2, 0.8],
+                },
+            },
+            3,
+        )
+
+        self.assertEqual(count, 3)
+        self.assertEqual(
+            [name for name, _, _ in writer.histograms],
+            [
+                "epoch/val/detector/prediction_confidence",
+                "epoch/val/detector/per_class_confidence/traffic_light",
+                "epoch/val/lane/mean_point_distance",
             ],
         )
 

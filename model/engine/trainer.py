@@ -337,6 +337,7 @@ class PV26Trainer:
             "purge_step": None,
         }
         self._tensorboard_train_step = 0
+        self._tensorboard_graph_written = False
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
@@ -565,6 +566,7 @@ class PV26Trainer:
             resolve_summary_path_fn=resolve_summary_path,
             is_better_fn=_is_better,
             write_tensorboard_scalars_fn=_reporting._write_tensorboard_scalars,
+            write_tensorboard_histograms_fn=_reporting._write_tensorboard_histograms,
             tensorboard_epoch_payload_fn=_reporting._tensorboard_epoch_payload,
             run_manifest_version=RUN_MANIFEST_VERSION,
         )

@@ -171,6 +171,7 @@ def run_fit(
     resolve_summary_path_fn: Callable[[dict[str, Any], str], float] | None = None,
     is_better_fn: Callable[[float, float | None, str], bool] | None = None,
     write_tensorboard_scalars_fn: Callable[[Any, str, dict[str, Any], int], None] | None = None,
+    write_tensorboard_histograms_fn: Callable[[Any, str, dict[str, Any], int], None] | None = None,
     tensorboard_epoch_payload_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     run_manifest_version: str = "pv26-train-run-v1",
 ) -> dict[str, Any]:
@@ -190,6 +191,7 @@ def run_fit(
         or resolve_summary_path_fn is None
         or is_better_fn is None
         or write_tensorboard_scalars_fn is None
+        or write_tensorboard_histograms_fn is None
         or tensorboard_epoch_payload_fn is None
     ):
         raise ValueError("run_fit requires helper function dependencies")
@@ -215,6 +217,7 @@ def run_fit(
     previous_writer = trainer.tensorboard_writer
     previous_status = dict(trainer.tensorboard_status)
     previous_tb_step = int(trainer._tensorboard_train_step)
+    trainer._tensorboard_graph_written = False
     tensorboard_purge_step: int | None = None
     resumed_from_checkpoint = False
     if auto_resume:
@@ -373,6 +376,19 @@ def run_fit(
                     tensorboard_epoch_payload_fn(epoch_summary),
                     epoch,
                 )
+                tensorboard_histograms = {}
+                val_summary = epoch_summary.get("val")
+                if isinstance(val_summary, dict):
+                    candidate_histograms = val_summary.get("tensorboard_histograms")
+                    if isinstance(candidate_histograms, dict) and candidate_histograms:
+                        tensorboard_histograms = candidate_histograms
+                if tensorboard_histograms:
+                    write_tensorboard_histograms_fn(
+                        trainer.tensorboard_writer,
+                        "epoch/val",
+                        tensorboard_histograms,
+                        epoch,
+                    )
                 trainer.tensorboard_writer.flush()
 
             serialized_early_exit = json_ready_fn(early_exit_state) if early_exit_state is not None else None
