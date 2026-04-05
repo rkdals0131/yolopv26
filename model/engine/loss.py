@@ -190,6 +190,23 @@ def _hungarian_match(cost_matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
     )
 
 
+def _sanitize_hungarian_cost_matrix(cost_matrix: torch.Tensor) -> tuple[torch.Tensor, str]:
+    finite_mask = torch.isfinite(cost_matrix)
+    if bool(finite_mask.all()):
+        return cost_matrix, "clean"
+    if not bool(finite_mask.any()):
+        return cost_matrix, "all_invalid"
+
+    finite_values = cost_matrix[finite_mask]
+    replacement = float((finite_values.max() + finite_values.abs().max() + 1.0).item())
+    sanitized = torch.where(
+        finite_mask,
+        cost_matrix,
+        torch.full_like(cost_matrix, replacement),
+    )
+    return sanitized, "sanitized"
+
+
 def _lane_cost_matrix(pred_rows: torch.Tensor, gt_rows: torch.Tensor) -> torch.Tensor:
     pred_x = pred_rows[:, LANE_X_SLICE]
     gt_x = gt_rows[:, LANE_X_SLICE]
@@ -839,6 +856,12 @@ class PV26MultiTaskLoss(nn.Module):
             sample_pred = pred_rows[batch_index].detach()
             sample_gt = target_rows[batch_index, valid_indices].detach()
             cost = cost_builder(sample_pred, sample_gt)
+            cost, cost_state = _sanitize_hungarian_cost_matrix(cost)
+            if cost_state == "all_invalid":
+                mode = "hungarian_all_invalid_cost"
+                continue
+            if cost_state == "sanitized" and mode == "hungarian":
+                mode = "hungarian_sanitized"
             query_idx, gt_local_idx = _hungarian_match(cost)
             if query_idx.numel() == 0:
                 continue

@@ -223,6 +223,42 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["lane"].grad)
 
+    def test_stop_line_assignment_sanitizes_partial_invalid_cost_entries(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        stop_line = predictions["stop_line"].detach().clone()
+        stop_line[0, 0, 1:] = float("nan")
+        predictions["stop_line"] = stop_line.requires_grad_(True)
+
+        criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
+        losses = criterion(predictions, encoded)
+
+        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian_sanitized")
+        self.assertTrue(torch.isfinite(losses["stop_line"]))
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["stop_line"].grad)
+
+    def test_stop_line_assignment_skips_samples_with_all_invalid_cost_entries(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        stop_line = predictions["stop_line"].detach().clone()
+        stop_line[0, :, 1:] = float("nan")
+        predictions["stop_line"] = stop_line.requires_grad_(True)
+
+        criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
+        losses = criterion(predictions, encoded)
+
+        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian_all_invalid_cost")
+        self.assertTrue(torch.isfinite(losses["stop_line"]))
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["stop_line"].grad)
+
     def test_task_aligned_assignment_promotes_amp_inputs_to_float32(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 
