@@ -3,6 +3,8 @@ from __future__ import annotations
 import types
 import unittest
 
+import numpy as np
+
 from common.train_runtime import (
     build_progress_status,
     format_duration,
@@ -121,6 +123,7 @@ class CommonTrainRuntimeTests(unittest.TestCase):
                 "epoch/val/lane/mean_point_distance",
             ],
         )
+        self.assertTrue(all(isinstance(value, np.ndarray) for _, value, _ in writer.histograms))
 
     def test_progress_helpers_build_shared_status_segments(self) -> None:
         self.assertEqual(join_status_segments("elapsed=00:10", None, "", "eta=00:20"), "elapsed=00:10  |  eta=00:20")

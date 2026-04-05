@@ -4,6 +4,8 @@ import math
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+import numpy as np
+
 from common.scalars import flatten_scalar_tree
 
 
@@ -149,7 +151,7 @@ def write_tensorboard_histograms(writer: Any, prefix: str, payload: dict[str, An
         return 0
     count = 0
     for name, value in flatten_histogram_tree(prefix, payload):
-        writer.add_histogram(name, value, global_step=int(step))
+        writer.add_histogram(name, _coerce_histogram_values(value), global_step=int(step))
         count += 1
     return count
 
@@ -166,3 +168,13 @@ def flatten_histogram_tree(prefix: str, payload: Any) -> list[tuple[str, Any]]:
     if isinstance(payload, (list, tuple)) and len(payload) == 0:
         return histograms
     return [(prefix, payload)]
+
+
+def _coerce_histogram_values(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value)
+    if isinstance(value, (bool, int, float)):
+        return np.asarray([value])
+    return value
