@@ -59,6 +59,10 @@ pv26_train:
           max_epochs: 30
           patience: 5
           min_improvement_pct: 2.0
+          selection:
+            metric_path: val.metrics.detector.map50
+            mode: max
+            eps: 1.0e-8
           overrides:
             batch_size: 32
             trunk_lr: 5.0e-5
@@ -69,6 +73,10 @@ pv26_train:
           max_epochs: 36
           patience: 6
           min_improvement_pct: 0.5
+          selection:
+            metric_path: val.metrics.detector.map50_95
+            mode: max
+            eps: 1.0e-8
           overrides:
             batch_size: 24
             trunk_lr: 3.0e-5
