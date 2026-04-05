@@ -100,8 +100,8 @@ class TrainDefaultsConfig:
 
 @dataclass(frozen=True)
 class SelectionConfig:
-    metric_path: str = "val.losses.total.mean"
-    mode: str = "min"
+    metric_path: str = "selection_metrics.phase_objective"
+    mode: str = "max"
     eps: float = 1e-8
 
 
@@ -126,7 +126,8 @@ class PhaseConfig:
     min_epochs: int
     max_epochs: int
     patience: int
-    min_improvement_pct: float
+    min_improvement_pct: float = 0.0
+    min_delta_abs: float | None = None
     selection: SelectionConfig | None = None
     loss_weights: dict[str, float] = field(default_factory=dict)
     freeze_policy: str | None = None
@@ -150,7 +151,8 @@ def phase(
     min_epochs: int,
     max_epochs: int,
     patience: int,
-    min_improvement_pct: float,
+    min_improvement_pct: float = 0.0,
+    min_delta_abs: float | None = None,
     selection: SelectionConfig | None = None,
     loss_weights: dict[str, float] | None = None,
     freeze_policy: str | None = None,
@@ -163,6 +165,7 @@ def phase(
         max_epochs=max_epochs,
         patience=patience,
         min_improvement_pct=min_improvement_pct,
+        min_delta_abs=min_delta_abs,
         selection=selection,
         loss_weights=dict(loss_weights or {}),
         freeze_policy=freeze_policy,
@@ -178,6 +181,7 @@ def phase_to_mapping(phase_config: PhaseConfig) -> dict[str, Any]:
         "max_epochs": phase_config.max_epochs,
         "patience": phase_config.patience,
         "min_improvement_pct": phase_config.min_improvement_pct,
+        "min_delta_abs": phase_config.min_delta_abs,
         "selection": asdict(phase_config.selection) if phase_config.selection is not None else None,
         "loss_weights": dict(phase_config.loss_weights),
         "freeze_policy": phase_config.freeze_policy,
@@ -417,8 +421,8 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
 def selection_config_from_mapping(payload: dict[str, Any]) -> SelectionConfig:
     data = _coerce_mapping(payload, field_name="selection")
     return SelectionConfig(
-        metric_path=_coerce_str(data.get("metric_path", "val.losses.total.mean"), field_name="selection.metric_path"),
-        mode=_coerce_str(data.get("mode", "min"), field_name="selection.mode"),
+        metric_path=_coerce_str(data.get("metric_path", "selection_metrics.phase_objective"), field_name="selection.metric_path"),
+        mode=_coerce_str(data.get("mode", "max"), field_name="selection.mode"),
         eps=_coerce_float(data.get("eps", 1e-8), field_name="selection.eps"),
     )
 
@@ -455,9 +459,13 @@ def phase_config_from_mapping(payload: dict[str, Any], *, index: int) -> PhaseCo
         max_epochs=_coerce_int(data.get("max_epochs"), field_name=f"phases[{index}].max_epochs"),
         patience=_coerce_int(data.get("patience"), field_name=f"phases[{index}].patience"),
         min_improvement_pct=_coerce_float(
-            data.get("min_improvement_pct"),
+            data.get("min_improvement_pct", 0.0),
             field_name=f"phases[{index}].min_improvement_pct",
         ),
+        min_delta_abs=_coerce_float(
+            data.get("min_delta_abs"),
+            field_name=f"phases[{index}].min_delta_abs",
+        ) if data.get("min_delta_abs") is not None else None,
         selection=selection_config_from_mapping(selection_payload) if selection_payload is not None else None,
         loss_weights={
             _coerce_str(name, field_name=f"phases[{index}].loss_weights.key"): _coerce_float(
@@ -541,6 +549,8 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} patience must be > 0")
         if phase_config.min_improvement_pct < 0.0:
             raise ValueError(f"phase {index} min_improvement_pct must be >= 0")
+        if phase_config.min_delta_abs is not None and float(phase_config.min_delta_abs) < 0.0:
+            raise ValueError(f"phase {index} min_delta_abs must be >= 0")
         unknown_loss_weight_names = sorted(set(phase_config.loss_weights) - set(LOSS_WEIGHT_NAMES))
         if unknown_loss_weight_names:
             raise ValueError(
@@ -557,7 +567,11 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} selection.eps must be > 0")
         if not any(float(value) > 0.0 for value in phase_train.sampler_ratios.values()):
             raise ValueError(f"phase {index} sampler_ratios must contain at least one positive value")
-        if phase_selection.metric_path.startswith("val.") and resolve_val_batch_limit(phase_train.val_batches) == 0:
+        selection_requires_val = (
+            phase_selection.metric_path.startswith("val.")
+            or phase_selection.metric_path.startswith("selection_metrics.")
+        )
+        if selection_requires_val and resolve_val_batch_limit(phase_train.val_batches) == 0:
             raise ValueError(
                 f"phase {index} disables validation but selection.metric_path="
                 f"{phase_selection.metric_path!r} requires val"

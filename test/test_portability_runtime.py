@@ -369,7 +369,7 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                         "status": "completed",
                         "final_checkpoint_path": str(checkpoint),
                         "latest_phase_stage": "stage_4_lane_family_finetune",
-                        "latest_selection_metric_path": "val.metrics.lane_family.mean_f1",
+                        "latest_selection_metric_path": "selection_metrics.phase_objective",
                         "latest_backbone_variant": "s",
                         "updated_at": "2026-04-04T01:02:03",
                     },
@@ -739,7 +739,7 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                         "train_defaults": {"backbone_variant": "s"},
                         "latest_phase_stage": "stage_4_lane_family_finetune",
                         "latest_backbone_variant": "s",
-                        "latest_selection_metric_path": "val.metrics.lane_family.mean_f1",
+                        "latest_selection_metric_path": "selection_metrics.phase_objective",
                     },
                     indent=2,
                 )
@@ -791,7 +791,7 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("phases=4/4", row_map["PV26 학습 run"].current_state)
         self.assertIn("stage=stage_4_lane_family_finetune", row_map["PV26 학습 run"].current_state)
         self.assertIn("backbone=s", row_map["PV26 학습 run"].current_state)
-        self.assertIn("selection=val.metrics.lane_family.mean_f1", row_map["PV26 학습 run"].current_state)
+        self.assertIn("selection=selection_metrics.phase_objective", row_map["PV26 학습 run"].current_state)
 
     def test_empty_final_dataset_directory_stays_todo(self) -> None:
         from tools.check_env import PipelinePaths, scan_workspace_status

@@ -157,6 +157,7 @@ def run_fit(
     auto_resume: bool = False,
     resume_path: str | Path | None = None,
     enable_tensorboard: bool = True,
+    selection_metric_callback: Callable[[dict[str, Any]], None] | None = None,
     early_exit_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     run_manifest_extra: dict[str, Any] | None = None,
     log_every_n_steps: int = 1,
@@ -327,6 +328,8 @@ def run_fit(
                 trainer.scheduler.step()
                 epoch_summary["scheduler_lrs"] = [float(group["lr"]) for group in trainer.optimizer.param_groups]
 
+            if selection_metric_callback is not None:
+                selection_metric_callback(epoch_summary)
             metric_value = resolve_summary_path_fn(epoch_summary, best_metric_path)
             epoch_summary["selection"] = {
                 "best_metric_path": best_metric_path,

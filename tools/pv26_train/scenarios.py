@@ -77,8 +77,8 @@ def build_meta_train_presets(
         backbone_variant="s",
     )
     default_selection = SelectionConfig(
-        metric_path="val.losses.total.mean",
-        mode="min",
+        metric_path="selection_metrics.phase_objective",
+        mode="max",
         eps=1e-8,
     )
     default_preview = PreviewConfig(
@@ -96,11 +96,7 @@ def build_meta_train_presets(
             max_epochs=12,
             patience=2,
             min_improvement_pct=2.0,
-            selection=SelectionConfig(
-                metric_path="val.metrics.detector.map50",
-                mode="max",
-                eps=1e-8,
-            ),
+            min_delta_abs=0.005,
             overrides={
                 "trunk_lr": 5e-5,
                 "head_lr": 3e-3,
@@ -113,11 +109,7 @@ def build_meta_train_presets(
             max_epochs=18,
             patience=2,
             min_improvement_pct=0.5,
-            selection=SelectionConfig(
-                metric_path="val.metrics.detector.map50_95",
-                mode="max",
-                eps=1e-8,
-            ),
+            min_delta_abs=0.004,
             overrides={
                 "trunk_lr": 3e-5,
                 "head_lr": 8e-4,
@@ -130,6 +122,7 @@ def build_meta_train_presets(
             max_epochs=24,
             patience=3,
             min_improvement_pct=0.25,
+            min_delta_abs=0.003,
             overrides={
                 "trunk_lr": 1e-5,
                 "head_lr": 4e-4,
@@ -142,11 +135,7 @@ def build_meta_train_presets(
             max_epochs=12,
             patience=3,
             min_improvement_pct=0.25,
-            selection=SelectionConfig(
-                metric_path="val.metrics.lane_family.mean_f1",
-                mode="max",
-                eps=1e-8,
-            ),
+            min_delta_abs=0.003,
             loss_weights={
                 "det": 0.0,
                 "tl_attr": 0.0,

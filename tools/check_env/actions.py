@@ -174,8 +174,13 @@ def _pv26_action_config_lines() -> list[str]:
     for phase_index, phase in enumerate(scenario.phases, start=1):
         phase_train = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
         phase_selection = _resolve_phase_selection(scenario.selection, phase)
+        stop_policy = (
+            f"min_delta_abs={float(phase.min_delta_abs):.4f}"
+            if phase.min_delta_abs is not None
+            else f"min_improvement_pct={float(phase.min_improvement_pct):.3f}"
+        )
         lines.append(
-            f"- phase_{phase_index} {phase.name}: epochs={phase.min_epochs}-{phase.max_epochs}, patience={phase.patience}, metric={phase_selection.metric_path}({phase_selection.mode}), batch={phase_train.batch_size}, trunk_lr={phase_train.trunk_lr}, head_lr={phase_train.head_lr}"
+            f"- phase_{phase_index} {phase.name}: epochs={phase.min_epochs}-{phase.max_epochs}, patience={phase.patience}, {stop_policy}, metric={phase_selection.metric_path}({phase_selection.mode}), batch={phase_train.batch_size}, trunk_lr={phase_train.trunk_lr}, head_lr={phase_train.head_lr}"
         )
     return lines
 

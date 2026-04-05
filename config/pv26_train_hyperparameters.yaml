@@ -16,8 +16,8 @@ pv26_train:
         max_samples_per_dataset: 1
         write_overlay: true
       selection:
-        metric_path: val.losses.total.mean
-        mode: min
+        metric_path: selection_metrics.phase_objective
+        mode: max
         eps: 1.0e-8
       train_defaults:
         device: cuda:0
@@ -59,10 +59,7 @@ pv26_train:
           max_epochs: 30
           patience: 5
           min_improvement_pct: 2.0
-          selection:
-            metric_path: val.metrics.detector.map50
-            mode: max
-            eps: 1.0e-8
+          min_delta_abs: 0.005
           overrides:
             batch_size: 32
             trunk_lr: 5.0e-5
@@ -73,10 +70,7 @@ pv26_train:
           max_epochs: 36
           patience: 6
           min_improvement_pct: 0.5
-          selection:
-            metric_path: val.metrics.detector.map50_95
-            mode: max
-            eps: 1.0e-8
+          min_delta_abs: 0.004
           overrides:
             batch_size: 24
             trunk_lr: 3.0e-5
@@ -87,6 +81,7 @@ pv26_train:
           max_epochs: 48
           patience: 7
           min_improvement_pct: 0.25
+          min_delta_abs: 0.003
           overrides:
             batch_size: 12
             trunk_lr: 1.0e-5
@@ -97,10 +92,7 @@ pv26_train:
           max_epochs: 48
           patience: 8
           min_improvement_pct: 0.25
-          selection:
-            metric_path: val.metrics.lane_family.mean_f1
-            mode: max
-            eps: 1.0e-8
+          min_delta_abs: 0.003
           loss_weights:
             det: 0.0
             tl_attr: 0.0

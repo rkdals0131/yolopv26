@@ -735,6 +735,105 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertAlmostEqual(float(target.heads.det_heads[0].block[0].weight.detach().flatten()[0]), 7.0)
         self.assertTrue(torch.equal(target.heads.lane_head.predictor.weight.detach(), original_lane_predictor))
 
+    def test_run_fit_selection_metric_callback_populates_custom_best_metric_path(self) -> None:
+        from model.engine import _trainer_fit
+        from model.engine.train_summary import resolve_summary_path
+
+        class _StubTrainer:
+            def __init__(self) -> None:
+                self.stage = "stage_1_frozen_trunk_warmup"
+                self.device = torch.device("cpu")
+                self.epoch_history: list[dict[str, object]] = []
+                self.history: list[dict[str, object]] = []
+                self.global_step = 0
+                self.skipped_steps = 0
+                self.scheduler = None
+                self.optimizer = object()
+                self.amp_enabled = False
+                self.accumulate_steps = 1
+                self.grad_clip_norm = 0.0
+                self.skip_non_finite_loss = False
+                self.oom_guard = False
+                self.tensorboard_writer = None
+                self.tensorboard_status = {"enabled": False}
+                self._tensorboard_train_step = 0
+                self._tensorboard_graph_written = False
+
+            def build_evaluator(self) -> object:
+                return object()
+
+            def train_epoch(self, *args, **kwargs) -> dict[str, object]:
+                return {"batches": 1}
+
+            def validate_epoch(self, *args, **kwargs) -> dict[str, object]:
+                return {"losses": {"total": {"mean": 1.0}}}
+
+            def save_checkpoint(self, path: Path, extra_state: dict[str, object] | None = None) -> Path:
+                del extra_state
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("checkpoint\n", encoding="utf-8")
+                return path
+
+            def save_history_jsonl(self, path: Path) -> Path:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+                return path
+
+            def save_epoch_history_jsonl(self, path: Path) -> Path:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                rows = [json.dumps(item, ensure_ascii=True) for item in self.epoch_history]
+                path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+                return path
+
+        def _write_json(path: str | Path, payload: dict[str, object]) -> Path:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")
+            return target
+
+        def _is_better(candidate: float, best: float | None, mode: str) -> bool:
+            if best is None:
+                return True
+            if mode == "min":
+                return candidate < best
+            return candidate > best
+
+        trainer = _StubTrainer()
+        callback_calls: list[int] = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "selection_metric_callback"
+            summary = _trainer_fit.run_fit(
+                trainer,
+                [object()],
+                epochs=1,
+                val_loader=[object()],
+                run_dir=run_dir,
+                best_metric="selection_metrics.phase_objective",
+                best_mode="max",
+                enable_tensorboard=False,
+                selection_metric_callback=lambda epoch_summary: (
+                    callback_calls.append(int(epoch_summary["epoch"])),
+                    epoch_summary.setdefault("selection_metrics", {"phase_objective": 0.75}),
+                ),
+                default_run_dir_fn=lambda: run_dir,
+                now_iso_fn=lambda: "2026-04-06T00:00:00",
+                write_json_fn=_write_json,
+                json_ready_fn=lambda value: value,
+                maybe_build_summary_writer_fn=lambda *args, **kwargs: (None, {"enabled": False}),
+                optimizer_group_hparams_fn=lambda optimizer: {},
+                resolve_summary_path_fn=resolve_summary_path,
+                is_better_fn=_is_better,
+                write_tensorboard_scalars_fn=lambda *args, **kwargs: None,
+                write_tensorboard_histograms_fn=lambda *args, **kwargs: None,
+                tensorboard_epoch_payload_fn=lambda payload: payload,
+            )
+
+        self.assertEqual(callback_calls, [1])
+        self.assertEqual(summary["best_metric_path"], "selection_metrics.phase_objective")
+        self.assertAlmostEqual(summary["best_metric_value"], 0.75)
+        self.assertAlmostEqual(trainer.epoch_history[0]["selection_metrics"]["phase_objective"], 0.75)
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
         from model.net import PV26Heads

@@ -36,9 +36,11 @@
 
 ## phase-specific selection
 
-- early stage는 전역 total loss 기준 selection으로 충분하다.
-- late stage, 특히 `stage_4_lane_family_finetune`은 lane family metric 기준 selection이 더 적합하다.
-- 따라서 training preset은 phase별 selection metric override를 수용하는 방향으로 유지한다.
+- 모든 phase의 기본 selection path는 `selection_metrics.phase_objective`다.
+- phase objective는 validation metric 기반 composite score이며, lane / stop-line / crosswalk sparse support는 reliability weight로 완화한다.
+- best checkpoint와 early exit는 같은 objective를 보되, stop 판정은 `patience + min_delta_abs`를 기본으로 사용한다.
+- training preset은 필요하면 phase별 selection override를 실험용으로 허용하지만, shipped preset은 전 phase에서 composite objective를 쓴다.
+- 식, 계수, shipped 기본값, `mode=max`, `min_delta_abs` tuning 기준은 [5_TARGETS_AND_LOSS.md](5_TARGETS_AND_LOSS.md)에 구현 기준으로 정리한다.
 
 ## sampler
 

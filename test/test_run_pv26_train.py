@@ -269,8 +269,11 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertTrue(phase_train.encode_val_batches_in_loader)
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
-        self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
-        self.assertEqual(scenario.phases[3].selection.mode, "max")
+        self.assertEqual(scenario.selection.metric_path, "selection_metrics.phase_objective")
+        self.assertEqual(scenario.selection.mode, "max")
+        self.assertIsNone(scenario.phases[3].selection)
+        self.assertAlmostEqual(scenario.phases[0].min_delta_abs, 0.005)
+        self.assertAlmostEqual(scenario.phases[3].min_delta_abs, 0.003)
         self.assertEqual(scenario.phases[3].freeze_policy, "lane_family_heads_only")
         phase4_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[3].overrides)
         self.assertEqual(phase4_train.sampler_ratios["aihub_lane"], 1.0)
@@ -384,6 +387,19 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "phase 1 must use stage"):
+            from tools.run_pv26_train import _validate_meta_train_scenario
+
+            _validate_meta_train_scenario(bad_scenario)
+
+    def test_validate_meta_train_scenario_rejects_phase_objective_without_validation(self) -> None:
+        scenario = load_meta_train_scenario("default")
+        bad_scenario = SimpleNamespace(**scenario.__dict__)
+        bad_scenario.train_defaults = TrainDefaultsConfig(**{
+            **scenario.train_defaults.__dict__,
+            "val_batches": 0,
+        })
+
+        with self.assertRaisesRegex(ValueError, "requires val"):
             from tools.run_pv26_train import _validate_meta_train_scenario
 
             _validate_meta_train_scenario(bad_scenario)
@@ -697,6 +713,68 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         stop_state = controller.observe_epoch(_summary(4, 0.4515))
         self.assertIsNotNone(stop_state)
         self.assertEqual(stop_state["reason"], "plateau")
+        self.assertEqual(stop_state["phase_state"]["improvement_policy"], "relative_pct")
+
+    def test_phase_transition_controller_uses_phase_objective_absolute_delta(self) -> None:
+        phase = PhaseConfig(
+            name="lane_family_finetune",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=2,
+            max_epochs=6,
+            patience=2,
+            min_improvement_pct=0.25,
+            min_delta_abs=0.003,
+        )
+        selection = SelectionConfig(metric_path="selection_metrics.phase_objective", mode="max", eps=1.0e-8)
+        controller = PhaseTransitionController(
+            phase=phase,
+            selection=selection,
+        )
+
+        def _summary(epoch: int, lane_f1: float) -> dict:
+            return {
+                "epoch": int(epoch),
+                "val": {
+                    "metrics": {
+                        "lane": {
+                            "tp": 120,
+                            "fn": 0,
+                            "f1": float(lane_f1),
+                            "mean_point_distance": 10.0,
+                            "color_accuracy": 0.9,
+                            "type_accuracy": 0.8,
+                        },
+                        "stop_line": {
+                            "tp": 40,
+                            "fn": 0,
+                            "f1": 0.45,
+                            "mean_point_distance": 10.0,
+                            "mean_angle_error": 5.0,
+                        },
+                        "crosswalk": {
+                            "tp": 40,
+                            "fn": 0,
+                            "f1": 0.35,
+                            "mean_polygon_iou": 0.8,
+                            "mean_vertex_distance": 8.0,
+                        },
+                    }
+                },
+            }
+
+        first = _summary(1, 0.40)
+        self.assertIsNone(controller.observe_epoch(first))
+        self.assertIn("selection_metrics", first)
+        self.assertIn("phase_objective", first["selection_metrics"])
+        self.assertIsNone(controller.observe_epoch(_summary(2, 0.50)))
+        stop_state = controller.observe_epoch(_summary(3, 0.504))
+        self.assertIsNone(stop_state)
+        stop_state = controller.observe_epoch(_summary(4, 0.508))
+        self.assertIsNotNone(stop_state)
+        self.assertEqual(stop_state["reason"], "plateau")
+        self.assertEqual(stop_state["phase_state"]["improvement_policy"], "absolute_delta")
+        self.assertGreater(stop_state["phase_state"]["best_phase_objective"], 0.0)
+        self.assertGreater(stop_state["phase_state"]["last_improvement_abs"], 0.0)
 
     def test_stage4_build_phase_train_loaders_filter_to_lane_family_dataset(self) -> None:
         class _FakeDataset:

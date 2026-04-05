@@ -2,11 +2,83 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
+import math
 from pathlib import Path
 import time
 from typing import Any, Callable
 
 from .config import MetaTrainScenario, PhaseConfig, TrainDefaultsConfig
+
+
+PHASE_OBJECTIVE_PATH = "selection_metrics.phase_objective"
+PHASE_OBJECTIVE_POLICY_VERSION = "phase_objective_v1"
+_LANE_FAMILY_SUPPORT_REFS = {
+    "lane": 300.0,
+    "stop_line": 80.0,
+    "crosswalk": 80.0,
+}
+_PHASE_OBJECTIVE_WEIGHTS = {
+    "stage_1_frozen_trunk_warmup": {
+        "detector": 0.25,
+        "traffic_light": 0.05,
+        "lane": 0.45,
+        "stop_line": 0.25,
+        "crosswalk": 0.0,
+    },
+    "stage_2_partial_unfreeze": {
+        "detector": 0.25,
+        "traffic_light": 0.05,
+        "lane": 0.40,
+        "stop_line": 0.20,
+        "crosswalk": 0.10,
+    },
+    "stage_3_end_to_end_finetune": {
+        "detector": 0.30,
+        "traffic_light": 0.05,
+        "lane": 0.35,
+        "stop_line": 0.18,
+        "crosswalk": 0.12,
+    },
+    "stage_4_lane_family_finetune": {
+        "detector": 0.0,
+        "traffic_light": 0.0,
+        "lane": 0.50,
+        "stop_line": 0.30,
+        "crosswalk": 0.20,
+    },
+}
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _float_tree_value(mapping: dict[str, Any], *parts: str, default: float = 0.0) -> float:
+    current: Any = mapping
+    for part in parts:
+        if not isinstance(current, dict):
+            return float(default)
+        current = current.get(part)
+    if isinstance(current, (int, float)):
+        return float(current)
+    return float(default)
+
+
+def _lane_family_support(metric: dict[str, Any]) -> int:
+    return int(metric.get("tp", 0)) + int(metric.get("fn", 0))
+
+
+def _lane_family_reliability(metric: dict[str, Any], *, ref: float) -> float:
+    support = _lane_family_support(metric)
+    if support <= 0:
+        return 0.0
+    return min(1.0, math.sqrt(float(support) / float(ref)))
+
+
+def phase_stop_policy_label(phase: PhaseConfig) -> str:
+    if phase.min_delta_abs is not None:
+        return f"min_delta_abs={float(phase.min_delta_abs):.4f}"
+    return f"min_improvement_pct={float(phase.min_improvement_pct):.3f}"
 
 
 class PhaseTransitionController:
@@ -22,7 +94,10 @@ class PhaseTransitionController:
         self._resolve_summary_path = resolve_summary_path
         self.best_metric_value: float | None = None
         self.best_epoch: int | None = None
+        self.best_phase_objective: float | None = None
+        self.best_phase_objective_epoch: int | None = None
         self.plateau_count = 0
+        self.last_improvement_abs: float | None = None
         self.last_improvement_pct: float | None = None
         self.last_stop_state: dict[str, Any] | None = None
 
@@ -39,7 +114,116 @@ class PhaseTransitionController:
             return ((previous_best - current_value) / denominator) * 100.0
         return ((current_value - previous_best) / denominator) * 100.0
 
-    def _phase_state(self, *, epoch: int, current_metric_value: float) -> dict[str, Any]:
+    def _absolute_improvement(self, previous_best: float, current_value: float) -> float:
+        if self.selection.mode == "min":
+            return previous_best - current_value
+        return current_value - previous_best
+
+    def _uses_absolute_delta(self) -> bool:
+        return self.phase.min_delta_abs is not None
+
+    def _current_phase_objective(self, epoch_summary: dict[str, Any]) -> float:
+        selection_metrics = epoch_summary.get("selection_metrics")
+        if isinstance(selection_metrics, dict) and isinstance(selection_metrics.get("phase_objective"), (int, float)):
+            return float(selection_metrics["phase_objective"])
+        return 0.0
+
+    def _build_selection_metrics(self, epoch_summary: dict[str, Any]) -> dict[str, Any]:
+        val_summary = epoch_summary.get("val")
+        metrics = val_summary.get("metrics") if isinstance(val_summary, dict) and isinstance(val_summary.get("metrics"), dict) else {}
+        detector = metrics.get("detector", {}) if isinstance(metrics.get("detector"), dict) else {}
+        traffic_light = metrics.get("traffic_light", {}) if isinstance(metrics.get("traffic_light"), dict) else {}
+        lane = metrics.get("lane", {}) if isinstance(metrics.get("lane"), dict) else {}
+        stop_line = metrics.get("stop_line", {}) if isinstance(metrics.get("stop_line"), dict) else {}
+        crosswalk = metrics.get("crosswalk", {}) if isinstance(metrics.get("crosswalk"), dict) else {}
+
+        component_scores = {
+            "detector": (
+                0.70 * _float_tree_value(detector, "map50")
+                + 0.30 * _float_tree_value(detector, "f1")
+            ),
+            "traffic_light": (
+                0.60 * _float_tree_value(traffic_light, "mean_f1")
+                + 0.40 * _float_tree_value(traffic_light, "combo_accuracy")
+            ),
+            "lane": (
+                0.55 * _float_tree_value(lane, "f1")
+                + 0.20 * (1.0 - _clamp01(_float_tree_value(lane, "mean_point_distance") / 40.0))
+                + 0.15 * _float_tree_value(lane, "color_accuracy")
+                + 0.10 * _float_tree_value(lane, "type_accuracy")
+            ),
+            "stop_line": (
+                0.55 * _float_tree_value(stop_line, "f1")
+                + 0.25 * (1.0 - _clamp01(_float_tree_value(stop_line, "mean_point_distance") / 40.0))
+                + 0.20 * (1.0 - _clamp01(_float_tree_value(stop_line, "mean_angle_error") / 30.0))
+            ),
+            "crosswalk": (
+                0.45 * _float_tree_value(crosswalk, "f1")
+                + 0.35 * _float_tree_value(crosswalk, "mean_polygon_iou")
+                + 0.20 * (1.0 - _clamp01(_float_tree_value(crosswalk, "mean_vertex_distance") / 60.0))
+            ),
+        }
+        support = {
+            "lane": _lane_family_support(lane),
+            "stop_line": _lane_family_support(stop_line),
+            "crosswalk": _lane_family_support(crosswalk),
+        }
+        reliability = {
+            "detector": 1.0,
+            "traffic_light": 1.0,
+            "lane": _lane_family_reliability(lane, ref=_LANE_FAMILY_SUPPORT_REFS["lane"]),
+            "stop_line": _lane_family_reliability(stop_line, ref=_LANE_FAMILY_SUPPORT_REFS["stop_line"]),
+            "crosswalk": _lane_family_reliability(crosswalk, ref=_LANE_FAMILY_SUPPORT_REFS["crosswalk"]),
+        }
+        component_weights = dict(_PHASE_OBJECTIVE_WEIGHTS.get(self.phase.stage, {}))
+        objective_total = 0.0
+        effective_weight_total = 0.0
+        components: dict[str, dict[str, Any]] = {}
+        for component_name, weight in component_weights.items():
+            score = float(component_scores.get(component_name, 0.0))
+            raw_weight = float(weight)
+            component_reliability = float(reliability.get(component_name, 1.0))
+            if component_name in {"lane", "stop_line", "crosswalk"}:
+                included = bool(raw_weight > 0.0 and component_reliability > 0.0)
+                effective_weight = raw_weight * component_reliability if included else 0.0
+            else:
+                included = bool(raw_weight > 0.0)
+                effective_weight = raw_weight if included else 0.0
+            if included:
+                objective_total += score * effective_weight
+                effective_weight_total += effective_weight
+            component_payload = {
+                "score": score,
+                "weight": raw_weight,
+                "effective_weight": float(effective_weight),
+                "reliability": component_reliability,
+                "included": included,
+            }
+            if component_name in support:
+                component_payload["support"] = int(support[component_name])
+            components[component_name] = component_payload
+        phase_objective = objective_total / effective_weight_total if effective_weight_total > 0.0 else 0.0
+        return {
+            "phase_objective": float(phase_objective),
+            "policy_version": PHASE_OBJECTIVE_POLICY_VERSION,
+            "components": components,
+            "support": support,
+            "reliability": reliability,
+        }
+
+    def annotate_epoch(self, epoch_summary: dict[str, Any]) -> None:
+        selection_metrics = epoch_summary.get("selection_metrics")
+        if isinstance(selection_metrics, dict) and isinstance(selection_metrics.get("phase_objective"), (int, float)):
+            return
+        epoch_summary["selection_metrics"] = self._build_selection_metrics(epoch_summary)
+
+    def _phase_state(
+        self,
+        *,
+        epoch: int,
+        current_metric_value: float,
+        current_phase_objective: float,
+    ) -> dict[str, Any]:
         return {
             "epoch": int(epoch),
             "metric_path": self.selection.metric_path,
@@ -47,7 +231,11 @@ class PhaseTransitionController:
             "current_metric_value": float(current_metric_value),
             "best_metric_value": self.best_metric_value,
             "best_epoch": self.best_epoch,
+            "current_phase_objective": float(current_phase_objective),
+            "best_phase_objective": self.best_phase_objective,
+            "best_phase_objective_epoch": self.best_phase_objective_epoch,
             "plateau_count": int(self.plateau_count),
+            "last_improvement_abs": self.last_improvement_abs,
             "last_improvement_pct": self.last_improvement_pct,
             "selection_metric_path": self.selection.metric_path,
             "selection_mode": self.selection.mode,
@@ -55,37 +243,57 @@ class PhaseTransitionController:
             "max_epochs": int(self.phase.max_epochs),
             "patience": int(self.phase.patience),
             "min_improvement_pct": float(self.phase.min_improvement_pct),
+            "min_delta_abs": self.phase.min_delta_abs,
+            "improvement_policy": "absolute_delta" if self._uses_absolute_delta() else "relative_pct",
+            "policy_version": PHASE_OBJECTIVE_POLICY_VERSION,
             "transition_eligible": bool(epoch >= self.phase.min_epochs),
         }
 
     def observe_epoch(self, epoch_summary: dict[str, Any]) -> dict[str, Any] | None:
+        self.annotate_epoch(epoch_summary)
         epoch = int(epoch_summary["epoch"])
         current_metric = float(self._resolve_summary_path(epoch_summary, self.selection.metric_path))
+        current_phase_objective = self._current_phase_objective(epoch_summary)
+        if self.best_phase_objective is None or current_phase_objective > self.best_phase_objective:
+            self.best_phase_objective = current_phase_objective
+            self.best_phase_objective_epoch = epoch
         if self.best_metric_value is None:
             self.best_metric_value = current_metric
             self.best_epoch = epoch
             self.plateau_count = 0
+            self.last_improvement_abs = None
             self.last_improvement_pct = None
         else:
             better = self._is_better(current_metric)
             if better:
+                improvement_abs = self._absolute_improvement(self.best_metric_value, current_metric)
                 improvement_pct = self._relative_improvement(self.best_metric_value, current_metric)
                 self.best_metric_value = current_metric
                 self.best_epoch = epoch
+                self.last_improvement_abs = improvement_abs
                 self.last_improvement_pct = improvement_pct
                 if epoch >= self.phase.min_epochs:
-                    if improvement_pct >= float(self.phase.min_improvement_pct):
+                    if self._uses_absolute_delta():
+                        threshold_met = improvement_abs >= float(self.phase.min_delta_abs or 0.0)
+                    else:
+                        threshold_met = improvement_pct >= float(self.phase.min_improvement_pct)
+                    if threshold_met:
                         self.plateau_count = 0
                     else:
                         self.plateau_count += 1
                 else:
                     self.plateau_count = 0
             else:
+                self.last_improvement_abs = 0.0
                 self.last_improvement_pct = 0.0
                 if epoch >= self.phase.min_epochs:
                     self.plateau_count += 1
 
-        phase_state = self._phase_state(epoch=epoch, current_metric_value=current_metric)
+        phase_state = self._phase_state(
+            epoch=epoch,
+            current_metric_value=current_metric,
+            current_phase_objective=current_phase_objective,
+        )
         epoch_summary["phase_transition"] = dict(phase_state)
 
         stop_state: dict[str, Any] | None = None
@@ -587,7 +795,7 @@ def run_meta_train_scenario(
         phase_selection = resolve_phase_selection(scenario.selection, phase)
         log_meta_train(
             f"phase policy: min_epochs={phase.min_epochs}, max_epochs={phase.max_epochs}, "
-            f"patience={phase.patience}, min_improvement_pct={phase.min_improvement_pct}, "
+            f"patience={phase.patience}, {phase_stop_policy_label(phase)}, "
             f"selection={phase_selection.metric_path} ({phase_selection.mode})"
         )
 

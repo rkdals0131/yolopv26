@@ -166,8 +166,11 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("`yolo26s.pt`", architecture_doc)
         self.assertIn("`yolo26n.pt`", architecture_doc)
         self.assertIn("stage_4_lane_family_finetune", loss_doc)
+        self.assertIn("selection_metrics.phase_objective", loss_doc)
         self.assertIn("stage 4", training_doc)
         self.assertIn("phase-specific selection", training_doc)
+        self.assertIn("selection_metrics.phase_objective", training_doc)
+        self.assertIn("min_delta_abs", training_doc)
 
     def test_standardization_doc_tracks_bootstrap_output_roots(self) -> None:
         standardization_doc = _read(DOCS_ROOT / "3_DATA_AND_STANDARDIZATION.md")
