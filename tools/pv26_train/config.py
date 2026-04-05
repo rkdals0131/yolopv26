@@ -78,7 +78,6 @@ class TrainDefaultsConfig:
     amp: bool = True
     accumulate_steps: int = 1
     grad_clip_norm: float = 5.0
-    val_every: int = 1
     checkpoint_every: int = 1
     num_workers: int = 6
     pin_memory: bool = True
@@ -352,7 +351,6 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("grad_clip_norm", defaults.grad_clip_norm),
             field_name="train_defaults.grad_clip_norm",
         ),
-        val_every=_coerce_int(data.get("val_every", defaults.val_every), field_name="train_defaults.val_every"),
         checkpoint_every=_coerce_int(
             data.get("checkpoint_every", defaults.checkpoint_every),
             field_name="train_defaults.checkpoint_every",

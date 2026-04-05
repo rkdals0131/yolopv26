@@ -56,6 +56,23 @@ class _GroupCursor:
         return index
 
 
+@dataclass
+class _IndexCursor:
+    indices: list[int]
+    rng: random.Random
+    position: int = 0
+
+    def draw(self) -> int:
+        if not self.indices:
+            raise ValueError("cannot draw from an empty index cursor")
+        if self.position >= len(self.indices):
+            self.rng.shuffle(self.indices)
+            self.position = 0
+        index = self.indices[self.position]
+        self.position += 1
+        return index
+
+
 def _batch_counts_from_ratios(
     ratios: dict[str, float],
     batch_size: int,
@@ -180,6 +197,49 @@ class PV26SequentialBatchSampler(BatchSampler):
             yield selected[start : start + self.batch_size]
 
 
+class PV26RandomSubsetBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        dataset: PV26CanonicalDataset,
+        *,
+        batch_size: int,
+        num_batches: int | None = None,
+        split: str | None = "val",
+        seed: int = 26,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        self.batch_size = batch_size
+        indices = [
+            index
+            for index, record in enumerate(dataset.records)
+            if split is None or record.split == split
+        ]
+        if not indices:
+            raise ValueError("eval sampler found no eligible samples")
+        rng = random.Random(seed)
+        shuffled = list(indices)
+        rng.shuffle(shuffled)
+        self._cursor = _IndexCursor(indices=shuffled, rng=random.Random(rng.randint(0, 1_000_000)))
+        self.num_batches = num_batches or math.ceil(len(indices) / batch_size)
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    def __iter__(self):
+        requested = min(len(self._cursor.indices), self.num_batches * self.batch_size)
+        selected: list[int] = []
+        seen: set[int] = set()
+        while len(selected) < requested:
+            candidate = self._cursor.draw()
+            if candidate in seen:
+                continue
+            selected.append(candidate)
+            seen.add(candidate)
+        for start in range(0, len(selected), self.batch_size):
+            yield selected[start : start + self.batch_size]
+
+
 def build_pv26_train_dataloader(
     dataset: PV26CanonicalDataset,
     *,
@@ -221,17 +281,19 @@ def build_pv26_eval_dataloader(
     batch_size: int,
     num_batches: int | None = None,
     split: str | None = "val",
+    seed: int = 26,
     num_workers: int = 0,
     pin_memory: bool = False,
     encode_batches: bool = False,
     persistent_workers: bool = False,
     prefetch_factor: int | None = None,
 ) -> DataLoader:
-    sampler = PV26SequentialBatchSampler(
+    sampler = PV26RandomSubsetBatchSampler(
         dataset,
         batch_size=batch_size,
         num_batches=num_batches,
         split=split,
+        seed=seed,
     )
     loader_kwargs: dict[str, object] = {
         "batch_sampler": sampler,
@@ -250,6 +312,7 @@ __all__ = [
     "DATASET_GROUP_BY_KEY",
     "DEFAULT_SAMPLER_RATIOS",
     "PV26BalancedBatchSampler",
+    "PV26RandomSubsetBatchSampler",
     "PV26SequentialBatchSampler",
     "build_pv26_eval_dataloader",
     "build_pv26_train_dataloader",

@@ -149,7 +149,6 @@ def run_fit(
     phase_name: str | None = None,
     val_loader: Any = None,
     run_dir: str | Path | None = None,
-    val_every: int = 1,
     checkpoint_every: int = 1,
     max_train_batches: int | None = None,
     max_val_batches: int | None = None,
@@ -307,7 +306,7 @@ def run_fit(
                     profile_device_sync=profile_device_sync,
                 ),
             }
-            if val_loader is not None and epoch % val_every == 0:
+            if val_loader is not None:
                 epoch_summary["val"] = trainer.validate_epoch(
                     val_loader,
                     epoch=epoch,

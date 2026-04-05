@@ -198,7 +198,7 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         groups = {dataset_group_for_key(item["dataset_key"]) for item in batch["meta"]}
         self.assertEqual(groups, {"bdd100k", "aihub_traffic", "aihub_obstacle", "aihub_lane"})
 
-    def test_eval_dataloader_is_sequential_and_unbalanced(self) -> None:
+    def test_eval_dataloader_uses_random_val_subset_instead_of_prefix_slice(self) -> None:
         dataset = _ToyCanonicalDataset()
         loader = build_pv26_eval_dataloader(dataset, batch_size=5, num_batches=2, split="val")
 
@@ -206,12 +206,39 @@ class PV26BalancedSamplerTests(unittest.TestCase):
 
         self.assertEqual(len(batches), 2)
         flat_sample_ids = [item["sample_id"] for batch in batches for item in batch["meta"]]
-        expected = [
+        sequential_prefix = [
             record.sample_id
             for record in dataset.records
             if record.split == "val"
         ][:10]
-        self.assertEqual(flat_sample_ids, expected)
+        self.assertEqual(len(flat_sample_ids), 10)
+        self.assertEqual(len(set(flat_sample_ids)), 10)
+        self.assertNotEqual(flat_sample_ids, sequential_prefix)
+
+    def test_eval_dataloader_can_draw_random_val_subsets_without_prefix_bias(self) -> None:
+        dataset = _ToyCanonicalDataset()
+        loader = build_pv26_eval_dataloader(
+            dataset,
+            batch_size=5,
+            num_batches=2,
+            split="val",
+            seed=11,
+        )
+
+        first_epoch = [item["sample_id"] for batch in loader for item in batch["meta"]]
+        second_epoch = [item["sample_id"] for batch in loader for item in batch["meta"]]
+        sequential_prefix = [
+            record.sample_id
+            for record in dataset.records
+            if record.split == "val"
+        ][:10]
+
+        self.assertEqual(len(first_epoch), 10)
+        self.assertEqual(len(set(first_epoch)), 10)
+        self.assertNotEqual(first_epoch, sequential_prefix)
+        self.assertEqual(len(second_epoch), 10)
+        self.assertEqual(len(set(second_epoch)), 10)
+        self.assertGreater(len(set(first_epoch) | set(second_epoch)), 10)
 
     def test_eval_dataloader_can_encode_batches_and_preserve_raw_bundle_for_metrics(self) -> None:
         dataset = _ToyCanonicalDataset()

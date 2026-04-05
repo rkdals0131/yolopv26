@@ -64,7 +64,6 @@ def build_meta_train_presets(
         amp=True,
         accumulate_steps=1,
         grad_clip_norm=5.0,
-        val_every=1,
         checkpoint_every=10,
         num_workers=6,
         pin_memory=True,

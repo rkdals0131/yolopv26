@@ -10,6 +10,7 @@ from .dataset import (
 from .preview import render_overlay
 from .sampler import (
     PV26BalancedBatchSampler,
+    PV26RandomSubsetBatchSampler,
     PV26SequentialBatchSampler,
     build_pv26_eval_dataloader,
     build_pv26_train_dataloader,
@@ -21,6 +22,7 @@ from .transform import compute_letterbox_transform, load_letterboxed_image
 __all__ = [
     "PV26BalancedBatchSampler",
     "PV26CanonicalDataset",
+    "PV26RandomSubsetBatchSampler",
     "PV26SequentialBatchSampler",
     "SampleRecord",
     "build_pv26_eval_dataloader",
