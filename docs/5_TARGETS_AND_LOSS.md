@@ -343,13 +343,15 @@ improvement_pct
 | `stage_1_frozen_trunk_warmup` | 2 | 6 | 2 | 0.003 | 1.0 |
 | `stage_2_partial_unfreeze` | 4 | 10 | 3 | 0.003 | 0.5 |
 | `stage_3_end_to_end_finetune` | 21 | 48 | 8 | 0.0025 | 0.25 |
-| `stage_4_lane_family_finetune` | 2 | 8 | 3 | 0.0025 | 0.25 |
+| `stage_4_lane_family_finetune` | 12 | 40 | 10 | 0.002 | 0.25 |
 
 의도:
 
 - stage 1/2는 warm-up과 partial unfreeze를 짧게 끝낸다.
 - stage 3는 shipped exhaustive train split 약 25.2만 장, `batch_size=12`, `train_batches=2048` 기준으로 최소 약 `2.05x` exposure를 확보한다.
-- stage 4는 lane-only sampler라 epoch당 lane split을 여러 번 도니 짧게 두는 편이 낫다.
+- stage 4는 lane-only sampler로 lane family를 의도적으로 오래 밀어붙인다.
+- 현재 lane split 3만 장 기준 stage 4 min 12 epoch는 약 `26.2x` exposure다.
+- lane split이 추후 약 33만 장까지 커져도 stage 4 min 12 epoch는 약 `2.38x` exposure를 확보한다.
 
 추가로 shipped preset의 phase override는 아래다.
 

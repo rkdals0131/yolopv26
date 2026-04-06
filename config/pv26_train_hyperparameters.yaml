@@ -56,7 +56,8 @@ pv26_train:
         # Current exhaustive train split is about 251.7k samples.
         # With train_batches=2048, per-epoch sample draws are:
         # stage1=65,536, stage2=49,152, stage3=24,576, stage4(lane-only)=65,536.
-        # stage3 min_epochs=21 keeps the fully-unfrozen phase above ~2.0x train exposure.
+        # stage3 min_epochs=21 keeps the fully-unfrozen phase above ~2.0x mixed-set exposure.
+        # stage4 min_epochs=12 keeps lane-only exposure above ~2.3x even if lane train grows to ~330k.
         - name: head_warmup
           stage: stage_1_frozen_trunk_warmup
           min_epochs: 2
@@ -92,11 +93,11 @@ pv26_train:
             head_lr: 4.0e-4
         - name: lane_family_finetune
           stage: stage_4_lane_family_finetune
-          min_epochs: 2
-          max_epochs: 8
-          patience: 3
+          min_epochs: 12
+          max_epochs: 40
+          patience: 10
           min_improvement_pct: 0.25
-          min_delta_abs: 0.0025
+          min_delta_abs: 0.002
           loss_weights:
             det: 0.0
             tl_attr: 0.0
