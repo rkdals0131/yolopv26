@@ -156,22 +156,46 @@ def _class_policy_defaults_from_config(hyperparameters_config: dict[str, Any]) -
     return merged
 
 
+def _coerce_resume(value: Any, *, field_name: str) -> bool | str:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return normalized
+    raise TypeError(f"{field_name} must be false, true, 'latest', or a checkpoint path")
+
+
 def _effective_class_policy(
     *,
     hyperparameters_config: dict[str, Any],
     class_policy_path: Path,
-) -> dict[str, ClassPolicy]:
+    allow_default_class_policy: bool,
+) -> tuple[dict[str, ClassPolicy], str]:
     defaults = _class_policy_defaults_from_config(hyperparameters_config)
     if not class_policy_path.is_file():
-        return defaults
+        if not allow_default_class_policy:
+            raise FileNotFoundError(f"missing calibration class_policy.yaml: {class_policy_path}")
+        return defaults, "defaults"
     payload = read_yaml(class_policy_path)
-    merged = dict(defaults)
-    for class_name, raw_policy in payload.items():
+    missing = sorted(class_name for class_name in OD_CLASSES if class_name not in payload)
+    if missing:
+        raise ValueError(f"class_policy.yaml is missing policies for: {missing}")
+    merged: dict[str, ClassPolicy] = {}
+    for class_name in OD_CLASSES:
         merged[str(class_name)] = class_policy_from_dict(
-            raw_policy,
-            default_policy=merged.get(str(class_name)),
+            payload[class_name],
+            default_policy=defaults.get(str(class_name)),
         )
-    return merged
+    return merged, "calibration"
 
 
 def build_default_source_preset(*, output_root: Path | None = None) -> SourcePrepConfig:
@@ -471,7 +495,7 @@ def build_teacher_train_preset(teacher_name: str) -> TeacherTrainScenario:
                 field_name="od_bootstrap.teacher_train.common.optimizer",
             ),
             seed=_coerce_int(teacher_common.get("seed", 0), field_name="od_bootstrap.teacher_train.common.seed"),
-            resume=_coerce_bool(teacher_common.get("resume", False), field_name="od_bootstrap.teacher_train.common.resume"),
+            resume=_coerce_resume(teacher_common.get("resume", False), field_name="od_bootstrap.teacher_train.common.resume"),
             val=_coerce_bool(teacher_common.get("val", True), field_name="od_bootstrap.teacher_train.common.val"),
             save_period=_coerce_int(
                 teacher_common.get("save_period", 10),
@@ -747,12 +771,17 @@ def build_calibration_preset() -> CalibrationScenario:
     )
 
 
-def build_sweep_preset() -> BootstrapSweepScenario:
+def build_sweep_preset(*, allow_default_class_policy: bool = False) -> BootstrapSweepScenario:
     paths_config = _load_od_bootstrap_paths_config()
     hyperparameters_config = _load_od_bootstrap_hyperparameters_config()
-    exhaustive_run = _config_section(hyperparameters_config, "exhaustive_od", "run")
-    exhaustive_materialization = _config_section(hyperparameters_config, "exhaustive_od", "materialization")
-    exhaustive_teachers = _config_section(hyperparameters_config, "exhaustive_od", "teachers")
+    exhaustive_config = _config_section(hyperparameters_config, "exhaustive_od")
+    exhaustive_run = _config_section(exhaustive_config, "run")
+    exhaustive_materialization = _config_section(exhaustive_config, "materialization")
+    exhaustive_teachers = _config_section(exhaustive_config, "teachers")
+    effective_allow_default_class_policy = bool(allow_default_class_policy) or _coerce_bool(
+        exhaustive_config.get("allow_default_class_policy", False),
+        field_name="od_bootstrap.exhaustive_od.allow_default_class_policy",
+    )
 
     teacher_defaults = {
         "mobility": {
@@ -832,6 +861,11 @@ def build_sweep_preset() -> BootstrapSweepScenario:
     # ===== USER CONFIG: EXHAUSTIVE OD INPUTS =====
 
     # ===== HYPERPARAMETERS: EXHAUSTIVE OD BUILD =====
+    class_policy, class_policy_source = _effective_class_policy(
+        hyperparameters_config=hyperparameters_config,
+        class_policy_path=class_policy_path,
+        allow_default_class_policy=effective_allow_default_class_policy,
+    )
     return BootstrapSweepScenario(
         run=SweepRunConfig(
             output_root=exhaustive_run_output_root,
@@ -878,10 +912,8 @@ def build_sweep_preset() -> BootstrapSweepScenario:
         ),
         teachers=tuple(teachers),
         class_policy_path=class_policy_path,
-        class_policy=_effective_class_policy(
-            hyperparameters_config=hyperparameters_config,
-            class_policy_path=class_policy_path,
-        ),
+        class_policy=class_policy,
+        class_policy_source=class_policy_source,
     )
 
 

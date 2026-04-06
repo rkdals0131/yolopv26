@@ -40,7 +40,7 @@ def _build_isolated_sweep_preset(*, calibration_root: Path):
         return_value={"od_bootstrap": {"runs": {"calibration_root": str(calibration_root)}}},
     ), patch(
         "tools.od_bootstrap.presets.load_user_hyperparameters_config",
-        return_value={},
+        return_value={"od_bootstrap": {"exhaustive_od": {"allow_default_class_policy": True}}},
     ):
         return build_sweep_preset()
 
@@ -254,12 +254,14 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                 ),
                 class_policy_path=root / "class_policy.yaml",
                 class_policy=TEST_CLASS_POLICY,
+                class_policy_source="calibration",
             )
             with patch("tools.od_bootstrap.build.sweep.YOLO", _FakeYOLO):
                 summary = run_model_centric_sweep_scenario(scenario, scenario_path=root / "preset_sweep")
             run_dir = Path(summary["run_dir"])
 
             self.assertEqual(summary["teacher_names"], ["mobility", "signal", "obstacle"])
+            self.assertEqual(summary["class_policy_source"], "calibration")
             self.assertEqual([row["teacher_name"] for row in summary["teacher_jobs"]], ["mobility", "signal", "obstacle"])
             self.assertEqual(summary["teacher_jobs"][0]["manifest_version"], JOB_MANIFEST_VERSION)
             self.assertEqual(

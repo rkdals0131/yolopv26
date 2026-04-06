@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import sys
+from types import ModuleType
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -179,6 +182,45 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertEqual(sample["lanes"], [])
         self.assertEqual(sample["stop_lines"], [])
         self.assertEqual(sample["crosswalks"], [])
+
+    def test_postprocess_raises_when_torchvision_batched_nms_fails_by_default(self) -> None:
+        predictions = _make_prediction_batch()
+        torchvision_module = ModuleType("torchvision")
+        ops_module = ModuleType("torchvision.ops")
+
+        def _broken_batched_nms(*args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("nms backend missing")
+
+        ops_module.batched_nms = _broken_batched_nms
+        torchvision_module.ops = ops_module
+        with patch.dict(sys.modules, {"torchvision": torchvision_module, "torchvision.ops": ops_module}):
+            with self.assertRaisesRegex(RuntimeError, "nms backend missing"):
+                postprocess_pv26_batch(
+                    predictions,
+                    _meta_identity(),
+                    config=PV26PostprocessConfig(det_iou_threshold=0.5),
+                )
+
+    def test_postprocess_uses_python_nms_only_when_explicitly_enabled(self) -> None:
+        predictions = _make_prediction_batch()
+        torchvision_module = ModuleType("torchvision")
+        ops_module = ModuleType("torchvision.ops")
+
+        def _broken_batched_nms(*args, **kwargs):
+            del args, kwargs
+            raise RuntimeError("nms backend missing")
+
+        ops_module.batched_nms = _broken_batched_nms
+        torchvision_module.ops = ops_module
+        with patch.dict(sys.modules, {"torchvision": torchvision_module, "torchvision.ops": ops_module}):
+            decoded = postprocess_pv26_batch(
+                predictions,
+                _meta_identity(),
+                config=PV26PostprocessConfig(det_iou_threshold=0.5, allow_python_nms_fallback=True),
+            )
+
+        self.assertEqual(len(decoded[0]["detections"]), 2)
 
 
 if __name__ == "__main__":

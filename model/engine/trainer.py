@@ -14,7 +14,7 @@ from . import _trainer_io as _io
 from . import _trainer_step as _step
 from . import trainer_reporting as _reporting
 from .batch import move_batch_to_device
-from .loss import PV26DetAssignmentUnavailable, PV26MultiTaskLoss
+from .loss import PV26MultiTaskLoss
 from .spec import build_loss_spec
 from .train_summary import resolve_summary_path
 from ..net.trunk import forward_pyramid_features
@@ -189,8 +189,7 @@ def configure_pv26_train_stage(
                 _set_module_requires_grad(module, True)
             head_policy = "lane_family_only"
         else:
-            _set_module_requires_grad(heads, True)
-            head_policy = "all_heads_fallback"
+            raise RuntimeError("lane_family_heads_only requires lane_head, stop_line_head, and crosswalk_head modules")
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:

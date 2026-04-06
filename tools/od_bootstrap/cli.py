@@ -96,6 +96,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     train = subparsers.add_parser("train", help="Train a teacher preset.")
     train.add_argument("--teacher", choices=("mobility", "signal", "obstacle"), default="mobility")
+    train.add_argument(
+        "--resume",
+        nargs="?",
+        const="latest",
+        default=None,
+        help="Resume from the latest resumable checkpoint, or provide an exact checkpoint path.",
+    )
     _add_common_path_overrides(train)
     train.set_defaults(handler=_run_teacher_train)
 
@@ -109,6 +116,11 @@ def _build_parser() -> argparse.ArgumentParser:
     calibrate.set_defaults(handler=_run_calibration)
 
     exhaustive_od = subparsers.add_parser("build-exhaustive-od", help="Build the exhaustive OD dataset preset.")
+    exhaustive_od.add_argument(
+        "--allow-default-class-policy",
+        action="store_true",
+        help="Allow exhaustive OD build to run without calibration/class_policy.yaml by using config defaults.",
+    )
     _add_common_path_overrides(exhaustive_od)
     exhaustive_od.set_defaults(handler=_run_exhaustive_od)
 
@@ -216,6 +228,8 @@ def _run_teacher_train(args: argparse.Namespace) -> int:
     scenario = build_teacher_train_preset(args.teacher)
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))
+    if args.resume is not None:
+        scenario = replace(scenario, train=replace(scenario.train, resume=args.resume))
     run_teacher_train_scenario(scenario, scenario_path=Path(f"preset_{scenario.teacher_name}"))
     return 0
 
@@ -237,7 +251,7 @@ def _run_calibration(args: argparse.Namespace) -> int:
 
 
 def _run_exhaustive_od(args: argparse.Namespace) -> int:
-    scenario = build_sweep_preset()
+    scenario = build_sweep_preset(allow_default_class_policy=bool(args.allow_default_class_policy))
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))
     run_model_centric_sweep_scenario(scenario, scenario_path=Path("preset_model_centric"))

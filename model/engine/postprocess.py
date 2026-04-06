@@ -43,6 +43,7 @@ class PV26PostprocessConfig:
     stop_line_obj_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
     lane_visibility_threshold: float = 0.50
+    allow_python_nms_fallback: bool = False
 
 
 def _resample_polyline(points_xy: list[list[float]], target_count: int) -> torch.Tensor:
@@ -246,12 +247,16 @@ def _run_batched_nms(
     scores: torch.Tensor,
     class_ids: torch.Tensor,
     iou_threshold: float,
+    *,
+    allow_python_nms_fallback: bool,
 ) -> torch.Tensor:
     try:
         from torchvision.ops import batched_nms as torchvision_batched_nms
 
         return torchvision_batched_nms(boxes, scores, class_ids, float(iou_threshold))
     except Exception:
+        if not allow_python_nms_fallback:
+            raise
         kept_indices: list[torch.Tensor] = []
         for class_id in class_ids.unique(sorted=True):
             class_mask = class_ids == class_id
@@ -306,7 +311,13 @@ def _decode_detection_rows(
     class_ids = class_ids[valid]
     tl_scores = tl_rows.sigmoid()[valid]
 
-    keep = _run_batched_nms(boxes, scores, class_ids, float(config.det_iou_threshold))
+    keep = _run_batched_nms(
+        boxes,
+        scores,
+        class_ids,
+        float(config.det_iou_threshold),
+        allow_python_nms_fallback=bool(config.allow_python_nms_fallback),
+    )
     keep = keep[: int(config.max_detections)]
 
     detections: list[dict[str, Any]] = []

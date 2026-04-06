@@ -141,6 +141,7 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         lane_obj_threshold=float(train_config.lane_obj_threshold),
         stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
         crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
+        allow_python_nms_fallback=bool(train_config.allow_python_nms_fallback),
     )
 
 

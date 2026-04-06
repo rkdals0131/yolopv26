@@ -47,6 +47,7 @@ pv26_train:
         lane_obj_threshold: 0.50
         stop_line_obj_threshold: 0.50
         crosswalk_obj_threshold: 0.50
+        allow_python_nms_fallback: false
         sampler_ratios:
           bdd100k: 0.30
           aihub_traffic: 0.30

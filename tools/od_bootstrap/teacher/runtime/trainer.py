@@ -150,57 +150,45 @@ def _restore_resume_training_args(trainer: Any, overrides: dict[str, Any]) -> bo
     resume = trainer.args.resume
     if not resume:
         return resume
-    try:
-        exists = isinstance(resume, (str, Path)) and Path(resume).exists()
-        requested = Path(ultra_trainer.check_file(resume) if exists else ultra_trainer.get_latest_run())
-        last = resolve_resume_checkpoint_path(requested) or requested
-        metadata = checkpoint_resume_metadata(last)
-        ckpt_args = dict(metadata["train_args"])
-        if not ckpt_args:
-            raise FileNotFoundError(f"resume checkpoint is missing train_args: {last}")
-        if not metadata["resumable"]:
-            raise FileNotFoundError(
-                f"resume checkpoint is finalized and not resumable: {last}. "
-                "Use a saved epoch*.pt or last_resume.pt checkpoint instead."
-            )
-        if not isinstance(ckpt_args["data"], dict) and not Path(ckpt_args["data"]).exists():
-            ckpt_args["data"] = trainer.args.data
+    requested = Path(str(resume)).expanduser().resolve()
+    last = resolve_resume_checkpoint_path(requested)
+    metadata = checkpoint_resume_metadata(last)
+    ckpt_args = dict(metadata["train_args"])
+    if not ckpt_args:
+        raise FileNotFoundError(f"resume checkpoint is missing train_args: {last}")
+    if not isinstance(ckpt_args["data"], dict) and not Path(ckpt_args["data"]).exists():
+        ckpt_args["data"] = trainer.args.data
 
-        trainer.od_resume_base_epochs = int(ckpt_args.get("epochs") or 0) or None
-        trainer.od_resume_start_epoch = int(metadata["epoch"]) + 1
-        trainer.args = ultra_trainer.get_cfg(ckpt_args)
-        trainer.args.model = trainer.args.resume = str(last)
-        for key in (
-            "epochs",
-            "imgsz",
-            "batch",
-            "device",
-            "close_mosaic",
-            "augmentations",
-            "save_period",
-            "workers",
-            "cache",
-            "patience",
-            "time",
-            "freeze",
-            "val",
-            "plots",
-        ):
-            if key in overrides:
-                setattr(trainer.args, key, overrides[key])
+    trainer.od_resume_base_epochs = int(ckpt_args.get("epochs") or 0) or None
+    trainer.od_resume_start_epoch = int(metadata["epoch"]) + 1
+    trainer.args = ultra_trainer.get_cfg(ckpt_args)
+    trainer.args.model = trainer.args.resume = str(last)
+    for key in (
+        "epochs",
+        "imgsz",
+        "batch",
+        "device",
+        "close_mosaic",
+        "augmentations",
+        "save_period",
+        "workers",
+        "cache",
+        "patience",
+        "time",
+        "freeze",
+        "val",
+        "plots",
+    ):
+        if key in overrides:
+            setattr(trainer.args, key, overrides[key])
 
-        if ckpt_args.get("augmentations") is not None:
-            ultra_trainer.LOGGER.warning(
-                "Custom Albumentations transforms were used in the original training run but are not "
-                "being restored. To preserve custom augmentations when resuming, you need to pass the "
-                "'augmentations' parameter again to get expected results. Example: \n"
-                f"model.train(resume=True, augmentations={ckpt_args['augmentations']})"
-            )
-    except Exception as exc:
-        raise FileNotFoundError(
-            "Resume checkpoint not found. Please pass a valid checkpoint to resume from, "
-            "i.e. 'yolo train resume model=path/to/last.pt'"
-        ) from exc
+    if ckpt_args.get("augmentations") is not None:
+        ultra_trainer.LOGGER.warning(
+            "Custom Albumentations transforms were used in the original training run but are not "
+            "being restored. To preserve custom augmentations when resuming, you need to pass the "
+            "'augmentations' parameter again to get expected results. Example: \n"
+            f"model.train(resume=True, augmentations={ckpt_args['augmentations']})"
+        )
     return True
 
 

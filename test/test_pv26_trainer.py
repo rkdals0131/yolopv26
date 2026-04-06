@@ -162,9 +162,7 @@ class _OOMCriterion(nn.Module):
 class _AssignmentFailureCriterion(nn.Module):
     def forward(self, predictions, encoded):  # type: ignore[override]
         del predictions, encoded
-        from model.engine.loss import PV26DetAssignmentUnavailable
-
-        raise PV26DetAssignmentUnavailable("det_feature_metadata_invalid")
+        raise ValueError("det_feature_metadata_invalid")
 
 
 class _FiniteCriterion(nn.Module):
@@ -1011,7 +1009,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["global_step"], 0)
         self.assertEqual(trainer.skipped_steps, 1)
 
-    def test_train_step_skips_assignment_failure_without_advancing_counters(self) -> None:
+    def test_train_step_raises_assignment_failure_without_advancing_counters(self) -> None:
         from model.engine.trainer import PV26Trainer
 
         trainer = PV26Trainer(
@@ -1029,15 +1027,12 @@ class PV26TrainerTests(unittest.TestCase):
             "crosswalk": torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), requires_grad=True),
         }
 
-        summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=2))
+        with self.assertRaisesRegex(ValueError, "det_feature_metadata_invalid"):
+            trainer.train_step(_make_encoded_batch(batch_size=1, q_det=2))
 
-        self.assertFalse(summary["successful"])
-        self.assertEqual(summary["skipped_reason"], "det_assignment_unavailable")
-        self.assertEqual(summary["assignment"]["det"], "det_assignment_unavailable")
-        self.assertEqual(summary["global_step"], 0)
-        self.assertEqual(summary["micro_step"], 0)
-        self.assertEqual(trainer.skipped_steps, 1)
-        self.assertIn("det_feature_metadata_invalid", summary["skipped_reason_detail"])
+        self.assertEqual(trainer.global_step, 0)
+        self.assertEqual(trainer.micro_step, 0)
+        self.assertEqual(trainer.skipped_steps, 0)
 
     def test_train_epoch_aggregates_only_successful_batches(self) -> None:
         from model.engine.trainer import PV26Trainer
@@ -1088,14 +1083,14 @@ class PV26TrainerTests(unittest.TestCase):
                     "optimizer_step": False,
                     "micro_step": 0,
                     "accumulate_steps": 1,
-                    "skipped_reason": "det_assignment_unavailable",
-                    "skipped_reason_detail": "det_feature_metadata_invalid",
+                    "skipped_reason": "non_finite_loss",
+                    "skipped_reason_detail": None,
                     "skipped_steps": 1,
                     "amp_enabled": False,
                     "gradient_scale": 1.0,
                     "optimizer_lrs": {"trunk": 1e-4},
                     "trainable": dict(trainer.stage_summary),
-                    "assignment": {"det": "det_assignment_unavailable", "lane": {}},
+                    "assignment": {"det": "task_aligned", "lane": {}},
                     "timing": {key: 0.01 for key in ("wait_sec", "load_sec", "forward_sec", "loss_sec", "backward_sec", "iteration_sec")},
                     "source_counts": {"det_source_samples": 1, "tl_attr_source_samples": 0, "lane_source_samples": 0, "stop_line_source_samples": 0, "crosswalk_source_samples": 0},
                     "det_supervision": {
@@ -1117,7 +1112,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["attempted_batches"], 2)
         self.assertEqual(summary["successful_batches"], 1)
         self.assertEqual(summary["skipped_batches"], 1)
-        self.assertEqual(summary["skipped_reasons"]["det_assignment_unavailable"], 1)
+        self.assertEqual(summary["skipped_reasons"]["non_finite_loss"], 1)
         self.assertEqual(summary["losses"]["total"]["mean"], 2.0)
         self.assertEqual(summary["det_components"]["det_cls_unmatched_neg_count"], 8)
         self.assertEqual(summary["attempted_source_counts"]["det_source_samples"], 2)
@@ -1153,14 +1148,14 @@ class PV26TrainerTests(unittest.TestCase):
             "optimizer_step": False,
             "micro_step": 0,
             "accumulate_steps": 1,
-            "skipped_reason": "det_assignment_unavailable",
-            "skipped_reason_detail": "det_feature_metadata_invalid",
+            "skipped_reason": "non_finite_loss",
+            "skipped_reason_detail": None,
             "skipped_steps": 1,
             "amp_enabled": False,
             "gradient_scale": 1.0,
             "optimizer_lrs": {"trunk": 1e-4},
             "trainable": dict(trainer.stage_summary),
-            "assignment": {"det": "det_assignment_unavailable", "lane": {}},
+            "assignment": {"det": "task_aligned", "lane": {}},
             "timing": {key: 0.01 for key in ("wait_sec", "load_sec", "forward_sec", "loss_sec", "backward_sec", "iteration_sec")},
             "source_counts": {"det_source_samples": 1, "tl_attr_source_samples": 0, "lane_source_samples": 0, "stop_line_source_samples": 0, "crosswalk_source_samples": 0},
             "det_supervision": {
@@ -1176,9 +1171,15 @@ class PV26TrainerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "zero successful batches.*det_assignment_unavailable.*det_feature_metadata_invalid",
+            "zero successful batches.*non_finite_loss",
         ):
             trainer.train_epoch([_make_encoded_batch(batch_size=1, q_det=2)], epoch=1)
+
+    def test_stage4_requires_lane_family_modules(self) -> None:
+        from model.engine.trainer import configure_pv26_train_stage
+
+        with self.assertRaisesRegex(RuntimeError, "lane_family_heads_only requires lane_head"):
+            configure_pv26_train_stage(_DummyAdapter(), nn.Module(), "stage_4_lane_family_finetune")
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:

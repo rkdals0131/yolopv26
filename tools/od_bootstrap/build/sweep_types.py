@@ -80,3 +80,4 @@ class BootstrapSweepScenario:
     teachers: tuple[TeacherConfig, ...]
     class_policy_path: Path
     class_policy: dict[str, ClassPolicy]
+    class_policy_source: str = "calibration"

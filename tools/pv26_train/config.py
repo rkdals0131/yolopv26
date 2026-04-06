@@ -96,6 +96,7 @@ class TrainDefaultsConfig:
     lane_obj_threshold: float = 0.50
     stop_line_obj_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
+    allow_python_nms_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -414,6 +415,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         crosswalk_obj_threshold=_coerce_float(
             data.get("crosswalk_obj_threshold", defaults.crosswalk_obj_threshold),
             field_name="train_defaults.crosswalk_obj_threshold",
+        ),
+        allow_python_nms_fallback=_coerce_bool(
+            data.get("allow_python_nms_fallback", defaults.allow_python_nms_fallback),
+            field_name="train_defaults.allow_python_nms_fallback",
         ),
     )
 

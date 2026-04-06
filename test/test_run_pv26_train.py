@@ -344,6 +344,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(config.lane_obj_threshold, 0.41)
         self.assertAlmostEqual(config.stop_line_obj_threshold, 0.42)
         self.assertAlmostEqual(config.crosswalk_obj_threshold, 0.43)
+        self.assertFalse(config.allow_python_nms_fallback)
 
     def test_phase_manifest_extra_includes_resolved_postprocess_thresholds(self) -> None:
         scenario = load_meta_train_scenario("default")
@@ -368,6 +369,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(manifest_extra["postprocess"]["lane_obj_threshold"], 0.44)
         self.assertEqual(manifest_extra["postprocess"]["stop_line_obj_threshold"], 0.5)
         self.assertEqual(manifest_extra["postprocess"]["crosswalk_obj_threshold"], 0.5)
+        self.assertFalse(manifest_extra["postprocess"]["allow_python_nms_fallback"])
 
     def test_load_meta_train_scenario_rejects_invalid_stage_order(self) -> None:
         scenario = load_meta_train_scenario("default")

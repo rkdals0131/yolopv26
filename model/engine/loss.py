@@ -332,7 +332,7 @@ class PV26MultiTaskLoss(nn.Module):
         mask_gt: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.assigner is None:
-            raise PV26DetAssignmentUnavailable("task_aligned_assigner_missing")
+            raise RuntimeError("task_aligned_assigner_missing")
 
         original_topk = getattr(self.assigner, "topk", None)
         original_topk2 = getattr(self.assigner, "topk2", None)
@@ -543,19 +543,16 @@ class PV26MultiTaskLoss(nn.Module):
             gt_labels = det_gt["classes"].to(device=det_pred.device, dtype=torch.long).clamp(min=0).unsqueeze(-1)
             gt_bboxes = det_gt["boxes_xyxy"].to(device=det_pred.device, dtype=torch.float32)
             mask_gt = det_valid.unsqueeze(-1) & det_source[:, None, None]
-            try:
-                # Ultralytics task-aligned assigner is not consistently AMP-safe.
-                # Keep the training graph in the model dtype, but run assigner inputs in float32.
-                _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self._run_task_aligned_assigner(
-                    cls_logits.detach().to(dtype=torch.float32).sigmoid(),
-                    pred_boxes.detach().to(dtype=torch.float32),
-                    anchor_points.to(dtype=torch.float32),
-                    gt_labels,
-                    gt_bboxes,
-                    mask_gt,
-                )
-            except Exception as exc:
-                raise PV26DetAssignmentUnavailable(f"task_aligned_assigner_failed: {exc}") from exc
+            # Ultralytics task-aligned assigner is not consistently AMP-safe.
+            # Keep the training graph in the model dtype, but run assigner inputs in float32.
+            _, assigned_bboxes, assigned_scores, assigned_fg, assigned_gt_idx = self._run_task_aligned_assigner(
+                cls_logits.detach().to(dtype=torch.float32).sigmoid(),
+                pred_boxes.detach().to(dtype=torch.float32),
+                anchor_points.to(dtype=torch.float32),
+                gt_labels,
+                gt_bboxes,
+                mask_gt,
+            )
             assigned_fg = assigned_fg.to(dtype=torch.bool)
             assigned_scores = assigned_scores * det_source[:, None, None].to(dtype=det_pred.dtype)
             assigned_fg = assigned_fg & det_source[:, None]
@@ -586,12 +583,11 @@ class PV26MultiTaskLoss(nn.Module):
                 "det_source": det_source,
             }
 
-        missing: list[str] = []
         if self.assigner is None:
-            missing.append("task_aligned_assigner_unavailable")
+            raise RuntimeError("task_aligned_assigner_unavailable")
         if not feature_meta_valid:
-            missing.append("det_feature_metadata_invalid")
-        raise PV26DetAssignmentUnavailable(", ".join(missing) or "task_aligned_assigner_unavailable")
+            raise ValueError("det_feature_metadata_invalid")
+        raise RuntimeError("task_aligned_assigner_unavailable")
 
     def _det_supervision_masks(
         self,

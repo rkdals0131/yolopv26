@@ -451,6 +451,17 @@ class UltralyticsRunnerTests(unittest.TestCase):
             resolved = resolve_resume_argument(True, teacher_name="signal", teacher_root=teacher_root)
             self.assertEqual(resolved, str(resumable_epoch))
 
+    def test_resolve_resume_argument_exact_path_does_not_fallback_to_sibling_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            teacher_root = Path(temp_dir) / "signal"
+            stripped_last = teacher_root / "20260328_040148" / "weights" / "last.pt"
+            resumable_epoch = teacher_root / "20260328_040148" / "weights" / "epoch70.pt"
+            _write_checkpoint(stripped_last, epoch=71, total_epochs=72, resumable=False)
+            _write_checkpoint(resumable_epoch, epoch=70, total_epochs=72, resumable=True)
+
+            with self.assertRaisesRegex(RuntimeError, "finalized and not resumable"):
+                resolve_resume_argument(str(stripped_last), teacher_name="signal", teacher_root=teacher_root)
+
     def test_train_teacher_with_ultralytics_checks_resume_path_before_trainer_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             dataset_yaml = Path(temp_dir) / "dataset.yaml"
@@ -461,7 +472,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 "tools.od_bootstrap.teacher.ultralytics_runner._make_teacher_trainer",
                 side_effect=AssertionError("trainer dependencies should not be checked first"),
             ):
-                with self.assertRaisesRegex(FileNotFoundError, "no last.pt exists under"):
+                with self.assertRaisesRegex(FileNotFoundError, "no resumable checkpoint exists under"):
                     train_teacher_with_ultralytics(
                         teacher_name="signal",
                         dataset_yaml=dataset_yaml,

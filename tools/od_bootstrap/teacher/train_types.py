@@ -41,7 +41,7 @@ class TeacherTrainParams:
     amp: bool = True
     optimizer: str = "auto"
     seed: int = 0
-    resume: bool = False
+    resume: bool | str = False
     val: bool = True
     save_period: int = 10
     log_every_n_steps: int = 20

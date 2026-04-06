@@ -12,6 +12,7 @@ __all__ = [
     "checkpoint_resume_metadata",
     "coerce_weights_name",
     "extract_run_dir",
+    "resolve_latest_resumable_checkpoint",
     "resolve_resume_argument",
     "resolve_resume_checkpoint_path",
 ]
@@ -25,13 +26,14 @@ def coerce_weights_name(model_size: str, weights: str | None) -> str:
 
 
 def _load_checkpoint_payload(checkpoint: Path) -> dict[str, Any] | None:
-    if torch is None or not checkpoint.is_file():
-        return None
-    try:
-        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
+    if torch is None:
+        raise RuntimeError("torch is not available")
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"resume checkpoint not found: {checkpoint}")
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise TypeError(f"resume checkpoint payload must be a mapping: {checkpoint}")
+    return payload
 
 
 def checkpoint_resume_metadata(checkpoint: Path) -> dict[str, Any]:
@@ -44,13 +46,6 @@ def checkpoint_resume_metadata(checkpoint: Path) -> dict[str, Any]:
         "train_args": dict(train_args) if isinstance(train_args, dict) else {},
         "resumable": isinstance(optimizer, dict) and isinstance(epoch, int) and int(epoch) >= 0,
     }
-
-
-def _infer_teacher_root_from_checkpoint(checkpoint: Path) -> Path | None:
-    for parent in checkpoint.parents:
-        if (parent / "latest_run.json").is_file():
-            return parent
-    return None
 
 
 def _resume_candidate_sort_key(checkpoint: Path) -> tuple[int, int, int, int, str]:
@@ -66,65 +61,44 @@ def _resume_candidate_sort_key(checkpoint: Path) -> tuple[int, int, int, int, st
     )
 
 
-def _find_latest_resumable_checkpoint(teacher_root: Path) -> Path | None:
+def resolve_latest_resumable_checkpoint(teacher_root: Path, *, teacher_name: str | None = None) -> Path:
     candidates: set[Path] = set()
     for pattern in ("**/last_resume*.pt", "**/last*.pt", "**/epoch*.pt"):
         candidates.update(path for path in teacher_root.glob(pattern) if path.is_file())
     resumable = [path for path in candidates if checkpoint_resume_metadata(path)["resumable"]]
     if not resumable:
-        return None
-    return max(resumable, key=_resume_candidate_sort_key)
+        label = f" for teacher '{teacher_name}'" if teacher_name else ""
+        raise FileNotFoundError(f"resume requested{label} but no resumable checkpoint exists under {teacher_root}")
+    return max(resumable, key=_resume_candidate_sort_key).resolve()
 
 
 def resolve_resume_checkpoint_path(checkpoint: Path, *, teacher_root: Path | None = None) -> Path | None:
-    if not checkpoint.is_file():
-        return None
-    if checkpoint_resume_metadata(checkpoint)["resumable"]:
-        return checkpoint
-
-    search_root = teacher_root or _infer_teacher_root_from_checkpoint(checkpoint)
-    if search_root is not None:
-        fallback = _find_latest_resumable_checkpoint(search_root)
-        if fallback is not None:
-            return fallback
-
-    sibling_candidates = [path for path in checkpoint.parent.glob("last_resume*.pt") if path.is_file()]
-    sibling_candidates.extend(path for path in checkpoint.parent.glob("epoch*.pt") if path.is_file())
-    resumable = [path for path in sibling_candidates if checkpoint_resume_metadata(path)["resumable"]]
-    if resumable:
-        return max(resumable, key=_resume_candidate_sort_key)
-    return checkpoint
-
-
-def _find_latest_teacher_checkpoint(teacher_root: Path) -> Path | None:
-    resumable = _find_latest_resumable_checkpoint(teacher_root)
-    if resumable is not None:
-        return resumable
-    candidates = [path for path in teacher_root.glob("**/last*.pt") if path.is_file()]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
+    del teacher_root
+    resolved = Path(checkpoint).expanduser().resolve()
+    metadata = checkpoint_resume_metadata(resolved)
+    if not metadata["resumable"]:
+        raise RuntimeError(
+            f"resume checkpoint is finalized and not resumable: {resolved}. "
+            "Use a saved epoch*.pt or last_resume.pt checkpoint instead."
+        )
+    return resolved
 
 
 def resolve_resume_argument(resume: Any, *, teacher_name: str, teacher_root: Path) -> bool | str:
     if not resume:
         return False
+    if isinstance(resume, bool):
+        return str(resolve_latest_resumable_checkpoint(teacher_root, teacher_name=teacher_name))
     if isinstance(resume, Path):
-        resolved = resolve_resume_checkpoint_path(resume, teacher_root=teacher_root)
-        return str(resolved) if resolved is not None else str(resume)
+        return str(resolve_resume_checkpoint_path(resume, teacher_root=teacher_root))
     if isinstance(resume, str):
         normalized = resume.strip()
         if not normalized:
             return False
-        resolved = resolve_resume_checkpoint_path(Path(normalized), teacher_root=teacher_root)
-        return str(resolved) if resolved is not None else normalized
-
-    checkpoint = _find_latest_teacher_checkpoint(teacher_root)
-    if checkpoint is None:
-        raise FileNotFoundError(
-            f"resume requested for teacher '{teacher_name}' but no last.pt exists under {teacher_root}"
-        )
-    return str(checkpoint)
+        if normalized.lower() == "latest":
+            return str(resolve_latest_resumable_checkpoint(teacher_root, teacher_name=teacher_name))
+        return str(resolve_resume_checkpoint_path(Path(normalized), teacher_root=teacher_root))
+    raise TypeError("resume must be false, true, 'latest', or an exact checkpoint path")
 
 
 def extract_run_dir(train_result: Any, fallback_dir: Path) -> Path:
@@ -140,5 +114,6 @@ def extract_run_dir(train_result: Any, fallback_dir: Path) -> Path:
 _checkpoint_resume_metadata = checkpoint_resume_metadata
 _coerce_weights_name = coerce_weights_name
 _extract_run_dir = extract_run_dir
+_resolve_latest_resumable_checkpoint = resolve_latest_resumable_checkpoint
 _resolve_resume_argument = resolve_resume_argument
 _resolve_resume_checkpoint_path = resolve_resume_checkpoint_path

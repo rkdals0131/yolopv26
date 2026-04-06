@@ -7,7 +7,6 @@ import torch
 
 from common.train_runtime import sync_timing_device as _common_sync_timing_device
 from .trainer_reporting import _tensorboard_train_step_payload, _write_tensorboard_scalars
-from .loss import PV26DetAssignmentUnavailable
 from ..net.trunk import forward_pyramid_features
 
 
@@ -216,18 +215,6 @@ def run_train_step(
                 trainer.micro_step = 0
                 optimizer_step = True
             successful = True
-        sync_timing_device(trainer.device, profile_device_sync)
-        backward_ended_at = time.perf_counter()
-    except PV26DetAssignmentUnavailable as exc:
-        skipped_reason = "det_assignment_unavailable"
-        skipped_reason_detail = str(exc)
-        trainer.optimizer.zero_grad(set_to_none=True)
-        trainer.micro_step = 0
-        trainer.skipped_steps += 1
-        losses = _nan_losses(trainer.device)
-        det_components = _summary_det_components({})
-        assignment_det_mode = "det_assignment_unavailable"
-        assignment_lane_modes = {}
         sync_timing_device(trainer.device, profile_device_sync)
         backward_ended_at = time.perf_counter()
     except RuntimeError as exc:

@@ -44,6 +44,7 @@ class ModelCentricSweepSummary(TypedDict):
     image_count: int
     teacher_names: list[str]
     class_policy_path: str
+    class_policy_source: str
     teacher_jobs: list[TeacherJobManifestPayload]
     materialization: ExhaustiveMaterializationSummary
 
@@ -357,6 +358,7 @@ def run_model_centric_sweep_scenario(
         "image_count": len(entries),
         "teacher_names": list(teacher_names),
         "class_policy_path": str(scenario.class_policy_path),
+        "class_policy_source": str(scenario.class_policy_source),
         "teacher_jobs": teacher_jobs,
         "materialization": materialization_summary,
     }
