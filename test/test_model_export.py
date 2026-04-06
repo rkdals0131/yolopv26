@@ -76,6 +76,46 @@ def test_build_example_input_random_seed_is_reproducible() -> None:
     assert first_info == second_info == {"kind": "random", "seed": 1234}
 
 
+def test_torchscript_export_wrapper_trace_matches_eager_outputs() -> None:
+    class AddConstant(torch.nn.Module):
+        def __init__(self, value: float) -> None:
+            super().__init__()
+            self.f = -1
+            self.value = float(value)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x + self.value
+
+    class ToyHeads(torch.nn.Module):
+        def forward(self, features: list[torch.Tensor]) -> dict[str, torch.Tensor]:
+            p3, p4, p5 = features
+            return {
+                "det": p3.mean(dim=(2, 3)).unsqueeze(1),
+                "tl_attr": p4.amax(dim=(2, 3)).unsqueeze(1),
+                "lane": p5.amin(dim=(2, 3)).unsqueeze(1),
+                "stop_line": (p3 + p4).mean(dim=(2, 3)).unsqueeze(1),
+                "crosswalk": (p4 + p5).mean(dim=(2, 3)).unsqueeze(1),
+            }
+
+    wrapper = pv26_exporter.Pv26TorchscriptExportWrapper(
+        trunk_layers=[AddConstant(1.0), AddConstant(2.0), AddConstant(3.0)],
+        feature_source_indices=(0, 1, 2),
+        heads=ToyHeads(),
+    ).eval()
+    example_input = torch.rand((1, 3, 8, 10), dtype=torch.float32)
+
+    eager_outputs = wrapper(example_input)
+    scripted = torch.jit.trace(wrapper, example_input, strict=False, check_trace=False)
+    scripted = torch.jit.freeze(scripted.eval())
+    scripted_outputs = scripted(example_input)
+
+    assert len(eager_outputs) == 5
+    assert len(scripted_outputs) == 5
+    for eager, scripted_tensor in zip(eager_outputs, scripted_outputs):
+        assert eager.shape == scripted_tensor.shape
+        assert torch.allclose(eager, scripted_tensor, atol=1.0e-6, rtol=1.0e-6)
+
+
 def test_letterbox_example_image_rejects_invalid_image_shape() -> None:
     with pytest.raises(ValueError):
         pv26_exporter.letterbox_example_image(

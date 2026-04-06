@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -86,20 +87,62 @@ def _discover_records(
     return sorted(records, key=lambda item: (item.dataset_key, item.split, item.sample_id))
 
 
-def _yolo_to_raw_box(line: str, raw_hw: tuple[int, int]) -> tuple[int, list[float]] | None:
+def _yolo_to_raw_box(
+    line: str,
+    raw_hw: tuple[int, int],
+    *,
+    det_path: Path,
+    line_number: int,
+) -> tuple[int, list[float]]:
     parts = line.strip().split()
     if len(parts) != 5:
-        return None
+        raise ValueError(
+            f"invalid detection label row at {det_path}:{line_number}: expected 5 columns, got {len(parts)}"
+        )
     raw_h, raw_w = raw_hw
-    class_id = int(parts[0])
-    center_x = float(parts[1]) * raw_w
-    center_y = float(parts[2]) * raw_h
-    width = float(parts[3]) * raw_w
-    height = float(parts[4]) * raw_h
+    try:
+        class_id = int(parts[0])
+        center_x_norm = float(parts[1])
+        center_y_norm = float(parts[2])
+        width_norm = float(parts[3])
+        height_norm = float(parts[4])
+    except ValueError as exc:
+        raise ValueError(f"invalid detection label row at {det_path}:{line_number}: {line.strip()}") from exc
+    if class_id < 0 or class_id >= len(OD_CLASSES):
+        raise ValueError(
+            f"invalid detection class id at {det_path}:{line_number}: {class_id} not in [0, {len(OD_CLASSES) - 1}]"
+        )
+    normalized_values = {
+        "center_x": center_x_norm,
+        "center_y": center_y_norm,
+        "width": width_norm,
+        "height": height_norm,
+    }
+    for name, value in normalized_values.items():
+        if not math.isfinite(value):
+            raise ValueError(f"non-finite detection {name} at {det_path}:{line_number}: {value}")
+    if not 0.0 <= center_x_norm <= 1.0 or not 0.0 <= center_y_norm <= 1.0:
+        raise ValueError(
+            f"invalid normalized detection center at {det_path}:{line_number}: "
+            f"center=({center_x_norm}, {center_y_norm})"
+        )
+    if not 0.0 < width_norm <= 1.0 or not 0.0 < height_norm <= 1.0:
+        raise ValueError(
+            f"invalid normalized detection size at {det_path}:{line_number}: "
+            f"size=({width_norm}, {height_norm})"
+        )
+    center_x = center_x_norm * raw_w
+    center_y = center_y_norm * raw_h
+    width = width_norm * raw_w
+    height = height_norm * raw_h
     x1 = center_x - width / 2.0
     y1 = center_y - height / 2.0
     x2 = center_x + width / 2.0
     y2 = center_y + height / 2.0
+    if not (x2 > x1 and y2 > y1):
+        raise ValueError(
+            f"degenerate detection box at {det_path}:{line_number}: box=({x1}, {y1}, {x2}, {y2})"
+        )
     return class_id, [x1, y1, x2, y2]
 
 
@@ -107,12 +150,16 @@ def _load_det_rows(det_path: Path | None, raw_hw: tuple[int, int]) -> list[tuple
     if det_path is None or not det_path.is_file():
         return []
     rows: list[tuple[int, list[float]]] = []
-    for line in det_path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(det_path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
-        parsed = _yolo_to_raw_box(line, raw_hw)
-        if parsed is not None:
-            rows.append(parsed)
+        parsed = _yolo_to_raw_box(
+            line,
+            raw_hw,
+            det_path=det_path,
+            line_number=line_number,
+        )
+        rows.append(parsed)
     return rows
 
 
@@ -238,6 +285,11 @@ class PV26CanonicalDataset(Dataset):
 
         source_mask = _build_source_mask(record.dataset_key)
         det_policy = _build_det_supervision_policy(record.dataset_key)
+        if bool(source_mask.get("det")) and record.det_path is None:
+            expected_det_path = record.dataset_root / "labels_det" / record.split / f"{record.sample_id}.txt"
+            raise FileNotFoundError(
+                f"det label file not found for detector-supervised sample: {expected_det_path}"
+            )
         tl_lookup = _traffic_light_lookup(scene)
         det_rows = _load_det_rows(record.det_path, raw_hw)
 

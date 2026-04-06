@@ -111,3 +111,22 @@ class ODBootstrapScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.class_policy["vehicle"].min_box_size, 9)
         self.assertEqual(scenario.class_policy["vehicle"].center_y_range, (0.1, 0.8))
         self.assertEqual(scenario.class_policy["traffic_light"].score_threshold, 0.30)
+
+    def test_build_sweep_preset_rejects_incomplete_generated_class_policy_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "class_policy.yaml").write_text(
+                "\n".join(
+                    [
+                        "vehicle:",
+                        "  score_threshold: 0.91",
+                        "bike:",
+                        "  score_threshold: 0.35",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "class_policy.yaml is missing policies for"):
+                _build_isolated_sweep_preset(calibration_root=root)

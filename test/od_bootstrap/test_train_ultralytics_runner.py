@@ -462,6 +462,37 @@ class UltralyticsRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "finalized and not resumable"):
                 resolve_resume_argument(str(stripped_last), teacher_name="signal", teacher_root=teacher_root)
 
+    def test_resolve_resume_argument_rejects_non_mapping_checkpoint_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            teacher_root = Path(temp_dir) / "signal"
+            checkpoint = teacher_root / "20260328_040148" / "weights" / "epoch70.pt"
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(["not", "a", "mapping"], checkpoint)
+
+            with self.assertRaisesRegex(TypeError, "payload must be a mapping"):
+                resolve_resume_argument(str(checkpoint), teacher_name="signal", teacher_root=teacher_root)
+
+    def test_restore_resume_training_args_requires_train_args_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "signal" / "20260328_040148" / "weights" / "epoch70.pt"
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "epoch": 70,
+                    "optimizer": {"state": {}, "param_groups": []},
+                },
+                checkpoint,
+            )
+            trainer = SimpleNamespace(
+                args=SimpleNamespace(
+                    resume=str(checkpoint),
+                    data=str(Path(temp_dir) / "dataset.yaml"),
+                )
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "resume checkpoint is missing train_args"):
+                runtime_trainer._restore_resume_training_args(trainer, {})
+
     def test_train_teacher_with_ultralytics_checks_resume_path_before_trainer_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             dataset_yaml = Path(temp_dir) / "dataset.yaml"

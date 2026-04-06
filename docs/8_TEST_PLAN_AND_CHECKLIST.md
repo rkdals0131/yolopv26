@@ -66,7 +66,7 @@
 - [x] crosswalk loss finite
 - [x] no-positive batch 안전 처리
 - [x] final detector assignment runtime
-- [x] synthetic fallback runtime
+- [x] synthetic assignment sanity test
 - [x] lane Hungarian matching runtime
 - [x] stop-line Hungarian matching runtime
 - [x] crosswalk Hungarian matching runtime
@@ -103,7 +103,9 @@
 - [x] evaluator predict-batch runtime
 - [x] detector/TL/lane family metric runtime
 - [x] evaluator single-forward validation path
-- [x] torchvision NMS fallback
+- [x] torchvision NMS runtime test
+- [x] prepared PV26 dataset train/infer e2e test
+- [x] prepared PV26 dataset runtime sanity test
 - [x] env preflight command
 
 ## 명령 체크리스트
@@ -128,6 +130,8 @@
 - [x] `python3 -m unittest discover -s test -p 'test_aihub_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_bdd100k_standardize.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_loader.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_train_infer_e2e.py' -v`
+- [x] `python3 -m unittest discover -s test -p 'test_pv26_runtime_sanity.py' -v`
 - [x] `python3 tools/run_pv26_train.py --preset default`
 - [x] model regression command
 - [x] training regression command

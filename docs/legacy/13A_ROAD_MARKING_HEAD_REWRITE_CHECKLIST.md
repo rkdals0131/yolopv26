@@ -69,7 +69,7 @@
 - [x] `test/test_pv26_loss_runtime.py`가 lane loss finite/backward를 검증한다
 - [x] `test/test_pv26_postprocess.py`가 lane `points_xy` reconstruction과 dedupe를 검증한다
 - [x] `test/test_pv26_evaluator.py`가 lane metric path 유지 여부를 검증한다
-- [x] lane-only tiny overfit smoke test가 loss 감소를 보인다
+- [x] lane-only tiny overfit sanity test가 loss 감소를 보인다
 
 ### exit criteria
 
@@ -171,8 +171,8 @@
 - [x] `test/test_run_pv26_train.py`
 - [x] checkpoint migration targeted test
 - [x] old exact resume rejection targeted test
-- [x] export smoke test
-- [x] compileall smoke test
+- [x] export sanity test
+- [x] compileall sanity test
 
 ### exit criteria
 
