@@ -73,6 +73,24 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(tuple(outputs["lane"].shape), (2, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
         self.assertEqual(outputs["det_feature_shapes"], [(76, 100), (38, 50), (19, 25)])
 
+    def test_spatial_query_decoder_promotes_half_precision_memory_to_float32(self) -> None:
+        from model.net.heads import _SpatialQueryDecoderHead
+
+        head = _SpatialQueryDecoderHead(
+            hidden_dim=32,
+            query_count=STOP_LINE_QUERY_COUNT,
+            vector_dim=STOP_LINE_VECTOR_DIM,
+            decoder_layers=1,
+            decoder_heads=8,
+            force_float32=True,
+        )
+        memory = torch.randn(2, 32, 8, 10, dtype=torch.float16)
+
+        output = head(memory)
+
+        self.assertEqual(output.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(output).all())
+
 
 if __name__ == "__main__":
     unittest.main()

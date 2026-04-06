@@ -958,6 +958,19 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(second["global_step"], 1)
         self.assertEqual(second["micro_step"], 0)
 
+    def test_trainer_defaults_to_fail_fast_for_non_finite_and_oom(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            nn.Identity(),
+            criterion=_FiniteCriterion(total=1.0),
+            optimizer=_dummy_optimizer(),
+        )
+
+        self.assertFalse(trainer.skip_non_finite_loss)
+        self.assertFalse(trainer.oom_guard)
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:
         from model.net import PV26Heads

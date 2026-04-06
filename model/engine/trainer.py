@@ -290,8 +290,8 @@ class PV26Trainer:
         amp: bool = False,
         accumulate_steps: int = 1,
         grad_clip_norm: float | None = None,
-        skip_non_finite_loss: bool = True,
-        oom_guard: bool = True,
+        skip_non_finite_loss: bool = False,
+        oom_guard: bool = False,
     ) -> None:
         if accumulate_steps <= 0:
             raise ValueError("accumulate_steps must be > 0")

@@ -340,10 +340,16 @@ improvement_pct
 
 | stage | min_epochs | max_epochs | patience | min_delta_abs | legacy min_improvement_pct |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `stage_1_frozen_trunk_warmup` | 1 | 30 | 5 | 0.005 | 2.0 |
-| `stage_2_partial_unfreeze` | 1 | 36 | 6 | 0.004 | 0.5 |
-| `stage_3_end_to_end_finetune` | 1 | 48 | 7 | 0.003 | 0.25 |
-| `stage_4_lane_family_finetune` | 1 | 48 | 8 | 0.003 | 0.25 |
+| `stage_1_frozen_trunk_warmup` | 2 | 6 | 2 | 0.003 | 1.0 |
+| `stage_2_partial_unfreeze` | 4 | 10 | 3 | 0.003 | 0.5 |
+| `stage_3_end_to_end_finetune` | 21 | 48 | 8 | 0.0025 | 0.25 |
+| `stage_4_lane_family_finetune` | 2 | 8 | 3 | 0.0025 | 0.25 |
+
+의도:
+
+- stage 1/2는 warm-up과 partial unfreeze를 짧게 끝낸다.
+- stage 3는 shipped exhaustive train split 약 25.2만 장, `batch_size=12`, `train_batches=2048` 기준으로 최소 약 `2.05x` exposure를 확보한다.
+- stage 4는 lane-only sampler라 epoch당 lane split을 여러 번 도니 짧게 두는 편이 낫다.
 
 추가로 shipped preset의 phase override는 아래다.
 
@@ -431,8 +437,9 @@ improvement_pct
 
 권장:
 
-- 지금 기본값 `1`은 빠른 실험용이다
-- 실제 장기 학습에서 “적어도 몇 epoch는 강제로 돈다”를 원하면 `2 ~ 4`로 올린다
+- warm-up phase는 `2 ~ 4`가 보통 충분하다.
+- end-to-end phase는 현재 batch budget 기준 sample exposure로 잡는 편이 낫다.
+- shipped preset은 stage 3 `min_epochs=21`로 fully-unfrozen 구간에서 train split을 대략 두 번 보게 맞춘다.
 
 ### `max_epochs`
 

@@ -22,7 +22,7 @@ pv26_train:
       train_defaults:
         device: cuda:0
         batch_size: 16
-        train_batches: 512
+        train_batches: 2048
         val_batches: 256
         trunk_lr: 1.0e-4
         head_lr: 5.0e-3
@@ -53,46 +53,50 @@ pv26_train:
           aihub_lane: 0.25
           aihub_obstacle: 0.15
       phases:
+        # Current exhaustive train split is about 251.7k samples.
+        # With train_batches=2048, per-epoch sample draws are:
+        # stage1=65,536, stage2=49,152, stage3=24,576, stage4(lane-only)=65,536.
+        # stage3 min_epochs=21 keeps the fully-unfrozen phase above ~2.0x train exposure.
         - name: head_warmup
           stage: stage_1_frozen_trunk_warmup
-          min_epochs: 1
-          max_epochs: 30
-          patience: 5
-          min_improvement_pct: 2.0
-          min_delta_abs: 0.005
+          min_epochs: 2
+          max_epochs: 6
+          patience: 2
+          min_improvement_pct: 1.0
+          min_delta_abs: 0.003
           overrides:
             batch_size: 32
             trunk_lr: 5.0e-5
             head_lr: 3.0e-3
         - name: partial_unfreeze
           stage: stage_2_partial_unfreeze
-          min_epochs: 1
-          max_epochs: 36
-          patience: 6
+          min_epochs: 4
+          max_epochs: 10
+          patience: 3
           min_improvement_pct: 0.5
-          min_delta_abs: 0.004
+          min_delta_abs: 0.003
           overrides:
             batch_size: 24
             trunk_lr: 3.0e-5
             head_lr: 8.0e-4
         - name: end_to_end_finetune
           stage: stage_3_end_to_end_finetune
-          min_epochs: 1
+          min_epochs: 21
           max_epochs: 48
-          patience: 7
+          patience: 8
           min_improvement_pct: 0.25
-          min_delta_abs: 0.003
+          min_delta_abs: 0.0025
           overrides:
             batch_size: 12
             trunk_lr: 1.0e-5
             head_lr: 4.0e-4
         - name: lane_family_finetune
           stage: stage_4_lane_family_finetune
-          min_epochs: 1
-          max_epochs: 48
-          patience: 8
+          min_epochs: 2
+          max_epochs: 8
+          patience: 3
           min_improvement_pct: 0.25
-          min_delta_abs: 0.003
+          min_delta_abs: 0.0025
           loss_weights:
             det: 0.0
             tl_attr: 0.0

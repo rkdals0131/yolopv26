@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Iterable
 
 import torch
@@ -209,8 +210,10 @@ class _SpatialQueryDecoderHead(nn.Module):
         vector_dim: int,
         decoder_layers: int,
         decoder_heads: int,
+        force_float32: bool = False,
     ) -> None:
         super().__init__()
+        self.force_float32 = bool(force_float32)
         self.query_embed = nn.Embedding(query_count, hidden_dim)
         self.decoder_layers = nn.ModuleList(
             [_LaneDecoderBlock(hidden_dim, decoder_heads) for _ in range(decoder_layers)]
@@ -218,19 +221,41 @@ class _SpatialQueryDecoderHead(nn.Module):
         self.predictor = nn.Linear(hidden_dim, vector_dim)
 
     def forward(self, memory_feature: torch.Tensor) -> torch.Tensor:
-        batch_size, channels, height, width = memory_feature.shape
-        memory_tokens = memory_feature.flatten(2).transpose(1, 2).contiguous()
-        memory_pos = _build_2d_sincos_position_encoding(
-            height,
-            width,
-            channels,
-            device=memory_feature.device,
-            dtype=memory_feature.dtype,
-        ).unsqueeze(0).expand(batch_size, -1, -1)
-        query = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
-        for decoder_layer in self.decoder_layers:
-            query = decoder_layer(query, memory_tokens, memory_pos=memory_pos)
-        return self.predictor(query)
+        if not self.force_float32:
+            batch_size, channels, height, width = memory_feature.shape
+            memory_tokens = memory_feature.flatten(2).transpose(1, 2).contiguous()
+            memory_pos = _build_2d_sincos_position_encoding(
+                height,
+                width,
+                channels,
+                device=memory_feature.device,
+                dtype=memory_feature.dtype,
+            ).unsqueeze(0).expand(batch_size, -1, -1)
+            query = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+            for decoder_layer in self.decoder_layers:
+                query = decoder_layer(query, memory_tokens, memory_pos=memory_pos)
+            return self.predictor(query)
+
+        autocast_guard = (
+            torch.autocast(device_type=memory_feature.device.type, enabled=False)
+            if memory_feature.device.type == "cuda"
+            else nullcontext()
+        )
+        with autocast_guard:
+            stable_memory = memory_feature.to(dtype=torch.float32)
+            batch_size, channels, height, width = stable_memory.shape
+            memory_tokens = stable_memory.flatten(2).transpose(1, 2).contiguous()
+            memory_pos = _build_2d_sincos_position_encoding(
+                height,
+                width,
+                channels,
+                device=stable_memory.device,
+                dtype=stable_memory.dtype,
+            ).unsqueeze(0).expand(batch_size, -1, -1)
+            query = self.query_embed.weight.to(dtype=torch.float32).unsqueeze(0).expand(batch_size, -1, -1)
+            for decoder_layer in self.decoder_layers:
+                query = decoder_layer(query, memory_tokens, memory_pos=memory_pos)
+            return self.predictor(query)
 
 
 class PV26Heads(nn.Module):
@@ -267,6 +292,7 @@ class PV26Heads(nn.Module):
             vector_dim=STOP_LINE_VECTOR_DIM,
             decoder_layers=STOP_LINE_DECODER_LAYERS,
             decoder_heads=STOP_LINE_DECODER_HEADS,
+            force_float32=True,
         )
         self.crosswalk_head = _SpatialQueryDecoderHead(
             hidden_dim=LANE_HIDDEN_DIM,
