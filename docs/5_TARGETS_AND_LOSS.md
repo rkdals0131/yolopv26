@@ -351,7 +351,7 @@ improvement_pct
 - stage 3는 seg-first roadmark head와 OD/TL head를 함께 학습하는 주 구간이다.
 - stage 4는 lane-only sampler로 lane family head를 마지막에 더 밀어붙인다.
 - 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, full train split, bounded validation을 사용한다.
-- AMP는 켜되 `amp_init_scale=1024`, non-finite loss skip, OOM guard를 함께 켠다.
+- AMP는 켜되 `amp_init_scale=1024`, non-finite loss skip, OOM guard를 함께 켠다. seg-first lane dense logits는 loss 계산 전에 fp32로 승격해 AMP forward의 메모리 이점은 유지하면서 loss-side non-finite 위험을 줄인다.
 
 추가로 shipped preset의 phase override는 아래다.
 
@@ -361,6 +361,17 @@ improvement_pct
 | `stage_2_partial_unfreeze` | 4 | 3e-5 | 8e-4 | partial unfreeze |
 | `stage_3_end_to_end_finetune` | 4 | 1e-5 | 4e-4 | full fine-tune |
 | `stage_4_lane_family_finetune` | 4 | 0.0 | 2e-4 | lane-only sampler / lane-family heads only |
+
+2026-05-02 local RTX 4060 8GB phase sweep 결과:
+
+| stage | checked batch sizes | result |
+| --- | --- | --- |
+| `stage_1_frozen_trunk_warmup` | 1,2,4,6,8 | 8까지 성공, ceiling 미관측 |
+| `stage_2_partial_unfreeze` | 1,2,4,6,8 | 8까지 성공, ceiling 미관측 |
+| `stage_3_end_to_end_finetune` | 1,2,4,6,8 | 8까지 성공, ceiling 미관측 |
+| `stage_4_lane_family_finetune` | 1,2,4,6,8 | 6까지 성공, 8에서 OOM |
+
+기본 batch 4는 모든 phase에서 검증된 성공 구간 안에 있다.
 
 ## tuning guide
 

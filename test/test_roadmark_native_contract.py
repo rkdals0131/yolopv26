@@ -141,6 +141,14 @@ class RoadmarkNativeContractTest(unittest.TestCase):
             torch.randn(1, 256, 19, 25),
         )
         predictions = heads(features, encoded=encoded)
+        for key in (
+            "lane_seg_centerline_logits",
+            "lane_seg_support_logits",
+            "lane_seg_tangent_axis",
+            "lane_seg_color_logits",
+            "lane_seg_type_logits",
+        ):
+            predictions[key] = predictions[key].half()
         criterion = PV26MultiTaskLoss(
             stage="stage_3_end_to_end_finetune",
             loss_weights={"det": 0.0, "tl_attr": 0.0, "lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0},
