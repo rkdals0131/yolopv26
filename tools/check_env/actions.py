@@ -42,6 +42,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("J", "Obstacle teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "obstacle" / "weights")),
         ActionSpec("K", "PV26 retrain / fine-tune", "interactive: source run 선택 후 stage window derived run", (), str(paths.pv26_run_root), rerun_contract="derived run only: source run + selected stage window / current config"),
         ActionSpec("L", "최종 데이터셋 full stats", "interactive: final dataset class/task/audit 통계 표시", (), str(paths.final_dataset_root / "meta")),
+        ActionSpec("M", "PV26 phase VRAM ceiling sweep", "interactive: phase 1-4 batch list probe", (), "stdout JSON summary (no checkpoints / no run dir)", rerun_contract="short probe only: phase별 batch 후보를 순차 확인"),
     )
 
 
@@ -85,7 +86,7 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
             blockers.append("lane canonical/source prep이 먼저 필요합니다.")
         if not flags.get("exhaustive", False):
             blockers.append("최신 exhaustive OD run이 아직 없습니다.")
-    elif action.key in {"C", "D"}:
+    elif action.key in {"C", "D", "M"}:
         if not flags.get("pv26_runtime", False):
             blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
         if not flags.get("final_dataset", False):
@@ -122,6 +123,8 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
         return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
     if action.key == "D":
         return "기본은 stage_3지만, 이제 phase별 probe를 실행할 수 있습니다. stage_3가 대체로 VRAM 상한 proxy이고 stage_4는 보통 더 가볍습니다."
+    if action.key == "M":
+        return "CUDA가 보이는 환경에서만 실행됩니다. 결과의 max_ok_batch_size는 ceiling_observed=false이면 하한값입니다."
     if action.key == "E":
         return "resume는 exact resume only입니다. batch_size 변경이나 best/epoch 재시작은 별도 흐름으로 다루는 편이 안전합니다."
     if action.key == "K":

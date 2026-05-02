@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
-from .config import MetaTrainScenario, PhaseConfig, TrainDefaultsConfig
+from .config import MetaTrainScenario, PHASE_STAGE_ORDER, PhaseConfig, TrainDefaultsConfig
 
 
 PHASE_OBJECTIVE_PATH = "selection_metrics.phase_objective"
@@ -47,6 +47,7 @@ _PHASE_OBJECTIVE_WEIGHTS = {
         "crosswalk": 0.20,
     },
 }
+DEFAULT_PHASE_VRAM_SWEEP_BATCH_SIZES = (1, 2, 4, 6, 8, 12, 16, 24, 32)
 
 
 def _clamp01(value: float) -> float:
@@ -562,6 +563,186 @@ def phase_vram_stress_summary(
     if status == "oom":
         result["recommendation"] = "reduce batch_size or choose a lighter phase and rerun the VRAM probe"
     return result
+
+
+def parse_phase_vram_sweep_batch_sizes(value: str | list[int] | tuple[int, ...] | None) -> tuple[int, ...]:
+    if value is None:
+        return DEFAULT_PHASE_VRAM_SWEEP_BATCH_SIZES
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+        if not any(raw_items):
+            return DEFAULT_PHASE_VRAM_SWEEP_BATCH_SIZES
+        try:
+            candidates = [int(item) for item in raw_items if item]
+        except ValueError as exc:
+            raise ValueError("stress batch sizes must be comma-separated positive integers") from exc
+    else:
+        candidates = [int(item) for item in value]
+    if not candidates:
+        return DEFAULT_PHASE_VRAM_SWEEP_BATCH_SIZES
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for batch_size in sorted(candidates):
+        if batch_size <= 0:
+            raise ValueError("stress batch sizes must be > 0")
+        if batch_size in seen:
+            continue
+        normalized.append(batch_size)
+        seen.add(batch_size)
+    return tuple(normalized)
+
+
+def parse_phase_vram_sweep_stages(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    if value is None:
+        return tuple(PHASE_STAGE_ORDER)
+    if isinstance(value, str):
+        stages = tuple(item.strip() for item in value.split(",") if item.strip())
+    else:
+        stages = tuple(str(item).strip() for item in value if str(item).strip())
+    if not stages:
+        return tuple(PHASE_STAGE_ORDER)
+    supported = set(str(stage) for stage in PHASE_STAGE_ORDER)
+    unsupported = [stage for stage in stages if stage not in supported]
+    if unsupported:
+        raise ValueError(f"unsupported stress stages: {', '.join(unsupported)}")
+    return stages
+
+
+def _require_cuda_for_phase_vram_sweep() -> None:
+    import torch
+
+    if not torch.cuda.is_available():
+        raise SystemExit("phase VRAM sweep requires CUDA; torch.cuda.is_available() is false")
+
+
+def run_phase_vram_sweep(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    stages: str | list[str] | tuple[str, ...] | None = None,
+    batch_sizes: str | list[int] | tuple[int, ...] | None = None,
+    stress_iters: int | None = None,
+    configure_torch_multiprocessing: Callable[[], None],
+    log_meta_train: Callable[[str], None],
+    canonical_dataset_cls: Any,
+    build_phase_train_loaders: Callable[..., tuple[Any, Any]],
+    build_phase_trainer: Callable[[PhaseConfig, TrainDefaultsConfig], Any],
+    scenario_phase_defaults: Callable[[TrainDefaultsConfig, Any], TrainDefaultsConfig],
+    json_ready: Callable[[Any], Any],
+    cuda_memory_stats: Callable[[Any], dict[str, Any]],
+) -> dict[str, Any]:
+    import torch
+
+    configure_torch_multiprocessing()
+    _require_cuda_for_phase_vram_sweep()
+    resolved_stages = parse_phase_vram_sweep_stages(stages)
+    resolved_batch_sizes = parse_phase_vram_sweep_batch_sizes(batch_sizes)
+    resolved_stress_iters = int(stress_iters) if stress_iters is not None else 8
+    if resolved_stress_iters <= 0:
+        raise ValueError("stress iterations must be > 0")
+
+    dataset_roots = existing_dataset_roots(scenario)
+    log_meta_train(f"loading scenario for phase VRAM sweep: {scenario_path}")
+    log_meta_train(f"dataset roots: {[str(path) for path in dataset_roots]}")
+    log_meta_train("building canonical dataset index for phase VRAM sweep")
+    dataset = canonical_dataset_cls(
+        dataset_roots,
+        train_augmentation=scenario.train_defaults.train_augmentation,
+        train_augmentation_seed=scenario.train_defaults.train_augmentation_seed,
+        progress_callback=log_meta_train,
+    )
+
+    phase_results: list[dict[str, Any]] = []
+    sweep_started_at = time.perf_counter()
+    for stage in resolved_stages:
+        phase_index, phase = find_phase_by_stage(scenario, stage=stage)
+        attempts: list[dict[str, Any]] = []
+        max_ok_batch_size: int | None = None
+        first_oom_batch_size: int | None = None
+        for batch_size in resolved_batch_sizes:
+            phase_index, phase, phase_train_config = phase_vram_stress_train_config(
+                scenario,
+                stage=stage,
+                batch_size=batch_size,
+                stress_iters=resolved_stress_iters,
+                scenario_phase_defaults=scenario_phase_defaults,
+            )
+            log_meta_train(
+                f"phase VRAM sweep: stage={phase.stage}, batch_size={batch_size}, "
+                f"stress_iters={resolved_stress_iters}, device={phase_train_config.device}, "
+                f"backbone={phase_train_config.backbone_variant}"
+            )
+            train_loader, _ = build_phase_train_loaders(dataset, train_config=phase_train_config, phase=phase)
+            trainer = build_phase_trainer(phase, phase_train_config)
+            trainer.oom_guard = False
+            if trainer.device.type != "cuda":
+                raise SystemExit(f"phase VRAM sweep requires a CUDA device, got device={trainer.device}")
+
+            attempt_started_at = time.perf_counter()
+            status, train_summary, error = run_stage3_probe(
+                trainer,
+                train_loader,
+                scenario=scenario,
+                phase_index=phase_index,
+                phase_name=phase.name,
+                phase_train_config=phase_train_config,
+                stress_iters=resolved_stress_iters,
+                is_oom_error=is_oom_error,
+            )
+            attempt_duration_sec = max(0.0, time.perf_counter() - attempt_started_at)
+            attempt = phase_vram_stress_summary(
+                scenario_path=scenario_path,
+                phase_index=phase_index,
+                phase=phase,
+                trainer=trainer,
+                train_config=phase_train_config,
+                batch_size=batch_size,
+                stress_iters=resolved_stress_iters,
+                duration_sec=attempt_duration_sec,
+                status=status,
+                train_summary=train_summary,
+                error=error,
+                json_ready=json_ready,
+                cuda_memory_stats=cuda_memory_stats,
+            )
+            attempts.append(attempt)
+            if status == "ok":
+                max_ok_batch_size = int(batch_size)
+            elif status == "oom":
+                first_oom_batch_size = int(batch_size)
+                break
+            torch.cuda.empty_cache()
+
+        if max_ok_batch_size is None:
+            phase_status = "no_fit"
+        elif first_oom_batch_size is None:
+            phase_status = "lower_bound"
+        else:
+            phase_status = "bounded"
+        phase_results.append(
+            {
+                "phase_index": int(phase_index),
+                "phase_name": phase.name,
+                "phase_stage": phase.stage,
+                "status": phase_status,
+                "max_ok_batch_size": max_ok_batch_size,
+                "first_oom_batch_size": first_oom_batch_size,
+                "ceiling_observed": first_oom_batch_size is not None,
+                "attempts": attempts,
+            }
+        )
+
+    return {
+        "mode": "phase_vram_sweep",
+        "status": "ok",
+        "scenario_path": str(scenario_path),
+        "stages": list(resolved_stages),
+        "batch_sizes": list(resolved_batch_sizes),
+        "stress_iters": int(resolved_stress_iters),
+        "duration_sec": max(0.0, time.perf_counter() - sweep_started_at),
+        "phase_results": phase_results,
+        "note": "max_ok_batch_size is a lower bound when ceiling_observed is false",
+    }
 
 
 def run_stage3_vram_stress(

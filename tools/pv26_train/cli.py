@@ -1051,6 +1051,31 @@ def run_phase_vram_stress(
     )
 
 
+def run_phase_vram_sweep(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    stages: str | list[str] | tuple[str, ...] | None = None,
+    batch_sizes: str | list[int] | tuple[int, ...] | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_phase_vram_sweep(
+        scenario,
+        scenario_path=scenario_path,
+        stages=stages,
+        batch_sizes=batch_sizes,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=train_artifacts.json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
 def run_meta_train_scenario(
     scenario: MetaTrainScenario,
     *,
@@ -1098,6 +1123,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Run a short phase training probe and report peak CUDA VRAM usage. Defaults to stage_3.",
     )
     parser.add_argument(
+        "--phase-vram-sweep",
+        action="store_true",
+        help="Run short VRAM probes across phase stages and batch sizes, reporting the largest successful batch per phase.",
+    )
+    parser.add_argument(
         "--resume-run",
         default=None,
         help="Resume an existing incomplete meta-train run directory exactly in place.",
@@ -1137,15 +1167,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override stage for --stage3-vram-stress. Defaults to stage_3_end_to_end_finetune.",
     )
+    parser.add_argument(
+        "--stress-stages",
+        default=None,
+        help="Comma-separated stage list for --phase-vram-sweep. Defaults to all four phase stages.",
+    )
+    parser.add_argument(
+        "--stress-batch-sizes",
+        default=None,
+        help="Comma-separated batch sizes for --phase-vram-sweep. Defaults to 1,2,4,6,8,12,16,24,32.",
+    )
     return parser
 
 
 def _validate_cli_args(args: argparse.Namespace) -> None:
-    if bool(args.stage3_vram_stress):
+    if bool(args.stage3_vram_stress) and bool(args.phase_vram_sweep):
+        raise SystemExit("--stage3-vram-stress cannot be combined with --phase-vram-sweep")
+    if bool(args.stage3_vram_stress) or bool(args.phase_vram_sweep):
         if args.resume_run is not None:
-            raise SystemExit("--resume-run cannot be combined with --stage3-vram-stress")
+            raise SystemExit("--resume-run cannot be combined with VRAM probe modes")
         if args.derive_run is not None:
-            raise SystemExit("--derive-run cannot be combined with --stage3-vram-stress")
+            raise SystemExit("--derive-run cannot be combined with VRAM probe modes")
     if args.resume_run is not None and args.derive_run is not None:
         raise SystemExit("--resume-run cannot be combined with --derive-run")
     if args.resume_run is None and (args.start_stage is not None or args.end_stage is not None) and args.derive_run is None:
@@ -1214,6 +1256,14 @@ def _run_cli_command(
             batch_size=args.stress_batch_size,
             stress_iters=args.stress_iters,
         )
+    if bool(args.phase_vram_sweep):
+        return run_phase_vram_sweep(
+            scenario,
+            scenario_path=scenario_path,
+            stages=args.stress_stages,
+            batch_sizes=args.stress_batch_sizes,
+            stress_iters=args.stress_iters,
+        )
     return run_meta_train_scenario(
         scenario,
         scenario_path=scenario_path,
@@ -1227,7 +1277,7 @@ def _raise_for_cli_failure(
     args: argparse.Namespace,
     summary: dict[str, Any],
 ) -> None:
-    if bool(args.stage3_vram_stress) and summary.get("status") != "ok":
+    if (bool(args.stage3_vram_stress) or bool(args.phase_vram_sweep)) and summary.get("status") != "ok":
         raise SystemExit(2)
 
 

@@ -21,6 +21,7 @@ from .launch import (  # noqa: E402
     _default_phase_stress_batch_size,
     _default_stage3_stress_batch_size,
     _interactive_loop,
+    _resolve_phase_sweep_action,
     _resolve_phase_stress_action,
     _resolve_stage3_stress_action,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "_interactive_loop",
     "_manifest_header",
     "_resolve_phase_stress_action",
+    "_resolve_phase_sweep_action",
     "_scan_pv26_export_candidates",
     "_scan_pv26_retrain_candidates",
     "_resolve_stage3_stress_action",

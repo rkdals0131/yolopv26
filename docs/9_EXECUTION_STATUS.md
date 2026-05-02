@@ -279,7 +279,8 @@
 - PV26 학습 경로는 `check_env.py`, `tools/run_pv26_train.py`, `tools/run_pv26_train.py --preset default`, `run_pv26_tiny_overfit()` 기준으로 유지한다
 - exact resume CLI는 `tools/run_pv26_train.py --resume-run <existing_run_dir>` 기준으로 유지한다
 - derived retrain/fine-tune CLI는 `tools/run_pv26_train.py --derive-run <source_run_dir> --start-stage <STAGE> --end-stage <STAGE>` 기준으로 유지한다
-- stage 3 VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다
+- phase VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-stage <STAGE> --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다
+- phase별 batch 후보 sweep은 `tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes <CSV> --stress-iters <ITERS>` 기준으로 유지한다
 - engine 공통 batch helper는 `model/engine/batch.py`를 기준선으로 두고, trainer/evaluator/_trainer_epochs에서 중복을 다시 만들지 않는다
 - detector geometry helper는 `model/engine/_det_geometry.py`를 기준선으로 두고 `loss.py`, `postprocess.py`가 이를 재사용한다
 - trainer facade는 compatibility shim만 남기고, 새 internal helper 사용처는 owning `_trainer_*` 모듈을 직접 import한다

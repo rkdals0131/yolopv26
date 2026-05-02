@@ -124,6 +124,25 @@ def _prompt_positive_int(console: Console, prompt: str, *, default: int) -> int 
         return value
 
 
+def _prompt_batch_size_csv(console: Console, prompt: str, *, default: str) -> str | None:
+    while True:
+        raw = _ascii_input(console, prompt)
+        if raw is None:
+            return None
+        if raw == "":
+            raw = default
+        if raw.upper() == "Q":
+            return None
+        try:
+            from tools.pv26_train.runtime import parse_phase_vram_sweep_batch_sizes
+
+            parse_phase_vram_sweep_batch_sizes(raw)
+        except ValueError as exc:
+            console.print(f"[yellow]{exc}[/yellow]")
+            continue
+        return raw
+
+
 def _prompt_stress_stage(console: Console) -> str | None:
     while True:
         raw = _ascii_input(
@@ -191,6 +210,46 @@ def _resolve_phase_stress_action(console: Console, action: ActionSpec) -> Action
 
 def _resolve_stage3_stress_action(console: Console, action: ActionSpec) -> ActionSpec | None:
     return _resolve_phase_stress_action(console, action)
+
+
+def _resolve_phase_sweep_action(console: Console, action: ActionSpec) -> ActionSpec | None:
+    batch_sizes = _prompt_batch_size_csv(
+        console,
+        "phase sweep batch sizes CSV (Enter=1,2,4,6,8,12, Q=취소) > ",
+        default="1,2,4,6,8,12",
+    )
+    if batch_sizes is None:
+        return None
+    stress_iters = _prompt_positive_int(
+        console,
+        "phase sweep iterations per attempt (Enter=8, 권장 6-12, Q=취소) > ",
+        default=8,
+    )
+    if stress_iters is None:
+        return None
+    argv = (
+        sys.executable,
+        "tools/run_pv26_train.py",
+        "--preset",
+        "default",
+        "--phase-vram-sweep",
+        "--stress-batch-sizes",
+        batch_sizes,
+        "--stress-iters",
+        str(stress_iters),
+    )
+    command_display = (
+        "python3 tools/run_pv26_train.py --preset default --phase-vram-sweep "
+        f"--stress-batch-sizes {batch_sizes} --stress-iters {stress_iters}"
+    )
+    return ActionSpec(
+        key=action.key,
+        label=action.label,
+        command_display=command_display,
+        argv=argv,
+        output_hint=action.output_hint,
+        rerun_contract=action.rerun_contract,
+    )
 
 
 def _argv_flag_value(argv: tuple[str, ...], flag: str) -> str | None:
@@ -674,6 +733,11 @@ def _run_action(console: Console, action: ActionSpec, snapshot: WorkspaceSnapsho
 
     if action.key == "D":
         return _run_stage3_stress_probe(console, snapshot, action)
+    if action.key == "M":
+        resolved_action = _resolve_phase_sweep_action(console, action)
+        if resolved_action is None:
+            return True
+        return _run_subprocess_action(console, snapshot, resolved_action)
     if action.key == "E":
         return _run_pv26_resume(console, snapshot, action)
     if action.key == "K":
@@ -695,7 +759,7 @@ def _interactive_loop(console: Console) -> int:
         actions = _action_catalog(snapshot.paths)
         _render_dashboard(console, snapshot, actions)
 
-        raw = _ascii_input(console, "선택 (1-9/A-L/H/R/Q) > ")
+        raw = _ascii_input(console, "선택 (1-9/A-M/H/R/Q) > ")
         if raw is None:
             return 0
         if raw == "":

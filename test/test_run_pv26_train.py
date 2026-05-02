@@ -35,6 +35,7 @@ from tools.run_pv26_train import (
     load_meta_train_resume_scenario,
     load_meta_train_scenario,
     main,
+    run_phase_vram_sweep,
     run_phase_vram_stress,
     run_stage3_vram_stress,
 )
@@ -82,6 +83,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             "load_meta_train_scenario",
             "main",
             "run_meta_train_scenario",
+            "run_phase_vram_sweep",
             "run_phase_vram_stress",
             "run_stage3_vram_stress",
         }
@@ -1101,6 +1103,37 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         )
         self.assertIn('"mode": "phase_vram_stress"', buffer.getvalue())
 
+    def test_main_dispatches_phase_vram_sweep_mode(self) -> None:
+        loaded_scenario = SimpleNamespace()
+
+        with patch("tools.run_pv26_train.load_meta_train_scenario", return_value=loaded_scenario) as mocked_load:
+            with patch("tools.run_pv26_train.run_phase_vram_sweep", return_value={"status": "ok", "mode": "phase_vram_sweep"}) as mocked_sweep:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    main(
+                        [
+                            "--preset",
+                            "default",
+                            "--phase-vram-sweep",
+                            "--stress-stages",
+                            "stage_1_frozen_trunk_warmup,stage_4_lane_family_finetune",
+                            "--stress-batch-sizes",
+                            "1,2,4",
+                            "--stress-iters",
+                            "6",
+                        ]
+                    )
+
+        mocked_load.assert_called_once_with("default")
+        mocked_sweep.assert_called_once_with(
+            loaded_scenario,
+            scenario_path=PRESET_PATH_ROOT / "default",
+            stages="stage_1_frozen_trunk_warmup,stage_4_lane_family_finetune",
+            batch_sizes="1,2,4",
+            stress_iters=6,
+        )
+        self.assertIn('"mode": "phase_vram_sweep"', buffer.getvalue())
+
     def test_arg_parser_keeps_resume_and_stage3_runtime_flags(self) -> None:
         parser = _build_arg_parser()
 
@@ -1127,6 +1160,28 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(args.stress_batch_size, 24)
         self.assertEqual(args.stress_iters, 16)
 
+    def test_arg_parser_accepts_phase_vram_sweep_runtime_flags(self) -> None:
+        parser = _build_arg_parser()
+
+        args = parser.parse_args(
+            [
+                "--preset",
+                "default",
+                "--phase-vram-sweep",
+                "--stress-stages",
+                "stage_1_frozen_trunk_warmup,stage_3_end_to_end_finetune",
+                "--stress-batch-sizes",
+                "1,2,4,8",
+                "--stress-iters",
+                "6",
+            ]
+        )
+
+        self.assertTrue(args.phase_vram_sweep)
+        self.assertEqual(args.stress_stages, "stage_1_frozen_trunk_warmup,stage_3_end_to_end_finetune")
+        self.assertEqual(args.stress_batch_sizes, "1,2,4,8")
+        self.assertEqual(args.stress_iters, 6)
+
     def test_arg_parser_accepts_derive_run_and_stage_window(self) -> None:
         parser = _build_arg_parser()
 
@@ -1148,12 +1203,16 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(args.end_stage, "stage_4_lane_family_finetune")
 
     def test_main_rejects_resume_run_with_stage3_vram_stress(self) -> None:
-        with self.assertRaisesRegex(SystemExit, "--resume-run cannot be combined with --stage3-vram-stress"):
+        with self.assertRaisesRegex(SystemExit, "--resume-run cannot be combined with VRAM probe modes"):
             main(["--resume-run", "/tmp/existing_run", "--stage3-vram-stress"])
 
     def test_main_rejects_derive_run_with_stage3_vram_stress(self) -> None:
-        with self.assertRaisesRegex(SystemExit, "--derive-run cannot be combined with --stage3-vram-stress"):
+        with self.assertRaisesRegex(SystemExit, "--derive-run cannot be combined with VRAM probe modes"):
             main(["--derive-run", "/tmp/source_run", "--stage3-vram-stress"])
+
+    def test_main_rejects_combined_vram_probe_modes(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "--stage3-vram-stress cannot be combined with --phase-vram-sweep"):
+            main(["--stage3-vram-stress", "--phase-vram-sweep"])
 
     def test_main_rejects_resume_run_with_derive_run(self) -> None:
         with self.assertRaisesRegex(SystemExit, "--resume-run cannot be combined with --derive-run"):
@@ -1407,6 +1466,87 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(train_config.train_batches, 6)
         self.assertEqual(captured_train_config["phase"].stage, "stage_1_frozen_trunk_warmup")
         self.assertEqual(result["status"], "ok")
+
+    def test_run_phase_vram_sweep_reuses_dataset_and_reports_phase_bounds(self) -> None:
+        class FakeCudaDevice:
+            type = "cuda"
+
+            def __str__(self) -> str:
+                return "cuda:0"
+
+        class FakeTrainer:
+            def __init__(self) -> None:
+                self.device = FakeCudaDevice()
+                self.oom_guard = True
+
+            def train_epoch(self, *args, **kwargs) -> dict[str, object]:
+                return {"loss": 1.0}
+
+        captured_train_configs: list[object] = []
+
+        def fake_build_phase_train_loaders(dataset, *, train_config, phase=None):
+            captured_train_configs.append(train_config)
+            return object(), None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=Path(tmpdir)),
+                run=RunConfig(run_root=Path(tmpdir) / "runs"),
+                train_defaults=TrainDefaultsConfig(batch_size=4, num_workers=6, persistent_workers=True, prefetch_factor=2),
+                selection=SelectionConfig(),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(
+                    PhaseConfig(
+                        name="head_warmup",
+                        stage="stage_1_frozen_trunk_warmup",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                        min_improvement_pct=0.25,
+                    ),
+                    PhaseConfig(
+                        name="lane_family_finetune",
+                        stage="stage_4_lane_family_finetune",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                        min_improvement_pct=0.25,
+                    ),
+                ),
+            )
+
+            with patch("torch.cuda.is_available", return_value=True):
+                with patch("torch.cuda.empty_cache"):
+                    with patch("torch.cuda.reset_peak_memory_stats"):
+                        with patch("tools.run_pv26_train._configure_torch_multiprocessing"):
+                            with patch("tools.run_pv26_train.PV26CanonicalDataset", return_value=SimpleNamespace(records=[])) as mocked_dataset:
+                                with patch(
+                                    "tools.run_pv26_train._build_phase_train_loaders",
+                                    side_effect=fake_build_phase_train_loaders,
+                                ):
+                                    with patch("tools.run_pv26_train._build_phase_trainer", return_value=FakeTrainer()):
+                                        with patch(
+                                            "tools.run_pv26_train._cuda_memory_stats",
+                                            return_value={"device": "cuda:0"},
+                                        ):
+                                            result = run_phase_vram_sweep(
+                                                scenario,
+                                                scenario_path=Path(tmpdir) / "default",
+                                                stages="stage_1_frozen_trunk_warmup,stage_4_lane_family_finetune",
+                                                batch_sizes="1,2",
+                                                stress_iters=3,
+                                            )
+
+        mocked_dataset.assert_called_once()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["mode"], "phase_vram_sweep")
+        self.assertEqual(result["batch_sizes"], [1, 2])
+        self.assertEqual(len(result["phase_results"]), 2)
+        self.assertEqual(result["phase_results"][0]["max_ok_batch_size"], 2)
+        self.assertFalse(result["phase_results"][0]["ceiling_observed"])
+        self.assertEqual(len(captured_train_configs), 4)
+        self.assertTrue(all(config.num_workers == 0 for config in captured_train_configs))
+        self.assertTrue(all(config.val_batches == 0 for config in captured_train_configs))
 
 
 if __name__ == "__main__":
