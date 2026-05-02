@@ -105,7 +105,7 @@
 - derived run은 source run의 checkpoint를 seed로 쓰되, epoch/sampler/loss/freeze 숫자 파라미터는 현재 preset + user YAML을 그대로 다시 읽는다.
 - `tools/check_env.py` interactive launcher는 `stage_3` peak VRAM stress probe를 제공하고, batch size / short iter 수를 받아 현재 backbone/stage 경로로 메모리 상한을 빠르게 확인할 수 있다.
 - direct CLI probe는 `python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-stage <STAGE> --stress-batch-size <BATCH> --stress-iters <ITERS>` 형식으로 유지한다.
-- phase별 batch 후보를 한 번에 확인할 때는 `python3 tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes 1,2,4,6,8,12 --stress-iters 8`를 사용한다. 출력의 `ceiling_observed=false`는 OOM을 아직 못 만났다는 뜻이며, `max_ok_batch_size`는 확정 상한이 아니라 확인된 하한이다.
+- phase별 batch 후보를 한 번에 확인할 때는 `python3 tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes 1,2,4,6,8,12 --stress-iters 8`를 사용한다. 출력의 `ceiling_observed=false`는 OOM/non-finite failure를 아직 못 만났다는 뜻이며, `max_ok_batch_size`는 확정 상한이 아니라 확인된 하한이다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
 - phase summary와 run manifest는 backbone variant, resolved head channels, phase selection metric 같은 late-stage 판단 정보를 함께 남기는 방향을 따른다.
 - `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.

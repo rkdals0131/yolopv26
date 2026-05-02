@@ -83,7 +83,7 @@ python3 tools/run_pv26_train.py --derive-run runs/pv26_exhaustive_od_lane_train/
 python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size 4 --stress-iters 16
 ```
 
-phase 1-4 각각의 local batch 하한/상한을 한 번에 확인하려면 CUDA가 보이는 터미널에서 아래 sweep을 실행한다. `ceiling_observed=false`면 해당 phase는 입력한 후보 중 OOM이 안 났다는 뜻이라 `max_ok_batch_size`는 확정 상한이 아니라 확인된 하한이다.
+phase 1-4 각각의 local batch 하한/상한을 한 번에 확인하려면 CUDA가 보이는 터미널에서 아래 sweep을 실행한다. `ceiling_observed=false`면 해당 phase는 입력한 후보 중 OOM이나 non-finite failure가 안 났다는 뜻이라 `max_ok_batch_size`는 확정 상한이 아니라 확인된 하한이다.
 
 ```bash
 python3 tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes 1,2,4,6,8,12 --stress-iters 8

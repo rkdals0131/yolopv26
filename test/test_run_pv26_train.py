@@ -1548,6 +1548,93 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertTrue(all(config.num_workers == 0 for config in captured_train_configs))
         self.assertTrue(all(config.val_batches == 0 for config in captured_train_configs))
 
+    def test_run_phase_vram_sweep_stops_phase_on_non_finite_skips(self) -> None:
+        class FakeCudaDevice:
+            type = "cuda"
+
+            def __str__(self) -> str:
+                return "cuda:0"
+
+        class FakeTrainer:
+            def __init__(self, batch_size: int) -> None:
+                self.device = FakeCudaDevice()
+                self.oom_guard = True
+                self.batch_size = int(batch_size)
+
+            def train_epoch(self, *args, **kwargs) -> dict[str, object]:
+                if self.batch_size >= 2:
+                    return {
+                        "attempted_batches": 3,
+                        "successful_batches": 2,
+                        "skipped_batches": 1,
+                        "skipped_reasons": {"non_finite_loss": 1},
+                    }
+                return {
+                    "attempted_batches": 3,
+                    "successful_batches": 3,
+                    "skipped_batches": 0,
+                    "skipped_reasons": {},
+                }
+
+        captured_train_configs: list[object] = []
+
+        def fake_build_phase_train_loaders(dataset, *, train_config, phase=None):
+            captured_train_configs.append(train_config)
+            return object(), None
+
+        def fake_build_phase_trainer(phase, train_config):
+            return FakeTrainer(train_config.batch_size)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=Path(tmpdir)),
+                run=RunConfig(run_root=Path(tmpdir) / "runs"),
+                train_defaults=TrainDefaultsConfig(batch_size=4),
+                selection=SelectionConfig(),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(
+                    PhaseConfig(
+                        name="head_warmup",
+                        stage="stage_1_frozen_trunk_warmup",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                        min_improvement_pct=0.25,
+                    ),
+                ),
+            )
+
+            with patch("torch.cuda.is_available", return_value=True):
+                with patch("torch.cuda.empty_cache"):
+                    with patch("torch.cuda.reset_peak_memory_stats"):
+                        with patch("tools.run_pv26_train._configure_torch_multiprocessing"):
+                            with patch("tools.run_pv26_train.PV26CanonicalDataset", return_value=SimpleNamespace(records=[])):
+                                with patch(
+                                    "tools.run_pv26_train._build_phase_train_loaders",
+                                    side_effect=fake_build_phase_train_loaders,
+                                ):
+                                    with patch("tools.run_pv26_train._build_phase_trainer", side_effect=fake_build_phase_trainer):
+                                        with patch(
+                                            "tools.run_pv26_train._cuda_memory_stats",
+                                            return_value={"device": "cuda:0"},
+                                        ):
+                                            result = run_phase_vram_sweep(
+                                                scenario,
+                                                scenario_path=Path(tmpdir) / "default",
+                                                stages="stage_1_frozen_trunk_warmup",
+                                                batch_sizes="1,2,4",
+                                                stress_iters=3,
+                                            )
+
+        phase_result = result["phase_results"][0]
+        self.assertEqual(phase_result["max_ok_batch_size"], 1)
+        self.assertEqual(phase_result["first_failure_batch_size"], 2)
+        self.assertIsNone(phase_result["first_oom_batch_size"])
+        self.assertEqual(phase_result["first_non_finite_batch_size"], 2)
+        self.assertEqual(phase_result["failure_status"], "non_finite")
+        self.assertEqual(len(phase_result["attempts"]), 2)
+        self.assertEqual(len(captured_train_configs), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

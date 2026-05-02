@@ -488,6 +488,13 @@ def run_stage3_probe(
         status = "oom"
         error = str(exc)
         torch.cuda.empty_cache()
+    except ValueError as exc:
+        message = str(exc)
+        if "non_finite_loss" not in message and "zero successful batches" not in message:
+            raise
+        status = "non_finite"
+        error = message
+        torch.cuda.empty_cache()
     return status, train_summary, error
 
 
@@ -525,6 +532,8 @@ def stage3_stress_summary(
     }
     if status == "oom":
         result["recommendation"] = "reduce batch_size and rerun the stage3 stress probe"
+    elif status == "non_finite":
+        result["recommendation"] = "reduce batch_size or lower AMP risk and rerun the phase stress probe"
     return result
 
 
@@ -562,6 +571,8 @@ def phase_vram_stress_summary(
     result["mode"] = "phase_vram_stress"
     if status == "oom":
         result["recommendation"] = "reduce batch_size or choose a lighter phase and rerun the VRAM probe"
+    elif status == "non_finite":
+        result["recommendation"] = "reduce batch_size or lower AMP risk and rerun the VRAM probe"
     return result
 
 
@@ -689,6 +700,12 @@ def run_phase_vram_sweep(
                 stress_iters=resolved_stress_iters,
                 is_oom_error=is_oom_error,
             )
+            if status == "ok" and isinstance(train_summary, dict):
+                skipped_batches = int(train_summary.get("skipped_batches") or 0)
+                skipped_reasons = train_summary.get("skipped_reasons")
+                if skipped_batches > 0:
+                    status = "non_finite"
+                    error = f"train summary reported skipped batches during VRAM sweep: {skipped_reasons}"
             attempt_duration_sec = max(0.0, time.perf_counter() - attempt_started_at)
             attempt = phase_vram_stress_summary(
                 scenario_path=scenario_path,
@@ -708,7 +725,7 @@ def run_phase_vram_sweep(
             attempts.append(attempt)
             if status == "ok":
                 max_ok_batch_size = int(batch_size)
-            elif status == "oom":
+            elif status in {"oom", "non_finite"}:
                 first_oom_batch_size = int(batch_size)
                 break
             torch.cuda.empty_cache()
@@ -726,7 +743,14 @@ def run_phase_vram_sweep(
                 "phase_stage": phase.stage,
                 "status": phase_status,
                 "max_ok_batch_size": max_ok_batch_size,
-                "first_oom_batch_size": first_oom_batch_size,
+                "first_failure_batch_size": first_oom_batch_size,
+                "first_oom_batch_size": first_oom_batch_size
+                if attempts and attempts[-1].get("status") == "oom"
+                else None,
+                "first_non_finite_batch_size": first_oom_batch_size
+                if attempts and attempts[-1].get("status") == "non_finite"
+                else None,
+                "failure_status": attempts[-1].get("status") if attempts and attempts[-1].get("status") != "ok" else None,
                 "ceiling_observed": first_oom_batch_size is not None,
                 "attempts": attempts,
             }
