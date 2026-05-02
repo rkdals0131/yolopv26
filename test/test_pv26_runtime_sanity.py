@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 
 from model.data import PV26CanonicalDataset, collate_pv26_samples
+from model.engine.trainer import PV26Trainer
 from pv26_prepared_dataset_fixture import (
     EXHAUSTIVE_BDD_DATASET_KEY,
     EXHAUSTIVE_OBSTACLE_DATASET_KEY,
@@ -48,6 +49,43 @@ class _NaNCriterion(nn.Module):
         }
 
 
+class _ConflictCriterion(nn.Module):
+    stage = "stage_3_end_to_end_finetune"
+    loss_weights = {"det": 1.0, "tl_attr": 1.0, "lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0}
+    last_det_assignment_mode = "unit"
+    last_lane_assignment_modes: dict[str, str] = {}
+    last_det_loss_breakdown: dict[str, float] = {}
+
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        del encoded
+        scalar = predictions["scalar"]
+        det = scalar
+        lane = -scalar
+        zero = scalar * 0.0
+        return {
+            "total": det + lane + zero,
+            "det": det,
+            "tl_attr": zero,
+            "lane": lane,
+            "stop_line": zero,
+            "crosswalk": zero,
+        }
+
+
+class _TinyAdapter:
+    def __init__(self) -> None:
+        self.raw_model = nn.Linear(1, 1, bias=False)
+        self.trunk = self.raw_model
+
+    def freeze_trunk(self) -> None:
+        for parameter in self.trunk.parameters():
+            parameter.requires_grad = False
+
+    def unfreeze_trunk(self) -> None:
+        for parameter in self.trunk.parameters():
+            parameter.requires_grad = True
+
+
 def _dummy_optimizer() -> torch.optim.Optimizer:
     return torch.optim.SGD([nn.Parameter(torch.tensor(0.0, requires_grad=True))], lr=1e-3)
 
@@ -78,6 +116,56 @@ def _default_train_config() -> TrainDefaultsConfig:
 
 
 class PV26PreparedDatasetRuntimeSanityTests(unittest.TestCase):
+    def test_trainer_applies_pcgrad_style_multitask_conflict_snapshot(self) -> None:
+        adapter = _TinyAdapter()
+        heads = nn.Linear(1, 1, bias=False)
+        trainer = PV26Trainer(
+            adapter,
+            heads,
+            stage="stage_3_end_to_end_finetune",
+            device="cpu",
+            criterion=_ConflictCriterion(),
+            amp=False,
+            accumulate_steps=1,
+            grad_clip_norm=5.0,
+            multitask_conflict={
+                "enabled": True,
+                "mode": "pcgrad_style",
+                "tasks": ["det", "lane"],
+            },
+        )
+
+        def _forward_encoded_batch(encoded):
+            del encoded
+            return {"scalar": adapter.raw_model.weight.sum() + heads.weight.sum()}
+
+        trainer.forward_encoded_batch = _forward_encoded_batch  # type: ignore[method-assign]
+        batch = {
+            "image": torch.zeros((2, 3, 4, 4), dtype=torch.float32),
+            "det_gt": {
+                "valid_mask": torch.zeros((2, 0), dtype=torch.bool),
+                "classes": torch.zeros((2, 0), dtype=torch.long),
+            },
+            "mask": {
+                "det_source": torch.zeros((2,), dtype=torch.bool),
+                "tl_attr_source": torch.zeros((2,), dtype=torch.bool),
+                "lane_source": torch.zeros((2,), dtype=torch.bool),
+                "stop_line_source": torch.zeros((2,), dtype=torch.bool),
+                "crosswalk_source": torch.zeros((2,), dtype=torch.bool),
+                "det_allow_objectness_negatives": torch.zeros((2,), dtype=torch.bool),
+                "det_allow_unmatched_class_negatives": torch.zeros((2,), dtype=torch.bool),
+                "det_supervised_class_mask": torch.zeros((2, 7), dtype=torch.bool),
+            },
+        }
+
+        summary = trainer.train_step(batch)
+
+        self.assertTrue(summary["successful"])
+        self.assertTrue(summary["optimizer_step"])
+        self.assertEqual(summary["multitask_conflict"]["mode"], "pcgrad_style")
+        self.assertEqual(summary["multitask_conflict"]["tasks"], ["det", "lane"])
+        self.assertIn(["det", "lane"], summary["multitask_conflict"]["conflict_pairs"])
+
     def test_loader_rejects_malformed_detection_label_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = create_prepared_pv26_dataset(Path(temp_dir) / "prepared")

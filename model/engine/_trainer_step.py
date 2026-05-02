@@ -7,6 +7,12 @@ import torch
 
 from common.train_runtime import sync_timing_device as _common_sync_timing_device
 from .trainer_reporting import _tensorboard_train_step_payload, _write_tensorboard_scalars
+from .multitask_conflict import (
+    accumulate_pcgrad_trunk_update,
+    compute_pcgrad_trunk_update,
+    current_pcgrad_trunk_update,
+    reset_multitask_conflict_state,
+)
 from ..net.trunk import forward_pyramid_features
 
 
@@ -117,6 +123,27 @@ def _summary_det_components(payload: Any) -> dict[str, float | int]:
     return summary
 
 
+def _optimizer_group_params(trainer: Any, group_name: str) -> list[torch.nn.Parameter]:
+    params: list[torch.nn.Parameter] = []
+    for index, group in enumerate(trainer.optimizer.param_groups):
+        if str(group.get("group_name", f"group_{index}")) == group_name:
+            params.extend([param for param in group.get("params", ()) if isinstance(param, torch.nn.Parameter)])
+    return params
+
+
+def _apply_projected_grads(
+    params: list[torch.nn.Parameter],
+    grads: list[torch.Tensor | None] | None,
+) -> None:
+    if grads is None:
+        return
+    for param, grad in zip(params, grads):
+        if grad is None:
+            param.grad = None
+        else:
+            param.grad = grad.detach().to(device=param.device, dtype=param.dtype).clone()
+
+
 class _TensorboardGraphModel(torch.nn.Module):
     def __init__(self, adapter: Any, heads: torch.nn.Module) -> None:
         super().__init__()
@@ -161,6 +188,7 @@ def run_train_step(
     det_components = _summary_det_components({})
     assignment_det_mode = "unknown"
     assignment_lane_modes = dict(getattr(trainer.criterion, "last_lane_assignment_modes", {}))
+    multitask_conflict_snapshot: dict[str, Any] = {"enabled": False}
     forward_started_at = load_ended_at
     forward_ended_at = load_ended_at
     loss_started_at = load_ended_at
@@ -190,7 +218,33 @@ def run_train_step(
             trainer.optimizer.zero_grad(set_to_none=True)
             trainer.micro_step = 0
             trainer.skipped_steps += 1
+            trainer.multitask_conflict_state = reset_multitask_conflict_state(getattr(trainer, "multitask_conflict_state", {}))
         else:
+            trunk_params = _optimizer_group_params(trainer, "trunk")
+            pcgrad_grads = None
+            if bool(getattr(trainer, "multitask_conflict", {}).get("enabled", False)):
+                task_loss_weights = getattr(trainer.criterion, "loss_weights", {})
+                weighted_task_losses = {
+                    task_name: losses[task_name] * float(task_loss_weights.get(task_name, 1.0)) / float(trainer.accumulate_steps)
+                    for task_name in getattr(trainer, "multitask_conflict", {}).get("tasks", ())
+                    if task_name in losses
+                }
+                pcgrad_grads, multitask_conflict_snapshot = compute_pcgrad_trunk_update(
+                    weighted_task_losses,
+                    params=trunk_params,
+                    config=getattr(trainer, "multitask_conflict", {}),
+                )
+                trainer.multitask_conflict_state = accumulate_pcgrad_trunk_update(
+                    getattr(trainer, "multitask_conflict_state", {}),
+                    pcgrad_grads,
+                )
+                multitask_conflict_snapshot["weighted_task_losses"] = {
+                    task_name: float(value.detach().cpu())
+                    for task_name, value in weighted_task_losses.items()
+                }
+                multitask_conflict_snapshot["accumulated_micro_steps"] = int(
+                    getattr(trainer, "multitask_conflict_state", {}).get("accumulated_micro_steps", 0)
+                )
             scaled_total = total_loss / float(trainer.accumulate_steps)
             if trainer.amp_enabled:
                 trainer.scaler.scale(scaled_total).backward()
@@ -198,9 +252,14 @@ def run_train_step(
                 scaled_total.backward()
             trainer.micro_step += 1
             if trainer.micro_step >= trainer.accumulate_steps:
+                if trainer.amp_enabled:
+                    trainer.scaler.unscale_(trainer.optimizer)
+                if pcgrad_grads is not None:
+                    _apply_projected_grads(
+                        trunk_params,
+                        current_pcgrad_trunk_update(getattr(trainer, "multitask_conflict_state", {})),
+                    )
                 if trainer.grad_clip_norm is not None:
-                    if trainer.amp_enabled:
-                        trainer.scaler.unscale_(trainer.optimizer)
                     torch.nn.utils.clip_grad_norm_(
                         list(trainer.adapter.raw_model.parameters()) + list(trainer.heads.parameters()),
                         max_norm=trainer.grad_clip_norm,
@@ -213,6 +272,7 @@ def run_train_step(
                 trainer.optimizer.zero_grad(set_to_none=True)
                 trainer.global_step += 1
                 trainer.micro_step = 0
+                trainer.multitask_conflict_state = reset_multitask_conflict_state(getattr(trainer, "multitask_conflict_state", {}))
                 optimizer_step = True
             successful = True
         sync_timing_device(trainer.device, profile_device_sync)
@@ -225,6 +285,7 @@ def run_train_step(
         trainer.optimizer.zero_grad(set_to_none=True)
         trainer.micro_step = 0
         trainer.skipped_steps += 1
+        trainer.multitask_conflict_state = reset_multitask_conflict_state(getattr(trainer, "multitask_conflict_state", {}))
         if trainer.device.type == "cuda":
             torch.cuda.empty_cache()
         losses = _nan_losses(trainer.device)
@@ -266,6 +327,7 @@ def run_train_step(
             "det": assignment_det_mode,
             "lane": assignment_lane_modes,
         },
+        "multitask_conflict": multitask_conflict_snapshot,
         "timing": timing,
         "source_counts": _source_counts(encoded, od_classes=od_classes),
         "det_supervision": _det_supervision_summary(encoded, od_classes=od_classes),

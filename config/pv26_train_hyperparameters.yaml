@@ -34,6 +34,15 @@ pv26_train:
         grad_clip_norm: 5.0
         skip_non_finite_loss: true
         oom_guard: true
+        multitask_conflict:
+          enabled: true
+          mode: pcgrad_style
+          tasks:
+            - det
+            - tl_attr
+            - lane
+            - stop_line
+            - crosswalk
         checkpoint_every: 10
         num_workers: 0
         pin_memory: false

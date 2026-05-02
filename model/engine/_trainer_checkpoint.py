@@ -62,6 +62,8 @@ def checkpoint_state(
         "accumulate_steps": int(trainer.accumulate_steps),
         "grad_clip_norm": trainer.grad_clip_norm,
         "amp_enabled": bool(trainer.amp_enabled),
+        "multitask_conflict": dict(getattr(trainer, "multitask_conflict", {})),
+        "multitask_conflict_state": dict(getattr(trainer, "multitask_conflict_state", {})),
         "checkpoint_metadata": _checkpoint_metadata(trainer),
     }
     criterion_config = criterion_config_from_instance_fn(trainer.criterion, trainer.stage)
@@ -141,6 +143,10 @@ def load_checkpoint(
     trainer.epoch_history = list(checkpoint.get("epoch_history", []))
     trainer.micro_step = int(checkpoint.get("micro_step", 0))
     trainer.skipped_steps = int(checkpoint.get("skipped_steps", 0))
+    if isinstance(checkpoint.get("multitask_conflict"), dict):
+        trainer.multitask_conflict = dict(checkpoint["multitask_conflict"])
+    if isinstance(checkpoint.get("multitask_conflict_state"), dict):
+        trainer.multitask_conflict_state = dict(checkpoint["multitask_conflict_state"])
     return checkpoint
 
 

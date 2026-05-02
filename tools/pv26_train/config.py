@@ -21,6 +21,7 @@ DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
 DEFAULT_PRESET_NAME = "default"
 BACKBONE_VARIANTS = ("n", "s")
 LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
+MULTITASK_CONFLICT_TASK_NAMES = LOSS_WEIGHT_NAMES
 DEFAULT_SAMPLER_RATIOS = {
     "bdd100k": 0.30,
     "aihub_traffic": 0.30,
@@ -114,6 +115,11 @@ class TrainDefaultsConfig:
     stopline_geometry_aux_weight: float = 1.0
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
+    multitask_conflict: dict[str, Any] = field(default_factory=lambda: {
+        "enabled": False,
+        "mode": "none",
+        "tasks": list(MULTITASK_CONFLICT_TASK_NAMES),
+    })
 
 
 @dataclass(frozen=True)
@@ -369,6 +375,30 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         )
         for name, value in sampler_ratios_payload.items()
     }
+    multitask_conflict_payload = _coerce_mapping(
+        data.get("multitask_conflict", defaults.multitask_conflict),
+        field_name="train_defaults.multitask_conflict",
+    )
+    multitask_conflict_tasks = multitask_conflict_payload.get(
+        "tasks",
+        defaults.multitask_conflict.get("tasks", list(MULTITASK_CONFLICT_TASK_NAMES)),
+    )
+    if not isinstance(multitask_conflict_tasks, (list, tuple)):
+        raise TypeError("train_defaults.multitask_conflict.tasks must be a list")
+    multitask_conflict = {
+        "enabled": _coerce_bool(
+            multitask_conflict_payload.get("enabled", False),
+            field_name="train_defaults.multitask_conflict.enabled",
+        ),
+        "mode": _coerce_str(
+            multitask_conflict_payload.get("mode", "none"),
+            field_name="train_defaults.multitask_conflict.mode",
+        ),
+        "tasks": [
+            _coerce_str(task, field_name="train_defaults.multitask_conflict.tasks[]")
+            for task in multitask_conflict_tasks
+        ],
+    }
     return TrainDefaultsConfig(
         device=_coerce_str(data.get("device", defaults.device), field_name="train_defaults.device"),
         batch_size=_coerce_int(data.get("batch_size", defaults.batch_size), field_name="train_defaults.batch_size"),
@@ -519,6 +549,7 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_centerline_target_weight", defaults.stopline_centerline_target_weight),
             field_name="train_defaults.stopline_centerline_target_weight",
         ),
+        multitask_conflict=multitask_conflict,
     )
 
 
@@ -691,6 +722,18 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} task_positive_fraction must be between 0 and 1")
         if float(phase_train.amp_init_scale) <= 0.0:
             raise ValueError(f"phase {index} amp_init_scale must be > 0")
+        multitask_conflict = dict(phase_train.multitask_conflict)
+        conflict_mode = str(multitask_conflict.get("mode", "none"))
+        if conflict_mode not in {"none", "pcgrad_style"}:
+            raise ValueError(f"phase {index} multitask_conflict.mode must be one of: none, pcgrad_style")
+        conflict_tasks = multitask_conflict.get("tasks", ())
+        if not isinstance(conflict_tasks, (list, tuple)):
+            raise TypeError(f"phase {index} multitask_conflict.tasks must be a list")
+        unknown_conflict_tasks = sorted(set(str(task) for task in conflict_tasks) - set(MULTITASK_CONFLICT_TASK_NAMES))
+        if unknown_conflict_tasks:
+            raise ValueError(
+                f"phase {index} multitask_conflict uses unsupported task names: {unknown_conflict_tasks}"
+            )
         selection_requires_val = (
             phase_selection.metric_path.startswith("val.")
             or phase_selection.metric_path.startswith("selection_metrics.")

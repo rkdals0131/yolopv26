@@ -352,6 +352,7 @@ improvement_pct
 - stage 4는 lane-only sampler로 lane family head를 마지막에 더 밀어붙인다.
 - 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, full train split, bounded validation을 사용한다.
 - AMP는 켜되 `amp_init_scale=1024`, non-finite loss skip, OOM guard를 함께 켠다. seg-first lane dense logits는 loss 계산 전에 fp32로 승격해 AMP forward의 메모리 이점은 유지하면서 loss-side non-finite 위험을 줄인다.
+- lane-family repo의 `pcgrad_style` multitask conflict update를 켠다. PV26은 OD/TL과 roadmark가 trunk를 공유하므로 task 목록은 `det/tl_attr/lane/stop_line/crosswalk` 전체다. stage 4는 trunk가 frozen이라 PCGrad가 `no_trunk_params`로 비활성화되는 것이 정상이다.
 
 추가로 shipped preset의 phase override는 아래다.
 
@@ -362,16 +363,16 @@ improvement_pct
 | `stage_3_end_to_end_finetune` | 4 | 1e-5 | 4e-4 | full fine-tune |
 | `stage_4_lane_family_finetune` | 4 | 0.0 | 2e-4 | lane-only sampler / lane-family heads only |
 
-2026-05-02 local RTX 4060 8GB phase sweep 결과:
+2026-05-02 local RTX 4060 8GB phase sweep 결과(PCGrad 포함):
 
 | stage | checked batch sizes | result |
 | --- | --- | --- |
 | `stage_1_frozen_trunk_warmup` | 1,2,4,6,8 | 8까지 성공, ceiling 미관측 |
 | `stage_2_partial_unfreeze` | 1,2,4,6,8 | 8까지 성공, ceiling 미관측 |
-| `stage_3_end_to_end_finetune` | 1,2,4,6,8 | 8까지 성공, ceiling 미관측 |
-| `stage_4_lane_family_finetune` | 1,2,4,6,8 | 6까지 성공, 8에서 OOM |
+| `stage_3_end_to_end_finetune` | 4,6,8 | 8까지 성공, ceiling 미관측 |
+| `stage_4_lane_family_finetune` | 4,6,8 | 8까지 성공, ceiling 미관측 |
 
-기본 batch 4는 모든 phase에서 검증된 성공 구간 안에 있다.
+기본 batch 4는 모든 phase에서 검증된 성공 구간 안에 있다. stage 3 batch 8은 짧은 CUDA probe 기준 peak reserved가 약 7.28 GiB라 장시간 full training 기본값으로 올리지는 않는다.
 
 ## tuning guide
 

@@ -267,6 +267,7 @@
 - current trainer runtime also includes epoch fit loop, val loop, best / last checkpoint write, and run summary output
 - current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard
 - current loss precision path casts seg-first lane dense predictions to fp32 before loss; 2026-05-02 CUDA phase sweep showed no non-finite skips after this change
+- current trainer runtime includes PV26-expanded `pcgrad_style` multitask conflict handling over `det/tl_attr/lane/stop_line/crosswalk`, not the roadmark-only task list from the sibling repo
 - current evaluator runtime returns batch loss summary / GT count summary and supports postprocessed prediction bundles
 - current evaluator runtime also returns batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, and lane family matching metrics
 - current tiny overfit regression uses `stage_1_frozen_trunk_warmup`, mixed canonical train batch, and confirms best loss < first loss
@@ -282,7 +283,7 @@
 - derived retrain/fine-tune CLI는 `tools/run_pv26_train.py --derive-run <source_run_dir> --start-stage <STAGE> --end-stage <STAGE>` 기준으로 유지한다
 - phase VRAM probe direct CLI는 `tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-stage <STAGE> --stress-batch-size <BATCH> --stress-iters <ITERS>` 기준으로 유지한다
 - phase별 batch 후보 sweep은 `tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes <CSV> --stress-iters <ITERS>` 기준으로 유지한다
-- latest local RTX 4060 8GB phase sweep: stage 1/2/3 succeeded through batch 8 with no observed ceiling, stage 4 succeeded through batch 6 and OOMed at batch 8; shipped batch 4 remains inside the verified range
+- latest local RTX 4060 8GB phase sweep with PCGrad enabled: stage 1/2 succeeded through batch 8 with no observed ceiling; targeted stage 3/4 rerun also succeeded through batch 8 with no observed ceiling, but stage 3 batch 8 peak reserved was about 7.28 GiB, so shipped batch 4 remains the conservative default
 - engine 공통 batch helper는 `model/engine/batch.py`를 기준선으로 두고, trainer/evaluator/_trainer_epochs에서 중복을 다시 만들지 않는다
 - detector geometry helper는 `model/engine/_det_geometry.py`를 기준선으로 두고 `loss.py`, `postprocess.py`가 이를 재사용한다
 - trainer facade는 compatibility shim만 남기고, 새 internal helper 사용처는 owning `_trainer_*` 모듈을 직접 import한다

@@ -535,6 +535,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         grad_clip_norm=train_config.grad_clip_norm,
         skip_non_finite_loss=train_config.skip_non_finite_loss,
         oom_guard=train_config.oom_guard,
+        multitask_conflict=train_config.multitask_conflict,
     )
     trainer.scheduler = build_pv26_scheduler(
         trainer.optimizer,

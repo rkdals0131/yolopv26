@@ -99,6 +99,7 @@
 - trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
 - seg-first lane head의 dense loss 입력(`lane_seg_*`)은 AMP forward 이후 loss precision path에서 fp32로 정규화한다. 2026-05-02 CUDA probe에서 이 보정 후 기존 `lane=nan` skip은 재현되지 않았다.
+- trainer는 lane-family repo의 `pcgrad_style` multitask conflict update를 PV26용으로 확장해 지원한다. PV26 기본 config는 trunk PCGrad task를 `det/tl_attr/lane/stop_line/crosswalk` 전체로 둔다. roadmark-only 원본 구현처럼 `lane/stop_line/crosswalk`만 쓰면 PV26 stage 3에서 OD/TL trunk gradient를 덮어쓸 수 있으므로 그대로 축소하지 않는다.
 - trainer preset은 stage 1~4 phase chain을 기준으로 확장된다.
 - `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원한다. legacy/dev preset과 legacy dataset mapping key는 더 이상 지원하지 않는다.
 - exact in-place resume는 `python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>` 경로를 기준으로 유지한다.
@@ -107,7 +108,7 @@
 - `tools/check_env.py` interactive launcher는 `stage_3` peak VRAM stress probe를 제공하고, batch size / short iter 수를 받아 현재 backbone/stage 경로로 메모리 상한을 빠르게 확인할 수 있다.
 - direct CLI probe는 `python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-stage <STAGE> --stress-batch-size <BATCH> --stress-iters <ITERS>` 형식으로 유지한다.
 - phase별 batch 후보를 한 번에 확인할 때는 `python3 tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes 1,2,4,6,8,12 --stress-iters 8`를 사용한다. 출력의 `ceiling_observed=false`는 OOM/non-finite failure를 아직 못 만났다는 뜻이며, `max_ok_batch_size`는 확정 상한이 아니라 확인된 하한이다.
-- 2026-05-02 RTX 4060 8GB 확인값(`--stress-batch-sizes 1,2,4,6,8 --stress-iters 3`): stage 1/2/3은 batch 8까지 성공하고 ceiling 미관측, stage 4는 batch 6까지 성공 후 batch 8에서 OOM이다. 현재 shipped default batch 4는 네 phase 모두 검증된 성공 구간 안에 있다.
+- 2026-05-02 RTX 4060 8GB 확인값(PCGrad 포함): stage 1/2는 `--stress-batch-sizes 1,2,4,6,8 --stress-iters 3`에서 batch 8까지 성공하고 ceiling 미관측, stage 3/4는 `--stress-batch-sizes 4,6,8 --stress-iters 3`에서 batch 8까지 성공하고 ceiling 미관측이다. stage 3 batch 8은 peak reserved가 약 7.28 GiB라 장시간 full training 기본값으로 올리지는 않는다. 현재 shipped default batch 4는 네 phase 모두 검증된 성공 구간 안에 있다.
 - `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
 - phase summary와 run manifest는 backbone variant, resolved head channels, phase selection metric 같은 late-stage 판단 정보를 함께 남기는 방향을 따른다.
 - `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.

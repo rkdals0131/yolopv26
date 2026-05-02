@@ -16,6 +16,7 @@ from . import _trainer_step as _step
 from . import trainer_reporting as _reporting
 from .batch import move_batch_to_device
 from .loss import PV26MultiTaskLoss
+from .multitask_conflict import init_multitask_conflict_state, normalize_multitask_conflict
 from .spec import build_loss_spec
 from .train_summary import resolve_summary_path
 from ..net.trunk import forward_pyramid_features
@@ -293,6 +294,7 @@ class PV26Trainer:
         grad_clip_norm: float | None = None,
         skip_non_finite_loss: bool = False,
         oom_guard: bool = False,
+        multitask_conflict: dict[str, Any] | None = None,
     ) -> None:
         if accumulate_steps <= 0:
             raise ValueError("accumulate_steps must be > 0")
@@ -324,6 +326,8 @@ class PV26Trainer:
         self.grad_clip_norm = float(grad_clip_norm) if grad_clip_norm is not None else None
         self.skip_non_finite_loss = bool(skip_non_finite_loss)
         self.oom_guard = bool(oom_guard)
+        self.multitask_conflict = normalize_multitask_conflict(multitask_conflict)
+        self.multitask_conflict_state = init_multitask_conflict_state(self.multitask_conflict)
         self.amp_enabled = bool(amp) and self.device.type == "cuda"
         self.amp_init_scale = float(amp_init_scale)
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled, init_scale=self.amp_init_scale)
