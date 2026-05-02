@@ -13,6 +13,8 @@ TL_CLASS_ID = OD_CLASSES.index("traffic_light")
 SIGN_CLASS_ID = OD_CLASSES.index("sign")
 LANE_QUERY_COUNT = int(build_loss_spec()["heads"]["lane"]["query_count"])
 LANE_ANCHOR_COUNT = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_COLOR_DIM = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["color_logits"])
+LANE_TYPE_DIM = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["type_logits"])
 LANE_VECTOR_DIM = int(build_loss_spec()["heads"]["lane"]["shape"].split(" x ")[-1])
 STOP_LINE_QUERY_COUNT = int(build_loss_spec()["heads"]["stop_line"]["query_count"])
 STOP_LINE_VECTOR_DIM = int(build_loss_spec()["heads"]["stop_line"]["shape"].split(" x ")[-1])
@@ -92,6 +94,41 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         },
         "meta": [{"sample_id": f"sample_{index}"} for index in range(batch_size)],
     }
+
+
+def _with_zero_segfirst_targets(encoded: dict) -> dict:
+    from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+    batch_size = int(encoded["image"].shape[0])
+    h, w = ROADMARK_DENSE_OUTPUT_HW
+    encoded = dict(encoded)
+    roadmark_v2 = dict(encoded.get("roadmark_v2") or {})
+    roadmark_v2.update(
+        {
+            "stop_line_center_heatmap": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_center_offset": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "stop_line_angle": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "stop_line_half_length": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_mask": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_centerline": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "crosswalk_mask": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "crosswalk_boundary": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "crosswalk_center": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_centerline_core": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_centerline_soft": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_support": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "lane_seg_color": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), dtype=torch.float32),
+            "lane_seg_type": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), dtype=torch.float32),
+            "lane_seg_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_negative": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_stop_line_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_crosswalk_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_tangent_count": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+        }
+    )
+    encoded["roadmark_v2"] = roadmark_v2
+    return encoded
 
 
 def _zero_predictions(batch_size: int, q_det: int) -> dict[str, torch.Tensor]:
@@ -203,6 +240,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
             *,
             task_name: str,
             cost_builder,
+            quality_builder,
         ):
             observed[task_name] = pred_rows.dtype
             return original_build_query_assignment(
@@ -212,6 +250,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
                 source_mask,
                 task_name=task_name,
                 cost_builder=cost_builder,
+                quality_builder=quality_builder,
             )
 
         criterion._build_query_assignment = _record_dtype  # type: ignore[method-assign]
@@ -235,7 +274,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
         losses = criterion(predictions, encoded)
 
-        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian_sanitized")
+        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
         self.assertTrue(torch.isfinite(losses["stop_line"]))
         self.assertTrue(torch.isfinite(losses["total"]))
         losses["total"].backward()
@@ -253,7 +292,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
         criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
         losses = criterion(predictions, encoded)
 
-        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian_all_invalid_cost")
+        self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
         self.assertTrue(torch.isfinite(losses["stop_line"]))
         self.assertTrue(torch.isfinite(losses["total"]))
         losses["total"].backward()
@@ -571,20 +610,20 @@ class PV26LossRuntimeTests(unittest.TestCase):
     def test_real_trunk_heads_and_loss_support_backward_regression(self) -> None:
         from model.net import PV26Heads
         from model.engine.loss import PV26MultiTaskLoss
-        from model.net import build_yolo26n_trunk
+        from model.net import build_yolo26_roadmark_trunk
         from model.net import forward_pyramid_features
 
-        encoded = _make_encoded_batch(batch_size=1, q_det=9975)
-        adapter = build_yolo26n_trunk()
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=1, q_det=9975))
+        adapter = build_yolo26_roadmark_trunk(variant="n")
         image = encoded["image"].clone().requires_grad_(False)
 
         features = forward_pyramid_features(adapter, image)
+        heads = PV26Heads(in_channels=tuple(int(feature.shape[1]) for feature in features))
         predictions = heads(features)
         criterion = PV26MultiTaskLoss(stage="stage_1_frozen_trunk_warmup")
         losses = criterion(predictions, encoded)
         self.assertEqual(criterion.last_det_assignment_mode, "task_aligned")
-        self.assertEqual(criterion.last_lane_assignment_modes["lane"], "hungarian")
+        self.assertEqual(criterion.last_lane_assignment_modes["lane"], "seg_first_dense")
         self.assertEqual(criterion.last_lane_assignment_modes["stop_line"], "hungarian")
         self.assertEqual(criterion.last_lane_assignment_modes["crosswalk"], "disabled")
 

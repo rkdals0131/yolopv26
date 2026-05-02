@@ -13,6 +13,8 @@ OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TL_CLASS_ID = OD_CLASSES.index("traffic_light")
 LANE_QUERY_COUNT = int(build_loss_spec()["heads"]["lane"]["query_count"])
 LANE_ANCHOR_COUNT = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_COLOR_DIM = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["color_logits"])
+LANE_TYPE_DIM = int(build_loss_spec()["heads"]["lane"]["target_encoding"]["type_logits"])
 LANE_VECTOR_DIM = int(build_loss_spec()["heads"]["lane"]["shape"].split(" x ")[-1])
 STOP_LINE_QUERY_COUNT = int(build_loss_spec()["heads"]["stop_line"]["query_count"])
 STOP_LINE_VECTOR_DIM = int(build_loss_spec()["heads"]["stop_line"]["shape"].split(" x ")[-1])
@@ -112,6 +114,41 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     }
 
 
+def _with_zero_segfirst_targets(encoded: dict) -> dict:
+    from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+    batch_size = int(encoded["image"].shape[0])
+    h, w = ROADMARK_DENSE_OUTPUT_HW
+    encoded = dict(encoded)
+    roadmark_v2 = dict(encoded.get("roadmark_v2") or {})
+    roadmark_v2.update(
+        {
+            "stop_line_center_heatmap": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_center_offset": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "stop_line_angle": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "stop_line_half_length": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_mask": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_centerline": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "crosswalk_mask": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "crosswalk_boundary": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "crosswalk_center": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_centerline_core": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_centerline_soft": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_support": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "lane_seg_color": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), dtype=torch.float32),
+            "lane_seg_type": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), dtype=torch.float32),
+            "lane_seg_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_negative": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_stop_line_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_crosswalk_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_tangent_count": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+        }
+    )
+    encoded["roadmark_v2"] = roadmark_v2
+    return encoded
+
+
 class _StaticAdapter:
     def __init__(self) -> None:
         self.raw_model = nn.Identity()
@@ -171,13 +208,14 @@ class PV26EvaluatorTests(unittest.TestCase):
     def test_evaluator_returns_loss_and_count_summary(self) -> None:
         from model.engine.evaluator import PV26Evaluator
         from model.net import PV26Heads
-        from model.net import build_yolo26n_trunk
+        from model.net import build_yolo26_roadmark_trunk
+        from model.net import infer_pyramid_channels
 
-        adapter = build_yolo26n_trunk()
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        adapter = build_yolo26_roadmark_trunk(variant="n")
+        heads = PV26Heads(in_channels=infer_pyramid_channels(adapter))
         evaluator = PV26Evaluator(adapter, heads, stage="stage_1_frozen_trunk_warmup")
 
-        summary = evaluator.evaluate_batch(_make_encoded_batch(batch_size=1, q_det=9975))
+        summary = evaluator.evaluate_batch(_with_zero_segfirst_targets(_make_encoded_batch(batch_size=1, q_det=9975)))
 
         self.assertEqual(summary["batch_size"], 1)
         self.assertGreater(summary["losses"]["total"], 0.0)
