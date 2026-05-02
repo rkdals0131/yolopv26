@@ -168,7 +168,7 @@ def _pv26_action_config_lines() -> list[str]:
         f"- dataset roots: {dataset_roots}",
         f"- defaults: device={train_defaults.device}, backbone={train_defaults.backbone_variant}, batch={train_defaults.batch_size}, workers={train_defaults.num_workers}, amp={_bool_flag(train_defaults.amp)}",
         f"- optimizer: trunk_lr={train_defaults.trunk_lr}, head_lr={train_defaults.head_lr}, weight_decay={train_defaults.weight_decay}, schedule={train_defaults.schedule}",
-        f"- runtime: checkpoint_every={train_defaults.checkpoint_every}, accumulate_steps={train_defaults.accumulate_steps}, grad_clip={train_defaults.grad_clip_norm}",
+        f"- runtime: checkpoint_every={train_defaults.checkpoint_every}, accumulate_steps={train_defaults.accumulate_steps}, grad_clip={train_defaults.grad_clip_norm}, amp_init_scale={train_defaults.amp_init_scale}, skip_non_finite={_bool_flag(train_defaults.skip_non_finite_loss)}, oom_guard={_bool_flag(train_defaults.oom_guard)}",
         f"- preview: enabled={_bool_flag(scenario.preview.enabled)}, split={scenario.preview.split}, per_dataset={scenario.preview.max_samples_per_dataset}, keys={list(scenario.preview.dataset_keys)}",
     ]
     for phase_index, phase in enumerate(scenario.phases, start=1):

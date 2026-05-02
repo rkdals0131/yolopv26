@@ -43,6 +43,7 @@ class PV26HeadsTests(unittest.TestCase):
         heads = PV26Heads(in_channels=(64, 64, 128, 256))
         summary = heads.describe()
 
+        self.assertEqual(heads.lane_head_mode, "seg_first")
         self.assertEqual(summary["feature_channels"], [64, 64, 128, 256])
         self.assertEqual(summary["feature_strides"], [4, 8, 16, 32])
         self.assertEqual(summary["det_feature_channels"], [64, 128, 256])
@@ -52,6 +53,7 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(summary["lane_queries"], LANE_QUERY_COUNT)
         self.assertEqual(summary["stop_line_queries"], STOP_LINE_QUERY_COUNT)
         self.assertEqual(summary["crosswalk_queries"], CROSSWALK_QUERY_COUNT)
+        self.assertEqual(summary["roadmark"]["lane_head_mode"], "seg_first")
 
     def test_heads_reject_wrong_feature_count(self) -> None:
         from model.net import PV26Heads

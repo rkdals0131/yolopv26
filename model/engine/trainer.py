@@ -288,6 +288,7 @@ class PV26Trainer:
         loss_weights: dict[str, float] | None = None,
         freeze_policy: str | None = None,
         amp: bool = False,
+        amp_init_scale: float = 65536.0,
         accumulate_steps: int = 1,
         grad_clip_norm: float | None = None,
         skip_non_finite_loss: bool = False,
@@ -295,6 +296,8 @@ class PV26Trainer:
     ) -> None:
         if accumulate_steps <= 0:
             raise ValueError("accumulate_steps must be > 0")
+        if amp_init_scale <= 0.0:
+            raise ValueError("amp_init_scale must be > 0")
         self.adapter = adapter
         self.heads = heads
         self.device = torch.device(device)
@@ -322,7 +325,8 @@ class PV26Trainer:
         self.skip_non_finite_loss = bool(skip_non_finite_loss)
         self.oom_guard = bool(oom_guard)
         self.amp_enabled = bool(amp) and self.device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
+        self.amp_init_scale = float(amp_init_scale)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled, init_scale=self.amp_init_scale)
         self.micro_step = 0
         self.skipped_steps = 0
         self.global_step = 0

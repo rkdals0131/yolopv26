@@ -76,8 +76,11 @@ class TrainDefaultsConfig:
     weight_decay: float = 1e-4
     schedule: str = "cosine"
     amp: bool = True
+    amp_init_scale: float = 65536.0
     accumulate_steps: int = 1
     grad_clip_norm: float = 5.0
+    skip_non_finite_loss: bool = False
+    oom_guard: bool = False
     checkpoint_every: int = 1
     num_workers: int = 6
     pin_memory: bool = True
@@ -376,6 +379,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         weight_decay=_coerce_float(data.get("weight_decay", defaults.weight_decay), field_name="train_defaults.weight_decay"),
         schedule=_coerce_str(data.get("schedule", defaults.schedule), field_name="train_defaults.schedule"),
         amp=_coerce_bool(data.get("amp", defaults.amp), field_name="train_defaults.amp"),
+        amp_init_scale=_coerce_float(
+            data.get("amp_init_scale", defaults.amp_init_scale),
+            field_name="train_defaults.amp_init_scale",
+        ),
         accumulate_steps=_coerce_int(
             data.get("accumulate_steps", defaults.accumulate_steps),
             field_name="train_defaults.accumulate_steps",
@@ -383,6 +390,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         grad_clip_norm=_coerce_float(
             data.get("grad_clip_norm", defaults.grad_clip_norm),
             field_name="train_defaults.grad_clip_norm",
+        ),
+        skip_non_finite_loss=_coerce_bool(
+            data.get("skip_non_finite_loss", defaults.skip_non_finite_loss),
+            field_name="train_defaults.skip_non_finite_loss",
+        ),
+        oom_guard=_coerce_bool(
+            data.get("oom_guard", defaults.oom_guard),
+            field_name="train_defaults.oom_guard",
         ),
         checkpoint_every=_coerce_int(
             data.get("checkpoint_every", defaults.checkpoint_every),
@@ -674,6 +689,8 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} sampler_ratios must contain at least one positive value")
         if phase_train.task_positive_fraction is not None and not 0.0 <= float(phase_train.task_positive_fraction) <= 1.0:
             raise ValueError(f"phase {index} task_positive_fraction must be between 0 and 1")
+        if float(phase_train.amp_init_scale) <= 0.0:
+            raise ValueError(f"phase {index} amp_init_scale must be > 0")
         selection_requires_val = (
             phase_selection.metric_path.startswith("val.")
             or phase_selection.metric_path.startswith("selection_metrics.")

@@ -21,26 +21,31 @@ pv26_train:
         eps: 1.0e-8
       train_defaults:
         device: cuda:0
-        batch_size: 16
-        train_batches: 2048
+        batch_size: 4
+        train_batches: -1
         val_batches: 256
         trunk_lr: 1.0e-4
         head_lr: 5.0e-3
         weight_decay: 1.0e-4
         schedule: cosine
         amp: true
-        accumulate_steps: 1
+        amp_init_scale: 1024.0
+        accumulate_steps: 2
         grad_clip_norm: 5.0
+        skip_non_finite_loss: true
+        oom_guard: true
         checkpoint_every: 10
-        num_workers: 6
-        pin_memory: true
+        num_workers: 0
+        pin_memory: false
         log_every_n_steps: 20
         profile_window: 20
-        profile_device_sync: true
+        profile_device_sync: false
         encode_train_batches_in_loader: true
         encode_val_batches_in_loader: true
-        persistent_workers: true
-        prefetch_factor: 2
+        persistent_workers: false
+        prefetch_factor: null
+        train_augmentation: true
+        train_augmentation_seed: 26
         backbone_variant: s
         det_conf_threshold: 0.25
         det_iou_threshold: 0.70
@@ -54,49 +59,47 @@ pv26_train:
           aihub_lane: 0.25
           aihub_obstacle: 0.15
       phases:
-        # Current exhaustive train split is about 251.7k samples.
-        # With train_batches=2048, per-epoch sample draws are:
-        # stage1=65,536, stage2=49,152, stage3=24,576, stage4(lane-only)=65,536.
-        # stage3 min_epochs=21 keeps the fully-unfrozen phase above ~2.0x mixed-set exposure.
-        # stage4 min_epochs=12 keeps lane-only exposure above ~2.3x even if lane train grows to ~330k.
+        # Final local 8GB run: seg-first head stays in model code, while this file only
+        # controls numeric/training knobs. Train uses the full merged train split;
+        # validation stays bounded to keep every-epoch feedback practical.
         - name: head_warmup
           stage: stage_1_frozen_trunk_warmup
-          min_epochs: 2
-          max_epochs: 6
-          patience: 2
+          min_epochs: 1
+          max_epochs: 1
+          patience: 1
           min_improvement_pct: 1.0
           min_delta_abs: 0.003
           overrides:
-            batch_size: 32
+            batch_size: 4
             trunk_lr: 5.0e-5
             head_lr: 3.0e-3
         - name: partial_unfreeze
           stage: stage_2_partial_unfreeze
-          min_epochs: 4
-          max_epochs: 10
-          patience: 3
+          min_epochs: 1
+          max_epochs: 1
+          patience: 1
           min_improvement_pct: 0.5
           min_delta_abs: 0.003
           overrides:
-            batch_size: 24
+            batch_size: 4
             trunk_lr: 3.0e-5
             head_lr: 8.0e-4
         - name: end_to_end_finetune
           stage: stage_3_end_to_end_finetune
-          min_epochs: 21
-          max_epochs: 48
-          patience: 8
+          min_epochs: 78
+          max_epochs: 78
+          patience: 1
           min_improvement_pct: 0.25
           min_delta_abs: 0.0025
           overrides:
-            batch_size: 12
+            batch_size: 4
             trunk_lr: 1.0e-5
             head_lr: 4.0e-4
         - name: lane_family_finetune
           stage: stage_4_lane_family_finetune
-          min_epochs: 12
-          max_epochs: 40
-          patience: 10
+          min_epochs: 20
+          max_epochs: 20
+          patience: 1
           min_improvement_pct: 0.25
           min_delta_abs: 0.002
           loss_weights:
@@ -107,7 +110,7 @@ pv26_train:
             crosswalk: 1.0
           freeze_policy: lane_family_heads_only
           overrides:
-            batch_size: 32
+            batch_size: 4
             trunk_lr: 0.0
             head_lr: 2.0e-4
             sampler_ratios:

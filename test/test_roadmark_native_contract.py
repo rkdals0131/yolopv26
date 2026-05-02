@@ -97,6 +97,62 @@ class RoadmarkNativeContractTest(unittest.TestCase):
         self.assertEqual(config["loss_weights"]["det"], 1.0)
         self.assertEqual(config["loss_weights"]["tl_attr"], 1.0)
 
+    def test_segfirst_joint_loss_is_finite_on_synthetic_roadmark_batch(self) -> None:
+        batch = {
+            "image": torch.zeros((1, 3, 608, 800), dtype=torch.float32),
+            "det_targets": [{"boxes_xyxy": torch.zeros((0, 4)), "classes": torch.zeros((0,), dtype=torch.long)}],
+            "tl_attr_targets": [{"bits": torch.zeros((0, 4))}],
+            "lane_targets": [
+                {
+                    "lanes": [
+                        {
+                            "points_xy": [(120.0, 590.0), (170.0, 390.0), (230.0, 160.0)],
+                            "visibility": [1.0, 1.0, 1.0],
+                            "color": 0,
+                            "lane_type": 0,
+                        }
+                    ],
+                    "stop_lines": [{"points_xy": [(260.0, 500.0), (430.0, 500.0)]}],
+                    "crosswalks": [
+                        {"points_xy": [(450.0, 410.0), (590.0, 410.0), (600.0, 500.0), (440.0, 500.0)]}
+                    ],
+                }
+            ],
+            "source_mask": [
+                {"det": False, "tl_attr": False, "lane": True, "stop_line": True, "crosswalk": True}
+            ],
+            "valid_mask": [
+                {
+                    "det": torch.zeros((0,), dtype=torch.bool),
+                    "tl_attr": torch.zeros((0,), dtype=torch.bool),
+                    "lane": torch.ones((1,), dtype=torch.bool),
+                    "stop_line": torch.ones((1,), dtype=torch.bool),
+                    "crosswalk": torch.ones((1,), dtype=torch.bool),
+                }
+            ],
+            "meta": [{"dataset_key": "unit", "sample_id": "segfirst_numeric_contract"}],
+        }
+        encoded = encode_pv26_batch(batch, include_lane_segfirst_targets=True)
+        heads = PV26Heads((64, 64, 128, 256), lane_head_mode="seg_first")
+        features = (
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        )
+        predictions = heads(features, encoded=encoded)
+        criterion = PV26MultiTaskLoss(
+            stage="stage_3_end_to_end_finetune",
+            loss_weights={"det": 0.0, "tl_attr": 0.0, "lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0},
+            task_mode="roadmark_joint",
+        )
+
+        losses = criterion(predictions, encoded)
+        losses["total"].backward()
+
+        self.assertTrue(torch.isfinite(losses["total"]).item())
+        self.assertEqual(criterion.last_lane_assignment_modes["lane"], "seg_first_dense")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,7 @@ python3 tools/run_pv26_train.py --preset default
 - `default` preset은 `seg_dataset/pv26_exhaustive_od_lane_dataset`를 입력으로 쓰는 최종 merged dataset 전용이다.
 - canonical-only 상태라면 먼저 `2번`부터 `8번`까지 실행해 exhaustive OD + lane dataset을 만들어야 한다.
 - `stage_1_frozen_trunk_warmup -> stage_2_partial_unfreeze -> stage_3_end_to_end_finetune -> stage_4_lane_family_finetune` 4단계를 자동으로 수행한다.
+- lane head는 모델 소스의 최신 seg-first 경로를 기본으로 사용한다. 학습 숫자와 guard는 [config/pv26_train_hyperparameters.yaml](config/pv26_train_hyperparameters.yaml)에서 조절한다.
 - train/validation epoch 진행은 live progress로 표시되고, elapsed/ETA와 rolling timing profile을 함께 보여준다.
 - 출력 위치: `runs/pv26_exhaustive_od_lane_train/<meta_run_name>/`
 
@@ -79,7 +80,7 @@ python3 tools/run_pv26_train.py --derive-run runs/pv26_exhaustive_od_lane_train/
 현재 stage 3 경로의 peak VRAM 상한만 빠르게 확인하려면 아래 direct probe도 사용할 수 있다.
 
 ```bash
-python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size 24 --stress-iters 16
+python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-batch-size 4 --stress-iters 16
 ```
 
 ### 2. OD bootstrap 소스 준비

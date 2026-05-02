@@ -125,6 +125,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                         "train_defaults": {
                             "batch_size": 12,
                             "num_workers": 3,
+                            "amp_init_scale": 1024.0,
+                            "skip_non_finite_loss": True,
+                            "oom_guard": True,
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
                         },
@@ -210,6 +213,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.preview.max_samples_per_dataset, 2)
         self.assertEqual(scenario.train_defaults.batch_size, 12)
         self.assertEqual(scenario.train_defaults.num_workers, 3)
+        self.assertEqual(scenario.train_defaults.amp_init_scale, 1024.0)
+        self.assertTrue(scenario.train_defaults.skip_non_finite_loss)
+        self.assertTrue(scenario.train_defaults.oom_guard)
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")

@@ -530,8 +530,11 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         head_lr=train_config.head_lr,
         weight_decay=train_config.weight_decay,
         amp=train_config.amp,
+        amp_init_scale=train_config.amp_init_scale,
         accumulate_steps=train_config.accumulate_steps,
         grad_clip_norm=train_config.grad_clip_norm,
+        skip_non_finite_loss=train_config.skip_non_finite_loss,
+        oom_guard=train_config.oom_guard,
     )
     trainer.scheduler = build_pv26_scheduler(
         trainer.optimizer,

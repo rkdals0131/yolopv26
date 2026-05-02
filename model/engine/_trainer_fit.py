@@ -110,6 +110,7 @@ def _build_run_manifest(
         "optimizer": optimizer_group_hparams_fn(trainer.optimizer),
         "trainer": {
             "amp_enabled": bool(trainer.amp_enabled),
+            "amp_init_scale": float(getattr(trainer, "amp_init_scale", 65536.0)),
             "accumulate_steps": int(trainer.accumulate_steps),
             "grad_clip_norm": trainer.grad_clip_norm,
             "skip_non_finite_loss": bool(trainer.skip_non_finite_loss),

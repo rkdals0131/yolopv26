@@ -340,27 +340,27 @@ improvement_pct
 
 | stage | min_epochs | max_epochs | patience | min_delta_abs | legacy min_improvement_pct |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `stage_1_frozen_trunk_warmup` | 2 | 6 | 2 | 0.003 | 1.0 |
-| `stage_2_partial_unfreeze` | 4 | 10 | 3 | 0.003 | 0.5 |
-| `stage_3_end_to_end_finetune` | 21 | 48 | 8 | 0.0025 | 0.25 |
-| `stage_4_lane_family_finetune` | 12 | 40 | 10 | 0.002 | 0.25 |
+| `stage_1_frozen_trunk_warmup` | 1 | 1 | 1 | 0.003 | 1.0 |
+| `stage_2_partial_unfreeze` | 1 | 1 | 1 | 0.003 | 0.5 |
+| `stage_3_end_to_end_finetune` | 78 | 78 | 1 | 0.0025 | 0.25 |
+| `stage_4_lane_family_finetune` | 20 | 20 | 1 | 0.002 | 0.25 |
 
 의도:
 
-- stage 1/2는 warm-up과 partial unfreeze를 짧게 끝낸다.
-- stage 3는 shipped exhaustive train split 약 25.2만 장, `batch_size=12`, `train_batches=2048` 기준으로 최소 약 `2.05x` exposure를 확보한다.
-- stage 4는 lane-only sampler로 lane family를 의도적으로 오래 밀어붙인다.
-- 현재 lane split 3만 장 기준 stage 4 min 12 epoch는 약 `26.2x` exposure다.
-- lane split이 추후 약 33만 장까지 커져도 stage 4 min 12 epoch는 약 `2.38x` exposure를 확보한다.
+- stage 1/2는 필수 phase chain을 통과하기 위한 짧은 안정화 구간이다.
+- stage 3는 seg-first roadmark head와 OD/TL head를 함께 학습하는 주 구간이다.
+- stage 4는 lane-only sampler로 lane family head를 마지막에 더 밀어붙인다.
+- 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, full train split, bounded validation을 사용한다.
+- AMP는 켜되 `amp_init_scale=1024`, non-finite loss skip, OOM guard를 함께 켠다.
 
 추가로 shipped preset의 phase override는 아래다.
 
 | stage | batch_size | trunk_lr | head_lr | 특징 |
 | --- | ---: | ---: | ---: | --- |
-| `stage_1_frozen_trunk_warmup` | 32 | 5e-5 | 3e-3 | head warm-up |
-| `stage_2_partial_unfreeze` | 24 | 3e-5 | 8e-4 | partial unfreeze |
-| `stage_3_end_to_end_finetune` | 12 | 1e-5 | 4e-4 | full fine-tune |
-| `stage_4_lane_family_finetune` | 32 | 0.0 | 2e-4 | lane-only sampler / lane-family heads only |
+| `stage_1_frozen_trunk_warmup` | 4 | 5e-5 | 3e-3 | head warm-up |
+| `stage_2_partial_unfreeze` | 4 | 3e-5 | 8e-4 | partial unfreeze |
+| `stage_3_end_to_end_finetune` | 4 | 1e-5 | 4e-4 | full fine-tune |
+| `stage_4_lane_family_finetune` | 4 | 0.0 | 2e-4 | lane-only sampler / lane-family heads only |
 
 ## tuning guide
 
