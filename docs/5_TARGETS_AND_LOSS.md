@@ -340,17 +340,18 @@ improvement_pct
 
 | stage | min_epochs | max_epochs | patience | min_delta_abs | legacy min_improvement_pct |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `stage_1_frozen_trunk_warmup` | 1 | 1 | 1 | 0.003 | 1.0 |
-| `stage_2_partial_unfreeze` | 1 | 1 | 1 | 0.003 | 0.5 |
-| `stage_3_end_to_end_finetune` | 78 | 78 | 1 | 0.0025 | 0.25 |
+| `stage_1_frozen_trunk_warmup` | 2 | 2 | 1 | 0.003 | 1.0 |
+| `stage_2_partial_unfreeze` | 2 | 2 | 1 | 0.003 | 0.5 |
+| `stage_3_end_to_end_finetune` | 20 | 20 | 1 | 0.0025 | 0.25 |
 | `stage_4_lane_family_finetune` | 20 | 20 | 1 | 0.002 | 0.25 |
 
 의도:
 
-- stage 1/2는 필수 phase chain을 통과하기 위한 짧은 안정화 구간이다.
+- stage 1/2는 frozen-trunk warm-up과 partial-unfreeze를 각각 2 epoch씩 두어 loss/gradient scale 안정화를 먼저 확인한다.
 - stage 3는 seg-first roadmark head와 OD/TL head를 함께 학습하는 주 구간이다.
 - stage 4는 lane-only sampler로 lane family head를 마지막에 더 밀어붙인다.
 - 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, full train split, bounded validation을 사용한다.
+- 현재 기본 validation은 `val_batches=512`이며, 매 epoch마다 task-aware fixed validation sample 16장으로 `ground_truth/prediction/comparison`과 `comparison_grid.png`를 남긴다.
 - AMP는 켜되 `amp_init_scale=1024`, non-finite loss skip, OOM guard를 함께 켠다. seg-first lane dense logits는 loss 계산 전에 fp32로 승격해 AMP forward의 메모리 이점은 유지하면서 loss-side non-finite 위험을 줄인다.
 - lane-family repo의 `pcgrad_style` multitask conflict update를 켠다. PV26은 OD/TL과 roadmark가 trunk를 공유하므로 task 목록은 `det/tl_attr/lane/stop_line/crosswalk` 전체다. stage 4는 trunk가 frozen이라 PCGrad가 `no_trunk_params`로 비활성화되는 것이 정상이다.
 

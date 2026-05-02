@@ -476,6 +476,14 @@ class PV26TrainerTests(unittest.TestCase):
             "amp_enabled": True,
             "gradient_scale": 1024.0,
             "skipped_reason": None,
+            "multitask_conflict": {
+                "enabled": True,
+                "combined_grad_norm": 1.25,
+                "conflict_pairs": [["det", "lane"]],
+                "raw_grad_norms": {"det": 0.5, "lane": 0.7},
+                "projected_grad_norms": {"det": 0.4, "lane": 0.6},
+                "weighted_task_losses": {"det": 1.0, "lane": 2.0},
+            },
         }
 
         payload = trainer_reporting._tensorboard_train_step_payload(summary)
@@ -488,6 +496,12 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("train_step/loss_weighted/stop_line", scalar_names)
         self.assertIn("train_step/loss_weighted/crosswalk", scalar_names)
         self.assertIn("train_step/profile_sec/iteration_sec", scalar_names)
+        self.assertIn("train_step/multitask_conflict/enabled", scalar_names)
+        self.assertIn("train_step/multitask_conflict/conflict_pair_count", scalar_names)
+        self.assertIn("train_step/multitask_conflict/combined_grad_norm", scalar_names)
+        self.assertIn("train_step/multitask_conflict/raw_grad_norms/det", scalar_names)
+        self.assertIn("train_step/multitask_conflict/projected_grad_norms/lane", scalar_names)
+        self.assertIn("train_step/multitask_conflict/weighted_task_losses/lane", scalar_names)
         self.assertNotIn("train_step/lr/trunk", scalar_names)
         self.assertNotIn("train_step/health/gradient_scale", scalar_names)
         self.assertNotIn("train_step/source/det_source_samples", scalar_names)
@@ -501,6 +515,7 @@ class PV26TrainerTests(unittest.TestCase):
             "train": {
                 "optimizer_lrs": {"trunk": 1e-4, "heads": 5e-4},
             },
+            "selection_metrics": {"phase_objective": 0.42},
             "val": {
                 "losses": {
                     "total": {"mean": 0.8},
@@ -542,6 +557,7 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("epoch/val/metrics/stop_line/mean_angle_error", scalar_names)
         self.assertIn("epoch/val/metrics/crosswalk/mean_polygon_iou", scalar_names)
         self.assertIn("epoch/val/metrics/lane_family/mean_f1", scalar_names)
+        self.assertIn("epoch/selection_metrics/phase_objective", scalar_names)
         self.assertNotIn("epoch/train/loss", scalar_names)
         self.assertNotIn("epoch/train/duration_sec", scalar_names)
         self.assertNotIn("epoch/train/profile_sec/iteration_sec", scalar_names)

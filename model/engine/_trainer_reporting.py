@@ -223,6 +223,23 @@ def _tensorboard_train_step_payload(summary: dict[str, Any]) -> dict[str, Any]:
         weighted = _stage_weighted_losses(str(summary.get("stage")), summary["losses"])
         if weighted:
             payload["loss_weighted"] = weighted
+        conflict = summary.get("multitask_conflict")
+        if isinstance(conflict, dict):
+            conflict_payload = _select_numeric_scalars(
+                conflict,
+                ("enabled", "combined_grad_norm"),
+            )
+            conflict_pairs = conflict.get("conflict_pairs")
+            if isinstance(conflict_pairs, list):
+                conflict_payload["conflict_pair_count"] = float(len(conflict_pairs))
+            for key in ("raw_grad_norms", "projected_grad_norms", "weighted_task_losses"):
+                values = conflict.get(key)
+                if isinstance(values, dict):
+                    selected = _select_numeric_scalars(values, TENSORBOARD_LOSS_KEYS)
+                    if selected:
+                        conflict_payload[key] = selected
+            if conflict_payload:
+                payload["multitask_conflict"] = conflict_payload
     return payload
 
 
@@ -267,6 +284,11 @@ def _tensorboard_epoch_payload(epoch_summary: dict[str, Any]) -> dict[str, Any]:
         val_metrics = _tensorboard_val_metric_scalars(val_summary.get("metrics", {}))
         if val_metrics:
             payload["val"]["metrics"] = val_metrics
+    selection_metrics = epoch_summary.get("selection_metrics")
+    if isinstance(selection_metrics, dict):
+        selected = _select_numeric_scalars(selection_metrics, ("phase_objective",))
+        if selected:
+            payload["selection_metrics"] = selected
     return payload
 
 

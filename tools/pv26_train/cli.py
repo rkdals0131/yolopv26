@@ -561,6 +561,43 @@ def _sample_preview_selection(dataset: PV26CanonicalDataset, preview: PreviewCon
     return _sample_preview_selection_with_logging(dataset, preview, progress_callback=None)
 
 
+def _preview_scene_signal_score(record: Any) -> tuple[int, int, int, int, int, int, int]:
+    scene_path = getattr(record, "scene_path", None)
+    if scene_path is None:
+        return (0, 0, 0, 0, 0, 0, 0)
+    try:
+        scene = json.loads(Path(scene_path).read_text(encoding="utf-8"))
+    except Exception:
+        return (0, 0, 0, 0, 0, 0, 0)
+
+    tasks = scene.get("tasks") if isinstance(scene.get("tasks"), dict) else {}
+    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
+    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
+    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+    lanes = scene.get("lanes") if isinstance(scene.get("lanes"), list) else []
+    stop_lines = scene.get("stop_lines") if isinstance(scene.get("stop_lines"), list) else []
+    crosswalks = scene.get("crosswalks") if isinstance(scene.get("crosswalks"), list) else []
+
+    detection_classes = [
+        str(item.get("class_name"))
+        for item in detections
+        if isinstance(item, dict)
+    ]
+    traffic_light_count = sum(1 for class_name in detection_classes if class_name == "traffic_light")
+    traffic_light_count += len(traffic_lights)
+    obstacle_count = sum(1 for class_name in detection_classes if class_name in {"traffic_cone", "obstacle"})
+    generic_det_count = len(detections)
+    return (
+        int(bool(tasks.get("has_crosswalk")) or bool(crosswalks)),
+        int(bool(tasks.get("has_stop_line")) or bool(stop_lines)),
+        int(bool(tasks.get("has_lane")) or bool(lanes)),
+        int(bool(tasks.get("has_tl_attr")) or bool(traffic_lights)),
+        min(traffic_light_count + len(traffic_signs), 20),
+        min(obstacle_count, 20),
+        min(generic_det_count, 50),
+    )
+
+
 def _sample_preview_selection_with_logging(
     dataset: PV26CanonicalDataset,
     preview: PreviewConfig,
@@ -571,18 +608,21 @@ def _sample_preview_selection_with_logging(
         return []
     selected: list[dict[str, Any]] = []
     counts = {dataset_key: 0 for dataset_key in preview.dataset_keys}
-    selected_indices: list[int] = []
+    candidates: dict[str, list[tuple[tuple[int, int, int, int, int, int, int], int]]] = {
+        dataset_key: [] for dataset_key in preview.dataset_keys
+    }
     for index, record in enumerate(dataset.records):
         dataset_key = str(record.dataset_key)
         split = str(record.split)
         if split != preview.split or dataset_key not in counts:
             continue
-        if counts[dataset_key] >= preview.max_samples_per_dataset:
-            continue
-        selected_indices.append(index)
-        counts[dataset_key] += 1
-        if all(count >= preview.max_samples_per_dataset for count in counts.values()):
-            break
+        candidates[dataset_key].append((_preview_scene_signal_score(record), index))
+    selected_indices: list[int] = []
+    for dataset_key in preview.dataset_keys:
+        ranked = sorted(candidates[dataset_key], key=lambda item: tuple(-value for value in item[0]) + (item[1],))
+        picked = [index for _, index in ranked[: preview.max_samples_per_dataset]]
+        selected_indices.extend(picked)
+        counts[dataset_key] = len(picked)
     missing = [dataset_key for dataset_key, count in counts.items() if count < preview.max_samples_per_dataset]
     if missing and progress_callback is not None:
         available = {dataset_key: count for dataset_key, count in counts.items() if count > 0}

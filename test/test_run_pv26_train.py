@@ -929,6 +929,68 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(dataset.loaded_indices, [2, 3])
         self.assertEqual([item["meta"]["sample_id"] for item in selected], ["val_a", "val_b"])
 
+    def test_sample_preview_selection_prioritizes_scene_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            weak_scene = root / "weak.json"
+            rich_scene = root / "rich.json"
+            weak_scene.write_text(json.dumps({"tasks": {"has_lane": 1}, "lanes": [{}]}), encoding="utf-8")
+            rich_scene.write_text(
+                json.dumps(
+                    {
+                        "tasks": {"has_lane": 1, "has_stop_line": 1, "has_crosswalk": 1},
+                        "lanes": [{}],
+                        "stop_lines": [{}],
+                        "crosswalks": [{}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class _FakeDataset:
+                def __init__(self) -> None:
+                    self.records = [
+                        SimpleNamespace(
+                            dataset_key="aihub_lane_seoul",
+                            split="val",
+                            sample_id="weak",
+                            scene_path=weak_scene,
+                        ),
+                        SimpleNamespace(
+                            dataset_key="aihub_lane_seoul",
+                            split="val",
+                            sample_id="rich",
+                            scene_path=rich_scene,
+                        ),
+                    ]
+                    self.loaded_indices: list[int] = []
+
+                def __getitem__(self, index: int) -> dict:
+                    self.loaded_indices.append(index)
+                    record = self.records[index]
+                    return {
+                        "meta": {
+                            "sample_id": record.sample_id,
+                            "dataset_key": record.dataset_key,
+                            "split": record.split,
+                        }
+                    }
+
+            dataset = _FakeDataset()
+            selected = _sample_preview_selection(
+                dataset,
+                PreviewConfig(
+                    enabled=True,
+                    split="val",
+                    dataset_keys=("aihub_lane_seoul",),
+                    max_samples_per_dataset=1,
+                    write_overlay=False,
+                ),
+            )
+
+        self.assertEqual(dataset.loaded_indices, [1])
+        self.assertEqual([item["meta"]["sample_id"] for item in selected], ["rich"])
+
     def test_sample_preview_selection_tolerates_missing_dataset_keys(self) -> None:
         class _FakeDataset:
             def __init__(self) -> None:

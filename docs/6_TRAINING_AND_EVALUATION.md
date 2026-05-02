@@ -100,6 +100,8 @@
 - trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
 - seg-first lane head의 dense loss 입력(`lane_seg_*`)은 AMP forward 이후 loss precision path에서 fp32로 정규화한다. 2026-05-02 CUDA probe에서 이 보정 후 기존 `lane=nan` skip은 재현되지 않았다.
 - trainer는 lane-family repo의 `pcgrad_style` multitask conflict update를 PV26용으로 확장해 지원한다. PV26 기본 config는 trunk PCGrad task를 `det/tl_attr/lane/stop_line/crosswalk` 전체로 둔다. roadmark-only 원본 구현처럼 `lane/stop_line/crosswalk`만 쓰면 PV26 stage 3에서 OD/TL trunk gradient를 덮어쓸 수 있으므로 그대로 축소하지 않는다.
+- TensorBoard는 step loss, task별 weighted loss, phase objective, validation metric, PCGrad conflict count/gradient norm/task loss summary를 기록한다.
+- 기본 preview는 validation split에서 BDD/traffic/obstacle/lane source별 4장씩 고르고, lane sample은 lane/stop_line/crosswalk가 함께 있는 장면을 우선한다. 매 epoch 산출물은 `phase_<N>/epoch_comparison_grids/epoch_<EEE>/comparison_grid.png`와 sample별 `ground_truth.png`, `prediction.png`, `comparison.png`다.
 - trainer preset은 stage 1~4 phase chain을 기준으로 확장된다.
 - `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원한다. legacy/dev preset과 legacy dataset mapping key는 더 이상 지원하지 않는다.
 - exact in-place resume는 `python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>` 경로를 기준으로 유지한다.

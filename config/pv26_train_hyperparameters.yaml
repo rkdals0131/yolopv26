@@ -13,8 +13,12 @@ pv26_train:
           - pv26_exhaustive_aihub_traffic_seoul
           - pv26_exhaustive_aihub_obstacle_seoul
           - aihub_lane_seoul
-        max_samples_per_dataset: 1
+        max_samples_per_dataset: 4
         write_overlay: true
+        epoch_comparison_grid: true
+        epoch_comparison_every_n_epochs: 1
+        epoch_comparison_sample_count: 16
+        epoch_comparison_columns: 4
       selection:
         metric_path: selection_metrics.phase_objective
         mode: max
@@ -23,7 +27,7 @@ pv26_train:
         device: cuda:0
         batch_size: 4
         train_batches: -1
-        val_batches: 256
+        val_batches: 512
         trunk_lr: 1.0e-4
         head_lr: 5.0e-3
         weight_decay: 1.0e-4
@@ -73,8 +77,8 @@ pv26_train:
         # validation stays bounded to keep every-epoch feedback practical.
         - name: head_warmup
           stage: stage_1_frozen_trunk_warmup
-          min_epochs: 1
-          max_epochs: 1
+          min_epochs: 2
+          max_epochs: 2
           patience: 1
           min_improvement_pct: 1.0
           min_delta_abs: 0.003
@@ -84,8 +88,8 @@ pv26_train:
             head_lr: 3.0e-3
         - name: partial_unfreeze
           stage: stage_2_partial_unfreeze
-          min_epochs: 1
-          max_epochs: 1
+          min_epochs: 2
+          max_epochs: 2
           patience: 1
           min_improvement_pct: 0.5
           min_delta_abs: 0.003
@@ -95,8 +99,8 @@ pv26_train:
             head_lr: 8.0e-4
         - name: end_to_end_finetune
           stage: stage_3_end_to_end_finetune
-          min_epochs: 78
-          max_epochs: 78
+          min_epochs: 20
+          max_epochs: 20
           patience: 1
           min_improvement_pct: 0.25
           min_delta_abs: 0.0025
