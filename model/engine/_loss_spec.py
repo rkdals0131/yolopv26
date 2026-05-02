@@ -5,7 +5,7 @@ from typing import Any
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
-SPEC_VERSION = "pv26-loss-v9"
+SPEC_VERSION = "pv26-loss-v10"
 LossSpec = dict[str, Any]
 
 
@@ -111,22 +111,21 @@ def _build_heads() -> dict[str, Any]:
             },
         },
         "stop_line": {
-            "shape": "B x 8 x 6",
-            "query_count": 8,
-            "target_encoding": {
-                "objectness": 1,
-                "endpoints": 2,
-                "point_coordinates": 4,
-                "width": 1,
-            },
-        },
-        "crosswalk": {
             "shape": "B x 8 x 9",
             "query_count": 8,
             "target_encoding": {
                 "objectness": 1,
-                "quad_corners": 4,
+                "polyline_points": 4,
                 "point_coordinates": 8,
+            },
+        },
+        "crosswalk": {
+            "shape": "B x 8 x 33",
+            "query_count": 8,
+            "target_encoding": {
+                "objectness": 1,
+                "sequence_points": 16,
+                "point_coordinates": 32,
             },
         },
     }
@@ -202,15 +201,12 @@ def _build_encoded_batch_contract() -> dict[str, Any]:
         "tl_attr_gt_bits": "float32[B, N_gt_det_max, 4]",
         "tl_attr_gt_mask": "bool[B, N_gt_det_max]",
         "lane": "float32[B, 24, 38]",
-        "stop_line": "float32[B, 8, 6]",
-        "crosswalk": "float32[B, 8, 9]",
+        "stop_line": "float32[B, 8, 9]",
+        "crosswalk": "float32[B, 8, 33]",
         "det_supervision": {
             "det_supervised_class_mask": "bool[B, C_det] with at least one true class for det_source rows",
             "det_allow_objectness_negatives": "bool[B]",
             "det_allow_unmatched_class_negatives": "bool[B]",
-        },
-        "geometry_masks": {
-            "stop_line_width_valid": "bool[B, 8]",
         },
         "det_assignment_binding": "computed inside loss and maps Q_det positives to N_gt_det indices",
     }
@@ -265,10 +261,10 @@ def _build_canonical_target_rules() -> dict[str, Any]:
             "Preserve source visibility when available; otherwise derive pseudo-visibility from point span.",
         ],
         "stop_line": [
-            "Sort left-to-right, then encode as endpoints + optional width.",
+            "Project to a canonical centerline, then sample 4 ordered polyline points.",
         ],
         "crosswalk": [
-            "Order contour clockwise, then downsample to 4-corner quad.",
+            "Order contour clockwise, preserve original vertices when possible, then sample a 16-point contour sequence.",
         ],
         "external_contract": [
             "Training/inference IO stays AIHUB-compatible.",
@@ -392,8 +388,7 @@ def _build_losses() -> dict[str, Any]:
             "type": "matched_query_loss",
             "subterms": {
                 "objectness": 1.0,
-                "endpoints_smooth_l1": 6.0,
-                "width_smooth_l1": 1.0,
+                "polyline_smooth_l1": 6.0,
                 "angle_length": 0.5,
             },
         },
@@ -401,7 +396,7 @@ def _build_losses() -> dict[str, Any]:
             "type": "matched_query_loss",
             "subterms": {
                 "objectness": 1.0,
-                "corner_smooth_l1": 4.0,
+                "contour_smooth_l1": 4.0,
                 "shape_regularizer": 0.5,
             },
         },
@@ -423,15 +418,14 @@ def _build_matching() -> dict[str, Any]:
         "stop_line": {
             "matcher": "hungarian",
             "costs": {
-                "endpoints_l1": 4.0,
-                "width_l1": 0.5,
+                "polyline_l1": 4.0,
                 "angle_length_cost": 0.5,
             },
         },
         "crosswalk": {
             "matcher": "hungarian",
             "costs": {
-                "corner_l1": 3.0,
+                "contour_l1": 3.0,
                 "polygon_overlap_cost": 1.0,
             },
         },
@@ -467,7 +461,7 @@ def _build_validation() -> dict[str, Any]:
         ],
         "crosswalk": [
             "polygon IoU",
-            "corner distance",
+            "contour vertex distance",
         ],
     }
 

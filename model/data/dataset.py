@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -243,6 +245,7 @@ class PV26CanonicalDataset(Dataset):
         dataset_roots: Iterable[Path | str],
         *,
         train_augmentation: bool | TrainAugmentationConfig = False,
+        train_augmentation_seed: int | None = None,
         progress_callback: Callable[[str], None] | None = None,
         progress_every: int = 2000,
     ) -> None:
@@ -253,6 +256,7 @@ class PV26CanonicalDataset(Dataset):
             self.train_augmentation = TrainAugmentationConfig()
         else:
             self.train_augmentation = None
+        self.train_augmentation_seed = None if train_augmentation_seed is None else int(train_augmentation_seed)
         self.records: list[SampleRecord] = []
         for root in roots:
             if progress_callback is not None:
@@ -339,6 +343,11 @@ class PV26CanonicalDataset(Dataset):
         )
         augmentation_meta = None
         if record.split == "train" and self.train_augmentation is not None:
+            rng = None
+            if self.train_augmentation_seed is not None:
+                key = f"{self.train_augmentation_seed}:{record.dataset_key}:{record.split}:{record.sample_id}".encode("utf-8")
+                seed = int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
+                rng = random.Random(seed)
             image, det_boxes, lanes, stop_lines, crosswalks, augmentation_meta = apply_train_augmentations(
                 image,
                 det_boxes=det_boxes,
@@ -347,6 +356,7 @@ class PV26CanonicalDataset(Dataset):
                 crosswalks=crosswalks,
                 network_hw=NETWORK_HW,
                 config=self.train_augmentation,
+                rng=rng,
             )
 
         return {
@@ -405,14 +415,14 @@ def collate_pv26_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def collate_pv26_encoded_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
     from .target_encoder import encode_pv26_batch
 
-    return encode_pv26_batch(collate_pv26_samples(samples))
+    return encode_pv26_batch(collate_pv26_samples(samples), include_lane_segfirst_targets=True)
 
 
 def collate_pv26_encoded_eval_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
     from .target_encoder import encode_pv26_batch
 
     raw_batch = collate_pv26_samples(samples)
-    encoded = encode_pv26_batch(raw_batch)
+    encoded = encode_pv26_batch(raw_batch, include_lane_segfirst_targets=True)
     encoded["_raw_batch"] = {
         "det_targets": list(raw_batch["det_targets"]),
         "tl_attr_targets": list(raw_batch["tl_attr_targets"]),

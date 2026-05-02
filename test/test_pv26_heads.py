@@ -19,8 +19,9 @@ class PV26HeadsTests(unittest.TestCase):
     def test_heads_produce_documented_output_shapes(self) -> None:
         from model.net import PV26Heads
 
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        heads = PV26Heads(in_channels=(64, 64, 128, 256))
         features = [
+            torch.randn(2, 64, 152, 200),
             torch.randn(2, 64, 76, 100),
             torch.randn(2, 128, 38, 50),
             torch.randn(2, 256, 19, 25),
@@ -39,11 +40,13 @@ class PV26HeadsTests(unittest.TestCase):
     def test_heads_expose_feature_contract_metadata(self) -> None:
         from model.net import PV26Heads
 
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        heads = PV26Heads(in_channels=(64, 64, 128, 256))
         summary = heads.describe()
 
-        self.assertEqual(summary["feature_channels"], [64, 128, 256])
-        self.assertEqual(summary["feature_strides"], [8, 16, 32])
+        self.assertEqual(summary["feature_channels"], [64, 64, 128, 256])
+        self.assertEqual(summary["feature_strides"], [4, 8, 16, 32])
+        self.assertEqual(summary["det_feature_channels"], [64, 128, 256])
+        self.assertEqual(summary["det_feature_strides"], [8, 16, 32])
         self.assertEqual(summary["det_dim"], 12)
         self.assertEqual(summary["tl_attr_dim"], 4)
         self.assertEqual(summary["lane_queries"], LANE_QUERY_COUNT)
@@ -53,15 +56,16 @@ class PV26HeadsTests(unittest.TestCase):
     def test_heads_reject_wrong_feature_count(self) -> None:
         from model.net import PV26Heads
 
-        heads = PV26Heads(in_channels=(64, 128, 256))
-        with self.assertRaisesRegex(ValueError, "3 feature maps"):
+        heads = PV26Heads(in_channels=(64, 64, 128, 256))
+        with self.assertRaisesRegex(ValueError, "4 feature maps"):
             heads([torch.randn(1, 64, 76, 100)])
 
     def test_heads_support_yolo26s_channel_contract(self) -> None:
         from model.net import PV26Heads
 
-        heads = PV26Heads(in_channels=(128, 256, 512))
+        heads = PV26Heads(in_channels=(128, 128, 256, 512))
         features = [
+            torch.randn(2, 128, 152, 200),
             torch.randn(2, 128, 76, 100),
             torch.randn(2, 256, 38, 50),
             torch.randn(2, 512, 19, 25),
@@ -73,23 +77,22 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(tuple(outputs["lane"].shape), (2, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
         self.assertEqual(outputs["det_feature_shapes"], [(76, 100), (38, 50), (19, 25)])
 
-    def test_spatial_query_decoder_promotes_half_precision_memory_to_float32(self) -> None:
-        from model.net.heads import _SpatialQueryDecoderHead
+    def test_roadmark_native_outputs_are_finite(self) -> None:
+        from model.net import PV26Heads
 
-        head = _SpatialQueryDecoderHead(
-            hidden_dim=32,
-            query_count=STOP_LINE_QUERY_COUNT,
-            vector_dim=STOP_LINE_VECTOR_DIM,
-            decoder_layers=1,
-            decoder_heads=8,
-            force_float32=True,
-        )
-        memory = torch.randn(2, 32, 8, 10, dtype=torch.float16)
+        heads = PV26Heads(in_channels=(64, 64, 128, 256))
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
 
-        output = head(memory)
+        outputs = heads(features, encoded={})
 
-        self.assertEqual(output.dtype, torch.float32)
-        self.assertTrue(torch.isfinite(output).all())
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
 
 
 if __name__ == "__main__":

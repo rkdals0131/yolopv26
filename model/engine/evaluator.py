@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from ..data.target_encoder import encode_pv26_batch
+from common.task_mode import LANE_FAMILY_TASK_MODE
 from .batch import augment_lane_family_metrics, move_batch_to_device, raw_batch_for_metrics
 from ..net.trunk import forward_pyramid_features
 from .metrics import PV26MetricConfig, summarize_pv26_metrics
@@ -31,12 +32,16 @@ def _weighted_loss_summary(losses: dict[str, torch.Tensor], criterion: torch.nn.
 
 
 def _summarize_counts(encoded: dict[str, Any]) -> dict[str, int]:
+    masks = encoded["mask"]
     return {
         "det_gt": int(encoded["det_gt"]["valid_mask"].sum().item()),
         "tl_attr_gt": int(encoded["tl_attr_gt_mask"].sum().item()),
-        "lane_rows": int(encoded["mask"]["lane_valid"].sum().item()),
-        "stop_line_rows": int(encoded["mask"]["stop_line_valid"].sum().item()),
-        "crosswalk_rows": int(encoded["mask"]["crosswalk_valid"].sum().item()),
+        "lane_raw_rows": int(masks.get("lane_raw_count", masks["lane_valid"].sum()).sum().item()),
+        "lane_input_valid_rows": int(masks.get("lane_input_valid_count", masks["lane_valid"].sum()).sum().item()),
+        "lane_supervised_rows": int(masks.get("lane_supervised_count", masks["lane_valid"].sum()).sum().item()),
+        "lane_rows": int(masks["lane_valid"].sum().item()),
+        "stop_line_rows": int(masks["stop_line_valid"].sum().item()),
+        "crosswalk_rows": int(masks["crosswalk_valid"].sum().item()),
     }
 
 
@@ -59,7 +64,25 @@ class PV26Evaluator:
         self.criterion = (criterion or PV26MultiTaskLoss(stage=stage)).to(self.device)
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
-        encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
+        task_mode = str(getattr(self.criterion, "task_mode", LANE_FAMILY_TASK_MODE))
+        include_segfirst = str(getattr(self.heads, "lane_head_mode", "row_native")) == "seg_first"
+        if "det_gt" in batch:
+            encoded = batch
+            raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
+            has_segfirst = isinstance(encoded.get("roadmark_v2"), dict) and "lane_seg_centerline_core" in encoded["roadmark_v2"]
+            if include_segfirst and not has_segfirst and raw_batch is not None:
+                encoded = encode_pv26_batch(
+                    {"image": encoded["image"], **raw_batch},
+                    task_mode=task_mode,
+                    include_lane_segfirst_targets=True,
+                )
+                encoded["_raw_batch"] = raw_batch
+        else:
+            encoded = encode_pv26_batch(
+                batch,
+                task_mode=task_mode,
+                include_lane_segfirst_targets=include_segfirst,
+            )
         raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
         encoded_payload = {key: value for key, value in encoded.items() if key != "_raw_batch"}
         moved = move_batch_to_device(encoded_payload, self.device)
@@ -69,7 +92,7 @@ class PV26Evaluator:
 
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, Any]:
         features = forward_pyramid_features(self.adapter, encoded["image"])
-        return self.heads(features)
+        return self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
 
     def _run_batch(
         self,

@@ -9,9 +9,15 @@ from typing import Any
 from tools.od_bootstrap.build.debug_vis import (
     DEFAULT_DEBUG_VIS_COUNT,
     DEFAULT_DEBUG_VIS_SEED,
+    DEFAULT_FINAL_LANE_AUDIT_BIN_COUNT,
+    DEFAULT_FINAL_LANE_AUDIT_DIRNAME,
+    DEFAULT_FINAL_LANE_AUDIT_OVERVIEW_COUNT,
+    DEFAULT_FINAL_LANE_AUDIT_SAMPLES_PER_BIN,
+    DEFAULT_FINAL_LANE_AUDIT_WORKERS,
     generate_canonical_debug_vis,
     generate_exhaustive_debug_vis,
     generate_final_dataset_debug_vis,
+    generate_final_lane_label_audit,
     generate_teacher_dataset_debug_vis,
 )
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
@@ -131,6 +137,16 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze_final = subparsers.add_parser("analyze-final-dataset", help="Scan final dataset class/task stats and audit manifest integrity.")
     analyze_final.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
     analyze_final.set_defaults(handler=_run_analyze_final_dataset)
+
+    audit_final = subparsers.add_parser("audit-final-lane-labels", help="Render shallow final-dataset audit overlays with lane-focused stratified sampling.")
+    audit_final.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
+    audit_final.add_argument("--output-root", type=Path, default=None, help="Override the audit output root.")
+    audit_final.add_argument("--overview-count", type=int, default=DEFAULT_FINAL_LANE_AUDIT_OVERVIEW_COUNT, help="Approximate overview overlay budget across the final dataset.")
+    audit_final.add_argument("--lane-bin-count", type=int, default=DEFAULT_FINAL_LANE_AUDIT_BIN_COUNT, help="Number of contiguous bins per lane clip.")
+    audit_final.add_argument("--lane-samples-per-bin", type=int, default=DEFAULT_FINAL_LANE_AUDIT_SAMPLES_PER_BIN, help="How many overlays to sample from each lane bin.")
+    audit_final.add_argument("--workers", type=int, default=DEFAULT_FINAL_LANE_AUDIT_WORKERS, help="Maximum parallel overlay render workers.")
+    audit_final.add_argument("--seed", type=int, default=DEFAULT_DEBUG_VIS_SEED, help="Sampling seed.")
+    audit_final.set_defaults(handler=_run_audit_final_lane_labels)
 
     review_final = subparsers.add_parser("review-final-dataset", help="Render focused final-dataset overlay review samples.")
     review_final.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
@@ -281,6 +297,41 @@ def _run_analyze_final_dataset(args: argparse.Namespace) -> int:
     final_root = _resolve_final_root_override(args.final_root)
     result = analyze_final_dataset(dataset_root=final_root, write_artifacts=True)
     _print_json(result)
+    return 0
+
+
+def _run_audit_final_lane_labels(args: argparse.Namespace) -> int:
+    final_root = _resolve_final_root_override(args.final_root)
+    manifest_path = final_root / "meta" / FINAL_DATASET_MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"final dataset manifest not found: {manifest_path}")
+    manifest = _load_json(manifest_path)
+    sample_rows = [dict(item) for item in manifest.get("samples") or []]
+    output_root = (
+        Path(args.output_root).resolve()
+        if args.output_root is not None
+        else final_root / DEFAULT_FINAL_LANE_AUDIT_DIRNAME
+    )
+    result = generate_final_lane_label_audit(
+        dataset_root=final_root,
+        manifest_rows=sample_rows,
+        output_root=output_root,
+        overview_count=int(args.overview_count),
+        lane_bin_count=int(args.lane_bin_count),
+        lane_samples_per_bin=int(args.lane_samples_per_bin),
+        debug_vis_seed=int(args.seed),
+        workers=int(args.workers),
+        log_fn=lambda message: print(message, flush=True),
+    )
+    _print_json(
+        {
+            "dataset_root": str(final_root),
+            "output_root": str(result["output_root"]),
+            "index_path": str(result["index_path"]),
+            "summary_path": str(result["summary_path"]),
+            "selection_count": int(result["selection_count"]),
+        }
+    )
     return 0
 
 

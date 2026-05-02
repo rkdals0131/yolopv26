@@ -329,6 +329,91 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             self.assertEqual(stats_payload["traffic_light_attr"]["valid_count"], 1)
             self.assertIn('"sample_count": 1', buffer.getvalue())
 
+    def test_audit_final_lane_labels_renders_shallow_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            final_root = root / "pv26_exhaustive_od_lane_dataset"
+            manifest_rows = [
+                self._make_final_dataset_sample(
+                    dataset_root=final_root,
+                    dataset_key="aihub_lane_seoul",
+                    split="train",
+                    sample_id="aihub_lane_seoul_train_Training_c_1280_720_daylight_train_1_100",
+                    color="#111111",
+                    source_image_path="/raw/lane/train/c_1280_720_daylight_train_1/100.jpg",
+                    source_raw_id="Training_c_1280_720_daylight_train_1_100",
+                    lane_count=1,
+                ),
+                self._make_final_dataset_sample(
+                    dataset_root=final_root,
+                    dataset_key="aihub_lane_seoul",
+                    split="val",
+                    sample_id="aihub_lane_seoul_val_Validation_c_1280_720_daylight_validation_1_c_1280_720_daylight_val_1_200",
+                    color="#121212",
+                    source_image_path="/raw/lane/val/c_1280_720_daylight_val_1/200.jpg",
+                    source_raw_id="Validation_c_1280_720_daylight_validation_1_c_1280_720_daylight_val_1_200",
+                    lane_count=0,
+                ),
+                self._make_final_dataset_sample(
+                    dataset_root=final_root,
+                    dataset_key="pv26_exhaustive_aihub_traffic_seoul",
+                    split="train",
+                    sample_id="traffic_train_001",
+                    color="#222222",
+                    source_image_path="/raw/traffic/train/[원천]c_train_1280_720_daylight_2/001.jpg",
+                    source_raw_id="traffic_train_001",
+                ),
+                self._make_final_dataset_sample(
+                    dataset_root=final_root,
+                    dataset_key="pv26_exhaustive_bdd100k_det_100k",
+                    split="test",
+                    sample_id="bdd_test_001",
+                    color="#333333",
+                    source_image_path="/raw/bdd/100k/test/bdd_test_001.jpg",
+                    source_raw_id="bdd_test_001",
+                ),
+            ]
+            _write_json(
+                final_root / "meta" / FINAL_DATASET_MANIFEST_NAME,
+                {
+                    "version": "test",
+                    "samples": manifest_rows,
+                },
+            )
+            output_root = final_root / "debug_vis_lane_audit"
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = od_bootstrap_main(
+                    [
+                        "audit-final-lane-labels",
+                        "--final-root",
+                        str(final_root),
+                        "--output-root",
+                        str(output_root),
+                        "--overview-count",
+                        "3",
+                        "--lane-bin-count",
+                        "1",
+                        "--lane-samples-per-bin",
+                        "1",
+                        "--workers",
+                        "2",
+                        "--seed",
+                        "7",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            index_payload = json.loads((output_root / "index.json").read_text(encoding="utf-8"))
+            summary_payload = json.loads((output_root / "summary.json").read_text(encoding="utf-8"))
+            self.assertTrue((output_root / "overview").is_dir())
+            self.assertTrue((output_root / "lane_train").is_dir())
+            self.assertTrue((output_root / "lane_val").is_dir())
+            self.assertEqual(summary_payload["lane_zero_counts"]["total"], 1)
+            self.assertTrue(index_payload["items"])
+            self.assertIn('"selection_count"', buffer.getvalue())
+
     def test_review_final_dataset_renders_focus_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -374,3 +459,45 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             self.assertEqual(index_payload["image_count"], 1)
             self.assertTrue(Path(index_payload["entries"][0]["overlay_path"]).is_file())
             self.assertIn('"focus": "vehicle"', buffer.getvalue())
+
+    def _make_final_dataset_sample(
+        self,
+        *,
+        dataset_root: Path,
+        dataset_key: str,
+        split: str,
+        sample_id: str,
+        color: str,
+        source_image_path: str,
+        source_raw_id: str,
+        lane_count: int = 0,
+    ) -> dict[str, str]:
+        image_path = dataset_root / "images" / split / f"{sample_id}.png"
+        scene_path = dataset_root / "labels_scene" / split / f"{sample_id}.json"
+        _make_image(image_path, 64, 48, color)
+        _write_json(
+            scene_path,
+            {
+                "image": {"file_name": image_path.name, "width": 64, "height": 48},
+                "source": {
+                    "dataset": dataset_key,
+                    "split": split,
+                    "final_sample_id": sample_id,
+                    "image_path": source_image_path,
+                    "raw_id": source_raw_id,
+                    "source_kind": "lane" if dataset_key == "aihub_lane_seoul" else "exhaustive_od",
+                },
+                "detections": [{"class_name": "vehicle", "bbox": [10, 10, 30, 30]}],
+                "traffic_lights": [],
+                "lanes": [{"class_name": "white_lane", "points": [[0, 0], [10, 10]]} for _ in range(lane_count)],
+                "stop_lines": [],
+                "crosswalks": [],
+            },
+        )
+        return {
+            "final_sample_id": sample_id,
+            "source_dataset_key": dataset_key,
+            "split": split,
+            "scene_path": str(scene_path),
+            "image_path": str(image_path),
+        }

@@ -7,6 +7,7 @@ from typing import Any, Callable
 import torch
 
 from ..data.target_encoder import encode_pv26_batch
+from common.task_mode import LANE_FAMILY_TASK_MODE
 from . import _trainer_checkpoint as _checkpoint
 from . import _trainer_epochs as _epochs
 from . import _trainer_fit as _fit
@@ -339,12 +340,30 @@ class PV26Trainer:
         self._tensorboard_graph_written = False
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
-        encoded = batch if "det_gt" in batch else encode_pv26_batch(batch)
+        task_mode = str(getattr(self.criterion, "task_mode", LANE_FAMILY_TASK_MODE))
+        include_segfirst = str(getattr(self.heads, "lane_head_mode", "row_native")) == "seg_first"
+        if "det_gt" in batch:
+            encoded = batch
+            raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
+            has_segfirst = isinstance(encoded.get("roadmark_v2"), dict) and "lane_seg_centerline_core" in encoded["roadmark_v2"]
+            if include_segfirst and not has_segfirst and raw_batch is not None:
+                encoded = encode_pv26_batch(
+                    {"image": encoded["image"], **raw_batch},
+                    task_mode=task_mode,
+                    include_lane_segfirst_targets=True,
+                )
+                encoded["_raw_batch"] = raw_batch
+        else:
+            encoded = encode_pv26_batch(
+                batch,
+                task_mode=task_mode,
+                include_lane_segfirst_targets=include_segfirst,
+            )
         return move_batch_to_device(encoded, self.device, non_blocking=self.device.type == "cuda")
 
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         features = forward_pyramid_features(self.adapter, encoded["image"])
-        return self.heads(features)
+        return self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
 
     def _autocast_context(self):
         if not self.amp_enabled:
@@ -530,6 +549,7 @@ class PV26Trainer:
         enable_tensorboard: bool = True,
         selection_metric_callback: Callable[[dict[str, Any]], None] | None = None,
         early_exit_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+        epoch_end_callback: Callable[[dict[str, Any]], None] | None = None,
         run_manifest_extra: dict[str, Any] | None = None,
         log_every_n_steps: int = 1,
         profile_window: int = 20,
@@ -554,6 +574,7 @@ class PV26Trainer:
             enable_tensorboard=enable_tensorboard,
             selection_metric_callback=selection_metric_callback,
             early_exit_callback=early_exit_callback,
+            epoch_end_callback=epoch_end_callback,
             run_manifest_extra=run_manifest_extra,
             log_every_n_steps=log_every_n_steps,
             profile_window=profile_window,

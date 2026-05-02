@@ -2,6 +2,7 @@
 /seg_dataset
 /data/
 /datasets/
+*.tar.zst
 
 # ----- Model weights & checkpoints -----
 *.pt

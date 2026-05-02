@@ -34,6 +34,19 @@ CROSSWALK_QUERY_COUNT = int(build_loss_spec()["heads"]["crosswalk"]["query_count
 CROSSWALK_VECTOR_DIM = int(build_loss_spec()["heads"]["crosswalk"]["shape"].split(" x ")[-1])
 LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
+PV26_TEST_CHANNELS = (64, 64, 128, 256)
+
+
+def _build_yolo26n_roadmark_trunk():
+    from model.net import build_yolo26_roadmark_trunk
+
+    return build_yolo26_roadmark_trunk(weights="yolo26n.pt")
+
+
+def _make_pv26_heads_for_trainer_tests():
+    from model.net import PV26Heads
+
+    return PV26Heads(in_channels=PV26_TEST_CHANNELS, lane_head_mode="row_native")
 
 
 def _default_components_for_test(matched_count: int, unmatched_count: int) -> dict[str, float | int]:
@@ -587,7 +600,7 @@ class PV26TrainerTests(unittest.TestCase):
         from model.net import PV26Heads
 
         adapter = _DummyAdapter()
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        heads = _make_pv26_heads_for_trainer_tests()
 
         stage4 = configure_pv26_train_stage(adapter, heads, "stage_4_lane_family_finetune")
 
@@ -600,8 +613,13 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
         self.assertFalse(any(parameter.requires_grad for parameter in heads.det_heads.parameters()))
         self.assertFalse(any(parameter.requires_grad for parameter in heads.tl_attr_heads.parameters()))
-        self.assertTrue(any(parameter.requires_grad for parameter in heads.spatial_fusion_stem.parameters()))
-        self.assertTrue(any(parameter.requires_grad for parameter in heads.geometry_memory.parameters()))
+        self.assertTrue(heads.lane_family_modules())
+        self.assertTrue(
+            all(
+                any(parameter.requires_grad for parameter in module.parameters())
+                for module in heads.lane_family_modules()
+            )
+        )
         self.assertTrue(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
@@ -610,10 +628,9 @@ class PV26TrainerTests(unittest.TestCase):
     def test_train_step_with_real_runtime_returns_finite_losses(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
-        adapter = build_yolo26n_trunk()
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        adapter = _build_yolo26n_roadmark_trunk()
+        heads = _make_pv26_heads_for_trainer_tests()
         trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup")
 
         summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=9975))
@@ -638,10 +655,9 @@ class PV26TrainerTests(unittest.TestCase):
         from model.net import PV26Heads
         from model.engine.loss import PV26MultiTaskLoss
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
-        adapter = build_yolo26n_trunk()
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        adapter = _build_yolo26n_roadmark_trunk()
+        heads = _make_pv26_heads_for_trainer_tests()
         criterion = PV26MultiTaskLoss(
             stage="stage_1_frozen_trunk_warmup",
             det_cls_negative_weight=0.2,
@@ -668,8 +684,8 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(json.loads(history_lines[-1])["global_step"], 2)
 
             reloaded_trainer = PV26Trainer(
-                build_yolo26n_trunk(),
-                PV26Heads(in_channels=(64, 128, 256)),
+                _build_yolo26n_roadmark_trunk(),
+                _make_pv26_heads_for_trainer_tests(),
                 stage="stage_1_frozen_trunk_warmup",
             )
             checkpoint = reloaded_trainer.load_checkpoint(checkpoint_path, map_location="cpu")
@@ -693,7 +709,7 @@ class PV26TrainerTests(unittest.TestCase):
         from model.engine.trainer import PV26Trainer
         from model.net import PV26Heads
 
-        trainer = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+        trainer = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             checkpoint_path = trainer.save_checkpoint(Path(temp_dir) / "resume_break.pt")
@@ -701,7 +717,7 @@ class PV26TrainerTests(unittest.TestCase):
             payload["checkpoint_metadata"]["architecture_generation"] = "pv26-pre-road-marking"
             torch.save(payload, checkpoint_path)
 
-            reloaded = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+            reloaded = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
             with self.assertRaisesRegex(RuntimeError, "exact resume unsupported"):
                 reloaded.load_checkpoint(checkpoint_path, map_location="cpu")
 
@@ -709,8 +725,8 @@ class PV26TrainerTests(unittest.TestCase):
         from model.engine.trainer import PV26Trainer
         from model.net import PV26Heads
 
-        source = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
-        target = PV26Trainer(_DummyAdapter(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+        source = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
+        target = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
 
         checkpoint_payload = {
             "adapter_state_dict": source.adapter.raw_model.state_dict(),
@@ -720,18 +736,32 @@ class PV26TrainerTests(unittest.TestCase):
             checkpoint_payload["heads_state_dict"]["det_heads.0.block.0.weight"],
             7.0,
         )
-        checkpoint_payload["heads_state_dict"]["lane_head.predictor.weight"] = torch.ones((1, 1), dtype=torch.float32)
+        lane_weight_keys = [
+            "roadmark_heads.roadmark_heads.lane_head.location_head.weight",
+            "roadmark_heads.lane_head.location_head.weight",
+            "lane_head.location_head.weight",
+        ]
+        for lane_weight_key in lane_weight_keys:
+            checkpoint_payload["heads_state_dict"][lane_weight_key] = torch.ones((1, 1), dtype=torch.float32)
 
-        original_lane_predictor = target.heads.lane_head.predictor.weight.detach().clone()
+        original_lane_weight = (
+            target.heads.roadmark_heads.roadmark_heads.lane_head.location_head.weight.detach().clone()
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
             checkpoint_path = Path(temp_dir) / "migration.pt"
             torch.save(checkpoint_payload, checkpoint_path)
             loaded = target.load_model_weights(checkpoint_path, map_location="cpu")
 
         self.assertEqual(loaded["load_policy"], "shape_aware_partial")
-        self.assertIn("lane_head.predictor.weight", loaded["heads_load_report"]["skipped_shape_keys"])
+        for lane_weight_key in lane_weight_keys:
+            self.assertIn(lane_weight_key, loaded["heads_load_report"]["skipped_shape_keys"])
         self.assertAlmostEqual(float(target.heads.det_heads[0].block[0].weight.detach().flatten()[0]), 7.0)
-        self.assertTrue(torch.equal(target.heads.lane_head.predictor.weight.detach(), original_lane_predictor))
+        self.assertTrue(
+            torch.equal(
+                target.heads.roadmark_heads.roadmark_heads.lane_head.location_head.weight.detach(),
+                original_lane_weight,
+            )
+        )
 
     def test_run_fit_selection_metric_callback_populates_custom_best_metric_path(self) -> None:
         from model.engine import _trainer_fit
@@ -836,10 +866,9 @@ class PV26TrainerTests(unittest.TestCase):
     def test_fit_writes_epoch_history_and_checkpoints(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
-        adapter = build_yolo26n_trunk()
-        heads = PV26Heads(in_channels=(64, 128, 256))
+        adapter = _build_yolo26n_roadmark_trunk()
+        heads = _make_pv26_heads_for_trainer_tests()
         trainer = PV26Trainer(adapter, heads, stage="stage_1_frozen_trunk_warmup")
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
 
@@ -933,11 +962,10 @@ class PV26TrainerTests(unittest.TestCase):
     def test_train_step_supports_grad_accumulation(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
         trainer = PV26Trainer(
-            build_yolo26n_trunk(),
-            PV26Heads(in_channels=(64, 128, 256)),
+            _build_yolo26n_roadmark_trunk(),
+            _make_pv26_heads_for_trainer_tests(),
             stage="stage_1_frozen_trunk_warmup",
             accumulate_steps=2,
             grad_clip_norm=1.0,
@@ -973,11 +1001,10 @@ class PV26TrainerTests(unittest.TestCase):
     def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
         trainer = PV26Trainer(
-            build_yolo26n_trunk(),
-            PV26Heads(in_channels=(64, 128, 256)),
+            _build_yolo26n_roadmark_trunk(),
+            _make_pv26_heads_for_trainer_tests(),
             criterion=_NaNCriterion(),
             skip_non_finite_loss=True,
         )
@@ -993,11 +1020,10 @@ class PV26TrainerTests(unittest.TestCase):
     def test_train_step_recovers_from_oom_guard(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
         trainer = PV26Trainer(
-            build_yolo26n_trunk(),
-            PV26Heads(in_channels=(64, 128, 256)),
+            _build_yolo26n_roadmark_trunk(),
+            _make_pv26_heads_for_trainer_tests(),
             criterion=_OOMCriterion(),
             oom_guard=True,
         )
@@ -1185,17 +1211,16 @@ class PV26TrainerTests(unittest.TestCase):
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
-        from model.net import build_yolo26n_trunk
 
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "resume_fit"
 
-            trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+            trainer = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
             first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir)
             self.assertEqual(first["completed_epochs"], 1)
 
-            resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+            resumed = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
             second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True)
 
             self.assertTrue(second["auto_resumed"])
@@ -1208,7 +1233,6 @@ class PV26TrainerTests(unittest.TestCase):
         from model.net import PV26Heads
         from model.engine.trainer import PV26Trainer
         import model.engine._trainer_io as trainer_io
-        from model.net import build_yolo26n_trunk
 
         batch = _make_encoded_batch(batch_size=1, q_det=9975)
         writer_calls: list[tuple[Path, int | None, _FakeSummaryWriter]] = []
@@ -1227,10 +1251,10 @@ class PV26TrainerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "resume_fit_tb"
             with mock.patch.object(trainer_io, "_maybe_build_summary_writer", side_effect=_fake_build_summary_writer):
-                trainer = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+                trainer = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
                 first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, enable_tensorboard=True)
 
-                resumed = PV26Trainer(build_yolo26n_trunk(), PV26Heads(in_channels=(64, 128, 256)), stage="stage_1_frozen_trunk_warmup")
+                resumed = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
                 second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True, enable_tensorboard=True)
 
         self.assertEqual(first["completed_epochs"], 1)

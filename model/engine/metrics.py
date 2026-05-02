@@ -9,6 +9,10 @@ from PIL import Image, ImageDraw
 from scipy.optimize import linear_sum_assignment
 import torch
 
+from common.geometry import (
+    canonicalize_crosswalk_points,
+    sample_stop_line_centerline,
+)
 from ..data.transform import inverse_transform_box_xyxy, inverse_transform_points, transform_from_meta
 from .spec import build_loss_spec
 
@@ -18,6 +22,8 @@ OD_CLASSES = tuple(SPEC["model_contract"]["od_classes"])
 TL_BITS = tuple(SPEC["model_contract"]["tl_bits"])
 LANE_CLASSES = ("white_lane", "yellow_lane", "blue_lane")
 LANE_TYPES = ("solid", "dotted")
+STOP_LINE_POINT_COUNT = int(SPEC["heads"]["stop_line"]["target_encoding"]["polyline_points"])
+CROSSWALK_POINT_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["sequence_points"])
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,11 @@ def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
+def _points_all_finite(points_xy: list[list[float]] | np.ndarray) -> bool:
+    points = np.asarray(points_xy, dtype=np.float32)
+    return bool(np.isfinite(points).all())
+
+
 def _prf(tp: int, fp: int, fn: int) -> dict[str, float | int]:
     precision = _safe_div(tp, tp + fp)
     recall = _safe_div(tp, tp + fn)
@@ -55,6 +66,8 @@ def _prf(tp: int, fp: int, fn: int) -> dict[str, float | int]:
 def _box_iou(box_a: list[float], box_b: list[float]) -> float:
     ax1, ay1, ax2, ay2 = [float(value) for value in box_a]
     bx1, by1, bx2, by2 = [float(value) for value in box_b]
+    if not math.isfinite(ax1 + ay1 + ax2 + ay2 + bx1 + by1 + bx2 + by2):
+        return 0.0
     inter_x1 = max(ax1, bx1)
     inter_y1 = max(ay1, by1)
     inter_x2 = min(ax2, bx2)
@@ -99,6 +112,8 @@ def _compute_ap(records: list[tuple[float, int]], gt_count: int) -> float:
 
 def _resample_points(points_xy: list[list[float]], target_count: int) -> np.ndarray:
     points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if not bool(np.isfinite(points).all()):
+        return np.full((target_count, 2), np.inf, dtype=np.float32)
     if points.shape[0] == 0:
         return np.zeros((target_count, 2), dtype=np.float32)
     if points.shape[0] == 1:
@@ -127,13 +142,68 @@ def _resample_points(points_xy: list[list[float]], target_count: int) -> np.ndar
     return np.stack(resampled, axis=0)
 
 
+def _resample_polygon_points(points_xy: list[list[float]], target_count: int) -> np.ndarray:
+    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if not bool(np.isfinite(points).all()):
+        return np.full((target_count, 2), np.inf, dtype=np.float32)
+    if points.shape[0] == 0:
+        return np.zeros((target_count, 2), dtype=np.float32)
+    if points.shape[0] == 1:
+        return np.repeat(points, target_count, axis=0)
+    next_points = np.roll(points, shift=-1, axis=0)
+    deltas = next_points - points
+    segment_lengths = np.linalg.norm(deltas, axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    total_length = float(cumulative[-1])
+    if total_length <= 1e-6:
+        return np.repeat(points[:1], target_count, axis=0)
+
+    targets = np.linspace(0.0, total_length, target_count + 1, dtype=np.float32)[:-1]
+    resampled: list[np.ndarray] = []
+    for target in targets:
+        upper = int(np.searchsorted(cumulative, target, side="right"))
+        upper = min(max(upper, 1), points.shape[0])
+        lower = upper - 1
+        start = points[lower]
+        end = points[upper % points.shape[0]]
+        left_distance = cumulative[lower]
+        right_distance = cumulative[upper]
+        interval = float(right_distance - left_distance)
+        if interval <= 1e-6:
+            resampled.append(start)
+            continue
+        ratio = float((target - left_distance) / interval)
+        resampled.append(start + ratio * (end - start))
+    return np.stack(resampled, axis=0)
+
+
 def _mean_point_distance(points_a: list[list[float]], points_b: list[list[float]], target_count: int) -> float:
+    if not _points_all_finite(points_a) or not _points_all_finite(points_b):
+        return float("inf")
     resampled_a = _resample_points(points_a, target_count)
     resampled_b = _resample_points(points_b, target_count)
-    return float(np.linalg.norm(resampled_a - resampled_b, axis=1).mean())
+    value = float(np.linalg.norm(resampled_a - resampled_b, axis=1).mean())
+    return value if math.isfinite(value) else float("inf")
+
+
+def _mean_cyclic_point_distance(points_a: list[list[float]], points_b: list[list[float]], target_count: int) -> float:
+    if not _points_all_finite(points_a) or not _points_all_finite(points_b):
+        return float("inf")
+    resampled_a = _resample_polygon_points(points_a, target_count)
+    resampled_b = _resample_polygon_points(points_b, target_count)
+    best = float("inf")
+    for orientation in (resampled_b, resampled_b[::-1].copy()):
+        for shift in range(target_count):
+            candidate = np.roll(orientation, shift=-shift, axis=0)
+            distance = float(np.linalg.norm(resampled_a - candidate, axis=1).mean())
+            if distance < best:
+                best = distance
+    return best if math.isfinite(best) else float("inf")
 
 
 def _segment_angle_error(points_a: list[list[float]], points_b: list[list[float]], target_count: int) -> float:
+    if not _points_all_finite(points_a) or not _points_all_finite(points_b):
+        return 180.0
     resampled_a = _resample_points(points_a, target_count)
     resampled_b = _resample_points(points_b, target_count)
     vector_a = resampled_a[-1] - resampled_a[0]
@@ -149,6 +219,10 @@ def _segment_angle_error(points_a: list[list[float]], points_b: list[list[float]
 def _polygon_iou(points_a: list[list[float]], points_b: list[list[float]]) -> float:
     polygon_a = np.asarray(points_a, dtype=np.float32).reshape(-1, 2)
     polygon_b = np.asarray(points_b, dtype=np.float32).reshape(-1, 2)
+    if polygon_a.shape[0] < 3 or polygon_b.shape[0] < 3:
+        return 0.0
+    if not bool(np.isfinite(polygon_a).all()) or not bool(np.isfinite(polygon_b).all()):
+        return 0.0
     min_x = math.floor(min(float(polygon_a[:, 0].min()), float(polygon_b[:, 0].min())))
     min_y = math.floor(min(float(polygon_a[:, 1].min()), float(polygon_b[:, 1].min())))
     max_x = math.ceil(max(float(polygon_a[:, 0].max()), float(polygon_b[:, 0].max())))
@@ -172,6 +246,13 @@ def _polygon_iou(points_a: list[list[float]], points_b: list[list[float]]) -> fl
 def _hungarian_from_cost(cost_matrix: np.ndarray, *, max_cost: float) -> list[tuple[int, int]]:
     if cost_matrix.size == 0 or cost_matrix.shape[0] == 0 or cost_matrix.shape[1] == 0:
         return []
+    finite_mask = np.isfinite(cost_matrix)
+    if not finite_mask.any():
+        return []
+    if not finite_mask.all():
+        finite_values = cost_matrix[finite_mask]
+        replacement = float(finite_values.max() + np.abs(finite_values).max() + 1.0)
+        cost_matrix = np.where(finite_mask, cost_matrix, replacement)
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
     matches: list[tuple[int, int]] = []
     for pred_index, gt_index in zip(row_ind.tolist(), col_ind.tolist()):
@@ -183,6 +264,11 @@ def _hungarian_from_cost(cost_matrix: np.ndarray, *, max_cost: float) -> list[tu
 def _hungarian_from_similarity(similarity_matrix: np.ndarray, *, min_similarity: float) -> list[tuple[int, int]]:
     if similarity_matrix.size == 0 or similarity_matrix.shape[0] == 0 or similarity_matrix.shape[1] == 0:
         return []
+    finite_mask = np.isfinite(similarity_matrix)
+    if not finite_mask.any():
+        return []
+    if not finite_mask.all():
+        similarity_matrix = np.where(finite_mask, similarity_matrix, -1.0)
     row_ind, col_ind = linear_sum_assignment(1.0 - similarity_matrix)
     matches: list[tuple[int, int]] = []
     for pred_index, gt_index in zip(row_ind.tolist(), col_ind.tolist()):
@@ -224,8 +310,9 @@ def _extract_gt_samples(batch: dict[str, Any]) -> list[dict[str, Any]]:
             )
 
         lanes: list[dict[str, Any]] = []
+        lane_eval_mask = sample_valid.get("lane_supervised", sample_valid["lane"])
         for row_index, row in enumerate(sample_lane["lanes"]):
-            if not bool(sample_valid["lane"][row_index]):
+            if not bool(lane_eval_mask[row_index]):
                 continue
             raw_points = inverse_transform_points(row["points_xy"].tolist(), transform)
             lanes.append(
@@ -240,14 +327,19 @@ def _extract_gt_samples(batch: dict[str, Any]) -> list[dict[str, Any]]:
         for row_index, row in enumerate(sample_lane["stop_lines"]):
             if not bool(sample_valid["stop_line"][row_index]):
                 continue
-            raw_points = inverse_transform_points(row["points_xy"].tolist(), transform)
+            raw_points = sample_stop_line_centerline(
+                inverse_transform_points(row["points_xy"].tolist(), transform),
+                target_count=4,
+            ).tolist()
             stop_lines.append({"points_xy": [[float(x), float(y)] for x, y in raw_points]})
 
         crosswalks: list[dict[str, Any]] = []
         for row_index, row in enumerate(sample_lane["crosswalks"]):
             if not bool(sample_valid["crosswalk"][row_index]):
                 continue
-            raw_points = inverse_transform_points(row["points_xy"].tolist(), transform)
+            raw_points = canonicalize_crosswalk_points(
+                inverse_transform_points(row["points_xy"].tolist(), transform)
+            ).tolist()
             crosswalks.append({"points_xy": [[float(x), float(y)] for x, y in raw_points]})
 
         samples.append(
@@ -368,6 +460,8 @@ def summarize_pv26_tensorboard_histograms(
             matched_gt: set[int] = set()
             for pred in sorted(pred_rows, key=lambda item: float(item["score"]), reverse=True):
                 score = float(pred["score"])
+                if not math.isfinite(score):
+                    continue
                 detector_prediction_confidence.append(score)
                 detector_per_class_confidence[class_name].append(score)
                 best_iou = 0.0
@@ -403,7 +497,11 @@ def summarize_pv26_tensorboard_histograms(
             if best_gt_index >= 0 and best_iou >= config.tl_iou_threshold:
                 matched_gt.add(best_gt_index)
                 attr_scores = pred["tl_attr_scores"]
-                values = [float(attr_scores[bit]) for bit in TL_BITS if bit in attr_scores]
+                values = [
+                    float(attr_scores[bit])
+                    for bit in TL_BITS
+                    if bit in attr_scores and math.isfinite(float(attr_scores[bit]))
+                ]
                 if values:
                     traffic_light_attr_confidence.append(sum(values) / len(values))
 
@@ -574,7 +672,10 @@ def _lane_family_metrics(
         for pred_index, gt_index in matches:
             pred = pred_rows[pred_index]
             gt = gt_rows[gt_index]
-            distances.append(_mean_point_distance(pred["points_xy"], gt["points_xy"], target_count))
+            if field_name == "crosswalks":
+                distances.append(_mean_cyclic_point_distance(pred["points_xy"], gt["points_xy"], target_count))
+            else:
+                distances.append(_mean_point_distance(pred["points_xy"], gt["points_xy"], target_count))
             if field_name == "lanes":
                 attr_total += 1
                 if pred["class_name"] == gt["class_name"]:
@@ -686,14 +787,14 @@ def summarize_pv26_metrics(
             predictions,
             gt_samples,
             field_name="stop_lines",
-            target_count=4,
+            target_count=STOP_LINE_POINT_COUNT,
             match_threshold=config.stop_line_match_threshold,
         ),
         "crosswalk": _lane_family_metrics(
             predictions,
             gt_samples,
             field_name="crosswalks",
-            target_count=8,
+            target_count=CROSSWALK_POINT_COUNT,
             iou_threshold=config.crosswalk_iou_threshold,
         ),
     }

@@ -33,11 +33,16 @@ def build_meta_train_presets(
         preset_overrides = {}
     if not isinstance(preset_overrides, dict):
         raise TypeError("pv26_train.presets must be a mapping")
-    unsupported_preset_overrides = sorted(set(preset_overrides) - {"default"})
+    supported_preset_names = {
+        "default",
+        "pv26_unified_roadmark_native_a100",
+        "pv26_unified_roadmark_segfirst_a100",
+    }
+    unsupported_preset_overrides = sorted(set(preset_overrides) - supported_preset_names)
     if unsupported_preset_overrides:
         raise KeyError(
             "unsupported PV26 meta-train preset overrides: "
-            f"{unsupported_preset_overrides}; only 'default' is supported"
+            f"{unsupported_preset_overrides}; supported presets are {sorted(supported_preset_names)}"
         )
 
     preview_dataset_keys = (
@@ -157,6 +162,114 @@ def build_meta_train_presets(
         ),
     )
 
+    a100_train_defaults = replace(
+        default_train_defaults,
+        batch_size=64,
+        train_batches=-1,
+        val_batches=-1,
+        amp=True,
+        num_workers=12,
+        persistent_workers=True,
+        prefetch_factor=4,
+        checkpoint_every=0,
+        lane_dynamic_coverage_weight=0.1,
+    )
+    segfirst_a100_train_defaults = replace(
+        a100_train_defaults,
+        batch_size=64,
+        train_batches=512,
+        val_batches=256,
+        amp=False,
+        train_augmentation=True,
+        train_augmentation_seed=26,
+        task_positive_task="multi:lane,stopline,crosswalk",
+        task_positive_fraction=0.5,
+        sampler_ratios={
+            "bdd100k": 0.35,
+            "aihub_traffic": 0.35,
+            "aihub_lane": 0.0,
+            "aihub_obstacle": 0.30,
+        },
+    )
+    a100_run = replace(default_run, run_name_prefix="pv26_unified_roadmark_native_a100")
+    segfirst_a100_run = replace(default_run, run_name_prefix="pv26_unified_roadmark_segfirst_a100")
+    a100_preview = replace(
+        default_preview,
+        max_samples_per_dataset=3,
+        epoch_comparison_grid=True,
+        epoch_comparison_every_n_epochs=1,
+        epoch_comparison_sample_count=12,
+        epoch_comparison_columns=3,
+    )
+    a100_phases = tuple(
+        replace(phase_config, max_epochs=max(phase_config.max_epochs, 25), patience=max(phase_config.patience, 5))
+        for phase_config in default_phases
+    )
+    segfirst_a100_phases = (
+        phase(
+            "head_warmup",
+            "stage_1_frozen_trunk_warmup",
+            min_epochs=2,
+            max_epochs=2,
+            patience=2,
+            min_delta_abs=0.003,
+            overrides={
+                "trunk_lr": 5e-5,
+                "head_lr": 3e-3,
+            },
+        ),
+        phase(
+            "partial_unfreeze",
+            "stage_2_partial_unfreeze",
+            min_epochs=3,
+            max_epochs=3,
+            patience=2,
+            min_delta_abs=0.003,
+            overrides={
+                "trunk_lr": 3e-5,
+                "head_lr": 8e-4,
+            },
+        ),
+        phase(
+            "end_to_end_finetune",
+            "stage_3_end_to_end_finetune",
+            min_epochs=12,
+            max_epochs=20,
+            patience=5,
+            min_delta_abs=0.002,
+            overrides={
+                "trunk_lr": 1e-5,
+                "head_lr": 4e-4,
+            },
+        ),
+        phase(
+            "lane_family_finetune",
+            "stage_4_lane_family_finetune",
+            min_epochs=2,
+            max_epochs=3,
+            patience=2,
+            min_delta_abs=0.002,
+            loss_weights={
+                "det": 0.0,
+                "tl_attr": 0.0,
+                "lane": 1.5,
+                "stop_line": 1.25,
+                "crosswalk": 1.0,
+            },
+            freeze_policy="lane_family_heads_only",
+            overrides={
+                "trunk_lr": 0.0,
+                "head_lr": 2e-4,
+                "task_positive_fraction": 1.0,
+                "sampler_ratios": {
+                    "bdd100k": 0.0,
+                    "aihub_traffic": 0.0,
+                    "aihub_lane": 1.0,
+                    "aihub_obstacle": 0.0,
+                },
+            },
+        ),
+    )
     presets = {
         "default": MetaTrainScenario(
             dataset=default_dataset,
@@ -165,6 +278,22 @@ def build_meta_train_presets(
             selection=default_selection,
             preview=default_preview,
             phases=default_phases,
+        ),
+        "pv26_unified_roadmark_native_a100": MetaTrainScenario(
+            dataset=default_dataset,
+            run=a100_run,
+            train_defaults=a100_train_defaults,
+            selection=default_selection,
+            preview=a100_preview,
+            phases=a100_phases,
+        ),
+        "pv26_unified_roadmark_segfirst_a100": MetaTrainScenario(
+            dataset=default_dataset,
+            run=segfirst_a100_run,
+            train_defaults=segfirst_a100_train_defaults,
+            selection=default_selection,
+            preview=a100_preview,
+            phases=segfirst_a100_phases,
         ),
     }
     return {

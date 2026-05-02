@@ -88,15 +88,29 @@ class TrainDefaultsConfig:
     encode_val_batches_in_loader: bool = True
     persistent_workers: bool = True
     prefetch_factor: int | None = 2
+    train_augmentation: bool = False
+    train_augmentation_seed: int | None = None
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
+    task_positive_task: str | None = None
+    task_positive_fraction: float | None = None
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
     lane_obj_threshold: float = 0.50
     stop_line_obj_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
     allow_python_nms_fallback: bool = False
+    task_mode: str = "roadmark_joint"
+    lane_assignment_mode: str = "fixed_slot"
+    lane_dynamic_coverage_weight: float = 0.0
+    lane_centerline_focal_weight: float = 0.0
+    lane_centerline_dice_weight: float = 0.0
+    stopline_local_x_aux_weight: float = 0.0
+    stopline_selector_aux_weight: float = 1.0
+    stopline_geometry_aux_weight: float = 1.0
+    stopline_center_target_mode: str = "union"
+    stopline_centerline_target_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -118,6 +132,10 @@ class PreviewConfig:
     )
     max_samples_per_dataset: int = 1
     write_overlay: bool = True
+    epoch_comparison_grid: bool = False
+    epoch_comparison_every_n_epochs: int = 1
+    epoch_comparison_sample_count: int = 12
+    epoch_comparison_columns: int = 3
 
 
 @dataclass(frozen=True)
@@ -209,6 +227,10 @@ def scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
             "dataset_keys": list(scenario.preview.dataset_keys),
             "max_samples_per_dataset": scenario.preview.max_samples_per_dataset,
             "write_overlay": scenario.preview.write_overlay,
+            "epoch_comparison_grid": scenario.preview.epoch_comparison_grid,
+            "epoch_comparison_every_n_epochs": scenario.preview.epoch_comparison_every_n_epochs,
+            "epoch_comparison_sample_count": scenario.preview.epoch_comparison_sample_count,
+            "epoch_comparison_columns": scenario.preview.epoch_comparison_columns,
         },
         "phases": [phase_to_mapping(phase_config) for phase_config in scenario.phases],
     }
@@ -271,6 +293,12 @@ def _coerce_optional_int(value: Any, *, field_name: str) -> int | None:
     if value is None:
         return None
     return _coerce_int(value, field_name=field_name)
+
+
+def _coerce_optional_float(value: Any, *, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _coerce_float(value, field_name=field_name)
 
 
 def _coerce_optional_str(value: Any, *, field_name: str) -> str | None:
@@ -390,12 +418,28 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("prefetch_factor", defaults.prefetch_factor),
             field_name="train_defaults.prefetch_factor",
         ),
+        train_augmentation=_coerce_bool(
+            data.get("train_augmentation", defaults.train_augmentation),
+            field_name="train_defaults.train_augmentation",
+        ),
+        train_augmentation_seed=_coerce_optional_int(
+            data.get("train_augmentation_seed", defaults.train_augmentation_seed),
+            field_name="train_defaults.train_augmentation_seed",
+        ),
         backbone_variant=backbone_variant,
         backbone_weights=_coerce_optional_str(
             data.get("backbone_weights", defaults.backbone_weights),
             field_name="train_defaults.backbone_weights",
         ),
         sampler_ratios=sampler_ratios,
+        task_positive_task=_coerce_optional_str(
+            data.get("task_positive_task", defaults.task_positive_task),
+            field_name="train_defaults.task_positive_task",
+        ),
+        task_positive_fraction=_coerce_optional_float(
+            data.get("task_positive_fraction", defaults.task_positive_fraction),
+            field_name="train_defaults.task_positive_fraction",
+        ),
         det_conf_threshold=_coerce_float(
             data.get("det_conf_threshold", defaults.det_conf_threshold),
             field_name="train_defaults.det_conf_threshold",
@@ -419,6 +463,46 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         allow_python_nms_fallback=_coerce_bool(
             data.get("allow_python_nms_fallback", defaults.allow_python_nms_fallback),
             field_name="train_defaults.allow_python_nms_fallback",
+        ),
+        task_mode=_coerce_str(
+            data.get("task_mode", defaults.task_mode),
+            field_name="train_defaults.task_mode",
+        ),
+        lane_assignment_mode=_coerce_str(
+            data.get("lane_assignment_mode", defaults.lane_assignment_mode),
+            field_name="train_defaults.lane_assignment_mode",
+        ),
+        lane_dynamic_coverage_weight=_coerce_float(
+            data.get("lane_dynamic_coverage_weight", defaults.lane_dynamic_coverage_weight),
+            field_name="train_defaults.lane_dynamic_coverage_weight",
+        ),
+        lane_centerline_focal_weight=_coerce_float(
+            data.get("lane_centerline_focal_weight", defaults.lane_centerline_focal_weight),
+            field_name="train_defaults.lane_centerline_focal_weight",
+        ),
+        lane_centerline_dice_weight=_coerce_float(
+            data.get("lane_centerline_dice_weight", defaults.lane_centerline_dice_weight),
+            field_name="train_defaults.lane_centerline_dice_weight",
+        ),
+        stopline_local_x_aux_weight=_coerce_float(
+            data.get("stopline_local_x_aux_weight", defaults.stopline_local_x_aux_weight),
+            field_name="train_defaults.stopline_local_x_aux_weight",
+        ),
+        stopline_selector_aux_weight=_coerce_float(
+            data.get("stopline_selector_aux_weight", defaults.stopline_selector_aux_weight),
+            field_name="train_defaults.stopline_selector_aux_weight",
+        ),
+        stopline_geometry_aux_weight=_coerce_float(
+            data.get("stopline_geometry_aux_weight", defaults.stopline_geometry_aux_weight),
+            field_name="train_defaults.stopline_geometry_aux_weight",
+        ),
+        stopline_center_target_mode=_coerce_str(
+            data.get("stopline_center_target_mode", defaults.stopline_center_target_mode),
+            field_name="train_defaults.stopline_center_target_mode",
+        ),
+        stopline_centerline_target_weight=_coerce_float(
+            data.get("stopline_centerline_target_weight", defaults.stopline_centerline_target_weight),
+            field_name="train_defaults.stopline_centerline_target_weight",
         ),
     )
 
@@ -446,6 +530,22 @@ def preview_config_from_mapping(payload: dict[str, Any]) -> PreviewConfig:
             field_name="preview.max_samples_per_dataset",
         ),
         write_overlay=_coerce_bool(data.get("write_overlay", True), field_name="preview.write_overlay"),
+        epoch_comparison_grid=_coerce_bool(
+            data.get("epoch_comparison_grid", False),
+            field_name="preview.epoch_comparison_grid",
+        ),
+        epoch_comparison_every_n_epochs=_coerce_int(
+            data.get("epoch_comparison_every_n_epochs", 1),
+            field_name="preview.epoch_comparison_every_n_epochs",
+        ),
+        epoch_comparison_sample_count=_coerce_int(
+            data.get("epoch_comparison_sample_count", 12),
+            field_name="preview.epoch_comparison_sample_count",
+        ),
+        epoch_comparison_columns=_coerce_int(
+            data.get("epoch_comparison_columns", 3),
+            field_name="preview.epoch_comparison_columns",
+        ),
     )
 
 
@@ -572,6 +672,8 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} selection.eps must be > 0")
         if not any(float(value) > 0.0 for value in phase_train.sampler_ratios.values()):
             raise ValueError(f"phase {index} sampler_ratios must contain at least one positive value")
+        if phase_train.task_positive_fraction is not None and not 0.0 <= float(phase_train.task_positive_fraction) <= 1.0:
+            raise ValueError(f"phase {index} task_positive_fraction must be between 0 and 1")
         selection_requires_val = (
             phase_selection.metric_path.startswith("val.")
             or phase_selection.metric_path.startswith("selection_metrics.")
@@ -587,3 +689,10 @@ def validate_meta_train_scenario(
         raise ValueError("selection.eps must be > 0")
     if scenario.preview.max_samples_per_dataset <= 0:
         raise ValueError("preview.max_samples_per_dataset must be > 0")
+    if scenario.preview.epoch_comparison_grid:
+        if scenario.preview.epoch_comparison_every_n_epochs <= 0:
+            raise ValueError("preview.epoch_comparison_every_n_epochs must be > 0")
+        if scenario.preview.epoch_comparison_sample_count <= 0:
+            raise ValueError("preview.epoch_comparison_sample_count must be > 0")
+        if scenario.preview.epoch_comparison_columns <= 0:
+            raise ValueError("preview.epoch_comparison_columns must be > 0")

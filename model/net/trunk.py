@@ -21,6 +21,9 @@ YOLO26_DEFAULT_WEIGHTS = {
     "n": "yolo26n.pt",
     "s": "yolo26s.pt",
 }
+YOLO26_DETECT_SOURCE_STRIDES = (8, 16, 32)
+YOLO26_ROADMARK_SOURCE_INDICES = (2, 16, 19, 22)
+YOLO26_ROADMARK_SOURCE_STRIDES = (4, 8, 16, 32)
 YOLO26_PYRAMID_CHANNELS = {
     "n": (64, 128, 256),
     "s": (128, 256, 512),
@@ -36,6 +39,7 @@ class UltralyticsYOLO26TrunkAdapter:
     detect_head: nn.Module
     detect_head_index: int
     feature_source_indices: tuple[int, ...] = field(default_factory=tuple)
+    feature_source_strides: tuple[int, ...] = field(default_factory=tuple)
     resolved_feature_channels: tuple[int, ...] = field(default_factory=tuple)
 
     def freeze_trunk(self) -> None:
@@ -61,6 +65,7 @@ def summarize_trunk_adapter(adapter: UltralyticsYOLO26TrunkAdapter) -> dict[str,
         "detect_head_index": adapter.detect_head_index,
         "detect_head_class": adapter.detect_head.__class__.__name__,
         "feature_source_indices": list(adapter.feature_source_indices),
+        "feature_source_strides": list(adapter.feature_source_strides),
         "resolved_feature_channels": list(adapter.resolved_feature_channels),
         "trunk_layer_count": len(trunk_layers),
         "trunk_layer_classes": [layer.__class__.__name__ for layer in trunk_layers],
@@ -119,6 +124,17 @@ def expected_pyramid_channels(*, variant: str | None = None, weights: str | None
     return YOLO26_PYRAMID_CHANNELS.get(resolved_variant)
 
 
+def expected_roadmark_pyramid_channels(
+    *,
+    variant: str | None = None,
+    weights: str | None = None,
+) -> tuple[int, ...] | None:
+    detect_channels = expected_pyramid_channels(variant=variant, weights=weights)
+    if detect_channels is None:
+        return None
+    return (detect_channels[0], *detect_channels)
+
+
 def _extract_model_layers(torch_model: nn.Module) -> list[nn.Module]:
     model_layers = getattr(torch_model, "model", None)
     if model_layers is None:
@@ -138,6 +154,8 @@ def build_yolo26_trunk(
     *,
     variant: str | None = None,
     weights: str | None = None,
+    feature_source_indices: tuple[int, ...] | None = None,
+    feature_source_strides: tuple[int, ...] | None = None,
 ) -> UltralyticsYOLO26TrunkAdapter:
     ensure_yolo26_support()
     if YOLO is None:  # pragma: no cover - dependency absence handled above.
@@ -151,7 +169,21 @@ def build_yolo26_trunk(
     trunk = nn.Sequential(*layers[:detect_head_index])
     detect_head = layers[detect_head_index]
     trunk.requires_grad_(True)
-    feature_source_indices = tuple(int(index) for index in getattr(detect_head, "f", ()))
+    default_source_indices = tuple(int(index) for index in getattr(detect_head, "f", ()))
+    resolved_source_indices = (
+        tuple(int(index) for index in default_source_indices)
+        if feature_source_indices is None
+        else tuple(int(index) for index in feature_source_indices)
+    )
+    if feature_source_strides is None:
+        if resolved_source_indices == default_source_indices:
+            resolved_source_strides = YOLO26_DETECT_SOURCE_STRIDES
+        elif resolved_source_indices == YOLO26_ROADMARK_SOURCE_INDICES:
+            resolved_source_strides = YOLO26_ROADMARK_SOURCE_STRIDES
+        else:
+            resolved_source_strides = tuple()
+    else:
+        resolved_source_strides = tuple(int(value) for value in feature_source_strides)
     return UltralyticsYOLO26TrunkAdapter(
         weights=resolved_weights,
         ultralytics_version=ULTRALYTICS_VERSION,
@@ -159,7 +191,8 @@ def build_yolo26_trunk(
         trunk=trunk,
         detect_head=detect_head,
         detect_head_index=detect_head_index,
-        feature_source_indices=feature_source_indices,
+        feature_source_indices=resolved_source_indices,
+        feature_source_strides=resolved_source_strides,
         resolved_feature_channels=expected_pyramid_channels(variant=variant, weights=resolved_weights) or (),
     )
 
@@ -172,11 +205,34 @@ def build_yolo26s_trunk(weights: str = "yolo26s.pt") -> UltralyticsYOLO26TrunkAd
     return build_yolo26_trunk(weights=weights)
 
 
-def forward_pyramid_features(adapter: UltralyticsYOLO26TrunkAdapter, image: Any) -> list[Any]:
-    if not adapter.feature_source_indices:
+def build_yolo26_roadmark_trunk(
+    *,
+    variant: str | None = None,
+    weights: str | None = None,
+) -> UltralyticsYOLO26TrunkAdapter:
+    resolved_weights = resolve_yolo26_weights(variant=variant, weights=weights)
+    adapter = build_yolo26_trunk(
+        variant=variant,
+        weights=resolved_weights,
+        feature_source_indices=YOLO26_ROADMARK_SOURCE_INDICES,
+        feature_source_strides=YOLO26_ROADMARK_SOURCE_STRIDES,
+    )
+    expected_channels = expected_roadmark_pyramid_channels(variant=variant, weights=resolved_weights)
+    if expected_channels is not None:
+        adapter.resolved_feature_channels = tuple(int(channel) for channel in expected_channels)
+    return adapter
+
+
+def forward_selected_features(
+    adapter: UltralyticsYOLO26TrunkAdapter,
+    image: Any,
+    source_indices: tuple[int, ...] | list[int],
+) -> list[Any]:
+    resolved_source_indices = tuple(int(index) for index in source_indices)
+    if not resolved_source_indices:
         raise ValueError("detect head does not expose source feature indices.")
     layers = list(getattr(adapter.raw_model, "model"))
-    max_index = max(adapter.feature_source_indices)
+    max_index = max(resolved_source_indices)
     outputs: list[Any] = []
     current = image
 
@@ -191,7 +247,11 @@ def forward_pyramid_features(adapter: UltralyticsYOLO26TrunkAdapter, image: Any)
         current = layer(layer_input)
         outputs.append(current)
 
-    return [outputs[index] for index in adapter.feature_source_indices]
+    return [outputs[index] for index in resolved_source_indices]
+
+
+def forward_pyramid_features(adapter: UltralyticsYOLO26TrunkAdapter, image: Any) -> list[Any]:
+    return forward_selected_features(adapter, image, adapter.feature_source_indices)
 
 
 def infer_pyramid_channels(
@@ -250,12 +310,18 @@ __all__ = [
     "UltralyticsYOLO26TrunkAdapter",
     "DEFAULT_YOLO26_VARIANT",
     "YOLO26_DEFAULT_WEIGHTS",
+    "YOLO26_DETECT_SOURCE_STRIDES",
     "YOLO26_PYRAMID_CHANNELS",
+    "YOLO26_ROADMARK_SOURCE_INDICES",
+    "YOLO26_ROADMARK_SOURCE_STRIDES",
     "build_yolo26_trunk",
+    "build_yolo26_roadmark_trunk",
     "build_yolo26n_trunk",
     "build_yolo26s_trunk",
     "ensure_yolo26_support",
     "expected_pyramid_channels",
+    "expected_roadmark_pyramid_channels",
+    "forward_selected_features",
     "forward_pyramid_features",
     "infer_pyramid_channels",
     "infer_yolo26_variant",

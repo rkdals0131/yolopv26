@@ -8,6 +8,15 @@ from typing import Any, Callable
 from .trainer_reporting import _format_epoch_completion_log
 
 
+TASK_BEST_METRICS: dict[str, tuple[str, str, str]] = {
+    "detector": ("val.metrics.detector.map50_95", "max", "best_detector.pt"),
+    "traffic_light": ("val.metrics.traffic_light.combo_accuracy", "max", "best_traffic_light.pt"),
+    "lane": ("val.metrics.lane.f1", "max", "best_lane.pt"),
+    "stop_line": ("val.metrics.stop_line.f1", "max", "best_stop_line.pt"),
+    "crosswalk": ("val.metrics.crosswalk.f1", "max", "best_crosswalk.pt"),
+}
+
+
 def _best_metric_path(best_metric: str | None, *, has_val_loader: bool) -> str:
     return best_metric or ("val.losses.total.mean" if has_val_loader else "train.losses.total.mean")
 
@@ -24,6 +33,7 @@ def _build_run_summary(
     best_metric_value: float | None,
     best_epoch: int | None,
     best_checkpoint_path: Path | None,
+    task_best_state: dict[str, dict[str, Any]],
     run_started_at: float,
     tensorboard_status: dict[str, Any],
     auto_resume: bool,
@@ -48,6 +58,21 @@ def _build_run_summary(
         "checkpoint_paths": {
             "last": str(checkpoint_dir / "last.pt"),
             "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
+            "task_best": {
+                task_name: str(payload["path"])
+                for task_name, payload in task_best_state.items()
+                if payload.get("path") is not None
+            },
+        },
+        "task_best_metrics": {
+            task_name: {
+                "metric_path": payload.get("metric_path"),
+                "metric_value": payload.get("metric_value"),
+                "epoch": payload.get("epoch"),
+                "mode": payload.get("mode"),
+                "checkpoint_path": str(payload["path"]) if payload.get("path") is not None else None,
+            }
+            for task_name, payload in task_best_state.items()
         },
         "tensorboard": dict(tensorboard_status),
         "manifest_path": str(manifest_path),
@@ -139,6 +164,71 @@ def _restore_resume_state(
     return start_epoch, best_metric_value, best_epoch, best_checkpoint_path
 
 
+def _restore_task_best_state(output_dir: Path, checkpoint_dir: Path) -> dict[str, dict[str, Any]]:
+    summary_path = output_dir / "summary.json"
+    prior_state: dict[str, Any] = {}
+    if summary_path.is_file():
+        prior_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if isinstance(prior_summary.get("task_best_metrics"), dict):
+            prior_state = prior_summary["task_best_metrics"]
+    state: dict[str, dict[str, Any]] = {}
+    for task_name, (metric_path, mode, filename) in TASK_BEST_METRICS.items():
+        checkpoint_path = checkpoint_dir / filename
+        payload = prior_state.get(task_name, {}) if isinstance(prior_state.get(task_name), dict) else {}
+        state[task_name] = {
+            "metric_path": metric_path,
+            "metric_value": payload.get("metric_value") if checkpoint_path.is_file() else None,
+            "epoch": payload.get("epoch") if checkpoint_path.is_file() else None,
+            "mode": mode,
+            "path": checkpoint_path if checkpoint_path.is_file() else None,
+        }
+    return state
+
+
+def _update_task_best_checkpoints(
+    *,
+    trainer: Any,
+    epoch: int,
+    epoch_summary: dict[str, Any],
+    checkpoint_dir: Path,
+    task_best_state: dict[str, dict[str, Any]],
+    resolve_summary_path_fn: Callable[[dict[str, Any], str], float],
+    is_better_fn: Callable[[float, float | None, str], bool],
+) -> dict[str, str]:
+    updated: dict[str, str] = {}
+    for task_name, (metric_path, mode, filename) in TASK_BEST_METRICS.items():
+        try:
+            metric_value = resolve_summary_path_fn(epoch_summary, metric_path)
+        except (KeyError, TypeError, ValueError):
+            continue
+        current_value = task_best_state.get(task_name, {}).get("metric_value")
+        current_best = float(current_value) if current_value is not None else None
+        if not is_better_fn(metric_value, current_best, mode):
+            continue
+        checkpoint_path = trainer.save_checkpoint(
+            checkpoint_dir / filename,
+            extra_state={
+                "epoch": epoch,
+                "epoch_summary": epoch_summary,
+                "task_best": {
+                    "task": task_name,
+                    "metric_path": metric_path,
+                    "metric_value": metric_value,
+                    "mode": mode,
+                },
+            },
+        )
+        task_best_state[task_name] = {
+            "metric_path": metric_path,
+            "metric_value": metric_value,
+            "epoch": epoch,
+            "mode": mode,
+            "path": checkpoint_path,
+        }
+        updated[task_name] = str(checkpoint_path)
+    return updated
+
+
 def run_fit(
     trainer: Any,
     train_loader: Any,
@@ -159,6 +249,7 @@ def run_fit(
     enable_tensorboard: bool = True,
     selection_metric_callback: Callable[[dict[str, Any]], None] | None = None,
     early_exit_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    epoch_end_callback: Callable[[dict[str, Any]], None] | None = None,
     run_manifest_extra: dict[str, Any] | None = None,
     log_every_n_steps: int = 1,
     profile_window: int = 20,
@@ -209,6 +300,7 @@ def run_fit(
     best_metric_value: float | None = None
     best_epoch: int | None = None
     best_checkpoint_path: Path | None = None
+    task_best_state = _restore_task_best_state(output_dir, checkpoint_dir)
     run_started_at = time.perf_counter()
     run_started_at_iso = now_iso_fn()
     run_summary: dict[str, Any] = {}
@@ -265,6 +357,7 @@ def run_fit(
                 best_metric_value=best_metric_value,
                 best_epoch=best_epoch,
                 best_checkpoint_path=best_checkpoint_path,
+                task_best_state=task_best_state,
                 run_started_at=run_started_at,
                 tensorboard_status=trainer.tensorboard_status,
                 auto_resume=True,
@@ -356,7 +449,7 @@ def run_fit(
                 extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
             )
             epoch_summary["checkpoint_last"] = str(last_checkpoint_path)
-            if epoch % checkpoint_every == 0:
+            if checkpoint_every > 0 and epoch % checkpoint_every == 0:
                 epoch_checkpoint_path = trainer.save_checkpoint(
                     checkpoint_dir / f"epoch_{epoch:03d}.pt",
                     extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
@@ -368,6 +461,19 @@ def run_fit(
                     extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
                 )
                 epoch_summary["checkpoint_best"] = str(best_checkpoint_path)
+            task_best_updates = _update_task_best_checkpoints(
+                trainer=trainer,
+                epoch=epoch,
+                epoch_summary=epoch_summary,
+                checkpoint_dir=checkpoint_dir,
+                task_best_state=task_best_state,
+                resolve_summary_path_fn=resolve_summary_path_fn,
+                is_better_fn=is_better_fn,
+            )
+            if task_best_updates:
+                epoch_summary["checkpoint_task_best"] = task_best_updates
+            if epoch_end_callback is not None:
+                epoch_end_callback(epoch_summary)
 
             trainer.save_history_jsonl(history_dir / "train_steps.jsonl")
             trainer.save_epoch_history_jsonl(history_dir / "epochs.jsonl")
@@ -406,6 +512,7 @@ def run_fit(
                 best_metric_value=best_metric_value,
                 best_epoch=best_epoch,
                 best_checkpoint_path=best_checkpoint_path,
+                task_best_state=task_best_state,
                 run_started_at=run_started_at,
                 tensorboard_status=trainer.tensorboard_status,
                 auto_resume=auto_resume,

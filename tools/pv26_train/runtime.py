@@ -637,6 +637,8 @@ def run_phase_vram_stress(
     log_meta_train("building canonical dataset index for phase stress")
     dataset = canonical_dataset_cls(
         dataset_roots,
+        train_augmentation=phase_defaults.train_augmentation,
+        train_augmentation_seed=phase_defaults.train_augmentation_seed,
         progress_callback=log_meta_train,
     )
     log_meta_train(
@@ -722,6 +724,8 @@ def run_meta_train_scenario(
     log_meta_train("building canonical dataset index")
     dataset = canonical_dataset_cls(
         dataset_roots,
+        train_augmentation=scenario.train_defaults.train_augmentation,
+        train_augmentation_seed=scenario.train_defaults.train_augmentation_seed,
         progress_callback=log_meta_train,
     )
     split_counts = Counter(record.split for record in dataset.records)

@@ -37,13 +37,15 @@ from model.data import (
     collate_pv26_samples,
 )
 from model.engine.trainer import PV26Trainer, build_pv26_scheduler
+from model.engine.loss import PV26MultiTaskLoss
 from model.engine.train_summary import resolve_summary_path
 from model.net import PV26Heads
 from model.net import build_yolo26n_trunk
 try:
-    from model.net import build_yolo26_trunk
+    from model.net import build_yolo26_trunk, build_yolo26_roadmark_trunk
 except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
     build_yolo26_trunk = None
+    build_yolo26_roadmark_trunk = None
 try:
     from model.net import infer_pyramid_channels
 except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
@@ -56,6 +58,7 @@ from . import artifacts as train_artifacts
 from . import runtime as _runtime_ops
 from . import scenarios as _scenario_ops
 from . import config as train_config_api
+from .epoch_visualization import build_epoch_comparison_grid_callback
 from .config import (
     DEFAULT_DATASET_ROOT,
     DEFAULT_PRESET_NAME,
@@ -72,8 +75,8 @@ from .config import (
 
 PRESET_PATH_ROOT = REPO_ROOT / "presets" / "pv26_meta_train"
 BACKBONE_HEAD_CHANNELS = {
-    "n": (64, 128, 256),
-    "s": (128, 256, 512),
+    "n": (64, 64, 128, 256),
+    "s": (128, 128, 256, 512),
 }
 META_MANIFEST_VERSION = "pv26-meta-train-v1"
 # IDE에서 아래 검색어로 조절 지점을 바로 찾을 수 있다.
@@ -108,6 +111,11 @@ def _resolve_backbone_weights(train_config: TrainDefaultsConfig) -> str:
 
 def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
     weights = _resolve_backbone_weights(train_config)
+    if build_yolo26_roadmark_trunk is not None:
+        return build_yolo26_roadmark_trunk(
+            variant=train_config.backbone_variant,
+            weights=weights,
+        )
     if build_yolo26_trunk is not None:
         return build_yolo26_trunk(
             variant=train_config.backbone_variant,
@@ -116,15 +124,15 @@ def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
     return build_yolo26n_trunk(weights=weights)
 
 
-def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, int, int]:
+def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, ...]:
     if infer_pyramid_channels is not None:
         channels = tuple(int(value) for value in infer_pyramid_channels(adapter))
-        if len(channels) == 3:
+        if len(channels) in {3, 4}:
             return channels
     return _configured_head_channels(train_config)
 
 
-def _configured_head_channels(train_config: TrainDefaultsConfig) -> tuple[int, int, int]:
+def _configured_head_channels(train_config: TrainDefaultsConfig) -> tuple[int, ...]:
     try:
         return BACKBONE_HEAD_CHANNELS[str(train_config.backbone_variant)]
     except KeyError as exc:
@@ -465,6 +473,8 @@ def _build_phase_train_loaders(
         batch_size=train_config.batch_size,
         num_batches=train_batches,
         ratios=train_config.sampler_ratios,
+        task_positive_task=train_config.task_positive_task,
+        task_positive_fraction=train_config.task_positive_fraction,
         split="train",
         seed=26,
         num_workers=train_config.num_workers,
@@ -494,11 +504,26 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
     adapter = _build_backbone_adapter(train_config)
     head_channels = _resolve_head_channels(adapter, train_config)
     heads = PV26Heads(in_channels=head_channels)
+    criterion = PV26MultiTaskLoss(
+        stage=phase.stage,
+        loss_weights=phase.loss_weights or None,
+        task_mode=train_config.task_mode,
+        lane_assignment_mode=train_config.lane_assignment_mode,
+        lane_dynamic_coverage_weight=train_config.lane_dynamic_coverage_weight,
+        lane_centerline_focal_weight=train_config.lane_centerline_focal_weight,
+        lane_centerline_dice_weight=train_config.lane_centerline_dice_weight,
+        stopline_local_x_aux_weight=train_config.stopline_local_x_aux_weight,
+        stopline_selector_aux_weight=train_config.stopline_selector_aux_weight,
+        stopline_geometry_aux_weight=train_config.stopline_geometry_aux_weight,
+        stopline_center_target_mode=train_config.stopline_center_target_mode,
+        stopline_centerline_target_weight=train_config.stopline_centerline_target_weight,
+    )
     trainer = PV26Trainer(
         adapter,
         heads,
         stage=phase.stage,
         device=train_config.device,
+        criterion=criterion,
         loss_weights=phase.loss_weights or None,
         freeze_policy=phase.freeze_policy,
         trunk_lr=train_config.trunk_lr,
@@ -776,6 +801,14 @@ def _execute_phase(
         enable_tensorboard=True,
         selection_metric_callback=controller.annotate_epoch,
         early_exit_callback=controller.observe_epoch,
+        epoch_end_callback=build_epoch_comparison_grid_callback(
+            trainer=trainer,
+            phase=phase,
+            phase_dir=phase_run_dir,
+            preview_samples=preview_samples,
+            preview_config=scenario.preview,
+            log_fn=_log_meta_train,
+        ),
         log_every_n_steps=phase_train_config.log_every_n_steps,
         profile_window=phase_train_config.profile_window,
         profile_device_sync=phase_train_config.profile_device_sync,

@@ -9,7 +9,7 @@ class PV26LossSpecTests(unittest.TestCase):
     def test_loss_spec_matches_approved_multitask_design(self) -> None:
         spec = build_loss_spec()
 
-        self.assertEqual(spec["version"], "pv26-loss-v9")
+        self.assertEqual(spec["version"], "pv26-loss-v10")
         self.assertEqual(
             spec["model_contract"]["od_classes"],
             ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
@@ -22,9 +22,10 @@ class PV26LossSpecTests(unittest.TestCase):
         self.assertEqual(spec["heads"]["lane"]["query_count"], 24)
         self.assertEqual(spec["heads"]["stop_line"]["query_count"], 8)
         self.assertEqual(spec["heads"]["crosswalk"]["query_count"], 8)
-        self.assertEqual(spec["heads"]["stop_line"]["target_encoding"]["endpoints"], 2)
-        self.assertEqual(spec["heads"]["stop_line"]["target_encoding"]["width"], 1)
-        self.assertEqual(spec["heads"]["crosswalk"]["target_encoding"]["quad_corners"], 4)
+        self.assertEqual(spec["heads"]["stop_line"]["target_encoding"]["polyline_points"], 4)
+        self.assertEqual(spec["heads"]["stop_line"]["target_encoding"]["point_coordinates"], 8)
+        self.assertEqual(spec["heads"]["crosswalk"]["target_encoding"]["sequence_points"], 16)
+        self.assertEqual(spec["heads"]["crosswalk"]["target_encoding"]["point_coordinates"], 32)
         self.assertIn("N_gt_det", spec["sample_contract"]["det_targets"]["boxes_xyxy"])
         self.assertEqual(spec["sample_contract"]["naming"]["Q_det"], "number of detector prediction slots in one image")
         self.assertEqual(spec["sample_contract"]["image"]["shape"], [3, 608, 800])
