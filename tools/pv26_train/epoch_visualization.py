@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - Pillow is an optional runtime dependen
 from common.overlay import render_overlay
 from common.pv26_schema import LANE_CLASSES, OD_CLASSES
 from model.data import collate_pv26_samples
+from model.data.transform import inverse_transform_box_xyxy, inverse_transform_points, transform_from_meta
 from .config import PhaseConfig, PreviewConfig
 
 
@@ -30,8 +31,13 @@ def _tensor_points_to_list(item: dict[str, Any]) -> list[list[float]]:
     return [[float(x), float(y)] for x, y in points]
 
 
+def _raw_points_from_item(item: dict[str, Any], transform: Any) -> list[list[float]]:
+    return [[float(x), float(y)] for x, y in inverse_transform_points(_tensor_points_to_list(item), transform)]
+
+
 def _gt_scene_from_sample(sample: dict[str, Any]) -> dict[str, Any]:
     meta = sample["meta"]
+    transform = transform_from_meta(meta)
     det_targets = sample.get("det_targets", {})
     lane_targets = sample.get("lane_targets", {})
     valid_mask = sample.get("valid_mask", {})
@@ -58,9 +64,12 @@ def _gt_scene_from_sample(sample: dict[str, Any]) -> dict[str, Any]:
     else:
         class_list = list(classes)
     for box, class_id in zip(boxes_list, class_list):
+        raw_box = inverse_transform_box_xyxy(box, transform)
+        if raw_box is None:
+            continue
         class_name = OD_CLASSES[int(class_id)] if 0 <= int(class_id) < len(OD_CLASSES) else "unknown"
         item = {
-            "bbox": [float(value) for value in box],
+            "bbox": [float(value) for value in raw_box],
             "class_name": class_name,
         }
         if class_name == "traffic_light":
@@ -90,17 +99,17 @@ def _gt_scene_from_sample(sample: dict[str, Any]) -> dict[str, Any]:
         scene["lanes"].append(
             {
                 "class_name": str(raw_class_name or "lane"),
-                "points": _tensor_points_to_list(lane),
+                "points": _raw_points_from_item(lane, transform),
             }
         )
     for index, stop_line in enumerate(lane_targets.get("stop_lines", [])):
         if index < len(stop_valid) and not bool(stop_valid[index]):
             continue
-        scene["stop_lines"].append({"points": _tensor_points_to_list(stop_line)})
+        scene["stop_lines"].append({"points": _raw_points_from_item(stop_line, transform)})
     for index, crosswalk in enumerate(lane_targets.get("crosswalks", [])):
         if index < len(cross_valid) and not bool(cross_valid[index]):
             continue
-        scene["crosswalks"].append({"points": _tensor_points_to_list(crosswalk)})
+        scene["crosswalks"].append({"points": _raw_points_from_item(crosswalk, transform)})
     return scene
 
 

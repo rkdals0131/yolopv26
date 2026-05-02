@@ -47,6 +47,7 @@ from tools.pv26_train.config import (
     TrainDefaultsConfig,
     scenario_to_mapping,
 )
+from tools.pv26_train.epoch_visualization import _gt_scene_from_sample
 
 
 def _epoch_summary(epoch: int, metric_value: float) -> dict:
@@ -890,6 +891,65 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
         self.assertTrue(all(item["dataset_key"] == "aihub_lane_seoul" for item in train_batch["meta"]))
         self.assertTrue(all(item["dataset_key"] == "aihub_lane_seoul" for item in val_batch["meta"]))
+
+    def test_epoch_comparison_ground_truth_overlay_uses_raw_coordinates(self) -> None:
+        sample = {
+            "det_targets": {
+                "boxes_xyxy": torch.tensor([[62.5, 141.5, 125.0, 204.0]], dtype=torch.float32),
+                "classes": torch.tensor([0], dtype=torch.long),
+            },
+            "lane_targets": {
+                "lanes": [
+                    {
+                        "points_xy": torch.tensor([[62.5, 141.5], [125.0, 204.0]], dtype=torch.float32),
+                        "color": 0,
+                        "lane_type": 0,
+                    }
+                ],
+                "stop_lines": [
+                    {"points_xy": torch.tensor([[187.5, 266.5], [250.0, 266.5]], dtype=torch.float32)}
+                ],
+                "crosswalks": [
+                    {
+                        "points_xy": torch.tensor(
+                            [[312.5, 329.0], [375.0, 329.0], [375.0, 391.5], [312.5, 391.5]],
+                            dtype=torch.float32,
+                        )
+                    }
+                ],
+            },
+            "valid_mask": {
+                "lane": torch.tensor([True], dtype=torch.bool),
+                "stop_line": torch.tensor([True], dtype=torch.bool),
+                "crosswalk": torch.tensor([True], dtype=torch.bool),
+            },
+            "meta": {
+                "sample_id": "sample",
+                "dataset_key": "aihub_lane_seoul",
+                "split": "val",
+                "image_path": "/tmp/sample.jpg",
+                "raw_hw": (720, 1280),
+                "network_hw": (608, 800),
+                "transform": {
+                    "scale": 0.625,
+                    "pad_left": 0,
+                    "pad_top": 79,
+                    "pad_right": 0,
+                    "pad_bottom": 79,
+                    "resized_hw": (450, 800),
+                },
+            },
+        }
+
+        scene = _gt_scene_from_sample(sample)
+
+        self.assertEqual(scene["detections"][0]["bbox"], [100.0, 100.0, 200.0, 200.0])
+        self.assertEqual(scene["lanes"][0]["points"], [[100.0, 100.0], [200.0, 200.0]])
+        self.assertEqual(scene["stop_lines"][0]["points"], [[300.0, 300.0], [400.0, 300.0]])
+        self.assertEqual(
+            scene["crosswalks"][0]["points"],
+            [[500.0, 400.0], [600.0, 400.0], [600.0, 500.0], [500.0, 500.0]],
+        )
 
     def test_sample_preview_selection_uses_record_metadata_before_loading_samples(self) -> None:
         class _FakeDataset:
