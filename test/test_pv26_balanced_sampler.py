@@ -226,6 +226,7 @@ class PV26BalancedSamplerTests(unittest.TestCase):
 
             self.assertEqual(sampler.positive_count, 3)
             self.assertEqual(sampler.negative_count, 1)
+            self.assertEqual(sampler.negative_pool_policy, "det_source_not_task_positive")
             for batch_indices in sampler:
                 batch_records = [dataset.records[index] for index in batch_indices]
                 self.assertEqual(len(batch_records), 4)
@@ -236,6 +237,81 @@ class PV26BalancedSamplerTests(unittest.TestCase):
                 self.assertEqual(
                     sum(record.dataset_key == "aihub_lane_seoul" for record in batch_records),
                     3,
+                )
+
+    def test_task_positive_multi_sampler_prefers_det_source_for_negative_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = _ToyCanonicalDataset(
+                dataset_keys=(
+                    ("bdd100k_det_100k", 4),
+                    ("aihub_lane_seoul", 16),
+                ),
+            )
+            scene_payloads = (
+                {"lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}]},
+                {"tasks": {"has_stop_line": True}},
+                {"tasks": {"has_crosswalk": True}},
+                {"tasks": {}},
+            )
+            for record_index, record in enumerate(dataset.records):
+                scene_path = root / f"{record.sample_id}.json"
+                if record.dataset_key == "aihub_lane_seoul":
+                    payload = scene_payloads[int(record.sample_id.rsplit("_", 1)[-1]) % len(scene_payloads)]
+                else:
+                    payload = {"tasks": {}}
+                scene_path.write_text(json.dumps(payload), encoding="utf-8")
+                dataset.records[record_index] = replace(record, scene_path=scene_path)
+
+            sampler = PV26TaskPositiveMultiBatchSampler(
+                dataset,
+                batch_size=4,
+                task_names=["lane", "stopline", "crosswalk"],
+                positive_fraction=0.75,
+                num_batches=4,
+                split="train",
+                seed=11,
+            )
+
+            self.assertEqual(sampler.negative_pool_policy, "det_source_not_task_positive")
+            for batch_indices in sampler:
+                batch_records = [dataset.records[index] for index in batch_indices]
+                self.assertEqual(
+                    sum(record.dataset_key == "bdd100k_det_100k" for record in batch_records),
+                    1,
+                )
+
+    def test_multi_task_positive_dataloader_fails_fast_when_a_task_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = _ToyCanonicalDataset(
+                dataset_keys=(
+                    ("bdd100k_det_100k", 4),
+                    ("aihub_lane_seoul", 8),
+                ),
+            )
+            scene_payloads = (
+                {"lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}]},
+                {"tasks": {"has_stop_line": True}},
+            )
+            for record_index, record in enumerate(dataset.records):
+                scene_path = root / f"{record.sample_id}.json"
+                if record.dataset_key == "aihub_lane_seoul":
+                    payload = scene_payloads[int(record.sample_id.rsplit("_", 1)[-1]) % len(scene_payloads)]
+                else:
+                    payload = {"tasks": {}}
+                scene_path.write_text(json.dumps(payload), encoding="utf-8")
+                dataset.records[record_index] = replace(record, scene_path=scene_path)
+
+            with self.assertRaisesRegex(ValueError, "task-positive multi sampler found no positive samples for task='crosswalk'"):
+                build_pv26_train_dataloader(
+                    dataset,
+                    batch_size=4,
+                    num_batches=1,
+                    split="train",
+                    seed=7,
+                    task_positive_task="multi:lane,stopline,crosswalk",
+                    task_positive_fraction=0.75,
                 )
 
     def test_balanced_dataloader_respects_split_filter(self) -> None:

@@ -351,7 +351,7 @@ improvement_pct
 - stage 3는 seg-first roadmark head와 OD/TL head를 함께 학습하는 주 구간이다.
 - stage 4는 lane-family positive-only sampler로 lane family head를 마지막에 더 밀어붙인다.
 - 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, full train split, bounded validation을 사용한다.
-- stage 1~3 train sampler는 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`다. `batch_size=4` 기준 lane / stop-line / crosswalk positive slot 3장과 OD/background slot 1장을 매 batch에 넣는다.
+- stage 1~3 train sampler는 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`다. `batch_size=4` 기준 lane / stop-line / crosswalk positive slot 3장과 det-source OD/background slot 1장을 매 batch에 넣고, 세 positive task 중 하나라도 unavailable이면 fail-fast한다.
 - 현재 기본 validation은 `val_batches=512`이며, 매 epoch마다 task-aware fixed validation sample 16장으로 `ground_truth/prediction/comparison`과 `comparison_grid.png`를 남긴다.
 - AMP는 코드 경로로는 남기되 shipped local long-run 기본값은 `amp=false`다. 2026-05-02 run은 phase 2/3에서 GradScaler scale이 0.0으로 붕괴해 대부분의 optimizer update가 무효화됐고, 다음 long-run은 fp32에서 다시 시작한다.
 - lane-family repo의 `pcgrad_style` multitask conflict update를 켠다. PV26은 OD/TL과 roadmark가 trunk를 공유하므로 task 목록은 `det/tl_attr/lane/stop_line/crosswalk` 전체다. stage 4는 trunk가 frozen이라 PCGrad가 `no_trunk_params`로 비활성화되는 것이 정상이다.

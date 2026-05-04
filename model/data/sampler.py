@@ -9,6 +9,8 @@ from functools import lru_cache
 import torch
 from torch.utils.data import BatchSampler, DataLoader
 
+from common.pv26_schema import SOURCE_MASK_BY_DATASET
+
 from .dataset import (
     PV26CanonicalDataset,
     collate_pv26_encoded_batch,
@@ -305,6 +307,10 @@ def _task_positive_available(record: SampleRecord, task_name: str) -> bool:
     return bool(_scene_task_flags(str(record.scene_path)).get(resolved, False))
 
 
+def _record_has_det_supervision(record: SampleRecord) -> bool:
+    return bool(SOURCE_MASK_BY_DATASET.get(str(record.dataset_key), {}).get("det", False))
+
+
 class PV26TaskPositiveBatchSampler(BatchSampler):
     def __init__(
         self,
@@ -523,7 +529,19 @@ class PV26TaskPositiveMultiBatchSampler(BatchSampler):
             eligible_indices.append(index)
             if any(_task_positive_available(record, task_name) for task_name in self.task_names):
                 union_positive.add(index)
-        negative_indices = [index for index in eligible_indices if index not in union_positive]
+        all_negative_indices = [index for index in eligible_indices if index not in union_positive]
+        det_negative_indices = [
+            index
+            for index in all_negative_indices
+            if _record_has_det_supervision(dataset.records[index])
+        ]
+        if det_negative_indices:
+            negative_indices = det_negative_indices
+            self.negative_pool_policy = "det_source_not_task_positive"
+        else:
+            negative_indices = all_negative_indices
+            self.negative_pool_policy = "any_not_task_positive_fallback"
+        self.negative_pool_size = len(negative_indices)
         self.positive_count = min(self.batch_size, max(len(self.task_names), int(round(self.batch_size * fraction))))
         self.negative_count = max(0, self.batch_size - self.positive_count)
         if self.negative_count > 0 and not negative_indices:
@@ -606,7 +624,7 @@ def build_pv26_train_dataloader(
                     num_batches=num_batches,
                     split=split,
                     seed=seed,
-                    allow_missing_tasks=True,
+                    allow_missing_tasks=False,
                 )
                 unavailable_positive_tasks = list(getattr(sampler, "unavailable_task_names", []))
             elif len(positive_task_names) == 1:
@@ -632,6 +650,8 @@ def build_pv26_train_dataloader(
                 )
                 unavailable_positive_tasks = list(getattr(sampler, "unavailable_task_names", []))
         except ValueError:
+            if positive_task_mode == "multi":
+                raise
             fallback_reason = f"task_positive_unavailable:{task_positive_task}"
             sampler = PV26BalancedBatchSampler(
                 dataset,
@@ -671,6 +691,8 @@ def build_pv26_train_dataloader(
         "unavailable_task_positive_tasks": list(unavailable_positive_tasks),
         "sampler_type": type(sampler).__name__,
         "fallback_reason": fallback_reason,
+        "negative_pool_policy": getattr(sampler, "negative_pool_policy", None),
+        "negative_pool_size": getattr(sampler, "negative_pool_size", None),
     }
     return loader
 

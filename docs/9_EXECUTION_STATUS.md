@@ -161,7 +161,7 @@
 - `exhaustive_od_lane_default_20260502_193106` run은 폐기한다. phase 1 후반부터 AMP GradScaler가 scale 0.0을 기록했고, phase 2/3에서는 첫 160 optimizer step 이후 대부분의 train step이 scale 0.0으로 남았다. phase 3 epoch 1 validation은 detector/lane/stop-line `tp=0`, crosswalk `fp=201397`로 comparison grid의 crosswalk FP 폭주와 일치한다.
 - 이 실패는 단순한 comparison grid overlay bug가 아니라 training update가 사실상 죽은 상태에서 crosswalk dense mask noise가 postprocess를 통해 polygon FP로 보이는 증상이다. OD/lane/stop-line은 score/objectness threshold를 넘는 prediction이 거의 없어 grid에서 비어 보인다.
 - 현재 shipped local long-run 기본값은 `amp=false`다. AMP 코드는 남기지만 PV26 default long-run에서는 별도 GradScaler health gate를 만들기 전까지 쓰지 않는다.
-- stage 1~3은 full train split에서 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`를 사용한다. `batch_size=4`에서는 lane / stop-line / crosswalk positive slot 3장과 OD/background slot 1장을 매 batch에 넣는다.
+- stage 1~3은 full train split에서 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`를 사용한다. `batch_size=4`에서는 lane / stop-line / crosswalk positive slot 3장과 det-source OD/background slot 1장을 매 batch에 넣는다. 세 positive task 중 하나라도 unavailable이면 balanced fallback 없이 fail-fast한다.
 - stage 4는 `task_positive_fraction=1.0`과 lane-family heads-only freeze policy를 사용한다.
 - 기본 validation은 epoch당 512 batch이며, 매 epoch fixed 16장 task-aware comparison grid를 남긴다.
 - TensorBoard는 train step loss, weighted task loss, PCGrad conflict summary, epoch validation metrics, selection `phase_objective`를 포함한다.

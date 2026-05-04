@@ -47,8 +47,9 @@
 - shipped local long-run default는 task-positive multi sampler를 사용한다.
   - `task_positive_task=multi:lane,stopline,crosswalk`
   - `task_positive_fraction=0.75`
-- `batch_size=4`에서는 매 train batch가 lane / stop-line / crosswalk positive slot 3장과 OD/background slot 1장으로 구성된다. lane-family head가 빈 batch를 반복해서 보지 않게 하면서 OD/TL source exposure도 완전히 끊지 않는 계약이다.
-- task-positive sampler가 요청 task positive를 찾지 못하면 dataset-balanced sampler로 fallback한다.
+- `batch_size=4`에서는 매 train batch가 lane / stop-line / crosswalk positive slot 3장과 det-source OD/background slot 1장으로 구성된다. lane-family head가 빈 batch를 반복해서 보지 않게 하면서 OD/TL source exposure도 완전히 끊지 않는 계약이다.
+- multi task-positive sampler는 요청한 lane / stop-line / crosswalk positive 중 하나라도 없으면 fail-fast한다. 조용히 partial sampler나 balanced sampler로 떨어지는 것은 shipped long-run에서는 허용하지 않는다.
+- single/rotation task-positive fallback이나 no-task-positive 경로에서는 dataset-balanced sampler를 fallback/source ratio로 사용한다.
 - fallback/source ratio
   - BDD100K `30%`
   - AIHUB traffic `30%`
