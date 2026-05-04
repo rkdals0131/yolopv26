@@ -311,7 +311,6 @@ def run_fit(
     previous_writer = trainer.tensorboard_writer
     previous_status = dict(trainer.tensorboard_status)
     previous_tb_step = int(trainer._tensorboard_train_step)
-    trainer._tensorboard_graph_written = False
     tensorboard_purge_step: int | None = None
     resumed_from_checkpoint = False
     if auto_resume:

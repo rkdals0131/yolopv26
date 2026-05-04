@@ -32,7 +32,9 @@ pv26_train:
         head_lr: 5.0e-3
         weight_decay: 1.0e-4
         schedule: cosine
-        amp: true
+        # 20260502 local run reached GradScaler scale 0.0 in phase 2/3.
+        # Keep shipped long-run defaults in fp32 until AMP has a separate health gate.
+        amp: false
         amp_init_scale: 1024.0
         accumulate_steps: 2
         grad_clip_norm: 5.0
@@ -71,6 +73,8 @@ pv26_train:
           aihub_traffic: 0.30
           aihub_lane: 0.25
           aihub_obstacle: 0.15
+        task_positive_task: multi:lane,stopline,crosswalk
+        task_positive_fraction: 0.75
       phases:
         # Final local 8GB run: seg-first head stays in model code, while this file only
         # controls numeric/training knobs. Train uses the full merged train split;
@@ -126,6 +130,8 @@ pv26_train:
             batch_size: 4
             trunk_lr: 0.0
             head_lr: 2.0e-4
+            task_positive_task: multi:lane,stopline,crosswalk
+            task_positive_fraction: 1.0
             sampler_ratios:
               bdd100k: 0.0
               aihub_traffic: 0.0

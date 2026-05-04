@@ -235,6 +235,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.dataset.root.parts[-2:], ("seg_dataset", "pv26_exhaustive_od_lane_dataset"))
         self.assertEqual(scenario.run.run_root.parts[-2:], ("runs", "pv26_exhaustive_od_lane_train"))
         self.assertEqual(scenario.train_defaults.batch_size, 40)
+        self.assertFalse(scenario.train_defaults.amp)
+        self.assertEqual(scenario.train_defaults.task_positive_task, "multi:lane,stopline,crosswalk")
+        self.assertAlmostEqual(scenario.train_defaults.task_positive_fraction, 0.75)
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
         self.assertAlmostEqual(scenario.train_defaults.det_iou_threshold, 0.70)
@@ -287,6 +290,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         phase4_train = _scenario_phase_defaults(scenario.train_defaults, scenario.phases[3].overrides)
         self.assertEqual(phase4_train.sampler_ratios["aihub_lane"], 1.0)
         self.assertEqual(phase4_train.sampler_ratios["bdd100k"], 0.0)
+        self.assertEqual(phase4_train.task_positive_task, "multi:lane,stopline,crosswalk")
+        self.assertAlmostEqual(phase4_train.task_positive_fraction, 1.0)
 
     def test_removed_stage3_stress_preset_is_rejected(self) -> None:
         with self.assertRaisesRegex(KeyError, "unsupported PV26 meta-train preset: stage3_vram_stress"):
@@ -877,6 +882,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             num_workers=0,
             persistent_workers=False,
             prefetch_factor=None,
+            task_positive_task=None,
+            task_positive_fraction=None,
             sampler_ratios={
                 "bdd100k": 0.0,
                 "aihub_traffic": 0.0,

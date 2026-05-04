@@ -66,7 +66,8 @@ def build_meta_train_presets(
         head_lr=5e-3,
         weight_decay=1e-4,
         schedule="cosine",
-        amp=True,
+        amp=False,
+        amp_init_scale=1024.0,
         accumulate_steps=1,
         grad_clip_norm=5.0,
         checkpoint_every=10,
@@ -80,6 +81,8 @@ def build_meta_train_presets(
         persistent_workers=True,
         prefetch_factor=2,
         backbone_variant="s",
+        task_positive_task="multi:lane,stopline,crosswalk",
+        task_positive_fraction=0.75,
     )
     default_selection = SelectionConfig(
         metric_path="selection_metrics.phase_objective",
@@ -152,6 +155,8 @@ def build_meta_train_presets(
             overrides={
                 "trunk_lr": 0.0,
                 "head_lr": 2e-4,
+                "task_positive_task": "multi:lane,stopline,crosswalk",
+                "task_positive_fraction": 1.0,
                 "sampler_ratios": {
                     "bdd100k": 0.0,
                     "aihub_traffic": 0.0,
@@ -260,6 +265,7 @@ def build_meta_train_presets(
             overrides={
                 "trunk_lr": 0.0,
                 "head_lr": 2e-4,
+                "task_positive_task": "multi:lane,stopline,crosswalk",
                 "task_positive_fraction": 1.0,
                 "sampler_ratios": {
                     "bdd100k": 0.0,

@@ -44,13 +44,18 @@
 
 ## sampler
 
-- dataset-balanced sampler 사용
-- initial ratio
+- shipped local long-run default는 task-positive multi sampler를 사용한다.
+  - `task_positive_task=multi:lane,stopline,crosswalk`
+  - `task_positive_fraction=0.75`
+- `batch_size=4`에서는 매 train batch가 lane / stop-line / crosswalk positive slot 3장과 OD/background slot 1장으로 구성된다. lane-family head가 빈 batch를 반복해서 보지 않게 하면서 OD/TL source exposure도 완전히 끊지 않는 계약이다.
+- task-positive sampler가 요청 task positive를 찾지 못하면 dataset-balanced sampler로 fallback한다.
+- fallback/source ratio
   - BDD100K `30%`
   - AIHUB traffic `30%`
   - AIHUB obstacle `15%`
   - AIHUB lane `25%`
-- validation은 balanced sampler를 재사용하지 않고 sequential eval loader를 사용한다.
+- stage 4는 `task_positive_fraction=1.0`, lane-family heads-only freeze policy로 lane / stop-line / crosswalk만 마지막에 더 밀어붙인다.
+- validation은 train sampler를 재사용하지 않고 eval loader를 사용한다.
 
 ## eval metrics
 
@@ -97,8 +102,8 @@
 - trainer는 train/validation epoch 양쪽 모두 live progress 표시를 지원하고, phase/epoch/iter/epoch start/elapsed/ETA/timing 정보를 runtime에서 바로 노출한다.
 - trainer는 checkpoint save/load를 지원한다.
 - trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
-- trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다.
-- seg-first lane head의 dense loss 입력(`lane_seg_*`)은 AMP forward 이후 loss precision path에서 fp32로 정규화한다. 2026-05-02 CUDA probe에서 이 보정 후 기존 `lane=nan` skip은 재현되지 않았다.
+- trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다. 다만 shipped local long-run preset은 2026-05-02 run의 GradScaler collapse 이후 `amp=false`를 기본값으로 둔다.
+- seg-first lane head의 dense loss 입력(`lane_seg_*`)은 loss precision path에서 fp32로 정규화한다. 2026-05-02 CUDA probe에서 기존 `lane=nan` skip은 재현되지 않았지만, 이후 full run에서는 AMP GradScaler가 phase 2/3에서 scale 0.0으로 붕괴해 fp32 long-run으로 되돌렸다.
 - trainer는 lane-family repo의 `pcgrad_style` multitask conflict update를 PV26용으로 확장해 지원한다. PV26 기본 config는 trunk PCGrad task를 `det/tl_attr/lane/stop_line/crosswalk` 전체로 둔다. roadmark-only 원본 구현처럼 `lane/stop_line/crosswalk`만 쓰면 PV26 stage 3에서 OD/TL trunk gradient를 덮어쓸 수 있으므로 그대로 축소하지 않는다.
 - TensorBoard는 step loss, task별 weighted loss, phase objective, validation metric, PCGrad conflict count/gradient norm/task loss summary를 기록한다.
 - 기본 preview는 validation split에서 BDD/traffic/obstacle/lane source별 4장씩 고르고, lane sample은 lane/stop_line/crosswalk가 함께 있는 장면을 우선한다. 매 epoch 산출물은 `phase_<N>/epoch_comparison_grids/epoch_<EEE>/comparison_grid.png`와 sample별 `ground_truth.png`, `prediction.png`, `comparison.png`다.

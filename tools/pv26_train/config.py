@@ -76,8 +76,8 @@ class TrainDefaultsConfig:
     head_lr: float = 5e-3
     weight_decay: float = 1e-4
     schedule: str = "cosine"
-    amp: bool = True
-    amp_init_scale: float = 65536.0
+    amp: bool = False
+    amp_init_scale: float = 1024.0
     accumulate_steps: int = 1
     grad_clip_norm: float = 5.0
     skip_non_finite_loss: bool = False
@@ -97,8 +97,8 @@ class TrainDefaultsConfig:
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
-    task_positive_task: str | None = None
-    task_positive_fraction: float | None = None
+    task_positive_task: str | None = "multi:lane,stopline,crosswalk"
+    task_positive_fraction: float | None = 0.75
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
     lane_obj_threshold: float = 0.50

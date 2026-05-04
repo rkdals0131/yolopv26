@@ -221,7 +221,6 @@ class _FakeSummaryWriter:
         self.log_dir = log_dir
         self.scalars: list[tuple[str, float, int]] = []
         self.histograms: list[tuple[str, object, int]] = []
-        self.graphs: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.flushed = False
         self.closed = False
         self.layouts: list[dict] = []
@@ -231,9 +230,6 @@ class _FakeSummaryWriter:
 
     def add_histogram(self, name: str, value: object, global_step: int) -> None:
         self.histograms.append((name, value, int(global_step)))
-
-    def add_graph(self, *args: object, **kwargs: object) -> None:
-        self.graphs.append((args, kwargs))
 
     def add_custom_scalars(self, layout: dict) -> None:
         self.layouts.append(layout)
@@ -801,7 +797,6 @@ class PV26TrainerTests(unittest.TestCase):
                 self.tensorboard_writer = None
                 self.tensorboard_status = {"enabled": False}
                 self._tensorboard_train_step = 0
-                self._tensorboard_graph_written = False
 
             def build_evaluator(self) -> object:
                 return object()
@@ -1282,8 +1277,6 @@ class PV26TrainerTests(unittest.TestCase):
         second_train_steps = [step for name, _, step in writer_calls[1][2].scalars if name == "train_step/loss/total"]
         self.assertEqual(first_train_steps, [1])
         self.assertEqual(second_train_steps, [2])
-        self.assertEqual(len(writer_calls[0][2].graphs), 1)
-        self.assertEqual(len(writer_calls[1][2].graphs), 1)
         self.assertEqual(second["tensorboard"]["purge_step"], 2)
 
 

@@ -434,8 +434,10 @@ def _build_matching() -> dict[str, Any]:
 
 def _build_sampler() -> dict[str, Any]:
     return {
-        "type": "dataset_balanced",
-        "ratios": {
+        "type": "task_positive_multi",
+        "task_positive_task": "multi:lane,stopline,crosswalk",
+        "task_positive_fraction": 0.75,
+        "fallback_ratios": {
             "bdd100k": 0.30,
             "aihub_traffic": 0.30,
             "aihub_lane": 0.25,

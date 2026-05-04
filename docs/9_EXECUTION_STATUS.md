@@ -154,12 +154,15 @@
 - [ ] exhaustive OD 기반 PV26 재학습 metric 해석과 default preset 기준 안정화
 - [ ] export / ROS 정교화
 
-## 2026-05-02 full-run 준비 기준
+## 2026-05-02 full-run 결과와 현재 기준
 
 - 실행 명령은 `python3 tools/run_pv26_train.py --preset default`다.
 - 기본 phase schedule은 `stage_1=2`, `stage_2=2`, `stage_3=20`, `stage_4=20`으로 총 44 epoch다.
-- stage 1~3은 full train split sampler와 source ratio `bdd/traffic/lane/obstacle = 0.30/0.30/0.25/0.15`를 사용한다. `batch_size=4`에서는 실제 배치가 source별 1장씩 들어간다.
-- stage 4는 lane-only sampler와 lane-family heads-only freeze policy를 사용한다.
+- `exhaustive_od_lane_default_20260502_193106` run은 폐기한다. phase 1 후반부터 AMP GradScaler가 scale 0.0을 기록했고, phase 2/3에서는 첫 160 optimizer step 이후 대부분의 train step이 scale 0.0으로 남았다. phase 3 epoch 1 validation은 detector/lane/stop-line `tp=0`, crosswalk `fp=201397`로 comparison grid의 crosswalk FP 폭주와 일치한다.
+- 이 실패는 단순한 comparison grid overlay bug가 아니라 training update가 사실상 죽은 상태에서 crosswalk dense mask noise가 postprocess를 통해 polygon FP로 보이는 증상이다. OD/lane/stop-line은 score/objectness threshold를 넘는 prediction이 거의 없어 grid에서 비어 보인다.
+- 현재 shipped local long-run 기본값은 `amp=false`다. AMP 코드는 남기지만 PV26 default long-run에서는 별도 GradScaler health gate를 만들기 전까지 쓰지 않는다.
+- stage 1~3은 full train split에서 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`를 사용한다. `batch_size=4`에서는 lane / stop-line / crosswalk positive slot 3장과 OD/background slot 1장을 매 batch에 넣는다.
+- stage 4는 `task_positive_fraction=1.0`과 lane-family heads-only freeze policy를 사용한다.
 - 기본 validation은 epoch당 512 batch이며, 매 epoch fixed 16장 task-aware comparison grid를 남긴다.
 - TensorBoard는 train step loss, weighted task loss, PCGrad conflict summary, epoch validation metrics, selection `phase_objective`를 포함한다.
 
@@ -277,8 +280,8 @@
 - current trainer runtime also writes `run_manifest.json`, step/epoch JSONL logs, and TensorBoard scalars under `runs/.../tensorboard` with default `curated` / optional `full` verbosity
 - current trainer runtime also prints live epoch/iteration progress with elapsed/ETA and rolling timing profiles for wait/load/fwd/loss/bwd including mean/p50/p99
 - current trainer runtime also includes epoch fit loop, val loop, best / last checkpoint write, and run summary output
-- current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard
-- current loss precision path casts seg-first lane dense predictions to fp32 before loss; 2026-05-02 CUDA phase sweep showed no non-finite skips after this change
+- current trainer runtime also includes AMP, grad accumulation, grad clip, auto resume, and non-finite / OOM guard, but shipped PV26 local long-run config currently disables AMP after the 2026-05-02 GradScaler collapse
+- current loss precision path casts seg-first lane dense predictions to fp32 before loss; 2026-05-02 CUDA phase sweep showed no non-finite skips after this change, but the later full run still failed through AMP scale collapse rather than lane loss NaN
 - current trainer runtime includes PV26-expanded `pcgrad_style` multitask conflict handling over `det/tl_attr/lane/stop_line/crosswalk`, not the roadmark-only task list from the sibling repo
 - current evaluator runtime returns batch loss summary / GT count summary and supports postprocessed prediction bundles
 - current evaluator runtime also returns batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, and lane family matching metrics

@@ -345,7 +345,6 @@ class PV26Trainer:
             "purge_step": None,
         }
         self._tensorboard_train_step = 0
-        self._tensorboard_graph_written = False
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         task_mode = str(getattr(self.criterion, "task_mode", LANE_FAMILY_TASK_MODE))

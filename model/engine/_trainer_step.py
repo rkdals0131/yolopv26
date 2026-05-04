@@ -13,7 +13,6 @@ from .multitask_conflict import (
     current_pcgrad_trunk_update,
     reset_multitask_conflict_state,
 )
-from ..net.trunk import forward_pyramid_features
 
 
 TIMING_KEYS = (
@@ -142,24 +141,6 @@ def _apply_projected_grads(
             param.grad = None
         else:
             param.grad = grad.detach().to(device=param.device, dtype=param.dtype).clone()
-
-
-class _TensorboardGraphModel(torch.nn.Module):
-    def __init__(self, adapter: Any, heads: torch.nn.Module) -> None:
-        super().__init__()
-        self.adapter = adapter
-        self.heads = heads
-
-    def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        features = forward_pyramid_features(self.adapter, image)
-        outputs = self.heads(features)
-        return (
-            outputs["det"],
-            outputs["tl_attr"],
-            outputs["lane"],
-            outputs["stop_line"],
-            outputs["crosswalk"],
-        )
 
 
 def run_train_step(
@@ -341,24 +322,4 @@ def run_train_step(
             _tensorboard_train_step_payload(summary),
             trainer._tensorboard_train_step,
         )
-        if not bool(getattr(trainer, "_tensorboard_graph_written", False)):
-            raw_model = trainer.adapter.raw_model
-            raw_model_was_training = bool(raw_model.training)
-            heads_was_training = bool(trainer.heads.training)
-            try:
-                raw_model.eval()
-                trainer.heads.eval()
-                with torch.no_grad():
-                    trainer.tensorboard_writer.add_graph(
-                        _TensorboardGraphModel(trainer.adapter, trainer.heads),
-                        encoded["image"][:1],
-                    )
-            except Exception:
-                pass
-            finally:
-                if raw_model_was_training:
-                    raw_model.train()
-                if heads_was_training:
-                    trainer.heads.train()
-                trainer._tensorboard_graph_written = True
     return summary

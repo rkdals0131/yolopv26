@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -8,6 +11,7 @@ import torch
 from common.pv26_schema import OD_CLASSES
 from model.data import (
     PV26BalancedBatchSampler,
+    PV26TaskPositiveMultiBatchSampler,
     build_pv26_eval_dataloader,
     build_pv26_train_dataloader,
     dataset_group_for_key,
@@ -186,6 +190,53 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         self.assertEqual(len(sampler), 1)
         only_batch = next(iter(sampler))
         self.assertTrue(all(dataset.records[index].dataset_key == "aihub_lane_seoul" for index in only_batch))
+
+    def test_task_positive_multi_sampler_uses_three_positive_slots_and_one_background_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = _ToyCanonicalDataset(
+                dataset_keys=(
+                    ("bdd100k_det_100k", 4),
+                    ("aihub_lane_seoul", 12),
+                ),
+            )
+            scene_payloads = (
+                {"lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}]},
+                {"tasks": {"has_stop_line": True}},
+                {"tasks": {"has_crosswalk": True}},
+            )
+            for record_index, record in enumerate(dataset.records):
+                scene_path = root / f"{record.sample_id}.json"
+                if record.dataset_key == "aihub_lane_seoul":
+                    payload = scene_payloads[int(record.sample_id.rsplit("_", 1)[-1]) % len(scene_payloads)]
+                else:
+                    payload = {"tasks": {}}
+                scene_path.write_text(json.dumps(payload), encoding="utf-8")
+                dataset.records[record_index] = replace(record, scene_path=scene_path)
+
+            sampler = PV26TaskPositiveMultiBatchSampler(
+                dataset,
+                batch_size=4,
+                task_names=["lane", "stopline", "crosswalk"],
+                positive_fraction=0.75,
+                num_batches=3,
+                split="train",
+                seed=7,
+            )
+
+            self.assertEqual(sampler.positive_count, 3)
+            self.assertEqual(sampler.negative_count, 1)
+            for batch_indices in sampler:
+                batch_records = [dataset.records[index] for index in batch_indices]
+                self.assertEqual(len(batch_records), 4)
+                self.assertEqual(
+                    sum(record.dataset_key == "bdd100k_det_100k" for record in batch_records),
+                    1,
+                )
+                self.assertEqual(
+                    sum(record.dataset_key == "aihub_lane_seoul" for record in batch_records),
+                    3,
+                )
 
     def test_balanced_dataloader_respects_split_filter(self) -> None:
         dataset = _ToyCanonicalDataset()
