@@ -137,7 +137,7 @@
 - [x] derived retrain/fine-tune CLI (`--derive-run`, `--start-stage`, `--end-stage`) 추가
 - [x] derived run phase-window manifest/summary/lineage 기록 추가
 - [x] check_env retrain candidate scan / launcher action 추가
-- [x] PV26 default full-run config를 2/2/20/20 epoch phase chain, batch 4, accumulate 2, `val_batches=512`로 정리
+- [x] PV26 default full-run config를 capped epoch 기준 1/1/30~50/30~50 phase chain, batch 4, accumulate 2, `train_batches=4000`, `val_batches=512`로 정리
 - [x] task-aware validation preview selection과 매 epoch 16장 comparison grid 산출물 추가
 - [x] TensorBoard에 `phase_objective`와 PCGrad conflict/count/gradient norm/task loss summary logging 추가
 - [x] unit test 통과
@@ -157,13 +157,13 @@
 ## 2026-05-02 full-run 결과와 현재 기준
 
 - 실행 명령은 `python3 tools/run_pv26_train.py --preset default`다.
-- 기본 phase schedule은 `stage_1=2`, `stage_2=2`, `stage_3=20`, `stage_4=20`으로 총 44 epoch다.
+- 기본 phase schedule은 capped epoch 기준 `stage_1=1`, `stage_2=1`, `stage_3=30~50`, `stage_4=30~50`이다. `train_batches=4000`, `accumulate_steps=2`라서 capped epoch 1개는 2000 optimizer step이다.
 - `exhaustive_od_lane_default_20260502_193106` run은 폐기한다. phase 1 후반부터 AMP GradScaler가 scale 0.0을 기록했고, phase 2/3에서는 첫 160 optimizer step 이후 대부분의 train step이 scale 0.0으로 남았다. phase 3 epoch 1 validation은 detector/lane/stop-line `tp=0`, crosswalk `fp=201397`로 comparison grid의 crosswalk FP 폭주와 일치한다.
 - 이 실패는 단순한 comparison grid overlay bug가 아니라 training update가 사실상 죽은 상태에서 crosswalk dense mask noise가 postprocess를 통해 polygon FP로 보이는 증상이다. OD/lane/stop-line은 score/objectness threshold를 넘는 prediction이 거의 없어 grid에서 비어 보인다.
 - 현재 shipped local long-run 기본값은 `amp=false`다. AMP 코드는 남기지만 PV26 default long-run에서는 별도 GradScaler health gate를 만들기 전까지 쓰지 않는다.
 - stage 1~3은 full train split에서 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`를 사용한다. `batch_size=4`에서는 lane / stop-line / crosswalk positive slot 3장과 det-source OD/background slot 1장을 매 batch에 넣는다. 세 positive task 중 하나라도 unavailable이면 balanced fallback 없이 fail-fast한다.
 - stage 4는 `task_positive_fraction=1.0`과 lane-family heads-only freeze policy를 사용한다.
-- 기본 validation은 epoch당 512 batch이며, 매 epoch fixed 16장 task-aware comparison grid를 남긴다.
+- 기본 validation은 capped epoch당 512 batch이며, 매 capped epoch fixed 16장 task-aware comparison grid를 남긴다.
 - TensorBoard는 train step loss, weighted task loss, PCGrad conflict summary, epoch validation metrics, selection `phase_objective`를 포함한다.
 
 ## rank-3 잔여 리스크 기준

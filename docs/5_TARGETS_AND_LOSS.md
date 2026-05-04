@@ -340,17 +340,18 @@ improvement_pct
 
 | stage | min_epochs | max_epochs | patience | min_delta_abs | legacy min_improvement_pct |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `stage_1_frozen_trunk_warmup` | 2 | 2 | 1 | 0.003 | 1.0 |
-| `stage_2_partial_unfreeze` | 2 | 2 | 1 | 0.003 | 0.5 |
-| `stage_3_end_to_end_finetune` | 20 | 20 | 1 | 0.0025 | 0.25 |
-| `stage_4_lane_family_finetune` | 20 | 20 | 1 | 0.002 | 0.25 |
+| `stage_1_frozen_trunk_warmup` | 1 | 1 | 1 | 0.003 | 1.0 |
+| `stage_2_partial_unfreeze` | 1 | 1 | 1 | 0.003 | 0.5 |
+| `stage_3_end_to_end_finetune` | 30 | 50 | 8 | 0.0025 | 0.25 |
+| `stage_4_lane_family_finetune` | 30 | 50 | 8 | 0.002 | 0.25 |
 
 의도:
 
-- stage 1/2는 frozen-trunk warm-up과 partial-unfreeze를 각각 2 epoch씩 두어 loss/gradient scale 안정화를 먼저 확인한다.
+- shipped local run에서 1 epoch는 full dataset pass가 아니라 `train_batches=4000` capped epoch다.
+- stage 1/2는 frozen-trunk warm-up과 partial-unfreeze를 각각 1 capped epoch씩 두어 fp32/loader/gradient health를 먼저 확인한다.
 - stage 3는 seg-first roadmark head와 OD/TL head를 함께 학습하는 주 구간이다.
 - stage 4는 lane-family positive-only sampler로 lane family head를 마지막에 더 밀어붙인다.
-- 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, full train split, bounded validation을 사용한다.
+- 현재 기본값은 local 8GB 기준으로 `batch_size=4`, `accumulate_steps=2`, `train_batches=4000`, bounded validation을 사용한다. `accumulate_steps=2`라서 capped epoch 1개는 2000 optimizer step이다.
 - stage 1~3 train sampler는 `task_positive_task=multi:lane,stopline,crosswalk`, `task_positive_fraction=0.75`다. `batch_size=4` 기준 lane / stop-line / crosswalk positive slot 3장과 det-source OD/background slot 1장을 매 batch에 넣고, 세 positive task 중 하나라도 unavailable이면 fail-fast한다.
 - 현재 기본 validation은 `val_batches=512`이며, 매 epoch마다 task-aware fixed validation sample 16장으로 `ground_truth/prediction/comparison`과 `comparison_grid.png`를 남긴다.
 - AMP는 코드 경로로는 남기되 shipped local long-run 기본값은 `amp=false`다. 2026-05-02 run은 phase 2/3에서 GradScaler scale이 0.0으로 붕괴해 대부분의 optimizer update가 무효화됐고, 다음 long-run은 fp32에서 다시 시작한다.

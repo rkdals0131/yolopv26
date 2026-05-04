@@ -26,7 +26,7 @@ pv26_train:
       train_defaults:
         device: cuda:0
         batch_size: 4
-        train_batches: -1
+        train_batches: 4000
         val_batches: 512
         trunk_lr: 1.0e-4
         head_lr: 5.0e-3
@@ -77,12 +77,12 @@ pv26_train:
         task_positive_fraction: 0.75
       phases:
         # Final local 8GB run: seg-first head stays in model code, while this file only
-        # controls numeric/training knobs. Train uses the full merged train split;
-        # validation stays bounded to keep every-epoch feedback practical.
+        # controls numeric/training knobs. Train uses capped epochs over the full
+        # merged train split; validation stays bounded to keep every-epoch feedback practical.
         - name: head_warmup
           stage: stage_1_frozen_trunk_warmup
-          min_epochs: 2
-          max_epochs: 2
+          min_epochs: 1
+          max_epochs: 1
           patience: 1
           min_improvement_pct: 1.0
           min_delta_abs: 0.003
@@ -92,8 +92,8 @@ pv26_train:
             head_lr: 3.0e-3
         - name: partial_unfreeze
           stage: stage_2_partial_unfreeze
-          min_epochs: 2
-          max_epochs: 2
+          min_epochs: 1
+          max_epochs: 1
           patience: 1
           min_improvement_pct: 0.5
           min_delta_abs: 0.003
@@ -103,9 +103,9 @@ pv26_train:
             head_lr: 8.0e-4
         - name: end_to_end_finetune
           stage: stage_3_end_to_end_finetune
-          min_epochs: 20
-          max_epochs: 20
-          patience: 1
+          min_epochs: 30
+          max_epochs: 50
+          patience: 8
           min_improvement_pct: 0.25
           min_delta_abs: 0.0025
           overrides:
@@ -114,9 +114,9 @@ pv26_train:
             head_lr: 4.0e-4
         - name: lane_family_finetune
           stage: stage_4_lane_family_finetune
-          min_epochs: 20
-          max_epochs: 20
-          patience: 1
+          min_epochs: 30
+          max_epochs: 50
+          patience: 8
           min_improvement_pct: 0.25
           min_delta_abs: 0.002
           loss_weights:
