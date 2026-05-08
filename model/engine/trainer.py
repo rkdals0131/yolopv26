@@ -69,6 +69,30 @@ def _set_module_requires_grad(module: torch.nn.Module, requires_grad: bool) -> N
         parameter.requires_grad = requires_grad
 
 
+def _lane_family_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
+    lane_family_getter = getattr(heads, "lane_family_modules", None)
+    if callable(lane_family_getter):
+        modules = [module for module in lane_family_getter() if isinstance(module, torch.nn.Module)]
+        if modules:
+            return modules
+    return [
+        module
+        for module in (
+            getattr(heads, "lane_head", None),
+            getattr(heads, "stop_line_head", None),
+            getattr(heads, "crosswalk_head", None),
+        )
+        if isinstance(module, torch.nn.Module)
+    ]
+
+
+def _require_lane_family_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
+    modules = _lane_family_modules(heads)
+    if not modules:
+        raise RuntimeError(f"{policy} requires lane_head, stop_line_head, and crosswalk_head modules")
+    return modules
+
+
 def _criterion_config_from_instance(criterion: torch.nn.Module, stage: str) -> dict[str, Any] | None:
     export_config = getattr(criterion, "export_config", None)
     if not callable(export_config):
@@ -167,31 +191,22 @@ def configure_pv26_train_stage(
         for layer in trunk_layers[-partial_count:]:
             for parameter in layer.parameters():
                 parameter.requires_grad = True
+    elif policy == "lane_family_plus_upper_trunk":
+        adapter.freeze_trunk()
+        partial_count = max(1, len(trunk_layers) // 3)
+        for layer in trunk_layers[-partial_count:]:
+            for parameter in layer.parameters():
+                parameter.requires_grad = True
+        _set_module_requires_grad(heads, False)
+        for module in _require_lane_family_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "lane_family_only"
     elif policy == "lane_family_heads_only":
         adapter.freeze_trunk()
         _set_module_requires_grad(heads, False)
-        lane_family_modules: list[torch.nn.Module] = []
-        lane_family_getter = getattr(heads, "lane_family_modules", None)
-        if callable(lane_family_getter):
-            lane_family_modules = [
-                module for module in lane_family_getter() if isinstance(module, torch.nn.Module)
-            ]
-        if not lane_family_modules:
-            lane_family_modules = [
-                module
-                for module in (
-                    getattr(heads, "lane_head", None),
-                    getattr(heads, "stop_line_head", None),
-                    getattr(heads, "crosswalk_head", None),
-                )
-                if isinstance(module, torch.nn.Module)
-            ]
-        if lane_family_modules and all(isinstance(module, torch.nn.Module) for module in lane_family_modules):
-            for module in lane_family_modules:
-                _set_module_requires_grad(module, True)
-            head_policy = "lane_family_only"
-        else:
-            raise RuntimeError("lane_family_heads_only requires lane_head, stop_line_head, and crosswalk_head modules")
+        for module in _require_lane_family_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "lane_family_only"
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:
@@ -213,26 +228,11 @@ def configure_pv26_train_stage(
         tl_attr_heads = getattr(heads, "tl_attr_heads")
         if isinstance(tl_attr_heads, torch.nn.Module):
             stage_summary["trainable_tl_attr_head_params"] = _count_parameters(_trainable_parameters(tl_attr_heads))
-    lane_family_modules_for_summary: list[torch.nn.Module] = []
-    lane_family_getter = getattr(heads, "lane_family_modules", None)
-    if callable(lane_family_getter):
-        lane_family_modules_for_summary = [
-            module for module in lane_family_getter() if isinstance(module, torch.nn.Module)
-        ]
-    if not lane_family_modules_for_summary:
-        lane_family_modules_for_summary = [
-            module
-            for module in (
-                getattr(heads, "lane_head", None),
-                getattr(heads, "stop_line_head", None),
-                getattr(heads, "crosswalk_head", None),
-            )
-            if isinstance(module, torch.nn.Module)
-        ]
+    lane_family_modules_for_summary = _lane_family_modules(heads)
     lane_family_trainable = _count_parameters(_trainable_parameters_from_modules(lane_family_modules_for_summary))
     if lane_family_trainable:
         stage_summary["trainable_lane_family_head_params"] = lane_family_trainable
-    if policy == "lane_family_heads_only":
+    if policy in {"lane_family_heads_only", "lane_family_plus_upper_trunk"}:
         stage_summary["head_training_policy"] = head_policy
     return stage_summary
 
