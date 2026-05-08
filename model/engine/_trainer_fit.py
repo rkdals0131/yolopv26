@@ -54,6 +54,7 @@ def _build_run_summary(
         "history_paths": {
             "train_steps": str(history_dir / "train_steps.jsonl"),
             "epochs": str(history_dir / "epochs.jsonl"),
+            "pcgrad_diagnostics": str(history_dir / "pcgrad_diagnostics.jsonl"),
         },
         "checkpoint_paths": {
             "last": str(checkpoint_dir / "last.pt"),
@@ -92,6 +93,12 @@ def _build_run_manifest(
     log_every_n_steps: int,
     profile_window: int,
     profile_device_sync: bool,
+    step_history_enabled: bool,
+    step_history_every_n_steps: int,
+    step_history_include_grad_details: bool,
+    pcgrad_diagnostics_enabled: bool,
+    pcgrad_aggregate_every_n_steps: int,
+    pcgrad_keep_raw_every_n_steps: int,
     tensorboard_status: dict[str, Any],
     output_dir: Path,
     run_summary: dict[str, Any],
@@ -118,6 +125,12 @@ def _build_run_manifest(
             "log_every_n_steps": int(log_every_n_steps),
             "profile_window": int(profile_window),
             "profile_device_sync": bool(profile_device_sync),
+            "step_history_enabled": bool(step_history_enabled),
+            "step_history_every_n_steps": int(step_history_every_n_steps),
+            "step_history_include_grad_details": bool(step_history_include_grad_details),
+            "pcgrad_diagnostics_enabled": bool(pcgrad_diagnostics_enabled),
+            "pcgrad_aggregate_every_n_steps": int(pcgrad_aggregate_every_n_steps),
+            "pcgrad_keep_raw_every_n_steps": int(pcgrad_keep_raw_every_n_steps),
         },
         "artifacts": {
             "summary": str(output_dir / "summary.json"),
@@ -148,6 +161,13 @@ def _restore_resume_state(
     best_epoch: int | None = None
     best_checkpoint_path: Path | None = None
     summary_path = output_dir / "summary.json"
+    epoch_history_path = output_dir / "history" / "epochs.jsonl"
+    if epoch_history_path.is_file():
+        trainer.epoch_history = [
+            json.loads(line)
+            for line in epoch_history_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
     if summary_path.is_file():
         prior_summary = json.loads(summary_path.read_text(encoding="utf-8"))
         if prior_summary.get("best_metric_value") is not None:
@@ -210,7 +230,7 @@ def _update_task_best_checkpoints(
             checkpoint_dir / filename,
             extra_state={
                 "epoch": epoch,
-                "epoch_summary": epoch_summary,
+                "metric_value": metric_value,
                 "task_best": {
                     "task": task_name,
                     "metric_path": metric_path,
@@ -255,6 +275,12 @@ def run_fit(
     log_every_n_steps: int = 1,
     profile_window: int = 20,
     profile_device_sync: bool = False,
+    step_history_enabled: bool = True,
+    step_history_every_n_steps: int = 100,
+    step_history_include_grad_details: bool = False,
+    pcgrad_diagnostics_enabled: bool = True,
+    pcgrad_aggregate_every_n_steps: int = 100,
+    pcgrad_keep_raw_every_n_steps: int = 1000,
     default_run_dir_fn: Callable[[], Path] | None = None,
     now_iso_fn: Callable[[], str] | None = None,
     write_json_fn: Callable[[str | Path, dict[str, Any]], Path] | None = None,
@@ -274,6 +300,12 @@ def run_fit(
         raise ValueError("log_every_n_steps must be > 0")
     if profile_window <= 0:
         raise ValueError("profile_window must be > 0")
+    if step_history_every_n_steps <= 0:
+        raise ValueError("step_history_every_n_steps must be > 0")
+    if pcgrad_aggregate_every_n_steps <= 0:
+        raise ValueError("pcgrad_aggregate_every_n_steps must be > 0")
+    if pcgrad_keep_raw_every_n_steps < 0:
+        raise ValueError("pcgrad_keep_raw_every_n_steps must be >= 0")
     if (
         default_run_dir_fn is None
         or now_iso_fn is None
@@ -326,7 +358,7 @@ def run_fit(
                 has_val_loader=val_loader is not None,
                 resolve_summary_path_fn=resolve_summary_path_fn,
             )
-    trainer._tensorboard_train_step = len(trainer.history)
+    trainer._tensorboard_train_step = int(getattr(trainer, "train_step_count", len(trainer.history)))
     if resumed_from_checkpoint:
         tensorboard_purge_step = max(1, trainer._tensorboard_train_step + 1)
     if enable_tensorboard:
@@ -372,6 +404,12 @@ def run_fit(
                     log_every_n_steps=log_every_n_steps,
                     profile_window=profile_window,
                     profile_device_sync=profile_device_sync,
+                    step_history_enabled=step_history_enabled,
+                    step_history_every_n_steps=step_history_every_n_steps,
+                    step_history_include_grad_details=step_history_include_grad_details,
+                    pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
+                    pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
+                    pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
                     tensorboard_status=trainer.tensorboard_status,
                     output_dir=output_dir,
                     run_summary=run_summary,
@@ -401,6 +439,13 @@ def run_fit(
                     log_every_n_steps=log_every_n_steps,
                     profile_window=profile_window,
                     profile_device_sync=profile_device_sync,
+                    step_history_enabled=step_history_enabled,
+                    step_history_every_n_steps=step_history_every_n_steps,
+                    step_history_include_grad_details=step_history_include_grad_details,
+                    pcgrad_diagnostics_path=history_dir / "pcgrad_diagnostics.jsonl",
+                    pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
+                    pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
+                    pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
                 ),
             }
             if val_loader is not None:
@@ -446,19 +491,19 @@ def run_fit(
             trainer.epoch_history.append(epoch_summary)
             last_checkpoint_path = trainer.save_checkpoint(
                 checkpoint_dir / "last.pt",
-                extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
+                extra_state={"epoch": epoch, "metric_value": metric_value, "best_epoch": best_epoch},
             )
             epoch_summary["checkpoint_last"] = str(last_checkpoint_path)
             if checkpoint_every > 0 and epoch % checkpoint_every == 0:
                 epoch_checkpoint_path = trainer.save_checkpoint(
                     checkpoint_dir / f"epoch_{epoch:03d}.pt",
-                    extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
+                    extra_state={"epoch": epoch, "metric_value": metric_value, "best_epoch": best_epoch},
                 )
                 epoch_summary["checkpoint_epoch"] = str(epoch_checkpoint_path)
             if is_best:
                 best_checkpoint_path = trainer.save_checkpoint(
                     checkpoint_dir / "best.pt",
-                    extra_state={"epoch": epoch, "epoch_summary": epoch_summary},
+                    extra_state={"epoch": epoch, "metric_value": metric_value, "best_epoch": best_epoch},
                 )
                 epoch_summary["checkpoint_best"] = str(best_checkpoint_path)
             task_best_updates = _update_task_best_checkpoints(
@@ -475,7 +520,6 @@ def run_fit(
             if epoch_end_callback is not None:
                 epoch_end_callback(epoch_summary)
 
-            trainer.save_history_jsonl(history_dir / "train_steps.jsonl")
             trainer.save_epoch_history_jsonl(history_dir / "epochs.jsonl")
 
             if trainer.tensorboard_writer is not None:
@@ -528,6 +572,12 @@ def run_fit(
                     log_every_n_steps=log_every_n_steps,
                     profile_window=profile_window,
                     profile_device_sync=profile_device_sync,
+                    step_history_enabled=step_history_enabled,
+                    step_history_every_n_steps=step_history_every_n_steps,
+                    step_history_include_grad_details=step_history_include_grad_details,
+                    pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
+                    pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
+                    pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
                     tensorboard_status=trainer.tensorboard_status,
                     output_dir=output_dir,
                     run_summary=run_summary,

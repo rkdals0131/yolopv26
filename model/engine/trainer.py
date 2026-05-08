@@ -334,6 +334,7 @@ class PV26Trainer:
         self.micro_step = 0
         self.skipped_steps = 0
         self.global_step = 0
+        self.train_step_count = 0
         self.history: list[dict[str, Any]] = []
         self.epoch_history: list[dict[str, Any]] = []
         self.tensorboard_writer = None
@@ -383,12 +384,14 @@ class PV26Trainer:
         *,
         wait_sec: float = 0.0,
         profile_device_sync: bool = False,
+        store_history: bool = True,
     ) -> dict[str, Any]:
         return _step.run_train_step(
             self,
             batch,
             wait_sec=wait_sec,
             profile_device_sync=profile_device_sync,
+            store_history=store_history,
             od_classes=OD_CLASSES,
             is_oom_error_fn=_is_oom_error,
         )
@@ -490,6 +493,13 @@ class PV26Trainer:
         log_every_n_steps: int = 1,
         profile_window: int = 20,
         profile_device_sync: bool = False,
+        step_history_enabled: bool = True,
+        step_history_every_n_steps: int = 100,
+        step_history_include_grad_details: bool = False,
+        pcgrad_diagnostics_path: str | Path | None = None,
+        pcgrad_diagnostics_enabled: bool = True,
+        pcgrad_aggregate_every_n_steps: int = 100,
+        pcgrad_keep_raw_every_n_steps: int = 1000,
     ) -> dict[str, Any]:
         return _epochs.run_train_epoch(
             self,
@@ -504,6 +514,13 @@ class PV26Trainer:
             log_every_n_steps=log_every_n_steps,
             profile_window=profile_window,
             profile_device_sync=profile_device_sync,
+            step_history_enabled=step_history_enabled,
+            step_history_every_n_steps=step_history_every_n_steps,
+            step_history_include_grad_details=step_history_include_grad_details,
+            pcgrad_diagnostics_path=str(pcgrad_diagnostics_path) if pcgrad_diagnostics_path is not None else None,
+            pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
+            pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
+            pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
         )
 
     def validate_epoch(
@@ -561,6 +578,12 @@ class PV26Trainer:
         log_every_n_steps: int = 1,
         profile_window: int = 20,
         profile_device_sync: bool = False,
+        step_history_enabled: bool = True,
+        step_history_every_n_steps: int = 100,
+        step_history_include_grad_details: bool = False,
+        pcgrad_diagnostics_enabled: bool = True,
+        pcgrad_aggregate_every_n_steps: int = 100,
+        pcgrad_keep_raw_every_n_steps: int = 1000,
     ) -> dict[str, Any]:
         return _fit.run_fit(
             self,
@@ -586,6 +609,12 @@ class PV26Trainer:
             log_every_n_steps=log_every_n_steps,
             profile_window=profile_window,
             profile_device_sync=profile_device_sync,
+            step_history_enabled=step_history_enabled,
+            step_history_every_n_steps=step_history_every_n_steps,
+            step_history_include_grad_details=step_history_include_grad_details,
+            pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
+            pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
+            pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
             default_run_dir_fn=_io._default_run_dir,
             now_iso_fn=_io._now_iso,
             write_json_fn=_io._write_json,

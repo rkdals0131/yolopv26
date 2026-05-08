@@ -149,6 +149,7 @@ def run_train_step(
     *,
     wait_sec: float = 0.0,
     profile_device_sync: bool = False,
+    store_history: bool = True,
     od_classes: tuple[str, ...],
     is_oom_error_fn: Any,
 ) -> dict[str, Any]:
@@ -284,7 +285,7 @@ def run_train_step(
     }
     timing["iteration_sec"] = sum(float(timing[key]) for key in TIMING_KEYS if key != "iteration_sec")
     summary = {
-        "history_index": len(trainer.history) + 1,
+        "history_index": int(getattr(trainer, "train_step_count", len(trainer.history))) + 1,
         "global_step": trainer.global_step,
         "stage": trainer.stage,
         "batch_size": int(encoded["image"].shape[0]),
@@ -313,7 +314,9 @@ def run_train_step(
         "source_counts": _source_counts(encoded, od_classes=od_classes),
         "det_supervision": _det_supervision_summary(encoded, od_classes=od_classes),
     }
-    trainer.history.append(summary)
+    trainer.train_step_count = int(getattr(trainer, "train_step_count", len(trainer.history))) + 1
+    if store_history:
+        trainer.history.append(summary)
     if trainer.tensorboard_writer is not None:
         trainer._tensorboard_train_step += 1
         _write_tensorboard_scalars(

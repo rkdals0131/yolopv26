@@ -704,7 +704,10 @@ class PV26TrainerTests(unittest.TestCase):
 
             self.assertEqual(reloaded_trainer.stage, "stage_1_frozen_trunk_warmup")
             self.assertEqual(reloaded_trainer.global_step, 2)
-            self.assertEqual(len(reloaded_trainer.history), 2)
+            self.assertEqual(reloaded_trainer.train_step_count, 2)
+            self.assertEqual(len(reloaded_trainer.history), 0)
+            self.assertNotIn("history", checkpoint)
+            self.assertNotIn("epoch_history", checkpoint)
             self.assertEqual(checkpoint["extra_state"]["tag"], "regression")
             self.assertEqual(
                 reloaded_trainer.stage_summary["trainable_head_params"],
@@ -1155,6 +1158,80 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(summary["attempted_source_counts"]["det_source_samples"], 2)
         self.assertEqual(summary["skipped_source_counts"]["det_source_samples"], 1)
         self.assertEqual(summary["source_counts"]["det_source_samples"], 1)
+        self.assertEqual(summary["step_history"]["logged_steps"], 2)
+
+    def test_train_epoch_samples_step_history_and_writes_pcgrad_diagnostics(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        trainer = PV26Trainer(_DummyAdapter(), nn.Identity(), criterion=_FiniteCriterion(total=1.0), optimizer=_dummy_optimizer())
+
+        def _step(index: int) -> dict:
+            return {
+                "history_index": index,
+                "global_step": index,
+                "stage": trainer.stage,
+                "batch_size": 1,
+                "successful": True,
+                "losses": {"total": float(index), "det": 1.0, "tl_attr": 0.0, "lane": 0.5, "stop_line": 0.25, "crosswalk": 0.25},
+                "det_components": _default_components_for_test(2, 8),
+                "optimizer_step": True,
+                "micro_step": 0,
+                "accumulate_steps": 1,
+                "skipped_reason": None,
+                "skipped_reason_detail": None,
+                "skipped_steps": 0,
+                "amp_enabled": False,
+                "gradient_scale": 1.0,
+                "optimizer_lrs": {"trunk": 1e-4},
+                "trainable": dict(trainer.stage_summary),
+                "assignment": {"det": "task_aligned", "lane": {"lane": "hungarian", "stop_line": "hungarian", "crosswalk": "hungarian"}},
+                "multitask_conflict": {
+                    "enabled": True,
+                    "conflict_pairs": [["det", "lane"], ["stop_line", "lane"]],
+                    "pairwise_dots": {"det": {"lane": -float(index)}, "stop_line": {"lane": -2.0}},
+                    "raw_grad_norms": {"det": float(index), "lane": 2.0, "stop_line": 3.0},
+                    "projected_grad_norms": {"det": float(index) / 2.0, "lane": 1.0, "stop_line": 1.5},
+                },
+                "timing": {key: 0.01 for key in ("wait_sec", "load_sec", "forward_sec", "loss_sec", "backward_sec", "iteration_sec")},
+                "source_counts": {"det_source_samples": 1, "tl_attr_source_samples": 0, "lane_source_samples": 0, "stop_line_source_samples": 0, "crosswalk_source_samples": 0},
+                "det_supervision": {
+                    "det_source_samples": 1,
+                    "partial_det_samples": 0,
+                    "objectness_negative_enabled_samples": 1,
+                    "class_negative_enabled_samples": 1,
+                    "partial_det_ratio": 0.0,
+                    "supervised_class_sample_counts": {class_name: 0 for class_name in OD_CLASSES},
+                    "gt_class_counts": {class_name: 0 for class_name in OD_CLASSES},
+                },
+            }
+
+        outcomes = iter(_step(index) for index in range(1, 5))
+        trainer.train_step = lambda batch, **kwargs: next(outcomes)  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            step_log_path = root / "train_steps.jsonl"
+            pcgrad_path = root / "pcgrad_diagnostics.jsonl"
+            summary = trainer.train_epoch(
+                [_make_encoded_batch(batch_size=1, q_det=2) for _ in range(4)],
+                epoch=1,
+                step_log_path=step_log_path,
+                step_history_every_n_steps=2,
+                pcgrad_diagnostics_path=pcgrad_path,
+                pcgrad_aggregate_every_n_steps=2,
+            )
+
+            step_rows = [json.loads(line) for line in step_log_path.read_text(encoding="utf-8").splitlines()]
+            pcgrad_rows = [json.loads(line) for line in pcgrad_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual([row["history_index"] for row in step_rows], [1, 2, 4])
+        self.assertNotIn("multitask_conflict", step_rows[0])
+        self.assertEqual(len(trainer.history), 3)
+        self.assertEqual(summary["step_history"]["logged_steps"], 3)
+        self.assertEqual(summary["pcgrad_diagnostics"]["windows"], 2)
+        self.assertEqual(len(pcgrad_rows), 2)
+        self.assertAlmostEqual(pcgrad_rows[0]["conflict_rate"]["det_vs_lane"], 1.0)
+        self.assertAlmostEqual(pcgrad_rows[0]["mean_raw_grad_norm"]["det"], 1.5)
 
     def test_build_evaluator_clones_pv26_criterion_config(self) -> None:
         from model.engine.evaluator import PV26Evaluator

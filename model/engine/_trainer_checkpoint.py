@@ -50,13 +50,14 @@ def checkpoint_state(
     checkpoint = {
         "stage": trainer.stage,
         "global_step": trainer.global_step,
+        "train_step_count": int(getattr(trainer, "train_step_count", len(trainer.history))),
         "stage_summary": dict(trainer.stage_summary),
         "adapter_state_dict": trainer.adapter.raw_model.state_dict(),
         "heads_state_dict": trainer.heads.state_dict(),
         "optimizer_state_dict": trainer.optimizer.state_dict(),
         "criterion_stage": str(getattr(trainer.criterion, "stage", trainer.stage)),
-        "history": list(trainer.history),
-        "epoch_history": list(trainer.epoch_history),
+        "completed_epochs": len(trainer.epoch_history),
+        "last_epoch": int(trainer.epoch_history[-1]["epoch"]) if trainer.epoch_history else 0,
         "micro_step": int(trainer.micro_step),
         "skipped_steps": int(trainer.skipped_steps),
         "accumulate_steps": int(trainer.accumulate_steps),
@@ -138,9 +139,12 @@ def load_checkpoint(
     if trainer.amp_enabled and "scaler_state_dict" in checkpoint:
         trainer.scaler.load_state_dict(checkpoint["scaler_state_dict"])
     trainer.global_step = int(checkpoint.get("global_step", 0))
+    trainer.train_step_count = int(
+        checkpoint.get("train_step_count", checkpoint.get("history_len", len(checkpoint.get("history", []))))
+    )
     trainer.stage_summary = dict(checkpoint.get("stage_summary", trainer.stage_summary))
-    trainer.history = list(checkpoint.get("history", []))
-    trainer.epoch_history = list(checkpoint.get("epoch_history", []))
+    trainer.history = []
+    trainer.epoch_history = []
     trainer.micro_step = int(checkpoint.get("micro_step", 0))
     trainer.skipped_steps = int(checkpoint.get("skipped_steps", 0))
     if isinstance(checkpoint.get("multitask_conflict"), dict):

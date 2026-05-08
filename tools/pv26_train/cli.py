@@ -856,6 +856,12 @@ def _execute_phase(
         log_every_n_steps=phase_train_config.log_every_n_steps,
         profile_window=phase_train_config.profile_window,
         profile_device_sync=phase_train_config.profile_device_sync,
+        step_history_enabled=phase_train_config.step_history_enabled,
+        step_history_every_n_steps=phase_train_config.step_history_every_n_steps,
+        step_history_include_grad_details=phase_train_config.step_history_include_grad_details,
+        pcgrad_diagnostics_enabled=phase_train_config.pcgrad_diagnostics_enabled,
+        pcgrad_aggregate_every_n_steps=phase_train_config.pcgrad_aggregate_every_n_steps,
+        pcgrad_keep_raw_every_n_steps=phase_train_config.pcgrad_keep_raw_every_n_steps,
         run_manifest_extra=_phase_manifest_extra(
             scenario_path=scenario_path,
             phase_index=phase_index,

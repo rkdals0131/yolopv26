@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 import time
 from typing import Any
 
@@ -58,6 +59,137 @@ def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def _is_step_anomaly(summary: dict[str, Any]) -> bool:
+    if not _is_successful_summary(summary):
+        return True
+    if summary.get("skipped_reason"):
+        return True
+    total_loss = summary.get("losses", {}).get("total")
+    return isinstance(total_loss, float) and not math.isfinite(total_loss)
+
+
+def _slim_step_summary(summary: dict[str, Any], *, include_grad_details: bool) -> dict[str, Any]:
+    keys = (
+        "history_index",
+        "global_step",
+        "stage",
+        "batch_size",
+        "successful",
+        "losses",
+        "det_components",
+        "optimizer_step",
+        "micro_step",
+        "accumulate_steps",
+        "skipped_reason",
+        "skipped_reason_detail",
+        "skipped_steps",
+        "amp_enabled",
+        "gradient_scale",
+        "optimizer_lrs",
+        "assignment",
+        "timing",
+        "source_counts",
+        "det_supervision",
+        "progress",
+        "profile",
+    )
+    slim = {key: summary[key] for key in keys if key in summary}
+    if include_grad_details and "multitask_conflict" in summary:
+        slim["multitask_conflict"] = summary["multitask_conflict"]
+    return slim
+
+
+def _should_log_step_summary(
+    *,
+    batch_index: int,
+    total_batches: int | None,
+    every_n_steps: int,
+    enabled: bool,
+    summary: dict[str, Any],
+) -> bool:
+    if _is_step_anomaly(summary):
+        return True
+    if not enabled:
+        return False
+    if batch_index == 1:
+        return True
+    if total_batches is not None and batch_index == total_batches:
+        return True
+    return every_n_steps > 0 and batch_index % every_n_steps == 0
+
+
+def _mean_nested_values(items: list[dict[str, Any]], key: str) -> dict[str, float]:
+    sums: Counter[str] = Counter()
+    counts: Counter[str] = Counter()
+    for item in items:
+        payload = item.get(key)
+        if not isinstance(payload, dict):
+            continue
+        for name, value in payload.items():
+            if isinstance(value, (int, float)):
+                sums[str(name)] += float(value)
+                counts[str(name)] += 1
+    return {name: float(sums[name]) / float(counts[name]) for name in sorted(sums) if counts[name]}
+
+
+def _aggregate_pcgrad_window(*, epoch: int, window: list[dict[str, Any]]) -> dict[str, Any]:
+    conflict_counts: Counter[str] = Counter()
+    task_conflict_counts: Counter[str] = Counter()
+    pairwise_sums: Counter[str] = Counter()
+    pairwise_counts: Counter[str] = Counter()
+    enabled_steps = 0
+    for summary in window:
+        pcgrad = summary.get("multitask_conflict")
+        if not isinstance(pcgrad, dict) or not pcgrad.get("enabled"):
+            continue
+        enabled_steps += 1
+        for pair in pcgrad.get("conflict_pairs", []):
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                continue
+            left, right = str(pair[0]), str(pair[1])
+            conflict_counts[f"{left}_vs_{right}"] += 1
+            task_conflict_counts[left] += 1
+        pairwise = pcgrad.get("pairwise_dots")
+        if isinstance(pairwise, dict):
+            for left, nested in pairwise.items():
+                if not isinstance(nested, dict):
+                    continue
+                for right, value in nested.items():
+                    if isinstance(value, (int, float)):
+                        key = f"{left}_vs_{right}"
+                        pairwise_sums[key] += float(value)
+                        pairwise_counts[key] += 1
+    denominator = max(enabled_steps, 1)
+    return {
+        "epoch": int(epoch),
+        "window_started_history_index": int(window[0].get("history_index", 0)) if window else 0,
+        "window_ended_history_index": int(window[-1].get("history_index", 0)) if window else 0,
+        "steps": len(window),
+        "pcgrad_enabled_steps": int(enabled_steps),
+        "conflict_rate": {
+            name: float(count) / float(denominator)
+            for name, count in sorted(conflict_counts.items())
+        },
+        "projection_rate_by_task": {
+            name: float(count) / float(denominator)
+            for name, count in sorted(task_conflict_counts.items())
+        },
+        "mean_pairwise_dot": {
+            name: float(pairwise_sums[name]) / float(pairwise_counts[name])
+            for name in sorted(pairwise_sums)
+            if pairwise_counts[name]
+        },
+        "mean_raw_grad_norm": _mean_nested_values(
+            [summary["multitask_conflict"] for summary in window if isinstance(summary.get("multitask_conflict"), dict)],
+            "raw_grad_norms",
+        ),
+        "mean_projected_grad_norm": _mean_nested_values(
+            [summary["multitask_conflict"] for summary in window if isinstance(summary.get("multitask_conflict"), dict)],
+            "projected_grad_norms",
+        ),
+    }
+
+
 def run_train_epoch(
     trainer: Any,
     loader: Any,
@@ -72,10 +204,20 @@ def run_train_epoch(
     log_every_n_steps: int = 1,
     profile_window: int = 20,
     profile_device_sync: bool = False,
+    step_history_enabled: bool = True,
+    step_history_every_n_steps: int = 100,
+    step_history_include_grad_details: bool = False,
+    pcgrad_diagnostics_path: str | None = None,
+    pcgrad_diagnostics_enabled: bool = True,
+    pcgrad_aggregate_every_n_steps: int = 100,
+    pcgrad_keep_raw_every_n_steps: int = 1000,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     epoch_started_at_iso = _now_iso()
     step_summaries: list[dict[str, Any]] = []
+    logged_step_count = 0
+    pcgrad_window: list[dict[str, Any]] = []
+    pcgrad_window_count = 0
     timing_window: list[dict[str, Any]] = []
     start_step = trainer.global_step
     total_batches = max_batches if max_batches is not None else safe_len(loader)
@@ -103,6 +245,7 @@ def run_train_epoch(
                 batch,
                 wait_sec=wait_sec,
                 profile_device_sync=profile_device_sync,
+                store_history=False,
             )
             timing_window = update_timing_window(timing_window, step_summary, profile_window=profile_window)
             profile_summary, elapsed_sec, eta_sec = summarize_progress(
@@ -122,8 +265,38 @@ def run_train_epoch(
             }
             step_summary["profile"] = profile_summary
             step_summaries.append(step_summary)
-            if step_log_path is not None:
-                _append_jsonl(step_log_path, step_summary)
+            should_log_step = _should_log_step_summary(
+                batch_index=batch_index,
+                total_batches=total_batches,
+                every_n_steps=step_history_every_n_steps,
+                enabled=step_history_enabled,
+                summary=step_summary,
+            )
+            include_grad_details = bool(step_history_include_grad_details)
+            if (
+                pcgrad_keep_raw_every_n_steps > 0
+                and batch_index % pcgrad_keep_raw_every_n_steps == 0
+            ) or _is_step_anomaly(step_summary):
+                include_grad_details = True
+            if should_log_step:
+                logged_summary = _slim_step_summary(
+                    step_summary,
+                    include_grad_details=include_grad_details,
+                )
+                trainer.history.append(logged_summary)
+                logged_step_count += 1
+                if step_log_path is not None:
+                    _append_jsonl(step_log_path, logged_summary)
+            if pcgrad_diagnostics_enabled:
+                pcgrad_window.append(step_summary)
+                if pcgrad_aggregate_every_n_steps > 0 and len(pcgrad_window) >= pcgrad_aggregate_every_n_steps:
+                    pcgrad_window_count += 1
+                    if pcgrad_diagnostics_path is not None:
+                        _append_jsonl(
+                            pcgrad_diagnostics_path,
+                            _aggregate_pcgrad_window(epoch=epoch, window=pcgrad_window),
+                        )
+                    pcgrad_window = []
             should_log = should_log_progress(
                 batch_index=batch_index,
                 total_batches=total_batches,
@@ -175,6 +348,13 @@ def run_train_epoch(
     if not successful_summaries:
         raise ValueError(_zero_successful_batches_error(step_summaries))
     skipped_summaries = [item for item in step_summaries if not _is_successful_summary(item)]
+    if pcgrad_diagnostics_enabled and pcgrad_window:
+        pcgrad_window_count += 1
+        if pcgrad_diagnostics_path is not None:
+            _append_jsonl(
+                pcgrad_diagnostics_path,
+                _aggregate_pcgrad_window(epoch=epoch, window=pcgrad_window),
+            )
     ended_at = time.perf_counter()
     return {
         "epoch": int(epoch),
@@ -199,6 +379,18 @@ def run_train_epoch(
         "source_counts": _aggregate_count_tree(successful_summaries, "source_counts"),
         "det_supervision": _aggregate_count_tree(successful_summaries, "det_supervision"),
         "det_components": _aggregate_count_tree(successful_summaries, "det_components"),
+        "step_history": {
+            "enabled": bool(step_history_enabled),
+            "logged_steps": int(logged_step_count),
+            "every_n_steps": int(step_history_every_n_steps),
+            "include_grad_details": bool(step_history_include_grad_details),
+        },
+        "pcgrad_diagnostics": {
+            "enabled": bool(pcgrad_diagnostics_enabled),
+            "windows": int(pcgrad_window_count),
+            "aggregate_every_n_steps": int(pcgrad_aggregate_every_n_steps),
+            "keep_raw_every_n_steps": int(pcgrad_keep_raw_every_n_steps),
+        },
     }
 
 

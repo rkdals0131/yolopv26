@@ -88,6 +88,12 @@ class TrainDefaultsConfig:
     log_every_n_steps: int = 20
     profile_window: int = 20
     profile_device_sync: bool = True
+    step_history_enabled: bool = True
+    step_history_every_n_steps: int = 100
+    step_history_include_grad_details: bool = False
+    pcgrad_diagnostics_enabled: bool = True
+    pcgrad_aggregate_every_n_steps: int = 100
+    pcgrad_keep_raw_every_n_steps: int = 1000
     encode_train_batches_in_loader: bool = True
     encode_val_batches_in_loader: bool = True
     persistent_workers: bool = True
@@ -446,6 +452,30 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         profile_device_sync=_coerce_bool(
             data.get("profile_device_sync", defaults.profile_device_sync),
             field_name="train_defaults.profile_device_sync",
+        ),
+        step_history_enabled=_coerce_bool(
+            data.get("step_history_enabled", defaults.step_history_enabled),
+            field_name="train_defaults.step_history_enabled",
+        ),
+        step_history_every_n_steps=_coerce_int(
+            data.get("step_history_every_n_steps", defaults.step_history_every_n_steps),
+            field_name="train_defaults.step_history_every_n_steps",
+        ),
+        step_history_include_grad_details=_coerce_bool(
+            data.get("step_history_include_grad_details", defaults.step_history_include_grad_details),
+            field_name="train_defaults.step_history_include_grad_details",
+        ),
+        pcgrad_diagnostics_enabled=_coerce_bool(
+            data.get("pcgrad_diagnostics_enabled", defaults.pcgrad_diagnostics_enabled),
+            field_name="train_defaults.pcgrad_diagnostics_enabled",
+        ),
+        pcgrad_aggregate_every_n_steps=_coerce_int(
+            data.get("pcgrad_aggregate_every_n_steps", defaults.pcgrad_aggregate_every_n_steps),
+            field_name="train_defaults.pcgrad_aggregate_every_n_steps",
+        ),
+        pcgrad_keep_raw_every_n_steps=_coerce_int(
+            data.get("pcgrad_keep_raw_every_n_steps", defaults.pcgrad_keep_raw_every_n_steps),
+            field_name="train_defaults.pcgrad_keep_raw_every_n_steps",
         ),
         encode_train_batches_in_loader=_coerce_bool(
             data.get("encode_train_batches_in_loader", defaults.encode_train_batches_in_loader),
