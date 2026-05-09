@@ -30,7 +30,7 @@ class LaneSegFirstHead(nn.Module):
             ConvNormAct(self.hidden_dim, self.hidden_dim),
             ConvNormAct(self.hidden_dim, self.hidden_dim),
         )
-        self.centerline_refine_gate_logit = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))
+        self.centerline_refine_gate_logit = nn.Parameter(torch.tensor(-4.0, dtype=torch.float32))
         self.centerline_refine = nn.Sequential(
             ConvNormAct(self.hidden_dim, self.hidden_dim),
             ConvNormAct(self.hidden_dim, self.hidden_dim),

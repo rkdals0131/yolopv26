@@ -129,6 +129,7 @@ Val128 continuation probes:
 | `core_centerline_refine` | source best | 4 | 2 | 0.5591 | 0.4397 | 0.4027 | 0.4348 |
 | `core_centerline_low_lr` | refine best | 4 | 2 | 0.5550 | 0.4410 | 0.3871 | 0.4141 |
 | `core_centerline_refine_tangent` | source best | 4 | 2 | 0.5585 | 0.4375 | 0.4027 | 0.4348 |
+| `core_centerline_refine_open_gate` | source best | 4 | 2 | 0.5588 | 0.4384 | 0.4027 | 0.4297 |
 
 Epoch trace for the best core continuation:
 
@@ -150,6 +151,7 @@ Interpretation:
 - Adding a small gated centerline-only refinement branch is positive: best objective rises from `0.5530` to `0.5591`, with lane F1 rising to `0.4397`.
 - Continuing the refine-best checkpoint at `5e-5` does not preserve enough objective headroom. It reaches lane F1 `0.4410`, but stop-line/crosswalk balance is weaker and objective stays at `0.5550`.
 - Sharing the refined feature with tangent prediction is near-tie but negative: `0.5585` versus the prior `0.5591`. Keep tangent on the base lane feature unless a later probe changes the vectorizer contract.
+- Opening the refinement gate from `-4` to `-2` is also near-tie but negative: `0.5588` versus `0.5591`. The gain is not limited by a too-closed initial residual gate.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 Dense-map PR on the best core checkpoint:
@@ -178,7 +180,7 @@ Interpretation: refine does not radically change pixel PR, but it does raise the
 
 Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` together with the centerline map. Sharing the refined feature with tangent prediction did not beat centerline-only refinement, so that branch was restored to centerline-only behavior after recording the result.
 
-Open-gate follow-up: the best centerline-refine checkpoint kept `centerline_refine_gate_logit` near `-4` (`sigmoid ~= 0.018`), so the positive signal came from a very small residual branch. The next probe initializes the gate at `-2` (`sigmoid ~= 0.119`) as `core_centerline_refine_open_gate` to test whether the refinement path is under-used rather than fundamentally exhausted.
+Open-gate follow-up: the best centerline-refine checkpoint kept `centerline_refine_gate_logit` near `-4` (`sigmoid ~= 0.018`), so the positive signal came from a very small residual branch. Initializing the gate at `-2` (`sigmoid ~= 0.119`) did not beat the original gated refinement, so the default gate was restored to `-4`.
 
 Decode sweep on the best core checkpoint:
 
