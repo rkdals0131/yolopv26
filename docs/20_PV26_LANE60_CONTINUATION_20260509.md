@@ -217,6 +217,8 @@ Refine-Dice focus result: this was clearly worse. Epoch 2 reached objective `0.5
 
 Support-gated centerline decode probe: `tools/probe_pv26_lane60_support_gate.py` evaluates postprocess-only variants that replace or limit centerline probabilities with support probabilities. On the best refine checkpoint, the best relative variant was `centerline_support_floor070`, but it only moved the probe objective from `0.52806` to `0.52869` on that decode path. This does not expose a hidden 60% path, and the decode-probe metric path should not be confused with the training selection metric.
 
+Postprocess threshold sweep: `tools/probe_pv26_lane60_postprocess_thresholds.py` evaluates lane object, stop-line object/mask, and crosswalk object/mask threshold variants on one cached forward pass. On the current merged stop-retain best checkpoint, the proxy baseline was `0.52994` and the best variant was `stop_mask_0.30__cross_mask_0.40` at `0.53328`. This is useful for calibration, but the gain is too small to explain the missing 60% path.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
