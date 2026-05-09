@@ -66,6 +66,8 @@ class PV26PostprocessConfig:
     stop_line_mask_binary_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.40
+    crosswalk_min_component_pixels: int = 24
+    crosswalk_max_components: int = 0
     lane_visibility_threshold: float = 0.50
     allow_python_nms_fallback: bool = False
 
@@ -349,6 +351,8 @@ def _crosswalk_mask_to_polygon(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float,
+    min_component_pixels: int = 4,
+    max_components: int = 0,
 ) -> list[dict[str, Any]]:
     if not _tensor_all_finite(mask_logits):
         return []
@@ -379,7 +383,7 @@ def _crosswalk_mask_to_polygon(
     transform = transform_from_meta(meta)
     for label_index in range(1, component_count + 1):
         rows, cols = np.nonzero(labels == label_index)
-        if len(rows) < 4:
+        if len(rows) < max(4, int(min_component_pixels)):
             continue
 
         points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
@@ -411,7 +415,10 @@ def _crosswalk_mask_to_polygon(
             }
         )
     predictions.sort(key=lambda item: item["score"], reverse=True)
-    return _dedupe_crosswalk_predictions(predictions)
+    deduped = _dedupe_crosswalk_predictions(predictions)
+    if int(max_components) > 0:
+        return deduped[: int(max_components)]
+    return deduped
 
 
 def _prepare_stopline_binary_mask(mask_probs: np.ndarray, *, threshold: float) -> np.ndarray:
@@ -1510,6 +1517,8 @@ def _decode_crosswalk_rows(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float = 0.5,
+    min_component_pixels: int = 4,
+    max_components: int = 0,
     mask_logits: torch.Tensor | None = None,
     center_logits: torch.Tensor | None = None,
 ) -> list[dict[str, Any]]:
@@ -1520,6 +1529,8 @@ def _decode_crosswalk_rows(
             meta=meta,
             obj_threshold=obj_threshold,
             mask_binary_threshold=mask_binary_threshold,
+            min_component_pixels=min_component_pixels,
+            max_components=max_components,
         )
         if decoded:
             return decoded
@@ -1655,6 +1666,8 @@ def postprocess_pv26_batch(
                     meta=sample_meta,
                     obj_threshold=config.crosswalk_obj_threshold,
                     mask_binary_threshold=config.crosswalk_mask_binary_threshold,
+                    min_component_pixels=config.crosswalk_min_component_pixels,
+                    max_components=config.crosswalk_max_components,
                     mask_logits=(
                         crosswalk_mask_logits[batch_index]
                         if isinstance(crosswalk_mask_logits, torch.Tensor)

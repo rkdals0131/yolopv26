@@ -260,9 +260,10 @@ Exact epoch-2 checks after the min-rect crosswalk decode:
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `best.pt`, cross-mask `0.50` | 0.5611 | 0.4435 | 0.3946 | 0.4111 | 0.4277 |
 | `best.pt`, cross-mask `0.40` | 0.5621 | 0.4435 | 0.3946 | 0.4206 | 0.4326 |
+| `best.pt`, cross-mask `0.40`, cross-area `24` | 0.5674 | 0.4435 | 0.3946 | 0.4880 | 0.4577 |
 | `merged_epoch2_with_epoch4_crosswalk.pt`, cross-mask `0.50` | 0.5585 | 0.4435 | 0.3946 | 0.3893 | 0.4153 |
 
-The crosswalk mask threshold sweep on the true epoch-2 subset found `cross_mask_0.40` as the best decode-only variant, so `PV26PostprocessConfig.crosswalk_mask_binary_threshold` now defaults to `0.40`. This is a small but real selection-metric improvement, not a 60% path by itself.
+The crosswalk mask threshold sweep on the true epoch-2 subset first found `cross_mask_0.40` as the best decode-only variant, so `PV26PostprocessConfig.crosswalk_mask_binary_threshold` now defaults to `0.40`. A follow-up component-area sweep found `cross_area_24` as the best row, raising crosswalk F1 from `0.4206` to `0.4880` and the exact epoch-2 objective from `0.5621` to `0.5674`. `PV26PostprocessConfig.crosswalk_min_component_pixels` now defaults to `24`. This is a real selection-metric improvement, but still not a 60% path by itself.
 
 ## Decision
 
@@ -285,14 +286,14 @@ What this continuation falsified:
 - Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, post-merge stop/cross rebalancing, and temporary crosswalk feature isolation do not clear the ceiling.
 - Crosswalk-heavy post-min-rect continuation also regresses, so the current gap is not just crosswalk phase weight.
 - Lower-LR post-min-rect continuation also regresses, so the current gap is not just peak overshoot from the `1e-4` schedule.
-- Decode-only changes remain too small to be the main path, although crosswalk mask threshold `0.40` is now kept because it raises the exact epoch-2 objective from `0.5611` to `0.5621`.
+- Decode-only changes remain too small to be the main path, although crosswalk mask threshold `0.40` and component-area filtering are now kept because they raise the exact epoch-2 objective from `0.5611` to `0.5674`.
 
 Next useful axis:
 
 1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
 2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
 3. Keep the core centerline target plus gated centerline refinement as the current best lane axis.
-4. The next target is crossing the remaining gap from `0.5621` to `0.60` by preserving the merged cross-adapt epoch-2 lane/stop gain while avoiding the epoch-3/4 stop-line/crosswalk oscillation.
+4. The next target is crossing the remaining gap from `0.5674` to `0.60` by preserving the merged cross-adapt epoch-2 lane/stop gain while avoiding the epoch-3/4 stop-line/crosswalk oscillation.
 
 ## Commands
 
