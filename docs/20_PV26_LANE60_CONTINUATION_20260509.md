@@ -235,6 +235,8 @@ Exact-config threshold sweep on the current `0.5609` best still does not reprodu
 
 Crosswalk min-rect decode result: replacing the PCA-aligned component box with a convex-hull minimum-area rectangle moved the exact-config proxy baseline from `0.52915` to `0.52970` and the best threshold variant from `0.53380` to `0.53435`. This is too small to be the 60% path, but it is a localized decode improvement that raises crosswalk component score without changing F1/support.
 
+Post-min-rect cross-focus result: after keeping the min-rect decode improvement, raising crosswalk phase weight from `1.75` to `2.25` from the current best seed reached only objective `0.5563` at epoch 2. Lane/stop/cross F1 were `0.4412 / 0.3922 / 0.4031`, so the heavier crosswalk loss hurt crosswalk F1 instead of rescuing it.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
@@ -263,6 +265,7 @@ What this continuation falsified:
 - Gated centerline refinement is the current best architecture-side improvement, and merged-head adaptation nudges it to `0.5595`.
 - Merging a cross-adapted head raises the best checkpoint to `0.5609`, but repeated merge and balanced-retain follow-ups regress.
 - Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, post-merge stop/cross rebalancing, and temporary crosswalk feature isolation do not clear the ceiling.
+- Crosswalk-heavy post-min-rect continuation also regresses, so the current gap is not just crosswalk phase weight.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
