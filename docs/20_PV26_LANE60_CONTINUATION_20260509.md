@@ -178,6 +178,8 @@ Interpretation: refine does not radically change pixel PR, but it does raise the
 
 Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` together with the centerline map. Sharing the refined feature with tangent prediction did not beat centerline-only refinement, so that branch was restored to centerline-only behavior after recording the result.
 
+Open-gate follow-up: the best centerline-refine checkpoint kept `centerline_refine_gate_logit` near `-4` (`sigmoid ~= 0.018`), so the positive signal came from a very small residual branch. The next probe initializes the gate at `-2` (`sigmoid ~= 0.119`) as `core_centerline_refine_open_gate` to test whether the refinement path is under-used rather than fundamentally exhausted.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
