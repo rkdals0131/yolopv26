@@ -61,7 +61,7 @@ class LaneSegFirstHead(nn.Module):
             "lane": lane_placeholder,
             "lane_seg_centerline_logits": self.centerline_logits(centerline_feature),
             "lane_seg_support_logits": self.support_logits(lane_feature),
-            "lane_seg_tangent_axis": self.tangent_axis(centerline_feature),
+            "lane_seg_tangent_axis": self.tangent_axis(lane_feature),
             "lane_seg_color_logits": self.color_logits(lane_feature),
             "lane_seg_type_logits": self.type_logits(lane_feature),
             "lane_feature": lane_feature,

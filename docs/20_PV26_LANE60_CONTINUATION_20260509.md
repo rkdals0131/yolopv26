@@ -128,6 +128,7 @@ Val128 continuation probes:
 | `core_centerline_posw8` | source best | 4 | 2 | 0.5428 | 0.3889 | 0.4000 | 0.4348 |
 | `core_centerline_refine` | source best | 4 | 2 | 0.5591 | 0.4397 | 0.4027 | 0.4348 |
 | `core_centerline_low_lr` | refine best | 4 | 2 | 0.5550 | 0.4410 | 0.3871 | 0.4141 |
+| `core_centerline_refine_tangent` | source best | 4 | 2 | 0.5585 | 0.4375 | 0.4027 | 0.4348 |
 
 Epoch trace for the best core continuation:
 
@@ -148,6 +149,7 @@ Interpretation:
 - Lowering the centerline BCE positive-weight cap from `32` to `8` also loses lane score; it does not fix the false-positive problem.
 - Adding a small gated centerline-only refinement branch is positive: best objective rises from `0.5530` to `0.5591`, with lane F1 rising to `0.4397`.
 - Continuing the refine-best checkpoint at `5e-5` does not preserve enough objective headroom. It reaches lane F1 `0.4410`, but stop-line/crosswalk balance is weaker and objective stays at `0.5550`.
+- Sharing the refined feature with tangent prediction is near-tie but negative: `0.5585` versus the prior `0.5591`. Keep tangent on the base lane feature unless a later probe changes the vectorizer contract.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 Dense-map PR on the best core checkpoint:
@@ -174,7 +176,7 @@ Dense-map PR on the best gated-refine checkpoint:
 
 Interpretation: refine does not radically change pixel PR, but it does raise the vectorized lane metric. The next promising axis should keep the gated refinement branch and search around schedule/retention from its best epoch, not return to the plain head.
 
-Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` together with the centerline map. The first refinement branch only changed centerline logits, leaving tangent from the base lane feature. The next probe shares the refined feature with tangent prediction as `core_centerline_refine_tangent` to test whether centerline topology and tangent direction need to move together.
+Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` together with the centerline map. Sharing the refined feature with tangent prediction did not beat centerline-only refinement, so that branch was restored to centerline-only behavior after recording the result.
 
 Decode sweep on the best core checkpoint:
 
