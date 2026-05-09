@@ -124,6 +124,7 @@ Val128 continuation probes:
 | `core_centerline_rebalance` | core best | 4 | 2 | 0.5530 | 0.4253 | 0.3947 | 0.4170 |
 | `hybrid_centerline_rebalance` | source best | 2 | 2 | 0.5458 | 0.4056 | 0.4054 | 0.4269 |
 | `core_cross_retain` | source best | 2 | 2 | 0.5512 | 0.4121 | 0.4054 | 0.4269 |
+| `core_centerline_low_lr` | source best | 4 | 3 | 0.5489 | 0.3960 | 0.4255 | 0.4573 |
 
 Epoch trace for the best core continuation:
 
@@ -140,6 +141,7 @@ Interpretation:
 - The gain comes mainly from lane F1 moving from the mid-`0.36` range to `0.42`.
 - Hybrid target retains too much soft target and is worse than core.
 - Raising crosswalk task weight does not preserve crosswalk at the objective peak.
+- Lowering head LR from `1e-4` to `5e-5` preserves stop-line/crosswalk better, but loses too much lane score and does not beat core.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 Decode sweep on the best core checkpoint:
@@ -165,6 +167,7 @@ What this continuation falsified:
 - Opening the upper trunk at low LR is slower and slightly worse than head-only.
 - Core centerline target is the first real architectural improvement in this pass, but it only reaches `0.5530`.
 - Hybrid target and crosswalk reweighting do not clear the ceiling.
+- Lower-LR continuation is not the crosswalk-retention solution; its best objective is `0.5489`.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
@@ -172,7 +175,7 @@ Next useful axis:
 1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
 2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
 3. Keep the core centerline target as the current best lane axis.
-4. The next architectural target is preserving crosswalk while lane/stop improve, not more threshold tuning or trunk unfreezing. Candidate mechanisms are lower-LR continuation, task-specific schedule, or teacher/EMA retention; they need metric evidence before a multi-day run.
+4. The next architectural target is separating lane-map quality from vectorizer/decode quality on the improved core checkpoint, then changing the centerline head or decoder where the measured bottleneck is. Lower LR is already negative.
 
 ## Commands
 
