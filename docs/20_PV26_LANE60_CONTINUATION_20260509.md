@@ -130,6 +130,7 @@ Val128 continuation probes:
 | `core_centerline_low_lr` | refine best | 4 | 2 | 0.5550 | 0.4410 | 0.3871 | 0.4141 |
 | `core_centerline_refine_tangent` | source best | 4 | 2 | 0.5585 | 0.4375 | 0.4027 | 0.4348 |
 | `core_centerline_refine_open_gate` | source best | 4 | 2 | 0.5588 | 0.4384 | 0.4027 | 0.4297 |
+| `core_centerline_refine_cross_retain` | source best | 4 | 2 | 0.5577 | 0.4361 | 0.4000 | 0.4348 |
 
 Epoch trace for the best core continuation:
 
@@ -152,6 +153,7 @@ Interpretation:
 - Continuing the refine-best checkpoint at `5e-5` does not preserve enough objective headroom. It reaches lane F1 `0.4410`, but stop-line/crosswalk balance is weaker and objective stays at `0.5550`.
 - Sharing the refined feature with tangent prediction is near-tie but negative: `0.5585` versus the prior `0.5591`. Keep tangent on the base lane feature unless a later probe changes the vectorizer contract.
 - Opening the refinement gate from `-4` to `-2` is also near-tie but negative: `0.5588` versus `0.5591`. The gain is not limited by a too-closed initial residual gate.
+- Raising crosswalk phase weight on top of refinement is negative: crosswalk does not rise at the objective peak, while lane and stop-line slip slightly.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 Dense-map PR on the best core checkpoint:
@@ -184,7 +186,9 @@ Open-gate follow-up: the best centerline-refine checkpoint kept `centerline_refi
 
 Task-head merge probe: a helper was added to merge `lane_head`, `stop_line_head`, and `crosswalk_head` weights from the task-best checkpoints into one checkpoint. On the refine run this did not produce an immediate threshold-sweep win, and the sweep metric path is not identical to training selection metrics, so merged task heads are not promoted as a 60% candidate without a dedicated selection-metric evaluator.
 
-Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. The next probe keeps the now-best centerline-only refinement path and raises only the crosswalk phase weight from `1.25` to `1.75` as `core_centerline_refine_cross_retain`.
+Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. Repeating that idea on the now-best centerline-only refinement path was still negative, so crosswalk phase weight alone is not the missing 60% lever.
+
+Refine-stop retention follow-up: `core_centerline_low_lr` showed stop-line could rise above the refine run, but at the cost of lane score. The next single-axis probe keeps the normal LR and raises only stop-line phase weight from `1.75` to `2.25` as `core_centerline_refine_stop_retain`.
 
 Decode sweep on the best core checkpoint:
 
