@@ -42,6 +42,32 @@ EXPERIMENTS = {
             "crosswalk": 1.5,
         },
     },
+    "dense_sharpen_rebalance": {
+        "freeze_policy": "lane_family_heads_only",
+        "trunk_lr": 0.0,
+        "head_lr": 1.0e-4,
+        "loss_weights": {
+            "det": 0.0,
+            "tl_attr": 0.0,
+            "lane": 1.75,
+            "stop_line": 2.25,
+            "crosswalk": 1.0,
+        },
+        "overrides": {
+            "lane_segfirst_loss_weights": {
+                "centerline_bce": 1.5,
+                "centerline_dice": 1.5,
+                "support_bce": 0.15,
+                "tangent": 0.35,
+                "color": 0.5,
+                "type": 0.25,
+            },
+            "stopline_center_target_mode": "heatmap",
+            "stopline_selector_aux_weight": 0.5,
+            "stopline_geometry_aux_weight": 1.5,
+            "stopline_local_x_aux_weight": 0.5,
+        },
+    },
 }
 
 
@@ -100,6 +126,7 @@ def _lane60_scenario(args: argparse.Namespace, *, source_run: Path, seed_checkpo
             },
         }
     )
+    phase_overrides.update(dict(experiment.get("overrides", {})))
     probe_phase = replace(
         phase,
         name=f"{phase.name}_{args.experiment}",

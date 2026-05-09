@@ -512,6 +512,8 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_dynamic_coverage_weight=train_config.lane_dynamic_coverage_weight,
         lane_centerline_focal_weight=train_config.lane_centerline_focal_weight,
         lane_centerline_dice_weight=train_config.lane_centerline_dice_weight,
+        lane_segfirst_loss_weights=train_config.lane_segfirst_loss_weights,
+        lane_segfirst_color_class_weights=train_config.lane_segfirst_color_class_weights,
         stopline_local_x_aux_weight=train_config.stopline_local_x_aux_weight,
         stopline_selector_aux_weight=train_config.stopline_selector_aux_weight,
         stopline_geometry_aux_weight=train_config.stopline_geometry_aux_weight,

@@ -116,6 +116,8 @@ class TrainDefaultsConfig:
     lane_dynamic_coverage_weight: float = 0.0
     lane_centerline_focal_weight: float = 0.0
     lane_centerline_dice_weight: float = 0.0
+    lane_segfirst_loss_weights: dict[str, float] = field(default_factory=dict)
+    lane_segfirst_color_class_weights: dict[str, float] = field(default_factory=dict)
     stopline_local_x_aux_weight: float = 0.0
     stopline_selector_aux_weight: float = 1.0
     stopline_geometry_aux_weight: float = 1.0
@@ -385,6 +387,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         data.get("multitask_conflict", defaults.multitask_conflict),
         field_name="train_defaults.multitask_conflict",
     )
+    lane_segfirst_loss_weights_payload = _coerce_mapping(
+        data.get("lane_segfirst_loss_weights", defaults.lane_segfirst_loss_weights),
+        field_name="train_defaults.lane_segfirst_loss_weights",
+    )
+    lane_segfirst_color_class_weights_payload = _coerce_mapping(
+        data.get("lane_segfirst_color_class_weights", defaults.lane_segfirst_color_class_weights),
+        field_name="train_defaults.lane_segfirst_color_class_weights",
+    )
     multitask_conflict_tasks = multitask_conflict_payload.get(
         "tasks",
         defaults.multitask_conflict.get("tasks", list(MULTITASK_CONFLICT_TASK_NAMES)),
@@ -559,6 +569,20 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("lane_centerline_dice_weight", defaults.lane_centerline_dice_weight),
             field_name="train_defaults.lane_centerline_dice_weight",
         ),
+        lane_segfirst_loss_weights={
+            _coerce_str(name, field_name="train_defaults.lane_segfirst_loss_weights.key"): _coerce_float(
+                value,
+                field_name=f"train_defaults.lane_segfirst_loss_weights.{name}",
+            )
+            for name, value in lane_segfirst_loss_weights_payload.items()
+        },
+        lane_segfirst_color_class_weights={
+            _coerce_str(name, field_name="train_defaults.lane_segfirst_color_class_weights.key"): _coerce_float(
+                value,
+                field_name=f"train_defaults.lane_segfirst_color_class_weights.{name}",
+            )
+            for name, value in lane_segfirst_color_class_weights_payload.items()
+        },
         stopline_local_x_aux_weight=_coerce_float(
             data.get("stopline_local_x_aux_weight", defaults.stopline_local_x_aux_weight),
             field_name="train_defaults.stopline_local_x_aux_weight",
