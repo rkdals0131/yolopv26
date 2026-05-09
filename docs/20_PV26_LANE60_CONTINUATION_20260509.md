@@ -213,6 +213,10 @@ Stop/cross-only adaptation result: setting lane loss to zero while training stop
 
 Merged cross-adapt head result: merging lane and stop-line heads from the current merged stop-retain best with the crosswalk head from the stop/cross-only run's `best_crosswalk.pt`, then adapting with `core_centerline_refine_cross_retain`, produced a new best objective `0.5609` at epoch 2. Metrics at that point were lane/stop/cross F1 `0.4435 / 0.3946 / 0.4190`, with component scores `0.6228 / 0.5452 / 0.4268`. This is a real improvement over `0.5595`, but still far below the 60% target.
 
+Second merge follow-up: merging the same epoch-2 lane/stop heads with the epoch-4 crosswalk head from the merged cross-adapt run did not compound the gain. It reached only objective `0.5572` at epoch 2, with lane/stop/cross F1 `0.4407 / 0.3947 / 0.4186`. Repeating task-head merge after crosswalk drift is therefore negative evidence, not a hidden 60% path.
+
+Balanced-retain follow-up: starting from the new `0.5609` best and raising stop-line phase weight to `2.25` while keeping crosswalk at `1.75` produced objective `0.5569` at epoch 2 and `0.5550` at epoch 3. The epoch-2 lane/stop/cross F1 were `0.4405 / 0.3947 / 0.4138`; epoch 3 traded a little crosswalk back to `0.4548` but dropped lane/stop to `0.4302 / 0.3803`. This confirms that the current best is not improved by simply rebalancing stop/cross weights after the merged cross-adapt seed.
+
 Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. Repeating that idea on the now-best centerline-only refinement path was still negative, so crosswalk phase weight alone is not the missing 60% lever.
 
 Refine-stop retention follow-up: `core_centerline_low_lr` showed stop-line could rise above the refine run, but at the cost of lane score. The next single-axis probe keeps the normal LR and raises only stop-line phase weight from `1.75` to `2.25` as `core_centerline_refine_stop_retain`.
@@ -251,7 +255,8 @@ What this continuation falsified:
 - Lower-LR continuation is not the crosswalk-retention solution; its best objective is `0.5489`.
 - Positive-weight cap `8` is not the precision solution; its best objective is `0.5428`.
 - Gated centerline refinement is the current best architecture-side improvement, and merged-head adaptation nudges it to `0.5595`.
-- Stop-line retention, support-gated decode, Dice-focused centerline loss, and direct support-conditioned centerline residual do not clear the ceiling.
+- Merging a cross-adapted head raises the best checkpoint to `0.5609`, but repeated merge and balanced-retain follow-ups regress.
+- Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, and post-merge stop/cross rebalancing do not clear the ceiling.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
@@ -259,7 +264,7 @@ Next useful axis:
 1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
 2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
 3. Keep the core centerline target plus gated centerline refinement as the current best lane axis.
-4. The next target is crossing the remaining gap from `0.5591` to `0.60` by preserving the refine epoch-2 lane gain while avoiding the epoch-3/4 stop-line/crosswalk oscillation.
+4. The next target is crossing the remaining gap from `0.5609` to `0.60` by preserving the merged cross-adapt epoch-2 lane/stop gain while avoiding the epoch-3/4 stop-line/crosswalk oscillation.
 
 ## Commands
 
