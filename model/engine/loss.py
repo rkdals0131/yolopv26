@@ -446,6 +446,7 @@ def _lane_segfirst_loss(
     *,
     loss_weights: dict[str, float] | None = None,
     centerline_target_mode: str = "soft",
+    centerline_max_positive_weight: float = 32.0,
     color_class_weights: dict[str, float] | None = None,
     breakdown: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
@@ -483,7 +484,7 @@ def _lane_segfirst_loss(
         centerline_logits,
         centerline_target,
         valid_mask,
-        max_positive_weight=32.0,
+        max_positive_weight=float(centerline_max_positive_weight),
     )
     centerline_dice = _masked_dice_loss(centerline_logits, centerline_target, valid_mask)
     support_bce = _masked_binary_ce_balanced(
@@ -1475,6 +1476,7 @@ class PV26MultiTaskLoss(nn.Module):
         lane_dynamic_coverage_weight: float = 0.0,
         lane_segfirst_loss_weights: dict[str, float] | None = None,
         lane_segfirst_centerline_target_mode: str = "soft",
+        lane_segfirst_centerline_max_positive_weight: float = 32.0,
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
         stopline_selector_aux_weight: float = 1.0,
@@ -1512,6 +1514,7 @@ class PV26MultiTaskLoss(nn.Module):
         if lane_segfirst_loss_weights:
             self.lane_segfirst_loss_weights.update({str(name): float(value) for name, value in lane_segfirst_loss_weights.items()})
         self.lane_segfirst_centerline_target_mode = str(lane_segfirst_centerline_target_mode)
+        self.lane_segfirst_centerline_max_positive_weight = float(lane_segfirst_centerline_max_positive_weight)
         self.lane_segfirst_color_class_weights = (
             {str(name): float(value) for name, value in lane_segfirst_color_class_weights.items()}
             if lane_segfirst_color_class_weights
@@ -1596,6 +1599,7 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_dynamic_coverage_weight": float(self.lane_dynamic_coverage_weight),
             "lane_segfirst_loss_weights": dict(self.lane_segfirst_loss_weights),
             "lane_segfirst_centerline_target_mode": self.lane_segfirst_centerline_target_mode,
+            "lane_segfirst_centerline_max_positive_weight": float(self.lane_segfirst_centerline_max_positive_weight),
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
             "stopline_selector_aux_weight": float(self.stopline_selector_aux_weight),
@@ -2179,6 +2183,7 @@ class PV26MultiTaskLoss(nn.Module):
                 encoded,
                 loss_weights=self.lane_segfirst_loss_weights,
                 centerline_target_mode=self.lane_segfirst_centerline_target_mode,
+                centerline_max_positive_weight=self.lane_segfirst_centerline_max_positive_weight,
                 color_class_weights=self.lane_segfirst_color_class_weights,
                 breakdown=lane_breakdown,
             )

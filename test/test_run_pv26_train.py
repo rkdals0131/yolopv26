@@ -134,6 +134,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
                             "lane_segfirst_centerline_target_mode": "core",
+                            "lane_segfirst_centerline_max_positive_weight": 8.0,
                             "lane_segfirst_loss_weights": {
                                 "centerline_bce": 1.25,
                                 "centerline_dice": 1.5,
@@ -230,6 +231,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.train_defaults.lane_segfirst_centerline_target_mode, "core")
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_centerline_max_positive_weight, 8.0)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_bce"], 1.25)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_dice"], 1.5)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)

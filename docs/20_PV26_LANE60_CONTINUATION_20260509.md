@@ -125,6 +125,7 @@ Val128 continuation probes:
 | `hybrid_centerline_rebalance` | source best | 2 | 2 | 0.5458 | 0.4056 | 0.4054 | 0.4269 |
 | `core_cross_retain` | source best | 2 | 2 | 0.5512 | 0.4121 | 0.4054 | 0.4269 |
 | `core_centerline_low_lr` | source best | 4 | 3 | 0.5489 | 0.3960 | 0.4255 | 0.4573 |
+| `core_centerline_posw8` | source best | 4 | 2 | 0.5428 | 0.3889 | 0.4000 | 0.4348 |
 
 Epoch trace for the best core continuation:
 
@@ -142,7 +143,21 @@ Interpretation:
 - Hybrid target retains too much soft target and is worse than core.
 - Raising crosswalk task weight does not preserve crosswalk at the objective peak.
 - Lowering head LR from `1e-4` to `5e-5` preserves stop-line/crosswalk better, but loses too much lane score and does not beat core.
+- Lowering the centerline BCE positive-weight cap from `32` to `8` also loses lane score; it does not fix the false-positive problem.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
+
+Dense-map PR on the best core checkpoint:
+
+| Map | Best threshold | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: |
+| lane centerline core | 0.9 | 0.5278 | 0.6148 | 0.5680 |
+| lane support | 0.9 | 0.7528 | 0.8411 | 0.7945 |
+| stop-line mask | 0.8 | 0.6973 | 0.5439 | 0.6111 |
+| stop-line center | 0.4 | 0.0855 | 0.3112 | 0.1341 |
+| crosswalk mask | 0.8 | 0.8774 | 0.8463 | 0.8616 |
+| crosswalk center | 0.1 | 0.1075 | 0.1710 | 0.1320 |
+
+Interpretation: core-target training improved lane centerline-core pixel F1 from the source checkpoint's `0.4822` to `0.5680`, but support remains much stronger at `0.7945`. The lane bottleneck is still mostly centerline-map quality before vectorization, not merely a postprocess threshold issue.
 
 Decode sweep on the best core checkpoint:
 
@@ -168,6 +183,7 @@ What this continuation falsified:
 - Core centerline target is the first real architectural improvement in this pass, but it only reaches `0.5530`.
 - Hybrid target and crosswalk reweighting do not clear the ceiling.
 - Lower-LR continuation is not the crosswalk-retention solution; its best objective is `0.5489`.
+- Positive-weight cap `8` is not the precision solution; its best objective is `0.5428`.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
