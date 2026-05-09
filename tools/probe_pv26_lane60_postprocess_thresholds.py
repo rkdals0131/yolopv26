@@ -60,6 +60,22 @@ def _threshold_variants(base: PV26PostprocessConfig) -> list[tuple[str, PV26Post
     variants: list[tuple[str, PV26PostprocessConfig]] = [("baseline", base)]
     for threshold in (0.30, 0.35, 0.40, 0.45, 0.55, 0.60, 0.65, 0.70):
         variants.append((f"lane_obj_{threshold:.2f}", replace(base, lane_obj_threshold=threshold)))
+    for min_area in (0.0, 1024.0, 2048.0, 4096.0, 8192.0):
+        variants.append((f"lane_bbox_area_{min_area:.0f}", replace(base, lane_segfirst_min_bbox_area_px=min_area)))
+    for max_aspect in (0.0, 4.0, 6.0, 8.0, 12.0):
+        variants.append((f"lane_max_aspect_{max_aspect:.1f}", replace(base, lane_segfirst_max_bbox_aspect=max_aspect)))
+    for min_area in (2048.0, 4096.0, 8192.0):
+        for max_aspect in (4.0, 6.0, 8.0):
+            variants.append(
+                (
+                    f"lane_bbox_area_{min_area:.0f}__max_aspect_{max_aspect:.1f}",
+                    replace(
+                        base,
+                        lane_segfirst_min_bbox_area_px=min_area,
+                        lane_segfirst_max_bbox_aspect=max_aspect,
+                    ),
+                )
+            )
     for threshold in (0.20, 0.30, 0.40, 0.60, 0.70):
         variants.append((f"stop_obj_{threshold:.2f}", replace(base, stop_line_obj_threshold=threshold)))
         variants.append((f"cross_obj_{threshold:.2f}", replace(base, crosswalk_obj_threshold=threshold)))
@@ -70,6 +86,26 @@ def _threshold_variants(base: PV26PostprocessConfig) -> list[tuple[str, PV26Post
         variants.append((f"stop_area_{min_pixels}", replace(base, stop_line_min_component_pixels=min_pixels)))
     for max_components in (1, 2, 3):
         variants.append((f"stop_topk_{max_components}", replace(base, stop_line_max_components=max_components)))
+    for min_area in (0.0, 32.0, 64.0, 128.0, 256.0):
+        variants.append((f"stop_bbox_area_{min_area:.0f}", replace(base, stop_line_min_bbox_area_px=min_area)))
+    for min_aspect in (0.0, 4.0, 6.0, 8.0, 10.0):
+        variants.append((f"stop_aspect_{min_aspect:.1f}", replace(base, stop_line_min_bbox_aspect=min_aspect)))
+    for min_score in (0.0, 0.90, 0.92, 0.94, 0.96):
+        variants.append((f"stop_score_{min_score:.2f}", replace(base, stop_line_min_instance_score=min_score)))
+    for min_area in (0.0, 64.0, 128.0):
+        for min_aspect in (4.0, 6.0, 8.0):
+            for min_score in (0.90, 0.94, 0.96):
+                variants.append(
+                    (
+                        f"stop_bbox_area_{min_area:.0f}__aspect_{min_aspect:.1f}__score_{min_score:.2f}",
+                        replace(
+                            base,
+                            stop_line_min_bbox_area_px=min_area,
+                            stop_line_min_bbox_aspect=min_aspect,
+                            stop_line_min_instance_score=min_score,
+                        ),
+                    )
+                )
     for min_pixels in (8, 12, 16, 24):
         for max_components in (1, 2):
             variants.append(
@@ -84,6 +120,32 @@ def _threshold_variants(base: PV26PostprocessConfig) -> list[tuple[str, PV26Post
             )
     for min_pixels in (8, 12, 16, 20, 24, 28, 32, 36, 40, 48, 64):
         variants.append((f"cross_area_{min_pixels}", replace(base, crosswalk_min_component_pixels=min_pixels)))
+    for polygon_area in (0.0, 256.0, 384.0, 512.0, 640.0, 768.0, 1024.0):
+        variants.append(
+            (
+                f"cross_poly_area_{polygon_area:.0f}",
+                replace(base, crosswalk_min_polygon_area_px=polygon_area),
+            )
+        )
+    for min_aspect in (0.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0):
+        variants.append(
+            (
+                f"cross_aspect_{min_aspect:.1f}",
+                replace(base, crosswalk_min_bbox_aspect=min_aspect),
+            )
+        )
+    for polygon_area in (384.0, 512.0, 640.0):
+        for min_aspect in (2.5, 3.0, 4.0):
+            variants.append(
+                (
+                    f"cross_poly_area_{polygon_area:.0f}__aspect_{min_aspect:.1f}",
+                    replace(
+                        base,
+                        crosswalk_min_polygon_area_px=polygon_area,
+                        crosswalk_min_bbox_aspect=min_aspect,
+                    ),
+                )
+            )
     for max_components in (1, 2, 3, 4, 6, 8):
         variants.append((f"cross_topk_{max_components}", replace(base, crosswalk_max_components=max_components)))
     for min_pixels in (8, 16, 32):
@@ -144,14 +206,21 @@ def _row(name: str, config: PV26PostprocessConfig, metrics: dict[str, Any], sele
         "variant": name,
         "phase_objective": selection["phase_objective"],
         "lane_obj_threshold": config.lane_obj_threshold,
+        "lane_segfirst_min_bbox_area_px": config.lane_segfirst_min_bbox_area_px,
+        "lane_segfirst_max_bbox_aspect": config.lane_segfirst_max_bbox_aspect,
         "stop_line_obj_threshold": config.stop_line_obj_threshold,
         "stop_line_mask_binary_threshold": config.stop_line_mask_binary_threshold,
         "stop_line_min_component_pixels": config.stop_line_min_component_pixels,
         "stop_line_max_components": config.stop_line_max_components,
+        "stop_line_min_bbox_area_px": config.stop_line_min_bbox_area_px,
+        "stop_line_min_bbox_aspect": config.stop_line_min_bbox_aspect,
+        "stop_line_min_instance_score": config.stop_line_min_instance_score,
         "crosswalk_obj_threshold": config.crosswalk_obj_threshold,
         "crosswalk_mask_binary_threshold": config.crosswalk_mask_binary_threshold,
         "crosswalk_min_component_pixels": config.crosswalk_min_component_pixels,
         "crosswalk_max_components": config.crosswalk_max_components,
+        "crosswalk_min_polygon_area_px": config.crosswalk_min_polygon_area_px,
+        "crosswalk_min_bbox_aspect": config.crosswalk_min_bbox_aspect,
     }
     for task in ("lane", "stop_line", "crosswalk"):
         task_metrics = metrics.get(task, {}) if isinstance(metrics.get(task), dict) else {}

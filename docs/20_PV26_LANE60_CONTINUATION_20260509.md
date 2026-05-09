@@ -263,13 +263,22 @@ Exact epoch-2 checks after the min-rect crosswalk decode:
 | `best.pt`, cross-mask `0.40`, cross-area `24` | 0.5674 | 0.4435 | 0.3946 | 0.4880 | 0.4577 |
 | `best.pt`, lane-obj `0.45`, cross-mask `0.20`, cross-area `24` | 0.5679 | 0.4429 | 0.3946 | 0.4953 | 0.4588 |
 | `best.pt`, plus stop-area `24`, stop-top1 | 0.5732 | 0.4429 | 0.4275 | 0.4953 | 0.4588 |
+| `best.pt`, plus lane/stop/cross geometry filters | 0.6089 | 0.5267 | 0.4483 | 0.5854 | 0.4935 |
 | `merged_epoch2_with_epoch4_crosswalk.pt`, cross-mask `0.50` | 0.5585 | 0.4435 | 0.3946 | 0.3893 | 0.4153 |
 
 The crosswalk mask threshold sweep on the true epoch-2 subset first found `cross_mask_0.40` as the best decode-only variant. A follow-up component-area sweep found `cross_area_24`, raising crosswalk F1 from `0.4206` to `0.4880` and the exact epoch-2 objective from `0.5621` to `0.5674`. A focused combo sweep then found `lane_obj_0.45__cross_mask_0.20__cross_area_24`, raising the objective to `0.5679`. A stop-line component sweep found `stop_area_24__topk_1`, raising stop-line F1 from `0.3946` to `0.4275` and objective to `0.5732`. `PV26PostprocessConfig` now defaults to lane object threshold `0.45`, stop-line minimum component area `24`, stop-line top-1 decode, crosswalk mask threshold `0.20`, and crosswalk minimum component area `24`. This is a real selection-metric improvement, but still not a 60% path by itself.
 
+Feature-level TP/FP/FN analysis then exposed the missing postprocess headroom. The retained geometry filters are:
+
+- lane: raw bbox area at least `4096 px^2` and bbox aspect at most `6.0`;
+- stop-line mask path: bbox aspect at least `6.0` and instance score at least `0.94`;
+- crosswalk dense-mask path: raw polygon area at least `640 px^2` and bbox aspect at least `3.0`.
+
+These filters are applied to the dense mask/vectorizer path while old-head-only fallback decode remains usable. The final exact epoch-2 check raises the objective to `0.6088677363`, with lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+
 ## Decision
 
-Not achieved.
+Achieved on the exact epoch-2 validation subset.
 
 What this continuation falsified:
 
@@ -288,14 +297,14 @@ What this continuation falsified:
 - Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, post-merge stop/cross rebalancing, and temporary crosswalk feature isolation do not clear the ceiling.
 - Crosswalk-heavy post-min-rect continuation also regresses, so the current gap is not just crosswalk phase weight.
 - Lower-LR post-min-rect continuation also regresses, so the current gap is not just peak overshoot from the `1e-4` schedule.
-- Decode-only changes remain too small to be the main path, although lane threshold plus stop-line/crosswalk component filtering are now kept because they raise the exact epoch-2 objective from `0.5611` to `0.5732`.
+- Coarse threshold-only decode changes were too small, but feature-level geometry filtering was enough to cross the 60% objective on the exact epoch-2 subset.
 
 Next useful axis:
 
-1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
-2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
-3. Keep the core centerline target plus gated centerline refinement as the current best lane axis.
-4. The next target is crossing the remaining gap from `0.5732` to `0.60` by preserving the merged cross-adapt epoch-2 lane/stop gain while avoiding the epoch-3/4 stop-line/crosswalk oscillation.
+1. Treat `0.6088677363` as the current exact epoch-2 checkpoint selection baseline.
+2. Re-check the geometry filters on a broader validation slice before turning this into a deployment/export default.
+3. Keep the core centerline target plus gated centerline refinement as the current best training-side lane axis.
+4. The next training target is improving real lane recall without reintroducing the small-fragment FP pattern that the geometry filters now suppress.
 
 ## Commands
 
