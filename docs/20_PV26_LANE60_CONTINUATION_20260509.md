@@ -83,6 +83,27 @@ Short smoke:
 
 Interpretation: the configuration runs and is numerically stable, but the small smoke did not show a strong 60% direction.
 
+Larger val128 probes:
+
+| Probe | Seed | Epochs | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `dense_sharpen_rebalance` | source best | 2 | 0.5308 | 0.3654 | 0.4027 | 0.5254 |
+| `heads_rebalance` | dense best | 2 | 0.5300 | 0.3643 | 0.4054 | 0.5021 |
+| `upper_trunk_rebalance` | dense best | 2 | 0.5288 | 0.3637 | 0.4000 | 0.5062 |
+| `dense_sharpen_rebalance` | dense best | 4 | 0.5295 | 0.3644 | 0.4000 | 0.5000 |
+
+The stop-line head can be lifted into the `0.40` F1 range, but lane remains pinned around `0.36` and longer same-axis continuation regresses after epoch 2.
+
+Expanded decode sweep on the best dense-sharpen checkpoint:
+
+| Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
+| --- | ---: | ---: | ---: | ---: |
+| `lane_t090_stop_mask_only_stop_obj070` | 0.3880 | 0.2388 | 0.5039 | 0.3664 |
+| `lane_t090_stop_mask_only_cross_mask030` | 0.3880 | 0.2286 | 0.5100 | 0.3646 |
+| `lane_t090_stop_mask_only` | 0.3880 | 0.2286 | 0.5039 | 0.3634 |
+
+Threshold tuning only adds about one proxy point over the previous decode result. It does not expose hidden 60% headroom.
+
 ## Decision
 
 Not achieved.
@@ -92,13 +113,15 @@ What this continuation falsified:
 - Support-map substitution is not a shortcut to 60%.
 - Length/bottom-y filtering does not materially raise lane F1 on this checkpoint.
 - Stop-line mask-only decode helps, but only from `0.1739` to about `0.2044`.
-- A tiny dense-sharpen training smoke is stable but not immediately better.
+- Stop-line-focused dense sharpening helps stop-line F1, but does not move lane enough.
+- Longer same-axis continuation does not climb toward 60%; it peaks by epoch 2 and then regresses.
+- Opening the upper trunk at low LR is slower and slightly worse than head-only.
 
 Next useful axis:
 
-1. Preserve `lane_t090_stop_mask_only` as a postprocess candidate, but do not confuse it with a solution.
-2. If continuing training, run `dense_sharpen_rebalance` at a real probe size before discarding it.
-3. If that fails, the next architectural target is a different lane centerline objective/decoder, not more threshold tuning.
+1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
+2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
+3. The next architectural target is a different lane centerline objective/decoder, not more threshold tuning or trunk unfreezing.
 
 ## Commands
 

@@ -110,6 +110,22 @@ def _variant_postprocess_config(base: PV26PostprocessConfig, variant: str) -> PV
         overrides["lane_segfirst_min_polyline_bottom_y_fraction"] = 0.30
     if "lane_bottom50" in variant:
         overrides["lane_segfirst_min_polyline_bottom_y_fraction"] = 0.50
+    if "stop_obj030" in variant:
+        overrides["stop_line_obj_threshold"] = 0.30
+    if "stop_obj070" in variant:
+        overrides["stop_line_obj_threshold"] = 0.70
+    if "stop_mask030" in variant:
+        overrides["stop_line_mask_binary_threshold"] = 0.30
+    if "stop_mask070" in variant:
+        overrides["stop_line_mask_binary_threshold"] = 0.70
+    if "cross_obj030" in variant:
+        overrides["crosswalk_obj_threshold"] = 0.30
+    if "cross_obj070" in variant:
+        overrides["crosswalk_obj_threshold"] = 0.70
+    if "cross_mask030" in variant:
+        overrides["crosswalk_mask_binary_threshold"] = 0.30
+    if "cross_mask070" in variant:
+        overrides["crosswalk_mask_binary_threshold"] = 0.70
     return replace(base, **overrides) if overrides else base
 
 
@@ -176,6 +192,22 @@ def main() -> int:
         "lane_t090_len80",
         "lane_t090_bottom30",
         "lane_t090_bottom50",
+        "stop_obj030",
+        "stop_obj070",
+        "stop_mask030",
+        "stop_mask070",
+        "cross_obj030",
+        "cross_obj070",
+        "cross_mask030",
+        "cross_mask070",
+        "lane_t090_stop_mask_only_cross_obj030",
+        "lane_t090_stop_mask_only_cross_obj070",
+        "lane_t090_stop_mask_only_cross_mask030",
+        "lane_t090_stop_mask_only_cross_mask070",
+        "lane_t090_stop_mask_only_stop_obj030",
+        "lane_t090_stop_mask_only_stop_obj070",
+        "lane_t090_stop_mask_only_stop_mask030",
+        "lane_t090_stop_mask_only_stop_mask070",
         "lane_support_as_centerline",
         "lane_centerline_support_blend",
         "lane_support_stop_mask_only",
