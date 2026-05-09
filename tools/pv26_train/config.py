@@ -116,6 +116,7 @@ class TrainDefaultsConfig:
     lane_dynamic_coverage_weight: float = 0.0
     lane_centerline_focal_weight: float = 0.0
     lane_centerline_dice_weight: float = 0.0
+    lane_segfirst_centerline_target_mode: str = "soft"
     lane_segfirst_loss_weights: dict[str, float] = field(default_factory=dict)
     lane_segfirst_color_class_weights: dict[str, float] = field(default_factory=dict)
     stopline_local_x_aux_weight: float = 0.0
@@ -568,6 +569,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_centerline_dice_weight=_coerce_float(
             data.get("lane_centerline_dice_weight", defaults.lane_centerline_dice_weight),
             field_name="train_defaults.lane_centerline_dice_weight",
+        ),
+        lane_segfirst_centerline_target_mode=_coerce_str(
+            data.get("lane_segfirst_centerline_target_mode", defaults.lane_segfirst_centerline_target_mode),
+            field_name="train_defaults.lane_segfirst_centerline_target_mode",
         ),
         lane_segfirst_loss_weights={
             _coerce_str(name, field_name="train_defaults.lane_segfirst_loss_weights.key"): _coerce_float(

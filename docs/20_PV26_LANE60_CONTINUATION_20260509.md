@@ -104,6 +104,53 @@ Expanded decode sweep on the best dense-sharpen checkpoint:
 
 Threshold tuning only adds about one proxy point over the previous decode result. It does not expose hidden 60% headroom.
 
+## Core Centerline Target Probe
+
+New probe axis: `lane_segfirst_centerline_target_mode`.
+
+The earlier lane loss trained centerline logits against the soft centerline map. The dense-map PR showed the support map was strong but the core centerline was too broad/noisy for vectorization, so this pass exposed the centerline target mode:
+
+- `soft`: previous behavior, target is `lane_seg_centerline_soft`
+- `core`: target is `lane_seg_centerline_core`
+- `hybrid`: target is `max(core, 0.5 * soft)`
+
+The probe also carries the active phase loss weights into train/val summaries. Before this fix, the actual criterion used the probe phase weights, but summary `losses.weighted.*.weight` could be recomputed from static stage defaults. That made loss analysis misleading for derived probes; future summaries now report the active criterion weights.
+
+Val128 continuation probes:
+
+| Probe | Seed | Epochs | Best epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `core_centerline_rebalance` | source best | 2 | 2 | 0.5512 | 0.4121 | 0.4054 | 0.4269 |
+| `core_centerline_rebalance` | core best | 4 | 2 | 0.5530 | 0.4253 | 0.3947 | 0.4170 |
+| `hybrid_centerline_rebalance` | source best | 2 | 2 | 0.5458 | 0.4056 | 0.4054 | 0.4269 |
+| `core_cross_retain` | source best | 2 | 2 | 0.5512 | 0.4121 | 0.4054 | 0.4269 |
+
+Epoch trace for the best core continuation:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.5204 | 0.3938 | 0.1818 | 0.4959 |
+| 2 | 0.5530 | 0.4253 | 0.3947 | 0.4170 |
+| 3 | 0.5483 | 0.4065 | 0.3946 | 0.4579 |
+| 4 | 0.5356 | 0.3993 | 0.2837 | 0.4781 |
+
+Interpretation:
+
+- Core target is a real improvement over dense-sharpen, lifting best objective from `0.5308` to `0.5530`.
+- The gain comes mainly from lane F1 moving from the mid-`0.36` range to `0.42`.
+- Hybrid target retains too much soft target and is worse than core.
+- Raising crosswalk task weight does not preserve crosswalk at the objective peak.
+- The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
+
+Decode sweep on the best core checkpoint:
+
+| Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
+| --- | ---: | ---: | ---: | ---: |
+| `stop_mask_only` | 0.4041 | 0.2302 | 0.4941 | 0.3699 |
+| baseline | 0.4041 | 0.1806 | 0.4941 | 0.3550 |
+
+Postprocess variants do not expose a hidden 60% path on the improved checkpoint.
+
 ## Decision
 
 Not achieved.
@@ -116,12 +163,16 @@ What this continuation falsified:
 - Stop-line-focused dense sharpening helps stop-line F1, but does not move lane enough.
 - Longer same-axis continuation does not climb toward 60%; it peaks by epoch 2 and then regresses.
 - Opening the upper trunk at low LR is slower and slightly worse than head-only.
+- Core centerline target is the first real architectural improvement in this pass, but it only reaches `0.5530`.
+- Hybrid target and crosswalk reweighting do not clear the ceiling.
+- Decode-only changes remain too small to be the main path.
 
 Next useful axis:
 
 1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
 2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
-3. The next architectural target is a different lane centerline objective/decoder, not more threshold tuning or trunk unfreezing.
+3. Keep the core centerline target as the current best lane axis.
+4. The next architectural target is preserving crosswalk while lane/stop improve, not more threshold tuning or trunk unfreezing. Candidate mechanisms are lower-LR continuation, task-specific schedule, or teacher/EMA retention; they need metric evidence before a multi-day run.
 
 ## Commands
 
@@ -143,6 +194,20 @@ Dense sharpen smoke:
   --epochs 1 \
   --train-batches 64 \
   --val-batches 32 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Core centerline probe:
+
+```bash
+.venv/bin/python tools/run_pv26_lane60_probe.py \
+  --source-run /home/kai/yolopv26/runs/pv26_exhaustive_od_lane_train/exhaustive_od_lane_default_20260505_032217 \
+  --experiment core_centerline_rebalance \
+  --epochs 2 \
+  --train-batches 512 \
+  --val-batches 128 \
   --batch-size 4 \
   --device cuda:0 \
   --run-root runs/pv26_exhaustive_od_lane_train

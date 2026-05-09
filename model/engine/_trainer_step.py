@@ -290,6 +290,10 @@ def run_train_step(
         "stage": trainer.stage,
         "batch_size": int(encoded["image"].shape[0]),
         "successful": successful,
+        "loss_weights": {
+            str(name): float(value)
+            for name, value in dict(getattr(trainer.criterion, "loss_weights", {})).items()
+        },
         "losses": {name: float(value.detach().cpu()) for name, value in losses.items()},
         "det_components": det_components,
         "optimizer_step": optimizer_step,
