@@ -131,6 +131,8 @@ Val128 continuation probes:
 | `core_centerline_refine_tangent` | source best | 4 | 2 | 0.5585 | 0.4375 | 0.4027 | 0.4348 |
 | `core_centerline_refine_open_gate` | source best | 4 | 2 | 0.5588 | 0.4384 | 0.4027 | 0.4297 |
 | `core_centerline_refine_cross_retain` | source best | 4 | 2 | 0.5577 | 0.4361 | 0.4000 | 0.4348 |
+| `core_centerline_refine_stop_retain` | source best | 3* | 2 | 0.5583 | 0.4383 | 0.3974 | 0.4331 |
+| `core_centerline_refine_dice_focus` | source best | 2* | 2 | 0.5523 | 0.4139 | 0.4027 | 0.4348 |
 
 Epoch trace for the best core continuation:
 
@@ -154,7 +156,11 @@ Interpretation:
 - Sharing the refined feature with tangent prediction is near-tie but negative: `0.5585` versus the prior `0.5591`. Keep tangent on the base lane feature unless a later probe changes the vectorizer contract.
 - Opening the refinement gate from `-4` to `-2` is also near-tie but negative: `0.5588` versus `0.5591`. The gain is not limited by a too-closed initial residual gate.
 - Raising crosswalk phase weight on top of refinement is negative: crosswalk does not rise at the objective peak, while lane and stop-line slip slightly.
+- Raising stop-line phase weight on top of refinement is also near-tie but negative: `0.5583` versus `0.5591`. It does not preserve enough stop-line score to justify the lane/crosswalk trade.
+- Shifting centerline loss toward Dice overlap is negative: objective drops to `0.5523`, mainly from lane F1 falling to `0.4139`. The current centerline issue is not fixed by simply making the dense loss more Dice-heavy.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
+
+`*` These runs were stopped after the result was clearly below the current best, to return GPU time to the next probe.
 
 Dense-map PR on the best core checkpoint:
 
@@ -190,6 +196,12 @@ Refine-cross retention follow-up: the earlier `core_cross_retain` result was mea
 
 Refine-stop retention follow-up: `core_centerline_low_lr` showed stop-line could rise above the refine run, but at the cost of lane score. The next single-axis probe keeps the normal LR and raises only stop-line phase weight from `1.75` to `2.25` as `core_centerline_refine_stop_retain`.
 
+Refine-stop retention result: this near-tied but did not beat the current best. Epoch 2 reached objective `0.5583` with lane/stop/cross F1 `0.4383 / 0.3974 / 0.4331`, below `core_centerline_refine` at `0.5591`.
+
+Refine-Dice focus result: this was clearly worse. Epoch 2 reached objective `0.5523` with lane/stop/cross F1 `0.4139 / 0.4027 / 0.4348`; increasing centerline Dice weight traded away lane quality.
+
+Support-gated centerline decode probe: `tools/probe_pv26_lane60_support_gate.py` evaluates postprocess-only variants that replace or limit centerline probabilities with support probabilities. On the best refine checkpoint, the best relative variant was `centerline_support_floor070`, but it only moved the probe objective from `0.52806` to `0.52869` on that decode path. This does not expose a hidden 60% path, and the decode-probe metric path should not be confused with the training selection metric.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
@@ -216,6 +228,7 @@ What this continuation falsified:
 - Lower-LR continuation is not the crosswalk-retention solution; its best objective is `0.5489`.
 - Positive-weight cap `8` is not the precision solution; its best objective is `0.5428`.
 - Gated centerline refinement is the current best architecture-side improvement, but still only reaches `0.5591`.
+- Stop-line retention, support-gated decode, and Dice-focused centerline loss do not clear the ceiling.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
