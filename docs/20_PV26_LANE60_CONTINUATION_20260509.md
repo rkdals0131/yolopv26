@@ -182,6 +182,10 @@ Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` togeth
 
 Open-gate follow-up: the best centerline-refine checkpoint kept `centerline_refine_gate_logit` near `-4` (`sigmoid ~= 0.018`), so the positive signal came from a very small residual branch. Initializing the gate at `-2` (`sigmoid ~= 0.119`) did not beat the original gated refinement, so the default gate was restored to `-4`.
 
+Task-head merge probe: a helper was added to merge `lane_head`, `stop_line_head`, and `crosswalk_head` weights from the task-best checkpoints into one checkpoint. On the refine run this did not produce an immediate threshold-sweep win, and the sweep metric path is not identical to training selection metrics, so merged task heads are not promoted as a 60% candidate without a dedicated selection-metric evaluator.
+
+Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. The next probe keeps the now-best centerline-only refinement path and raises only the crosswalk phase weight from `1.25` to `1.75` as `core_centerline_refine_cross_retain`.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
