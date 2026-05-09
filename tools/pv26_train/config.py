@@ -107,7 +107,7 @@ class TrainDefaultsConfig:
     task_positive_fraction: float | None = 0.75
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
-    lane_obj_threshold: float = 0.50
+    lane_obj_threshold: float = 0.45
     stop_line_obj_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
     allow_python_nms_fallback: bool = False

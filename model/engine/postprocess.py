@@ -58,14 +58,14 @@ class PV26PostprocessConfig:
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
     max_detections: int = 300
-    lane_obj_threshold: float = 0.50
+    lane_obj_threshold: float = 0.45
     lane_segfirst_min_polyline_length_px: float = 0.0
     lane_segfirst_min_polyline_bottom_y_fraction: float = 0.0
     lane_segfirst_semantic_vote_mode: str = "component"
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
-    crosswalk_mask_binary_threshold: float = 0.40
+    crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
     crosswalk_max_components: int = 0
     lane_visibility_threshold: float = 0.50

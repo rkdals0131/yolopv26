@@ -82,6 +82,20 @@ def _threshold_variants(base: PV26PostprocessConfig) -> list[tuple[str, PV26Post
                     ),
                 )
             )
+    for lane_threshold in (0.35, 0.40, 0.45, 0.50):
+        for cross_threshold in (0.20, 0.30, 0.40):
+            for min_pixels in (16, 20, 24, 28, 32):
+                variants.append(
+                    (
+                        f"lane_obj_{lane_threshold:.2f}__cross_mask_{cross_threshold:.2f}__cross_area_{min_pixels}",
+                        replace(
+                            base,
+                            lane_obj_threshold=lane_threshold,
+                            crosswalk_mask_binary_threshold=cross_threshold,
+                            crosswalk_min_component_pixels=min_pixels,
+                        ),
+                    )
+                )
     for stop_threshold in (0.30, 0.40, 0.50, 0.60, 0.70):
         for cross_threshold in (0.30, 0.40, 0.50, 0.60, 0.70):
             variants.append(

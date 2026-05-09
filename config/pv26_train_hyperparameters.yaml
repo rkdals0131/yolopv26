@@ -64,7 +64,7 @@ pv26_train:
         backbone_variant: s
         det_conf_threshold: 0.25
         det_iou_threshold: 0.70
-        lane_obj_threshold: 0.50
+        lane_obj_threshold: 0.45
         stop_line_obj_threshold: 0.50
         crosswalk_obj_threshold: 0.50
         allow_python_nms_fallback: false
