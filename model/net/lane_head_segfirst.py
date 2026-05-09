@@ -30,6 +30,11 @@ class LaneSegFirstHead(nn.Module):
             ConvNormAct(self.hidden_dim, self.hidden_dim),
             ConvNormAct(self.hidden_dim, self.hidden_dim),
         )
+        self.centerline_refine_gate_logit = nn.Parameter(torch.tensor(-4.0, dtype=torch.float32))
+        self.centerline_refine = nn.Sequential(
+            ConvNormAct(self.hidden_dim, self.hidden_dim),
+            ConvNormAct(self.hidden_dim, self.hidden_dim),
+        )
         self.centerline_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.support_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.tangent_axis = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
@@ -49,10 +54,12 @@ class LaneSegFirstHead(nn.Module):
         batch_size = int(lane_feature.shape[0])
         dtype = lane_feature.dtype
         device = lane_feature.device
+        centerline_gate = torch.sigmoid(self.centerline_refine_gate_logit).to(device=device, dtype=dtype)
+        centerline_feature = lane_feature + centerline_gate.view(1, 1, 1, 1) * self.centerline_refine(lane_feature)
         lane_placeholder = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), device=device, dtype=dtype)
         return {
             "lane": lane_placeholder,
-            "lane_seg_centerline_logits": self.centerline_logits(lane_feature),
+            "lane_seg_centerline_logits": self.centerline_logits(centerline_feature),
             "lane_seg_support_logits": self.support_logits(lane_feature),
             "lane_seg_tangent_axis": self.tangent_axis(lane_feature),
             "lane_seg_color_logits": self.color_logits(lane_feature),

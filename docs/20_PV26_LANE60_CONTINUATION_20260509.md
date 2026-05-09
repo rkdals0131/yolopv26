@@ -126,6 +126,7 @@ Val128 continuation probes:
 | `core_cross_retain` | source best | 2 | 2 | 0.5512 | 0.4121 | 0.4054 | 0.4269 |
 | `core_centerline_low_lr` | source best | 4 | 3 | 0.5489 | 0.3960 | 0.4255 | 0.4573 |
 | `core_centerline_posw8` | source best | 4 | 2 | 0.5428 | 0.3889 | 0.4000 | 0.4348 |
+| `core_centerline_refine` | source best | 4 | 2 | 0.5591 | 0.4397 | 0.4027 | 0.4348 |
 
 Epoch trace for the best core continuation:
 
@@ -144,6 +145,7 @@ Interpretation:
 - Raising crosswalk task weight does not preserve crosswalk at the objective peak.
 - Lowering head LR from `1e-4` to `5e-5` preserves stop-line/crosswalk better, but loses too much lane score and does not beat core.
 - Lowering the centerline BCE positive-weight cap from `32` to `8` also loses lane score; it does not fix the false-positive problem.
+- Adding a small gated centerline-only refinement branch is positive: best objective rises from `0.5530` to `0.5591`, with lane F1 rising to `0.4397`.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 Dense-map PR on the best core checkpoint:
@@ -158,6 +160,17 @@ Dense-map PR on the best core checkpoint:
 | crosswalk center | 0.1 | 0.1075 | 0.1710 | 0.1320 |
 
 Interpretation: core-target training improved lane centerline-core pixel F1 from the source checkpoint's `0.4822` to `0.5680`, but support remains much stronger at `0.7945`. The lane bottleneck is still mostly centerline-map quality before vectorization, not merely a postprocess threshold issue.
+
+Dense-map PR on the best gated-refine checkpoint:
+
+| Map | Best threshold | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: |
+| lane centerline core | 0.9 | 0.5218 | 0.6295 | 0.5706 |
+| lane support | 0.9 | 0.7588 | 0.8384 | 0.7966 |
+| stop-line mask | 0.8 | 0.6992 | 0.5443 | 0.6121 |
+| crosswalk mask | 0.8 | 0.8744 | 0.8504 | 0.8622 |
+
+Interpretation: refine does not radically change pixel PR, but it does raise the vectorized lane metric. The next promising axis should keep the gated refinement branch and search around schedule/retention from its best epoch, not return to the plain head.
 
 Decode sweep on the best core checkpoint:
 
@@ -184,14 +197,15 @@ What this continuation falsified:
 - Hybrid target and crosswalk reweighting do not clear the ceiling.
 - Lower-LR continuation is not the crosswalk-retention solution; its best objective is `0.5489`.
 - Positive-weight cap `8` is not the precision solution; its best objective is `0.5428`.
+- Gated centerline refinement is the current best architecture-side improvement, but still only reaches `0.5591`.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
 
 1. Preserve `lane_t090_stop_mask_only_stop_obj070` as a postprocess candidate, but do not confuse it with a solution.
 2. Stop using same-axis longer continuation as the primary plan; the probe evidence is already negative.
-3. Keep the core centerline target as the current best lane axis.
-4. The next architectural target is separating lane-map quality from vectorizer/decode quality on the improved core checkpoint, then changing the centerline head or decoder where the measured bottleneck is. Lower LR is already negative.
+3. Keep the core centerline target plus gated centerline refinement as the current best lane axis.
+4. The next target is crossing the remaining gap from `0.5591` to `0.60` by preserving the refine epoch-2 lane gain while avoiding the epoch-3/4 stop-line/crosswalk oscillation.
 
 ## Commands
 
