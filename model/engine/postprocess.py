@@ -65,7 +65,7 @@ class PV26PostprocessConfig:
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
     crosswalk_obj_threshold: float = 0.50
-    crosswalk_mask_binary_threshold: float = 0.50
+    crosswalk_mask_binary_threshold: float = 0.40
     lane_visibility_threshold: float = 0.50
     allow_python_nms_fallback: bool = False
 

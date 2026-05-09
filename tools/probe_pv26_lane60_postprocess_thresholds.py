@@ -34,6 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lane60-experiment", default="", help="Optional run_pv26_lane60_probe experiment config to reuse.")
     parser.add_argument("--phase-index", type=int, default=4, help="1-based phase index used for validation config.")
     parser.add_argument("--max-val-batches", type=int, default=128)
+    parser.add_argument(
+        "--validation-epoch",
+        type=int,
+        default=1,
+        help="One-based validation epoch subset to reproduce. Epoch 2 skips one sampler pass before evaluation.",
+    )
     parser.add_argument("--train-batches", type=int, default=512, help="Only used with --lane60-experiment.")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda:0")
@@ -101,9 +107,29 @@ def _row(name: str, config: PV26PostprocessConfig, metrics: dict[str, Any], sele
         task_metrics = metrics.get(task, {}) if isinstance(metrics.get(task), dict) else {}
         component = selection["components"].get(task, {})
         row[f"{task}_f1"] = task_metrics.get("f1", 0.0)
+        row[f"{task}_precision"] = task_metrics.get("precision", 0.0)
+        row[f"{task}_recall"] = task_metrics.get("recall", 0.0)
+        row[f"{task}_tp"] = task_metrics.get("tp", 0)
+        row[f"{task}_fp"] = task_metrics.get("fp", 0)
+        row[f"{task}_fn"] = task_metrics.get("fn", 0)
+        for metric_name in ("mean_point_distance", "mean_angle_error", "mean_polygon_iou", "mean_vertex_distance"):
+            if metric_name in task_metrics:
+                row[f"{task}_{metric_name}"] = task_metrics.get(metric_name, 0.0)
         row[f"{task}_score"] = component.get("score", 0.0)
         row[f"{task}_support"] = component.get("support", 0)
     return row
+
+
+def _advance_validation_sampler(val_loader: Any, *, validation_epoch: int) -> None:
+    skips = max(0, int(validation_epoch) - 1)
+    if skips == 0:
+        return
+    batch_sampler = getattr(val_loader, "batch_sampler", None)
+    if batch_sampler is None:
+        raise ValueError("validation loader does not expose a batch_sampler to advance")
+    for _ in range(skips):
+        for _batch_indices in batch_sampler:
+            pass
 
 
 def main() -> int:
@@ -139,6 +165,7 @@ def main() -> int:
     _, val_loader = train_cli._build_phase_train_loaders(dataset, train_config=train_config, phase=phase)
     if val_loader is None:
         raise ValueError("threshold probe requires validation batches")
+    _advance_validation_sampler(val_loader, validation_epoch=int(args.validation_epoch))
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     trainer.load_model_weights(checkpoint, map_location=train_config.device)
@@ -181,6 +208,7 @@ def main() -> int:
         "phase_name": phase.name,
         "phase_stage": phase.stage,
         "max_val_batches": int(args.max_val_batches),
+        "validation_epoch": int(args.validation_epoch),
         "base_postprocess": asdict(base_postprocess),
         "rows": rows,
         "metrics_by_variant": metrics_by_variant,
