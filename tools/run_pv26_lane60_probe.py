@@ -231,6 +231,33 @@ EXPERIMENTS = {
             "stopline_local_x_aux_weight": 0.5,
         },
     },
+    "core_centerline_refine_tangent": {
+        "freeze_policy": "lane_family_heads_only",
+        "trunk_lr": 0.0,
+        "head_lr": 1.0e-4,
+        "loss_weights": {
+            "det": 0.0,
+            "tl_attr": 0.0,
+            "lane": 2.25,
+            "stop_line": 1.75,
+            "crosswalk": 1.25,
+        },
+        "overrides": {
+            "lane_segfirst_centerline_target_mode": "core",
+            "lane_segfirst_loss_weights": {
+                "centerline_bce": 2.0,
+                "centerline_dice": 2.0,
+                "support_bce": 0.15,
+                "tangent": 0.35,
+                "color": 0.5,
+                "type": 0.25,
+            },
+            "stopline_center_target_mode": "heatmap",
+            "stopline_selector_aux_weight": 0.5,
+            "stopline_geometry_aux_weight": 1.5,
+            "stopline_local_x_aux_weight": 0.5,
+        },
+    },
 }
 
 

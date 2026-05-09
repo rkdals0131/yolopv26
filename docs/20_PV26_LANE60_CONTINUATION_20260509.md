@@ -127,6 +127,7 @@ Val128 continuation probes:
 | `core_centerline_low_lr` | source best | 4 | 3 | 0.5489 | 0.3960 | 0.4255 | 0.4573 |
 | `core_centerline_posw8` | source best | 4 | 2 | 0.5428 | 0.3889 | 0.4000 | 0.4348 |
 | `core_centerline_refine` | source best | 4 | 2 | 0.5591 | 0.4397 | 0.4027 | 0.4348 |
+| `core_centerline_low_lr` | refine best | 4 | 2 | 0.5550 | 0.4410 | 0.3871 | 0.4141 |
 
 Epoch trace for the best core continuation:
 
@@ -146,6 +147,7 @@ Interpretation:
 - Lowering head LR from `1e-4` to `5e-5` preserves stop-line/crosswalk better, but loses too much lane score and does not beat core.
 - Lowering the centerline BCE positive-weight cap from `32` to `8` also loses lane score; it does not fix the false-positive problem.
 - Adding a small gated centerline-only refinement branch is positive: best objective rises from `0.5530` to `0.5591`, with lane F1 rising to `0.4397`.
+- Continuing the refine-best checkpoint at `5e-5` does not preserve enough objective headroom. It reaches lane F1 `0.4410`, but stop-line/crosswalk balance is weaker and objective stays at `0.5550`.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 Dense-map PR on the best core checkpoint:
@@ -171,6 +173,8 @@ Dense-map PR on the best gated-refine checkpoint:
 | crosswalk mask | 0.8 | 0.8744 | 0.8504 | 0.8622 |
 
 Interpretation: refine does not radically change pixel PR, but it does raise the vectorized lane metric. The next promising axis should keep the gated refinement branch and search around schedule/retention from its best epoch, not return to the plain head.
+
+Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` together with the centerline map. The first refinement branch only changed centerline logits, leaving tangent from the base lane feature. The next probe shares the refined feature with tangent prediction as `core_centerline_refine_tangent` to test whether centerline topology and tangent direction need to move together.
 
 Decode sweep on the best core checkpoint:
 
