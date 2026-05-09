@@ -66,6 +66,22 @@ def _threshold_variants(base: PV26PostprocessConfig) -> list[tuple[str, PV26Post
     for threshold in (0.20, 0.30, 0.40, 0.60, 0.70, 0.80):
         variants.append((f"stop_mask_{threshold:.2f}", replace(base, stop_line_mask_binary_threshold=threshold)))
         variants.append((f"cross_mask_{threshold:.2f}", replace(base, crosswalk_mask_binary_threshold=threshold)))
+    for min_pixels in (4, 8, 12, 16, 24, 32):
+        variants.append((f"stop_area_{min_pixels}", replace(base, stop_line_min_component_pixels=min_pixels)))
+    for max_components in (1, 2, 3):
+        variants.append((f"stop_topk_{max_components}", replace(base, stop_line_max_components=max_components)))
+    for min_pixels in (8, 12, 16, 24):
+        for max_components in (1, 2):
+            variants.append(
+                (
+                    f"stop_area_{min_pixels}__topk_{max_components}",
+                    replace(
+                        base,
+                        stop_line_min_component_pixels=min_pixels,
+                        stop_line_max_components=max_components,
+                    ),
+                )
+            )
     for min_pixels in (8, 12, 16, 20, 24, 28, 32, 36, 40, 48, 64):
         variants.append((f"cross_area_{min_pixels}", replace(base, crosswalk_min_component_pixels=min_pixels)))
     for max_components in (1, 2, 3, 4, 6, 8):
@@ -130,6 +146,8 @@ def _row(name: str, config: PV26PostprocessConfig, metrics: dict[str, Any], sele
         "lane_obj_threshold": config.lane_obj_threshold,
         "stop_line_obj_threshold": config.stop_line_obj_threshold,
         "stop_line_mask_binary_threshold": config.stop_line_mask_binary_threshold,
+        "stop_line_min_component_pixels": config.stop_line_min_component_pixels,
+        "stop_line_max_components": config.stop_line_max_components,
         "crosswalk_obj_threshold": config.crosswalk_obj_threshold,
         "crosswalk_mask_binary_threshold": config.crosswalk_mask_binary_threshold,
         "crosswalk_min_component_pixels": config.crosswalk_min_component_pixels,

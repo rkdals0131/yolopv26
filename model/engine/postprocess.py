@@ -64,6 +64,8 @@ class PV26PostprocessConfig:
     lane_segfirst_semantic_vote_mode: str = "component"
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
+    stop_line_min_component_pixels: int = 24
+    stop_line_max_components: int = 1
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -911,6 +913,8 @@ def _stopline_mask_to_polyline(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float,
+    min_component_pixels: int = STOPLINE_MIN_COMPONENT_PIXELS,
+    max_components: int = 3,
 ) -> list[dict[str, Any]]:
     if not _tensor_all_finite(mask_logits):
         return []
@@ -966,7 +970,7 @@ def _stopline_mask_to_polyline(
     )
     for label_index in range(1, component_count + 1):
         rows, cols = np.nonzero(labels == label_index)
-        if len(rows) < STOPLINE_MIN_COMPONENT_PIXELS:
+        if len(rows) < max(STOPLINE_MIN_COMPONENT_PIXELS, int(min_component_pixels)):
             continue
         component_points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
         mask_values = mask_probs[rows, cols]
@@ -1036,7 +1040,7 @@ def _stopline_mask_to_polyline(
         reverse=True,
     )
     predictions = _dedupe_stop_line_predictions(predictions)
-    return predictions[:3]
+    return predictions[: max(1, int(max_components))]
 
 
 def _probe_stopline_mask_decode(
@@ -1455,6 +1459,8 @@ def _decode_stop_line_rows(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float = 0.5,
+    min_component_pixels: int = STOPLINE_MIN_COMPONENT_PIXELS,
+    max_components: int = 3,
     mask_logits: torch.Tensor | None = None,
     selector_map_logits: torch.Tensor | None = None,
     center_logits: torch.Tensor | None = None,
@@ -1477,6 +1483,8 @@ def _decode_stop_line_rows(
             meta=meta,
             obj_threshold=obj_threshold,
             mask_binary_threshold=mask_binary_threshold,
+            min_component_pixels=min_component_pixels,
+            max_components=max_components,
         )
         if decoded:
             return decoded
@@ -1620,6 +1628,8 @@ def postprocess_pv26_batch(
                     meta=sample_meta,
                     obj_threshold=config.stop_line_obj_threshold,
                     mask_binary_threshold=config.stop_line_mask_binary_threshold,
+                    min_component_pixels=config.stop_line_min_component_pixels,
+                    max_components=config.stop_line_max_components,
                     mask_logits=(
                         stop_line_mask_logits[batch_index]
                         if isinstance(stop_line_mask_logits, torch.Tensor)
