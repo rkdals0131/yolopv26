@@ -285,6 +285,63 @@ def _dedupe_crosswalk_predictions(predictions: list[dict[str, Any]]) -> list[dic
     return kept
 
 
+def _convex_hull_points(points: np.ndarray) -> np.ndarray:
+    unique = np.unique(np.asarray(points, dtype=np.float32), axis=0)
+    if unique.shape[0] <= 2:
+        return unique
+    order = np.lexsort((unique[:, 1], unique[:, 0]))
+    sorted_points = unique[order]
+
+    def cross(origin: np.ndarray, left: np.ndarray, right: np.ndarray) -> float:
+        return float((left[0] - origin[0]) * (right[1] - origin[1]) - (left[1] - origin[1]) * (right[0] - origin[0]))
+
+    lower: list[np.ndarray] = []
+    for point in sorted_points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0.0:
+            lower.pop()
+        lower.append(point)
+    upper: list[np.ndarray] = []
+    for point in reversed(sorted_points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0.0:
+            upper.pop()
+        upper.append(point)
+    hull = np.asarray(lower[:-1] + upper[:-1], dtype=np.float32)
+    return hull if hull.shape[0] >= 3 else unique
+
+
+def _minimum_area_rect(points: np.ndarray) -> np.ndarray | None:
+    hull = _convex_hull_points(points)
+    if hull.shape[0] < 3:
+        return None
+    best_area: float | None = None
+    best_rect: np.ndarray | None = None
+    for index in range(hull.shape[0]):
+        edge = hull[(index + 1) % hull.shape[0]] - hull[index]
+        edge_norm = float(np.linalg.norm(edge))
+        if edge_norm <= 1.0e-6:
+            continue
+        axis1 = edge / edge_norm
+        axis2 = np.array([-axis1[1], axis1[0]], dtype=np.float32)
+        proj1 = hull @ axis1
+        proj2 = hull @ axis2
+        min1, max1 = float(proj1.min()), float(proj1.max())
+        min2, max2 = float(proj2.min()), float(proj2.max())
+        area = max(max1 - min1, 0.0) * max(max2 - min2, 0.0)
+        if best_area is not None and area >= best_area:
+            continue
+        best_area = area
+        best_rect = np.array(
+            [
+                axis1 * min1 + axis2 * min2,
+                axis1 * max1 + axis2 * min2,
+                axis1 * max1 + axis2 * max2,
+                axis1 * min1 + axis2 * max2,
+            ],
+            dtype=np.float32,
+        )
+    return best_rect
+
+
 def _crosswalk_mask_to_polygon(
     mask_logits: torch.Tensor,
     center_logits: torch.Tensor | None,
@@ -326,23 +383,9 @@ def _crosswalk_mask_to_polygon(
             continue
 
         points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
-        center = points.mean(axis=0, keepdims=True)
-        centered = points - center
-        _, _, vh = np.linalg.svd(centered, full_matrices=False)
-        axis1, axis2 = vh[0], vh[1]
-        proj1 = centered @ axis1
-        proj2 = centered @ axis2
-        min1, max1 = float(proj1.min()), float(proj1.max())
-        min2, max2 = float(proj2.min()), float(proj2.max())
-        rect = np.array(
-            [
-                center[0] + axis1 * min1 + axis2 * min2,
-                center[0] + axis1 * max1 + axis2 * min2,
-                center[0] + axis1 * max1 + axis2 * max2,
-                center[0] + axis1 * min1 + axis2 * max2,
-            ],
-            dtype=np.float32,
-        )
+        rect = _minimum_area_rect(points)
+        if rect is None:
+            continue
 
         rect[:, 0] = (rect[:, 0] + 0.5) * (float(meta["network_hw"][1]) / float(output_w))
         rect[:, 1] = (rect[:, 1] + 0.5) * (float(meta["network_hw"][0]) / float(output_h))

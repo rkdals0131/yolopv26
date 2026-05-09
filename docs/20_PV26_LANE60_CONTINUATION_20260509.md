@@ -233,6 +233,8 @@ Postprocess threshold sweep: `tools/probe_pv26_lane60_postprocess_thresholds.py`
 
 Exact-config threshold sweep on the current `0.5609` best still does not reproduce the training selection metric because the standalone evaluator path samples validation differently. Its proxy baseline was `0.52915` and the best variant was `stop_mask_0.20` at `0.53380`. Treat this only as decode calibration, not as a replacement for phase selection.
 
+Crosswalk min-rect decode result: replacing the PCA-aligned component box with a convex-hull minimum-area rectangle moved the exact-config proxy baseline from `0.52915` to `0.52970` and the best threshold variant from `0.53380` to `0.53435`. This is too small to be the 60% path, but it is a localized decode improvement that raises crosswalk component score without changing F1/support.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
