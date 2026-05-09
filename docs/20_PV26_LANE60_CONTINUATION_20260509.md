@@ -217,6 +217,8 @@ Second merge follow-up: merging the same epoch-2 lane/stop heads with the epoch-
 
 Balanced-retain follow-up: starting from the new `0.5609` best and raising stop-line phase weight to `2.25` while keeping crosswalk at `1.75` produced objective `0.5569` at epoch 2 and `0.5550` at epoch 3. The epoch-2 lane/stop/cross F1 were `0.4405 / 0.3947 / 0.4138`; epoch 3 traded a little crosswalk back to `0.4548` but dropped lane/stop to `0.4302 / 0.3803`. This confirms that the current best is not improved by simply rebalancing stop/cross weights after the merged cross-adapt seed.
 
+Temporary crosswalk-isolator result: a local architecture probe added identity-biased gated residual isolators on P2/P3/P4 before the crosswalk head, matching the stop-line isolation pattern but scoped to crosswalk. From the `0.5609` seed it reached only objective `0.5574` at epoch 2, with lane/stop/cross F1 `0.4430 / 0.3922 / 0.4186`. The lane score was preserved, but crosswalk did not improve and stop-line slipped, so the code was reverted after recording the run.
+
 Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. Repeating that idea on the now-best centerline-only refinement path was still negative, so crosswalk phase weight alone is not the missing 60% lever.
 
 Refine-stop retention follow-up: `core_centerline_low_lr` showed stop-line could rise above the refine run, but at the cost of lane score. The next single-axis probe keeps the normal LR and raises only stop-line phase weight from `1.75` to `2.25` as `core_centerline_refine_stop_retain`.
@@ -228,6 +230,8 @@ Refine-Dice focus result: this was clearly worse. Epoch 2 reached objective `0.5
 Support-gated centerline decode probe: `tools/probe_pv26_lane60_support_gate.py` evaluates postprocess-only variants that replace or limit centerline probabilities with support probabilities. On the best refine checkpoint, the best relative variant was `centerline_support_floor070`, but it only moved the probe objective from `0.52806` to `0.52869` on that decode path. This does not expose a hidden 60% path, and the decode-probe metric path should not be confused with the training selection metric.
 
 Postprocess threshold sweep: `tools/probe_pv26_lane60_postprocess_thresholds.py` evaluates lane object, stop-line object/mask, and crosswalk object/mask threshold variants on one cached forward pass. On the current merged stop-retain best checkpoint, the proxy baseline was `0.52994` and the best variant was `stop_mask_0.30__cross_mask_0.40` at `0.53328`. This is useful for calibration, but the gain is too small to explain the missing 60% path.
+
+Exact-config threshold sweep on the current `0.5609` best still does not reproduce the training selection metric because the standalone evaluator path samples validation differently. Its proxy baseline was `0.52915` and the best variant was `stop_mask_0.20` at `0.53380`. Treat this only as decode calibration, not as a replacement for phase selection.
 
 Decode sweep on the best core checkpoint:
 
@@ -256,7 +260,7 @@ What this continuation falsified:
 - Positive-weight cap `8` is not the precision solution; its best objective is `0.5428`.
 - Gated centerline refinement is the current best architecture-side improvement, and merged-head adaptation nudges it to `0.5595`.
 - Merging a cross-adapted head raises the best checkpoint to `0.5609`, but repeated merge and balanced-retain follow-ups regress.
-- Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, and post-merge stop/cross rebalancing do not clear the ceiling.
+- Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, post-merge stop/cross rebalancing, and temporary crosswalk feature isolation do not clear the ceiling.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
