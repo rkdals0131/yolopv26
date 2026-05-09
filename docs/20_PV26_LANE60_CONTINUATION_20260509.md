@@ -165,6 +165,8 @@ Interpretation:
 - Combining merged-head seeding with stop-line retention only ties the same level (`0.5595`) and does not open new headroom.
 - Adding a support-conditioned centerline residual branch was negative (`0.5582`) and was reverted after the probe. The support map remains diagnostically useful, but feeding it directly into the centerline residual did not improve vectorized lane selection.
 - Opening the upper trunk at a very low LR from the merged stop-retain checkpoint was also negative: lane F1 reached `0.4426`, but the overall objective stayed at `0.5580` because stop-line/crosswalk balance did not improve.
+- Stop/cross-only adaptation did not beat the current best (`0.5584`), but its epoch-1 crosswalk head provided useful merge material.
+- Merging the current best lane/stop heads with that crosswalk-adapted head and then running cross-retain adaptation produced the current best: objective `0.5609` at epoch 2.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 `*` These runs were stopped after the result was clearly below the current best, to return GPU time to the next probe.
@@ -206,6 +208,10 @@ Merged-head stop-retain result: repeating the stop-line retention idea from the 
 Support-conditioned residual result: a temporary architecture variant added a small gated residual branch where the centerline logit could see the support probability. It reached only `0.5582` at epoch 2 and was reverted. This falsifies the simple version of "use strong support map to refine centerline"; a later attempt would need a different contract, not just direct support concatenation.
 
 Upper-trunk continuation result: from the merged stop-retain checkpoint, opening the upper trunk with `trunk_lr=2e-6` and `head_lr=1e-4` reached objective `0.5580` at epoch 2. Lane F1 rose to `0.4426`, but stop-line/crosswalk F1 were only `0.3867 / 0.4093`. This says the current ceiling is not simply "frozen trunk prevents lane refinement"; the extra trunk freedom did not raise the multi-task objective.
+
+Stop/cross-only adaptation result: setting lane loss to zero while training stop-line/crosswalk heads reached only `0.5584` at epoch 2, below the previous best. The useful part was task specialization: epoch 1 raised crosswalk F1 to `0.5020`, while epoch 2 kept lane/stop near the old operating point but did not improve the joint objective.
+
+Merged cross-adapt head result: merging lane and stop-line heads from the current merged stop-retain best with the crosswalk head from the stop/cross-only run's `best_crosswalk.pt`, then adapting with `core_centerline_refine_cross_retain`, produced a new best objective `0.5609` at epoch 2. Metrics at that point were lane/stop/cross F1 `0.4435 / 0.3946 / 0.4190`, with component scores `0.6228 / 0.5452 / 0.4268`. This is a real improvement over `0.5595`, but still far below the 60% target.
 
 Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. Repeating that idea on the now-best centerline-only refinement path was still negative, so crosswalk phase weight alone is not the missing 60% lever.
 
