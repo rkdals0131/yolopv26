@@ -133,6 +133,7 @@ Val128 continuation probes:
 | `core_centerline_refine_cross_retain` | source best | 4 | 2 | 0.5577 | 0.4361 | 0.4000 | 0.4348 |
 | `core_centerline_refine_stop_retain` | source best | 3* | 2 | 0.5583 | 0.4383 | 0.3974 | 0.4331 |
 | `core_centerline_refine_dice_focus` | source best | 2* | 2 | 0.5523 | 0.4139 | 0.4027 | 0.4348 |
+| `core_centerline_refine` | merged task heads | 3* | 2 | 0.5595 | 0.4391 | 0.3893 | 0.4202 |
 
 Epoch trace for the best core continuation:
 
@@ -158,6 +159,7 @@ Interpretation:
 - Raising crosswalk phase weight on top of refinement is negative: crosswalk does not rise at the objective peak, while lane and stop-line slip slightly.
 - Raising stop-line phase weight on top of refinement is also near-tie but negative: `0.5583` versus `0.5591`. It does not preserve enough stop-line score to justify the lane/crosswalk trade.
 - Shifting centerline loss toward Dice overlap is negative: objective drops to `0.5523`, mainly from lane F1 falling to `0.4139`. The current centerline issue is not fixed by simply making the dense loss more Dice-heavy.
+- Seeding from the merged task-head checkpoint is a tiny positive but not a 60% break: objective rises from `0.5591` to `0.5595`, while stop-line/crosswalk balance still limits the result.
 - The objective still peaks around epoch 2, then oscillates/regresses; another same-axis longer run is not justified as the primary 60% path.
 
 `*` These runs were stopped after the result was clearly below the current best, to return GPU time to the next probe.
@@ -191,6 +193,8 @@ Refine-tangent follow-up: the vectorizer consumes `lane_seg_tangent_axis` togeth
 Open-gate follow-up: the best centerline-refine checkpoint kept `centerline_refine_gate_logit` near `-4` (`sigmoid ~= 0.018`), so the positive signal came from a very small residual branch. Initializing the gate at `-2` (`sigmoid ~= 0.119`) did not beat the original gated refinement, so the default gate was restored to `-4`.
 
 Task-head merge probe: a helper was added to merge `lane_head`, `stop_line_head`, and `crosswalk_head` weights from the task-best checkpoints into one checkpoint. On the refine run this did not produce an immediate threshold-sweep win, and the sweep metric path is not identical to training selection metrics, so merged task heads are not promoted as a 60% candidate without a dedicated selection-metric evaluator.
+
+Merged-head adaptation result: using `merged_task_heads.pt` as the seed and running the normal `core_centerline_refine` probe produced a tiny new best at epoch 2: objective `0.5595`, lane/stop/cross F1 `0.4391 / 0.3893 / 0.4202`. This is the current best numeric probe, but the gain is only `+0.0004` over the previous refine checkpoint and remains far below 60%.
 
 Refine-cross retention follow-up: the earlier `core_cross_retain` result was measured before the gated centerline refinement branch existed. Repeating that idea on the now-best centerline-only refinement path was still negative, so crosswalk phase weight alone is not the missing 60% lever.
 
@@ -227,7 +231,7 @@ What this continuation falsified:
 - Hybrid target and crosswalk reweighting do not clear the ceiling.
 - Lower-LR continuation is not the crosswalk-retention solution; its best objective is `0.5489`.
 - Positive-weight cap `8` is not the precision solution; its best objective is `0.5428`.
-- Gated centerline refinement is the current best architecture-side improvement, but still only reaches `0.5591`.
+- Gated centerline refinement is the current best architecture-side improvement, and merged-head adaptation nudges it to `0.5595`.
 - Stop-line retention, support-gated decode, and Dice-focused centerline loss do not clear the ceiling.
 - Decode-only changes remain too small to be the main path.
 
