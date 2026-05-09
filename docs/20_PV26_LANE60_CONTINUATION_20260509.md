@@ -237,6 +237,8 @@ Crosswalk min-rect decode result: replacing the PCA-aligned component box with a
 
 Post-min-rect cross-focus result: after keeping the min-rect decode improvement, raising crosswalk phase weight from `1.75` to `2.25` from the current best seed reached only objective `0.5563` at epoch 2. Lane/stop/cross F1 were `0.4412 / 0.3922 / 0.4031`, so the heavier crosswalk loss hurt crosswalk F1 instead of rescuing it.
 
+Post-min-rect low-LR retention result: keeping the current best loss weights and lowering head LR from `1e-4` to `5e-5` reached objective `0.5573` at epoch 2. Lane/stop/cross F1 were `0.4429 / 0.3922 / 0.4094`, so the lower LR preserved lane but still did not retain enough crosswalk or stop-line quality.
+
 Decode sweep on the best core checkpoint:
 
 | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Proxy |
@@ -266,6 +268,7 @@ What this continuation falsified:
 - Merging a cross-adapted head raises the best checkpoint to `0.5609`, but repeated merge and balanced-retain follow-ups regress.
 - Stop-line retention, support-gated decode, Dice-focused centerline loss, direct support-conditioned centerline residual, post-merge stop/cross rebalancing, and temporary crosswalk feature isolation do not clear the ceiling.
 - Crosswalk-heavy post-min-rect continuation also regresses, so the current gap is not just crosswalk phase weight.
+- Lower-LR post-min-rect continuation also regresses, so the current gap is not just peak overshoot from the `1e-4` schedule.
 - Decode-only changes remain too small to be the main path.
 
 Next useful axis:
