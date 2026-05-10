@@ -69,9 +69,11 @@ Lane Gate 3 dense-map probe:
 - command: `python3 tools/probe_pv26_lane60_dense_maps.py --checkpoint .../phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --device auto`
 - lane centerline core best pixel F1은 `0.5729`이고, lane support best pixel F1은 `0.7971`이다.
 - 결론: support map은 이미 충분히 강하고, lane은 vectorizer만의 문제가 아니라 centerline core 품질이 아직 0.6 직전에서 막혀 있다.
+- centerline-to-vector recovery audit은 같은 vectorizer에 GT centerline을 넣으면 broader-val512 epoch2 lane F1 `0.6630`까지 복구됨을 보였다. 반면 current predicted centerline은 best threshold `0.35`에서도 lane F1 `0.5169`다.
+- predicted semantic attrs를 GT로 바꿔도 `pred_full`과 geometry F1은 같으므로, 현 lane 병목은 color/type attr가 아니라 predicted centerline coverage/quality다.
 - BCE-focus calibration은 broader-val512 lane F1을 `0.5101 -> 0.5344`로 올렸지만 stop-line/crosswalk가 내려갔고, centerline-core pixel F1도 `0.5729 -> 0.5680`으로 낮아졌다. goal success가 아니라 lane-vectorized metric partial-positive다.
 - BCE-focus + PCA stop-line decoder integration best는 broader-val512 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`이고, stop-balance + PCA replay best도 `0.5372 / 0.4528 / 0.5812`에 그쳤다.
-- 다음 축은 PCA threshold/top-k, stop-line weight-only, component split, half-length scalar, learned query-vector proposal-only, lane support-substitution이 아니다. stop-line dense signal을 line geometry로 바꾸는 readout/target contract, 또는 별도 lane axis를 한 축씩 진행한다.
+- 다음 lane 축은 vectorizer rewrite나 threshold sweep이 아니라 predicted centerline core의 recall/coverage를 올리는 한 축이다. stop-line을 재개한다면 dense signal을 line geometry로 바꾸는 readout/target contract 쪽으로 제한한다.
 
 ## 3. Active docs surface
 

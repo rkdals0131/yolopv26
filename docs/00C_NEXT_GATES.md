@@ -162,6 +162,8 @@ Gate 상태:
 - lane centerline recall 부족인지, vectorizer recovery 부족인지 broader-val dense-map PR과 vectorizer audit으로 분리한다.
 - current dense-map probe 기준 lane centerline core best pixel F1은 `0.5729`, lane support best pixel F1은 `0.7971`이다.
 - 따라서 첫 후보는 support가 아니라 centerline-core 품질이다.
+- centerline-to-vector recovery audit 기준, GT centerline oracle은 broader-val512 epoch2 lane F1 `0.6630`까지 복구하지만 current predicted centerline은 best threshold `0.35`에서도 `0.5169`다.
+- predicted attrs oracle도 geometry F1을 올리지 못했으므로 lane 병목은 semantic attr가 아니라 predicted centerline coverage/quality다.
 - `core_centerline_refine_bce_focus`는 lane F1을 broader-val512 `0.5101 -> 0.5344`로 올렸지만, centerline-core pixel F1은 `0.5680`으로 기준선보다 낮고 stop-line/crosswalk가 내려갔다.
 - BCE-focus + PCA stop-line decoder integration audit best는 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`로 partial-positive지만 목표 미달이다.
 - BCE-focus stop-balance broader-val512는 `0.5372 / 0.4041 / 0.5812`이고 PCA replay best도 `0.5372 / 0.4528 / 0.5812`라 stop-line 병목을 못 풀었다.
@@ -179,7 +181,8 @@ Gate 상태:
 - `exp/lane-family-f1/stopline-vector-proposal-readout`은 learned query-vector proposal negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-selector-component-gate`는 selector-map component gate negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-centerline-endpoint-offset`은 endpoint-delta target/readout negative evidence로 보관한다.
-- 다음 한 축은 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 stop-line geometry recovery contract이거나, stop-line을 잠시 보류한 lane axis다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, lane support-substitution은 반복하지 않는다.
+- `exp/lane-family-f1/lane-vectorizer-recovery-audit`은 vectorizer headroom / predicted centerline bottleneck evidence로 보관한다.
+- 다음 한 축은 lane centerline-core recall/coverage를 올리는 target/loss/calibration 실험이거나, stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first는 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6

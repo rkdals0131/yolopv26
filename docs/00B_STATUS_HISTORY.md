@@ -392,3 +392,40 @@ Stop-line branch 결과:
 
 - stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract가 필요하다.
 - stop-line을 잠시 보류한다면 lane axis는 support substitution이나 threshold sweep이 아니라 centerline-to-vector recovery error bucket 또는 새로운 centerline-core 품질 가설로 제한한다.
+
+## 13. 2026-05-11 Gate 3 lane vectorizer recovery audit: vectorizer has headroom, predicted centerline is limiting
+
+맥락:
+
+- dense-map probe는 lane support map이 강하고 centerline core pixel F1이 `0.5729`에 머무른다는 것을 보였다.
+- 아직 남은 질문은 "centerline만 맞으면 현재 seg-first vectorizer가 0.6 lane F1을 복구할 수 있는가"였다.
+- 새 학습 없이 validation epoch2 sampler를 맞춰 current predicted maps, GT centerline oracle, GT attrs oracle을 같은 vectorizer/geometry filters로 비교했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-vectorizer-recovery-audit`
+- `tools/probe_pv26_lane60_lane_vectorizer_recovery.py`를 추가했다.
+- variants: `pred_full`, `pred_centerline_gt_attrs`, `gt_centerline_pred_attrs`, `gt_centerline_gt_attrs`.
+- thresholds: `0.35 / 0.45 / 0.55 / 0.65 / 0.75 / 0.85`.
+- `--validation-epoch`으로 training replay와 같은 validation sampler subset을 맞춘다.
+
+검증:
+
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_vectorizer_recovery_val512_validation_epoch2`
+- command: `python3 tools/probe_pv26_lane60_lane_vectorizer_recovery.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --lane60-experiment core_centerline_refine_cross_retain --phase-index 4 --max-val-batches 512 --validation-epoch 2 --batch-size 4 --device cuda:0 --output-dir .../analysis_exports/lane_vectorizer_recovery_val512_validation_epoch2`
+- `gt_centerline_gt_attrs@0.35`: lane F1 `0.6630`, precision/recall `0.9621 / 0.5058`, TP/FP/FN `4793 / 189 / 4684`, strict F1 `0.6485`.
+- `gt_centerline_pred_attrs@0.35`: lane F1 `0.6630`, precision/recall `0.9621 / 0.5058`, TP/FP/FN `4793 / 189 / 4684`, strict F1 `0.6126`.
+- `pred_full@0.35`: lane F1 `0.5169`, precision/recall `0.6677 / 0.4217`, TP/FP/FN `3996 / 1989 / 5481`, strict F1 `0.4900`.
+- `pred_full@0.45`: lane F1 `0.5101`, precision/recall `0.6702 / 0.4117`, TP/FP/FN `3902 / 1920 / 5575`, strict F1 `0.4855`.
+
+판단:
+
+- 현재 vectorizer/geometry filters는 GT centerline이 주어지면 broader-val512 epoch2에서 lane F1 `0.6630`까지 복구한다.
+- predicted attrs를 GT로 바꿔도 geometry F1은 그대로라서 color/type attr가 lane geometry F1 병목은 아니다.
+- threshold를 `0.45 -> 0.35`로 낮춰도 `0.5101 -> 0.5169`만 오른다. threshold-only sweep은 0.6 path가 아니다.
+- predicted centerline과 GT centerline 사이의 gap은 lane F1 기준 `0.1461`이다. Gate 3 병목은 vectorizer rewrite보다 predicted centerline coverage/quality다.
+
+다음:
+
+- 다음 lane 축은 centerline-core recall/coverage를 올리는 target/loss/calibration 쪽으로 제한한다.
+- support map substitution, semantic attr oracle, threshold sweep, vectorizer rewrite부터 시작하는 실험은 반복하지 않는다.
