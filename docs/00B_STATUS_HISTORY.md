@@ -744,3 +744,44 @@ Stop-line branch 결과:
 다음:
 
 - 다음 lane 축은 risk bucket이나 negative mask를 단순히 더 누르는 방식이 아니라, instance continuity / endpoint coverage / fragment separation을 같이 다루는 contract여야 한다.
+
+## 22. 2026-05-11 Gate 3 lane support bridge postprocess: closing hurts lane recall
+
+맥락:
+
+- support map 자체는 dense F1이 높지만, support-as-centerline과 support blend는 이미 lane source 대체로 실패했다.
+- 이번 실험은 support를 대체 source로 쓰지 않고, centerline binary의 짧은 gap만 high-confidence support 안에서 closing해 component continuity를 회복할 수 있는지 확인했다.
+- default postprocess는 바꾸지 않고 opt-in config와 decode probe variant로만 검증했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-support-bridge`
+- `LaneSegFirstVectorizerConfig`에 opt-in `support_bridge_threshold`, `support_bridge_iterations`를 추가했다.
+- `PV26PostprocessConfig`와 train defaults에 `lane_segfirst_support_bridge_threshold`, `lane_segfirst_support_bridge_iterations`를 추가했다. 기본값은 비활성 `0.0 / 0`이다.
+- `tools/probe_pv26_lane60_decode_variants.py`에 bridge variants와 `--output-json`을 추가했다.
+
+검증:
+
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/decode_variants_support_bridge_val128_epoch2.json`
+- command: `python3 tools/probe_pv26_lane60_decode_variants.py --checkpoint .../phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --device cuda:0 --output-json .../analysis_exports/decode_variants_support_bridge_val128_epoch2.json`
+- same-probe baseline: lane/stop/cross F1 `0.5222 / 0.2000 / 0.6667`.
+- `lane_bridge_s080_i2`: lane/stop/cross F1 `0.4758 / 0.2000 / 0.6667`, lane TP/FP/FN `884 / 497 / 1451`.
+- `lane_bridge_s090_i2`: lane F1 `0.4724`.
+- `lane_bridge_s080_i4`: lane F1 `0.4075`.
+- `lane_t080_bridge_*`: lane F1 `0.4716`.
+- `lane_t090_bridge_*`: lane F1 `0.4372`.
+
+판단:
+
+- bridge variants는 모두 same-probe baseline보다 낮고, best bridge도 missed lane을 복구하기보다 lane recall을 잃었다.
+- stronger closing일수록 더 나빠졌다. support-gated morphology가 valid lane instance를 복구한 것이 아니라 유용한 centerline structure를 합치거나 지우는 쪽으로 작동한 형태다.
+- broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- support bridge/closing-only 후처리를 같은 형태로 반복하지 않는다.
+- support map의 높은 dense F1을 lane instance continuity 해결로 해석하지 않는다.
+
+다음:
+
+- 다음 lane 축은 support morphology가 아니라 instance continuity / endpoint coverage / fragment separation을 모델이 직접 학습하거나, vectorizer가 instance-level evidence를 쓰는 contract여야 한다.
