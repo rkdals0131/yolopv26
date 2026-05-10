@@ -873,3 +873,42 @@ Stop-line branch 결과:
 - row-scan은 opt-in lane postprocess partial-positive baseline으로 보관한다.
 - default 승격 전에는 tangent/curvature/length/merge geometry guard나 더 targeted visual review로 over-link risk를 줄인다.
 - 남은 목표 gap은 stop-line first 또는 row-scan 이후 lane residual gap으로 분리한다.
+
+## 25. 2026-05-11 Gate 2 stop-line row-center auxiliary: centerline-row pressure is negative
+
+맥락:
+
+- stop-line dense mask pixel F1은 높지만 center/proposal reliability가 낮다는 기존 결론에서 출발했다.
+- 기존 row selector auxiliary는 `mask_target` row를 보고 있어 두꺼운 mask row 전체를 긍정으로 배운다.
+- 이번 실험은 row selector에 `stop_line_centerline` row pressure를 추가하면 center row localization이 좋아져 stop-line F1이 오르는지 확인했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-row-center-aux`
+- commit: `050459a Test stop-line row-center auxiliary pressure`
+- `PV26MultiTaskLoss`에 opt-in `stopline_row_center_aux_weight`를 추가했다. 기본값은 `0.0`이다.
+- `TrainDefaultsConfig`, train config loading, trainer construction에 같은 knob을 연결했다.
+- `core_centerline_refine_stop_row_center_aux` probe는 baseline core-centerline/cross-retain 설정 위에 `stopline_row_center_aux_weight=1.0`만 추가했다.
+
+검증:
+
+- tests: `python3 -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`
+- tests: `PYTHONPATH=. python3 test/test_pv26_loss_runtime.py` -> 17 tests OK.
+- tests: `PYTHONPATH=. python3 test/test_run_pv26_train.py` -> 50 tests OK.
+- tests: `git diff --check`.
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_row_center_aux_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_064045`
+- command shape: source checkpoint `phase_4/checkpoints/best.pt`, epochs `2`, train batches `512`, val batches `128`, batch size `4`, device `cuda:0`.
+- epoch1 exact val128: `phase_objective=0.5804`, lane/stop/cross F1 `0.5143 / 0.1980 / 0.6748`.
+- epoch2 exact val128: `phase_objective=0.6060`, lane/stop/cross F1 `0.5265 / 0.4248 / 0.5818`.
+- 기준 exact epoch2: `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+
+판단:
+
+- row-center auxiliary는 stop-line F1을 기준보다 낮췄고, lane/crosswalk도 기준을 넘지 못했다.
+- phase objective도 기준보다 낮아 broader-val512로 확장하지 않는다.
+- centerline-row pressure만 추가하는 방식은 predicted center/proposal reliability 개선으로 이어지지 않았다.
+
+다음:
+
+- row-center auxiliary-only는 반복하지 않는다.
+- stop-line을 재개한다면 row/center loss scalar를 더 키우기보다, PCA/component-fit weak-positive를 넘는 geometry recovery contract나 feature/readout mismatch를 직접 재검증한다.

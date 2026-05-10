@@ -63,6 +63,7 @@ Stop-line Gate 2 follow-up:
 - selector-map을 component gate/anchor에 opt-in으로 연결한 read-only decode probe도 stop-line F1 `0.2062`로 `stop_mask_only` `0.2593`보다 낮았다. centerline selector map을 단순 component 선택에 쓰는 후처리만으로는 0.6 path가 아니다.
 - endpoint-delta target/readout short run은 val128 epoch1/2 stop-line F1이 모두 `0.0000`이고 best objective도 `0.5880863169`라 기준선보다 낮았다. 새 dense geometry channel을 바로 decode에 쓰는 형태도 현재는 0.6 path가 아니다.
 - heatmap-support geometry target fill은 center heatmap support 전체에 offset/angle/half-length target을 채우는 opt-in target 계약을 시험했지만 exact val128 epoch2 stop-line F1이 `0.2338`로 무너졌다. dense stop-line mask F1도 `0.4854`, center heatmap F1도 `0.0815`로 기준 `0.6118 / 0.1396`보다 낮아 같은 형태로 반복하지 않는다.
+- row-center auxiliary는 row selector에 centerline-row pressure를 추가해 predicted center/proposal reliability를 올리는지 봤다. exact val128 epoch2 objective `0.6060`, lane/stop/cross F1 `0.5265 / 0.4248 / 0.5818`로 기준 exact `0.6089`, `0.5267 / 0.4483 / 0.5854`보다 낮아서 row-center-aux-only도 0.6 path가 아니다.
 - 남은 stop-line 방향은 새 query row나 endpoint-delta channel 추가가 아니라, predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 찾는 것이다.
 
 Lane Gate 3 dense-map probe:
