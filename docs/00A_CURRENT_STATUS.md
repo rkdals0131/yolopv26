@@ -9,6 +9,12 @@ PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune �
 
 이 60% 돌파는 raw model만으로 만든 결론이 아니고, F1 자체가 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 small-fragment FP를 제거하는 postprocess geometry filters가 붙어서 만든 partial success다. 다음 목표를 더 엄격하게 잡는다면 `phase_objective`가 아니라 lane/stop/cross F1 자체를 0.6 이상으로 끌어올리는 것이다.
 
+Active goal:
+
+- broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
+- exact epoch-2 subset이나 `phase_objective` 단독 통과는 중간 신호일 뿐 최종 성공으로 보지 않는다.
+- 실험은 branch/worktree 단위로 분리하고, 한 worktree는 한 축만 바꾼다.
+
 ## 2. 현재 기준 artifact
 
 Run:

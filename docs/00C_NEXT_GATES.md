@@ -42,8 +42,39 @@
 - metric은 task F1, TP/FP/FN, support를 같이 본다.
 - comparison grid는 metric 보조 증거로만 쓴다.
 - run artifact는 `best.pt`, exact eval summary, comparison grid 정도만 남긴다.
+- Git branch/worktree를 파서 실험할 때도 한 worktree는 한 가설만 소유한다.
+- `/tmp` 안의 임시 산출물은 삭제 가능하다. 그 밖 경로에서는 삭제하지 않고 삭제후보 폴더로 이동만 허용한다.
 
-## 3. Gate 1: final geometry filters broader validation replay
+## 3. Worktree experiment protocol
+
+목적:
+
+- F1 0.6+까지 가는 후보를 architecture / postprocess / preprocess-runtime 축으로 나누되, 서로의 결과가 섞이지 않게 한다.
+
+Branch/worktree 규칙:
+
+- branch 이름은 `exp/lane-family-f1/<axis>-<short-hypothesis>` 형식으로 쓴다.
+- worktree 경로는 repo 밖 sibling 경로를 쓴다. 예: `/home/kai/yolopv26-exp-stopline-decoder`.
+- 한 worktree에서 동시에 두 축을 바꾸지 않는다.
+- positive result만 merge 대상으로 본다. negative result도 `00B_STATUS_HISTORY.md`에 남겨 같은 가설을 반복하지 않는다.
+- develop 승격 전에는 exact replay와 broader-val replay를 모두 통과해야 한다.
+
+초기 실험 lane:
+
+| Lane | 첫 질문 | 주요 파일 |
+| --- | --- | --- |
+| postprocess | final geometry filters가 broader-val에서도 precision gain을 유지하는가 | `model/engine/postprocess.py`, `tools/evaluate_pv26_lane60_checkpoint.py`, `tools/analyze_pv26_lane60_prediction_filters.py` |
+| stop-line architecture | stop-line F1 병목이 decoder/target/loss 어느 쪽인가 | `model/net/stopline_head_line.py`, `model/engine/loss.py`, `model/engine/postprocess.py`, `tools/run_pv26_lane60_probe.py` |
+| lane architecture | centerline recall 부족인지 vectorizer recovery 부족인지 분리 가능한가 | `model/net/lane_head_segfirst.py`, `model/engine/loss.py`, `tools/probe_pv26_lane60_dense_maps.py` |
+| sampler/feeder | stop-line/crosswalk positive exposure와 validation support가 충분히 안정적인가 | `model/data/sampler.py`, `tools/pv26_train/cli.py`, `config/pv26_train_hyperparameters.yaml` |
+
+첫 실행 순서:
+
+1. current `develop`에서 Gate 1 broader-val replay를 기준선으로 확정한다.
+2. 기준선 summary를 `00B_STATUS_HISTORY.md`에 추가한다.
+3. 기준선 이후부터 worktree를 나눠 stop-line / lane / sampler-feeder 후보를 한 축씩 실험한다.
+
+## 4. Gate 1: final geometry filters broader validation replay
 
 목적:
 
@@ -61,7 +92,7 @@
 - lane recall 손실이 과도하면 filter threshold를 deployment default로 승격하지 않는다.
 - F1 0.6+ plan의 baseline으로 쓸 broader-val lane/stop/cross F1을 확정한다.
 
-## 4. Gate 2: stop-line first improvement axis
+## 5. Gate 2: stop-line first improvement axis
 
 목적:
 
@@ -80,7 +111,7 @@
 - lane/crosswalk F1이 0.6 목표에서 멀어질 정도로 무너지면 실패다.
 - exact subset에서만 좋아지는 stop-line threshold tweak은 채택하지 않는다.
 
-## 5. Gate 3: lane recall without fragment FP
+## 6. Gate 3: lane recall without fragment FP
 
 목적:
 
@@ -98,7 +129,7 @@
 - lane F1이 올라야 하고, FP 감소만으로 recall이 무너지는 개선은 실패다.
 - broader-val comparison grid에서 긴 실제 차선이 빠지는 장면이 늘면 실패다.
 
-## 6. Gate 4: crosswalk retention to 0.6
+## 7. Gate 4: crosswalk retention to 0.6
 
 목적:
 
@@ -115,7 +146,7 @@
 - crosswalk F1 `>=0.60`이 broader-val에서 유지되어야 한다.
 - lane/stop-line 목표를 희생하는 crosswalk-only gain은 채택하지 않는다.
 
-## 7. Gate 5: export/TorchScript
+## 8. Gate 5: export/TorchScript
 
 목적:
 
@@ -128,7 +159,7 @@
 - geometry filters가 export/ROS runtime에서 동일하게 적용되는지.
 - output schema가 기존 prediction bundle과 호환되는지.
 
-## 8. Gate 6: ROS2 realtime check
+## 9. Gate 6: ROS2 realtime check
 
 목적:
 
@@ -142,7 +173,7 @@
 - prediction artifact shape.
 - comparison overlay 또는 sample replay.
 
-## 9. Gate 7: traffic-light selective fine-tune
+## 10. Gate 7: traffic-light selective fine-tune
 
 Lane60 fine-tune과 분리한다.
 
@@ -162,7 +193,7 @@ Lane60 fine-tune과 분리한다.
 - traffic-light box recall/precision과 attribute combo accuracy를 분리해서 본다.
 - attribute가 좋아도 box 검출이 약하면 end-to-end traffic-light 성공으로 보지 않는다.
 
-## 10. 문서 갱신 규칙
+## 11. 문서 갱신 규칙
 
 실험을 끝낼 때마다 다음 네 가지를 남긴다:
 

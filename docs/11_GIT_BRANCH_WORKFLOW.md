@@ -24,3 +24,32 @@
 - 현재 시점의 최신 구현 상태를 볼 때 `main`만 기준으로 판단하지 않는다.
 - `main`은 의도적으로 과거 상태일 수 있다. 최신 통합 상태는 `develop`, 최신 raw 작업 상태는 `omx`에서 확인한다.
 - 최종 `main` 반영과 GitHub push는 테스트가 끝난 뒤 사용자 판단으로 진행한다.
+
+## Lane-Family F1 Experiment Worktrees
+
+현재 lane-family 목표는 broader validation에서 lane / stop-line / crosswalk F1을 모두 `0.60` 이상으로 만드는 것이다. `phase_objective` 0.6 통과나 exact subset 통과만으로는 이 목표를 달성한 것으로 보지 않는다.
+
+F1 0.6+ 실험은 branch/worktree를 분리해서 진행한다.
+
+- branch 이름은 `exp/lane-family-f1/<axis>-<short-hypothesis>` 형식을 쓴다.
+- worktree 경로는 repo 밖 sibling 경로를 쓴다. 예: `/home/kai/yolopv26-exp-stopline-decoder`.
+- 한 worktree는 한 축만 바꾼다. 예: postprocess, stop-line head, lane head, sampler/feeder 중 하나.
+- 같은 worktree에서 architecture와 sampler를 동시에 바꾸지 않는다.
+- negative result도 커밋이나 문서로 남긴다. 반복 금지 근거는 `docs/00B_STATUS_HISTORY.md`에 축약한다.
+- develop 승격 전에는 exact replay와 broader validation replay를 모두 확인한다.
+
+초기 축은 아래 네 개다.
+
+| Axis | Scope |
+| --- | --- |
+| `postprocess` | geometry filters, thresholds, component filtering, mask-to-vector decode |
+| `stopline` | stop-line target/loss/head/decode contract |
+| `lane` | centerline recall, gated refinement, vectorizer recovery |
+| `sampler-feeder` | task-positive sampler, validation support, batch composition, encoded feeder behavior |
+
+Cleanup boundary:
+
+- `/tmp` 안의 PV26 임시 산출물은 필요 없으면 삭제해도 된다.
+- `/tmp` 밖 경로는 삭제하지 않는다.
+- repo 밖 worktree나 run folder를 치울 때는 먼저 삭제후보 폴더로 이동한다. 예: `/home/kai/yolopv26_deletion_candidates/<timestamp>-<name>`.
+- `runs/`는 `.gitignore` 대상이므로 커밋에 포함되지 않는다. 문서에는 재현 가능한 command와 핵심 metric만 남긴다.
