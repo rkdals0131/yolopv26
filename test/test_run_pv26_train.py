@@ -135,6 +135,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_obj_threshold": 0.61,
                             "lane_segfirst_centerline_target_mode": "core",
                             "lane_segfirst_centerline_max_positive_weight": 8.0,
+                            "lane_segfirst_residual_risk_core_weight": 0.5,
+                            "lane_segfirst_residual_risk_ring_weight": 0.35,
+                            "lane_segfirst_residual_risk_ring_margin": 0.2,
                             "lane_segfirst_track_mode": "row_scan",
                             "lane_segfirst_max_row_gap": 24,
                             "lane_segfirst_max_link_dx": 12.0,
@@ -235,6 +238,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.train_defaults.lane_segfirst_centerline_target_mode, "core")
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_centerline_max_positive_weight, 8.0)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_core_weight, 0.5)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_ring_weight, 0.35)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_ring_margin, 0.2)
         self.assertEqual(scenario.train_defaults.lane_segfirst_track_mode, "row_scan")
         self.assertEqual(scenario.train_defaults.lane_segfirst_max_row_gap, 24)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_max_link_dx, 12.0)
@@ -262,6 +268,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
         self.assertAlmostEqual(scenario.train_defaults.det_iou_threshold, 0.70)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.45)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_core_weight, 0.0)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_ring_weight, 0.0)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_ring_margin, 0.2)
         self.assertEqual(scenario.train_defaults.lane_segfirst_track_mode, "component")
         self.assertEqual(scenario.train_defaults.lane_segfirst_max_row_gap, 12)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_max_link_dx, 8.0)

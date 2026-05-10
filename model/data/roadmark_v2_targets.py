@@ -207,6 +207,8 @@ def build_lane_segfirst_targets(
         "lane_seg_centerline_core": maps["centerline_core"],
         "lane_seg_centerline_soft": maps["centerline_soft"],
         "lane_seg_support": maps["support"],
+        "lane_seg_residual_risk_core": maps["residual_risk_core"],
+        "lane_seg_residual_risk_ring_negative": maps["residual_risk_ring_negative"],
         "lane_seg_tangent_axis": maps["tangent_axis"],
         "lane_seg_color": maps["color_map"],
         "lane_seg_type": maps["lane_type_map"],

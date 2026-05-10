@@ -21,6 +21,7 @@ class LaneSegFirstTargetConfig:
     centerline_soft_sigma: float = 1.5
     centerline_soft_radius: int = 5
     support_width: int = 9
+    residual_risk_ring_width: int = 17
     tangent_width: int = 5
     stopline_ignore_width: int = 11
     crosswalk_boundary_width: int = 3
@@ -125,6 +126,22 @@ def _draw_poly_mask(output_hw: tuple[int, int], points: torch.Tensor, *, width: 
     return np.asarray(image, dtype=bool)
 
 
+def _residual_risk_lane(points: torch.Tensor) -> bool:
+    if points.shape[0] < 2:
+        return False
+    min_xy = points.min(dim=0).values
+    max_xy = points.max(dim=0).values
+    center_x = float((min_xy[0] + max_xy[0]).item() * 0.5)
+    bottom_y = float(max_xy[1].item())
+    width = float((max_xy[0] - min_xy[0]).item())
+    height = float((max_xy[1] - min_xy[1]).item())
+    aspect = max(width, height) / max(min(width, height), 1.0)
+    side = center_x < float(NETWORK_HW[1]) / 3.0 or center_x >= 2.0 * float(NETWORK_HW[1]) / 3.0
+    truncated = bottom_y < 0.50 * float(NETWORK_HW[0])
+    high_aspect = aspect >= 3.0
+    return bool(side or truncated or high_aspect)
+
+
 def _render_tangent_and_attrs(
     lane_rows: list[dict[str, Any]],
     valid_mask: torch.BoolTensor | list[bool] | tuple[bool, ...],
@@ -223,23 +240,27 @@ def render_lane_segfirst_targets(
     h, w = int(cfg.output_hw[0]), int(cfg.output_hw[1])
     core_image = Image.new("L", (w, h), 0)
     support_image = Image.new("L", (w, h), 0)
+    residual_risk_core_image = Image.new("L", (w, h), 0)
+    residual_risk_ring_image = Image.new("L", (w, h), 0)
 
     if source_enabled:
         for lane_index, row in enumerate(lane_rows):
             if not _valid_mask_value(lane_valid_mask, lane_index):
                 continue
-            points = _scale_points(
-                _visible_lane_points(row),
-                source_hw=NETWORK_HW,
-                target_hw=cfg.output_hw,
-            )
-            if points.shape[0] < 2:
+            network_points = _visible_lane_points(row)
+            if network_points.shape[0] < 2:
                 continue
+            points = _scale_points(network_points, source_hw=NETWORK_HW, target_hw=cfg.output_hw)
             _draw_line(core_image, points, fill=1, width=cfg.centerline_core_width)
             _draw_line(support_image, points, fill=1, width=cfg.support_width)
+            if _residual_risk_lane(network_points):
+                _draw_line(residual_risk_core_image, points, fill=1, width=cfg.centerline_core_width)
+                _draw_line(residual_risk_ring_image, points, fill=1, width=cfg.residual_risk_ring_width)
 
     core = np.asarray(core_image, dtype=np.float32)
     support = np.asarray(support_image, dtype=np.float32)
+    residual_risk_core = np.asarray(residual_risk_core_image, dtype=np.float32)
+    residual_risk_ring_full = np.asarray(residual_risk_ring_image, dtype=np.float32)
     if core.any():
         distance = ndimage.distance_transform_edt(core <= 0.0).astype(np.float32)
         soft = np.exp(-0.5 * (distance / max(float(cfg.centerline_soft_sigma), 1.0e-6)) ** 2)
@@ -285,11 +306,18 @@ def render_lane_segfirst_targets(
     )
     ignore = np.clip(np.maximum(stop_mask, cross_mask) - core, 0.0, 1.0)
     negative = ((support <= 0.0) & (ignore <= 0.0)).astype(np.float32)
+    residual_risk_ring_negative = (
+        (residual_risk_ring_full > 0.0)
+        & (support <= 0.0)
+        & (ignore <= 0.0)
+    ).astype(np.float32)
 
     return {
         "centerline_core": torch.from_numpy(core).unsqueeze(0),
         "centerline_soft": torch.from_numpy(soft.astype(np.float32)).unsqueeze(0),
         "support": torch.from_numpy(support).unsqueeze(0),
+        "residual_risk_core": torch.from_numpy(residual_risk_core.astype(np.float32)).unsqueeze(0),
+        "residual_risk_ring_negative": torch.from_numpy(residual_risk_ring_negative).unsqueeze(0),
         "tangent_axis": torch.from_numpy(tangent_axis.astype(np.float32)),
         "color_map": torch.from_numpy(color_map.astype(np.float32)),
         "lane_type_map": torch.from_numpy(lane_type_map.astype(np.float32)),

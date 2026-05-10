@@ -447,6 +447,9 @@ def _lane_segfirst_loss(
     loss_weights: dict[str, float] | None = None,
     centerline_target_mode: str = "soft",
     centerline_max_positive_weight: float = 32.0,
+    residual_risk_core_weight: float = 0.0,
+    residual_risk_ring_weight: float = 0.0,
+    residual_risk_ring_margin: float = 0.20,
     color_class_weights: dict[str, float] | None = None,
     breakdown: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
@@ -530,6 +533,30 @@ def _lane_segfirst_loss(
         color_loss = _zero_graph(color_logits)
         type_loss = _zero_graph(type_logits)
 
+    residual_risk_core_loss = _zero_graph(centerline_logits)
+    residual_risk_ring_loss = _zero_graph(centerline_logits)
+    if float(residual_risk_core_weight) > 0.0:
+        risk_core = aux.get("lane_seg_residual_risk_core")
+        if isinstance(risk_core, torch.Tensor):
+            risk_core = risk_core.to(device=centerline_logits.device, dtype=centerline_logits.dtype)
+            risk_core_mask = valid_mask & (risk_core > 0.5)
+            if bool(risk_core_mask.any()):
+                residual_risk_core_loss = F.binary_cross_entropy_with_logits(
+                    centerline_logits[risk_core_mask],
+                    torch.ones_like(centerline_logits[risk_core_mask]),
+                    reduction="mean",
+                )
+    if float(residual_risk_ring_weight) > 0.0:
+        risk_ring = aux.get("lane_seg_residual_risk_ring_negative")
+        if isinstance(risk_ring, torch.Tensor):
+            risk_ring = risk_ring.to(device=centerline_logits.device, dtype=torch.bool)
+            risk_ring_mask = valid_mask & risk_ring
+            if bool(risk_ring_mask.any()):
+                risk_prob = centerline_logits.sigmoid()
+                residual_risk_ring_loss = (
+                    F.relu(risk_prob[risk_ring_mask] - float(residual_risk_ring_margin)) ** 2.0
+                ).mean()
+
     total = (
         weights["centerline_bce"] * centerline_bce
         + weights["centerline_dice"] * centerline_dice
@@ -537,6 +564,8 @@ def _lane_segfirst_loss(
         + weights["tangent"] * tangent_loss
         + weights["color"] * color_loss
         + weights["type"] * type_loss
+        + float(residual_risk_core_weight) * residual_risk_core_loss
+        + float(residual_risk_ring_weight) * residual_risk_ring_loss
     )
     if breakdown is not None:
         breakdown.update(
@@ -547,6 +576,8 @@ def _lane_segfirst_loss(
                 "seg_tangent_axis": tangent_loss,
                 "seg_color": color_loss,
                 "seg_type": type_loss,
+                "seg_residual_risk_core": residual_risk_core_loss,
+                "seg_residual_risk_ring": residual_risk_ring_loss,
             }
         )
     return total
@@ -1477,6 +1508,9 @@ class PV26MultiTaskLoss(nn.Module):
         lane_segfirst_loss_weights: dict[str, float] | None = None,
         lane_segfirst_centerline_target_mode: str = "soft",
         lane_segfirst_centerline_max_positive_weight: float = 32.0,
+        lane_segfirst_residual_risk_core_weight: float = 0.0,
+        lane_segfirst_residual_risk_ring_weight: float = 0.0,
+        lane_segfirst_residual_risk_ring_margin: float = 0.20,
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
         stopline_selector_aux_weight: float = 1.0,
@@ -1515,6 +1549,9 @@ class PV26MultiTaskLoss(nn.Module):
             self.lane_segfirst_loss_weights.update({str(name): float(value) for name, value in lane_segfirst_loss_weights.items()})
         self.lane_segfirst_centerline_target_mode = str(lane_segfirst_centerline_target_mode)
         self.lane_segfirst_centerline_max_positive_weight = float(lane_segfirst_centerline_max_positive_weight)
+        self.lane_segfirst_residual_risk_core_weight = float(lane_segfirst_residual_risk_core_weight)
+        self.lane_segfirst_residual_risk_ring_weight = float(lane_segfirst_residual_risk_ring_weight)
+        self.lane_segfirst_residual_risk_ring_margin = float(lane_segfirst_residual_risk_ring_margin)
         self.lane_segfirst_color_class_weights = (
             {str(name): float(value) for name, value in lane_segfirst_color_class_weights.items()}
             if lane_segfirst_color_class_weights
@@ -1600,6 +1637,9 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_segfirst_loss_weights": dict(self.lane_segfirst_loss_weights),
             "lane_segfirst_centerline_target_mode": self.lane_segfirst_centerline_target_mode,
             "lane_segfirst_centerline_max_positive_weight": float(self.lane_segfirst_centerline_max_positive_weight),
+            "lane_segfirst_residual_risk_core_weight": float(self.lane_segfirst_residual_risk_core_weight),
+            "lane_segfirst_residual_risk_ring_weight": float(self.lane_segfirst_residual_risk_ring_weight),
+            "lane_segfirst_residual_risk_ring_margin": float(self.lane_segfirst_residual_risk_ring_margin),
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
             "stopline_selector_aux_weight": float(self.stopline_selector_aux_weight),
@@ -2184,6 +2224,9 @@ class PV26MultiTaskLoss(nn.Module):
                 loss_weights=self.lane_segfirst_loss_weights,
                 centerline_target_mode=self.lane_segfirst_centerline_target_mode,
                 centerline_max_positive_weight=self.lane_segfirst_centerline_max_positive_weight,
+                residual_risk_core_weight=self.lane_segfirst_residual_risk_core_weight,
+                residual_risk_ring_weight=self.lane_segfirst_residual_risk_ring_weight,
+                residual_risk_ring_margin=self.lane_segfirst_residual_risk_ring_margin,
                 color_class_weights=self.lane_segfirst_color_class_weights,
                 breakdown=lane_breakdown,
             )

@@ -88,9 +88,10 @@ Lane Gate 3 dense-map probe:
 - row-scan vectorizer는 connected-component별 vectorization 대신 row cluster track을 opt-in으로 이어서 centerline fragment continuity를 복구했다. exact val128 epoch2 objective는 `0.6144`, lane/stop/cross F1은 `0.5522 / 0.4483 / 0.5854`이고, broader-val512 objective는 `0.5981`, lane/stop/cross F1은 `0.5279 / 0.4083 / 0.5854`다. 18-sample visual comparison grid(`analysis_exports/row_scan_visual_compare_epoch2/row_scan_component_comparison_grid.png`)에서도 일부 side/fragment lane 복구는 보이지만 sample 10처럼 extra/zig track over-link risk가 남아, opt-in partial-positive이지 deployment default는 아니다.
 - row-scan geometry guard probe는 length/bottom/gap/dx/turn-angle guard를 exact val128 epoch2에서 비교했다. best lane F1은 `row_gap24_row_dx12`의 `0.5526`으로 기존 row-scan `0.5522` 대비 `+0.0004`뿐이고 FP가 `486 -> 512`로 늘었다. turn-angle guard는 FP를 줄였지만 TP를 더 잃어 best `0.5365`라 default 승격 path가 아니다.
 - row-scan residual filter export는 broader-val512 lane TP/FP/FN `4153 / 2105 / 5324`를 남겼다. FN은 left `46.9%`, truncated bottom `<0.50` `27.9%`, aspect `>=3` `65.9%`에 몰리고, FP는 side `74.8%`와 right `40.6%` 비중이 높다.
+- residual local separation loss는 left/truncated/high-aspect GT core를 올리고 주변 ring negative를 누르는 opt-in target/loss를 시험했다. exact val128 epoch2 lane F1은 `0.5476`으로 기준 `0.5267`보다 높았지만, stop-line F1은 `0.4310`으로 기준 `0.4483`보다 낮고 phase objective도 `0.6085`로 기준 `0.6089`보다 낮다. lane partial-positive일 뿐 채택/확장하지 않는다.
 - BCE-focus calibration은 broader-val512 lane F1을 `0.5101 -> 0.5344`로 올렸지만 stop-line/crosswalk가 내려갔고, centerline-core pixel F1도 `0.5729 -> 0.5680`으로 낮아졌다. goal success가 아니라 lane-vectorized metric partial-positive다.
 - BCE-focus + PCA stop-line decoder integration best는 broader-val512 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`이고, stop-balance + PCA replay best도 `0.5372 / 0.4528 / 0.5812`에 그쳤다.
-- 다음 lane 축은 row-scan micro-guard가 아니라, left/truncated/high-aspect GT recall을 올리면서 side FP fragments를 억제하는 centerline coverage + fragment separation contract로 좁힌다. stop-line을 재개한다면 dense signal을 line geometry로 바꾸는 readout/target contract 쪽으로 제한한다.
+- 다음 lane 축은 residual-risk local loss를 더 키우는 방향이 아니라, predicted centerline evidence를 instance 단위로 안정화하거나 row-scan partial-positive를 stop-line/crosswalk 목표와 같이 끌어올리는 contract로 좁힌다. stop-line을 재개한다면 dense signal을 line geometry로 바꾸는 readout/target contract 쪽으로 제한한다.
 
 ## 3. Active docs surface
 

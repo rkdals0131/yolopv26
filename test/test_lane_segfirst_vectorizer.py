@@ -5,7 +5,12 @@ import unittest
 import torch
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES
-from model.engine.lane_segfirst_vectorizer import LaneSegFirstVectorizerConfig, vectorize_lane_segfirst_maps
+from model.engine.lane_segfirst_vectorizer import (
+    LaneSegFirstTargetConfig,
+    LaneSegFirstVectorizerConfig,
+    render_lane_segfirst_targets,
+    vectorize_lane_segfirst_maps,
+)
 
 
 def _maps_with_vertical_gap() -> dict[str, torch.Tensor]:
@@ -93,6 +98,31 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
                 _maps_with_vertical_gap(),
                 config=LaneSegFirstVectorizerConfig(track_mode="unknown"),
             )
+
+    def test_residual_risk_targets_only_mark_bucketed_lanes(self) -> None:
+        rows = [
+            {"points_xy": torch.tensor([[320.0, 560.0], [330.0, 440.0]], dtype=torch.float32)},
+            {"points_xy": torch.tensor([[40.0, 560.0], [60.0, 440.0]], dtype=torch.float32)},
+            {"points_xy": torch.tensor([[320.0, 240.0], [330.0, 120.0]], dtype=torch.float32)},
+        ]
+
+        maps = render_lane_segfirst_targets(
+            rows,
+            lane_valid_mask=torch.tensor([True, True, True]),
+            config=LaneSegFirstTargetConfig(output_hw=(80, 80)),
+        )
+
+        risk_core = maps["residual_risk_core"]
+        risk_ring_negative = maps["residual_risk_ring_negative"]
+
+        self.assertGreater(float(risk_core.sum()), 0.0)
+        self.assertGreater(float(risk_ring_negative.sum()), 0.0)
+        self.assertEqual(risk_core.shape, torch.Size([1, 80, 80]))
+        self.assertEqual(risk_ring_negative.shape, torch.Size([1, 80, 80]))
+        self.assertEqual(
+            int(((risk_ring_negative > 0.0) & (maps["support"] > 0.0)).sum().item()),
+            0,
+        )
 
 
 if __name__ == "__main__":

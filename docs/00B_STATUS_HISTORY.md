@@ -1101,3 +1101,40 @@ Stop-line branch 결과:
 
 - row-scan 후처리 guard나 threshold를 더 만지지 않는다.
 - 다음 lane training axis는 left/truncated/high-aspect GT core recall을 올리되 side FP fragments를 같이 억제하는 target/loss contract로 제한한다.
+
+## 31. 2026-05-11 Gate 3 lane residual local separation: lane gain trades against stop-line
+
+맥락:
+
+- row-scan residual export에서 FN은 left/truncated/high-aspect GT lane에 남고, FP는 side/right fragments에 많이 남았다.
+- 이번 실험은 같은 residual-risk bucket에서 GT core에는 positive pressure를 주고, 주변 local ring에는 centerline probability margin penalty를 걸면 recall과 fragment separation을 같이 개선할 수 있는지 확인했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-residual-local-separation`
+- `render_lane_segfirst_targets`가 residual-risk lane의 `residual_risk_core`와 `residual_risk_ring_negative` dense maps를 내보내게 했다.
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_residual_risk_core_weight`, `lane_segfirst_residual_risk_ring_weight`, `lane_segfirst_residual_risk_ring_margin`을 추가했다. 기본값은 core/ring weight `0.0`이라 default training은 바뀌지 않는다.
+- `tools/run_pv26_lane60_probe.py`에 `core_centerline_refine_residual_local_separation` experiment를 추가했다.
+
+검증:
+
+- smoke command: `python3 tools/run_pv26_lane60_probe.py --source-run ... --experiment core_centerline_refine_residual_local_separation --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke result: code path completed; tiny val support was not used for metric judgment.
+- exact val128 command: `python3 tools/run_pv26_lane60_probe.py --source-run ... --experiment core_centerline_refine_residual_local_separation --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_residual_local_separation_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_082046`
+- epoch1 exact val128: `phase_objective=0.5828`, lane/stop/cross F1 `0.5358 / 0.2000 / 0.6790`.
+- epoch2 exact val128: `phase_objective=0.6085`, lane/stop/cross F1 `0.5476 / 0.4310 / 0.5854`.
+- epoch2 lane TP/FP/FN: `1115 / 567 / 1275`.
+- epoch2 stop-line TP/FP/FN: `25 / 31 / 35`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+
+판단:
+
+- lane F1은 기준보다 `+0.0209`라 residual-risk bucket pressure가 vectorized lane metric에는 일부 효과가 있다.
+- 하지만 stop-line F1이 `-0.0172` 후퇴하고 phase objective도 기준보다 낮다.
+- broader-val512로 확장할 정도의 signal은 아니다. lane만 끌어올리는 local residual loss가 stop-line 병목을 악화시키면 F1 0.6+ 목표에는 맞지 않는다.
+
+다음:
+
+- residual-risk core/ring weight만 키우는 같은 축은 반복하지 않는다.
+- lane을 계속한다면 row-scan partial-positive와 centerline-risk training을 단순 합치는 대신, predicted centerline evidence를 instance 단위로 안정화하거나 stop-line/crosswalk retention을 같이 보는 contract로 제한한다.
