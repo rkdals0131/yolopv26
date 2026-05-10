@@ -464,3 +464,43 @@ Stop-line branch 결과:
 
 - centerline target 폭만 넓히는 실험은 반복하지 않는다.
 - 다음 lane 축은 단순 target-width 조절이 아니라 missed-centerline error bucket을 보거나, recall을 올리면서 vectorized FP를 늘리지 않는 구조/학습 신호를 새로 잡아야 한다.
+
+## 15. 2026-05-11 Gate 3 lane centerline error buckets: misses concentrate in truncated/side/near-vertical lanes
+
+맥락:
+
+- target-width-only widening이 실패했으므로, 다음 lane axis를 새로 추측하기 전에 predicted centerline miss가 어떤 lane에 몰리는지 확인했다.
+- 목적은 GT lane마다 current centerline probability를 core target 위에서 샘플링하고, 위치/길이/형태/color/type bucket별 `recall@0.45`, `recall@0.90`, miss/dead rate를 남기는 것이다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-error-buckets`
+- `tools/probe_pv26_lane60_centerline_error_buckets.py`를 추가했다.
+- 출력은 per-lane CSV `lane_centerline_lane_rows.csv`, bucket summary CSV `lane_centerline_bucket_summary.csv`, `summary.json`이다.
+
+검증:
+
+- val128 output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_centerline_error_buckets_val128_validation_epoch2`
+- val512 output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_centerline_error_buckets_val512_validation_epoch2`
+- command: `python3 tools/probe_pv26_lane60_centerline_error_buckets.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --lane60-experiment core_centerline_refine_cross_retain --phase-index 4 --max-val-batches 512 --validation-epoch 2 --batch-size 4 --device cuda:0 --output-dir .../analysis_exports/lane_centerline_error_buckets_val512_validation_epoch2`
+- val512 supervised lanes: `5092`.
+- total `recall@0.45 < 0.25`: `291 / 5092`.
+- total `dead@0.45`: `54 / 5092`.
+
+주요 val512 buckets:
+
+- `bottom_band <0.50`: lanes `519`, `recall@0.45=0.6677`, miss rate `0.1329`, `recall@0.90=0.5125`.
+- `slope_band near_vertical`: lanes `31`, `recall@0.45=0.6611`, miss rate `0.1290`, `recall@0.90=0.4485`.
+- `x_band >=0.66`: lanes `1316`, `recall@0.45=0.7500`, miss rate `0.0821`, `recall@0.90=0.6068`.
+- `x_band <0.33`: lanes `1631`, `recall@0.45=0.7610`, miss rate `0.0705`, `recall@0.90=0.6265`.
+- `x_band 0.33-0.66`: lanes `2145`, `recall@0.45=0.8260`, miss rate `0.0317`, `recall@0.90=0.6997`.
+
+판단:
+
+- centerline miss는 전체적으로 균일하지 않다. center lane보다 side lane이 약하고, bottom이 낮은 truncated lane과 near-vertical lane이 더 약하다.
+- 단순 target-width 조절보다, 이 bucket들의 recall을 올리면서 side false-positive fragments를 늘리지 않는 신호가 필요하다.
+
+다음:
+
+- 다음 lane training axis는 side/truncated/near-vertical lane recall을 겨냥한다.
+- threshold-only, target-width-only, semantic attr oracle, support substitution은 반복하지 않는다.

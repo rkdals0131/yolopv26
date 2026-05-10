@@ -165,6 +165,7 @@ Gate 상태:
 - centerline-to-vector recovery audit 기준, GT centerline oracle은 broader-val512 epoch2 lane F1 `0.6630`까지 복구하지만 current predicted centerline은 best threshold `0.35`에서도 `0.5169`다.
 - predicted attrs oracle도 geometry F1을 올리지 못했으므로 lane 병목은 semantic attr가 아니라 predicted centerline coverage/quality다.
 - `core_centerline_refine_core_width3`는 exact val128 epoch2 `phase_objective=0.6002`까지 갔지만 lane/stop/cross F1 `0.5232 / 0.4348 / 0.5854`로 기준선 미달이다. target-width-only widening은 반복하지 않는다.
+- centerline error-bucket audit val512 기준 miss는 side/truncated/near-vertical lane에 몰린다. `bottom_y < 0.50` miss rate `0.1329`, near-vertical `0.1290`, right-side `0.0821`, left-side `0.0705`, center x-band `0.0317`이다.
 - `core_centerline_refine_bce_focus`는 lane F1을 broader-val512 `0.5101 -> 0.5344`로 올렸지만, centerline-core pixel F1은 `0.5680`으로 기준선보다 낮고 stop-line/crosswalk가 내려갔다.
 - BCE-focus + PCA stop-line decoder integration audit best는 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`로 partial-positive지만 목표 미달이다.
 - BCE-focus stop-balance broader-val512는 `0.5372 / 0.4041 / 0.5812`이고 PCA replay best도 `0.5372 / 0.4528 / 0.5812`라 stop-line 병목을 못 풀었다.
@@ -184,7 +185,8 @@ Gate 상태:
 - `exp/lane-family-f1/stopline-centerline-endpoint-offset`은 endpoint-delta target/readout negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-vectorizer-recovery-audit`은 vectorizer headroom / predicted centerline bottleneck evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-core-width3`은 centerline target-width-only negative evidence로 보관한다.
-- 다음 한 축은 missed-centerline error bucket 기반의 lane centerline-core recall/coverage 실험이거나, stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first, lane target-width-only widening은 반복하지 않는다.
+- `exp/lane-family-f1/lane-centerline-error-buckets`은 missed-centerline bucket evidence로 보관한다.
+- 다음 한 축은 side/truncated/near-vertical lane centerline recall을 올리는 학습 신호다. stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first, lane target-width-only widening은 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6
