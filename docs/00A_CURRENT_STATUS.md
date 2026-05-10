@@ -80,9 +80,10 @@ Lane Gate 3 dense-map probe:
 - geometry-risk local Tversky loss는 같은 risk instance 주변 false-positive를 같이 벌주도록 local support mask를 추가했다. exact val128 epoch2 objective는 `0.6089`, lane/stop/cross F1은 `0.5306 / 0.4522 / 0.5854`였고 lane centerline-core pixel F1은 `0.5738`이다. 기준 `0.5729` 대비 gain이 `+0.0009`뿐이고 vectorized lane F1도 recall-only보다 낮아서 broader-val512로 확장하지 않는다.
 - lane negative-pixel probability margin은 explicit negative target pixels에서 centerline confidence를 낮추는 반대 압력을 시험했다. exact val128 epoch2 objective `0.6058`, lane/stop/cross F1 `0.5261 / 0.4348 / 0.5854`로 기준 미달이고, lane centerline-core pixel F1도 `0.5736`으로 기준 대비 `+0.0007`뿐이라 broader-val512로 확장하지 않는다.
 - support-bridge postprocess는 support를 lane source로 대체하지 않고 centerline binary의 짧은 gap만 high-confidence support 안에서 closing하는 contract를 시험했다. 같은 decode probe baseline lane F1 `0.5222` 대비 best bridge는 `0.4758`이라 recall을 잃었고, support bridge/closing-only도 0.6 path가 아니다.
+- endpoint coverage loss는 lane의 visible endpoint heatmap을 추가하고 endpoint positive에서 centerline confidence를 직접 올리는 opt-in loss를 시험했다. exact val128 epoch2 objective `0.6035`, lane/stop/cross F1 `0.5212 / 0.4348 / 0.5854`로 기준 미달이고, lane centerline-core pixel F1도 `0.5670`으로 기준 `0.5729`보다 낮아서 endpoint-only coverage도 0.6 path가 아니다.
 - BCE-focus calibration은 broader-val512 lane F1을 `0.5101 -> 0.5344`로 올렸지만 stop-line/crosswalk가 내려갔고, centerline-core pixel F1도 `0.5729 -> 0.5680`으로 낮아졌다. goal success가 아니라 lane-vectorized metric partial-positive다.
 - BCE-focus + PCA stop-line decoder integration best는 broader-val512 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`이고, stop-balance + PCA replay best도 `0.5372 / 0.4528 / 0.5812`에 그쳤다.
-- 다음 lane 축은 vectorizer rewrite나 threshold sweep, support bridge/closing-only, 단순 negative-pixel pressure가 아니라 side/truncated/near-vertical lane의 predicted centerline coverage와 fragment separation을 같이 다루는 한 축이다. stop-line을 재개한다면 dense signal을 line geometry로 바꾸는 readout/target contract 쪽으로 제한한다.
+- 다음 lane 축은 vectorizer rewrite나 threshold sweep, support bridge/closing-only, 단순 negative-pixel pressure, endpoint-only coverage가 아니라 side/truncated/near-vertical lane의 predicted centerline coverage와 fragment separation을 같이 다루는 한 축이다. stop-line을 재개한다면 dense signal을 line geometry로 바꾸는 readout/target contract 쪽으로 제한한다.
 
 ## 3. Active docs surface
 

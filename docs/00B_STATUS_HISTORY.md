@@ -785,3 +785,45 @@ Stop-line branch 결과:
 다음:
 
 - 다음 lane 축은 support morphology가 아니라 instance continuity / endpoint coverage / fragment separation을 모델이 직접 학습하거나, vectorizer가 instance-level evidence를 쓰는 contract여야 한다.
+
+## 23. 2026-05-11 Gate 3 lane endpoint coverage: endpoint-only pressure regresses centerline-core
+
+맥락:
+
+- negative-margin과 support-bridge는 fragment separation이나 continuity를 단독으로 해결하지 못했다.
+- 이번 실험은 lane visible endpoint를 별도 dense heatmap으로 만들고, endpoint positive 위치에서 centerline confidence를 직접 올리면 truncated/side lane의 coverage가 개선되는지 확인했다.
+- 기본 동작은 유지하고, endpoint target과 coverage loss는 opt-in으로만 연결했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-endpoint-coverage`
+- `render_lane_segfirst_targets`가 supervised lane의 first/last visible point를 `lane_seg_endpoint` heatmap으로 내보내게 했다.
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_endpoint_coverage_weight`를 추가했다. 기본값은 비활성 `0.0`이다.
+- `_lane_segfirst_loss`는 endpoint target positive 위치에서 centerline logits에 BCE를 추가한다.
+- `core_centerline_refine_endpoint_coverage` probe는 core centerline refine baseline 위에 endpoint coverage weight `0.75`를 적용한다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_endpoint_coverage_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_054826`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_endpoint_coverage --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5784`, lane/stop/cross F1 `0.5120 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6035`, lane/stop/cross F1 `0.5212 / 0.4348 / 0.5854`, stop-line TP/FP/FN `25 / 30 / 35`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: lane centerline-core best pixel F1 `0.5670` at threshold `0.7`, precision/recall `0.5015 / 0.6520`; lane support best pixel F1 `0.7967`.
+- 기준 dense-map PR은 lane centerline-core F1 `0.5729`, lane support F1 `0.7971`이었다.
+
+판단:
+
+- exact objective, lane F1, stop-line F1이 모두 기준보다 낮다.
+- dense centerline-core F1도 기준보다 낮아 endpoint-only coverage가 predicted centerline 품질을 개선했다는 신호가 없다.
+- endpoint 위치 confidence를 밀어도 lane instance continuity와 fragment separation이 같이 해결되지 않았다.
+- broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- endpoint coverage loss만 같은 형태로 반복하지 않는다.
+- endpoint heatmap 추가 자체를 truncated/side lane coverage 해결로 해석하지 않는다.
+
+다음:
+
+- 다음 lane 축은 endpoint-only pressure가 아니라 endpoint/continuity/fragment separation을 한 계약 안에서 다루거나, predicted centerline evidence를 instance-level로 안정화하는 방향이어야 한다.
