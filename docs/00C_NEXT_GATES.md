@@ -12,6 +12,8 @@
 - GradScaler health gate 없이 PV26 long-run AMP default를 되살리지 않는다.
 - run artifact를 몇 GB씩 남기는 방식으로 실험하지 않는다. 핵심 checkpoint, exact eval summary, 비교 grid만 남긴다.
 - traffic light 상태를 lane60 결과로 판단하지 않는다.
+- stop-line micro target/loss/sampler 축을 같은 형태로 반복하지 않는다.
+- support map을 lane centerline 대체물처럼 쓰는 실험을 반복하지 않는다.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -117,20 +119,27 @@ Gate 상태:
 - stop-line TP/FP/FN은 `98 / 111 / 173`이다.
 - TP와 FP score median이 `0.9646 / 0.9609`로 겹쳐서 score threshold만으로 분리하기 어렵다.
 - FN bbox area median은 `2275.0`으로 TP median `1364.4`보다 작지 않다. area/aspect filter 강화는 recall 손실 위험이 크다.
-- 따라서 다음 stop-line worktree는 threshold-only가 아니라 decoder/target/loss 또는 recall 개선 축으로 잡는다.
+- stop-line mask pixel F1은 val128 probe에서 `0.6107`까지 나오지만, stop-line center heatmap F1은 `0.1385`에 그쳤다.
+- decoder-only PCA component 후보는 broader-val512 stop-line F1을 `0.4699`까지 올렸지만 목표 `0.60`에는 아직 멀다.
+- endpoint proposal, feature isolation, wider mask target, selector decode, sampler/loss 단일 축은 모두 0.6 path가 아니었다.
 
 후보:
 
-- stop-line dense mask/center heatmap diagnostics를 broader-val에서 다시 export한다.
-- stop-line FP/FN을 feature audit으로 나누고, component/aspect/score filter가 TP를 자르는지 확인한다.
-- stop-line-only 또는 stop-line-heavy short fine-tune을 하되 lane/crosswalk regression을 같은 eval에서 같이 본다.
-- 필요하면 stop-line geometry head의 target/loss/decoder contract를 재검토한다.
+- stop-line은 잠시 보류하고 Gate 3 lane axis를 진행한다.
+- stop-line을 재개한다면 mask-pixel 증강보다 center/endpoint/line geometry contract를 다시 설계한다.
+- PCA component 후보는 weak-positive reference로 보관하되, deployment default 승격 후보로 보지 않는다.
 
 성공 기준:
 
 - stop-line F1이 broader-val에서 의미 있게 상승해야 한다.
 - lane/crosswalk F1이 0.6 목표에서 멀어질 정도로 무너지면 실패다.
 - exact subset에서만 좋아지는 stop-line threshold tweak은 채택하지 않는다.
+
+Gate 상태:
+
+- partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
+- same-family micro experiments는 중단한다.
+- 다음 실행은 Gate 3 lane centerline-core 품질 분리다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -142,6 +151,8 @@ Gate 상태:
 
 - core centerline + gated refinement는 유지한다.
 - lane centerline recall 부족인지, vectorizer recovery 부족인지 broader-val dense-map PR과 vectorizer audit으로 분리한다.
+- current dense-map probe 기준 lane centerline core best pixel F1은 `0.5729`, lane support best pixel F1은 `0.7971`이다.
+- 따라서 첫 후보는 support가 아니라 centerline-core 품질이다.
 - support map을 단순 대체하거나 직접 residual input으로 넣는 방식은 이미 negative evidence가 있으므로 반복하지 않는다.
 - 새 lane training axis는 stop-line plan과 섞지 않고 별도 short run으로 본다.
 
@@ -149,6 +160,12 @@ Gate 상태:
 
 - lane F1이 올라야 하고, FP 감소만으로 recall이 무너지는 개선은 실패다.
 - broader-val comparison grid에서 긴 실제 차선이 빠지는 장면이 늘면 실패다.
+
+다음 실행:
+
+- `exp/lane-family-f1/lane-centerline-core-calibration` 같은 별도 worktree를 만든다.
+- 한 축만 바꾼다: centerline-core target/loss calibration 또는 centerline-to-vector recovery audit 중 하나만 선택한다.
+- val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6
 

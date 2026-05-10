@@ -196,3 +196,80 @@ falsified:
 
 - stop-line F1을 score threshold tweak만으로 해결하려고 하지 않는다.
 - area/aspect threshold를 올리는 실험은 FN 손실을 먼저 계산하지 않고 채택하지 않는다.
+
+## 8. 2026-05-10 Gate 2 stop-line worktree trail: many narrow axes, no 0.6 path yet
+
+상황:
+
+- Gate 2는 broader-val512 기준 stop-line F1 `0.4083`을 먼저 올리는 것이었다.
+- worktree는 `exp/lane-family-f1/stopline-*` 형태로 분리했고, 한 worktree는 한 가설만 소유했다.
+
+실험 축:
+
+- score/threshold-only와 mask-only postprocess.
+- centerline target, dense geometry target, selector-center target, center stem.
+- mask loss, wider mask target, positive/weighted sampler.
+- mask vectorizer, component PCA fit, core-row fit, cleanup fit.
+- endpoint mask weighting, endpoint proposal head, feature isolation.
+
+실제 결과:
+
+- 단순 score threshold는 TP/FP score 분포가 겹쳐서 버렸다.
+- sampler/loss/target 단일 축은 stop-line을 0.6 근처로 끌어올리지 못했다.
+- endpoint mask weighting은 broader-val512 stop-line F1 `0.4226 / 0.4237`로 decoder-only PCA 후보보다 나빴다.
+- direct selector decode는 val128 stop-line F1 `0.0635` 수준이라 fallback이 아니었다.
+- core-row fit은 val128 PCA reference `0.5133`보다 낮은 `0.4833`이었다.
+- cleanup fit은 val128에서 거의 동률이었지만 val512에서 `0.4667`로 PCA reference `0.4699`보다 낮았다.
+- wider stop-line mask target은 short train epoch2에서 lane/stop/cross F1 `0.5254 / 0.3091 / 0.5854`로 실패했다.
+- feature isolation은 phase objective만 `0.6019`까지 갔고 task F1은 lane/stop/cross `0.5260 / 0.4107 / 0.5854`라서 성공이 아니었다.
+- endpoint proposal도 phase objective만 `0.6030`까지 갔고 task F1은 lane/stop/cross `0.5260 / 0.4404 / 0.5854`로 exact baseline stop-line `0.4483`보다 낮았다.
+
+가장 강한 stop-line 중간 후보:
+
+- original checkpoint + decoder-only `component_pca_full_mask080_score094`.
+- broader-val512 lane/stop/cross F1 `0.5101 / 0.4699 / 0.5854`.
+- stop-line TP/FP/FN `113 / 97 / 158`.
+
+판단:
+
+- stop-line은 "mask가 전혀 없다"보다 "mask에서 정확한 선분 geometry로 복원하는 계약"이 더 큰 병목이다.
+- PCA component fit은 weak-positive지만 목표까지는 `+0.13` 정도 남아 있다.
+- 같은 종류의 micro target/loss/sampler를 더 반복하는 것은 우선순위가 낮다.
+
+하지 말 것:
+
+- `phase_objective > 0.60`을 task F1 0.6 달성으로 해석하지 않는다.
+- stop-line mask pixel 품질만 보고 vector F1이 해결됐다고 말하지 않는다.
+- endpoint/feature-isolation 단일 축은 같은 형태로 반복하지 않는다.
+
+## 9. 2026-05-10 Gate 3 lane dense-map split: support is strong, centerline core is the lane bottleneck
+
+상황:
+
+- Gate 2 stop-line micro axes가 0.6 path를 만들지 못했다.
+- 다음으로 lane F1 `0.5101`의 병목이 dense-map 자체인지 vectorizer recovery인지 분리했다.
+
+실행:
+
+- command: `python3 tools/probe_pv26_lane60_dense_maps.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --device auto`
+- processed batches: `128`, batch size `4`.
+
+결과:
+
+- lane centerline core best pixel F1 `0.5729` at threshold `0.9`, precision/recall `0.5148 / 0.6457`.
+- lane support best pixel F1 `0.7971` at threshold `0.9`, precision/recall `0.7527 / 0.8470`.
+- lane centerline soft best pixel F1 `0.3608`, recall `0.2347`.
+- stop-line mask best pixel F1 `0.6107`, but stop-line center heatmap best pixel F1 `0.1385`.
+- crosswalk mask best pixel F1 `0.8606`, but crosswalk center best pixel F1 `0.1324`.
+
+판단:
+
+- lane support map은 이미 강해서 support-map substitution류를 다시 반복할 이유가 없다.
+- lane은 centerline core pixel F1이 아직 `0.57`대라 vectorizer만 탓할 수 없다.
+- stop-line/crosswalk는 mask pixel map과 center/geometry map의 격차가 커서 vector/center 복원이 병목이라는 기존 판단을 강화한다.
+
+다음:
+
+- Gate 3는 lane centerline-core 품질을 올리는 한 축 실험으로 간다.
+- 후보는 centerline-core loss/target calibration 또는 centerline-to-vector recovery audit이다.
+- support map을 직접 centerline 대체물로 쓰거나 residual로 넣는 방식은 이미 negative evidence가 있으므로 반복하지 않는다.
