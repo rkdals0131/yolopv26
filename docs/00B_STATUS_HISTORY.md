@@ -1065,3 +1065,39 @@ Stop-line branch 결과:
 
 - row-scan length/bottom/gap/dx/turn-angle guard 조합은 같은 family로 반복하지 않는다.
 - lane을 계속한다면 row-scan 후처리 조절보다 side/truncated/near-vertical predicted centerline coverage와 fragment separation을 모델/target contract에서 같이 다룬다.
+
+## 30. 2026-05-11 Gate 3 lane row-scan residual filters: residual FN/FP are still bucketed, not uniform
+
+맥락:
+
+- row-scan micro-guard가 default 승격 path가 아니었으므로, 다음 학습축을 새로 잡기 전에 row-scan 이후에도 남는 lane FP/FN의 위치/형태를 broader-val512에서 다시 봤다.
+- 목적은 row-scan residual이 균일한지, 아니면 기존 centerline error-bucket처럼 특정 위치/형태에 남는지 확인하는 것이다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-row-scan-residual-buckets`
+- 새 코드는 추가하지 않고 기존 `tools/analyze_pv26_lane60_prediction_filters.py`를 `core_centerline_refine_row_scan_vectorizer` 설정으로 실행했다.
+- output: `analysis_exports/lane_row_scan_residual_filters_val512_epoch2`.
+- artifact: `prediction_filter_features.csv`, `summary.json`.
+
+검증:
+
+- command: `python3 tools/analyze_pv26_lane60_prediction_filters.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --lane60-experiment core_centerline_refine_row_scan_vectorizer --phase-index 4 --max-val-batches 512 --validation-epoch 2 --batch-size 4 --device cuda:0 --output-dir .../analysis_exports/lane_row_scan_residual_filters_val512_epoch2`
+- lane TP/FP/FN: `4153 / 2105 / 5324`.
+- lane F1 implied by these counts is `0.5279`, matching the broader-val512 row-scan summary.
+- FN x-band: left `2495 / 5324 = 46.9%`, right `1488 / 5324 = 27.9%`, center `25.2%`.
+- FN bottom bucket: truncated `<0.50` `1484 / 5324 = 27.9%`, mid `0.50-0.70` `45.8%`, bottom `>=0.70` `26.4%`.
+- FN aspect bucket: aspect `3-6` `42.9%`, very-flat-or-tall `23.0%`, aspect `<3` `33.1%`.
+- FP x-band: right `40.6%`, left `34.2%`, center `25.2%`.
+- FP bottom bucket: mid `45.2%`, bottom `35.2%`, truncated `<0.50` `19.6%`.
+
+판단:
+
+- row-scan 이후에도 FN은 left/truncated/high-aspect GT lane에 강하게 남는다.
+- FP는 side, 특히 right/mid lane 쪽으로 많이 남아 있어 recall만 더 올리는 loss는 row-scan FP를 더 악화시킬 위험이 크다.
+- 따라서 다음 lane 학습축은 단순 side positive boost가 아니라, GT recall과 predicted fragment separation/negative pressure를 같은 지역에서 같이 다뤄야 한다.
+
+다음:
+
+- row-scan 후처리 guard나 threshold를 더 만지지 않는다.
+- 다음 lane training axis는 left/truncated/high-aspect GT core recall을 올리되 side FP fragments를 같이 억제하는 target/loss contract로 제한한다.
