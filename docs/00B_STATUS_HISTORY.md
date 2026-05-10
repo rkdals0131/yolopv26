@@ -1138,3 +1138,39 @@ Stop-line branch 결과:
 
 - residual-risk core/ring weight만 키우는 같은 축은 반복하지 않는다.
 - lane을 계속한다면 row-scan partial-positive와 centerline-risk training을 단순 합치는 대신, predicted centerline evidence를 instance 단위로 안정화하거나 stop-line/crosswalk retention을 같이 보는 contract로 제한한다.
+
+## 32. 2026-05-11 Gate 2 stop-line component split readout: pairwise split over-produces false positives
+
+맥락:
+
+- fit-far visual audit과 local component extraction 실패 뒤 남은 stop-line 가설은 single connected component 안에서 true line instance를 분리/정렬하는 readout이었다.
+- 이번 실험은 학습 없이 현재 checkpoint output을 replay하고, predicted component 내부의 high-score point pairs로 여러 horizontal line 후보를 만든 뒤 기존 baseline stop-line과 replace/append 비교했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-component-split-readout`
+- `tools/probe_pv26_stopline_component_split_readout.py`를 추가했다.
+- 도구는 기존 checkpoint/validation epoch를 사용하고, lane/crosswalk와 raw model output은 그대로 둔 채 stop-line readout만 variant별로 바꿔 평가한다.
+- split 후보는 component 내부 high-score point pair에서 inlier band를 만들고 `_fit_stopline_segment`로 segment를 다시 fit한다.
+
+검증:
+
+- smoke command: `python3 tools/probe_pv26_stopline_component_split_readout.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --phase-index 4 --max-val-batches 4 --validation-epoch 2 --batch-size 4 --device cuda:0 --output-json /tmp/stopline_component_split_smoke.json`
+- smoke result: code path completed; stop-line support가 `2`뿐이라 metric judgment에는 쓰지 않았다.
+- exact val128 command: `python3 tools/probe_pv26_stopline_component_split_readout.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --phase-index 4 --max-val-batches 128 --validation-epoch 2 --batch-size 4 --device cuda:0 --output-json .../analysis_exports/stopline_component_split_readout_val128_epoch2.json`
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_component_split_readout_val128_epoch2.json`
+- baseline exact val128: objective `0.6088677363`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`, stop TP/FP/FN `26 / 30 / 34`.
+- best split append variant: `split_fused_top32_b2p5_append_top2`, objective `0.5947`, lane/stop/cross F1 `0.5267 / 0.3421 / 0.5854`, stop TP/FP/FN `26 / 66 / 34`.
+- best replacement group: `split_mask_top24_b2p0` and `split_fused_top24_b2p0`, stop-line F1 `0.2857`, stop TP/FP/FN `14 / 24 / 46`.
+
+판단:
+
+- pairwise component split은 baseline TP를 넘기지 못했다.
+- append는 TP를 유지하지만 FP를 `30 -> 66`으로 크게 늘려 objective와 stop-line F1을 망친다.
+- replacement는 FP를 조금 줄여도 TP를 크게 잃는다.
+- 따라서 component 내부 high-score point-pair split만으로는 0.6 path가 아니다.
+
+다음:
+
+- pair/Hough-like component split readout을 같은 형태로 반복하지 않는다.
+- stop-line을 재개한다면 postprocess-only line 후보 양산이 아니라, train-time target/readout이 직접 맞는 geometry representation 또는 stronger proposal contract로 제한한다.
