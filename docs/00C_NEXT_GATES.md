@@ -14,6 +14,7 @@
 - traffic light 상태를 lane60 결과로 판단하지 않는다.
 - stop-line micro target/loss/sampler 축을 같은 형태로 반복하지 않는다.
 - support map을 lane centerline 대체물처럼 쓰는 실험을 반복하지 않는다.
+- learned query-vector proposal-only를 objective만 보고 확장하지 않는다.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -122,11 +123,15 @@ Gate 상태:
 - stop-line mask pixel F1은 val128 probe에서 `0.6107`까지 나오지만, stop-line center heatmap F1은 `0.1385`에 그쳤다.
 - decoder-only PCA component 후보는 broader-val512 stop-line F1을 `0.4699`까지 올렸지만 목표 `0.60`에는 아직 멀다.
 - endpoint proposal, feature isolation, wider mask target, selector decode, sampler/loss 단일 축은 모두 0.6 path가 아니었다.
+- component split, center-cell geometry mask, half-length scale/loss/log target, learned query-vector proposal-only도 0.6 path가 아니었다.
+- proposal/readout oracle은 GT center/length reconstruction 기준 val128 stop-line F1 `1.0000`을 냈다. 따라서 evaluator representation보다 predicted center/proposal/readout contract가 병목이다.
+- predicted half-length는 단순 scale 문제가 아니다. x128 scaling도 stop-line F1 `0.4500`에 그쳤고, log target은 exact val128 stop-line F1 `0.4211`로 후퇴했다.
+- learned vector proposal short run은 vector-only exact val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. threshold를 낮춰도 TP가 없어서 broader-val이나 long run으로 확장하지 않는다.
 
 후보:
 
 - stop-line은 잠시 보류하고 Gate 3 lane axis를 진행한다.
-- stop-line을 재개한다면 mask-pixel 증강보다 center/endpoint/line geometry contract를 다시 설계한다.
+- stop-line을 재개한다면 새 query proposal을 얹기보다 dense mask/centerline signal을 line geometry로 복원하는 readout/target contract를 다시 설계한다.
 - PCA component 후보는 weak-positive reference로 보관하되, deployment default 승격 후보로 보지 않는다.
 
 성공 기준:
@@ -139,7 +144,7 @@ Gate 상태:
 
 - partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
 - same-family micro experiments는 중단한다.
-- 다음 실행은 Gate 3 lane centerline-core 품질 분리다.
+- 다음 stop-line 실행은 dense mask/centerline signal을 line geometry로 복원하는 target/readout contract다. 단순 half-length target/loss/readout scalar나 learned query-vector proposal-only는 반복하지 않는다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -153,6 +158,9 @@ Gate 상태:
 - lane centerline recall 부족인지, vectorizer recovery 부족인지 broader-val dense-map PR과 vectorizer audit으로 분리한다.
 - current dense-map probe 기준 lane centerline core best pixel F1은 `0.5729`, lane support best pixel F1은 `0.7971`이다.
 - 따라서 첫 후보는 support가 아니라 centerline-core 품질이다.
+- `core_centerline_refine_bce_focus`는 lane F1을 broader-val512 `0.5101 -> 0.5344`로 올렸지만, centerline-core pixel F1은 `0.5680`으로 기준선보다 낮고 stop-line/crosswalk가 내려갔다.
+- BCE-focus + PCA stop-line decoder integration audit best는 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`로 partial-positive지만 목표 미달이다.
+- BCE-focus stop-balance broader-val512는 `0.5372 / 0.4041 / 0.5812`이고 PCA replay best도 `0.5372 / 0.4528 / 0.5812`라 stop-line 병목을 못 풀었다.
 - support map을 단순 대체하거나 직접 residual input으로 넣는 방식은 이미 negative evidence가 있으므로 반복하지 않는다.
 - 새 lane training axis는 stop-line plan과 섞지 않고 별도 short run으로 본다.
 
@@ -163,8 +171,9 @@ Gate 상태:
 
 다음 실행:
 
-- `exp/lane-family-f1/lane-centerline-core-calibration` 같은 별도 worktree를 만든다.
-- 한 축만 바꾼다: centerline-core target/loss calibration 또는 centerline-to-vector recovery audit 중 하나만 선택한다.
+- `exp/lane-family-f1/lane-centerline-core-calibration`, `exp/lane-family-f1/lane-bce-stopline-pca-integration`, `exp/lane-family-f1/lane-bce-stopline-balance`는 partial/negative evidence로 보관한다.
+- `exp/lane-family-f1/stopline-vector-proposal-readout`은 learned query-vector proposal negative evidence로 보관한다.
+- 다음 한 축은 dense mask/centerline signal을 line geometry로 복원하는 stop-line target/readout contract이거나, stop-line을 잠시 보류한 lane axis다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, lane support-substitution은 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6

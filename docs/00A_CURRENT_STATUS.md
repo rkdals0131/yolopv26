@@ -58,13 +58,18 @@ Stop-line Gate 2 follow-up:
 - best decoder-only 후보는 original checkpoint + `component_pca_full_mask080_score094`로 broader-val512 stop-line F1 `0.4699`, TP/FP/FN `113 / 97 / 158`이다.
 - 이 값은 기준선 `0.4083`보다 낫지만, 목표 `0.60`까지는 아직 멀다.
 - stop-line dense mask pixel F1은 val128 probe에서 `0.6107`까지 나오지만, center heatmap F1은 `0.1385`라서 mask 존재보다 endpoint/geometry/selector 복원이 병목이다.
+- 이후 component split, center-cell geometry mask, half-length scale/loss/log target, learned query-vector proposal도 각각 별도 branch에서 닫았다. 모두 stop-line F1 0.6 path가 아니었다.
+- query-vector proposal short run은 vector-only exact val128 epoch1/2 stop-line F1이 모두 `0.0000`이고, threshold를 `0.10`까지 낮춰도 TP/FP/FN `0 / 0 / 55`였다. append mode도 mask baseline 수준에 머물렀다.
+- 남은 stop-line 방향은 새 query row 추가가 아니라 dense mask/centerline signal을 실제 line geometry로 복원하는 target/readout contract 재설계다.
 
 Lane Gate 3 dense-map probe:
 
 - command: `python3 tools/probe_pv26_lane60_dense_maps.py --checkpoint .../phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --device auto`
 - lane centerline core best pixel F1은 `0.5729`이고, lane support best pixel F1은 `0.7971`이다.
 - 결론: support map은 이미 충분히 강하고, lane은 vectorizer만의 문제가 아니라 centerline core 품질이 아직 0.6 직전에서 막혀 있다.
-- 다음 축은 stop-line micro-tweak 반복보다 lane centerline-core 품질 개선 또는 centerline-to-vector recovery를 분리해서 보는 Gate 3이다.
+- BCE-focus calibration은 broader-val512 lane F1을 `0.5101 -> 0.5344`로 올렸지만 stop-line/crosswalk가 내려갔고, centerline-core pixel F1도 `0.5729 -> 0.5680`으로 낮아졌다. goal success가 아니라 lane-vectorized metric partial-positive다.
+- BCE-focus + PCA stop-line decoder integration best는 broader-val512 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`이고, stop-balance + PCA replay best도 `0.5372 / 0.4528 / 0.5812`에 그쳤다.
+- 다음 축은 PCA threshold/top-k, stop-line weight-only, component split, half-length scalar, learned query-vector proposal-only, lane support-substitution이 아니다. stop-line dense signal을 line geometry로 바꾸는 readout/target contract, 또는 별도 lane axis를 한 축씩 진행한다.
 
 ## 3. Active docs surface
 

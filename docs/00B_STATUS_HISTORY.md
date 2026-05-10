@@ -273,3 +273,44 @@ falsified:
 - Gate 3는 lane centerline-core 품질을 올리는 한 축 실험으로 간다.
 - 후보는 centerline-core loss/target calibration 또는 centerline-to-vector recovery audit이다.
 - support map을 직접 centerline 대체물로 쓰거나 residual로 넣는 방식은 이미 negative evidence가 있으므로 반복하지 않는다.
+
+## 10. 2026-05-10/11 branch-local follow-ups: partial lane lift, stop-line still below target
+
+상황:
+
+- `develop`의 Gate 2/3 이후 여러 branch/worktree에서 한 축씩 추가 실험했다.
+- 이 구간의 목적은 broader-val512 기준 lane / stop-line / crosswalk F1을 모두 `0.60+`로 올릴 수 있는 후보를 찾는 것이었다.
+- 성공 기준은 여전히 task별 F1이지 `phase_objective`가 아니다.
+
+Lane branch 결과:
+
+- `exp/lane-family-f1/lane-centerline-core-calibration`은 `core_centerline_refine_bce_focus`로 centerline BCE/Dice 비율만 `2/2 -> 3/1`로 바꾼 단일 축이다.
+- exact val128 epoch2 lane/stop/cross F1은 `0.5451 / 0.4348 / 0.5854`, broader-val512 F1은 `0.5344 / 0.4025 / 0.5741`이다.
+- lane은 broader-val 기준선 `0.5101`보다 올랐지만, stop-line과 crosswalk가 내려갔다.
+- dense-map PR에서 lane centerline core F1은 `0.5680`으로 기준선 `0.5729`보다 낮다. 이 gain은 centerline pixel map 자체의 개선이라기보다 vectorized metric partial-positive로 본다.
+- BCE-focus checkpoint decode audit의 best proxy는 `stop_mask_only`였지만 lane/stop/cross F1 `0.5471 / 0.2569 / 0.6545`에 그쳤다. lane threshold tightening, support-as-centerline, support-blend는 lane F1을 개선하지 못했다.
+- `exp/lane-family-f1/lane-bce-stopline-pca-integration`에서 BCE-focus checkpoint 위에 PCA stop-line decoder 후보를 얹었을 때 best broader-val512 F1은 `0.5344 / 0.4583 / 0.5741`이다.
+- `exp/lane-family-f1/lane-bce-stopline-balance`는 task weight를 lane `2.0`, stop-line `2.25`, crosswalk `1.75`로 바꿨지만 broader-val512 F1은 `0.5372 / 0.4041 / 0.5812`이고, PCA replay best도 `0.5372 / 0.4528 / 0.5812`였다.
+
+Stop-line branch 결과:
+
+- `exp/lane-family-f1/stopline-component-split-fit`은 component row-band split이 val128 PCA reference stop-line F1 `0.5133`보다 낮은 `0.4957` 또는 `0.4786`에 그쳐 broader-val512로 확장하지 않았다.
+- `exp/lane-family-f1/stopline-geometry-center-mask`는 geometry regression을 center cell에만 걸었지만 exact val128 epoch2 lane/stop/cross F1 `0.5154 / 0.2609 / 0.5697`로 stop-line이 무너졌다.
+- `exp/lane-family-f1/stopline-proposal-readout-diagnostic`은 GT stop-line replacement와 GT center/length reconstruction이 val128 stop-line F1 `1.0000`을 낼 수 있음을 보였다. evaluator/readout representation 자체가 0.6을 막고 있지는 않다.
+- `exp/lane-family-f1/stopline-gt-center-readout`은 predicted offset 또는 predicted angle만 섞은 variant가 stop-line F1 `1.0000`을 유지하지만, predicted half-length가 들어가면 invalid readout이 58개로 늘고 stop-line F1 `0.0645`로 무너짐을 보였다.
+- `exp/lane-family-f1/stopline-half-length-scale-audit`에서 predicted half-length x128 best는 stop-line F1 `0.4500`이다. baseline `0.4483`과 사실상 같고 pred-vs-GT Spearman은 `-0.204`라 단순 scale 문제가 아니다.
+- `exp/lane-family-f1/stopline-half-length-loss-boost`는 half-length loss weight `16x`에도 exact val128 epoch2 stop-line F1 `0.4576`에 그쳤다.
+- `exp/lane-family-f1/stopline-half-length-log-target`은 log target으로 exact val128 epoch2 stop-line F1 `0.4211`까지 후퇴했다.
+- `exp/lane-family-f1/stopline-vector-proposal-readout`은 learned query-vector proposal-only short run이다. vector-only exact val128 epoch1/2 stop-line F1은 모두 `0.0000`이고, threshold를 `0.10`까지 낮춰도 TP/FP/FN `0 / 0 / 55`였다. append mode는 mask baseline과 같은 stop-line F1 `0.2000`에 머물렀고, 같은 checkpoint의 `stop_mask_only`는 `0.2778`이었다.
+
+판단:
+
+- Lane BCE-focus는 보관할 partial-positive다. 다만 전체 목표를 달성하지 못했고 centerline pixel PR 개선도 아니다.
+- PCA component decoder는 stop-line weak-positive reference지만 threshold/top-k 확장만으로는 0.6까지 못 간다.
+- stop-line의 hard blocker는 dense signal을 valid line geometry로 바꾸는 instance readout/target contract다.
+- learned query-vector proposal-only, half-length scalar 변형, component split, center-cell geometry-mask, stop-line weight-only는 반복하지 않는다.
+
+다음:
+
+- 다음 stop-line 축은 dense mask/centerline signal을 line geometry로 복원하는 target/readout contract다.
+- stop-line을 잠시 보류한다면 lane axis는 support substitution이나 threshold sweep이 아니라 centerline-to-vector recovery error bucket 또는 새로운 centerline-core 품질 가설로 제한한다.
