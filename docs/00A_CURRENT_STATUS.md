@@ -44,6 +44,14 @@ F1 기준 gap:
 - crosswalk: `0.5854 -> 0.6000`, `+0.0146` 필요.
 - 따라서 F1 0.6+ 목표의 병목은 stop-line, 그 다음 lane이다. crosswalk는 거의 도달했지만 broader validation에서 유지되는지 확인해야 한다.
 
+Broader-val512 replay result:
+
+- artifact: `analysis_exports/broader_val512_final_geometry_filters_epoch2/summary.json`
+- objective: `0.5943438312141003`
+- lane / stop-line / crosswalk F1: `0.5101 / 0.4083 / 0.5854`
+- support lane / stop / cross: `9477 / 271 / 395`
+- 판단: exact epoch-2의 geometry-filter gain은 더 넓은 slice에서도 완전히 사라지지는 않았지만, objective 0.6과 task별 F1 0.6 목표에는 미달이다. 다음 축은 stop-line first가 맞다.
+
 ## 3. Active docs surface
 
 Current status set:

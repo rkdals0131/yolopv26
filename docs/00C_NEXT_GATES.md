@@ -80,6 +80,13 @@ Branch/worktree 규칙:
 
 - exact epoch-2 subset에서 `0.6088677363` objective와 lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`를 만든 geometry filters가 더 넓은 validation slice에서도 유효한지 확인한다.
 
+현재 결과:
+
+- val512 replay에서 objective는 `0.5943438312141003`이다.
+- lane / stop-line / crosswalk F1은 `0.5101 / 0.4083 / 0.5854`다.
+- support는 `9477 / 271 / 395`다.
+- 결론은 partial success다. geometry-filter gain은 완전히 사라지지 않았지만, objective 0.6과 task별 F1 0.6 모두 아직 통과하지 못했다.
+
 확인할 것:
 
 - 같은 checkpoint와 same postprocess config로 larger validation slice objective/F1 replay.
@@ -91,6 +98,12 @@ Branch/worktree 규칙:
 - objective gain이 exact epoch-2에만 과적합된 현상이 아니어야 한다.
 - lane recall 손실이 과도하면 filter threshold를 deployment default로 승격하지 않는다.
 - F1 0.6+ plan의 baseline으로 쓸 broader-val lane/stop/cross F1을 확정한다.
+
+Gate 상태:
+
+- 기준선은 확정됐다: broader-val512 F1 `0.5101 / 0.4083 / 0.5854`.
+- deployment/export default 승격은 보류한다.
+- 다음 실행은 Gate 2 stop-line first다.
 
 ## 5. Gate 2: stop-line first improvement axis
 

@@ -136,3 +136,37 @@ falsified:
 - `legacy/19_PV26_LANE60_PROBES_20260509.md`
 - `legacy/20_PV26_LANE60_CONTINUATION_20260509.md`
 
+## 6. 2026-05-10 Gate 1: broader-val replay로 60% 착시를 줄인 시점
+
+상황:
+
+- exact epoch-2 subset에서 final geometry filters가 objective `0.6088677363`을 만들었다.
+- 하지만 다음 목표는 `phase_objective`가 아니라 broader validation에서 lane / stop-line / crosswalk F1 모두 `0.60+`다.
+- 그래서 같은 checkpoint와 같은 postprocess config를 validation 512 batch로 다시 replay했다.
+
+결과:
+
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/broader_val512_final_geometry_filters_epoch2/summary.json`
+- objective `0.5943438312141003`
+- lane F1 `0.5100986992613896`, TP/FP/FN `3902 / 1920 / 5575`, support `9477`
+- stop-line F1 `0.4083333333333333`, TP/FP/FN `98 / 111 / 173`, support `271`
+- crosswalk F1 `0.5853658536585366`, TP/FP/FN `216 / 127 / 179`, support `395`
+
+판단:
+
+- exact subset의 0.6089는 broader-val 기준으로는 유지되지 않았다.
+- 그래도 geometry filters가 완전히 깨진 신호는 아니다. lane precision은 `0.6702`, crosswalk precision은 `0.6297`로 FP 억제 효과가 남아 있다.
+- 병목은 더 명확해졌다. stop-line은 precision `0.4689`, recall `0.3616`, F1 `0.4083`으로 F1 0.6 목표에서 가장 멀다.
+- lane은 precision보다 recall이 더 큰 문제다. lane recall은 `0.4117`이고, FN이 `5575`다.
+
+하지 말 것:
+
+- exact epoch-2 objective `0.6089`만으로 deployment/export default라고 말하지 않는다.
+- broader-val F1 0.6 미달 상태에서 export/ROS gate로 넘어가지 않는다.
+- 다음 실험에서 stop-line과 lane 개선을 같은 worktree에 섞지 않는다.
+
+다음:
+
+- Gate 2는 stop-line first로 간다.
+- 별도 worktree에서 stop-line decoder/target/loss 또는 stop-line-heavy short fine-tune을 한 축씩 실험한다.
+- lane recall 실험은 Gate 2 결과와 분리해서 진행한다.
