@@ -58,14 +58,25 @@ class PV26PostprocessConfig:
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
     max_detections: int = 300
-    lane_obj_threshold: float = 0.50
+    lane_obj_threshold: float = 0.45
     lane_segfirst_min_polyline_length_px: float = 0.0
     lane_segfirst_min_polyline_bottom_y_fraction: float = 0.0
+    lane_segfirst_min_bbox_area_px: float = 4096.0
+    lane_segfirst_max_bbox_aspect: float = 6.0
     lane_segfirst_semantic_vote_mode: str = "component"
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
+    stop_line_min_component_pixels: int = 24
+    stop_line_max_components: int = 1
+    stop_line_min_bbox_area_px: float = 0.0
+    stop_line_min_bbox_aspect: float = 6.0
+    stop_line_min_instance_score: float = 0.94
     crosswalk_obj_threshold: float = 0.50
-    crosswalk_mask_binary_threshold: float = 0.50
+    crosswalk_mask_binary_threshold: float = 0.20
+    crosswalk_min_component_pixels: int = 24
+    crosswalk_max_components: int = 0
+    crosswalk_min_polygon_area_px: float = 640.0
+    crosswalk_min_bbox_aspect: float = 3.0
     lane_visibility_threshold: float = 0.50
     allow_python_nms_fallback: bool = False
 
@@ -165,6 +176,37 @@ def _polygon_iou(points_a: list[list[float]], points_b: list[list[float]]) -> fl
     return intersection / union
 
 
+def _polygon_area(points_xy: list[list[float]] | np.ndarray) -> float:
+    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 3 or not bool(np.isfinite(points).all()):
+        return 0.0
+    x = points[:, 0]
+    y = points[:, 1]
+    return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) * 0.5)
+
+
+def _bbox_aspect(points_xy: list[list[float]] | np.ndarray) -> float:
+    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] == 0 or not bool(np.isfinite(points).all()):
+        return 0.0
+    min_xy = points.min(axis=0)
+    max_xy = points.max(axis=0)
+    width = max(float(max_xy[0] - min_xy[0]), 0.0)
+    height = max(float(max_xy[1] - min_xy[1]), 0.0)
+    return max(width, height) / max(min(width, height), 1.0)
+
+
+def _bbox_area(points_xy: list[list[float]] | np.ndarray) -> float:
+    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] == 0 or not bool(np.isfinite(points).all()):
+        return 0.0
+    min_xy = points.min(axis=0)
+    max_xy = points.max(axis=0)
+    width = max(float(max_xy[0] - min_xy[0]), 0.0)
+    height = max(float(max_xy[1] - min_xy[1]), 0.0)
+    return width * height
+
+
 def _lane_anchor_rows(transform: Any, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     network_h = int(transform.network_hw[0])
     return torch.linspace(float(network_h - 1), 0.0, LANE_ANCHOR_COUNT, device=device, dtype=dtype)
@@ -209,6 +251,27 @@ def _dedupe_lane_predictions(predictions: list[dict[str, Any]]) -> list[dict[str
     return kept
 
 
+def _filter_lane_predictions(
+    predictions: list[dict[str, Any]] | None,
+    *,
+    min_bbox_area_px: float = 0.0,
+    max_bbox_aspect: float = 0.0,
+) -> list[dict[str, Any]]:
+    if predictions is None:
+        return []
+    if float(min_bbox_area_px) <= 0.0 and float(max_bbox_aspect) <= 0.0:
+        return predictions
+    kept: list[dict[str, Any]] = []
+    for prediction in predictions:
+        points_xy = prediction.get("points_xy", [])
+        if float(min_bbox_area_px) > 0.0 and _bbox_area(points_xy) < float(min_bbox_area_px):
+            continue
+        if float(max_bbox_aspect) > 0.0 and _bbox_aspect(points_xy) > float(max_bbox_aspect):
+            continue
+        kept.append(prediction)
+    return kept
+
+
 def _dedupe_stop_line_predictions(predictions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
     for candidate in predictions:
@@ -244,6 +307,32 @@ def _suppress_stop_line_fragments(
         if float(item.get("length", 0.0)) < min_length:
             continue
         kept.append(item)
+    return kept
+
+
+def _filter_stop_line_predictions(
+    predictions: list[dict[str, Any]],
+    *,
+    min_bbox_area_px: float = 0.0,
+    min_bbox_aspect: float = 0.0,
+    min_instance_score: float = 0.0,
+) -> list[dict[str, Any]]:
+    if (
+        float(min_bbox_area_px) <= 0.0
+        and float(min_bbox_aspect) <= 0.0
+        and float(min_instance_score) <= 0.0
+    ):
+        return predictions
+    kept: list[dict[str, Any]] = []
+    for prediction in predictions:
+        points_xy = prediction.get("points_xy", [])
+        if float(min_instance_score) > 0.0 and float(prediction.get("score", 0.0)) < float(min_instance_score):
+            continue
+        if float(min_bbox_area_px) > 0.0 and _bbox_area(points_xy) < float(min_bbox_area_px):
+            continue
+        if float(min_bbox_aspect) > 0.0 and _bbox_aspect(points_xy) < float(min_bbox_aspect):
+            continue
+        kept.append(prediction)
     return kept
 
 
@@ -285,6 +374,63 @@ def _dedupe_crosswalk_predictions(predictions: list[dict[str, Any]]) -> list[dic
     return kept
 
 
+def _convex_hull_points(points: np.ndarray) -> np.ndarray:
+    unique = np.unique(np.asarray(points, dtype=np.float32), axis=0)
+    if unique.shape[0] <= 2:
+        return unique
+    order = np.lexsort((unique[:, 1], unique[:, 0]))
+    sorted_points = unique[order]
+
+    def cross(origin: np.ndarray, left: np.ndarray, right: np.ndarray) -> float:
+        return float((left[0] - origin[0]) * (right[1] - origin[1]) - (left[1] - origin[1]) * (right[0] - origin[0]))
+
+    lower: list[np.ndarray] = []
+    for point in sorted_points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0.0:
+            lower.pop()
+        lower.append(point)
+    upper: list[np.ndarray] = []
+    for point in reversed(sorted_points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0.0:
+            upper.pop()
+        upper.append(point)
+    hull = np.asarray(lower[:-1] + upper[:-1], dtype=np.float32)
+    return hull if hull.shape[0] >= 3 else unique
+
+
+def _minimum_area_rect(points: np.ndarray) -> np.ndarray | None:
+    hull = _convex_hull_points(points)
+    if hull.shape[0] < 3:
+        return None
+    best_area: float | None = None
+    best_rect: np.ndarray | None = None
+    for index in range(hull.shape[0]):
+        edge = hull[(index + 1) % hull.shape[0]] - hull[index]
+        edge_norm = float(np.linalg.norm(edge))
+        if edge_norm <= 1.0e-6:
+            continue
+        axis1 = edge / edge_norm
+        axis2 = np.array([-axis1[1], axis1[0]], dtype=np.float32)
+        proj1 = hull @ axis1
+        proj2 = hull @ axis2
+        min1, max1 = float(proj1.min()), float(proj1.max())
+        min2, max2 = float(proj2.min()), float(proj2.max())
+        area = max(max1 - min1, 0.0) * max(max2 - min2, 0.0)
+        if best_area is not None and area >= best_area:
+            continue
+        best_area = area
+        best_rect = np.array(
+            [
+                axis1 * min1 + axis2 * min2,
+                axis1 * max1 + axis2 * min2,
+                axis1 * max1 + axis2 * max2,
+                axis1 * min1 + axis2 * max2,
+            ],
+            dtype=np.float32,
+        )
+    return best_rect
+
+
 def _crosswalk_mask_to_polygon(
     mask_logits: torch.Tensor,
     center_logits: torch.Tensor | None,
@@ -292,6 +438,10 @@ def _crosswalk_mask_to_polygon(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float,
+    min_component_pixels: int = 4,
+    max_components: int = 0,
+    min_polygon_area_px: float = 0.0,
+    min_bbox_aspect: float = 0.0,
 ) -> list[dict[str, Any]]:
     if not _tensor_all_finite(mask_logits):
         return []
@@ -322,27 +472,13 @@ def _crosswalk_mask_to_polygon(
     transform = transform_from_meta(meta)
     for label_index in range(1, component_count + 1):
         rows, cols = np.nonzero(labels == label_index)
-        if len(rows) < 4:
+        if len(rows) < max(4, int(min_component_pixels)):
             continue
 
         points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
-        center = points.mean(axis=0, keepdims=True)
-        centered = points - center
-        _, _, vh = np.linalg.svd(centered, full_matrices=False)
-        axis1, axis2 = vh[0], vh[1]
-        proj1 = centered @ axis1
-        proj2 = centered @ axis2
-        min1, max1 = float(proj1.min()), float(proj1.max())
-        min2, max2 = float(proj2.min()), float(proj2.max())
-        rect = np.array(
-            [
-                center[0] + axis1 * min1 + axis2 * min2,
-                center[0] + axis1 * max1 + axis2 * min2,
-                center[0] + axis1 * max1 + axis2 * max2,
-                center[0] + axis1 * min1 + axis2 * max2,
-            ],
-            dtype=np.float32,
-        )
+        rect = _minimum_area_rect(points)
+        if rect is None:
+            continue
 
         rect[:, 0] = (rect[:, 0] + 0.5) * (float(meta["network_hw"][1]) / float(output_w))
         rect[:, 1] = (rect[:, 1] + 0.5) * (float(meta["network_hw"][0]) / float(output_h))
@@ -353,6 +489,10 @@ def _crosswalk_mask_to_polygon(
             continue
         raw_points = canonicalize_crosswalk_points(inverse_transform_points(network_points, transform)).tolist()
         if unique_point_count(raw_points) < 3:
+            continue
+        if float(min_polygon_area_px) > 0.0 and _polygon_area(raw_points) < float(min_polygon_area_px):
+            continue
+        if float(min_bbox_aspect) > 0.0 and _bbox_aspect(raw_points) < float(min_bbox_aspect):
             continue
 
         instance_score = float(component_scores[label_index - 1])
@@ -368,7 +508,10 @@ def _crosswalk_mask_to_polygon(
             }
         )
     predictions.sort(key=lambda item: item["score"], reverse=True)
-    return _dedupe_crosswalk_predictions(predictions)
+    deduped = _dedupe_crosswalk_predictions(predictions)
+    if int(max_components) > 0:
+        return deduped[: int(max_components)]
+    return deduped
 
 
 def _prepare_stopline_binary_mask(mask_probs: np.ndarray, *, threshold: float) -> np.ndarray:
@@ -861,6 +1004,11 @@ def _stopline_mask_to_polyline(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float,
+    min_component_pixels: int = STOPLINE_MIN_COMPONENT_PIXELS,
+    max_components: int = 3,
+    min_bbox_area_px: float = 0.0,
+    min_bbox_aspect: float = 0.0,
+    min_instance_score: float = 0.0,
 ) -> list[dict[str, Any]]:
     if not _tensor_all_finite(mask_logits):
         return []
@@ -916,7 +1064,7 @@ def _stopline_mask_to_polyline(
     )
     for label_index in range(1, component_count + 1):
         rows, cols = np.nonzero(labels == label_index)
-        if len(rows) < STOPLINE_MIN_COMPONENT_PIXELS:
+        if len(rows) < max(STOPLINE_MIN_COMPONENT_PIXELS, int(min_component_pixels)):
             continue
         component_points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
         mask_values = mask_probs[rows, cols]
@@ -986,7 +1134,13 @@ def _stopline_mask_to_polyline(
         reverse=True,
     )
     predictions = _dedupe_stop_line_predictions(predictions)
-    return predictions[:3]
+    predictions = _filter_stop_line_predictions(
+        predictions,
+        min_bbox_area_px=min_bbox_area_px,
+        min_bbox_aspect=min_bbox_aspect,
+        min_instance_score=min_instance_score,
+    )
+    return predictions[: max(1, int(max_components))]
 
 
 def _probe_stopline_mask_decode(
@@ -1405,6 +1559,11 @@ def _decode_stop_line_rows(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float = 0.5,
+    min_component_pixels: int = STOPLINE_MIN_COMPONENT_PIXELS,
+    max_components: int = 3,
+    min_bbox_area_px: float = 0.0,
+    min_bbox_aspect: float = 0.0,
+    min_instance_score: float = 0.0,
     mask_logits: torch.Tensor | None = None,
     selector_map_logits: torch.Tensor | None = None,
     center_logits: torch.Tensor | None = None,
@@ -1427,6 +1586,11 @@ def _decode_stop_line_rows(
             meta=meta,
             obj_threshold=obj_threshold,
             mask_binary_threshold=mask_binary_threshold,
+            min_component_pixels=min_component_pixels,
+            max_components=max_components,
+            min_bbox_area_px=min_bbox_area_px,
+            min_bbox_aspect=min_bbox_aspect,
+            min_instance_score=min_instance_score,
         )
         if decoded:
             return decoded
@@ -1467,9 +1631,14 @@ def _decode_crosswalk_rows(
     meta: dict[str, Any],
     obj_threshold: float,
     mask_binary_threshold: float = 0.5,
+    min_component_pixels: int = 4,
+    max_components: int = 0,
+    min_polygon_area_px: float = 0.0,
+    min_bbox_aspect: float = 0.0,
     mask_logits: torch.Tensor | None = None,
     center_logits: torch.Tensor | None = None,
 ) -> list[dict[str, Any]]:
+    filter_fallback = isinstance(mask_logits, torch.Tensor)
     if isinstance(mask_logits, torch.Tensor):
         decoded = _crosswalk_mask_to_polygon(
             mask_logits,
@@ -1477,6 +1646,10 @@ def _decode_crosswalk_rows(
             meta=meta,
             obj_threshold=obj_threshold,
             mask_binary_threshold=mask_binary_threshold,
+            min_component_pixels=min_component_pixels,
+            max_components=max_components,
+            min_polygon_area_px=min_polygon_area_px,
+            min_bbox_aspect=min_bbox_aspect,
         )
         if decoded:
             return decoded
@@ -1499,6 +1672,11 @@ def _decode_crosswalk_rows(
         ).tolist()
         if unique_point_count(raw_points) < 3:
             continue
+        if filter_fallback:
+            if float(min_polygon_area_px) > 0.0 and _polygon_area(raw_points) < float(min_polygon_area_px):
+                continue
+            if float(min_bbox_aspect) > 0.0 and _bbox_aspect(raw_points) < float(min_bbox_aspect):
+                continue
         predictions.append(
             {
                 "score": score,
@@ -1539,6 +1717,26 @@ def postprocess_pv26_batch(
 
     batch_predictions: list[dict[str, Any]] = []
     for batch_index, sample_meta in enumerate(meta):
+        lane_predictions = _filter_lane_predictions(
+            _decode_segfirst_lane_rows(
+                predictions,
+                batch_index=batch_index,
+                meta=sample_meta,
+                config=config,
+            ),
+            min_bbox_area_px=config.lane_segfirst_min_bbox_area_px,
+            max_bbox_aspect=config.lane_segfirst_max_bbox_aspect,
+        )
+        if not lane_predictions:
+            lane_predictions = _filter_lane_predictions(
+                _decode_lane_rows(
+                    lane_pred[batch_index],
+                    meta=sample_meta,
+                    config=config,
+                ),
+                min_bbox_area_px=config.lane_segfirst_min_bbox_area_px,
+                max_bbox_aspect=config.lane_segfirst_max_bbox_aspect,
+            )
         batch_predictions.append(
             {
                 "meta": dict(sample_meta),
@@ -1550,22 +1748,17 @@ def postprocess_pv26_batch(
                     feature_strides=feature_strides,
                     config=config,
                 ),
-                "lanes": _decode_segfirst_lane_rows(
-                    predictions,
-                    batch_index=batch_index,
-                    meta=sample_meta,
-                    config=config,
-                )
-                or _decode_lane_rows(
-                    lane_pred[batch_index],
-                    meta=sample_meta,
-                    config=config,
-                ),
+                "lanes": lane_predictions,
                 "stop_lines": _decode_stop_line_rows(
                     stop_line_pred[batch_index],
                     meta=sample_meta,
                     obj_threshold=config.stop_line_obj_threshold,
                     mask_binary_threshold=config.stop_line_mask_binary_threshold,
+                    min_component_pixels=config.stop_line_min_component_pixels,
+                    max_components=config.stop_line_max_components,
+                    min_bbox_area_px=config.stop_line_min_bbox_area_px,
+                    min_bbox_aspect=config.stop_line_min_bbox_aspect,
+                    min_instance_score=config.stop_line_min_instance_score,
                     mask_logits=(
                         stop_line_mask_logits[batch_index]
                         if isinstance(stop_line_mask_logits, torch.Tensor)
@@ -1612,6 +1805,10 @@ def postprocess_pv26_batch(
                     meta=sample_meta,
                     obj_threshold=config.crosswalk_obj_threshold,
                     mask_binary_threshold=config.crosswalk_mask_binary_threshold,
+                    min_component_pixels=config.crosswalk_min_component_pixels,
+                    max_components=config.crosswalk_max_components,
+                    min_polygon_area_px=config.crosswalk_min_polygon_area_px,
+                    min_bbox_aspect=config.crosswalk_min_bbox_aspect,
                     mask_logits=(
                         crosswalk_mask_logits[batch_index]
                         if isinstance(crosswalk_mask_logits, torch.Tensor)

@@ -133,6 +133,15 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "oom_guard": True,
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
+                            "lane_segfirst_centerline_target_mode": "core",
+                            "lane_segfirst_centerline_max_positive_weight": 8.0,
+                            "lane_segfirst_loss_weights": {
+                                "centerline_bce": 1.25,
+                                "centerline_dice": 1.5,
+                            },
+                            "lane_segfirst_color_class_weights": {
+                                "yellow_lane": 1.75,
+                            },
                         },
                         "preview": {
                             "dataset_keys": ["custom_preview_dataset"],
@@ -221,6 +230,11 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertTrue(scenario.train_defaults.oom_guard)
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
+        self.assertEqual(scenario.train_defaults.lane_segfirst_centerline_target_mode, "core")
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_centerline_max_positive_weight, 8.0)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_bce"], 1.25)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_dice"], 1.5)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)
@@ -241,7 +255,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
         self.assertAlmostEqual(scenario.train_defaults.det_iou_threshold, 0.70)
-        self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.50)
+        self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.45)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_obj_threshold, 0.50)
         self.assertAlmostEqual(scenario.train_defaults.crosswalk_obj_threshold, 0.50)
         self.assertEqual(tuple(phase.stage for phase in scenario.phases), (

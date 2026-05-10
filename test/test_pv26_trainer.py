@@ -151,6 +151,16 @@ class _DummyAdapter:
             parameter.requires_grad = True
 
 
+class _DummyRoadmarkHeads(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.det_heads = nn.Linear(4, 4)
+        self.tl_attr_heads = nn.Linear(4, 4)
+        self.lane_head = nn.Linear(4, 4)
+        self.stop_line_head = nn.Linear(4, 4)
+        self.crosswalk_head = nn.Linear(4, 4)
+
+
 class _NaNCriterion(nn.Module):
     def forward(self, predictions, encoded):  # type: ignore[override]
         del predictions, encoded
@@ -1294,6 +1304,31 @@ class PV26TrainerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "lane_family_heads_only requires lane_head"):
             configure_pv26_train_stage(_DummyAdapter(), nn.Module(), "stage_4_lane_family_finetune")
+
+    def test_lane_family_plus_upper_trunk_keeps_non_lane_heads_frozen(self) -> None:
+        from model.engine.trainer import configure_pv26_train_stage
+
+        adapter = _DummyAdapter()
+        heads = _DummyRoadmarkHeads()
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_plus_upper_trunk",
+        )
+
+        self.assertEqual(summary["freeze_policy"], "lane_family_plus_upper_trunk")
+        self.assertEqual(summary["head_training_policy"], "lane_family_only")
+        self.assertGreater(summary["trainable_trunk_params"], 0)
+        self.assertGreater(summary["trainable_lane_family_head_params"], 0)
+        self.assertTrue(any(parameter.requires_grad for parameter in adapter.trunk[-1].parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk[0].parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.det_heads.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.tl_attr_heads.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:

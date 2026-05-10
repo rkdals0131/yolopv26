@@ -173,8 +173,10 @@ def _weighted_loss_mean_scalars(payload: dict[str, Any]) -> dict[str, float]:
     return output
 
 
-def _stage_weighted_losses(stage: str | None, losses: dict[str, Any]) -> dict[str, float]:
-    weights = STAGE_LOSS_WEIGHTS.get(str(stage), {})
+def _stage_weighted_losses(stage: str | None, losses: dict[str, Any], loss_weights: dict[str, Any] | None = None) -> dict[str, float]:
+    weights = loss_weights
+    if not isinstance(weights, dict):
+        weights = STAGE_LOSS_WEIGHTS.get(str(stage), {})
     output: dict[str, float] = {}
     for key in TENSORBOARD_LOSS_KEYS:
         if key == "total":
@@ -220,7 +222,7 @@ def _tensorboard_train_step_payload(summary: dict[str, Any]) -> dict[str, Any]:
     }
     if summary["successful"]:
         payload["loss"] = _total_scalar(summary["losses"])
-        weighted = _stage_weighted_losses(str(summary.get("stage")), summary["losses"])
+        weighted = _stage_weighted_losses(str(summary.get("stage")), summary["losses"], summary.get("loss_weights"))
         if weighted:
             payload["loss_weighted"] = weighted
         conflict = summary.get("multitask_conflict")
@@ -690,8 +692,8 @@ def _loss_stats_from_summaries(summaries: list[dict[str, Any]]) -> dict[str, dic
         }
         for name in names
     }
-    stage = str(summaries[-1].get("stage", ""))
-    weights = STAGE_LOSS_WEIGHTS.get(stage, {})
+    raw_weights = summaries[-1].get("loss_weights")
+    weights = raw_weights if isinstance(raw_weights, dict) else STAGE_LOSS_WEIGHTS.get(str(summaries[-1].get("stage", "")), {})
     weighted: dict[str, dict[str, float]] = {}
     for name in names:
         if name == "total" or name not in weights:

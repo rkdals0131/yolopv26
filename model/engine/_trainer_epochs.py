@@ -371,6 +371,7 @@ def run_train_epoch(
         "global_step_end": int(trainer.global_step),
         "duration_sec": ended_at - started_at,
         "timing_profile": _timing_profile(step_summaries),
+        "loss_weights": dict(successful_summaries[-1].get("loss_weights", {})),
         "losses": _loss_stats_from_summaries(successful_summaries),
         "optimizer_lrs": dict(successful_summaries[-1]["optimizer_lrs"]),
         "assignment": _aggregate_assignment_modes(successful_summaries),
@@ -447,6 +448,10 @@ def run_validate_epoch(
             sync_profile_device(trainer.device, profile_device_sync)
             evaluate_ended_at = time.perf_counter()
             batch_summary = dict(batch_summary)
+            batch_summary["loss_weights"] = {
+                str(name): float(value)
+                for name, value in dict(getattr(trainer.criterion, "loss_weights", {})).items()
+            }
             batch_timing = {
                 "wait_sec": wait_sec,
                 "evaluate_sec": max(0.0, evaluate_ended_at - evaluate_started_at),
@@ -562,6 +567,7 @@ def run_validate_epoch(
             "duration_sec": metric_summary_ended_at - started_at,
             "metric_summary_sec": max(0.0, metric_summary_ended_at - metric_summary_started_at),
             "timing_profile": _validation_timing_profile([dict(item["timing"]) for item in batch_summaries]),
+            "loss_weights": dict(batch_summaries[-1].get("loss_weights", {})),
             "losses": _loss_stats_from_summaries(batch_summaries),
             "counts": _sum_counts(batch_summaries),
             "metrics": metrics,
