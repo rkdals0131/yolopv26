@@ -581,3 +581,43 @@ Stop-line branch 결과:
 다음:
 
 - side/truncated/near-vertical miss 진단은 유지하되, probability를 더 밀어붙이는 방식보다 instance/geometry-aware recall 신호가 필요하다.
+
+## 18. 2026-05-11 Gate 3 lane geometry-risk recall: vector F1 nudged, dense centerline-core regressed
+
+맥락:
+
+- error-bucket audit은 side, truncated, near-vertical lane이 centerline miss에 취약하다고 봤다.
+- side-BCE와 side-margin은 x-band probability만 밀어붙여 centerline-core PR을 개선하지 못했다.
+- 그래서 좌표 band만이 아니라 lane instance geometry bucket을 target에 남기고, 해당 core pixels에 recall-only loss를 걸었다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-geometry-risk-recall`
+- `render_lane_segfirst_targets`가 side/truncated/near-vertical lane core pixels를 `lane_seg_centerline_geometry_risk`로 내보내게 했다.
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_geometry_risk_recall_weight`를 추가했다. 기본값은 기존 동작과 같은 `0.0`이다.
+- `core_centerline_refine_geometry_risk_recall` probe는 geometry-risk recall weight `0.75`를 켠다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_geometry_risk_recall_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_041807`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_geometry_risk_recall --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5852`, lane/stop/cross F1 `0.5400 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6086`, lane/stop/cross F1 `0.5405 / 0.4348 / 0.5854`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: lane centerline-core best pixel F1 `0.5572` at threshold `0.9`, precision/recall `0.4479 / 0.7370`; lane support best pixel F1 `0.7978`.
+
+판단:
+
+- exact lane F1은 기준보다 `+0.0138` 올랐지만, phase objective와 stop-line F1은 기준보다 낮다.
+- centerline-core pixel F1은 `0.5729 -> 0.5572`로 내려갔다. recall은 올랐지만 precision이 더 크게 떨어져 fragment/FP 위험이 커진 형태다.
+- 이 축도 centerline 병목 해결이 아니라 vectorized metric partial-positive다. broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- geometry-risk recall-only loss를 같은 형태로 반복하지 않는다.
+- exact lane F1 `0.5405`만 보고 0.6 path로 확장하지 않는다.
+
+다음:
+
+- side/truncated/near-vertical miss 진단은 유지하되, recall-only positive pressure만으로는 부족하다.
+- 다음 lane 축은 risk lane의 false-positive/fragment 제어까지 같이 갖는 더 정밀한 instance/geometry-aware contract여야 한다.
