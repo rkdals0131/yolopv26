@@ -856,6 +856,9 @@ Stop-line branch 결과:
 - broader output: `analysis_exports/broader_val512_row_scan_vectorizer_epoch2/summary.json`
 - broader-val512 epoch2: `phase_objective=0.5981`, lane/stop/cross F1 `0.5279 / 0.4083 / 0.5854`, support `9477 / 271 / 395`.
 - 기준 broader-val512는 `phase_objective=0.5943`, lane/stop/cross F1 `0.5101 / 0.4083 / 0.5854`.
+- visual output: `analysis_exports/row_scan_visual_compare_epoch2/row_scan_component_comparison_grid.png`
+- visual manifest: `analysis_exports/row_scan_visual_compare_epoch2/manifest.json`
+- visual audit은 component와 row-scan lane signature가 달라진 18개 sample을 `ground_truth / component / row_scan` triplet으로 렌더링했다.
 
 판단:
 
@@ -863,9 +866,10 @@ Stop-line branch 결과:
 - stop-line/crosswalk는 유지됐지만, 전체 목표인 세 task F1 `>= 0.60`에는 아직 멀다.
 - broader-val512 objective도 `0.5981`이라 mean/objective 0.6 직전이지만, stop-line F1 `0.4083` 병목은 그대로다.
 - connected-component-only vectorization이 lane fragment continuity를 일부 놓치고 있다는 증거로 보관한다.
-- 다만 row-scan은 nearby lane을 과하게 이어 붙일 위험이 있으므로 visual comparison grid 없이 deployment default로 승격하지 않는다.
+- visual audit은 partial-pass/caution이다. sample 2와 16은 row-scan 추가/삭제가 비교적 타당해 보였지만, sample 10은 extra/zig track over-link 가능성이 있어 deployment default로 승격하지 않는다.
 
 다음:
 
-- row-scan vs component comparison grid를 만들어 over-link/merge 위험을 확인한다.
-- visual risk가 통과되면 row-scan을 lane postprocess partial-positive baseline으로 삼고, 남은 목표 gap은 stop-line first 또는 row-scan 이후 lane residual gap으로 분리한다.
+- row-scan은 opt-in lane postprocess partial-positive baseline으로 보관한다.
+- default 승격 전에는 tangent/curvature/length/merge geometry guard나 더 targeted visual review로 over-link risk를 줄인다.
+- 남은 목표 gap은 stop-line first 또는 row-scan 이후 lane residual gap으로 분리한다.
