@@ -663,3 +663,43 @@ Stop-line branch 결과:
 
 - side/truncated/near-vertical miss 진단은 유지하되, BCE weight-only, margin-only, recall-only, local false-positive penalty-only는 닫는다.
 - 다음 lane 축은 risk bucket을 다시 누르는 게 아니라 prediction confidence/fragment separation 자체를 바꾸는 contract여야 한다.
+
+## 20. 2026-05-11 Gate 2 stop-line heatmap-support geometry target: dense maps regress
+
+맥락:
+
+- stop-line decoder는 predicted center/proposal 위치에서 offset/angle/half-length를 읽는다.
+- 기존 dense target은 center heatmap 주변을 positive로 만들지만 geometry target은 floor center cell 한 곳에만 기록한다.
+- 이번 실험은 center peak가 주변 support로 움직여도 geometry가 supervised되도록 heatmap support 전체에 geometry target을 채우는 opt-in target 계약을 확인했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-heatmap-geometry-support`
+- `build_stopline_dense_targets`에 opt-in `geometry_target_mode=heatmap_support`를 추가했다. 기본값은 기존 동작인 `center_cell`이다.
+- trainer/evaluator encode path가 `PV26MultiTaskLoss.stopline_geometry_target_mode`를 raw-batch encoding에 전달하게 했다.
+- `core_centerline_refine_stop_heatmap_geometry_support` probe는 dataloader pre-encoding을 끄고 `stopline_geometry_target_mode=heatmap_support`를 켠다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_heatmap_geometry_support_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_045646`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_stop_heatmap_geometry_support --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5594`, lane/stop/cross F1 `0.5116 / 0.1071 / 0.6707`.
+- epoch2: `phase_objective=0.5618`, lane/stop/cross F1 `0.5178 / 0.2338 / 0.5476`, stop-line TP/FP/FN `18 / 76 / 42`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: stop-line mask best pixel F1 `0.4854`, stop-line center best pixel F1 `0.0815`, lane centerline-core best pixel F1 `0.5728`.
+- 기준 dense-map PR은 stop-line mask F1 `0.6118`, stop-line center F1 `0.1396`, lane centerline-core F1 `0.5729`였다.
+
+판단:
+
+- exact stop-line F1이 `0.4483 -> 0.2338`로 크게 후퇴했다.
+- dense stop-line mask와 center heatmap도 같이 후퇴했다. geometry target support를 넓힌 것이 readout reliability를 올린 게 아니라 dense stop-line maps 자체를 망가뜨린 형태다.
+- broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- heatmap-support geometry target fill을 같은 형태로 반복하지 않는다.
+- center/proposal reliability 문제를 geometry target 위치 확장만으로 해결하려고 하지 않는다.
+
+다음:
+
+- stop-line을 재개한다면 target support를 넓히는 방향보다, predicted center/proposal confidence를 분리해 안정화하거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 찾아야 한다.

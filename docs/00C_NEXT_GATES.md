@@ -17,6 +17,7 @@
 - learned query-vector proposal-only를 objective만 보고 확장하지 않는다.
 - selector-map component gate를 stop-line readout fix로 반복하지 않는다.
 - endpoint-delta channel 추가 + direct decode를 같은 형태로 반복하지 않는다.
+- heatmap-support geometry target fill을 stop-line reliability fix로 반복하지 않는다.
 - side-band centerline BCE positive weighting만으로 lane 0.6 path를 다시 찾지 않는다.
 - side-band centerline probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - side/truncated/near-vertical geometry-risk recall-only loss만으로 lane 0.6 path를 다시 찾지 않는다.
@@ -135,6 +136,7 @@ Gate 상태:
 - learned vector proposal short run은 vector-only exact val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. threshold를 낮춰도 TP가 없어서 broader-val이나 long run으로 확장하지 않는다.
 - selector-map component gate read-only probe도 val128 stop-line F1 `0.2062`로 `stop_mask_only` `0.2593`보다 낮았다. selector map을 단순 component 선택에 쓰는 후처리만으로는 0.6 path가 아니다.
 - endpoint-delta target/readout short run도 val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. 새 dense endpoint channel을 바로 decode source로 쓰면 TP가 사라지므로 같은 형태로 확장하지 않는다.
+- heatmap-support geometry target fill은 exact val128 epoch2 stop-line F1 `0.2338`, TP/FP/FN `18 / 76 / 42`로 기준보다 크게 낮고, dense stop-line mask/center F1도 `0.4854 / 0.0815`로 후퇴했다. center heatmap support 전체에 geometry target을 채우는 방식은 0.6 path가 아니다.
 
 후보:
 
@@ -152,7 +154,7 @@ Gate 상태:
 
 - partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
 - same-family micro experiments는 중단한다.
-- 다음 stop-line 실행은 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode는 반복하지 않는다.
+- 다음 stop-line 실행은 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill은 반복하지 않는다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -191,6 +193,7 @@ Gate 상태:
 - `exp/lane-family-f1/stopline-vector-proposal-readout`은 learned query-vector proposal negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-selector-component-gate`는 selector-map component gate negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-centerline-endpoint-offset`은 endpoint-delta target/readout negative evidence로 보관한다.
+- `exp/lane-family-f1/stopline-heatmap-geometry-support`는 heatmap-support geometry target-fill negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-vectorizer-recovery-audit`은 vectorizer headroom / predicted centerline bottleneck evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-core-width3`은 centerline target-width-only negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-error-buckets`은 missed-centerline bucket evidence로 보관한다.
@@ -198,7 +201,7 @@ Gate 상태:
 - `exp/lane-family-f1/lane-centerline-side-margin`은 side-band probability margin partial/negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-geometry-risk-recall`은 side/truncated/near-vertical geometry-risk recall-only partial/negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-geometry-risk-local-tversky`는 geometry-risk local false-positive penalty partial/negative evidence로 보관한다.
-- 다음 한 축은 side/truncated/near-vertical lane centerline recall을 올리되 BCE weight-only, probability-margin-only, recall-only보다 더 정밀한 instance/geometry-aware 학습 신호다. stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only는 반복하지 않는다.
+- 다음 한 축은 side/truncated/near-vertical lane centerline recall을 올리되 BCE weight-only, probability-margin-only, recall-only보다 더 정밀한 instance/geometry-aware 학습 신호다. stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, heatmap-support geometry fill, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only는 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6
