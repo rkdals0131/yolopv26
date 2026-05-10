@@ -954,3 +954,42 @@ Stop-line branch 결과:
 
 - 다음 stop-line 축은 component-conditioned local line extraction, contaminated component split, 또는 train-time target/readout이 직접 맞는 geometry recovery contract여야 한다.
 - 학습 축을 열기 전에 `stopline_readout_gt_rows.csv`에서 FN but mask/center-good/fit-far bucket을 visual sample로 좁혀도 된다.
+
+## 27. 2026-05-11 Gate 2 stop-line fit-far visual audit: high-signal components still read the wrong line
+
+맥락:
+
+- component/readout audit에서 production FN 중 mask와 center가 모두 강한데도 no-anchor component fit이 40px 밖인 케이스가 `87`개였다.
+- 새 stop-line 학습축을 바로 열기 전에, 이 bucket이 component absence인지, component contamination인지, 또는 line extraction/readout 오류인지 눈으로 확인할 수 있는 artifact가 필요했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-fit-far-visual-audit`
+- `tools/visualize_pv26_stopline_fit_far_bucket.py`를 추가했다.
+- 도구는 기존 `stopline_readout_gt_rows.csv`에서 production FN, `gt_tube_mask_max >= 0.50`, `gt_tube_center_max >= 0.50`, `no_anchor_mean_distance > 40` row를 고른 뒤 같은 checkpoint/validation epoch를 다시 forward한다.
+- 각 tile은 `ground_truth / production / selected_gt_fit / mask_red_center_green` 4개 panel을 만든다. `selected_gt_fit`에는 selected GT, production line, no-anchor fit, anchored fit, best component mask를 같이 그린다.
+- 모델 weight, training config, postprocess default는 바꾸지 않는다.
+
+검증:
+
+- tests: `python3 -m py_compile tools/visualize_pv26_stopline_fit_far_bucket.py`.
+- smoke output은 2개 sample로 렌더링 확인 후 삭제하지 않고 `yolopv26_deletion_candidates/20260511-stopline-fit-far-visual-smoke/`로 이동했다.
+- visual output: `analysis_exports/stopline_fit_far_visual_audit_val512_epoch2/stopline_fit_far_bucket_grid.png`
+- manifest: `analysis_exports/stopline_fit_far_visual_audit_val512_epoch2/manifest.json`
+- filter: production FN, GT tube mask/center `>=0.50`, no-anchor distance `>40px`, sort `hit-distance`.
+- rendered samples: `18`.
+- grid size: `15360 x 4692`, file size about `18MB`.
+- manifest counts: component_count `1:14`, `2:3`, `3:1`; production_stop_line_count `1:18`.
+- selected rows cover no-anchor distances `46.5px` to `344.8px`; many have GT tube component hit fraction near `1.0`.
+
+판단:
+
+- 이 top visual bucket은 "prediction이 전혀 없음"이 아니라, production stop-line이 하나씩 존재하는데 selected GT와 맞지 않는 케이스다.
+- 대부분이 single connected component라서 단순 component split 개수 조절만으로는 부족하다.
+- GT tube와 component overlap이 높은데 PCA/no-anchor/anchored fit이 멀리 가는 샘플이 많아, component 안에서 true stop-line segment를 local하게 골라내는 readout contract가 다음 병목이다.
+- 이는 metric gain이 아니라 설계 방향을 좁히는 read-only evidence다. F1 0.6 목표는 아직 미달이다.
+
+다음:
+
+- 다음 stop-line implementation은 selected GT 근방 local support를 조건으로 line segment를 추출하거나, center/selector signal을 component 내부 weighting으로 쓰는 component-conditioned local line extraction이어야 한다.
+- PCA threshold/top-k, no-anchor PCA, current-anchor swap, row/center scalar loss만 반복하지 않는다.
