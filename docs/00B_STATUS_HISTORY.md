@@ -993,3 +993,39 @@ Stop-line branch 결과:
 
 - 다음 stop-line implementation은 selected GT 근방 local support를 조건으로 line segment를 추출하거나, center/selector signal을 component 내부 weighting으로 쓰는 component-conditioned local line extraction이어야 한다.
 - PCA threshold/top-k, no-anchor PCA, current-anchor swap, row/center scalar loss만 반복하지 않는다.
+
+## 28. 2026-05-11 Gate 2 stop-line local component extraction probe: score-window readout does not recover F1
+
+맥락:
+
+- fit-far visual audit에서 high-signal FN 대부분이 production stop-line을 이미 하나씩 갖고 있고, single connected component 안에서 wrong line segment를 읽는 문제가 강했다.
+- 그래서 새 학습축을 열기 전에 predicted component 내부에서 center/selector/fused score로 local support를 고른 뒤 다시 PCA fit하는 decode-only probe를 먼저 닫았다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-local-component-extraction`
+- `tools/probe_pv26_stopline_local_component_extraction.py`를 추가했다.
+- 도구는 기존 checkpoint/validation epoch를 replay하고, lane/crosswalk와 baseline non-stop-line prediction은 그대로 둔 채 stop-line만 local extraction variant로 replace 또는 append한다.
+- variants는 center/selector/fused score source, row band `2/4/6`, normal band `2/3`, quantile `0.50/0.60`, top1/top2, append-top2를 비교한다.
+- 모델 weight, training config, production postprocess default는 바꾸지 않는다.
+
+검증:
+
+- smoke: `--max-val-batches 4`로 실행했지만 stop-line support가 `2`뿐이라 의미 있는 판정에는 쓰지 않았다.
+- main probe: `--max-val-batches 128 --validation-epoch 2 --device cuda:0`.
+- output: `analysis_exports/stopline_local_component_extraction_val128_epoch2.json`.
+- baseline exact val128: objective `0.6088677363`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`, stop TP/FP/FN `26 / 30 / 34`.
+- best replacement by objective: `local_fused_r6_n3_q50`, objective `0.6112985943`, lane/stop/cross F1 `0.5267 / 0.4464 / 0.5854`, stop TP/FP/FN `25 / 27 / 35`.
+- best append-top2 stop-line F1: `local_center_r6_n3_q50_append_top2` and `local_fused_r6_n3_q50_append_top2`, stop-line F1 `0.4054`, stop TP/FP/FN `30 / 58 / 30`.
+
+판단:
+
+- replacement 계열은 phase objective가 약간 오를 수 있지만 task F1 기준으로 baseline stop-line F1을 넘지 못했다.
+- append-top2 계열은 TP가 `26 -> 30`으로 늘지만 FP도 `30 -> 58`까지 늘어 F1이 크게 내려간다.
+- local center/selector score window만으로 contaminated component에서 true line segment를 안정적으로 고르는 것은 현재 0.6 path가 아니다.
+- lane/crosswalk는 의도대로 그대로라서 이번 판정은 stop-line readout 축 자체의 negative evidence다.
+
+다음:
+
+- local center/selector/fused window extraction, append-top2, threshold/top-k 조합은 같은 family로 반복하지 않는다.
+- stop-line을 재개한다면 component를 true line instance 단위로 분리하는 contract, 또는 train-time geometry/readout이 직접 맞는 stronger representation을 설계해야 한다.

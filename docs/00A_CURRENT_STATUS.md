@@ -66,7 +66,8 @@ Stop-line Gate 2 follow-up:
 - row-center auxiliary는 row selector에 centerline-row pressure를 추가해 predicted center/proposal reliability를 올리는지 봤다. exact val128 epoch2 objective `0.6060`, lane/stop/cross F1 `0.5265 / 0.4248 / 0.5818`로 기준 exact `0.6089`, `0.5267 / 0.4483 / 0.5854`보다 낮아서 row-center-aux-only도 0.6 path가 아니다.
 - read-only component/readout audit은 broader-val512 GT 271개 중 production TP `98`, anchorless component fit close `123`, anchored fit close `119`를 보였다. GT tube의 mask/center signal은 각각 `223/271`, `220/271`에서 `>=0.50`로 남아 있지만, production FN 173개 중 anchorless fit으로 새로 40px 안에 들어오는 것은 34개뿐이다. 따라서 단순 anchor swap/no-anchor PCA만으로는 0.6 path가 아니다.
 - fit-far visual audit은 production FN, GT tube mask/center `>=0.50`, no-anchor distance `>40px` bucket 상위 18개를 렌더링했다. 18개 모두 production stop-line은 1개씩 있고, 14개는 component_count도 1이라 "아예 안 나옴"보다 single connected component 안에서 wrong line segment를 읽는 문제가 강하다.
-- 남은 stop-line 방향은 새 query row나 endpoint-delta channel 추가가 아니라, predicted component를 true line geometry로 분리/정렬하는 component-conditioned readout 또는 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 찾는 것이다.
+- component-conditioned local extraction probe는 predicted component 안에서 center/selector/fused score로 local support를 골라 다시 fit했지만 exact val128 stop-line F1이 기준 `0.4483`을 넘지 못했다. best replacement는 `0.4464`, append-top2는 TP를 늘리는 대신 FP가 크게 늘어 best `0.4054`였다.
+- 남은 stop-line 방향은 새 query row나 endpoint-delta channel 추가나 local score window가 아니라, predicted component를 true line instance로 분리/정렬하는 stronger geometry recovery contract를 찾는 것이다.
 
 Lane Gate 3 dense-map probe:
 
