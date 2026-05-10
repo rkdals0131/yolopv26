@@ -7,7 +7,7 @@
 
 PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 replay 기준 `phase_objective=0.6088677363`까지 확인됐다.
 
-이 60% 돌파는 raw model만으로 만든 결론이 아니다. core-centerline/refinement checkpoint 위에 small-fragment FP를 제거하는 postprocess geometry filters가 붙어서 만든 partial success다. 배포 기본값으로 확정하기 전에는 더 넓은 validation replay가 필요하다.
+이 60% 돌파는 raw model만으로 만든 결론이 아니고, F1 자체가 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 small-fragment FP를 제거하는 postprocess geometry filters가 붙어서 만든 partial success다. 다음 목표를 더 엄격하게 잡는다면 `phase_objective`가 아니라 lane/stop/cross F1 자체를 0.6 이상으로 끌어올리는 것이다.
 
 ## 2. 현재 기준 artifact
 
@@ -30,6 +30,13 @@ Final exact epoch-2 result:
 | stop-line F1 | `0.4482758620689655` |
 | crosswalk F1 | `0.5853658536585366` |
 | support lane/stop/cross | `2390 / 60 / 81` |
+
+F1 기준 gap:
+
+- lane: `0.5267 -> 0.6000`, `+0.0733` 필요.
+- stop-line: `0.4483 -> 0.6000`, `+0.1517` 필요.
+- crosswalk: `0.5854 -> 0.6000`, `+0.0146` 필요.
+- 따라서 F1 0.6+ 목표의 병목은 stop-line, 그 다음 lane이다. crosswalk는 거의 도달했지만 broader validation에서 유지되는지 확인해야 한다.
 
 ## 3. Active docs surface
 
@@ -74,4 +81,3 @@ Lane60 fine-tune은 traffic light를 학습한 run이 아니다.
 - traffic source 중심 sampler.
 - `det + tl_attr`만 켜는 fine-tune.
 - 필요하면 detector loss에서 traffic_light class만 강제 supervised class로 좁히는 config hook 추가.
-
