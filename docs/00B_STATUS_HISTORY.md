@@ -429,3 +429,38 @@ Stop-line branch 결과:
 
 - 다음 lane 축은 centerline-core recall/coverage를 올리는 target/loss/calibration 쪽으로 제한한다.
 - support map substitution, semantic attr oracle, threshold sweep, vectorizer rewrite부터 시작하는 실험은 반복하지 않는다.
+
+## 14. 2026-05-11 Gate 3 lane target calibration: centerline core width3 is negative
+
+맥락:
+
+- vectorizer recovery audit 이후, predicted centerline coverage를 직접 올리는 가장 작은 target-side 가설을 확인했다.
+- 기존 core target은 `LaneSegFirstTargetConfig.centerline_core_width=1`로 고정되어 있었다.
+- 이 실험은 target renderer의 core width만 opt-in train config로 열고, `core_centerline_refine_cross_retain` 설정에서 `lane_segfirst_centerline_core_width=3`만 추가했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-core-width3`
+- `lane_segfirst_centerline_core_width` train default를 추가했다.
+- encoded train/eval dataloader, raw-batch trainer/evaluator path 모두 같은 `LaneSegFirstTargetConfig`를 사용하게 했다.
+- `tools/run_pv26_lane60_probe.py`에 `core_centerline_refine_core_width3` experiment를 추가했다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_core_width3_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_030257`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_core_width3 --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5781`, lane/stop/cross F1 `0.5252 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6002`, lane/stop/cross F1 `0.5232 / 0.4348 / 0.5854`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+
+판단:
+
+- phase objective만 보면 epoch2가 `0.6002`까지 올라가지만, task별 F1 목표는 실패다.
+- lane F1은 기준 `0.5267`보다 낮고, stop-line도 기준 `0.4483`보다 낮다.
+- core target width-only widening은 predicted centerline coverage 병목을 해결하지 못했다.
+- exact val128에서 기준선도 못 넘었으므로 broader-val512나 long run으로 확장하지 않는다.
+
+다음:
+
+- centerline target 폭만 넓히는 실험은 반복하지 않는다.
+- 다음 lane 축은 단순 target-width 조절이 아니라 missed-centerline error bucket을 보거나, recall을 올리면서 vectorized FP를 늘리지 않는 구조/학습 신호를 새로 잡아야 한다.
