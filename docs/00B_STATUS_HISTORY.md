@@ -827,3 +827,45 @@ Stop-line branch 결과:
 다음:
 
 - 다음 lane 축은 endpoint-only pressure가 아니라 endpoint/continuity/fragment separation을 한 계약 안에서 다루거나, predicted centerline evidence를 instance-level로 안정화하는 방향이어야 한다.
+
+## 24. 2026-05-11 Gate 3 lane row-scan vectorizer: broader-val lane partial-positive
+
+맥락:
+
+- support-bridge/closing은 centerline binary를 morphologically 바꿨다가 lane recall을 잃었다.
+- endpoint-only coverage는 dense centerline-core와 vectorized lane F1을 모두 개선하지 못했다.
+- 이번 실험은 centerline probability map은 그대로 두고, connected-component 단위 vectorization 대신 row cluster track을 `max_row_gap`/`max_link_dx`로 직접 이어서 fragment continuity를 복구할 수 있는지 확인했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-row-scan-vectorizer`
+- `LaneSegFirstVectorizerConfig.track_mode`를 추가했다. 기본값은 기존 동작인 `component`다.
+- opt-in `row_scan` mode는 전체 centerline binary에서 row clusters를 bottom-to-top으로 track하고, bounded row gap/x drift 안에서 끊긴 fragments를 이어 polylines를 만든다.
+- `PV26PostprocessConfig`와 train defaults에 `lane_segfirst_track_mode`, `lane_segfirst_max_row_gap`, `lane_segfirst_max_link_dx`를 추가했다. 기본값은 `component / 12 / 8.0`이다.
+- `tools/probe_pv26_lane60_decode_variants.py`에 row-scan variants와 `--output-json`을 추가했다.
+- `tools/run_pv26_lane60_probe.py`에 `core_centerline_refine_row_scan_vectorizer` experiment를 추가했다.
+
+검증:
+
+- decode variant output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/decode_variants_row_scan_val128_epoch2.json`
+- same-probe baseline lane/stop/cross F1: `0.5222 / 0.2000 / 0.6667`.
+- best row-scan variant `lane_row_scan` lane/stop/cross F1: `0.5339 / 0.2000 / 0.6667`, lane TP/FP/FN `1051 / 551 / 1284`.
+- exact output: `analysis_exports/exact_checkpoint_eval_row_scan_vectorizer_epoch2/summary.json`
+- exact val128 epoch2: `phase_objective=0.6144`, lane/stop/cross F1 `0.5522 / 0.4483 / 0.5854`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- broader output: `analysis_exports/broader_val512_row_scan_vectorizer_epoch2/summary.json`
+- broader-val512 epoch2: `phase_objective=0.5981`, lane/stop/cross F1 `0.5279 / 0.4083 / 0.5854`, support `9477 / 271 / 395`.
+- 기준 broader-val512는 `phase_objective=0.5943`, lane/stop/cross F1 `0.5101 / 0.4083 / 0.5854`.
+
+판단:
+
+- row-scan은 exact와 broader-val512에서 lane F1을 모두 올렸다.
+- stop-line/crosswalk는 유지됐지만, 전체 목표인 세 task F1 `>= 0.60`에는 아직 멀다.
+- broader-val512 objective도 `0.5981`이라 mean/objective 0.6 직전이지만, stop-line F1 `0.4083` 병목은 그대로다.
+- connected-component-only vectorization이 lane fragment continuity를 일부 놓치고 있다는 증거로 보관한다.
+- 다만 row-scan은 nearby lane을 과하게 이어 붙일 위험이 있으므로 visual comparison grid 없이 deployment default로 승격하지 않는다.
+
+다음:
+
+- row-scan vs component comparison grid를 만들어 over-link/merge 위험을 확인한다.
+- visual risk가 통과되면 row-scan을 lane postprocess partial-positive baseline으로 삼고, 남은 목표 gap은 stop-line first 또는 row-scan 이후 lane residual gap으로 분리한다.
