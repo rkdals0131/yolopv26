@@ -504,3 +504,42 @@ Stop-line branch 결과:
 
 - 다음 lane training axis는 side/truncated/near-vertical lane recall을 겨냥한다.
 - threshold-only, target-width-only, semantic attr oracle, support substitution은 반복하지 않는다.
+
+## 16. 2026-05-11 Gate 3 lane side-band BCE weighting: small lane-vector lift, no centerline-core gain
+
+맥락:
+
+- centerline error-bucket audit에서 center x-band보다 side lanes가 약했다.
+- 그래서 전체 lane loss ratio나 target width를 다시 흔들지 않고, centerline core positive 중 좌우 x-band만 BCE에서 더 강하게 보는지 확인했다.
+- 이 실험은 truncated/near-vertical 판별까지 섞지 않고 side-band weighting만 한 단일 축이다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-side-bucket-weight`
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_centerline_side_positive_weight`와 `lane_segfirst_centerline_side_band_fraction`을 추가했다. 기본값은 기존 동작과 같은 `1.0 / 0.33`이다.
+- `core_centerline_refine_side_bce_focus` probe는 outer 33% x-band의 centerline-core positive BCE weight만 `2.0`으로 올린다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_side_bce_focus_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_033647`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_side_bce_focus --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5812`, lane/stop/cross F1 `0.5195 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6083`, lane/stop/cross F1 `0.5331 / 0.4348 / 0.5854`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: lane centerline-core best pixel F1 `0.5705` at threshold `0.9`, precision/recall `0.4912 / 0.6803`; lane support best pixel F1 `0.7979`.
+- 기준 dense-map PR은 lane centerline-core F1 `0.5729`, lane support F1 `0.7971`이었다.
+
+판단:
+
+- vectorized lane F1은 `+0.0064` 올랐지만, phase objective와 stop-line F1이 기준보다 낮다.
+- centerline-core pixel F1도 개선되지 않았으므로, 이 gain은 목표한 side-centerline quality 개선이 아니다.
+- exact gate에서 기준선을 명확히 넘지 못했으므로 broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- side-band BCE positive weighting만 같은 형태로 반복하지 않는다.
+- lane vector F1 소폭 상승만 보고 0.6 path로 확장하지 않는다.
+
+다음:
+
+- side/truncated/near-vertical miss는 여전히 유효한 진단이지만, 단순 BCE 가중치가 아니라 instance/geometry-aware recall 신호가 필요하다.
