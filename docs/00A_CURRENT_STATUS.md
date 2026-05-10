@@ -60,6 +60,7 @@ Stop-line Gate 2 follow-up:
 - stop-line dense mask pixel F1은 val128 probe에서 `0.6107`까지 나오지만, center heatmap F1은 `0.1385`라서 mask 존재보다 endpoint/geometry/selector 복원이 병목이다.
 - 이후 component split, center-cell geometry mask, half-length scale/loss/log target, learned query-vector proposal도 각각 별도 branch에서 닫았다. 모두 stop-line F1 0.6 path가 아니었다.
 - query-vector proposal short run은 vector-only exact val128 epoch1/2 stop-line F1이 모두 `0.0000`이고, threshold를 `0.10`까지 낮춰도 TP/FP/FN `0 / 0 / 55`였다. append mode도 mask baseline 수준에 머물렀다.
+- selector-map을 component gate/anchor에 opt-in으로 연결한 read-only decode probe도 stop-line F1 `0.2062`로 `stop_mask_only` `0.2593`보다 낮았다. centerline selector map을 단순 component 선택에 쓰는 후처리만으로는 0.6 path가 아니다.
 - 남은 stop-line 방향은 새 query row 추가가 아니라 dense mask/centerline signal을 실제 line geometry로 복원하는 target/readout contract 재설계다.
 
 Lane Gate 3 dense-map probe:

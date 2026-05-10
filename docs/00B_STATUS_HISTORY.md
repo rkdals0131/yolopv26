@@ -314,3 +314,42 @@ Stop-line branch 결과:
 
 - 다음 stop-line 축은 dense mask/centerline signal을 line geometry로 복원하는 target/readout contract다.
 - stop-line을 잠시 보류한다면 lane axis는 support substitution이나 threshold sweep이 아니라 centerline-to-vector recovery error bucket 또는 새로운 centerline-core 품질 가설로 제한한다.
+
+## 11. 2026-05-11 Gate 2 revisit: selector-map component gate is negative
+
+맥락:
+
+- stop-line loss는 `stop_line_selector_map_logits`를 centerline target으로 학습시키지만, production `_stopline_mask_to_polyline`은 component gate에서 주로 row selector와 center heatmap을 쓴다.
+- 그래서 새 training 없이 selector map을 component 선택/anchor source에 opt-in으로 연결하면 dense centerline signal이 line geometry readout을 개선하는지 확인했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-selector-component-gate`
+- `PV26PostprocessConfig.stop_line_component_gate_source`를 추가했다. 기본값은 기존 동작인 `center`다.
+- `selector` mode는 selector map을 component gate와 anchor source로 쓰고 row selector override를 끈다.
+- `max` mode는 selector map과 center heatmap의 max map을 component gate로 쓴다.
+- `tools/probe_pv26_lane60_decode_variants.py`에 `stop_selector_gate`, `stop_selector_gate_obj030`, `stop_selector_gate_mask030`, `stop_gate_max` variants와 `--output-json`을 추가했다.
+
+검증:
+
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/decode_variants_selector_gate_val128_epoch2.json`
+- baseline proxy lane/stop/cross F1은 `0.5222 / 0.2000 / 0.6667`이다.
+- `stop_mask_only`는 lane/stop/cross F1 `0.5222 / 0.2593 / 0.6667`, stop-line TP/FP/FN `14 / 39 / 41`이다.
+- `stop_selector_gate`, `stop_selector_gate_obj030`, `stop_selector_gate_mask030`은 모두 lane/stop/cross F1 `0.5222 / 0.2062 / 0.6667`, stop-line TP/FP/FN `10 / 32 / 45`다.
+- `stop_gate_max`는 lane/stop/cross F1 `0.5222 / 0.1980 / 0.6667`, stop-line TP/FP/FN `10 / 36 / 45`다.
+
+판단:
+
+- selector map을 단순히 component gate/anchor로 연결해도 stop-line recall이 살아나지 않는다.
+- FP는 baseline보다 줄지만 TP도 유지되지 않아서 `stop_mask_only`보다 약하다.
+- 이 결과는 "selector map을 쓰지 않아서 생긴 후처리 bug"가 아니라, dense signal을 valid line geometry로 바꾸는 더 명시적인 target/readout 계약이 필요하다는 쪽을 강화한다.
+
+하지 말 것:
+
+- selector-map component gate를 broader-val512나 long run으로 확장하지 않는다.
+- row selector를 끄고 selector map으로 component만 고르는 후처리 sweep을 반복하지 않는다.
+
+다음:
+
+- 다음 stop-line 축은 selector map gate가 아니라 train-time target과 geometry readout이 직접 맞는 contract여야 한다.
+- 가능한 후보는 component fit 후처리보다 endpoint/length를 component 또는 centerline pixels에서 직접 supervise/recover하는 방식이다.
