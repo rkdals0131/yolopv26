@@ -19,6 +19,7 @@
 - selector-map component gate를 stop-line readout fix로 반복하지 않는다.
 - endpoint-delta channel 추가 + direct decode를 같은 형태로 반복하지 않는다.
 - heatmap-support geometry target fill을 stop-line reliability fix로 반복하지 않는다.
+- no-anchor PCA 또는 current-anchor swap만 stop-line readout fix로 반복하지 않는다.
 - side-band centerline BCE positive weighting만으로 lane 0.6 path를 다시 찾지 않는다.
 - side-band centerline probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - side/truncated/near-vertical geometry-risk recall-only loss만으로 lane 0.6 path를 다시 찾지 않는다.
@@ -141,11 +142,12 @@ Gate 상태:
 - endpoint-delta target/readout short run도 val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. 새 dense endpoint channel을 바로 decode source로 쓰면 TP가 사라지므로 같은 형태로 확장하지 않는다.
 - heatmap-support geometry target fill은 exact val128 epoch2 stop-line F1 `0.2338`, TP/FP/FN `18 / 76 / 42`로 기준보다 크게 낮고, dense stop-line mask/center F1도 `0.4854 / 0.0815`로 후퇴했다. center heatmap support 전체에 geometry target을 채우는 방식은 0.6 path가 아니다.
 - row-center auxiliary short run은 exact val128 epoch2 stop-line F1 `0.4248`로 기준 `0.4483`보다 낮았다. row selector에 centerline-row pressure만 추가하는 방식도 0.6 path가 아니다.
+- component/readout audit은 broader-val512 GT `271`개 중 production TP `98`, anchorless component fit close `123`, anchored fit close `119`를 보였다. GT tube mask/center max가 `>=0.50`인 GT는 `223 / 220`개지만, production FN 중 anchorless fit으로 새로 close가 되는 것은 `34`개뿐이다. 단순 no-anchor PCA/anchor swap은 0.6 path가 아니다.
 
 후보:
 
 - stop-line은 잠시 보류하고 Gate 3 lane axis를 진행한다.
-- stop-line을 재개한다면 새 query proposal이나 endpoint-delta channel을 얹기보다, predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 설계한다.
+- stop-line을 재개한다면 새 query proposal이나 endpoint-delta channel을 얹기보다, contaminated component를 true line segment로 분리/정렬하는 component-conditioned local extraction 또는 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 설계한다.
 - PCA component 후보는 weak-positive reference로 보관하되, deployment default 승격 후보로 보지 않는다.
 
 성공 기준:
@@ -158,7 +160,7 @@ Gate 상태:
 
 - partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
 - same-family micro experiments는 중단한다.
-- 다음 stop-line 실행은 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only는 반복하지 않는다.
+- 다음 stop-line 실행은 component-conditioned local line extraction, contaminated component split, 또는 train-time target/readout이 직접 맞는 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, no-anchor PCA/anchor swap-only는 반복하지 않는다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -203,6 +205,7 @@ Gate 상태:
 - `exp/lane-family-f1/stopline-centerline-endpoint-offset`은 endpoint-delta target/readout negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-heatmap-geometry-support`는 heatmap-support geometry target-fill negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-row-center-aux`는 row-center auxiliary-only negative evidence로 보관한다.
+- `exp/lane-family-f1/stopline-readout-component-audit`은 dense mask/center signal이 남아 있어도 단순 component PCA/anchor swap만으로는 부족하다는 read-only evidence로 보관한다.
 - `exp/lane-family-f1/lane-vectorizer-recovery-audit`은 vectorizer headroom / predicted centerline bottleneck evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-core-width3`은 centerline target-width-only negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-error-buckets`은 missed-centerline bucket evidence로 보관한다.
@@ -214,7 +217,7 @@ Gate 상태:
 - `exp/lane-family-f1/lane-centerline-support-bridge`는 support-bridge/closing-only postprocess negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-endpoint-coverage`는 endpoint-only coverage loss negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-row-scan-vectorizer`는 broader-val lane partial-positive로 develop에 opt-in 승격했다.
-- row-scan visual audit artifact는 `analysis_exports/row_scan_visual_compare_epoch2/row_scan_component_comparison_grid.png`와 `manifest.json`이다. 판정은 partial-pass/caution이므로, 다음 lane 한 축은 row-scan tangent/curvature/length/merge geometry guard 또는 targeted visual review다. stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, lane support-substitution, lane threshold-only sweep, semantic attr oracle, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only, negative-pixel margin-only, support-bridge/closing-only, endpoint-only coverage는 반복하지 않는다.
+- row-scan visual audit artifact는 `analysis_exports/row_scan_visual_compare_epoch2/row_scan_component_comparison_grid.png`와 `manifest.json`이다. 판정은 partial-pass/caution이므로, 다음 lane 한 축은 row-scan tangent/curvature/length/merge geometry guard 또는 targeted visual review다. stop-line을 재개한다면 component-conditioned local line extraction이나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, no-anchor PCA/anchor swap-only, lane support-substitution, lane threshold-only sweep, semantic attr oracle, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only, negative-pixel margin-only, support-bridge/closing-only, endpoint-only coverage는 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay, visual audit 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6

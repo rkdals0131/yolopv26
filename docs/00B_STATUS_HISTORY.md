@@ -912,3 +912,45 @@ Stop-line branch 결과:
 
 - row-center auxiliary-only는 반복하지 않는다.
 - stop-line을 재개한다면 row/center loss scalar를 더 키우기보다, PCA/component-fit weak-positive를 넘는 geometry recovery contract나 feature/readout mismatch를 직접 재검증한다.
+
+## 26. 2026-05-11 Gate 2 stop-line component/readout audit: mask signal remains, raw component fit headroom is limited
+
+맥락:
+
+- row-center auxiliary까지 실패한 뒤 바로 새 stop-line training axis를 열지 않고, 현재 checkpoint의 dense mask/component가 GT stop-line 근처에 얼마나 남아 있는지 read-only로 다시 분해했다.
+- 목적은 production `_stopline_mask_to_polyline`이 놓친 FN 중 몇 개가 단순 component PCA/no-anchor fit이나 current anchored fit으로 복구 가능한지 확인하는 것이다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-readout-component-audit`
+- `tools/probe_pv26_stopline_readout_components.py`를 추가했다.
+- 도구는 같은 lane60 scenario/checkpoint/validation epoch를 사용해 per-GT `stopline_readout_gt_rows.csv`와 `summary.json`을 쓴다.
+- 모델 weight, postprocess default, training config는 바꾸지 않는다.
+
+검증:
+
+- val128 output: `analysis_exports/stopline_readout_component_audit_val128_epoch2`
+- val128 GT `60`: production TP `26`, anchorless component fit close `34`, anchored fit close `33`.
+- val128 GT tube mask/center `>=0.50`: `51 / 50`.
+- broader-val512 output: `analysis_exports/stopline_readout_component_audit_val512_epoch2`
+- broader-val512 GT `271`: production TP `98`, anchorless component fit close `123`, anchored fit close `119`.
+- broader-val512 GT tube mask/center `>=0.50`: `223 / 220`.
+- production FN `173` 중 anchorless component fit이 40px 안에 들어오는 것은 `34`개, anchored fit은 `21`개다.
+- production FN 중 mask와 center가 모두 `>=0.50`인데도 anchorless fit이 40px 밖인 케이스가 `87`개다.
+
+판단:
+
+- stop-line GT 주변에 dense mask/center signal은 많이 남아 있다. "mask가 전혀 없다"가 주 병목이라는 해석은 약하다.
+- 하지만 current component를 단순 PCA/no-anchor로 fit해도 broader-val512 close recall은 `123/271 = 0.4539`뿐이다. production `98/271 = 0.3616`보다 낫지만 0.6 path로는 부족하다.
+- anchored fit은 `119/271 = 0.4391`로 anchorless보다 낮다. current anchor가 일부 FN을 더 망가뜨리는 케이스가 있지만, anchor만 바꾸는 실험으로는 gap이 닫히지 않는다.
+- 남은 병목은 component contamination/instance split/line geometry extraction이다. GT 근처 signal을 true line segment로 분리해 읽는 contract가 필요하다.
+
+하지 말 것:
+
+- no-anchor PCA 또는 current-anchor swap만 단독 다음 축으로 반복하지 않는다.
+- GT tube mask/center max가 높다는 이유만으로 stop-line F1 0.6이 가까워졌다고 해석하지 않는다.
+
+다음:
+
+- 다음 stop-line 축은 component-conditioned local line extraction, contaminated component split, 또는 train-time target/readout이 직접 맞는 geometry recovery contract여야 한다.
+- 학습 축을 열기 전에 `stopline_readout_gt_rows.csv`에서 FN but mask/center-good/fit-far bucket을 visual sample로 좁혀도 된다.
