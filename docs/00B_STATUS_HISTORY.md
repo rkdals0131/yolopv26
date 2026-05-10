@@ -543,3 +543,41 @@ Stop-line branch 결과:
 다음:
 
 - side/truncated/near-vertical miss는 여전히 유효한 진단이지만, 단순 BCE 가중치가 아니라 instance/geometry-aware recall 신호가 필요하다.
+
+## 17. 2026-05-11 Gate 3 lane side-band margin loss: exact objective nudged, centerline-core regressed
+
+맥락:
+
+- side-band BCE weighting이 vectorized lane F1만 소폭 올리고 centerline-core dense PR을 개선하지 못했다.
+- 다음으로 side-band positive centerline pixels에 `sigmoid(logit) >= margin`을 직접 요구하는 opt-in margin loss를 확인했다.
+- 목적은 BCE 재가중치보다 더 직접적으로 side centerline probability를 끌어올릴 수 있는지 보는 것이었다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-side-margin`
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_centerline_side_margin_weight`, `lane_segfirst_centerline_side_margin`, `lane_segfirst_centerline_side_margin_band_fraction`을 추가했다. 기본값은 기존 동작과 같은 비활성 상태다.
+- `core_centerline_refine_side_margin` probe는 outer 33% x-band centerline-core positive pixels에 probability margin `0.9`, loss weight `1.0`을 적용한다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_side_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_035507`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_side_margin --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5867`, lane/stop/cross F1 `0.5409 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6097`, lane/stop/cross F1 `0.5352 / 0.4522 / 0.5854`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: lane centerline-core best pixel F1 `0.5573` at threshold `0.9`, precision/recall `0.4502 / 0.7313`; lane support best pixel F1 `0.7977`.
+
+판단:
+
+- exact objective와 vectorized lane/stop-line F1은 기준보다 아주 조금 올랐다.
+- 하지만 centerline-core pixel F1이 `0.5729 -> 0.5573`으로 내려갔다. recall은 올라갔지만 precision이 크게 떨어져 side/fragment FP 위험이 커진 형태다.
+- centerline 병목을 직접 푼 신호가 아니므로 broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- side-band probability margin loss만 같은 형태로 반복하지 않는다.
+- exact objective `+0.0008`만 보고 lane 0.6 path로 확장하지 않는다.
+
+다음:
+
+- side/truncated/near-vertical miss 진단은 유지하되, probability를 더 밀어붙이는 방식보다 instance/geometry-aware recall 신호가 필요하다.
