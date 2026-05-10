@@ -111,6 +111,14 @@ Gate 상태:
 
 - F1 0.6+ 목표의 최대 gap인 stop-line을 먼저 올린다.
 
+현재 진단:
+
+- `exp/lane-family-f1/stopline-diagnostics` worktree에서 val512 TP/FP/FN feature export를 완료했다.
+- stop-line TP/FP/FN은 `98 / 111 / 173`이다.
+- TP와 FP score median이 `0.9646 / 0.9609`로 겹쳐서 score threshold만으로 분리하기 어렵다.
+- FN bbox area median은 `2275.0`으로 TP median `1364.4`보다 작지 않다. area/aspect filter 강화는 recall 손실 위험이 크다.
+- 따라서 다음 stop-line worktree는 threshold-only가 아니라 decoder/target/loss 또는 recall 개선 축으로 잡는다.
+
 후보:
 
 - stop-line dense mask/center heatmap diagnostics를 broader-val에서 다시 export한다.

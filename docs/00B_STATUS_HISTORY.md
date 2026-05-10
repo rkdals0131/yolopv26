@@ -170,3 +170,29 @@ falsified:
 - Gate 2는 stop-line first로 간다.
 - 별도 worktree에서 stop-line decoder/target/loss 또는 stop-line-heavy short fine-tune을 한 축씩 실험한다.
 - lane recall 실험은 Gate 2 결과와 분리해서 진행한다.
+
+## 7. 2026-05-10 Gate 2 seed: stop-line feature audit
+
+상황:
+
+- `exp/lane-family-f1/stopline-diagnostics` worktree를 만들고 dataset/weight symlink를 연결했다.
+- 같은 checkpoint와 val512 slice에서 TP/FP/FN shape feature를 export했다.
+- artifact: branch-local `runs/lane_family_f1/stopline_filter_features_val512_epoch2/summary.json`
+
+결과:
+
+- stop-line counts는 TP/FP/FN `98 / 111 / 173`이다.
+- score 분포는 TP median `0.9646`, FP median `0.9609`로 거의 겹친다.
+- bbox area는 TP median `1364.4`, FP median `980.5`, FN median `2275.0`이다.
+- bbox aspect는 TP median `29.25`, FP median `19.80`, FN median `22.16`이다.
+
+판단:
+
+- 단순 score threshold는 좋은 다음 축이 아니다. TP와 FP score가 너무 가깝다.
+- bbox area/aspect filter도 단독으로는 위험하다. FN에도 큰 stop-line이 많아서 recall을 더 깎을 수 있다.
+- Gate 2의 우선 가설은 postprocess threshold보다 stop-line decoder/target/recall 문제다.
+
+하지 말 것:
+
+- stop-line F1을 score threshold tweak만으로 해결하려고 하지 않는다.
+- area/aspect threshold를 올리는 실험은 FN 손실을 먼저 계산하지 않고 채택하지 않는다.
