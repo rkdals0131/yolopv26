@@ -41,6 +41,7 @@ class LaneSegFirstVectorizerConfig:
     row_stride: int = 2
     max_row_gap: int = 12
     max_link_dx: float = 8.0
+    max_turn_degrees: float = 0.0
     lane_match_threshold: float = 40.0
 
 
@@ -428,6 +429,21 @@ def _polyline_length(points_xy: list[list[float]]) -> float:
     return float(np.linalg.norm(points[1:] - points[:-1], axis=1).sum())
 
 
+def _max_turn_degrees(points_xy: list[list[float]]) -> float:
+    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 3:
+        return 0.0
+    deltas = points[1:] - points[:-1]
+    lengths = np.linalg.norm(deltas, axis=1)
+    valid = lengths > 1.0e-6
+    if int(valid.sum()) < 2:
+        return 0.0
+    unit = deltas[valid] / lengths[valid, None]
+    dots = np.sum(unit[1:] * unit[:-1], axis=1)
+    angles = np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+    return float(angles.max(initial=0.0))
+
+
 def _passes_bottom_y_filter(
     points_xy: list[list[float]],
     *,
@@ -487,6 +503,8 @@ def vectorize_lane_segfirst_maps(
                 continue
             output_points = inverse_transform_points(network_points, transform) if transform is not None else network_points
             if unique_point_count(output_points) < 2:
+                continue
+            if float(cfg.max_turn_degrees) > 0.0 and _max_turn_degrees(output_points) > float(cfg.max_turn_degrees):
                 continue
             if float(cfg.min_polyline_length_px) > 0.0 and _polyline_length(output_points) < float(cfg.min_polyline_length_px):
                 continue
@@ -563,6 +581,8 @@ def vectorize_lane_segfirst_maps(
                 continue
             output_points = inverse_transform_points(network_points, transform) if transform is not None else network_points
             if unique_point_count(output_points) < 2:
+                continue
+            if float(cfg.max_turn_degrees) > 0.0 and _max_turn_degrees(output_points) > float(cfg.max_turn_degrees):
                 continue
             if float(cfg.min_polyline_length_px) > 0.0 and _polyline_length(output_points) < float(cfg.min_polyline_length_px):
                 continue

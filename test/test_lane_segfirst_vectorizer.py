@@ -19,6 +19,18 @@ def _maps_with_vertical_gap() -> dict[str, torch.Tensor]:
     }
 
 
+def _maps_with_zigzag_track() -> dict[str, torch.Tensor]:
+    centerline = torch.zeros((1, 12, 12), dtype=torch.float32)
+    centerline[0, 11, 2] = 0.9
+    centerline[0, 10, 6] = 0.9
+    centerline[0, 9, 2] = 0.9
+    return {
+        "centerline_core": centerline,
+        "color_map": torch.zeros((len(LANE_CLASSES), 12, 12), dtype=torch.float32),
+        "lane_type_map": torch.zeros((len(LANE_TYPES), 12, 12), dtype=torch.float32),
+    }
+
+
 class LaneSegFirstVectorizerTests(unittest.TestCase):
     def test_row_scan_track_mode_can_bridge_vertical_gaps(self) -> None:
         maps = _maps_with_vertical_gap()
@@ -46,6 +58,34 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertEqual(len(component_predictions), 2)
         self.assertEqual(len(row_scan_predictions), 1)
         self.assertGreaterEqual(len(row_scan_predictions[0]["points_xy"]), 4)
+
+    def test_row_scan_turn_guard_rejects_zigzag_tracks(self) -> None:
+        maps = _maps_with_zigzag_track()
+
+        unguarded = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=2,
+                max_link_dx=5.0,
+            ),
+        )
+        guarded = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=2,
+                max_link_dx=5.0,
+                max_turn_degrees=60.0,
+            ),
+        )
+
+        self.assertEqual(len(unguarded), 1)
+        self.assertEqual(len(guarded), 0)
 
     def test_rejects_unknown_track_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "track_mode"):

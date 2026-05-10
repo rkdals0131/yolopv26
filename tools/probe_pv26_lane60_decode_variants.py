@@ -19,6 +19,7 @@ from model.engine._trainer_epochs import _merge_raw_batches
 from model.engine.batch import augment_lane_family_metrics, raw_batch_for_metrics
 from model.engine.metrics import summarize_pv26_metrics
 from model.engine.postprocess import PV26PostprocessConfig, postprocess_pv26_batch
+from tools.evaluate_pv26_lane60_checkpoint import _advance_validation_sampler
 from tools.pv26_train import cli as train_cli
 from tools.pv26_train import config as train_config_api
 
@@ -40,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", default="default")
     parser.add_argument("--phase-index", type=int, default=4)
     parser.add_argument("--max-val-batches", type=int, default=128)
+    parser.add_argument("--validation-epoch", type=int, default=1)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--output-json", default="")
     return parser.parse_args()
@@ -109,6 +111,16 @@ def _variant_postprocess_config(base: PV26PostprocessConfig, variant: str) -> PV
         overrides["lane_segfirst_max_row_gap"] = 24
     if "row_gap36" in variant:
         overrides["lane_segfirst_max_row_gap"] = 36
+    if "row_gap8" in variant:
+        overrides["lane_segfirst_max_row_gap"] = 8
+    if "row_gap16" in variant:
+        overrides["lane_segfirst_max_row_gap"] = 16
+    if "row_dx6" in variant:
+        overrides["lane_segfirst_max_link_dx"] = 6.0
+    if "row_dx8" in variant:
+        overrides["lane_segfirst_max_link_dx"] = 8.0
+    if "row_dx10" in variant:
+        overrides["lane_segfirst_max_link_dx"] = 10.0
     if "row_dx12" in variant:
         overrides["lane_segfirst_max_link_dx"] = 12.0
     if "row_dx16" in variant:
@@ -121,6 +133,12 @@ def _variant_postprocess_config(base: PV26PostprocessConfig, variant: str) -> PV
         overrides["lane_segfirst_min_polyline_bottom_y_fraction"] = 0.30
     if "lane_bottom50" in variant:
         overrides["lane_segfirst_min_polyline_bottom_y_fraction"] = 0.50
+    if "turn45" in variant:
+        overrides["lane_segfirst_max_turn_degrees"] = 45.0
+    if "turn60" in variant:
+        overrides["lane_segfirst_max_turn_degrees"] = 60.0
+    if "turn75" in variant:
+        overrides["lane_segfirst_max_turn_degrees"] = 75.0
     if "stop_obj030" in variant:
         overrides["stop_line_obj_threshold"] = 0.30
     if "stop_obj070" in variant:
@@ -185,6 +203,7 @@ def main() -> int:
     _, val_loader = train_cli._build_phase_train_loaders(dataset, train_config=train_config, phase=phase)
     if val_loader is None:
         raise ValueError("decode variant probe requires validation batches")
+    _advance_validation_sampler(val_loader, validation_epoch=int(args.validation_epoch))
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     trainer.load_model_weights(checkpoint, map_location=train_config.device)
@@ -228,6 +247,20 @@ def main() -> int:
         "lane_row_scan_row_gap24_row_dx12",
         "lane_row_scan_row_gap36_row_dx12",
         "lane_row_scan_row_gap36_row_dx16",
+        "lane_row_scan_len40",
+        "lane_row_scan_len80",
+        "lane_row_scan_bottom30",
+        "lane_row_scan_bottom50",
+        "lane_row_scan_len40_bottom30",
+        "lane_row_scan_len80_bottom30",
+        "lane_row_scan_row_gap8_row_dx6",
+        "lane_row_scan_row_gap8_row_dx8",
+        "lane_row_scan_row_gap16_row_dx8",
+        "lane_row_scan_turn45",
+        "lane_row_scan_turn60",
+        "lane_row_scan_turn75",
+        "lane_row_scan_len40_turn60",
+        "lane_row_scan_row_gap8_row_dx6_turn60",
         "lane_t080_lane_row_scan",
         "lane_t090_lane_row_scan",
     )

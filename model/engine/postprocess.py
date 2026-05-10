@@ -67,6 +67,7 @@ class PV26PostprocessConfig:
     lane_segfirst_track_mode: str = "component"
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
+    lane_segfirst_max_turn_degrees: float = 0.0
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
     stop_line_min_component_pixels: int = 24
@@ -1522,6 +1523,7 @@ def _decode_segfirst_lane_rows(
             semantic_vote_mode=str(config.lane_segfirst_semantic_vote_mode),
             max_row_gap=int(config.lane_segfirst_max_row_gap),
             max_link_dx=float(config.lane_segfirst_max_link_dx),
+            max_turn_degrees=float(config.lane_segfirst_max_turn_degrees),
         ),
     )
 

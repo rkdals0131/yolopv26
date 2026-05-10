@@ -1029,3 +1029,39 @@ Stop-line branch 결과:
 
 - local center/selector/fused window extraction, append-top2, threshold/top-k 조합은 같은 family로 반복하지 않는다.
 - stop-line을 재개한다면 component를 true line instance 단위로 분리하는 contract, 또는 train-time geometry/readout이 직접 맞는 stronger representation을 설계해야 한다.
+
+## 29. 2026-05-11 Gate 3 lane row-scan geometry guard probe: FP guards do not improve the partial-positive
+
+맥락:
+
+- row-scan vectorizer는 broader-val512에서 lane F1을 `0.5101 -> 0.5279`로 올린 partial-positive였지만, visual audit에서 extra/zig track over-link risk가 남아 deployment default로 승격하지 않았다.
+- 그래서 학습축을 새로 열기 전에 row-scan track 자체에 length/bottom/gap/dx/turn-angle guard를 걸어 over-link를 줄이면 lane F1이 더 좋아지는지 decode-only로 확인했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-row-scan-geometry-guard`
+- `LaneSegFirstVectorizerConfig.max_turn_degrees`와 `PV26PostprocessConfig.lane_segfirst_max_turn_degrees`를 opt-in으로 추가했다. 기본값은 `0.0`이라 production default는 바뀌지 않는다.
+- `tools/probe_pv26_lane60_decode_variants.py`에 `--validation-epoch`과 row-scan guard variants를 추가했다.
+- variants는 row-scan baseline, length `40/80`, bottom fraction `0.30/0.50`, row gap/dx, turn `45/60/75` 및 일부 조합을 비교한다.
+
+검증:
+
+- smoke: `--max-val-batches 4 --validation-epoch 2`.
+- main probe: `--max-val-batches 128 --validation-epoch 2 --device cuda:0`.
+- output: `analysis_exports/decode_variants_row_scan_geometry_guard_val128_epoch2.json`.
+- baseline exact val128 lane/stop/cross F1: `0.5267 / 0.4483 / 0.5854`, lane TP/FP/FN `1021 / 466 / 1369`.
+- existing row-scan lane/stop/cross F1: `0.5522 / 0.4483 / 0.5854`, lane TP/FP/FN `1097 / 486 / 1293`.
+- best lane F1: `lane_row_scan_row_gap24_row_dx12`, lane F1 `0.5526`, lane TP/FP/FN `1108 / 512 / 1282`.
+- best turn guard in this probe: `lane_row_scan_turn75`, lane F1 `0.5365`, lane TP/FP/FN `1037 / 439 / 1353`.
+
+판단:
+
+- row gap/dx를 넓힌 best는 기존 row-scan 대비 lane F1이 `+0.0004`뿐이고 FP가 `486 -> 512`로 늘어 over-link guard가 아니라 더 느슨한 merge다.
+- turn-angle guard는 FP를 줄이지만 TP를 더 많이 잃어 lane F1이 `0.5365` 이하로 떨어진다.
+- length/bottom guard는 이 slice에서 기존 row-scan과 같은 결과라 over-link risk를 줄이는 신호가 없다.
+- 따라서 row-scan micro-guard만으로는 default 승격이나 lane F1 0.6 path가 아니다.
+
+다음:
+
+- row-scan length/bottom/gap/dx/turn-angle guard 조합은 같은 family로 반복하지 않는다.
+- lane을 계속한다면 row-scan 후처리 조절보다 side/truncated/near-vertical predicted centerline coverage와 fragment separation을 모델/target contract에서 같이 다룬다.
