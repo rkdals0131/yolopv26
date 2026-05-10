@@ -621,3 +621,45 @@ Stop-line branch 결과:
 
 - side/truncated/near-vertical miss 진단은 유지하되, recall-only positive pressure만으로는 부족하다.
 - 다음 lane 축은 risk lane의 false-positive/fragment 제어까지 같이 갖는 더 정밀한 instance/geometry-aware contract여야 한다.
+
+## 19. 2026-05-11 Gate 3 lane geometry-risk local Tversky: centerline-core gain is noise-level
+
+맥락:
+
+- geometry-risk recall-only loss는 exact lane F1을 올렸지만 dense centerline-core F1을 크게 낮췄다.
+- 이번 실험은 같은 side/truncated/near-vertical risk instance 주변 local support에서 false-positive까지 같이 벌주는 Tversky term을 추가했다.
+- 목적은 risk lane recall pressure를 유지하면서 fragment/FP 위험을 줄일 수 있는지 보는 것이었다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-geometry-risk-local-tversky`
+- `render_lane_segfirst_targets`가 `lane_seg_centerline_geometry_risk_support`를 추가로 내보내게 했다.
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_geometry_risk_local_tversky_weight`를 추가했다. 기본값은 기존 동작과 같은 `0.0`이다.
+- `core_centerline_refine_geometry_risk_local_tversky` probe는 geometry-risk local Tversky weight `0.75`를 켠다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_geometry_risk_local_tversky_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_043546`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_geometry_risk_local_tversky --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5798`, lane/stop/cross F1 `0.5160 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6089`, lane/stop/cross F1 `0.5306 / 0.4522 / 0.5854`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: lane centerline-core best pixel F1 `0.5738` at threshold `0.9`, precision/recall `0.5138 / 0.6498`; lane support best pixel F1 `0.7971`.
+- 기준 dense-map PR은 lane centerline-core F1 `0.5729`, lane support F1 `0.7971`이었다.
+
+판단:
+
+- exact objective와 stop-line F1은 기준보다 극소폭 높지만, lane F1 gain은 `+0.0039`뿐이다.
+- dense centerline-core F1도 기준 대비 `+0.0009`라 실질적인 centerline 병목 해결 신호로 보기 어렵다.
+- recall-only probe의 exact lane F1 `0.5405`보다 낮으므로 risk-lane vectorized metric 측면에서도 더 약하다.
+- broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- geometry-risk local Tversky loss만 같은 형태로 반복하지 않는다.
+- exact objective `+0.00004` 또는 dense F1 `+0.0009` 수준의 노이즈를 lane 0.6 path로 취급하지 않는다.
+
+다음:
+
+- side/truncated/near-vertical miss 진단은 유지하되, BCE weight-only, margin-only, recall-only, local false-positive penalty-only는 닫는다.
+- 다음 lane 축은 risk bucket을 다시 누르는 게 아니라 prediction confidence/fragment separation 자체를 바꾸는 contract여야 한다.
