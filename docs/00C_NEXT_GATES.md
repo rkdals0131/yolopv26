@@ -16,6 +16,7 @@
 - support map을 lane centerline 대체물처럼 쓰는 실험을 반복하지 않는다.
 - learned query-vector proposal-only를 objective만 보고 확장하지 않는다.
 - selector-map component gate를 stop-line readout fix로 반복하지 않는다.
+- endpoint-delta channel 추가 + direct decode를 같은 형태로 반복하지 않는다.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -129,11 +130,12 @@ Gate 상태:
 - predicted half-length는 단순 scale 문제가 아니다. x128 scaling도 stop-line F1 `0.4500`에 그쳤고, log target은 exact val128 stop-line F1 `0.4211`로 후퇴했다.
 - learned vector proposal short run은 vector-only exact val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. threshold를 낮춰도 TP가 없어서 broader-val이나 long run으로 확장하지 않는다.
 - selector-map component gate read-only probe도 val128 stop-line F1 `0.2062`로 `stop_mask_only` `0.2593`보다 낮았다. selector map을 단순 component 선택에 쓰는 후처리만으로는 0.6 path가 아니다.
+- endpoint-delta target/readout short run도 val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. 새 dense endpoint channel을 바로 decode source로 쓰면 TP가 사라지므로 같은 형태로 확장하지 않는다.
 
 후보:
 
 - stop-line은 잠시 보류하고 Gate 3 lane axis를 진행한다.
-- stop-line을 재개한다면 새 query proposal을 얹기보다 dense mask/centerline signal을 line geometry로 복원하는 readout/target contract를 다시 설계한다.
+- stop-line을 재개한다면 새 query proposal이나 endpoint-delta channel을 얹기보다, predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 설계한다.
 - PCA component 후보는 weak-positive reference로 보관하되, deployment default 승격 후보로 보지 않는다.
 
 성공 기준:
@@ -146,7 +148,7 @@ Gate 상태:
 
 - partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
 - same-family micro experiments는 중단한다.
-- 다음 stop-line 실행은 dense mask/centerline signal을 line geometry로 복원하는 target/readout contract다. 단순 half-length target/loss/readout scalar나 learned query-vector proposal-only는 반복하지 않는다.
+- 다음 stop-line 실행은 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode는 반복하지 않는다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -176,7 +178,8 @@ Gate 상태:
 - `exp/lane-family-f1/lane-centerline-core-calibration`, `exp/lane-family-f1/lane-bce-stopline-pca-integration`, `exp/lane-family-f1/lane-bce-stopline-balance`는 partial/negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-vector-proposal-readout`은 learned query-vector proposal negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-selector-component-gate`는 selector-map component gate negative evidence로 보관한다.
-- 다음 한 축은 dense mask/centerline signal을 line geometry로 복원하는 stop-line target/readout contract이거나, stop-line을 잠시 보류한 lane axis다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, lane support-substitution은 반복하지 않는다.
+- `exp/lane-family-f1/stopline-centerline-endpoint-offset`은 endpoint-delta target/readout negative evidence로 보관한다.
+- 다음 한 축은 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 stop-line geometry recovery contract이거나, stop-line을 잠시 보류한 lane axis다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, lane support-substitution은 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6

@@ -353,3 +353,42 @@ Stop-line branch 결과:
 
 - 다음 stop-line 축은 selector map gate가 아니라 train-time target과 geometry readout이 직접 맞는 contract여야 한다.
 - 가능한 후보는 component fit 후처리보다 endpoint/length를 component 또는 centerline pixels에서 직접 supervise/recover하는 방식이다.
+
+## 12. 2026-05-11 Gate 2 revisit: endpoint-delta target/readout is negative
+
+맥락:
+
+- selector-map component gate가 실패한 뒤, stop-line centerline pixels에서 양 끝점 delta를 직접 회귀하면 component mask를 valid line segment로 복원할 수 있는지 확인했다.
+- 목적은 half-length scalar 대신 `(start_x, start_y, end_x, end_y)` delta를 dense stop-line head에서 예측하고, opt-in decoder가 component anchor에서 이 값을 읽는 것이었다.
+
+변경:
+
+- branch: `exp/lane-family-f1/stopline-centerline-endpoint-offset`
+- `StopLineDenseLocalHead`에 `stop_line_endpoint_delta` 4ch output을 추가했다.
+- `build_stopline_mask_targets`와 batch encoder가 centerline pixels에 endpoint deltas를 기록하게 했다.
+- stop-line mask loss에 `stopline_endpoint_delta_aux_weight`를 추가하고 기본값은 `0.0`으로 유지했다.
+- `PV26PostprocessConfig.stop_line_endpoint_delta_decode`를 추가하고 기본값은 `False`로 유지했다.
+- `core_centerline_refine_stop_endpoint_delta` probe는 endpoint delta aux weight `2.0`과 endpoint decode를 켠다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_endpoint_delta_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_021151`
+- epoch1 objective `0.5880863169`, lane/stop/cross F1 `0.5124 / 0.0000 / 0.6790`, stop-line TP/FP/FN `0 / 13 / 55`.
+- epoch2 objective `0.5758300830`, lane/stop/cross F1 `0.5261 / 0.0000 / 0.5854`, stop-line TP/FP/FN `0 / 13 / 60`.
+- best objective는 epoch1의 `0.5880863169`로 기준 exact epoch2 `0.6088677363`과 broader-val512 `0.5943438312`보다 낮다.
+
+판단:
+
+- endpoint-delta channel 자체는 구현/학습/디코드 단위 테스트를 통과했다.
+- 하지만 newly initialized endpoint geometry를 바로 decode source로 쓰면 stop-line TP가 사라진다.
+- 현재 병목은 endpoint 표현이 없어서가 아니라 predicted anchor/geometry reliability가 부족한 쪽이다.
+
+하지 말 것:
+
+- endpoint-delta channel 추가 + direct decode를 같은 형태로 long run이나 broader-val512로 확장하지 않는다.
+- `phase_objective`가 일부 유지된 것만 보고 stop-line 개선으로 해석하지 않는다. stop-line F1은 `0.0000`이다.
+
+다음:
+
+- stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract가 필요하다.
+- stop-line을 잠시 보류한다면 lane axis는 support substitution이나 threshold sweep이 아니라 centerline-to-vector recovery error bucket 또는 새로운 centerline-core 품질 가설로 제한한다.
