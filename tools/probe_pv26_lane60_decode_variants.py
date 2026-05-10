@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phase-index", type=int, default=4)
     parser.add_argument("--max-val-batches", type=int, default=128)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--output-json", default="")
     return parser.parse_args()
 
 
@@ -102,6 +103,16 @@ def _variant_postprocess_config(base: PV26PostprocessConfig, variant: str) -> PV
         overrides["lane_obj_threshold"] = 0.80
     if "lane_t090" in variant:
         overrides["lane_obj_threshold"] = 0.90
+    if "lane_row_scan" in variant:
+        overrides["lane_segfirst_track_mode"] = "row_scan"
+    if "row_gap24" in variant:
+        overrides["lane_segfirst_max_row_gap"] = 24
+    if "row_gap36" in variant:
+        overrides["lane_segfirst_max_row_gap"] = 36
+    if "row_dx12" in variant:
+        overrides["lane_segfirst_max_link_dx"] = 12.0
+    if "row_dx16" in variant:
+        overrides["lane_segfirst_max_link_dx"] = 16.0
     if "lane_len40" in variant:
         overrides["lane_segfirst_min_polyline_length_px"] = 40.0
     if "lane_len80" in variant:
@@ -212,6 +223,13 @@ def main() -> int:
         "lane_centerline_support_blend",
         "lane_support_stop_mask_only",
         "lane_centerline_support_blend_stop_mask_only",
+        "lane_row_scan",
+        "lane_row_scan_row_gap24",
+        "lane_row_scan_row_gap24_row_dx12",
+        "lane_row_scan_row_gap36_row_dx12",
+        "lane_row_scan_row_gap36_row_dx16",
+        "lane_t080_lane_row_scan",
+        "lane_t090_lane_row_scan",
     )
     predictions_by_variant: dict[str, list[dict[str, Any]]] = {name: [] for name in variants}
     raw_batches: list[dict[str, Any]] = []
@@ -243,6 +261,11 @@ def main() -> int:
         )
         rows.append(_row_from_metrics(variant, metrics))
     rows.sort(key=lambda row: float(row.get("phase4_objective_proxy", 0.0)), reverse=True)
+    if str(args.output_json).strip():
+        output_path = Path(args.output_json).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n")
+        print(f"[decode_probe] wrote {output_path}", flush=True)
     print(json.dumps(rows, indent=2, sort_keys=True), flush=True)
     return 0
 

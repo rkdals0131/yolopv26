@@ -118,6 +118,9 @@ class TrainDefaultsConfig:
     lane_centerline_dice_weight: float = 0.0
     lane_segfirst_centerline_target_mode: str = "soft"
     lane_segfirst_centerline_max_positive_weight: float = 32.0
+    lane_segfirst_track_mode: str = "component"
+    lane_segfirst_max_row_gap: int = 12
+    lane_segfirst_max_link_dx: float = 8.0
     lane_segfirst_loss_weights: dict[str, float] = field(default_factory=dict)
     lane_segfirst_color_class_weights: dict[str, float] = field(default_factory=dict)
     stopline_local_x_aux_weight: float = 0.0
@@ -581,6 +584,18 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
                 defaults.lane_segfirst_centerline_max_positive_weight,
             ),
             field_name="train_defaults.lane_segfirst_centerline_max_positive_weight",
+        ),
+        lane_segfirst_track_mode=_coerce_str(
+            data.get("lane_segfirst_track_mode", defaults.lane_segfirst_track_mode),
+            field_name="train_defaults.lane_segfirst_track_mode",
+        ),
+        lane_segfirst_max_row_gap=_coerce_int(
+            data.get("lane_segfirst_max_row_gap", defaults.lane_segfirst_max_row_gap),
+            field_name="train_defaults.lane_segfirst_max_row_gap",
+        ),
+        lane_segfirst_max_link_dx=_coerce_float(
+            data.get("lane_segfirst_max_link_dx", defaults.lane_segfirst_max_link_dx),
+            field_name="train_defaults.lane_segfirst_max_link_dx",
         ),
         lane_segfirst_loss_weights={
             _coerce_str(name, field_name="train_defaults.lane_segfirst_loss_weights.key"): _coerce_float(

@@ -28,6 +28,7 @@ class LaneSegFirstTargetConfig:
 
 @dataclass(frozen=True)
 class LaneSegFirstVectorizerConfig:
+    track_mode: str = "component"
     centerline_threshold: float = 0.5
     min_component_pixels: int = 2
     max_component_pixels: int | None = 1000
@@ -379,6 +380,13 @@ def _component_to_polylines(
     return [track for track in downsampled if len(track) >= 2]
 
 
+def _track_to_mask(points_xy: list[list[float]], *, output_hw: tuple[int, int], width: int = 3) -> np.ndarray:
+    if len(points_xy) < 2:
+        return np.zeros(output_hw, dtype=bool)
+    points = torch.tensor(points_xy, dtype=torch.float32).reshape(-1, 2)
+    return _draw_poly_mask(output_hw, points, width=max(1, int(width)))
+
+
 def _vote_index(chw: np.ndarray, component_mask: np.ndarray, *, weights: np.ndarray | None = None) -> int:
     if chw.shape[0] == 0 or not bool(component_mask.any()):
         return 0
@@ -450,6 +458,66 @@ def vectorize_lane_segfirst_maps(
     transform = transform_from_meta(meta) if meta is not None else None
 
     predictions: list[dict[str, Any]] = []
+    track_mode = str(cfg.track_mode).strip().lower()
+    if track_mode in {"row_scan", "rowscan", "row"}:
+        map_polylines = _component_to_polylines(
+            binary,
+            row_stride=max(1, int(cfg.row_stride)),
+            max_row_gap=max(1, int(cfg.max_row_gap)),
+            max_link_dx=float(cfg.max_link_dx),
+        )
+        for map_points in map_polylines:
+            if cfg.max_predictions is not None and len(predictions) >= int(cfg.max_predictions):
+                break
+            if len(map_points) < int(cfg.min_polyline_points):
+                continue
+            track_mask = _track_to_mask(map_points, output_hw=map_hw, width=3) & binary
+            if int(track_mask.sum()) < int(cfg.min_component_pixels):
+                continue
+            if transform is not None:
+                network_points = _scale_points_list(
+                    map_points,
+                    source_hw=map_hw,
+                    target_hw=transform.network_hw,
+                )
+            else:
+                network_points = map_points
+            network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
+            if unique_point_count(network_points) < 2:
+                continue
+            output_points = inverse_transform_points(network_points, transform) if transform is not None else network_points
+            if unique_point_count(output_points) < 2:
+                continue
+            if float(cfg.min_polyline_length_px) > 0.0 and _polyline_length(output_points) < float(cfg.min_polyline_length_px):
+                continue
+            output_hw = transform.raw_hw if transform is not None else map_hw
+            if not _passes_bottom_y_filter(
+                output_points,
+                min_fraction=float(cfg.min_polyline_bottom_y_fraction),
+                target_hw=output_hw,
+            ):
+                continue
+            semantic_weights = _semantic_vote_weights(
+                centerline,
+                track_mask,
+                mode=cfg.semantic_vote_mode,
+                threshold=float(cfg.centerline_threshold),
+            )
+            color_index = _vote_index(color_map, track_mask, weights=semantic_weights)
+            type_index = _vote_index(type_map, track_mask, weights=semantic_weights)
+            predictions.append(
+                {
+                    "score": 1.0,
+                    "class_name": LANE_CLASSES[color_index],
+                    "lane_type": LANE_TYPES[type_index],
+                    "points_xy": [[float(x), float(y)] for x, y in output_points],
+                }
+            )
+        predictions.sort(key=lambda item: (max(point[1] for point in item["points_xy"]), -np.mean([point[0] for point in item["points_xy"]])), reverse=True)
+        return predictions
+    if track_mode != "component":
+        raise ValueError("track_mode must be one of: component, row_scan")
+
     component_ids: list[int] = []
     component_sizes = ndimage.sum(
         binary.astype(np.float32),
