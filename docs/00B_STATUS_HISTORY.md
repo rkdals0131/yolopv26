@@ -703,3 +703,44 @@ Stop-line branch 결과:
 다음:
 
 - stop-line을 재개한다면 target support를 넓히는 방향보다, predicted center/proposal confidence를 분리해 안정화하거나 PCA/component-fit weak-positive를 넘어서는 다른 geometry recovery contract를 찾아야 한다.
+
+## 21. 2026-05-11 Gate 3 lane negative-pixel margin: noise-level dense gain, exact metrics below baseline
+
+맥락:
+
+- side/risk recall probes는 vectorized lane F1을 조금 올렸지만 dense centerline-core precision을 잃었다.
+- 이번 실험은 반대로 explicit lane negative pixels에서 centerline probability를 margin 아래로 누르면 fragment/FP separation이 좋아지는지 확인했다.
+- 기본 동작은 유지하고, opt-in loss와 lane60 probe만 추가했다.
+
+변경:
+
+- branch: `exp/lane-family-f1/lane-centerline-negative-margin`
+- `PV26MultiTaskLoss`에 opt-in `lane_segfirst_centerline_negative_margin_weight`, `lane_segfirst_centerline_negative_margin`을 추가했다. 기본값은 비활성 `0.0 / 0.15`다.
+- `_lane_segfirst_loss`는 `lane_seg_negative` mask에서만 `relu(sigmoid(centerline_logits) - margin)^2`를 더한다.
+- `core_centerline_refine_negative_margin` probe는 core centerline refine baseline 위에 negative-margin weight `0.5`, margin `0.15`를 적용한다.
+
+검증:
+
+- output run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_negative_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_051455`
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run .../lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_negative_margin --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- epoch1: `phase_objective=0.5788`, lane/stop/cross F1 `0.5135 / 0.2000 / 0.6790`.
+- epoch2: `phase_objective=0.6058`, lane/stop/cross F1 `0.5261 / 0.4348 / 0.5854`, stop-line TP/FP/FN `25 / 30 / 35`.
+- 기준 exact epoch2는 `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+- dense-map PR on best checkpoint: lane centerline-core best pixel F1 `0.5736` at threshold `0.9`, precision/recall `0.5136 / 0.6495`; lane support best pixel F1 `0.7975`.
+- 기준 dense-map PR은 lane centerline-core F1 `0.5729`, lane support F1 `0.7971`이었다.
+
+판단:
+
+- exact objective, lane F1, stop-line F1이 모두 기준보다 낮다.
+- dense centerline-core F1 gain은 `+0.0007` 수준이라 geometry-risk local Tversky의 `+0.0009`와 마찬가지로 noise-level이다.
+- negative-pixel pressure만으로 predicted centerline coverage와 fragment separation을 동시에 해결하지 못했다.
+- broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- negative-pixel probability margin loss만 같은 형태로 반복하지 않는다.
+- dense F1 `+0.0007` 같은 노이즈를 lane 0.6 path로 취급하지 않는다.
+
+다음:
+
+- 다음 lane 축은 risk bucket이나 negative mask를 단순히 더 누르는 방식이 아니라, instance continuity / endpoint coverage / fragment separation을 같이 다루는 contract여야 한다.

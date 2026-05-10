@@ -22,6 +22,7 @@
 - side-band centerline probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - side/truncated/near-vertical geometry-risk recall-only loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - side/truncated/near-vertical geometry-risk local Tversky loss만으로 lane 0.6 path를 다시 찾지 않는다.
+- lane negative-pixel probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -176,6 +177,7 @@ Gate 상태:
 - `core_centerline_refine_side_margin`은 exact val128 epoch2 objective `0.6097`와 lane/stop/cross F1 `0.5352 / 0.4522 / 0.5854`로 기준을 근소하게 넘었지만, dense-map PR에서 lane centerline-core F1이 `0.5573`으로 기준 `0.5729`보다 크게 낮아졌다. centerline 병목을 직접 푼 신호가 아니므로 broader-val512로 확장하지 않는다.
 - `core_centerline_refine_geometry_risk_recall`은 side/truncated/near-vertical lane을 target risk bucket으로 찍고 recall-only loss를 추가했다. exact val128 epoch2 lane/stop/cross F1은 `0.5405 / 0.4348 / 0.5854`였지만, phase objective `0.6086`은 기준보다 낮고 lane centerline-core F1도 `0.5572`로 기준 `0.5729`보다 낮다. broader-val512로 확장하지 않는다.
 - `core_centerline_refine_geometry_risk_local_tversky`는 risk instance 주변 local support에서 false-positive를 같이 벌주는 Tversky loss를 추가했다. exact val128 epoch2 objective는 `0.6089`, lane/stop/cross F1은 `0.5306 / 0.4522 / 0.5854`였고 lane centerline-core F1은 `0.5738`로 기준보다 `+0.0009`뿐이다. centerline 병목 해결 신호로 보기에는 너무 작고 recall-only보다 vectorized lane F1도 낮아서 broader-val512로 확장하지 않는다.
+- `core_centerline_refine_negative_margin`은 explicit lane negative pixels에서 centerline probability를 margin 아래로 누르는 loss를 추가했다. exact val128 epoch2 objective는 `0.6058`, lane/stop/cross F1은 `0.5261 / 0.4348 / 0.5854`이고 lane centerline-core F1은 `0.5736`으로 기준보다 `+0.0007`뿐이다. exact metric이 기준 미달이고 dense gain도 noise-level이라 broader-val512로 확장하지 않는다.
 - `core_centerline_refine_bce_focus`는 lane F1을 broader-val512 `0.5101 -> 0.5344`로 올렸지만, centerline-core pixel F1은 `0.5680`으로 기준선보다 낮고 stop-line/crosswalk가 내려갔다.
 - BCE-focus + PCA stop-line decoder integration audit best는 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`로 partial-positive지만 목표 미달이다.
 - BCE-focus stop-balance broader-val512는 `0.5372 / 0.4041 / 0.5812`이고 PCA replay best도 `0.5372 / 0.4528 / 0.5812`라 stop-line 병목을 못 풀었다.
@@ -201,7 +203,8 @@ Gate 상태:
 - `exp/lane-family-f1/lane-centerline-side-margin`은 side-band probability margin partial/negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-geometry-risk-recall`은 side/truncated/near-vertical geometry-risk recall-only partial/negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-geometry-risk-local-tversky`는 geometry-risk local false-positive penalty partial/negative evidence로 보관한다.
-- 다음 한 축은 side/truncated/near-vertical lane centerline recall을 올리되 BCE weight-only, probability-margin-only, recall-only보다 더 정밀한 instance/geometry-aware 학습 신호다. stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, heatmap-support geometry fill, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only는 반복하지 않는다.
+- `exp/lane-family-f1/lane-centerline-negative-margin`은 negative-pixel probability margin partial/negative evidence로 보관한다.
+- 다음 한 축은 side/truncated/near-vertical lane centerline recall을 올리되 BCE weight-only, probability-margin-only, recall-only, negative-pixel margin-only보다 더 정밀한 instance/geometry-aware 학습 신호다. stop-line을 재개한다면 predicted center/proposal reliability를 먼저 올리거나 PCA/component-fit weak-positive를 넘어서는 geometry recovery contract다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate, endpoint-delta direct decode, heatmap-support geometry fill, lane support-substitution, lane threshold-only sweep, semantic attr oracle, vectorizer rewrite-first, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only, negative-pixel margin-only는 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6
