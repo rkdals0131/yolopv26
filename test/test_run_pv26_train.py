@@ -255,7 +255,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
         self.assertAlmostEqual(scenario.train_defaults.det_iou_threshold, 0.70)
-        self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.50)
+        self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.45)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_obj_threshold, 0.50)
         self.assertAlmostEqual(scenario.train_defaults.crosswalk_obj_threshold, 0.50)
         self.assertEqual(tuple(phase.stage for phase in scenario.phases), (

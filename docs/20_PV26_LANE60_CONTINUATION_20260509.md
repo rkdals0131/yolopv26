@@ -280,6 +280,35 @@ These filters are applied to the dense mask/vectorizer path while old-head-only 
 
 Achieved on the exact epoch-2 validation subset.
 
+## Closeout Summary
+
+Original situation:
+
+- The long source run had a real but unsatisfying lane-family checkpoint: epoch 18 selected at objective `0.5272`, with lane/stop/cross F1 `0.3643 / 0.3556 / 0.5165`.
+- The first continuation wave could move the objective only to the mid-`0.55` range. Core centerline supervision and a small gated centerline refinement were real training-side improvements, but not enough to clear 60%.
+- The best training-side checkpoint before final decode work was `core_centerline_refine_cross_retain` at objective `0.5609` on the trainer's phase summary, and exact epoch-2 replay measured the selected `best.pt` at `0.5611` with lane/stop/cross F1 `0.4435 / 0.3946 / 0.4111`.
+
+What changed:
+
+- The first successful training-side change was switching lane centerline supervision from soft centerline to core centerline. This raised the best val128 objective from the dense-sharpen range around `0.5308` to `0.5530`.
+- A centerline-only gated refinement branch then raised the best architecture-side objective to `0.5591`; merged task-head seeding and cross-adapted head merging nudged it to `0.5609`.
+- Those changes improved the model's useful signal, but the comparison grids and filter-feature audits showed a remaining decode problem: small lane fragments, weak stop-line fragments, and small/flat crosswalk polygons were counted as predictions.
+- Exact epoch-subset replay fixed the evaluator premise. The standalone evaluator now advances the validation sampler with `--validation-epoch`, so epoch-2 checkpoint checks use the same support counts that selected the training best: lane/stop/cross support `2390 / 60 / 81`.
+- The final postprocess path combines score/component thresholds with feature-derived geometry filters: lane bbox area/aspect, stop-line aspect plus instance score, and crosswalk polygon area/aspect.
+
+Observed result:
+
+- Exact epoch-2 baseline for the selected `best.pt`: objective `0.5611`, lane/stop/cross F1 `0.4435 / 0.3946 / 0.4111`.
+- After crosswalk mask/component and stop-line top-1 component filtering: objective `0.5732`, lane/stop/cross F1 `0.4429 / 0.4275 / 0.4953`.
+- After the final geometry filters: objective `0.6088677363`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`.
+
+Interpretation:
+
+- The 60% break is a partial success, not proof that the raw model is suddenly strong. It comes from a real checkpoint plus necessary decode cleanup.
+- The architecture work was still useful: without the core-centerline/refine/cross-retain checkpoint, the final filters would not have had the same signal to clean up.
+- The final geometry filters are plausible and visually necessary because they remove small fragments, but they should be broader-val checked before being treated as a deployment default.
+- Traffic-light detection and attributes were not part of the lane60 fine-tune. Phase 4 had `det=0`, `tl_attr=0`, and no det/tl source samples. The usable traffic-light evidence remains the earlier phase-3 joint run: traffic-light boxes are only moderate, while attributes are fairly good once a light box is correctly matched.
+
 What this continuation falsified:
 
 - Support-map substitution is not a shortcut to 60%.
