@@ -19,6 +19,9 @@ class DocsSyncTests(unittest.TestCase):
     def test_numbered_docs_set_is_the_active_docs_surface(self) -> None:
         numbered = sorted(path.name for path in DOCS_ROOT.glob("[0-9]*.md"))
         self.assertIn("0_PRD.md", numbered)
+        self.assertIn("00A_CURRENT_STATUS.md", numbered)
+        self.assertIn("00B_STATUS_HISTORY.md", numbered)
+        self.assertIn("00C_NEXT_GATES.md", numbered)
         self.assertIn("9_EXECUTION_STATUS.md", numbered)
         self.assertNotIn("yolopv26_main_code_cleanliness_checklists.md", numbered)
         self.assertNotIn("yolopv26_main_code_cleanliness_report.md", numbered)
@@ -69,7 +72,7 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("teacher/runtime/", readme)
 
     def test_implementation_and_execution_docs_track_package_native_tooling(self) -> None:
-        implementation_plan = _read(DOCS_ROOT / "7_IMPLEMENTATION_PLAN.md")
+        implementation_plan = _read(DOCS_ROOT / "legacy" / "7_IMPLEMENTATION_PLAN.md")
         execution_doc = _read(DOCS_ROOT / "9_EXECUTION_STATUS.md")
         architecture_doc = _read(DOCS_ROOT / "2_SYSTEM_ARCHITECTURE.md")
 
@@ -124,7 +127,7 @@ class DocsSyncTests(unittest.TestCase):
         self.assertNotIn("model/viz/", architecture_doc)
 
     def test_sample_contract_doc_exists_and_is_referenced(self) -> None:
-        sample_doc = DOCS_ROOT / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md"
+        sample_doc = DOCS_ROOT / "legacy" / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md"
         self.assertTrue(sample_doc.exists())
         content = _read(sample_doc)
         self.assertIn('"image"', content)
@@ -136,10 +139,14 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn('"meta"', content)
 
         prd = (DOCS_ROOT / "0_PRD.md").read_text(encoding="utf-8")
-        self.assertIn("[4A_SAMPLE_AND_TRANSFORM_CONTRACT.md]", prd)
+        loss_doc = (DOCS_ROOT / "5_TARGETS_AND_LOSS.md").read_text(encoding="utf-8")
+        training_doc = (DOCS_ROOT / "6_TRAINING_AND_EVALUATION.md").read_text(encoding="utf-8")
+        self.assertIn("legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md", loss_doc)
+        self.assertIn("legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md", training_doc)
+        self.assertIn("00A_CURRENT_STATUS.md", prd)
 
     def test_contract_terminology_is_locked(self) -> None:
-        sample_doc = _read(DOCS_ROOT / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md")
+        sample_doc = _read(DOCS_ROOT / "legacy" / "4A_SAMPLE_AND_TRANSFORM_CONTRACT.md")
         self.assertIn("`N_gt_det`", sample_doc)
         self.assertIn("`Q_det`", sample_doc)
         self.assertIn("non_car_traffic_light", sample_doc)
@@ -152,14 +159,14 @@ class DocsSyncTests(unittest.TestCase):
 
     def test_query_counts_are_synced_between_docs_and_spec(self) -> None:
         spec = build_loss_spec()
-        architecture_doc = _read(DOCS_ROOT / "4_MODEL_ARCHITECTURE.md")
+        architecture_doc = _read(DOCS_ROOT / "legacy" / "4_MODEL_ARCHITECTURE.md")
         self.assertIn(f"fixed query count `{spec['heads']['lane']['query_count']}`", architecture_doc)
         self.assertIn(f"fixed query count `{spec['heads']['stop_line']['query_count']}`", architecture_doc)
         self.assertIn(f"fixed query count `{spec['heads']['crosswalk']['query_count']}`", architecture_doc)
         self.assertNotIn("query count 최종값", architecture_doc)
 
     def test_pv26_docs_track_backbone_and_stage4_direction(self) -> None:
-        architecture_doc = _read(DOCS_ROOT / "4_MODEL_ARCHITECTURE.md")
+        architecture_doc = _read(DOCS_ROOT / "legacy" / "4_MODEL_ARCHITECTURE.md")
         loss_doc = _read(DOCS_ROOT / "5_TARGETS_AND_LOSS.md")
         training_doc = _read(DOCS_ROOT / "6_TRAINING_AND_EVALUATION.md")
 
@@ -173,7 +180,7 @@ class DocsSyncTests(unittest.TestCase):
         self.assertIn("min_delta_abs", training_doc)
 
     def test_standardization_doc_tracks_bootstrap_output_roots(self) -> None:
-        standardization_doc = _read(DOCS_ROOT / "3_DATA_AND_STANDARDIZATION.md")
+        standardization_doc = _read(DOCS_ROOT / "legacy" / "3_DATA_AND_STANDARDIZATION.md")
         self.assertIn("seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized", standardization_doc)
         self.assertIn("seg_dataset/pv26_od_bootstrap/canonical/bdd100k_det_100k", standardization_doc)
         self.assertNotIn("seg_dataset/pv26_aihub_standardized", standardization_doc)

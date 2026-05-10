@@ -188,9 +188,12 @@ python3 tools/run_pv26_train.py --preset default
 ## 참고 문서
 
 - [docs/0_PRD.md](docs/0_PRD.md): 저장소 목표와 전체 범위
-- [docs/3_DATA_AND_STANDARDIZATION.md](docs/3_DATA_AND_STANDARDIZATION.md): 데이터 구조와 전처리 방향
-- [docs/3A_RAW_DATASET_LAYOUTS.md](docs/3A_RAW_DATASET_LAYOUTS.md): 원본 데이터셋 배치와 로컬 레이아웃
-- [docs/4_MODEL_ARCHITECTURE.md](docs/4_MODEL_ARCHITECTURE.md): 모델 구조
+- [docs/00A_CURRENT_STATUS.md](docs/00A_CURRENT_STATUS.md): 현재 상태 snapshot
+- [docs/00B_STATUS_HISTORY.md](docs/00B_STATUS_HISTORY.md): 실패/수정/결과 오답노트
+- [docs/00C_NEXT_GATES.md](docs/00C_NEXT_GATES.md): 다음 gate와 금지사항
+- [docs/legacy/3_DATA_AND_STANDARDIZATION.md](docs/legacy/3_DATA_AND_STANDARDIZATION.md): 데이터 구조와 전처리 방향 원문
+- [docs/legacy/3A_RAW_DATASET_LAYOUTS.md](docs/legacy/3A_RAW_DATASET_LAYOUTS.md): 원본 데이터셋 배치와 로컬 레이아웃 원문
+- [docs/legacy/4_MODEL_ARCHITECTURE.md](docs/legacy/4_MODEL_ARCHITECTURE.md): 모델 구조 원문
 - [docs/5_TARGETS_AND_LOSS.md](docs/5_TARGETS_AND_LOSS.md): 타깃 인코딩과 loss 설계
 - [docs/6_TRAINING_AND_EVALUATION.md](docs/6_TRAINING_AND_EVALUATION.md): 학습/평가 정책
 

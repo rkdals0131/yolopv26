@@ -31,7 +31,10 @@
 ## 문서 운영 원칙
 
 - `0_PRD.md`는 제품 범위를 정의한다.
-- `9_EXECUTION_STATUS.md`는 살아있는 tracker다.
+- `00A_CURRENT_STATUS.md`는 현재 상태 snapshot이다.
+- `00B_STATUS_HISTORY.md`는 실패/수정/결과 오답노트다.
+- `00C_NEXT_GATES.md`는 다음 gate와 금지사항 tracker다.
+- `9_EXECUTION_STATUS.md`는 기존 구현 live tracker이며, 새 판단 이력은 00A/00B/00C set에 우선 남긴다.
 - 구현 단계가 바뀌면 status와 checklist를 먼저 바꾼다.
 - obsolete 문서는 남겨두지 않는다.
 

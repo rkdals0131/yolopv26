@@ -3,7 +3,7 @@
 ## training strategy
 
 - step 1
-  - [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md) 기준 standardized dataset loader 구현
+  - [legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md) 기준 standardized dataset loader 구현
 - step 2
   - sample contract를 encoded batch contract로 바꾸는 target encoder 구현
 - step 3

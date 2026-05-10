@@ -4,7 +4,7 @@
 
 - detector, TL attr, lane, stop-line, crosswalk를 하나의 학습 파이프라인에서 다룬다.
 - partial label source를 손상시키지 않는다.
-- sample/transform contract는 [4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)를 기준으로 한다.
+- sample/transform contract 원문은 [legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md)를 기준으로 한다.
 - best checkpoint 선택과 phase 종료 기준을 현재 runtime 구현과 정확히 일치하게 문서화한다.
 
 ## current implementation snapshot
