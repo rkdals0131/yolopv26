@@ -21,6 +21,7 @@
 - heatmap-support geometry target fill을 stop-line reliability fix로 반복하지 않는다.
 - no-anchor PCA 또는 current-anchor swap만 stop-line readout fix로 반복하지 않는다.
 - component 내부 high-score point-pair split만 stop-line readout fix로 반복하지 않는다.
+- GT-overlap oracle headroom을 production decode 후보로 착각하지 않는다. row-band/core-row trim, high-confidence subcomponent cleanup, PCA endpoint quantile trim, component split fitting은 같은 family로 반복하지 않는다.
 - side-band centerline BCE positive weighting만으로 lane 0.6 path를 다시 찾지 않는다.
 - side-band centerline probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - side/truncated/near-vertical geometry-risk recall-only loss만으로 lane 0.6 path를 다시 찾지 않는다.
@@ -148,6 +149,8 @@ Gate 상태:
 - heatmap-support geometry target fill은 exact val128 epoch2 stop-line F1 `0.2338`, TP/FP/FN `18 / 76 / 42`로 기준보다 크게 낮고, dense stop-line mask/center F1도 `0.4854 / 0.0815`로 후퇴했다. center heatmap support 전체에 geometry target을 채우는 방식은 0.6 path가 아니다.
 - row-center auxiliary short run은 exact val128 epoch2 stop-line F1 `0.4248`로 기준 `0.4483`보다 낮았다. row selector에 centerline-row pressure만 추가하는 방식도 0.6 path가 아니다.
 - component/readout audit은 broader-val512 GT `271`개 중 production TP `98`, anchorless component fit close `123`, anchored fit close `119`를 보였다. GT tube mask/center max가 `>=0.50`인 GT는 `223 / 220`개지만, production FN 중 anchorless fit으로 새로 close가 되는 것은 `34`개뿐이다. 단순 no-anchor PCA/anchor swap은 0.6 path가 아니다.
+- older branch history의 GT target mask oracle은 stop-line F1 `0.8228`까지 가능했고, GT-overlap oracle은 `component_fit_or_endpoint_error=97` 중 `50`개를 oracle-trimmed pixels로 40px 안에 복구했다. 따라서 vectorizer/evaluator 자체가 hard blocker라는 해석은 약하다.
+- 하지만 non-oracle repair follow-up은 닫혔다. core-row trim best는 val128 stop-line F1 `0.4833`으로 PCA reference `0.5133` 미달, high-confidence cleanup은 broader-val512 `0.4667`로 PCA reference `0.4699` 미달, split fit은 val128 `0.4957 / 0.4786`로 PCA reference를 못 넘었다.
 - fit-far visual audit은 production FN, GT tube mask/center `>=0.50`, no-anchor distance `>40px` bucket 상위 18개를 렌더링했다. 18개 모두 production stop-line은 1개씩 있고, 14개는 component_count도 1이라 single connected component 안에서 wrong line segment를 읽는 문제가 강하다.
 - local component extraction probe는 center/selector/fused score로 component 내부 local support를 골라 다시 fit했지만 exact val128 stop-line F1이 기준 `0.4483`을 넘지 못했다. best replacement는 `0.4464`, append-top2 best는 FP 증가 때문에 `0.4054`다.
 - component-split readout probe는 pair/Hough-like 후보를 component 내부에서 만들었지만 exact val128 best append-top2도 stop-line F1 `0.3421`, TP/FP/FN `26 / 66 / 34`로 baseline보다 낮았다. replacement 계열은 best `0.2857`로 TP를 크게 잃었다.
@@ -168,7 +171,7 @@ Gate 상태:
 
 - partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
 - same-family micro experiments는 중단한다.
-- 다음 stop-line 실행은 train-time target/readout이 직접 맞는 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, no-anchor PCA/anchor swap-only, PCA threshold/top-k-only, local center/selector/fused window extraction, append-top2, pair/Hough-like component split readout은 반복하지 않는다.
+- 다음 stop-line 실행은 train-time target/readout이 직접 맞는 geometry recovery contract다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, no-anchor PCA/anchor swap-only, PCA threshold/top-k-only, row-band/core-row trim, high-confidence cleanup, PCA endpoint quantile trim, local center/selector/fused window extraction, append-top2, pair/Hough-like component split readout은 반복하지 않는다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -220,6 +223,8 @@ Gate 상태:
 - `exp/lane-family-f1/stopline-fit-far-visual-audit`은 high-signal FN bucket의 visual evidence로 보관한다.
 - `exp/lane-family-f1/stopline-local-component-extraction`은 local center/selector/fused window extraction negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-component-split-readout`은 pairwise component split readout negative evidence로 보관한다.
+- `exp/lane-family-f1/stopline-overlap-fit-oracle`은 GT mask/vectorizer headroom과 GT-overlap oracle recovery evidence로 보관한다.
+- `exp/lane-family-f1/stopline-component-core-fit`, `exp/lane-family-f1/stopline-component-cleanup-fit`, `exp/lane-family-f1/stopline-component-split-fit`은 oracle headroom을 non-oracle trimming/splitting으로 회수하지 못한 negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-vectorizer-recovery-audit`은 vectorizer headroom / predicted centerline bottleneck evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-core-width3`은 centerline target-width-only negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-centerline-error-buckets`은 missed-centerline bucket evidence로 보관한다.

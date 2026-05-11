@@ -1245,3 +1245,28 @@ Stop-line branch 결과:
 - `cross_mask=0.40`, `cross_area=32` exact-only threshold 후보를 default/export 후보로 반복하지 않는다.
 - crosswalk를 재개한다면 recall-safe shape filtering이나 training-side retention evidence가 필요하다.
 - 전체 goal 기준 병목은 다시 stop-line, 그 다음 lane이다. stop-line은 train-time target/readout이 직접 맞는 geometry representation 또는 stronger proposal contract로 제한한다.
+
+## 35. 2026-05-11 Git-history reconciliation: older stop-line oracle repair branches stay negative/diagnostic
+
+맥락:
+
+- current docs는 May 11 stop-line readout/component audits와 crosswalk broader failure를 담고 있지만, May 10 branch history에 남은 older stop-line oracle/repair evidence 일부가 canonical docs의 금지축에 충분히 드러나지 않았다.
+- 중복 실험을 피하기 위해 `git show`와 branch-local docs에서 unmerged stop-line oracle/repair branch의 결론만 다시 대조했다.
+
+확인한 branch evidence:
+
+- `exp/lane-family-f1/stopline-overlap-fit-oracle`: GT target mask oracle은 stop-line F1 `0.8228`, GT-overlap oracle은 `component_fit_or_endpoint_error=97` 중 `50`개를 40px 안으로 복구했다. oracle은 diagnostic only이며 production decode 후보가 아니다.
+- `exp/lane-family-f1/stopline-component-core-fit`: simple core-row trim best는 val128 stop-line F1 `0.4833`으로 PCA decoder reference `0.5133`보다 낮았다.
+- `exp/lane-family-f1/stopline-component-cleanup-fit`: high-confidence subcomponent cleanup/PCA endpoint trim 계열은 broader-val512 stop-line F1 `0.4667`로 PCA reference `0.4699`보다 낮았다.
+- `exp/lane-family-f1/stopline-component-split-fit`: split PCA/horizontal fit은 val128 stop-line F1 `0.4957 / 0.4786`으로 PCA reference `0.5133`보다 낮았다.
+
+판단:
+
+- oracle headroom은 실제다. stop-line vectorizer/evaluator 자체가 hard blocker라는 해석은 약하다.
+- 하지만 GT 없이 그 headroom을 회수하는 단순 row-band/core-row trim, high-confidence cleanup, PCA endpoint quantile trim, component split fitting은 이미 실패했다.
+- 이 evidence는 current May 11 local extraction / pairwise split readout failures와 같은 방향이다. 다음 stop-line 축은 postprocess-only trimming family가 아니라 train-time target/readout이 직접 맞는 geometry recovery contract여야 한다.
+
+하지 말 것:
+
+- GT-overlap oracle 결과를 deployment default 후보로 승격하지 않는다.
+- row-band/core-row trim, high-confidence subcomponent cleanup, PCA endpoint quantile trim, component split fitting을 같은 형태로 반복하지 않는다.
