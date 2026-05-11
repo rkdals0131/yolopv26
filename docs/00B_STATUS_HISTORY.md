@@ -1667,3 +1667,53 @@ Stop-line branch 결과:
 
 - stop-line을 계속한다면 scalar CSV classifier가 아니라 model-side candidate instance validator head/probe로 가야 한다.
 - 그렇지 않으면 Gate 3 lane predicted centerline stability로 넘어가서 lane bottleneck을 줄이는 편이 더 안전하다.
+
+## 45. 2026-05-11 Gate 2 candidate rich-feature validator audit: decoded map-local signal is real but still not task success
+
+맥락:
+
+- scalar-feature audit은 candidate row-level signal을 보였지만, 입력이 score/length/rank 위주라 production stop-line F1을 설명하기에는 너무 얕았다.
+- candidate-pool CSV를 richer feature export로 확장해 proposal location, decoded center location, center/selector/mask point probability, local window max/mean이 oracle-positive row 분리에 도움되는지 확인했다.
+- 이 audit도 read-only다. decoder variant와 task-level F1을 바꾸는 실험이 아니다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-rich-feature-audit`
+- `tools/probe_pv26_stopline_candidate_pool.py`가 `candidate_features.csv`에 rich non-GT columns를 추가한다.
+- 추가 feature는 `proposal_row/col`, `decoded_center_row/col`, `center_prob`, `selector_prob`, `mask_prob`, `decoded_center_mask_prob`, `fused_center_selector_prob`, 그리고 `center/selector/mask`의 radius `1/2/4` window max/mean이다.
+- `tools/analyze_pv26_stopline_candidate_features.py`는 기존 6개 scalar feature에 더해 CSV에 존재하는 numeric non-label columns를 자동 포함한다. `batch_index`, `sample_index`, GT-distance/angle/index, label columns는 feature에서 제외한다.
+
+실행:
+
+- rich pool command: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 512 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_pool_rich_val512_epoch2`
+- rich feature audit command: `python3 tools/analyze_pv26_stopline_candidate_features.py --input runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_pool_rich_val512_epoch2/candidate_features.csv --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_rich_feature_validator_val512_epoch2`
+- outputs: `stopline_candidate_pool_rich_val512_epoch2/{summary.json,variants.csv,candidate_features.csv}` and `stopline_candidate_rich_feature_validator_val512_epoch2/{summary.json,feature_reports.csv}`.
+
+결과:
+
+- rich candidate rows: `2283`, same as scalar val512 pool.
+- feature count: `33` total, including the original 6 scalar features.
+- half-split logistic test AUC/AP: `0.8149 / 0.5950`.
+- train-threshold test TP/FP/FN: `243 / 245 / 56`, precision/recall/F1 `0.4980 / 0.8127 / 0.6175`.
+- test oracle-best threshold row F1: `0.6387`, TP/FP/FN `213 / 155 / 86`.
+- strongest single feature by train-threshold test F1 was `selector_r4_max`: test AUC/AP/F1 `0.8138 / 0.5824 / 0.6109`.
+- other high single-feature signals: `selector_r2_max` F1 `0.5973`, `selector_r1_max` F1 `0.5841`, score F1 `0.5812`, `mask_r4_max` AP `0.6021`.
+- task-level replay from the same pool did not improve: oracle top20 stop-line F1 remains `0.6517`, best production score/length variant remains `0.4371`, baseline remains `0.4083`.
+
+판단:
+
+- Rich map-local non-GT signal is materially stronger than the scalar CSV signal. Candidate-row F1 improved from `0.5651` to `0.6175`, and oracle-best row F1 improved from `0.5860` to `0.6387`.
+- The strongest features are selector/mask local-window evidence, not proposal rank or length. This points toward a candidate instance validator that sees decoded geometry plus local map evidence.
+- Still, row classification is not stop-line task F1. A CSV threshold over candidates can overproduce per-sample false positives and does not define NMS/per-sample competition/retention.
+
+하지 말 것:
+
+- rich candidate-row AUC/AP/F1을 stop-line task success로 표현하지 않는다.
+- `selector_r4_max` 같은 single-feature threshold를 production decoder로 바로 승격하지 않는다.
+- score/length-only filter나 hard-negative ranking loss-only로 되돌아가지 않는다.
+
+다음:
+
+- stop-line을 계속한다면 model-side candidate instance validator head/probe를 새 축으로 세운다. 입력은 decoded candidate geometry plus selector/mask/center local window evidence여야 하고, target은 per-candidate oracle-positive label plus per-sample competition/retention이어야 한다.
+- 이 축은 exact val128에서 PCA/angle-mask reference를 넘고 lane/crosswalk retention을 유지해야 broader-val512로 확장한다.
+- 그 구현을 바로 하지 않는다면 Gate 3 lane predicted centerline instance stability로 돌아간다.

@@ -115,6 +115,30 @@ def _nearest_gt(candidate: dict[str, Any], gt_stop_lines: list[dict[str, Any]]) 
     return best_distance, best_angle, best_index
 
 
+def _array_value(array: np.ndarray | None, row: int, col: int, default: float = 0.0) -> float:
+    if array is None or array.ndim != 2:
+        return float(default)
+    clipped_row = max(0, min(int(array.shape[0]) - 1, int(row)))
+    clipped_col = max(0, min(int(array.shape[1]) - 1, int(col)))
+    return float(array[clipped_row, clipped_col])
+
+
+def _window_stats(array: np.ndarray | None, row: int, col: int, radius: int) -> tuple[float, float]:
+    if array is None or array.ndim != 2:
+        return 0.0, 0.0
+    clipped_row = max(0, min(int(array.shape[0]) - 1, int(row)))
+    clipped_col = max(0, min(int(array.shape[1]) - 1, int(col)))
+    radius = max(0, int(radius))
+    row0 = max(0, clipped_row - radius)
+    row1 = min(int(array.shape[0]), clipped_row + radius + 1)
+    col0 = max(0, clipped_col - radius)
+    col1 = min(int(array.shape[1]), clipped_col + radius + 1)
+    window = array[row0:row1, col0:col1]
+    if window.size == 0:
+        return 0.0, 0.0
+    return float(window.max(initial=0.0)), float(window.mean())
+
+
 def _decode_candidates(
     *,
     outputs: dict[str, Any],
@@ -128,6 +152,8 @@ def _decode_candidates(
     angle_map = _sample_tensor(outputs, "stop_line_angle", sample_index)
     offset_map = _sample_tensor(outputs, "stop_line_center_offset", sample_index)
     proposal_map = _proposal_map(outputs, sample_index, source)
+    center_probs = _as_2d_array(_sample_tensor(outputs, "stop_line_center_logits", sample_index), sigmoid=True)
+    selector_probs = _as_2d_array(_sample_tensor(outputs, "stop_line_selector_map_logits", sample_index), sigmoid=True)
     if mask_probs is None or proposal_map is None or angle_map is None or offset_map is None:
         return [], {"missing_tensor": 1}
     if angle_map.ndim != 3 or offset_map.ndim != 3:
@@ -163,6 +189,30 @@ def _decode_candidates(
         candidate = dict(candidate)
         candidate["proposal_rank"] = int(proposal_rank)
         candidate["proposal_source"] = str(source)
+        candidate["proposal_row"] = int(row)
+        candidate["proposal_col"] = int(col)
+        center_row = int(round(float(center_xy[1])))
+        center_col = int(round(float(center_xy[0])))
+        candidate["decoded_center_row"] = int(center_row)
+        candidate["decoded_center_col"] = int(center_col)
+        candidate["center_prob"] = _array_value(center_probs, row, col)
+        candidate["selector_prob"] = _array_value(selector_probs, row, col)
+        candidate["mask_prob"] = _array_value(mask_probs, row, col)
+        candidate["decoded_center_mask_prob"] = _array_value(mask_probs, center_row, center_col)
+        candidate["fused_center_selector_prob"] = max(
+            float(candidate["center_prob"]),
+            float(candidate["selector_prob"]),
+        )
+        for radius in (1, 2, 4):
+            center_max, center_mean = _window_stats(center_probs, row, col, radius)
+            selector_max, selector_mean = _window_stats(selector_probs, row, col, radius)
+            mask_max, mask_mean = _window_stats(mask_probs, row, col, radius)
+            candidate[f"center_r{radius}_max"] = center_max
+            candidate[f"center_r{radius}_mean"] = center_mean
+            candidate[f"selector_r{radius}_max"] = selector_max
+            candidate[f"selector_r{radius}_mean"] = selector_mean
+            candidate[f"mask_r{radius}_max"] = mask_max
+            candidate[f"mask_r{radius}_mean"] = mask_mean
         candidate["nearest_gt_distance"] = float(nearest_distance)
         candidate["nearest_gt_angle_error"] = float(nearest_angle)
         candidate["nearest_gt_index"] = int(nearest_index)
@@ -219,8 +269,35 @@ def _candidate_feature_rows(candidates: list[dict[str, Any]], *, batch_index: in
                 "sample_index": int(sample_index),
                 "proposal_source": str(candidate.get("proposal_source", "")),
                 "proposal_rank": int(candidate.get("proposal_rank", 0)),
+                "proposal_row": int(candidate.get("proposal_row", -1)),
+                "proposal_col": int(candidate.get("proposal_col", -1)),
+                "decoded_center_row": int(candidate.get("decoded_center_row", -1)),
+                "decoded_center_col": int(candidate.get("decoded_center_col", -1)),
                 "score": float(candidate.get("score", 0.0)),
                 "length": float(candidate.get("length", 0.0)),
+                "center_prob": float(candidate.get("center_prob", 0.0)),
+                "selector_prob": float(candidate.get("selector_prob", 0.0)),
+                "fused_center_selector_prob": float(candidate.get("fused_center_selector_prob", 0.0)),
+                "mask_prob": float(candidate.get("mask_prob", 0.0)),
+                "decoded_center_mask_prob": float(candidate.get("decoded_center_mask_prob", 0.0)),
+                "center_r1_max": float(candidate.get("center_r1_max", 0.0)),
+                "center_r1_mean": float(candidate.get("center_r1_mean", 0.0)),
+                "center_r2_max": float(candidate.get("center_r2_max", 0.0)),
+                "center_r2_mean": float(candidate.get("center_r2_mean", 0.0)),
+                "center_r4_max": float(candidate.get("center_r4_max", 0.0)),
+                "center_r4_mean": float(candidate.get("center_r4_mean", 0.0)),
+                "selector_r1_max": float(candidate.get("selector_r1_max", 0.0)),
+                "selector_r1_mean": float(candidate.get("selector_r1_mean", 0.0)),
+                "selector_r2_max": float(candidate.get("selector_r2_max", 0.0)),
+                "selector_r2_mean": float(candidate.get("selector_r2_mean", 0.0)),
+                "selector_r4_max": float(candidate.get("selector_r4_max", 0.0)),
+                "selector_r4_mean": float(candidate.get("selector_r4_mean", 0.0)),
+                "mask_r1_max": float(candidate.get("mask_r1_max", 0.0)),
+                "mask_r1_mean": float(candidate.get("mask_r1_mean", 0.0)),
+                "mask_r2_max": float(candidate.get("mask_r2_max", 0.0)),
+                "mask_r2_mean": float(candidate.get("mask_r2_mean", 0.0)),
+                "mask_r4_max": float(candidate.get("mask_r4_max", 0.0)),
+                "mask_r4_mean": float(candidate.get("mask_r4_mean", 0.0)),
                 "nearest_gt_distance": float(candidate.get("nearest_gt_distance", float("inf"))),
                 "nearest_gt_angle_error": float(candidate.get("nearest_gt_angle_error", 180.0)),
                 "nearest_gt_index": int(candidate.get("nearest_gt_index", -1)),

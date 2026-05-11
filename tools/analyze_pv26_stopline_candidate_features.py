@@ -24,12 +24,30 @@ SOURCE_RUN = (
     / "lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
 )
 DEFAULT_INPUT = SOURCE_RUN / "analysis_exports" / "stopline_candidate_pool_val512_epoch2" / "candidate_features.csv"
+BASE_FEATURE_NAMES = (
+    "score",
+    "length",
+    "proposal_rank",
+    "inverse_rank",
+    "score_x_length",
+    "log1p_length",
+)
+RAW_BASE_FEATURE_NAMES = {"score", "length", "proposal_rank"}
+EXCLUDED_FEATURE_COLUMNS = {
+    "batch_index",
+    "sample_index",
+    "proposal_source",
+    "nearest_gt_distance",
+    "nearest_gt_angle_error",
+    "nearest_gt_index",
+    "is_oracle_positive",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit whether existing non-GT stop-line candidate scalar features "
+            "Audit whether existing non-GT stop-line candidate features "
             "can separate oracle-positive from false-positive candidates."
         )
     )
@@ -58,31 +76,47 @@ def _bool_label(row: dict[str, Any]) -> int:
     return int(value in {"1", "true", "yes", "y"})
 
 
+def _can_parse_float(value: Any) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _extra_numeric_feature_names(rows: list[dict[str, Any]]) -> list[str]:
+    if not rows:
+        return []
+    names: list[str] = []
+    for key in rows[0]:
+        if key in EXCLUDED_FEATURE_COLUMNS or key in RAW_BASE_FEATURE_NAMES or key in BASE_FEATURE_NAMES:
+            continue
+        values = [row.get(key, "") for row in rows]
+        non_empty = [value for value in values if str(value).strip()]
+        if non_empty and all(_can_parse_float(value) for value in non_empty):
+            names.append(key)
+    return names
+
+
 def _feature_matrix(rows: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    names = [
-        "score",
-        "length",
-        "proposal_rank",
-        "inverse_rank",
-        "score_x_length",
-        "log1p_length",
-    ]
+    extra_names = _extra_numeric_feature_names(rows)
+    names = list(BASE_FEATURE_NAMES) + extra_names
     matrix: list[list[float]] = []
     labels: list[int] = []
     for row in rows:
         score = _float(row, "score")
         length = _float(row, "length")
         rank = max(1.0, _float(row, "proposal_rank", 1.0))
-        matrix.append(
-            [
-                score,
-                length,
-                rank,
-                1.0 / rank,
-                score * length,
-                float(np.log1p(max(0.0, length))),
-            ]
-        )
+        values = [
+            score,
+            length,
+            rank,
+            1.0 / rank,
+            score * length,
+            float(np.log1p(max(0.0, length))),
+        ]
+        values.extend(_float(row, name) for name in extra_names)
+        matrix.append(values)
         labels.append(_bool_label(row))
     return np.asarray(matrix, dtype=np.float64), np.asarray(labels, dtype=np.float64), names
 
@@ -281,7 +315,7 @@ def main() -> int:
         },
         "feature_reports": feature_reports,
         "interpretation": (
-            "This is a candidate-level scalar-feature audit, not a production stop-line decoder. "
+            "This is a candidate-level feature audit, not a production stop-line decoder. "
             "Good candidate-level AUC/AP would only justify a learned instance validator; it does not prove task F1."
         ),
     }
