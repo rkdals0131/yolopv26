@@ -15,6 +15,7 @@ if repo_root not in sys.path:
 
 import torch
 
+from tools.evaluate_pv26_lane60_checkpoint import _advance_validation_sampler
 from tools.pv26_train import cli as train_cli
 from tools.pv26_train import config as train_config_api
 
@@ -37,7 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", default="default")
     parser.add_argument("--phase-index", type=int, default=4)
     parser.add_argument("--max-val-batches", type=int, default=128)
+    parser.add_argument("--validation-epoch", type=int, default=1)
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--output-json", default="")
     return parser.parse_args()
 
 
@@ -112,7 +115,7 @@ def _best_rows(raw_counts: dict[str, dict[float, dict[str, int]]]) -> dict[str, 
 
 def _map_specs(predictions: dict[str, torch.Tensor], targets: dict[str, torch.Tensor]) -> dict[str, tuple[torch.Tensor, torch.Tensor, float, torch.Tensor | None]]:
     lane_valid = ~(targets["lane_seg_ignore"].to(dtype=torch.bool))
-    return {
+    specs = {
         "lane_centerline_core": (
             predictions["lane_seg_centerline_logits"].sigmoid(),
             targets["lane_seg_centerline_core"],
@@ -156,6 +159,54 @@ def _map_specs(predictions: dict[str, torch.Tensor], targets: dict[str, torch.Te
             None,
         ),
     }
+    stop_centerline = targets.get("stop_line_centerline")
+    stop_mask = targets.get("stop_line_mask")
+    selector_logits = predictions.get("stop_line_selector_map_logits")
+    if isinstance(selector_logits, torch.Tensor) and isinstance(stop_centerline, torch.Tensor):
+        specs["stop_line_selector_centerline"] = (
+            selector_logits.sigmoid(),
+            stop_centerline,
+            0.5,
+            None,
+        )
+    if isinstance(selector_logits, torch.Tensor) and isinstance(stop_mask, torch.Tensor):
+        specs["stop_line_selector_mask"] = (
+            selector_logits.sigmoid(),
+            stop_mask,
+            0.5,
+            None,
+        )
+    row_logits = predictions.get("stop_line_row_logits")
+    if isinstance(row_logits, torch.Tensor) and isinstance(stop_centerline, torch.Tensor):
+        specs["stop_line_row_centerline"] = (
+            row_logits.sigmoid(),
+            stop_centerline.amax(dim=-1, keepdim=True),
+            0.5,
+            None,
+        )
+    if isinstance(row_logits, torch.Tensor) and isinstance(stop_mask, torch.Tensor):
+        specs["stop_line_row_mask"] = (
+            row_logits.sigmoid(),
+            stop_mask.amax(dim=-1, keepdim=True),
+            0.5,
+            None,
+        )
+    x_logits = predictions.get("stop_line_x_logits")
+    if isinstance(x_logits, torch.Tensor) and isinstance(stop_centerline, torch.Tensor):
+        specs["stop_line_x_centerline"] = (
+            x_logits.sigmoid(),
+            stop_centerline.amax(dim=-2, keepdim=True),
+            0.5,
+            None,
+        )
+    if isinstance(x_logits, torch.Tensor) and isinstance(stop_mask, torch.Tensor):
+        specs["stop_line_x_mask"] = (
+            x_logits.sigmoid(),
+            stop_mask.amax(dim=-2, keepdim=True),
+            0.5,
+            None,
+        )
+    return specs
 
 
 def main() -> int:
@@ -182,6 +233,7 @@ def main() -> int:
     _, val_loader = train_cli._build_phase_train_loaders(dataset, train_config=train_config, phase=phase)
     if val_loader is None:
         raise ValueError("dense map probe requires validation batches")
+    _advance_validation_sampler(val_loader, validation_epoch=int(args.validation_epoch))
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     trainer.load_model_weights(checkpoint, map_location=train_config.device)
@@ -217,8 +269,14 @@ def main() -> int:
         "checkpoint": str(checkpoint),
         "processed_batches": int(processed_batches),
         "batch_size": int(train_config.batch_size),
+        "validation_epoch": int(args.validation_epoch),
         "maps": _best_rows(counts),
     }
+    if args.output_json:
+        output_path = Path(args.output_json).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"[dense_probe] wrote {output_path}", flush=True)
     print(json.dumps(output, indent=2, sort_keys=True), flush=True)
     return 0
 

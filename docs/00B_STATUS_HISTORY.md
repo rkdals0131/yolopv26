@@ -1270,3 +1270,41 @@ Stop-line branch 결과:
 
 - GT-overlap oracle 결과를 deployment default 후보로 승격하지 않는다.
 - row-band/core-row trim, high-confidence subcomponent cleanup, PCA endpoint quantile trim, component split fitting을 같은 형태로 반복하지 않는다.
+
+## 36. 2026-05-11 Gate 2 stop-line selector dense audit: x projection is strong, selector proposal remains weak
+
+맥락:
+
+- selector-map component gate가 decode F1을 올리지 못했지만, 그 이유가 selector dense map 자체의 부재인지, row/x projection과 selector/readout 결합 문제인지 아직 분리되지 않았다.
+- 새 학습을 열기 전에 current checkpoint의 stop-line selector map, row logits, x logits을 val128 epoch2 sampler로 같은 threshold sweep에 올렸다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-selector-dense-audit`
+- `tools/probe_pv26_lane60_dense_maps.py`에 `--validation-epoch`, `--output-json`을 추가했다.
+- 같은 probe에 stop-line selector/row/x map PR을 추가했다.
+
+실행:
+
+- command: `python3 tools/probe_pv26_lane60_dense_maps.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-json runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_selector_dense_audit_val128_epoch2.json`
+- processed batches: `128`
+
+결과:
+
+- stop-line center F1 `0.1609`, mask F1 `0.6646`.
+- selector centerline F1 `0.4259`, selector mask F1 `0.3119`.
+- row centerline F1 `0.3359`, row mask F1 `0.6727`.
+- x centerline F1 `0.7490`, x mask F1 `0.7482`.
+
+판단:
+
+- stop-line dense mask와 x projection은 사라진 상태가 아니다. 특히 x projection은 val128 pixel/projection PR로는 충분히 강하다.
+- selector map은 mask 기준 recall `0.2020`으로 낮아 full stop-line support를 직접 고르는 proposal source로 약하다.
+- 따라서 stop-line 병목은 "mask signal이 없음"도 아니고 "x 위치를 전혀 모름"도 아니다. row/x/mask signal을 하나의 valid line proposal로 묶는 selector/proposal/readout contract가 약하다.
+- 이 결과는 selector-map을 component gate로 단순 연결한 실패, local score-window extraction 실패, pairwise component split 실패와 같은 방향이다.
+
+하지 말 것:
+
+- selector-map threshold sweep이나 selector-map component gate를 같은 형태로 반복하지 않는다.
+- row/x projection F1만 보고 stop-line vector F1 0.6이 가까워졌다고 해석하지 않는다.
+- 다음 stop-line 축은 row/x/mask를 line proposal로 결합하는 train-time target/readout contract여야 한다.
