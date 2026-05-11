@@ -5,9 +5,9 @@
 
 ## 1. 한 줄 결론
 
-PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 replay 기준 `phase_objective=0.6088677363`까지 확인됐다.
+PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 replay 기준 `phase_objective=0.6088677363`, postprocess threshold probe 기준 `0.6115270643`까지 확인됐다.
 
-이 60% 돌파는 raw model만으로 만든 결론이 아니고, F1 자체가 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 small-fragment FP를 제거하는 postprocess geometry filters가 붙어서 만든 partial success다. 다음 목표를 더 엄격하게 잡는다면 `phase_objective`가 아니라 lane/stop/cross F1 자체를 0.6 이상으로 끌어올리는 것이다.
+이 60% 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 small-fragment FP를 제거하는 postprocess geometry filters가 붙어서 만든 partial success다. Gate 4 exact probe에서는 crosswalk F1이 `0.6027`까지 올라갔지만, broader validation 통과 전에는 최종 성공으로 보지 않는다.
 
 Active goal:
 
@@ -43,6 +43,15 @@ F1 기준 gap:
 - stop-line: `0.4483 -> 0.6000`, `+0.1517` 필요.
 - crosswalk: `0.5854 -> 0.6000`, `+0.0146` 필요.
 - 따라서 F1 0.6+ 목표의 병목은 stop-line, 그 다음 lane이다. crosswalk는 거의 도달했지만 broader validation에서 유지되는지 확인해야 한다.
+
+Gate 4 exact crosswalk threshold candidate:
+
+- artifact: `analysis_exports/crosswalk_postprocess_thresholds_val128_epoch2/summary.json`
+- top objective variant: `lane_obj_0.35__cross_mask_0.40__cross_area_32`
+- objective: `0.6115270642619861`
+- lane / stop-line / crosswalk F1: `0.5326 / 0.4483 / 0.6027`
+- crosswalk TP/FP/FN: `44 / 21 / 37`
+- 판단: exact val128에서는 crosswalk gap을 닫았지만, top objective variant는 lane threshold도 같이 바꾼 조합이다. Gate 4의 next broader-val512는 crosswalk-only 후보 `lane_obj_0.45__cross_mask_0.40__cross_area_32`를 우선 본다.
 
 Broader-val512 replay result:
 
@@ -93,6 +102,7 @@ Lane Gate 3 dense-map probe:
 - BCE-focus calibration은 broader-val512 lane F1을 `0.5101 -> 0.5344`로 올렸지만 stop-line/crosswalk가 내려갔고, centerline-core pixel F1도 `0.5729 -> 0.5680`으로 낮아졌다. goal success가 아니라 lane-vectorized metric partial-positive다.
 - BCE-focus + PCA stop-line decoder integration best는 broader-val512 lane/stop/cross F1 `0.5344 / 0.4583 / 0.5741`이고, stop-balance + PCA replay best도 `0.5372 / 0.4528 / 0.5812`에 그쳤다.
 - 다음 lane 축은 residual-risk local loss를 더 키우는 방향이 아니라, predicted centerline evidence를 instance 단위로 안정화하거나 row-scan partial-positive를 stop-line/crosswalk 목표와 같이 끌어올리는 contract로 좁힌다. stop-line을 재개한다면 dense signal을 line geometry로 바꾸는 readout/target contract 쪽으로 제한한다.
+- Gate 4 crosswalk postprocess probe는 exact val128에서 crosswalk-only candidate `lane_obj_0.45__cross_mask_0.40__cross_area_32`가 lane/stop-line을 기준과 동일하게 유지하면서 crosswalk F1을 `0.5854 -> 0.6027`로 올렸다. broader-val512 통과 전까지는 partial-positive다.
 
 ## 3. Active docs surface
 

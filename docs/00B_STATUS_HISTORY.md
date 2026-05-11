@@ -1174,3 +1174,39 @@ Stop-line branch 결과:
 
 - pair/Hough-like component split readout을 같은 형태로 반복하지 않는다.
 - stop-line을 재개한다면 postprocess-only line 후보 양산이 아니라, train-time target/readout이 직접 맞는 geometry representation 또는 stronger proposal contract로 제한한다.
+
+## 33. 2026-05-11 Gate 4 crosswalk postprocess retention: exact threshold closes crosswalk only
+
+맥락:
+
+- current exact epoch2 baseline은 lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`였다.
+- crosswalk는 F1 0.6 목표까지 `+0.0146`만 남아 있어, 새 training axis를 열기 전에 existing checkpoint의 crosswalk postprocess threshold만 먼저 audit했다.
+- 목표는 crosswalk F1을 올리되 lane/stop-line 목표를 더 멀어지게 만들지 않는 것이다.
+
+변경:
+
+- branch: `exp/lane-family-f1/crosswalk-postprocess-retention`
+- 새 모델 학습이나 code change 없이 `tools/probe_pv26_lane60_postprocess_thresholds.py`로 existing checkpoint를 exact val128 epoch2에 replay했다.
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_postprocess_thresholds_val128_epoch2`
+- 실험 중 자동 다운로드된 `yolo26s.pt`는 삭제하지 않고 `runs/removable/crosswalk_postprocess_retention_downloaded_weights_20260511/`로 이동했다.
+
+검증:
+
+- command: `python3 tools/probe_pv26_lane60_postprocess_thresholds.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --lane60-experiment core_centerline_refine_cross_retain --phase-index 4 --max-val-batches 128 --validation-epoch 2 --batch-size 4 --device cuda:0 --output-dir .../analysis_exports/crosswalk_postprocess_thresholds_val128_epoch2`
+- baseline exact val128: objective `0.6088677363`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`, cross TP/FP/FN `48 / 35 / 33`.
+- top objective variant: `lane_obj_0.35__cross_mask_0.40__cross_area_32`, objective `0.6115270643`, lane/stop/cross F1 `0.5326 / 0.4483 / 0.6027`, cross TP/FP/FN `44 / 21 / 37`.
+- crosswalk-only candidate: `lane_obj_0.45__cross_mask_0.40__cross_area_32`, objective `0.6098888876`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.6027`, cross TP/FP/FN `44 / 21 / 37`.
+- crosswalk F1 `>=0.60` variants were exactly `4`, all using `cross_mask=0.40` and `cross_area=32`.
+
+판단:
+
+- exact val128에서는 crosswalk mask threshold와 min component area tightening이 FP를 `35 -> 21`로 줄여 crosswalk F1을 `0.6027`까지 올렸다.
+- 이 gain은 precision-driven이고 TP도 `48 -> 44`로 줄어든다. broader validation에서 recall 손실이 커질 수 있으므로 아직 deployment/default 승격은 아니다.
+- top objective variant는 lane threshold `0.45 -> 0.35`도 같이 바꾼 조합이므로 Gate 4의 crosswalk-only 판정 후보로는 `lane_obj_0.45__cross_mask_0.40__cross_area_32`를 우선 본다.
+- lane과 stop-line은 여전히 F1 0.6 미달이다. 따라서 goal success가 아니라 crosswalk exact partial-positive다.
+
+다음:
+
+- `cross_mask=0.40`, `cross_area=32`, lane/stop default 유지 후보를 broader-val512 epoch2로 replay한다.
+- broader-val512에서도 crosswalk F1 `>=0.60`이고 lane/stop-line이 후퇴하지 않을 때만 Gate 4를 닫는다.
+- exact val128 crosswalk threshold 통과만으로 export/default 승격하지 않는다.
