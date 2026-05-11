@@ -22,6 +22,7 @@ from model.engine.batch import augment_lane_family_metrics, raw_batch_for_metric
 from model.engine.metrics import (
     STOP_LINE_POINT_COUNT,
     _extract_gt_samples,
+    _hungarian_from_cost,
     _mean_point_distance,
     _segment_angle_error,
     summarize_pv26_metrics,
@@ -73,6 +74,46 @@ VARIANTS = (
     CandidateVariant("oracle_max_top20_positive", "max", top_k=20, sort_mode="distance", oracle_positive_only=True),
 )
 
+BASE_VALIDATOR_FEATURES = (
+    "score",
+    "length",
+    "proposal_rank",
+    "inverse_rank",
+    "score_x_length",
+    "log1p_length",
+)
+RICH_VALIDATOR_EXTRA_FEATURES = (
+    "proposal_row",
+    "proposal_col",
+    "decoded_center_row",
+    "decoded_center_col",
+    "center_prob",
+    "selector_prob",
+    "fused_center_selector_prob",
+    "mask_prob",
+    "decoded_center_mask_prob",
+    "center_r1_max",
+    "center_r1_mean",
+    "center_r2_max",
+    "center_r2_mean",
+    "center_r4_max",
+    "center_r4_mean",
+    "selector_r1_max",
+    "selector_r1_mean",
+    "selector_r2_max",
+    "selector_r2_mean",
+    "selector_r4_max",
+    "selector_r4_mean",
+    "mask_r1_max",
+    "mask_r1_mean",
+    "mask_r2_max",
+    "mask_r2_mean",
+    "mask_r4_max",
+    "mask_r4_mean",
+)
+RICH_VALIDATOR_FEATURES = BASE_VALIDATOR_FEATURES + RICH_VALIDATOR_EXTRA_FEATURES
+RAW_BATCH_KEYS = ("det_targets", "tl_attr_targets", "lane_targets", "source_mask", "valid_mask", "meta")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -88,6 +129,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-epoch", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument("--rich-validator-replay", action="store_true")
+    parser.add_argument("--rich-validator-train-fraction", type=float, default=0.5)
+    parser.add_argument("--rich-validator-steps", type=int, default=2000)
+    parser.add_argument("--rich-validator-lr", type=float, default=0.05)
+    parser.add_argument("--rich-validator-top-k", type=int, default=20)
+    parser.add_argument("--rich-validator-threshold-grid", type=int, default=101)
     return parser.parse_args()
 
 
@@ -260,6 +307,427 @@ def _select_stop_lines(
     return predictions[: max(1, int(max_components))]
 
 
+def _float_feature(candidate: dict[str, Any], name: str, default: float = 0.0) -> float:
+    try:
+        return float(candidate.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _rich_feature_vector(candidate: dict[str, Any]) -> list[float]:
+    score = _float_feature(candidate, "score")
+    length = _float_feature(candidate, "length")
+    rank = max(1.0, _float_feature(candidate, "proposal_rank", 1.0))
+    values = [
+        score,
+        length,
+        rank,
+        1.0 / rank,
+        score * length,
+        float(np.log1p(max(0.0, length))),
+    ]
+    values.extend(_float_feature(candidate, name) for name in RICH_VALIDATOR_EXTRA_FEATURES)
+    return values
+
+
+def _rich_feature_matrix(candidates: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
+    matrix = [_rich_feature_vector(candidate) for candidate in candidates]
+    labels = [float(bool(candidate.get("is_oracle_positive", False))) for candidate in candidates]
+    return np.asarray(matrix, dtype=np.float64), np.asarray(labels, dtype=np.float64)
+
+
+def _standardize(train_x: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mean = train_x.mean(axis=0)
+    std = train_x.std(axis=0)
+    std = np.where(std < 1.0e-6, 1.0, std)
+    return (x - mean) / std, mean, std
+
+
+def _sigmoid(value: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-np.clip(value, -40.0, 40.0)))
+
+
+def _fit_logistic(train_x: np.ndarray, train_y: np.ndarray, *, steps: int, lr: float) -> tuple[np.ndarray, float]:
+    x = np.concatenate([np.ones((train_x.shape[0], 1), dtype=np.float64), train_x], axis=1)
+    weights = np.zeros(x.shape[1], dtype=np.float64)
+    pos = max(float(train_y.sum()), 1.0)
+    neg = max(float(train_y.shape[0] - train_y.sum()), 1.0)
+    sample_weights = np.where(train_y > 0.5, 0.5 / pos, 0.5 / neg)
+    for _ in range(max(1, int(steps))):
+        probs = _sigmoid(x @ weights)
+        grad = x.T @ ((probs - train_y) * sample_weights)
+        weights -= float(lr) * grad
+    return weights[1:], float(weights[0])
+
+
+def _predict(x: np.ndarray, weights: np.ndarray, bias: float) -> np.ndarray:
+    return _sigmoid(x @ weights + float(bias))
+
+
+def _threshold_metrics(scores: np.ndarray, labels: np.ndarray, threshold: float) -> dict[str, float | int]:
+    predicted = scores >= float(threshold)
+    actual = labels > 0.5
+    tp = int(np.logical_and(predicted, actual).sum())
+    fp = int(np.logical_and(predicted, ~actual).sum())
+    fn = int(np.logical_and(~predicted, actual).sum())
+    precision = float(tp / max(1, tp + fp))
+    recall = float(tp / max(1, tp + fn))
+    f1 = float(2.0 * precision * recall / max(1.0e-12, precision + recall))
+    return {
+        "threshold": float(threshold),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "predicted_positive_count": int(predicted.sum()),
+    }
+
+
+def _best_row_threshold(scores: np.ndarray, labels: np.ndarray, *, grid_size: int) -> dict[str, float | int]:
+    if scores.size == 0:
+        return _threshold_metrics(scores, labels, 1.0)
+    thresholds = np.unique(np.quantile(scores, np.linspace(0.0, 1.0, max(2, int(grid_size)))))
+    best = _threshold_metrics(scores, labels, float(thresholds[0]))
+    for threshold in thresholds:
+        metrics = _threshold_metrics(scores, labels, float(threshold))
+        if (float(metrics["f1"]), float(metrics["precision"])) > (float(best["f1"]), float(best["precision"])):
+            best = metrics
+    return best
+
+
+def _slice_raw_batch_sample(raw_batch: dict[str, Any], sample_index: int) -> dict[str, Any]:
+    return {key: [raw_batch[key][sample_index]] for key in RAW_BATCH_KEYS}
+
+
+def _validator_stop_lines(
+    candidates: list[dict[str, Any]],
+    *,
+    score_key: str,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> list[dict[str, Any]]:
+    selected = [
+        candidate
+        for candidate in candidates
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+        and _float_feature(candidate, score_key, 0.0) >= float(threshold)
+    ]
+    selected.sort(
+        key=lambda candidate: (
+            _float_feature(candidate, score_key, 0.0),
+            _float_feature(candidate, "score", 0.0),
+            _float_feature(candidate, "length", 0.0),
+        ),
+        reverse=True,
+    )
+    predictions = [
+        {
+            "score": _float_feature(candidate, score_key, 0.0),
+            "center_score": _float_feature(candidate, score_key, 0.0),
+            "length": _float_feature(candidate, "length", 0.0),
+            "points_xy": candidate.get("points_xy", []),
+        }
+        for candidate in selected
+    ]
+    predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
+    predictions = _dedupe_stop_line_predictions(predictions)
+    return predictions[: max(1, int(max_components))]
+
+
+def _records_metrics_row(
+    records: list[dict[str, Any]],
+    *,
+    name: str,
+    split: str,
+    score_key: str = "",
+    threshold: float = 0.0,
+    top_k: int = 0,
+    max_components: int = 1,
+) -> dict[str, Any]:
+    if not records:
+        raise ValueError(f"cannot evaluate empty {split} split")
+    predictions: list[dict[str, Any]] = []
+    raw_batches: list[dict[str, Any]] = []
+    for record in records:
+        raw_batches.append(record["raw_batch"])
+        if score_key:
+            stop_lines = _validator_stop_lines(
+                list(record.get("candidates", [])),
+                score_key=score_key,
+                threshold=float(threshold),
+                top_k=int(top_k),
+                max_components=int(max_components),
+            )
+            predictions.append({**record["baseline_prediction"], "stop_lines": stop_lines})
+        else:
+            predictions.append(dict(record["baseline_prediction"]))
+    merged_raw = _merge_raw_batches(raw_batches)
+    metrics = augment_lane_family_metrics(summarize_pv26_metrics(predictions, merged_raw))
+    prediction_count = sum(len(sample.get("stop_lines", [])) for sample in predictions)
+    row = _row_from_metrics(name, metrics, prediction_count=prediction_count, stats={})
+    row.update(
+        {
+            "split": str(split),
+            "score_key": str(score_key),
+            "threshold": "" if not score_key else float(threshold),
+            "top_k": "" if not score_key else int(top_k),
+            "sample_count": int(len(records)),
+        }
+    )
+    return row
+
+
+def _stop_line_fast_summary(
+    records: list[dict[str, Any]],
+    *,
+    score_key: str,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> dict[str, float | int]:
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    prediction_count = 0
+    for record in records:
+        pred_rows = _validator_stop_lines(
+            list(record.get("candidates", [])),
+            score_key=score_key,
+            threshold=float(threshold),
+            top_k=int(top_k),
+            max_components=int(max_components),
+        )
+        gt_rows = list(record.get("gt_stop_lines", []))
+        prediction_count += len(pred_rows)
+        if pred_rows and gt_rows:
+            cost_matrix = np.zeros((len(pred_rows), len(gt_rows)), dtype=np.float32)
+            for pred_index, pred in enumerate(pred_rows):
+                for gt_index, gt in enumerate(gt_rows):
+                    cost_matrix[pred_index, gt_index] = _mean_point_distance(
+                        pred["points_xy"],
+                        gt["points_xy"],
+                        STOP_LINE_POINT_COUNT,
+                    )
+            matches = _hungarian_from_cost(cost_matrix, max_cost=40.0)
+        else:
+            matches = []
+        total_tp += len(matches)
+        total_fp += len(pred_rows) - len(matches)
+        total_fn += len(gt_rows) - len(matches)
+    precision = float(total_tp / max(1, total_tp + total_fp))
+    recall = float(total_tp / max(1, total_tp + total_fn))
+    f1 = float(2.0 * precision * recall / max(1.0e-12, precision + recall))
+    return {
+        "stop_line_precision": precision,
+        "stop_line_recall": recall,
+        "stop_line_f1": f1,
+        "stop_line_tp": int(total_tp),
+        "stop_line_fp": int(total_fp),
+        "stop_line_fn": int(total_fn),
+        "pred_stop_line_count": int(prediction_count),
+    }
+
+
+def _best_task_threshold(
+    records: list[dict[str, Any]],
+    *,
+    score_key: str,
+    top_k: int,
+    max_components: int,
+    grid_size: int,
+) -> dict[str, Any]:
+    scores = [
+        _float_feature(candidate, score_key, 0.0)
+        for record in records
+        for candidate in record.get("candidates", [])
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+    ]
+    if not scores:
+        raise ValueError(f"no candidates available for {score_key} threshold search")
+    thresholds = np.unique(np.quantile(np.asarray(scores, dtype=np.float64), np.linspace(0.0, 1.0, max(2, int(grid_size)))))
+    thresholds = np.unique(np.concatenate([thresholds, np.asarray([float(max(scores)) + 1.0e-6], dtype=np.float64)]))
+    best_row: dict[str, Any] | None = None
+    for threshold in thresholds:
+        row = _stop_line_fast_summary(
+            records,
+            score_key=score_key,
+            threshold=float(threshold),
+            top_k=int(top_k),
+            max_components=int(max_components),
+        )
+        key = (
+            float(row.get("stop_line_f1", 0.0)),
+            float(row.get("stop_line_precision", 0.0)),
+            -float(row.get("pred_stop_line_count", 0.0)),
+        )
+        best_key = (
+            float(best_row.get("stop_line_f1", 0.0)),
+            float(best_row.get("stop_line_precision", 0.0)),
+            -float(best_row.get("pred_stop_line_count", 0.0)),
+        ) if best_row is not None else (-1.0, -1.0, 0.0)
+        if key > best_key:
+            best_row = {
+                **row,
+                "variant": f"{score_key}_task_threshold",
+                "split": "train",
+                "score_key": str(score_key),
+                "threshold": float(threshold),
+                "top_k": int(top_k),
+                "sample_count": int(len(records)),
+            }
+    if best_row is None:
+        raise ValueError(f"failed to select threshold for {score_key}")
+    return best_row
+
+
+def _run_rich_validator_replay(
+    sample_records: list[dict[str, Any]],
+    *,
+    train_fraction: float,
+    steps: int,
+    lr: float,
+    top_k: int,
+    max_components: int,
+    threshold_grid: int,
+) -> dict[str, Any]:
+    if not sample_records:
+        raise ValueError("rich validator replay requires sample records")
+    batch_indices = np.asarray([int(record["batch_index"]) for record in sample_records], dtype=np.int64)
+    min_batch = int(batch_indices.min())
+    max_batch = int(batch_indices.max())
+    cutoff = min_batch + int(round((max_batch - min_batch + 1) * float(train_fraction))) - 1
+    train_records = [record for record in sample_records if int(record["batch_index"]) <= cutoff]
+    test_records = [record for record in sample_records if int(record["batch_index"]) > cutoff]
+    if not train_records or not test_records:
+        raise ValueError("rich validator replay requires non-empty train and held-out splits")
+
+    train_candidates = [
+        candidate
+        for record in train_records
+        for candidate in record.get("candidates", [])
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+    ]
+    if not train_candidates:
+        raise ValueError("rich validator replay found no train candidates")
+    train_x, train_y = _rich_feature_matrix(train_candidates)
+    train_x_std, mean, std = _standardize(train_x, train_x)
+    weights, bias = _fit_logistic(train_x_std, train_y, steps=int(steps), lr=float(lr))
+
+    all_candidates = [
+        candidate
+        for record in sample_records
+        for candidate in record.get("candidates", [])
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+    ]
+    all_x, _ = _rich_feature_matrix(all_candidates)
+    all_scores = _predict((all_x - mean) / std, weights, bias)
+    for candidate, score in zip(all_candidates, all_scores):
+        candidate["rich_logistic_score"] = float(score)
+        candidate["selector_r4_max_score"] = _float_feature(candidate, "selector_r4_max", 0.0)
+
+    train_scores = np.asarray([_float_feature(candidate, "rich_logistic_score", 0.0) for candidate in train_candidates])
+    row_threshold = float(_best_row_threshold(train_scores, train_y, grid_size=int(threshold_grid))["threshold"])
+    task_threshold_row = _best_task_threshold(
+        train_records,
+        score_key="rich_logistic_score",
+        top_k=int(top_k),
+        max_components=int(max_components),
+        grid_size=int(threshold_grid),
+    )
+    selector_task_threshold_row = _best_task_threshold(
+        train_records,
+        score_key="selector_r4_max_score",
+        top_k=int(top_k),
+        max_components=int(max_components),
+        grid_size=int(threshold_grid),
+    )
+    task_threshold = float(task_threshold_row["threshold"])
+    selector_task_threshold = float(selector_task_threshold_row["threshold"])
+
+    rows: list[dict[str, Any]] = [
+        _records_metrics_row(train_records, name="baseline", split="train"),
+        _records_metrics_row(test_records, name="baseline", split="heldout"),
+        _records_metrics_row(
+            train_records,
+            name="rich_logistic_task_threshold",
+            split="train",
+            score_key="rich_logistic_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            test_records,
+            name="rich_logistic_task_threshold",
+            split="heldout",
+            score_key="rich_logistic_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            train_records,
+            name="rich_logistic_row_threshold",
+            split="train",
+            score_key="rich_logistic_score",
+            threshold=row_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            test_records,
+            name="rich_logistic_row_threshold",
+            split="heldout",
+            score_key="rich_logistic_score",
+            threshold=row_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            train_records,
+            name="selector_r4_max_task_threshold",
+            split="train",
+            score_key="selector_r4_max_score",
+            threshold=selector_task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            test_records,
+            name="selector_r4_max_task_threshold",
+            split="heldout",
+            score_key="selector_r4_max_score",
+            threshold=selector_task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+    ]
+    return {
+        "split": {
+            "train_fraction": float(train_fraction),
+            "cutoff_batch_index": int(cutoff),
+            "train_samples": int(len(train_records)),
+            "heldout_samples": int(len(test_records)),
+            "train_candidate_count": int(len(train_candidates)),
+            "train_positive_count": int(train_y.sum()),
+        },
+        "feature_names": list(RICH_VALIDATOR_FEATURES),
+        "weights": {name: float(weight) for name, weight in zip(RICH_VALIDATOR_FEATURES, weights)},
+        "bias": float(bias),
+        "top_k": int(top_k),
+        "max_components": int(max_components),
+        "threshold_grid": int(threshold_grid),
+        "rows": rows,
+        "interpretation": (
+            "Rich-validator replay is a held-out read-only task probe. It trains thresholds on the "
+            "earlier validation half and evaluates task F1 on the later half; it is not a production decoder."
+        ),
+    }
+
+
 def _candidate_feature_rows(candidates: list[dict[str, Any]], *, batch_index: int, sample_index: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -351,8 +819,12 @@ def main() -> int:
     stats_by_variant: dict[str, dict[str, int]] = {name: {} for name in names}
     feature_rows: list[dict[str, Any]] = []
     raw_batches: list[dict[str, Any]] = []
+    sample_records: list[dict[str, Any]] = []
     processed_batches = 0
-    max_top_k = max(int(variant.top_k) for variant in VARIANTS)
+    max_top_k = max(
+        max(int(variant.top_k) for variant in VARIANTS),
+        int(args.rich_validator_top_k) if bool(args.rich_validator_replay) else 0,
+    )
     with torch.no_grad():
         for batch_index, batch in enumerate(val_loader, start=1):
             if batch_index > int(args.max_val_batches):
@@ -382,6 +854,16 @@ def main() -> int:
                     top_k=max_top_k,
                 )
                 feature_rows.extend(_candidate_feature_rows(candidates, batch_index=batch_index, sample_index=sample_index))
+                sample_records.append(
+                    {
+                        "batch_index": int(batch_index),
+                        "sample_index": int(sample_index),
+                        "raw_batch": _slice_raw_batch_sample(raw_batch, sample_index),
+                        "baseline_prediction": dict(baseline_prediction),
+                        "gt_stop_lines": list(gt_sample.get("stop_lines", [])),
+                        "candidates": candidates,
+                    }
+                )
                 for variant in VARIANTS:
                     totals = stats_by_variant[variant.name]
                     for key, value in stats.items():
@@ -438,6 +920,18 @@ def main() -> int:
             "candidate-pool headroom and are not production decoders."
         ),
     }
+    if bool(args.rich_validator_replay):
+        rich_validator = _run_rich_validator_replay(
+            sample_records,
+            train_fraction=float(args.rich_validator_train_fraction),
+            steps=int(args.rich_validator_steps),
+            lr=float(args.rich_validator_lr),
+            top_k=int(args.rich_validator_top_k),
+            max_components=int(postprocess_config.stop_line_max_components),
+            threshold_grid=int(args.rich_validator_threshold_grid),
+        )
+        _write_csv(output_dir / "rich_validator_variants.csv", list(rich_validator["rows"]))
+        summary["rich_validator_replay"] = rich_validator
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(rows, ensure_ascii=False, indent=2), flush=True)
     print(f"[stopline_candidate_pool] wrote {output_dir}", flush=True)

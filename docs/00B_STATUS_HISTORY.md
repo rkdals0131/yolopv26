@@ -1717,3 +1717,51 @@ Stop-line branch 결과:
 - stop-line을 계속한다면 model-side candidate instance validator head/probe를 새 축으로 세운다. 입력은 decoded candidate geometry plus selector/mask/center local window evidence여야 하고, target은 per-candidate oracle-positive label plus per-sample competition/retention이어야 한다.
 - 이 축은 exact val128에서 PCA/angle-mask reference를 넘고 lane/crosswalk retention을 유지해야 broader-val512로 확장한다.
 - 그 구현을 바로 하지 않는다면 Gate 3 lane predicted centerline instance stability로 돌아간다.
+
+## 46. 2026-05-11 Gate 2 candidate rich-validator held-out replay: row signal transfers weakly to task F1
+
+맥락:
+
+- rich-feature audit은 candidate-row F1을 `0.6175`까지 올렸지만, row-level metric은 task-level stop-line F1이 아니다.
+- 다음 질문은 train-half에서 맞춘 rich feature score/threshold가 held-out half에서 실제 per-sample candidate selection으로 stop-line task F1을 올리는지였다.
+- 이 audit은 read-only다. validation half split을 사용하므로 production decoder가 아니고, model-side head training도 아니다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-rich-validator-replay`
+- `tools/probe_pv26_stopline_candidate_pool.py`에 opt-in `--rich-validator-replay`를 추가했다.
+- probe는 기존 candidate pool forward 중 sample records를 보관하고, 앞쪽 validation half에서 rich logistic과 `selector_r4_max` threshold를 맞춘 뒤 뒤쪽 held-out half에서 task metrics를 계산한다.
+- threshold search는 stop-line matching만 fast path로 계산하고, 최종 train/held-out rows만 기존 full metric summary로 기록한다.
+
+실행:
+
+- command: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 512 --validation-epoch 2 --device cuda:0 --rich-validator-replay --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_rich_validator_replay_val512_epoch2`
+- outputs: `summary.json`, `variants.csv`, `candidate_features.csv`, `rich_validator_variants.csv`.
+
+결과:
+
+- processed batches: `512`.
+- candidate rows / oracle-positive rows: `2283 / 653`.
+- split: train batches `1..256`, held-out batches `257..512`; train/held-out samples `1024 / 1024`.
+- held-out baseline lane/stop/cross F1: `0.5125 / 0.3877 / 0.5659`, stop-line TP/FP/FN `44 / 55 / 84`.
+- held-out rich logistic task-threshold lane/stop/cross F1: `0.5125 / 0.4231 / 0.5659`, stop-line TP/FP/FN `44 / 36 / 84`, threshold `0.7181`.
+- held-out rich logistic row-threshold stop-line F1: `0.4141`, TP/FP/FN `47 / 52 / 81`, threshold `0.5047`.
+- held-out `selector_r4_max` task-threshold stop-line F1: `0.4259`, TP/FP/FN `46 / 42 / 82`, threshold `0.9992`.
+- train split also improved over its own baseline: stop-line F1 `0.4269` baseline, `0.4825` rich logistic task-threshold, `0.4711` selector threshold.
+
+판단:
+
+- Rich local-window signal does transfer from row classification into held-out task selection, but only weakly.
+- Held-out best `0.4259` improves over held-out baseline `0.3877`, mostly by reducing FP, but it remains below broader-val PCA reference `0.4699` and far below the `0.60` target.
+- This is not enough evidence to promote CSV/logistic threshold replay, and it is not a strong enough stop-line shortcut.
+
+하지 말 것:
+
+- rich logistic or `selector_r4_max` threshold replay를 production decoder로 승격하지 않는다.
+- held-out split improvement `+0.038`을 stop-line gate success로 표현하지 않는다.
+- 같은 CSV threshold family를 더 촘촘하게 sweep하는 방식으로 시간을 쓰지 않는다.
+
+다음:
+
+- stop-line을 계속한다면 threshold replay가 아니라 model-side instance validator loss/head처럼 training-time competition을 바꾸는 축이어야 한다.
+- 그렇지 않으면 Gate 3 lane predicted centerline instance stability로 돌아가는 것이 더 낫다.
