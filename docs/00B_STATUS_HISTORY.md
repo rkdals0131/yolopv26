@@ -1346,3 +1346,43 @@ Stop-line branch 결과:
 - row/x threshold, row-band, fallback/replace 조합을 같은 형태로 반복하지 않는다.
 - row/x projection만 보고 decode-only stop-line proposal path를 채택하지 않는다.
 - 다음 stop-line 축은 후처리 span 생성이 아니라 train-time target/readout이 row/x/mask를 하나의 valid proposal로 직접 묶도록 설계해야 한다.
+
+## 38. 2026-05-11 Gate 2 stop-line selector rowx-band contract: simple train-time binding is still negative
+
+맥락:
+
+- dense audit과 row/x proposal readout은 mask와 x projection signal이 남아 있지만, postprocess-only span proposal이 baseline stop-line F1을 넘지 못한다는 결론을 냈다.
+- 그래서 row/x/mask를 후처리에서 억지로 묶는 대신, selector target 자체를 row support와 x support가 만나는 band로 학습시키고 decode component gate도 selector map을 보도록 하는 opt-in contract를 시험했다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-selector-rowx-band-contract`
+- `TrainDefaultsConfig.stopline_selector_target_mode`와 `TrainDefaultsConfig.stop_line_component_gate_source`를 추가했다.
+- `stopline_selector_target_mode=rowx_band`는 row support와 column support의 곱을 selector target으로 쓴다.
+- `stop_line_component_gate_source=selector`는 stop-line component gate/anchor/score map을 center heatmap이 아니라 selector map으로 바꾼다.
+- 기본값은 `centerline` / `center`라 production default decode는 유지된다.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_stop_selector_rowx_band --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_selector_rowx_band_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_100656`
+- status: completed, best epoch `2`.
+
+결과:
+
+- 기준 exact epoch2: `phase_objective=0.6089`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.5854`, stop-line TP/FP/FN `26 / 30 / 34`.
+- rowx-band epoch2: `phase_objective=0.6036069113`, lane/stop/cross F1 `0.5260 / 0.4144 / 0.5854`, stop-line TP/FP/FN `23 / 28 / 37`.
+- task-best crosswalk는 epoch1 `0.6790`까지 올랐지만, 같은 epoch의 lane/stop/cross F1은 `0.5133 / 0.1915 / 0.6790`이다.
+- task-best stop-line도 epoch2 `0.4144`로 기준 `0.4483`보다 낮다.
+
+판단:
+
+- simple rowx-band selector target + selector gate는 `phase_objective`를 0.6 위로 올릴 수는 있지만, active bottleneck인 stop-line F1을 기준보다 낮춘다.
+- crosswalk epoch1 spike는 joint lane-family success가 아니고, stop-line 회복과도 동행하지 않는다.
+- broader-val512로 확장할 signal이 없다.
+
+하지 말 것:
+
+- rowx-band selector target과 selector component gate를 같은 형태로 반복하지 않는다.
+- `phase_objective >= 0.60`만 보고 stop-line axis를 성공으로 표현하지 않는다.
+- 다음 stop-line 축은 selector target 모양을 조금 바꾸는 micro-tweak보다, line instance proposal을 직접 supervise/evaluate하는 stronger contract여야 한다.

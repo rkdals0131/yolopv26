@@ -128,9 +128,11 @@ class TrainDefaultsConfig:
     lane_segfirst_color_class_weights: dict[str, float] = field(default_factory=dict)
     stopline_local_x_aux_weight: float = 0.0
     stopline_selector_aux_weight: float = 1.0
+    stopline_selector_target_mode: str = "centerline"
     stopline_geometry_aux_weight: float = 1.0
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
+    stop_line_component_gate_source: str = "center"
     multitask_conflict: dict[str, Any] = field(default_factory=lambda: {
         "enabled": False,
         "mode": "none",
@@ -643,6 +645,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_selector_aux_weight", defaults.stopline_selector_aux_weight),
             field_name="train_defaults.stopline_selector_aux_weight",
         ),
+        stopline_selector_target_mode=_coerce_str(
+            data.get("stopline_selector_target_mode", defaults.stopline_selector_target_mode),
+            field_name="train_defaults.stopline_selector_target_mode",
+        ),
         stopline_geometry_aux_weight=_coerce_float(
             data.get("stopline_geometry_aux_weight", defaults.stopline_geometry_aux_weight),
             field_name="train_defaults.stopline_geometry_aux_weight",
@@ -654,6 +660,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stopline_centerline_target_weight=_coerce_float(
             data.get("stopline_centerline_target_weight", defaults.stopline_centerline_target_weight),
             field_name="train_defaults.stopline_centerline_target_weight",
+        ),
+        stop_line_component_gate_source=_coerce_str(
+            data.get("stop_line_component_gate_source", defaults.stop_line_component_gate_source),
+            field_name="train_defaults.stop_line_component_gate_source",
         ),
         multitask_conflict=multitask_conflict,
     )

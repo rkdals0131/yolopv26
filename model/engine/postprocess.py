@@ -75,6 +75,7 @@ class PV26PostprocessConfig:
     stop_line_min_bbox_area_px: float = 0.0
     stop_line_min_bbox_aspect: float = 6.0
     stop_line_min_instance_score: float = 0.94
+    stop_line_component_gate_source: str = "center"
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -1013,6 +1014,7 @@ def _stopline_mask_to_polyline(
     min_bbox_area_px: float = 0.0,
     min_bbox_aspect: float = 0.0,
     min_instance_score: float = 0.0,
+    component_gate_source: str = "center",
 ) -> list[dict[str, Any]]:
     if not _tensor_all_finite(mask_logits):
         return []
@@ -1054,8 +1056,22 @@ def _stopline_mask_to_polyline(
             x_probs = x_probs.squeeze(0)
         if x_probs.ndim == 2:
             x_probs = x_probs.max(axis=0)
+    selector_probs = None
+    if isinstance(selector_map_logits, torch.Tensor) and _tensor_all_finite(selector_map_logits):
+        selector_probs = selector_map_logits.sigmoid().squeeze(0).detach().cpu().numpy()
+        if selector_probs.ndim == 3:
+            selector_probs = selector_probs.squeeze(0)
 
-    allowed_labels = _stopline_allowed_labels(labels, center_probs, row_probs=row_probs)
+    gate_source = str(component_gate_source or "center").strip().lower()
+    if gate_source not in {"center", "selector", "max"}:
+        raise ValueError(f"unsupported stop_line_component_gate_source: {component_gate_source}")
+    gate_probs = center_probs
+    if gate_source == "selector" and selector_probs is not None:
+        gate_probs = selector_probs
+    elif gate_source == "max" and selector_probs is not None:
+        gate_probs = selector_probs if center_probs is None else np.maximum(center_probs, selector_probs)
+
+    allowed_labels = _stopline_allowed_labels(labels, gate_probs, row_probs=row_probs)
 
     predictions: list[dict[str, Any]] = _decode_stopline_direct_center_segment(
         mask_logits=mask_logits,
@@ -1073,12 +1089,12 @@ def _stopline_mask_to_polyline(
         component_points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
         mask_values = mask_probs[rows, cols]
         center_anchor = None
-        if center_probs is not None:
+        if gate_probs is not None:
             center_anchor = _stopline_component_anchor(
                 rows,
                 cols,
                 mask_values=mask_values,
-                center_probs=center_probs,
+                center_probs=gate_probs,
                 center_offset=center_offset,
                 row_probs=row_probs,
                 x_probs=x_probs,
@@ -1107,8 +1123,8 @@ def _stopline_mask_to_polyline(
             continue
         instance_score = float(component_scores[label_index - 1])
         center_score = 0.0
-        if center_probs is not None:
-            center_score = float(center_probs[rows, cols].max())
+        if gate_probs is not None:
+            center_score = float(gate_probs[rows, cols].max())
             instance_score = 0.25 * center_score + 0.75 * instance_score
             if allowed_labels is not None and label_index in allowed_labels:
                 instance_score += 0.02
@@ -1580,6 +1596,7 @@ def _decode_stop_line_rows(
     x_logits: torch.Tensor | None = None,
     angle: torch.Tensor | None = None,
     half_length: torch.Tensor | None = None,
+    component_gate_source: str = "center",
 ) -> list[dict[str, Any]]:
     if isinstance(mask_logits, torch.Tensor):
         decoded = _stopline_mask_to_polyline(
@@ -1599,6 +1616,7 @@ def _decode_stop_line_rows(
             min_bbox_area_px=min_bbox_area_px,
             min_bbox_aspect=min_bbox_aspect,
             min_instance_score=min_instance_score,
+            component_gate_source=component_gate_source,
         )
         if decoded:
             return decoded
@@ -1767,6 +1785,7 @@ def postprocess_pv26_batch(
                     min_bbox_area_px=config.stop_line_min_bbox_area_px,
                     min_bbox_aspect=config.stop_line_min_bbox_aspect,
                     min_instance_score=config.stop_line_min_instance_score,
+                    component_gate_source=config.stop_line_component_gate_source,
                     mask_logits=(
                         stop_line_mask_logits[batch_index]
                         if isinstance(stop_line_mask_logits, torch.Tensor)

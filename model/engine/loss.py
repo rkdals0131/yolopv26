@@ -1048,6 +1048,7 @@ def _stop_line_mask_loss_with_selector_weight(
     *,
     local_x_aux_weight: float = 0.0,
     selector_aux_weight: float,
+    selector_target_mode: str = "centerline",
     geometry_aux_weight: float = 1.0,
     center_target_mode: str = "union",
     centerline_target_weight: float = 1.0,
@@ -1103,7 +1104,20 @@ def _stop_line_mask_loss_with_selector_weight(
         x_selector_logits = center_logits
     selector_map_logits = predictions.get("stop_line_selector_map_logits")
     row_target = mask_target
-    selector_target = centerline_target if isinstance(centerline_target, torch.Tensor) else mask_target
+    selector_mode = str(selector_target_mode or "centerline").strip().lower()
+    if selector_mode == "centerline":
+        selector_target = centerline_target if isinstance(centerline_target, torch.Tensor) else mask_target
+    elif selector_mode == "mask":
+        selector_target = mask_target
+    elif selector_mode == "local_centerline" and isinstance(local_centerline_target, torch.Tensor):
+        selector_target = local_centerline_target
+    elif selector_mode == "rowx_band":
+        selector_source = centerline_target if isinstance(centerline_target, torch.Tensor) else mask_target
+        row_support = selector_source.amax(dim=-1, keepdim=True).expand_as(mask_target)
+        col_support = mask_target.amax(dim=-2, keepdim=True).expand_as(mask_target)
+        selector_target = row_support * col_support
+    else:
+        raise ValueError(f"unsupported stopline_selector_target_mode: {selector_target_mode}")
     local_x_target = local_centerline_target if isinstance(local_centerline_target, torch.Tensor) else centerline_target
     if isinstance(center_logits, torch.Tensor):
         center_mask = source[:, None, None, None].expand_as(center_logits)
@@ -1514,6 +1528,7 @@ class PV26MultiTaskLoss(nn.Module):
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
         stopline_selector_aux_weight: float = 1.0,
+        stopline_selector_target_mode: str = "centerline",
         stopline_geometry_aux_weight: float = 1.0,
         stopline_center_target_mode: str = "union",
         stopline_centerline_target_weight: float = 1.0,
@@ -1559,6 +1574,7 @@ class PV26MultiTaskLoss(nn.Module):
         )
         self.stopline_local_x_aux_weight = float(stopline_local_x_aux_weight)
         self.stopline_selector_aux_weight = float(stopline_selector_aux_weight)
+        self.stopline_selector_target_mode = str(stopline_selector_target_mode)
         self.stopline_geometry_aux_weight = float(stopline_geometry_aux_weight)
         self.stopline_center_target_mode = str(stopline_center_target_mode)
         self.stopline_centerline_target_weight = float(stopline_centerline_target_weight)
@@ -1643,6 +1659,7 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
             "stopline_selector_aux_weight": float(self.stopline_selector_aux_weight),
+            "stopline_selector_target_mode": self.stopline_selector_target_mode,
             "stopline_geometry_aux_weight": float(self.stopline_geometry_aux_weight),
             "stopline_center_target_mode": self.stopline_center_target_mode,
             "stopline_centerline_target_weight": float(self.stopline_centerline_target_weight),
@@ -2325,13 +2342,21 @@ class PV26MultiTaskLoss(nn.Module):
             raise KeyError("roadmark_joint requires stop_line_mask_logits for native stop-line loss dispatch")
         if self.task_mode in {STOPLINE_ONLY_TASK_MODE, ROADMARK_JOINT_TASK_MODE} and "stop_line_mask_logits" in prediction_dict:
             self.last_lane_assignment_modes["stop_line"] = "dense_mask_only"
-            if float(self.stopline_selector_aux_weight) == 1.0:
+            if (
+                float(self.stopline_selector_aux_weight) == 1.0
+                and float(self.stopline_local_x_aux_weight) == 0.0
+                and float(self.stopline_geometry_aux_weight) == 1.0
+                and str(self.stopline_selector_target_mode).strip().lower() == "centerline"
+                and str(self.stopline_center_target_mode).strip().lower() == "union"
+                and float(self.stopline_centerline_target_weight) == 1.0
+            ):
                 return _stop_line_mask_loss(prediction_dict, encoded)
             return _stop_line_mask_loss_with_selector_weight(
                 prediction_dict,
                 encoded,
                 local_x_aux_weight=float(self.stopline_local_x_aux_weight),
                 selector_aux_weight=float(self.stopline_selector_aux_weight),
+                selector_target_mode=self.stopline_selector_target_mode,
                 geometry_aux_weight=float(self.stopline_geometry_aux_weight),
                 center_target_mode=self.stopline_center_target_mode,
                 centerline_target_weight=float(self.stopline_centerline_target_weight),

@@ -151,6 +151,7 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         lane_segfirst_max_row_gap=int(train_config.lane_segfirst_max_row_gap),
         lane_segfirst_max_link_dx=float(train_config.lane_segfirst_max_link_dx),
         stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
+        stop_line_component_gate_source=str(train_config.stop_line_component_gate_source),
         crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
         allow_python_nms_fallback=bool(train_config.allow_python_nms_fallback),
     )
@@ -524,6 +525,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_segfirst_color_class_weights=train_config.lane_segfirst_color_class_weights,
         stopline_local_x_aux_weight=train_config.stopline_local_x_aux_weight,
         stopline_selector_aux_weight=train_config.stopline_selector_aux_weight,
+        stopline_selector_target_mode=train_config.stopline_selector_target_mode,
         stopline_geometry_aux_weight=train_config.stopline_geometry_aux_weight,
         stopline_center_target_mode=train_config.stopline_center_target_mode,
         stopline_centerline_target_weight=train_config.stopline_centerline_target_weight,

@@ -148,6 +148,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_segfirst_color_class_weights": {
                                 "yellow_lane": 1.75,
                             },
+                            "stopline_selector_target_mode": "rowx_band",
+                            "stop_line_component_gate_source": "selector",
                         },
                         "preview": {
                             "dataset_keys": ["custom_preview_dataset"],
@@ -247,6 +249,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_bce"], 1.25)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_dice"], 1.5)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)
+        self.assertEqual(scenario.train_defaults.stopline_selector_target_mode, "rowx_band")
+        self.assertEqual(scenario.train_defaults.stop_line_component_gate_source, "selector")
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)
