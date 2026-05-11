@@ -1386,3 +1386,46 @@ Stop-line branch 결과:
 - rowx-band selector target과 selector component gate를 같은 형태로 반복하지 않는다.
 - `phase_objective >= 0.60`만 보고 stop-line axis를 성공으로 표현하지 않는다.
 - 다음 stop-line 축은 selector target 모양을 조금 바꾸는 micro-tweak보다, line instance proposal을 직접 supervise/evaluate하는 stronger contract여야 한다.
+
+## 39. 2026-05-11 Gate 2 stop-line angle-mask extent diagnostic: mask length is usable only with a center proposal
+
+맥락:
+
+- 이전 GT-center readout은 current head의 offset/angle은 GT center cell에서 충분하지만 predicted half-length가 대부분 `<=0.5`로 붕괴한다는 결론을 냈다.
+- half-length scale/loss/log-target은 이미 실패했으므로, 이번에는 half-length scalar를 버리고 GT center와 predicted angle이 주어졌을 때 predicted mask component extent로 stop-line 길이를 읽을 수 있는지 확인했다.
+- 이 probe는 GT center를 쓰는 read-only upper-bound다. production decoder가 아니다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-angle-mask-extent-diagnostic`
+- 새 도구 `tools/probe_pv26_stopline_angle_mask_extent.py`를 추가했다.
+- variant는 GT center cell마다 predicted mask component를 찾고, GT 또는 predicted angle 축으로 component extent를 투영해 stop-line segment를 만든다.
+- `gt_center_pred_angle_mask_thr050_band4`는 GT center + predicted angle + mask threshold `0.50` + normal band `4px`를 사용한다.
+- 실행 중 val512는 처음에 raw prediction을 전부 쌓아 메모리 압박으로 batch `120` 근처에서 죽었고, 도구를 batch-streaming 누적 방식으로 고쳐 재실행했다.
+
+실행:
+
+- val128 command: `python3 tools/probe_pv26_stopline_angle_mask_extent.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_angle_mask_extent_val128_epoch2`
+- val512 command: same, with `--max-val-batches 512 --output-dir .../analysis_exports/stopline_angle_mask_extent_val512_epoch2`
+
+결과:
+
+- val128 baseline lane/stop/cross F1: `0.5267 / 0.4483 / 0.5854`, stop-line TP/FP/FN `26 / 30 / 34`.
+- val128 `gt_center_pred_angle_mask_thr050_band4`: stop-line F1 `0.6126`, TP/FP/FN `34 / 17 / 26`, component miss `9 / 60`.
+- val128 `gt_cell_pred_offset_pred_angle_mask_thr050_band4`: stop-line F1 `0.6364`, TP/FP/FN `35 / 15 / 25`, component miss `10 / 60`.
+- val128 `gt_center_gt_angle_mask_thr050_band4`: stop-line F1 `0.6847`, TP/FP/FN `38 / 13 / 22`, component miss `9 / 60`.
+- val512 baseline lane/stop/cross F1: `0.5101 / 0.4083 / 0.5854`, stop-line TP/FP/FN `98 / 111 / 173`.
+- val512 `gt_center_pred_angle_mask_thr050_band4`: stop-line F1 `0.5361`, TP/FP/FN `130 / 84 / 141`, component miss `57 / 271`.
+- val512 `gt_center_gt_angle_mask_thr050_band4`: stop-line F1 `0.5608`, TP/FP/FN `136 / 78 / 135`, component miss `57 / 271`.
+
+판단:
+
+- predicted mask component extent에는 PCA/full-component readout보다 더 쓸 수 있는 length signal이 있다. broader-val512에서 predicted angle + mask extent는 baseline `0.4083`과 PCA weak-positive `0.4699`보다 높다.
+- 하지만 GT center를 쓰는 upper-bound도 broader-val512에서 `0.60`에 못 미친다. component miss `57 / 271`도 남아 있어 mask absence/center proposal 문제가 같이 남는다.
+- exact val128의 `0.6126`은 goal success가 아니다. broader-val512와 production center selection을 통과하지 못했다.
+
+다음:
+
+- 다음 production 후보는 predicted center/proposal을 선택한 뒤 half-length scalar가 아니라 angle-anchored mask extent로 길이를 읽는 readout이다.
+- 새 학습축을 열기 전, 먼저 predicted center/selector proposal + angle-mask extent decode-only replay를 val128에서 확인한다.
+- half-length scale/log/loss만 다시 반복하지 않는다.
