@@ -1429,3 +1429,49 @@ Stop-line branch 결과:
 - 다음 production 후보는 predicted center/proposal을 선택한 뒤 half-length scalar가 아니라 angle-anchored mask extent로 길이를 읽는 readout이다.
 - 새 학습축을 열기 전, 먼저 predicted center/selector proposal + angle-mask extent decode-only replay를 val128에서 확인한다.
 - half-length scale/log/loss만 다시 반복하지 않는다.
+
+## 40. 2026-05-11 Gate 2 stop-line predicted angle-mask extent readout: selector proposal is still below PCA reference
+
+맥락:
+
+- GT-center angle-mask extent diagnostic은 half-length scalar보다 mask extent length readout이 낫다는 upper-bound를 보였다.
+- 남은 질문은 GT center 없이 production predicted center/selector proposal만으로 같은 readout을 썼을 때, 기존 PCA component weak-positive를 넘는가였다.
+- 새 학습 없이 기존 checkpoint를 replay하는 decode-only probe로 확인했다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-pred-angle-mask-extent-readout`
+- 새 도구 `tools/probe_pv26_stopline_pred_angle_mask_extent.py`를 추가했다.
+- proposal source는 `center`, `selector`, `max(center, selector)`를 비교한다.
+- 각 proposal cell에서 predicted offset과 predicted angle을 읽고, predicted stop-line mask component extent를 angle 축으로 투영해 line segment를 만든다.
+- lane/crosswalk prediction은 그대로 두고 stop-line만 variant별로 교체한다.
+
+실행:
+
+- command: `python3 tools/probe_pv26_stopline_pred_angle_mask_extent.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_pred_angle_mask_extent_val128_epoch2`
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_pred_angle_mask_extent_val128_epoch2/summary.json`
+
+결과:
+
+- baseline exact val128 lane/stop/cross F1: `0.5267 / 0.4483 / 0.5854`, stop-line TP/FP/FN `26 / 30 / 34`.
+- best variant `pred_selector_top1_s060_mask050_band4`: lane/stop/cross F1 `0.5267 / 0.5085 / 0.5854`, stop-line TP/FP/FN `30 / 28 / 30`, predicted stop-line count `58`.
+- `pred_selector_top1_s040_mask050_band4`: stop-line F1 `0.5042`, TP/FP/FN `30 / 29 / 30`.
+- selector fallback variants: stop-line F1 `0.5041`, TP/FP/FN `31 / 32 / 29`.
+- `pred_selector_top3_s020_mask050_band4`: stop-line F1 `0.5000`, TP/FP/FN `30 / 30 / 30`.
+- max/center proposal variants over-produced FP and ranged from stop-line F1 `0.3946` to `0.4354`.
+
+판단:
+
+- production predicted selector proposal + angle-mask extent는 baseline `0.4483`보다 나은 partial improvement지만 prior val128 PCA reference `0.5133`을 넘지 못했다.
+- thresholding selector top1 reduces FP compared with top3/max proposals, but does not recover enough TP to justify broader-val512.
+- GT-center upper-bound remains useful evidence that mask extent contains length signal; the production blocker is still reliable instance proposal/center selection, not just half-length scalar replacement.
+
+하지 말 것:
+
+- 단순 predicted center/selector/max proposal threshold + angle-mask extent readout을 같은 형태로 broader-val512나 long run으로 확장하지 않는다.
+- fallback-to-baseline을 붙였다는 이유만으로 weak production candidate로 승격하지 않는다. fallback variant도 PCA reference보다 낮았다.
+
+다음:
+
+- stop-line을 계속한다면 단순 proposal threshold/top-k가 아니라 proposal reliability를 학습 계약으로 올리는 방향이어야 한다.
+- 바로 같은 family를 반복하기보다, center/proposal supervision 자체를 바꾸거나 instance proposal을 별도 검증 gate로 분리한다.

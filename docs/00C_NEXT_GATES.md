@@ -32,6 +32,7 @@
 - exact val128 crosswalk threshold pass를 broader-val Gate 4 success로 표현하지 않는다.
 - Gate 4 crosswalk isolation을 볼 때 lane threshold까지 같이 바꾼 top-objective variant를 먼저 broader default 후보로 삼지 않는다.
 - `cross_mask=0.40`, `cross_area=32` stricter crosswalk component threshold를 broader-val success 없이 default/export 후보로 반복하지 않는다.
+- 단순 predicted center/selector/max proposal threshold + angle-mask extent readout을 stop-line production fix로 반복하지 않는다.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -149,6 +150,7 @@ Gate 상태:
 - row/x projection을 직접 span proposal로 바꾸는 read-only probe도 exact val128 baseline stop-line F1 `0.4483`보다 낮았다. best fallback은 `0.4310`, best replacement는 `0.3146`이고 row/x decoder는 512 samples 중 `29~30`개에서만 line을 만들었다.
 - rowx-band selector target + selector component gate short run도 exact val128 epoch2 stop-line F1 `0.4144`, TP/FP/FN `23 / 28 / 37`로 기준 `0.4483`, `26 / 30 / 34`보다 낮았다. `phase_objective=0.6036`은 stop-line success가 아니다.
 - GT-center + angle-anchored mask extent diagnostic은 exact val128에서 predicted angle variant stop-line F1 `0.6126`, broader-val512에서 `0.5361`을 냈다. 이는 production success는 아니지만, half-length scalar보다 mask extent length readout이 더 유망하다는 upper-bound다.
+- production predicted center/selector proposal + angle-anchored mask extent readout은 exact val128에서 best `0.5085`, TP/FP/FN `30 / 28 / 30`에 그쳐 prior PCA val128 reference `0.5133`을 넘지 못했다. baseline `0.4483`보다는 낫지만 broader-val512로 확장하지 않는다.
 - endpoint-delta target/readout short run도 val128 epoch1/2 stop-line F1이 모두 `0.0000`이었다. 새 dense endpoint channel을 바로 decode source로 쓰면 TP가 사라지므로 같은 형태로 확장하지 않는다.
 - heatmap-support geometry target fill은 exact val128 epoch2 stop-line F1 `0.2338`, TP/FP/FN `18 / 76 / 42`로 기준보다 크게 낮고, dense stop-line mask/center F1도 `0.4854 / 0.0815`로 후퇴했다. center heatmap support 전체에 geometry target을 채우는 방식은 0.6 path가 아니다.
 - row-center auxiliary short run은 exact val128 epoch2 stop-line F1 `0.4248`로 기준 `0.4483`보다 낮았다. row selector에 centerline-row pressure만 추가하는 방식도 0.6 path가 아니다.
@@ -161,8 +163,8 @@ Gate 상태:
 
 후보:
 
-- stop-line은 GT-center angle-mask extent upper-bound를 production proposal/readout 후보로 좁혀서 재개한다.
-- stop-line을 재개한다면 새 query proposal, endpoint-delta channel, local score-window extraction, point-pair split, simple rowx-band selector target 후보를 얹기보다, predicted center/selector proposal + angle-anchored mask extent readout을 먼저 val128 decode-only로 확인한다.
+- stop-line은 GT-center angle-mask extent upper-bound를 봤지만, 단순 predicted selector/center proposal readout은 PCA reference를 못 넘었다.
+- stop-line을 재개한다면 새 query proposal, endpoint-delta channel, local score-window extraction, point-pair split, simple rowx-band selector target, 단순 center/selector threshold proposal을 얹기보다 proposal reliability 자체를 학습/검증하는 contract가 필요하다.
 - PCA component 후보는 weak-positive reference로 보관하되, deployment default 승격 후보로 보지 않는다.
 
 성공 기준:
@@ -175,7 +177,7 @@ Gate 상태:
 
 - partial weak-positive only. broader-val512 best stop-line F1은 `0.4699`이고 목표 미달이다.
 - same-family micro experiments는 중단한다.
-- 다음 stop-line 실행은 predicted center/selector proposal + angle-anchored mask extent readout을 decode-only로 확인하는 것이다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, selector-map threshold/gate-only, row/x span proposal-only, rowx-band selector target + selector component gate, no-anchor PCA/anchor swap-only, PCA threshold/top-k-only, row-band/core-row trim, high-confidence cleanup, PCA endpoint quantile trim, local center/selector/fused window extraction, append-top2, pair/Hough-like component split readout은 반복하지 않는다.
+- 다음 stop-line 실행은 단순 threshold/top-k decode가 아니라 proposal reliability를 직접 올리거나 검증하는 contract여야 한다. 단순 half-length target/loss/readout scalar, learned query-vector proposal-only, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, selector-map threshold/gate-only, row/x span proposal-only, rowx-band selector target + selector component gate, 단순 predicted center/selector/max proposal + angle-mask extent readout, no-anchor PCA/anchor swap-only, PCA threshold/top-k-only, row-band/core-row trim, high-confidence cleanup, PCA endpoint quantile trim, local center/selector/fused window extraction, append-top2, pair/Hough-like component split readout은 반복하지 않는다.
 
 ## 6. Gate 3: lane recall without fragment FP
 
@@ -247,7 +249,7 @@ Gate 상태:
 - `exp/lane-family-f1/lane-row-scan-geometry-guard`는 row-scan micro-guard negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-row-scan-residual-buckets`는 row-scan 후 residual이 left/truncated/high-aspect FN과 side/right FP에 남는다는 read-only evidence로 보관한다.
 - `exp/lane-family-f1/lane-residual-local-separation`은 lane partial-positive지만 stop-line/objective regression 때문에 negative evidence로 보관한다.
-- row-scan visual audit artifact는 `analysis_exports/row_scan_visual_compare_epoch2/row_scan_component_comparison_grid.png`와 `manifest.json`이다. stop-line fit-far visual audit artifact는 `analysis_exports/stopline_fit_far_visual_audit_val512_epoch2/stopline_fit_far_bucket_grid.png`와 `manifest.json`이다. 판정은 partial-pass/caution이므로, 다음 lane 한 축은 row-scan 후처리 조절이나 residual-risk local loss weight 조절이 아니라 predicted centerline evidence를 instance 단위로 안정화하거나 stop-line/crosswalk retention을 같이 보는 contract다. stop-line을 재개한다면 predicted center/selector proposal + angle-anchored mask extent readout을 먼저 val128 decode-only로 확인한다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate/threshold-only, row/x span proposal-only, rowx-band selector target + selector component gate, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, no-anchor PCA/anchor swap-only, local center/selector/fused window extraction, append-top2, point-pair component split readout, row-scan length/bottom/gap/dx/turn-angle guard, lane support-substitution, lane threshold-only sweep, semantic attr oracle, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only, negative-pixel margin-only, support-bridge/closing-only, endpoint-only coverage, residual-risk local separation weight-only는 반복하지 않는다.
+- row-scan visual audit artifact는 `analysis_exports/row_scan_visual_compare_epoch2/row_scan_component_comparison_grid.png`와 `manifest.json`이다. stop-line fit-far visual audit artifact는 `analysis_exports/stopline_fit_far_visual_audit_val512_epoch2/stopline_fit_far_bucket_grid.png`와 `manifest.json`이다. 판정은 partial-pass/caution이므로, 다음 lane 한 축은 row-scan 후처리 조절이나 residual-risk local loss weight 조절이 아니라 predicted centerline evidence를 instance 단위로 안정화하거나 stop-line/crosswalk retention을 같이 보는 contract다. stop-line을 재개한다면 proposal reliability를 직접 올리거나 검증하는 contract가 필요하다. PCA threshold/top-k, stop-line weight-only, component split, center-cell geometry-mask, half-length inference-scale, half-length loss-weight-only, log-target-only, learned query-vector proposal-only, selector-map component gate/threshold-only, row/x span proposal-only, rowx-band selector target + selector component gate, 단순 predicted center/selector/max proposal + angle-mask extent readout, endpoint-delta direct decode, heatmap-support geometry fill, row-center auxiliary-only, no-anchor PCA/anchor swap-only, local center/selector/fused window extraction, append-top2, point-pair component split readout, row-scan length/bottom/gap/dx/turn-angle guard, lane support-substitution, lane threshold-only sweep, semantic attr oracle, lane target-width-only widening, side-band BCE-only, side-band margin-only, geometry-risk recall-only, geometry-risk local-Tversky-only, negative-pixel margin-only, support-bridge/closing-only, endpoint-only coverage, residual-risk local separation weight-only는 반복하지 않는다.
 - val128 dense-map PR, exact task F1, broader-val replay, visual audit 순서로 통과시킨다.
 
 ## 7. Gate 4: crosswalk retention to 0.6
