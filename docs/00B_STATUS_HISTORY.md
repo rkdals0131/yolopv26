@@ -1475,3 +1475,50 @@ Stop-line branch 결과:
 
 - stop-line을 계속한다면 단순 proposal threshold/top-k가 아니라 proposal reliability를 학습 계약으로 올리는 방향이어야 한다.
 - 바로 같은 family를 반복하기보다, center/proposal supervision 자체를 바꾸거나 instance proposal을 별도 검증 gate로 분리한다.
+
+## 41. 2026-05-11 Gate 2 stop-line proposal recall audit: local signal exists, ranking is weak
+
+맥락:
+
+- predicted angle-mask extent readout은 baseline보다 나았지만 PCA reference를 넘지 못했다.
+- 남은 질문은 predicted center/selector proposal map이 GT stop-line 중심 근처를 아예 못 보느냐, 아니면 local signal은 있는데 top-k proposal ranking에서 밀리느냐였다.
+- 새 학습 없이 기존 checkpoint를 read-only로 audit했다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-proposal-recall-audit`
+- 새 도구 `tools/probe_pv26_stopline_proposal_recall.py`를 추가했다.
+- proposal source는 `center`, `selector`, `max(center, selector)`다.
+- 각 GT stop-line center 주변 `r=2/4/8` window max score, raw map rank, NMS-style top-k proposal이 GT center 근처에 들어오는지를 기록한다.
+- 이 audit은 F1을 직접 올리는 decode가 아니라 다음 proposal reliability 학습축을 정하기 위한 전제 확인이다.
+
+실행:
+
+- val128 command: `python3 tools/probe_pv26_stopline_proposal_recall.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_proposal_recall_val128_epoch2`
+- val512 command: same, with `--max-val-batches 512 --output-dir .../analysis_exports/stopline_proposal_recall_val512_epoch2`
+- outputs: `summary.json`, `proposal_recall.csv`, `per_gt.csv` under each output directory.
+
+결과:
+
+- val128 `max` source: `max_r8 >= 0.6` is `50/60`, top3-hit-r8 is `37/60`, top10-hit-r8 is `53/60`, raw rank top3 is `9/60`.
+- val128 `center` source: `max_r8 >= 0.6` is `50/60`, top3-hit-r8 is `38/60`, top10-hit-r8 is `54/60`.
+- val128 `selector` source: `max_r8 >= 0.6` is `46/60`, top3-hit-r8 is `35/60`, top10-hit-r8 is `51/60`.
+- val512 `max` source: `max_r8 >= 0.6` is `208/271`, top3-hit-r8 is `137/271`, top10-hit-r8 is `228/271`, raw rank top3 is `14/271`.
+- val512 `center` source: `max_r8 >= 0.6` is `204/271`, top3-hit-r8 is `144/271`, top10-hit-r8 is `229/271`.
+- val512 `selector` source: `max_r8 >= 0.6` is `185/271`, top3-hit-r8 is `128/271`, top10-hit-r8 is `216/271`.
+
+판단:
+
+- GT center 주변 local proposal signal은 대부분 남아 있다. broader-val512 `max` 기준 `max_r8 >= 0.6`이 `76.8%`다.
+- 하지만 production-friendly low top-k ranking은 약하다. broader-val512 `max` 기준 top3-hit-r8은 `50.6%`이고 raw rank top3는 `5.2%`뿐이다.
+- top10-hit-r8은 `84.1%`까지 올라가므로 후보 pool 자체를 넓히면 recall headroom은 있다. 다만 이전 predicted angle-mask extent readout에서 max top3도 FP를 많이 만들었으므로, 단순 top10 decode/append는 FP 폭주 위험이 크다.
+
+하지 말 것:
+
+- "GT 주변 score가 있다"만 보고 top-k를 넓히는 decode를 바로 default 후보로 삼지 않는다.
+- selector/center threshold만 조절하는 같은 family를 반복하지 않는다.
+
+다음:
+
+- 다음 stop-line 축은 candidate pool을 넓히되 FP를 억제하는 ranking/classification contract거나, proposal map 자체의 competition loss를 바꾸는 방향이어야 한다.
+- 단순 center/selector/max top-k threshold readout은 이미 닫혔으므로, 새 축은 proposal 후보의 false-positive suppression을 별도 신호로 검증해야 한다.
