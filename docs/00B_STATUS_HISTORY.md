@@ -1308,3 +1308,41 @@ Stop-line branch 결과:
 - selector-map threshold sweep이나 selector-map component gate를 같은 형태로 반복하지 않는다.
 - row/x projection F1만 보고 stop-line vector F1 0.6이 가까워졌다고 해석하지 않는다.
 - 다음 stop-line 축은 row/x/mask를 line proposal로 결합하는 train-time target/readout contract여야 한다.
+
+## 37. 2026-05-11 Gate 2 stop-line row/x proposal readout: projection-only span proposal is negative
+
+맥락:
+
+- selector dense audit은 x projection과 mask signal이 강하지만 selector/proposal 결합이 약하다는 결론을 냈다.
+- 그래서 새 학습 전에 current row/x/mask output만으로 horizontal-ish line span을 직접 만들면 baseline stop-line F1을 넘길 수 있는지 read-only로 확인했다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-rowx-proposal-readout`
+- 새 도구 `tools/probe_pv26_stopline_rowx_proposal_readout.py`를 추가했다.
+- production default는 건드리지 않고, baseline prediction에서 stop-line만 row/x/mask proposal로 replace하거나, proposal이 없으면 baseline으로 fallback하는 variants를 평가한다.
+- 임시 root weight symlink는 실행 후 `runs/removable/stopline_rowx_proposal_weight_link_20260511/`로 이동했다.
+
+실행:
+
+- command: `python3 tools/probe_pv26_stopline_rowx_proposal_readout.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-json runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_rowx_proposal_readout_val128_epoch2.json`
+- processed batches: `128`
+
+결과:
+
+- baseline lane/stop/cross F1: `0.5267 / 0.4483 / 0.5854`, stop-line TP/FP/FN `26 / 30 / 34`.
+- best fallback `rowx_r3_x030_fallback`: stop-line F1 `0.4310`, TP/FP/FN `25 / 31 / 35`.
+- best replacement `rowx_r2_x030_replace`: stop-line F1 `0.3146`, TP/FP/FN `14 / 15 / 46`.
+- row/x decoder 생성량은 variant별 512 samples 중 `29~30` samples, `29~30` lines뿐이다. fallback variants는 나머지 `482` samples를 baseline stop-line으로 되돌렸다.
+
+판단:
+
+- current row/x projection을 후처리에서 span proposal로 직접 꺼내면 baseline보다 stop-line recall이 더 낮아진다.
+- x projection F1이 높다는 사실은 column support 존재를 의미하지만, 실제 stop-line instance를 만들 proposal score/coverage로 바로 전환되지는 않는다.
+- 이 결과는 selector-map gate, local score-window extraction, pairwise component split과 같은 postprocess-only readout family를 더 닫는다.
+
+하지 말 것:
+
+- row/x threshold, row-band, fallback/replace 조합을 같은 형태로 반복하지 않는다.
+- row/x projection만 보고 decode-only stop-line proposal path를 채택하지 않는다.
+- 다음 stop-line 축은 후처리 span 생성이 아니라 train-time target/readout이 row/x/mask를 하나의 valid proposal로 직접 묶도록 설계해야 한다.
