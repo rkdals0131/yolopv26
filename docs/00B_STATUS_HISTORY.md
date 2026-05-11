@@ -1572,3 +1572,52 @@ Stop-line branch 결과:
 
 - stop-line을 계속한다면 candidate validator/classifier 또는 contrastive proposal ranking target처럼 FP 후보를 직접 누르는 contract가 필요하다.
 - 단순 score, length, top-k, threshold 조합은 같은 family로 반복하지 않는다.
+
+## 43. 2026-05-11 Gate 2 hard-negative proposal ranking short run: ranking loss helps baseline slightly but fails the gate
+
+맥락:
+
+- candidate-pool audit은 broader-val512 oracle-positive selection으로 stop-line F1 `0.6517`까지 가능하다는 headroom을 보였지만, score/length-only production filter는 `0.4371`로 실패했다.
+- 그래서 `max(center, selector)` proposal map의 hard false-positive cells를 GT center보다 낮게 rank하도록 하는 opt-in ranking loss를 시험했다.
+- 이 실험은 candidate validator/classifier의 첫 학습-side proxy다. 성공 기준은 exact val128에서 기존 angle-mask/PCA reference를 넘고, lane/crosswalk retention이 깨지지 않는 것이다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-validator-audit`
+- `model/engine/loss.py`에 optional `_stop_line_proposal_ranking_loss`를 추가했다.
+- `TrainDefaultsConfig`에는 `stopline_proposal_ranking_weight`, `margin`, `topk`, `exclusion_radius`를 추가했고 기본값은 disabled다.
+- loss는 center/selector fused proposal logits에서 GT center heatmap 주변을 제외한 top-k hard negatives가 positive center보다 margin 이상 낮아지도록 penalize한다.
+
+실행:
+
+- seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt`
+- run: `runs/pv26_exhaustive_od_lane_train/stopline_proposal_rank_w025_val128_default_20260511_113639`
+- stage: phase4 only, `train_batches=512`, `val_batches=128`, `max_epochs=2`, `stopline_proposal_ranking_weight=0.25`
+- candidate-pool replay: `analysis_exports/stopline_candidate_pool_val128_epoch2`
+
+결과:
+
+- epoch1 lane/stop/cross F1: `0.4852 / 0.2105 / 0.6750`.
+- epoch2 best lane/stop/cross F1: `0.4754 / 0.4918 / 0.5767`.
+- epoch2 stop-line TP/FP/FN: `30 / 32 / 30`.
+- epoch2 lane TP/FP/FN: `910 / 528 / 1480`.
+- epoch2 crosswalk TP/FP/FN: `47 / 35 / 34`.
+- epoch2 lane-family mean/min F1: `0.5146 / 0.4754`.
+- same-checkpoint candidate-pool replay oracle top20 stop-line F1: `0.7097`, TP/FP/FN `33 / 0 / 27`.
+- same-checkpoint candidate-pool replay best non-oracle production variant was only `max_top10_score_len8`, stop-line F1 `0.4286`, TP/FP/FN `27 / 39 / 33`.
+
+판단:
+
+- ranking loss did not solve proposal FP suppression. Default decode stop-line F1 improved over baseline `0.4483`, but stayed below angle-mask production `0.5085` and PCA val128 reference `0.5133`.
+- It also hurt lane/crosswalk retention on the exact slice, so this is not a safe extension candidate.
+- Oracle top20 remains high, but production filters got worse. This reinforces that non-GT validation signal, not score/length/top-k manipulation, is the missing contract.
+
+하지 말 것:
+
+- hard-negative proposal ranking loss-only를 같은 weight family로 longer run 확장하지 않는다.
+- exact val128 stop-line `0.4918`을 positive gate로 해석하지 않는다. 기준 reference를 못 넘고 lane/crosswalk가 같이 내려갔다.
+
+다음:
+
+- stop-line을 계속한다면 dense proposal ranking loss-only가 아니라 candidate feature validator/classifier처럼 candidate instance 자체를 분류하는 target으로 좁힌다.
+- 또는 stop-line을 잠시 멈추고 Gate 3 lane predicted centerline instance stability로 돌아간다.
