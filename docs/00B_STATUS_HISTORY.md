@@ -1621,3 +1621,49 @@ Stop-line branch 결과:
 
 - stop-line을 계속한다면 dense proposal ranking loss-only가 아니라 candidate feature validator/classifier처럼 candidate instance 자체를 분류하는 target으로 좁힌다.
 - 또는 stop-line을 잠시 멈추고 Gate 3 lane predicted centerline instance stability로 돌아간다.
+
+## 44. 2026-05-11 Gate 2 candidate scalar-feature validator audit: row-level signal exists, task-level validator still missing
+
+맥락:
+
+- candidate-pool audit은 oracle-positive 후보가 충분하다고 보였지만, score/length-only production filter는 task F1을 올리지 못했다.
+- hard-negative ranking loss-only도 exact val128 reference를 넘지 못했다.
+- 그래서 기존 `candidate_features.csv`에 있는 non-GT scalar feature만으로 oracle-positive candidate row가 분리되는지 확인했다. 이 audit은 candidate-row 분류이고, production decoder가 아니다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-feature-audit`
+- 새 도구 `tools/analyze_pv26_stopline_candidate_features.py`를 추가했다.
+- 입력 feature는 `score`, `length`, `proposal_rank`, `inverse_rank`, `score_x_length`, `log1p_length`다.
+- val512 candidate rows를 batch index 기준 앞/뒤 half split으로 나누고, train half에서 logistic classifier와 feature별 threshold를 맞춘 뒤 test half에 적용한다.
+
+실행:
+
+- command: `python3 tools/analyze_pv26_stopline_candidate_features.py --input runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_pool_val512_epoch2/candidate_features.csv --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_feature_validator_val512_epoch2`
+- outputs: `summary.json`, `feature_reports.csv`.
+
+결과:
+
+- total candidate rows: `2283`.
+- train rows/positive: `1185 / 354`.
+- test rows/positive: `1098 / 299`.
+- logistic test AUC/AP: `0.7894 / 0.5699`.
+- logistic threshold learned on train gives test TP/FP/FN `241 / 313 / 58`, precision/recall/F1 `0.4350 / 0.8060 / 0.5651`.
+- test oracle-best logistic threshold gives candidate-level F1 `0.5860`, TP/FP/FN `218 / 227 / 81`.
+- score-only feature has test AUC/AP `0.7479 / 0.5412` and test F1 at train threshold `0.5812`.
+
+판단:
+
+- Scalar candidate features have moderate row-level signal, so the problem is not total absence of non-GT signal.
+- But candidate-row F1 is not stop-line task F1. The same score/length candidate-pool replay on broader-val512 had best production stop-line F1 `0.4371`, below PCA reference `0.4699`.
+- Therefore a CSV scalar classifier is not enough to call production validation solved. It must become a task-aware candidate instance validator tied to decoded geometry, per-sample competition, and retention.
+
+하지 말 것:
+
+- candidate-level AUC/AP or row F1을 stop-line task success로 해석하지 않는다.
+- score-only 또는 scalar logistic threshold를 production decoder로 승격하지 않는다.
+
+다음:
+
+- stop-line을 계속한다면 scalar CSV classifier가 아니라 model-side candidate instance validator head/probe로 가야 한다.
+- 그렇지 않으면 Gate 3 lane predicted centerline stability로 넘어가서 lane bottleneck을 줄이는 편이 더 안전하다.
