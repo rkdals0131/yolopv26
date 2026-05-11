@@ -1210,3 +1210,38 @@ Stop-line branch 결과:
 - `cross_mask=0.40`, `cross_area=32`, lane/stop default 유지 후보를 broader-val512 epoch2로 replay한다.
 - broader-val512에서도 crosswalk F1 `>=0.60`이고 lane/stop-line이 후퇴하지 않을 때만 Gate 4를 닫는다.
 - exact val128 crosswalk threshold 통과만으로 export/default 승격하지 않는다.
+
+## 34. 2026-05-11 Gate 4 broader crosswalk retention: stricter component threshold does not hold
+
+맥락:
+
+- Gate 4 exact val128에서 `cross_mask=0.40`, `cross_area=32` 후보가 crosswalk F1 `0.6027`을 만들었다.
+- top objective variant는 lane threshold도 같이 바꿨으므로, broader replay는 lane/stop default를 유지하는 crosswalk-only 후보로 제한했다.
+- 기존 threshold probe는 all-variant sweep만 지원해 broader-val512 반복이 불필요하게 무거웠다.
+
+변경:
+
+- branch: `exp/lane-family-f1/crosswalk-broader-retention`
+- `tools/probe_pv26_lane60_postprocess_thresholds.py`에 `--variants` CSV 필터를 추가했다.
+- `test/test_pv26_threshold_probe.py`로 variant filter ordering, config selection, unknown name rejection을 고정했다.
+- focused broader replay는 `baseline,lane_obj_0.45__cross_mask_0.40__cross_area_32` 두 variant만 평가했다.
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_postprocess_thresholds_val512_epoch2_crossonly`
+
+검증:
+
+- focused replay command: `python3 tools/probe_pv26_lane60_postprocess_thresholds.py --checkpoint .../phase_4/checkpoints/best.pt --source-run ... --lane60-experiment core_centerline_refine_cross_retain --phase-index 4 --max-val-batches 512 --validation-epoch 2 --batch-size 4 --device cuda:0 --variants baseline,lane_obj_0.45__cross_mask_0.40__cross_area_32 --output-dir .../analysis_exports/crosswalk_postprocess_thresholds_val512_epoch2_crossonly`
+- broader baseline: objective `0.5943438336`, lane/stop/cross F1 `0.5101 / 0.4083 / 0.5854`, cross TP/FP/FN `216 / 127 / 179`, precision/recall `0.6297 / 0.5468`.
+- broader candidate: objective `0.5929870621`, lane/stop/cross F1 `0.5101 / 0.4083 / 0.5845`, cross TP/FP/FN `204 / 99 / 191`, precision/recall `0.6733 / 0.5165`.
+
+판단:
+
+- exact val128 gain은 broader-val512에서 유지되지 않았다.
+- stricter component threshold는 FP를 줄이지만 TP를 `216 -> 204`로 더 잃어 recall이 `0.5468 -> 0.5165`로 떨어진다.
+- objective도 기준 `0.5943 -> 0.5930`으로 내려가므로 Gate 4 success가 아니다.
+- crosswalk는 여전히 0.6에 가깝지만, `cross_mask=0.40`, `cross_area=32` threshold tightening만으로는 broader target을 넘기지 못한다.
+
+다음:
+
+- `cross_mask=0.40`, `cross_area=32` exact-only threshold 후보를 default/export 후보로 반복하지 않는다.
+- crosswalk를 재개한다면 recall-safe shape filtering이나 training-side retention evidence가 필요하다.
+- 전체 goal 기준 병목은 다시 stop-line, 그 다음 lane이다. stop-line은 train-time target/readout이 직접 맞는 geometry representation 또는 stronger proposal contract로 제한한다.

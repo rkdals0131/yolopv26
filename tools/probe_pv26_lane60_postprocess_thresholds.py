@@ -44,6 +44,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--variants",
+        default="",
+        help="Optional comma-separated variant names to evaluate, preserving the provided order.",
+    )
     return parser.parse_args()
 
 
@@ -189,6 +194,24 @@ def _threshold_variants(base: PV26PostprocessConfig) -> list[tuple[str, PV26Post
     return variants
 
 
+def _filter_variants(
+    variants: list[tuple[str, PV26PostprocessConfig]],
+    requested_csv: str,
+) -> list[tuple[str, PV26PostprocessConfig]]:
+    requested = [name.strip() for name in str(requested_csv or "").split(",") if name.strip()]
+    if not requested:
+        return variants
+    by_name = {name: (name, config) for name, config in variants}
+    missing = [name for name in requested if name not in by_name]
+    if missing:
+        available = ", ".join(sorted(by_name)[:20])
+        raise ValueError(
+            f"unknown threshold variant(s): {', '.join(missing)}; "
+            f"first available variants: {available}"
+        )
+    return [by_name[name] for name in requested]
+
+
 def _detach_to_cpu(item: Any) -> Any:
     if isinstance(item, torch.Tensor):
         return item.detach().cpu()
@@ -266,7 +289,7 @@ def main() -> int:
         val_batches=int(args.max_val_batches),
     )
     base_postprocess = train_cli._build_postprocess_config(train_config)
-    variants = _threshold_variants(base_postprocess)
+    variants = _filter_variants(_threshold_variants(base_postprocess), args.variants)
 
     output_dir = (
         Path(args.output_dir).expanduser().resolve()

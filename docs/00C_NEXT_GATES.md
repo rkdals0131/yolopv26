@@ -30,6 +30,7 @@
 - residual-risk core/ring local separation loss weight만 키워 lane 0.6 path를 다시 찾지 않는다.
 - exact val128 crosswalk threshold pass를 broader-val Gate 4 success로 표현하지 않는다.
 - Gate 4 crosswalk isolation을 볼 때 lane threshold까지 같이 바꾼 top-objective variant를 먼저 broader default 후보로 삼지 않는다.
+- `cross_mask=0.40`, `cross_area=32` stricter crosswalk component threshold를 broader-val success 없이 default/export 후보로 반복하지 않는다.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -247,15 +248,20 @@ Gate 상태:
 - exact val128 threshold probe는 완료됐다. `cross_mask=0.40`, `cross_area=32`가 crosswalk F1을 `0.5854 -> 0.6027`로 올렸다.
 - top objective variant는 `lane_obj_0.35__cross_mask_0.40__cross_area_32`이고 objective `0.6115270643`, lane/stop/cross F1 `0.5326 / 0.4483 / 0.6027`이다.
 - crosswalk-only candidate는 `lane_obj_0.45__cross_mask_0.40__cross_area_32`이고 objective `0.6098888876`, lane/stop/cross F1 `0.5267 / 0.4483 / 0.6027`이다.
-- 다음은 crosswalk-only candidate를 broader-val512에서 확인한다.
+- broader-val512 crosswalk-only replay는 실패했다. baseline lane/stop/cross F1은 `0.5101 / 0.4083 / 0.5854`, candidate는 `0.5101 / 0.4083 / 0.5845`다.
 - crosswalk-heavy loss 재시도는 이미 negative evidence가 있으므로 기본 후보가 아니다.
-- 필요하면 crosswalk polygon area/aspect thresholds의 recall 손실을 audit한다.
+- crosswalk를 재개한다면 stricter component threshold가 아니라 recall-safe shape filtering이나 training-side retention evidence를 먼저 요구한다.
 
 성공 기준:
 
 - crosswalk F1 `>=0.60`이 broader-val에서 유지되어야 한다.
 - lane/stop-line 목표를 희생하는 crosswalk-only gain은 채택하지 않는다.
 - exact val128 기준으로는 partial-positive일 뿐이고, broader-val512 통과 전에는 deployment/default 승격하지 않는다.
+
+Gate 상태:
+
+- exact-only partial-positive, broader-val512 failure.
+- 현재 active bottleneck은 다시 stop-line first, lane second다.
 
 ## 8. Gate 5: export/TorchScript
 
