@@ -1522,3 +1522,53 @@ Stop-line branch 결과:
 
 - 다음 stop-line 축은 candidate pool을 넓히되 FP를 억제하는 ranking/classification contract거나, proposal map 자체의 competition loss를 바꾸는 방향이어야 한다.
 - 단순 center/selector/max top-k threshold readout은 이미 닫혔으므로, 새 축은 proposal 후보의 false-positive suppression을 별도 신호로 검증해야 한다.
+
+## 42. 2026-05-11 Gate 2 stop-line candidate pool audit: oracle validates pool, production filters fail
+
+맥락:
+
+- proposal recall audit은 GT 주변 local signal은 남아 있지만 top-k ranking이 약하다는 결론을 냈다.
+- 그래서 `max(center, selector)` top10/top20 proposal pool 안에 metric-compatible stop-line segment가 실제로 있는지, 그리고 score/length 같은 non-GT feature만으로 FP를 억제할 수 있는지 확인했다.
+- 이 audit은 read-only다. oracle variants는 GT distance로 후보를 고르므로 production decoder가 아니다.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-pool-audit`
+- 새 도구 `tools/probe_pv26_stopline_candidate_pool.py`를 추가했다.
+- top-k proposal마다 predicted offset/angle + predicted mask extent로 stop-line candidate를 만든다.
+- variant는 score sort, length sort, score/length threshold, 그리고 oracle-positive candidate selection을 비교한다.
+- 후보별 feature/GT-distance row는 `candidate_features.csv`에 남긴다.
+
+실행:
+
+- val128 command: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_pool_val128_epoch2`
+- val512 command: same, with `--max-val-batches 512 --output-dir .../analysis_exports/stopline_candidate_pool_val512_epoch2`
+- outputs: `summary.json`, `variants.csv`, `candidate_features.csv` under each output directory.
+
+결과:
+
+- val128 candidate count `555`, oracle-positive candidates `168` (`30.3%`).
+- val128 oracle-positive selection: stop-line F1 `0.7368`, TP/FP/FN `35 / 0 / 25`.
+- val128 best production filter `max_top10_score_s080`: stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`.
+- val128 baseline: stop-line F1 `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- val512 candidate count `2283`, oracle-positive candidates `653` (`28.6%`).
+- val512 oracle-positive top20: stop-line F1 `0.6517`, TP/FP/FN `131 / 0 / 140`.
+- val512 oracle-positive top10: stop-line F1 `0.6450`, TP/FP/FN `129 / 0 / 142`.
+- val512 best production filter `max_top10_score_s080`: stop-line F1 `0.4371`, TP/FP/FN `106 / 108 / 165`.
+- val512 baseline: stop-line F1 `0.4083`, TP/FP/FN `98 / 111 / 173`.
+
+판단:
+
+- 후보 pool 자체에는 valid segment가 충분히 있다. broader-val512 oracle-positive selection은 stop-line F1 0.6을 넘는다.
+- 하지만 score/length threshold만으로는 FP suppression이 안 된다. best production filter는 PCA broader reference `0.4699`보다 낮다.
+- 따라서 다음 생산 후보는 top-k decode를 더 넓히는 것이 아니라, candidate false-positive를 직접 구분하는 학습/검증 신호가 필요하다.
+
+하지 말 것:
+
+- oracle-positive F1 `0.6517`을 production success로 표현하지 않는다.
+- top10/top20 candidate pool을 score/length threshold만 붙여 broader candidate로 승격하지 않는다.
+
+다음:
+
+- stop-line을 계속한다면 candidate validator/classifier 또는 contrastive proposal ranking target처럼 FP 후보를 직접 누르는 contract가 필요하다.
+- 단순 score, length, top-k, threshold 조합은 같은 family로 반복하지 않는다.
