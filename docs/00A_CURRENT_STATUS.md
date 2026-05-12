@@ -350,10 +350,13 @@ Latest stop-line fragment follow-up replays:
 - seed-extension result: best `seed_extend_s080_e065_c2_fallback_top`, stop-line F1 `0.4742`, TP/FP/FN `115 / 99 / 156`.
 - length-competition branch/worktree: `exp/lane-family-f1/stopline-fragment-length-competition`.
 - length-competition code commit: `1619fd9`.
+- length-competition audit commit: `206dc26`.
 - length-competition artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_length_competition_readout_val512_epoch2/summary.json`.
+- length-competition delta audit artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_readout_delta_val512_epoch2/summary.json`.
 - length-competition changed axis: keep union groups, let high-confidence single candidates compete with them, and rank the one emitted stop-line by no-GT length evidence.
 - length-competition result: best `length_comp_single090_length`, lane / stop-line / crosswalk F1 `0.5480 / 0.5031 / 0.6187`, stop-line TP/FP/FN `121 / 89 / 150`.
-- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but remains far below stop-line `0.60`; do not repeat it as a feature-rank or single-score sweep. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
+- delta audit: union vs length labels are `fp_removed=3`, `tp_added=2`, `tp_lost=1`, `same=363`.
+- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but the delta audit shows the gain is confined to six samples and mostly fallback suppression, not broad geometry recovery. Do not repeat it as a feature-rank or single-score sweep. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
 
 Latest stop-line center-rank margin probe:
 

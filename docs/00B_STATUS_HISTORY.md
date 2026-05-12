@@ -7558,3 +7558,42 @@ Result:
 - This is a small partial-positive over fragment union: `0.4948 -> 0.5031`, with TP/FP/FN moving from `120 / 94 / 151` to `121 / 89 / 150`.
 - It still misses stop-line `0.60` by a wide margin and does not solve lane `0.60`.
 - Do not turn this into a feature-rank/min-score sweep. The next useful stop-line step needs stronger candidate generation/midpoint recovery or a selector that can keep the new TP while removing many more FP.
+
+## 144. 2026-05-13 Stop-line fragment readout delta audit: length gain is narrow fallback suppression
+
+맥락:
+
+- Section 143 improved stop-line F1 by only `+0.0083`.
+- Before choosing another axis, the question was whether this was real geometry recovery or just a tiny fallback-emission change.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-length-competition`.
+- Code commit: `206dc26`.
+- Added `tools/analyze_pv26_stopline_fragment_readout_delta.py`.
+- Added `test/test_stopline_fragment_readout_delta.py`.
+- The audit compares `union_a12_o36_s080_c2_fallback_top` against `length_comp_single090_length` sample by sample on the same candidate CSV.
+
+Verification:
+
+- `python3 -m py_compile tools/analyze_pv26_stopline_fragment_readout_delta.py test/test_stopline_fragment_readout_delta.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_length_competition_readout.py test/test_stopline_fragment_readout_delta.py`
+- result: `9 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_readout_delta_val512_epoch2/summary.json`
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_readout_delta_val512_epoch2/fragment_readout_delta_samples.csv`
+
+Result:
+
+- union F1: `0.4948453608`, TP/FP/FN `120 / 94 / 151`.
+- length-competition F1: `0.5031185031`, TP/FP/FN `121 / 89 / 150`.
+- delta labels: `fp_removed=3`, `tp_added=2`, `tp_lost=1`, `same=363`.
+- The changed set is only `6/369` candidate-bearing samples.
+
+판단:
+
+- The gain is real but too narrow to justify a production path or another length-feature sweep.
+- The changed samples show fallback suppression behavior: some low-confidence no-cluster emissions disappear, one true positive also disappears, and only two samples add TP.
+- Next stop-line work should not keep tuning this fallback gate. It needs a materially stronger no-GT selector or a candidate/midpoint generation change that affects many more than six samples.
