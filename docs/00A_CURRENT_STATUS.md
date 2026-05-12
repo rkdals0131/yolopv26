@@ -291,6 +291,19 @@ Latest enriched stop-line candidate manifest audit:
 - `positive_no_oracle` top score q50 is `0.9998`, nearest GT distance q50 is `89.98px`, and nearest candidate length ratio q50 is only `0.066`.
 - 판단: the failing positive no-oracle samples are not low-score candidates waiting for a ranker. They are high-confidence, short fragments whose centers are far from the GT midpoint. Next stop-line work must change center proposal / extent recovery, not another score or sample-gate threshold.
 
+Latest learned stop-line fragment-to-center extent probe:
+
+- branch/worktree: `exp/lane-family-f1/stopline-fragment-extent-recovery`.
+- code commit: `64c7d70` adds an opt-in `stop_line_fragment_center_offset` head, fragment-line targets, fragment auxiliary loss, and fragment-extent postprocess decode.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/phase_4/history/epochs.jsonl`.
+- changed axis: keep checkpoint, sampler, freeze policy, and task weights fixed, then train a dense fragment pixel -> full stop-line center/angle/extent recovery contract with `stopline_fragment_extent_aux_weight=0.75` and `stop_line_fragment_extent_enabled=true`.
+- best exact val128 objective: `0.5499257237` at epoch1.
+- epoch1 lane / stop-line / crosswalk F1: `0.5147 / 0.0267 / 0.6625`.
+- epoch2 lane / stop-line / crosswalk F1: `0.5222 / 0.0519 / 0.5389`.
+- epoch2 stop-line TP/FP/FN: `4 / 90 / 56`.
+- skipped steps: `0`.
+- 판단: runtime and shape-aware handoff are stable, but the learned fragment-to-center extent head collapses stop-line task F1 far below tangent-link exact `0.4483`, PCA val128 `0.5133`, and read-only fragment-extent replay `0.4918`. Do not broaden to val512 or repeat as fragment top-k/min-score/aux-weight sweep.
+
 Latest stop-line center-rank margin probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/phase_4/history/epochs.jsonl`
@@ -607,6 +620,7 @@ Lane Gate 3 dense-map probe:
 - stop-line mask-wide angle-field auxiliary는 existing `stop_line_angle` map을 stop-line mask support 전체에서 sign-invariant axis cosine loss로 supervised했지만 gate를 넘지 못했다. exact val128 epoch2 objective는 `0.6152`, lane/stop/cross F1은 `0.5606 / 0.4348 / 0.5854`, stop-line TP/FP/FN은 `25 / 30 / 35`이다. 이는 tangent-link `0.6187`, `0.5633 / 0.4483 / 0.5854`와 PCA/angle-mask/task-head-merge stop-line references보다 낮아 broader-val512로 확장하지 않는다.
 - stop-line hard-negative sampler는 `stopline_negative` task-positive bucket으로 GT-negative lane-source samples를 직접 노출했지만 exact val128 epoch2 objective `0.6063`, lane/stop/cross F1 `0.5475 / 0.4561 / 0.5644`에 그쳤다. Stop-line은 tiny gain이지만 lane/crosswalk/objective retention을 잃으므로 broader-val512로 확장하지 않는다.
 - stop-line candidate manifest failure-mode audit은 gap4/max candidate-bearing samples `369`개를 `GT-negative 165 / positive top-oracle 113 / positive misrank 29 / positive no-oracle 62`로 분해했다. Positive no-oracle bucket은 nearest candidate distance가 `40_80=28`, `gte80=34`라 selector-only로는 회복할 수 없고, midpoint proposal/candidate generation 문제가 남아 있다.
+- learned stop-line fragment-to-center extent head는 high-confidence short fragment에서 full segment를 직접 복원하려 했지만 exact val128 stop-line F1이 epoch1/2 `0.0267 / 0.0519`로 무너졌다. Target/head wiring은 안정적이지만 production readout으로 확장할 신호가 없어 val512로 넓히지 않는다.
 - stop-line center-rank margin은 GT midpoint proposal logit을 hard-negative proposal보다 높이는 opt-in loss로 no-oracle bucket을 겨냥했지만 exact val128 epoch2 objective `0.6170`, lane/stop/cross F1 `0.5605 / 0.4602 / 0.5854`에 그쳤다. Stop-line은 tangent-link 대비 `+0.0119`지만 objective/lane은 current exact references보다 낮고 geometry-validator stop-line `0.4655`도 못 넘어 broader-val512로 확장하지 않는다.
 - denser stop-line candidate-select contract는 gap4/top50 후보를 validator/presence로 직접 학습하고 `max_validator` readout을 썼지만 stop-line emit이 완전히 꺼졌다. exact val128 epoch2 objective는 `0.5855`, lane/stop/cross F1은 `0.5612 / 0.0000 / 0.5854`, stop-line TP/FP/FN은 `0 / 0 / 60`이다. Same-axis threshold/longer run이 아니라 emit/select contract 재설계 없이는 반복하지 않는다.
 - stop-line geometry-validator + stop-line-head-only retention schedule은 trunk, detector/TL, lane, crosswalk heads를 고정하고 stop-line head만 업데이트했지만 stop-line을 회복하지 못했다. exact val128 epoch2 objective는 `0.6180`, lane/stop/cross F1은 `0.5640 / 0.4386 / 0.5926`, stop-line TP/FP/FN은 `25 / 29 / 35`다. Geometry-validator reference `0.4655`, tangent-link reference `0.4483`보다 stop-line이 낮아 broader-val512로 확장하지 않는다.

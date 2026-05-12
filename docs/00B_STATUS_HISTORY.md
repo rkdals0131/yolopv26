@@ -7152,3 +7152,77 @@ Task-best:
 - Dense instance-embedding row-link is closed as a standalone lane auxiliary/readout axis.
 - The next lane branch still needs stronger predicted-centerline instance recovery, not another row-link cost or auxiliary-weight sweep.
 - Since stop-line remains the larger all-task blocker, prefer a new stop-line emit/select/readout contract if a non-repeated premise is available; otherwise any lane branch must preserve the current stop-line/crosswalk contract.
+
+## 137. 2026-05-13 Stop-line learned fragment-to-center extent: wired but collapses task F1
+
+맥락:
+
+- Section 130 showed current positive no-oracle stop-line failures are high-confidence short fragments far from the GT midpoint.
+- Section 131 tested a read-only predicted-proposal + gap-tolerant mask-strip extent replay and found a partial exact lift to stop-line F1 `0.4918`, still below PCA and angle-mask references.
+- This branch asks whether the model can learn the missing relocation step directly: from supervised fragment pixels along the stop-line mask, predict the full stop-line center offset plus angle/extent and decode from high-score fragment evidence.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-extent-recovery`.
+- Code commit: `64c7d70`.
+- Added `stop_line_fragment_center_offset` output to `StopLineHeadLine`.
+- Added `stop_line_fragment_center_mask` and `stop_line_fragment_center_offset` target maps; angle and half-length targets are now also available along the fragment mask.
+- Added default-off `stopline_fragment_extent_aux_weight`.
+- Added opt-in fragment-extent postprocess decode controlled by `stop_line_fragment_extent_enabled`, `stop_line_fragment_extent_top_k`, and `stop_line_fragment_extent_min_score`.
+- Added probe preset `core_centerline_refine_stop_fragment_extent`.
+
+Verification before exact:
+
+- `python3 -m py_compile model/net/stopline_head_line.py model/data/roadmark_v2_targets.py model/data/target_encoder.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_run_pv26_train.py test/test_roadmark_native_contract.py test/test_pv26_evaluator.py`
+- `git diff --check`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_postprocess.py test/test_pv26_loss_runtime.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_run_pv26_train.py test/test_roadmark_native_contract.py test/test_pv26_evaluator.py`
+- Smoke run: train4/val2 on `cuda:0`, `skipped_steps=0`; the metric was intentionally not used for selection.
+
+Exact command:
+
+```bash
+PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --experiment core_centerline_refine_stop_fragment_extent \
+  --epochs 2 \
+  --train-batches 512 \
+  --val-batches 128 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/phase_4/history/epochs.jsonl`
+- summary: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/summary.json`
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5499257237` | `0.5147` | `974 / 476 / 1361` | `0.0267` | `2 / 93 / 53` | `0.6625` | `53 / 24 / 30` |
+| 2 | `0.5421280619` | `0.5222` | `1004 / 451 / 1386` | `0.0519` | `4 / 90 / 56` | `0.5389` | `45 / 41 / 36` |
+
+Task-best:
+
+- best objective `0.5499257237` at epoch1.
+- lane F1 `0.5222366710` at epoch2.
+- stop-line F1 `0.0519480519` at epoch2.
+- crosswalk F1 `0.6625000000` at epoch1.
+- skipped steps: `0`.
+
+판단:
+
+- This is valid negative evidence: target/render/loss/postprocess wiring compiles, unit tests pass, smoke runs, and the exact run has no skipped steps.
+- The learned fragment-to-center extent contract does not recover the positive no-oracle bucket. It collapses stop-line task F1 far below tangent-link exact `0.4483`, PCA val128 `0.5133`, predicted angle-mask production `0.5085`, and read-only fragment-extent replay `0.4918`.
+- The best objective is also below tangent-link exact `0.6187165763`, segment-MIL lane-head-only exact `0.6193428422`, and current exact runtime-TTA reference `0.6296149306`.
+- Do not broaden to val512.
+- Do not repeat this as `stopline_fragment_extent_aux_weight`, fragment top-k, min-score, or longer-run sweep unless the proposal/readout contract changes materially.
+
+다음:
+
+- Learned dense fragment-to-center extent is closed as a stop-line architecture axis.
+- The stop-line blocker remains candidate generation/readout geometry, but it is not enough to supervise a fragment pixel to regress a global segment center directly.
+- A viable next stop-line branch must introduce a different emit/select/readout contract that preserves emissions and improves center proposal recovery, or the work should pivot back to lane instance stability while preserving the current stop-line/crosswalk contract.
