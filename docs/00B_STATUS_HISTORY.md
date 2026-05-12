@@ -7848,3 +7848,65 @@ Result:
 - Raw-image contrast removes only `5` FP and does not recover recall; it is weaker than the previous thickness gate (`0.5217` vs `0.5250`).
 - Adding photometric features to the multifeature logistic makes train/full look better but still fails held-out (`0.4433` vs baseline `0.4848`) and loses `11` TP.
 - Do not continue as a raw-image brightness/contrast/photometric selector sweep. The next useful stop-line axis still needs actual candidate/midpoint recovery or a materially different no-GT signal.
+
+## 151. 2026-05-13 Lane FN recovery audit: missed lanes have recoverable centerline/track evidence
+
+맥락:
+
+- Stop-line remains the largest all-task blocker, but the latest permitted stop-line branches all collapse back into already-closed selector/logistic/photometric or midpoint-ranking families unless a materially new no-GT signal appears.
+- Section 110 made `flip_centerline_avg` the current broader objective baseline, but lane remains below target at `0.5577`.
+- Prior lane row gates and top-K safety fallbacks improved precision only by losing TP, so the next lane question is recall-side: do missed GT lanes already have predicted centerline evidence or nearby unmatched row-scan tracks that a better instance-recovery contract could use?
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
+- Code commit: `978fc88`.
+- Added `tools/probe_pv26_lane_fn_recovery_audit.py`.
+- Added `test/test_lane_fn_recovery_audit.py`.
+- Contract: replay the current transplanted composite with `flip_centerline_avg`, hull crosswalk, and current stop-line overrides; match lane predictions to GT; for each FN GT lane, record predicted centerline/support evidence along the GT polyline and nearest any/unmatched predicted lane distance. This is a read-only audit, not a production decoder.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_fn_recovery_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py test/test_lane_instance_evidence_probe.py`
+- result: `8 passed`.
+- Smoke replay: `--max-val-batches 4`, wrote `runs/pv26_exhaustive_od_lane_train/lane_fn_recovery_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Broader replay: `--max-val-batches 512`, wrote `runs/pv26_exhaustive_od_lane_train/lane_fn_recovery_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated caches were moved under branch-local `runs/removable/lane-fn-recovery-smoke-artifacts-20260513/` instead of being deleted.
+
+Broader result:
+
+| Metric | Value |
+| --- | ---: |
+| baseline lane F1 | `0.5577433492` |
+| baseline lane TP/FP/FN | `4518 / 2206 / 4959` |
+| baseline stop-line F1 | `0.4234800839` |
+| baseline crosswalk F1 | `0.6186666667` |
+| FN lanes | `4959` |
+| samples with FN | `1759 / 2048` |
+| FN with GT center point mean `>=0.30` | `2066` |
+| FN with GT center point mean `>=0.50` | `1363` |
+| FN with GT center point mean `>=0.70` | `721` |
+| FN with GT center point q10 `>=0.30` | `430` |
+| FN with nearest unmatched prediction `<=80px` | `1007` |
+| FN with nearest unmatched prediction `<=120px` | `1698` |
+| FN with nearest unmatched prediction `<=200px` | `2372` |
+
+Upper-bound controls:
+
+| Diagnostic recovery rule | Recovered FN | No-new-FP lane F1 upper bound |
+| --- | ---: | ---: |
+| center mean `>=0.30` or unmatched `<=120px` | `2588` | `0.7564` |
+| unmatched `<=200px` | `2372` | `0.7419` |
+| center mean `>=0.50` or unmatched `<=120px` | `2225` | `0.7319` |
+| center mean `>=0.30` | `2066` | `0.7209` |
+| center mean `>=0.50` or unmatched `<=80px` | `1807` | `0.7025` |
+| unmatched `<=120px` | `1698` | `0.6946` |
+| center mean `>=0.50` | `1363` | `0.6697` |
+| unmatched `<=80px` | `1007` | `0.6421` |
+
+판단:
+
+- The audit shows enough recall-side headroom to justify a lane instance-recovery branch: the all-task lane gap needs roughly `489` extra TP at the current FP count to cross F1 `0.60`, while `1363` FNs already have moderate GT-line centerline evidence and `1698` have nearby unmatched tracks within `120px`.
+- This is not a production result. The recovery counts use GT to label missed lanes and assume no new FP.
+- Do not turn this into another post-hoc row threshold, top-K fallback, duplicate suppression, or endpoint extension sweep. The useful next lane axis is a recall-preserving decoder/model-side contract that can turn existing centerline evidence or nearby partial tracks into complete matched lane instances.

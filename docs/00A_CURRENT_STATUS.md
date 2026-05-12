@@ -103,6 +103,18 @@ Current best broader runtime/postprocess composite by objective:
 - support lane / stop / cross: `9477 / 271 / 395`
 - 판단: flip-centerline TTA recovers a real but small broader lane gain over the same transplanted composite (`0.5480 -> 0.5577`) while preserving stop-line `0.4235` and hull crosswalk `0.6187`. This is a new objective best but still not all-task success because lane and stop-line remain below `0.60`.
 
+Latest lane FN recovery audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
+- code commit: `978fc88`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_fn_recovery_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- changed axis: no training and no production decoder change; replay the current flip-centerline broader composite, then inspect each missed GT lane for predicted centerline evidence on the GT polyline and nearby unmatched row-scan tracks.
+- baseline lane/stop/cross F1: `0.5577 / 0.4235 / 0.6187`.
+- lane TP/FP/FN: `4518 / 2206 / 4959`.
+- FN evidence: `2066 / 4959` missed lanes have `gt_center_point_mean >= 0.30`; `1363 / 4959` have `>= 0.50`; `1698 / 4959` have an unmatched predicted lane within `120px`; `2588 / 4959` satisfy `center_mean >= 0.30` or unmatched distance `<=120px`.
+- no-new-FP upper-bound control: recovering the `center_mean >= 0.30 or unmatched <=120px` subset would imply lane F1 `0.7564`, but this is diagnostic only and uses GT to count recoverable FNs.
+- 판단: lane still has recall-side headroom that is not explained by another FP selector threshold. The next lane branch should convert this into a recall-preserving decoder/model-side instance recovery contract; do not claim this read-only upper-bound as production lane success.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
