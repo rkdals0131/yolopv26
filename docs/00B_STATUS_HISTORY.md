@@ -6810,3 +6810,72 @@ Exact val128 result:
 
 - Stop-line still needs a stronger center/extent generation contract, not another predicted-proposal readout-only variant.
 - If no such stop-line premise is available, switch to lane instance-stability work, but keep crosswalk hull retention unchanged.
+
+## 132. 2026-05-13 Lane flip-consistency regularizer: runtime stable but exact gate miss
+
+맥락:
+
+- Section 131 left stop-line without a materially new center/extent premise, so the fallback was a lane instance-stability axis.
+- Prior runtime TTA showed that flip-centerline averaging can lift broader lane F1 slightly, but that was evaluator/runtime-only.
+- This branch asked whether the same invariance can be learned during stage-4 fine-tuning without changing the row-scan-tangent decoder, stop-line/crosswalk settings, sampler, or task weights.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-flip-consistency-row-scan-tangent`.
+- Code commits: `2dcd776` adds opt-in train-time lane flip consistency; `e19dbd1` adds the row-scan-tangent probe preset and single-axis guard test.
+- `lane_flip_consistency_weight=0.25` adds an MSE penalty between normal centerline probabilities and horizontally flipped/unflipped centerline probabilities.
+- The weighted term is added to total loss only; lane/stop-line/crosswalk task losses and PCGrad task accounting stay unchanged.
+- The probe preset `core_centerline_refine_row_scan_tangent_flip_consistency` is identical to `core_centerline_refine_row_scan_tangent_link` except for the flip-consistency weight.
+
+Verification:
+
+- `python3 -m py_compile tools/run_pv26_lane60_probe.py model/engine/_trainer_step.py model/engine/trainer.py tools/pv26_train/config.py tools/pv26_train/cli.py`
+- `python3 -m pytest -q test/test_run_pv26_lane60_probe.py test/test_pv26_runtime_sanity.py::PV26PreparedDatasetRuntimeSanityTests::test_train_step_adds_opt_in_lane_flip_consistency_loss test/test_run_pv26_train.py::RunPV26TrainScenarioTests::test_load_meta_train_scenario_applies_user_yaml_overrides test/test_run_pv26_train.py::RunPV26TrainScenarioTests::test_load_meta_train_scenario_preserves_defaults_without_user_yaml`
+- Result: `4 passed`.
+
+Exact command:
+
+```bash
+python3 tools/run_pv26_lane60_probe.py \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --experiment core_centerline_refine_row_scan_tangent_flip_consistency \
+  --epochs 2 \
+  --train-batches 1024 \
+  --val-batches 256 \
+  --batch-size 2 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Notes:
+
+- `batch_size=2` was used because the consistency term adds a second forward pass.
+- `train_batches=1024` and `val_batches=256` keep sample count and optimizer-step scale aligned with the older batch4/512/128 exact probes.
+- The run completed with `skipped_steps=0`.
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5856105125` | `0.5334706488` | `0.2264150943` | `0.6710526316` |
+| 2 | `0.5991166581` | `0.5541865728` | `0.3965517241` | `0.5548387097` |
+
+Task-best:
+
+- lane F1 `0.5541865728` at epoch2.
+- stop-line F1 `0.3965517241` at epoch2.
+- crosswalk F1 `0.6710526316` at epoch1.
+
+판단:
+
+- The training contract is wired and stable, and the single-axis guard test protects the preset.
+- But the best exact objective `0.5991166581` is below the tangent-link reference `0.6187`.
+- The epoch2 lane/stop/cross F1 `0.5542 / 0.3966 / 0.5548` is also below tangent-link exact `0.5633 / 0.4483 / 0.5854`.
+- The epoch1 crosswalk spike is not useful because lane and stop-line are far below target at that checkpoint.
+- Therefore flip-consistency-regularizer-only is a closed axis and should not be broadened to val512.
+
+다음:
+
+- Do not repeat this as a weight sweep unless a new premise changes where the consistency pressure is applied.
+- Keep the current broader objective best as the runtime/postprocess composite `0.6216194906`, lane/stop/cross `0.5577 / 0.4235 / 0.6187`.
+- The all-task goal still needs stop-line center/extent recovery and lane recall/FP improvement; flip-consistency did not materially help either blocker.

@@ -139,6 +139,19 @@ Latest lane upper-trunk capacity probe:
 - cross TP/FP/FN: `48 / 35 / 33`
 - 판단: stop-line is slightly higher than tangent-link exact `0.4483`, but lane falls below tangent-link `0.5633`, row-distribution `0.5659`, and segment-MIL lane-head-only `0.5660`; objective is also below the current exact references. Upper-trunk capacity/freeze-scope-only is not a broader-val512 expansion path.
 
+Latest lane flip-consistency training probe:
+
+- branch/worktree: `exp/lane-family-f1/lane-flip-consistency-row-scan-tangent`.
+- code commits: `2dcd776` adds the opt-in train-time flip-consistency loss; `e19dbd1` adds the row-scan-tangent probe preset and single-axis guard test.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_flip_consistency_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_002056/phase_4/history/epochs.jsonl`
+- experiment: `core_centerline_refine_row_scan_tangent_flip_consistency`
+- changed axis: keep `row_scan_tangent`, loss weights, freeze policy, stop-line/crosswalk settings, and sampler fixed, then add only `lane_flip_consistency_weight=0.25`.
+- exact val128 epoch2 objective: `0.5991166581`
+- lane / stop-line / crosswalk F1: `0.5542 / 0.3966 / 0.5548`
+- task-best F1: lane `0.5542` at epoch2, stop-line `0.3966` at epoch2, crosswalk `0.6711` at epoch1.
+- skipped steps: `0`.
+- 판단: runtime is stable, but the exact metric regresses below tangent-link reference `0.6187`, `0.5633 / 0.4483 / 0.5854`; the epoch1 crosswalk spike is not enough because the best objective checkpoint misses all three task targets. Flip-consistency-regularizer-only is not a broader-val512 expansion path.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`
