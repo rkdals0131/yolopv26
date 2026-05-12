@@ -8069,3 +8069,44 @@ Positive-no-oracle result:
 - Positive no-oracle is not primarily dense-map absence. For the `max(center, selector)` source, `44 / 69` GTs still have local `max_r8 >= 0.6`, and `61 / 69` have a top20 cell within 8 output pixels.
 - The gap is the current candidate-selection/geometry contract: top1/top3 hit rates are much lower, and the selected fragments do not become matched full segments.
 - The next stop-line branch should create candidates from local max-source neighborhoods or learn a richer emit/select contract that can choose those neighborhoods and decode full geometry. It should not stretch current fragments or repeat score/length/photometric selectors.
+
+## 156. 2026-05-13 Stop-line no-oracle anchor shift: decoded-center offset is not enough
+
+맥락:
+
+- Section 155 showed that many positive no-oracle GTs still have local dense `max(center, selector)` signal nearby.
+- The next cheap premise was whether current decoded candidate centers are simply offset from the proposal-cell anchors, causing otherwise valid local signal to miss the GT center.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- Code commit: `0670701`.
+- Added `tools/analyze_pv26_stopline_no_oracle_anchor_shift.py`.
+- Added `test/test_stopline_no_oracle_anchor_shift.py`.
+- Contract: keep the projection-competition replay fixed, replace only positive-no-oracle samples by shifting current candidate segments from decoded center back toward the proposal-cell anchor, then score the full val512 stop-line replay. This is an artifact-only premise check, not a production decoder change.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_no_oracle_anchor_shift.py test/test_stopline_no_oracle_anchor_shift.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_no_oracle_extension_budget.py test/test_stopline_no_oracle_proposal_recall.py test/test_stopline_no_oracle_anchor_shift.py`
+- result: `3 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_anchor_shift_val512_epoch2/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/stopline-no-oracle-anchor-shift-artifacts-20260513/` instead of being deleted.
+
+Audit result:
+
+| Scenario | Stop-line F1 | TP/FP/FN |
+| --- | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` |
+| top anchor shift a0.25 | `0.4475` | `113 / 121 / 158` |
+| top anchor shift a0.50 | `0.4475` | `113 / 121 / 158` |
+| top anchor shift a0.75 | `0.4475` | `113 / 121 / 158` |
+| top anchor shift a1.00 | `0.4475` | `113 / 121 / 158` |
+| longest high-score anchor shift a1.00 | `0.4475` | `113 / 121 / 158` |
+| nearest-GT-oracle anchor shift a1.00 | `0.4475` | `113 / 121 / 158` |
+
+판단:
+
+- The baseline projection-competition replay remains the best scenario.
+- Even the nearest-GT-oracle anchor-shift variant loses TP, adds FP, and adds FN relative to the reference, so the gap is not a simple decoded-center/proposal-anchor mismatch.
+- Do not repeat anchor/offset shifting. The next stop-line edit must create new local-neighborhood candidate geometry from dense score islands or a richer emit/select contract, rather than shifting or stretching current fragments.

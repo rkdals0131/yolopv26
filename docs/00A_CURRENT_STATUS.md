@@ -158,6 +158,16 @@ Latest stop-line no-oracle proposal-recall bucket audit:
 - top-k proximity: `top20_hit_r8` is `61 / 69`, while `top1_hit_r8` is only `12 / 69` and `top3_hit_r8` is `27 / 69`.
 - 판단: many no-oracle positives still have dense `max(center, selector)` signal near the GT center. The failure is not primarily dense-map absence; it is current top candidate selection / midpoint centering / geometry decode. The next stop-line branch should generate candidates from local max-source neighborhoods or learn a richer emit/select contract, not stretch selected fragments.
 
+Latest stop-line no-oracle anchor-shift audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- code commit: `0670701`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_anchor_shift_val512_epoch2/summary.json`.
+- changed axis: replace positive-no-oracle samples by shifting current candidate segments from decoded center toward the proposal-cell anchor; no model run and no production change.
+- baseline projection competition remains best: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- all anchor-shift variants collapse to F1 `0.4475`, TP/FP/FN `113 / 121 / 158`.
+- 판단: the no-oracle gap is not solved by a simple proposal-anchor vs decoded-anchor correction. Next stop-line work needs a richer local-neighborhood candidate geometry signal, not anchor shifting.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
