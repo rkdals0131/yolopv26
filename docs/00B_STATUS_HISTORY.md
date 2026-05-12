@@ -7761,3 +7761,43 @@ Result:
 - Projection competition is the current local stop-line readout best: `0.5164`, TP/FP/FN `126 / 91 / 145`.
 - It is a real improvement over projection split `0.5112`, but still far below the `0.60` task target.
 - Do not continue as a length/min-score/rank-feature sweep. The next useful stop-line axis must add a new signal or recover more candidate/midpoint structure.
+
+## 149. 2026-05-13 Stop-line projection-competition selector audit: simple no-GT gates are weak
+
+맥락:
+
+- Section 148 left `91` FP at the projection-competition readout.
+- If a production-legal no-GT selector could remove many of those FP while preserving `126` TP, stop-line F1 could move materially toward `0.60`.
+- The bounded question was whether the selected projection-competition predictions already contain a simple candidate/prediction feature that separates TP from FP.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-projection-selector-audit`.
+- Code commit: `4d16e2f`.
+- Added `tools/analyze_pv26_stopline_projection_competition_selector.py`.
+- Added `test/test_stopline_projection_competition_selector_audit.py`.
+- Contract: replay the projection-competition predictions, use GT only to label TP/FP for evaluation, then sweep single-feature no-GT gates over prediction/source-candidate features.
+
+Verification:
+
+- `python3 -m py_compile tools/analyze_pv26_stopline_projection_competition_selector.py test/test_stopline_projection_competition_selector_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_projection_competition_readout.py test/test_stopline_projection_competition_selector_audit.py`
+- result: `11 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_projection_competition_selector_audit_val512_epoch2/summary.json`
+
+Result:
+
+| Selector | Stop-line F1 | Stop TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| baseline projection competition | `0.5164` | `126 / 91 / 145` | `217` |
+| best no-GT single-feature gate: `component_svd_thickness_mean >= 4.681936370001899` | `0.5250` | `126 / 83 / 145` | `209` |
+| GT-presence oracle control | `0.5575` | `126 / 55 / 145` | `181` |
+
+판단:
+
+- The best production-legal single-feature gate removes only `8` FP and does not recover recall.
+- The GT-presence control shows FP-suppression headroom, but it uses oracle sample presence and is not a production selector.
+- Do not continue as a projection-competition selector feature/threshold sweep. A useful next axis needs a richer learned/no-GT signal or actual candidate/midpoint recovery.
