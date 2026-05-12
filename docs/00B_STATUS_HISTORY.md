@@ -7079,3 +7079,76 @@ Task-best:
 - Soft-skeleton topology pressure is closed as a standalone centerline auxiliary.
 - The next lane branch still needs a recall-preserving model-side/decoder-side instance-stability contract, not another centerline auxiliary scalar sweep.
 - Stop-line remains the larger all-task blocker; if no stop-line center/extent recovery premise is available, lane work must still preserve the current stop-line/crosswalk contract.
+
+## 136. 2026-05-13 Lane instance-embedding row-link: runnable but still below tangent-link exact gate
+
+맥락:
+
+- Section 135 closed soft-skeleton topology loss as a standalone centerline auxiliary.
+- Broader lane diagnostics still show selector headroom, but threshold/dedupe/top-k/endpoint/flip/topology-only branches are closed.
+- This branch tests whether a dense instance embedding can stabilize row-scan tangent linking while leaving the checkpoint, sampler, task weights, stop-line, and crosswalk contracts fixed.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-embedding-row-scan-link`.
+- Code commit: `7b84900`.
+- Added opt-in `lane_seg_instance_embedding` output to `LaneSegFirstHead`.
+- Added `lane_seg_instance_id` target rendering and batch encoding.
+- Added default-off `lane_segfirst_loss_weights.instance_embedding`.
+- Added `row_scan_tangent_embedding` decoder mode, which rejects high-distance embedding links and adds embedding distance to tangent-link cost.
+- Added probe preset `core_centerline_refine_row_scan_tangent_embedding_link`, identical to `core_centerline_refine_row_scan_tangent_link` except `lane_segfirst_track_mode=row_scan_tangent_embedding` and `instance_embedding=0.35`.
+
+Verification:
+
+- `python3 -m py_compile model/net/lane_head_segfirst.py model/engine/lane_segfirst_vectorizer.py model/data/target_encoder.py model/data/roadmark_v2_targets.py model/engine/loss.py tools/run_pv26_lane60_probe.py test/test_lane_segfirst_vectorizer.py test/test_pv26_loss_runtime.py test/test_pv26_heads.py test/test_pv26_evaluator.py test/test_roadmark_native_contract.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_loss_runtime.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_segfirst_vectorizer.py test/test_pv26_heads.py test/test_roadmark_native_contract.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_evaluator.py test/test_run_pv26_train.py`
+- Smoke run: train8/val4 on `cuda:0`, `skipped_steps=0`.
+
+Exact command:
+
+```bash
+PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --experiment core_centerline_refine_row_scan_tangent_embedding_link \
+  --epochs 2 \
+  --train-batches 512 \
+  --val-batches 128 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_embedding_link_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_024937/phase_4/history/epochs.jsonl`
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5879345310` | `0.5426` | `1058 / 507 / 1277` | `0.2000` | `10 / 35 / 45` | `0.6790` |
+| 2 | `0.6150797781` | `0.5594` | `1114 / 479 / 1276` | `0.4348` | `25 / 30 / 35` | `0.5854` |
+
+Task-best:
+
+- lane F1 `0.5593773538` at epoch2.
+- stop-line F1 `0.4347826087` at epoch2.
+- crosswalk F1 `0.6790123457` at epoch1.
+- skipped steps: `0`.
+
+판단:
+
+- Runtime and checkpoint handoff are stable, so this is valid negative evidence.
+- Best exact objective `0.6150797781` is below tangent-link exact `0.6187165763`, soft-skeleton `0.6152102115`, and segment-MIL lane-head-only exact `0.6193428422`.
+- Epoch2 lane/stop/cross F1 `0.5594 / 0.4348 / 0.5854` is below tangent-link `0.5633 / 0.4483 / 0.5854`.
+- The learned embedding link did not turn instance-level supervision into a recall-preserving lane gain.
+- Do not broaden to val512.
+- Do not repeat this as `max_embedding_distance`, `embedding_link_weight`, or `instance_embedding` loss-weight sweep unless a materially different instance contract changes the premise.
+
+다음:
+
+- Dense instance-embedding row-link is closed as a standalone lane auxiliary/readout axis.
+- The next lane branch still needs stronger predicted-centerline instance recovery, not another row-link cost or auxiliary-weight sweep.
+- Since stop-line remains the larger all-task blocker, prefer a new stop-line emit/select/readout contract if a non-repeated premise is available; otherwise any lane branch must preserve the current stop-line/crosswalk contract.

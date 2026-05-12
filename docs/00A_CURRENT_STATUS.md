@@ -188,6 +188,19 @@ Latest lane soft-skeleton topology-loss probe:
 - skipped steps: `0`.
 - 판단: runtime is stable, but topology-loss-only does not reach the tangent-link exact reference `0.6187165763`, `0.5633 / 0.4483 / 0.5854`; it also underperforms the earlier soft-shell auxiliary lane result. Do not broaden to val512 or repeat this as a weight/iteration sweep.
 
+Latest lane instance-embedding row-link probe:
+
+- branch/worktree: `exp/lane-family-f1/lane-embedding-row-scan-link`.
+- code commit: `7b84900` adds an opt-in dense lane instance embedding head, `lane_seg_instance_id` target, embedding pull/push loss, and `row_scan_tangent_embedding` decoder.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_embedding_link_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_024937/phase_4/history/epochs.jsonl`.
+- changed axis: keep row-scan-tangent, checkpoint, task weights, sampler, stop-line, and crosswalk fixed, then add only `lane_segfirst_loss_weights.instance_embedding=0.35` and decode with `row_scan_tangent_embedding`.
+- exact val128 epoch2 objective: `0.6150797781`.
+- lane / stop-line / crosswalk F1: `0.5594 / 0.4348 / 0.5854`.
+- lane TP/FP/FN: `1114 / 479 / 1276`.
+- task-best F1: lane `0.5594` epoch2, stop-line `0.4348` epoch2, crosswalk `0.6790` epoch1.
+- skipped steps: `0`.
+- 판단: runtime and checkpoint handoff are stable, but the embedding-link axis is below tangent-link exact `0.6187165763`, `0.5633 / 0.4483 / 0.5854`; it also fails to beat soft-skeleton or segment-MIL lane-head-only exact references. Do not broaden to val512 or repeat as an embedding distance/weight sweep.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`
