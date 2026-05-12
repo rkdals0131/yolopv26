@@ -1765,3 +1765,4984 @@ Stop-line branch 결과:
 
 - stop-line을 계속한다면 threshold replay가 아니라 model-side instance validator loss/head처럼 training-time competition을 바꾸는 축이어야 한다.
 - 그렇지 않으면 Gate 3 lane predicted centerline instance stability로 돌아가는 것이 더 낫다.
+
+## 47. 2026-05-11 Gate 2 model-side candidate instance validator head: cold validator gate fails
+
+맥락:
+
+- candidate rich-feature audit과 held-out replay showed row-level candidate signal, but CSV/logistic threshold replay was not enough.
+- The next stop-line question was whether that signal had to become a model-side candidate validator output/loss instead of a post-hoc CSV threshold.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-instance-validator-head`
+- The branch added an opt-in stop-line candidate-validator dense map and hard-negative auxiliary.
+- Postprocess could use `stop_line_component_gate_source=validator`, but the path stayed opt-in.
+
+실행:
+
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_stop_candidate_validator_head --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- center-gate replay: same epoch2 checkpoint evaluated after switching the gate back from `validator` to baseline `center`.
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| validator gate | 1 | `0.5886` | `0.5143` | `0.0000` | `0.6790` | `0 / 0 / 55` |
+| validator gate | 2 | `0.5760` | `0.5271` | `0.0000` | `0.5854` | `0 / 0 / 60` |
+| center gate replay on epoch2 last | 2 | `0.6047` | `0.5271` | `0.4211` | `0.5854` | not recorded here |
+
+판단:
+
+- Direct `validator` gate cold-started into suppressing all stop-line predictions.
+- Replaying the same checkpoint with baseline `center` gate recovers output but remains below the current exact baseline stop-line F1 `0.4483`.
+- The failure is not just the decode gate; the current hard-negative auxiliary/loss combination also does not beat baseline.
+
+하지 말 것:
+
+- cold validator gate, direct validator gate default, 현재 top-k hard-negative auxiliary 조합을 longer run으로 확장하지 않는다.
+- 1-batch smoke objective를 stop-line 성능 개선으로 표현하지 않는다.
+
+다음:
+
+- stop-line을 계속한다면 direct cold gate가 아니라 calibrated/delayed candidate scoring 또는 per-candidate instance classifier contract가 필요하다.
+- 그렇지 않으면 Gate 3 lane predicted centerline instance stability로 돌아간다.
+
+## 48. 2026-05-11 Gate 2 calibrated validator proposal replay: map mixing recovers only partial stop-line F1
+
+맥락:
+
+- model-side candidate validator head collapsed with direct `validator` gate: exact val128 stop-line F1 `0.0000`.
+- The same checkpoint with baseline `center` gate recovered output but stayed below baseline at stop-line F1 `0.4211`.
+- The remaining question was whether the validator map had usable FP-suppression signal when mixed with the existing center/selector proposal score instead of being used as the only gate.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-validator-calibrated-replay`
+- `tools/probe_pv26_stopline_pred_angle_mask_extent.py` adds read-only proposal sources:
+  - `blend_validator`: `0.75 * max(center, selector) + 0.25 * validator`
+  - `product_validator`: `max(center, selector) * (0.5 + 0.5 * validator)`
+- Exact replay was run from the candidate-validator epoch2 `last.pt`; no new training run was started.
+- output artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_candidate_validator_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_130133/analysis_exports/validator_calibrated_replay_val128_epoch2`
+
+실행:
+
+- `PYTHONPATH=. python3 tools/probe_pv26_stopline_pred_angle_mask_extent.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_candidate_validator_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_130133/phase_4/checkpoints/last.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_candidate_validator_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_130133/analysis_exports/validator_calibrated_replay_val128_epoch2`
+
+결과:
+
+| Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Objective |
+| --- | ---: | ---: | ---: | --- | ---: |
+| product validator top3 score0.40 fallback | `0.5271` | `0.4918` | `0.5854` | `30 / 32 / 30` | `0.5282` |
+| max validator top3 score0.20 | `0.5271` | `0.4874` | `0.5854` | `29 / 30 / 31` | `0.5268` |
+| center gate replay | `0.5271` | `0.4211` | `0.5854` | not recorded here | `0.6047` |
+| direct validator top3 score0.20 | `0.5271` | `0.0000` | `0.5854` | `0 / 0 / 60` | `0.3528` |
+
+판단:
+
+- Calibrated/product replay recovers stop-line from direct validator collapse and from same-checkpoint center-gate replay.
+- It still stays below the val128 PCA reference `0.5133` and angle-mask production `0.5085`.
+- Therefore this is not a broader-val512 candidate.
+
+하지 말 것:
+
+- simple validator map mixing, direct validator gate, max-validator gate, blend/product fallback replay를 같은 형태로 반복하지 않는다.
+
+다음:
+
+- stop-line을 계속한다면 map-source mixing이 아니라 explicit per-candidate instance classifier, delayed/warm-start validator, or candidate-level calibration loss처럼 candidate 단위 decision contract를 새로 세워야 한다.
+
+## 49. 2026-05-11 Gate 3 lane instance evidence validator audit: row-level signal is real, task gain is too small
+
+맥락:
+
+- row-scan vectorizer는 broader-val512에서 lane F1을 `0.5101 -> 0.5279`로 올린 partial-positive지만, visual audit에서는 extra/zig track over-link risk가 남았다.
+- row-scan geometry guard와 residual local separation은 각각 micro-guard negative, stop-line/objective regression으로 닫혔다.
+- 다음 질문은 post-hoc length/bottom/turn guard가 아니라, 각 row-scan lane instance가 centerline/support/tangent map-local evidence로 TP/FP 분리 가능한지였다.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-instance-evidence-validator-audit`
+- 새 도구 `tools/probe_pv26_lane_instance_evidence.py`를 추가했다.
+- 도구는 row-scan lane predictions마다 shape, centerline/support mask statistics, sampled centerline/support continuity, tangent alignment, semantic confidence를 CSV로 export한다.
+- val split 앞쪽 half에서 logistic 및 단일 feature threshold를 lane task F1 기준으로 맞추고, 뒤쪽 held-out half에서 lane/stop-line/crosswalk task metrics를 replay한다.
+- worktree에 dataset artifact가 없을 때는 `--source-run`의 repo parent에서 canonical dataset root를 추론한다.
+
+실행:
+
+- command: `python3 tools/probe_pv26_lane_instance_evidence.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --max-val-batches 128 --validation-epoch 2 --device cuda:0 --steps 1000 --task-threshold-quantiles 21 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_instance_evidence_row_scan_val128_epoch2`
+- outputs: `analysis_exports/lane_instance_evidence_row_scan_val128_epoch2/{summary.json,lane_instance_features.csv,feature_reports.csv,validator_variants.csv}`.
+
+결과:
+
+- val128 row-scan candidate rows / TP rows: `1583 / 1097`.
+- train/held-out rows: `793 / 790`; positives: `531 / 566`.
+- logistic row classifier held-out AUC/AP: `0.8407 / 0.9312`.
+- held-out row-scan baseline lane/stop/cross F1: `0.5691 / 0.5161 / 0.5542`.
+- held-out logistic task-threshold lane/stop/cross F1: `0.5749 / 0.5161 / 0.5542`.
+- logistic held-out lane TP/FP/FN: `537 / 132 / 662`; baseline: `566 / 224 / 633`.
+- best single feature was `tangent_align_q25`: held-out lane F1 `0.5725`, TP/FP/FN `557 / 190 / 642`.
+
+판단:
+
+- Map-local instance evidence separates row-scan TP/FP at row level, but the task-level gain is too small.
+- Logistic reduces FP strongly (`224 -> 132`) but loses TP (`566 -> 537`), so lane F1 only moves `+0.0058` on held-out val128 and stays below `0.60`.
+- This does not justify broader-val512 or deployment default promotion. It is useful evidence for a learned instance-stability contract, but not a production threshold replay.
+
+하지 말 것:
+
+- lane instance evidence AUC/AP를 lane task success로 해석하지 않는다.
+- logistic 또는 tangent-alignment threshold를 row-scan production filter로 승격하지 않는다.
+- 같은 post-hoc row-scan evidence threshold sweep을 더 촘촘히 반복하지 않는다.
+
+다음:
+
+- lane을 계속한다면 post-hoc filter가 아니라 recall을 보존하는 training-side instance-stability contract가 필요하다.
+- 또는 stop-line/crosswalk retention을 같이 보는 통합 contract로 넘어간다. row-scan candidate filtering alone은 0.6 path가 아니다.
+
+## 50. 2026-05-11 Gate 3 lane row-scan tangent stability: dense gain is too small and stop-line regresses
+
+맥락:
+
+- row-scan vectorizer는 lane partial-positive지만 over-link risk가 남았다.
+- lane instance evidence audit은 post-hoc row-scan candidate features 중 `tangent_align_q25`가 best single feature였지만, threshold replay는 TP를 잃어 task F1 gain이 작았다.
+- 이번 실험은 post-hoc threshold를 반복하지 않고, row-scan training에서 tangent consistency를 더 강하게 학습시키면 instance evidence가 task F1로 이동하는지 확인했다.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-tangent-stability-row-scan`
+- `tools/run_pv26_lane60_probe.py`에 `core_centerline_refine_row_scan_tangent_stability` experiment를 추가했다.
+- 기존 `core_centerline_refine_row_scan_vectorizer`와 같은 row-scan/postprocess/loss contract를 유지하고, lane seg-first `tangent` loss만 `0.35 -> 1.0`으로 올렸다.
+- worktree dataset은 `seg_dataset` symlink로 canonical dataset을 바라본다.
+
+실행:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stability --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stability --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stability_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_142548`
+- dense-map PR: `tools/probe_pv26_lane60_dense_maps.py --checkpoint <exact-run>/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-json <exact-run>/analysis_exports/dense_maps_val128_epoch2.json`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| tangent stability | 1 | `0.5842` | `0.5317` | `0.2000` | `0.6790` | `1040 / 537 / 1295` | `10 / 35 / 45` |
+| tangent stability | 2 | `0.6122` | `0.5555` | `0.4348` | `0.5854` | `1104 / 481 / 1286` | `25 / 30 / 35` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here |
+
+Dense-map PR:
+
+- lane centerline-core best F1: `0.5765` at threshold `0.9`.
+- lane support best F1: `0.8117` at threshold `0.9`.
+- prior dense-map reference was lane centerline-core `0.5729`, lane support `0.7971`.
+
+판단:
+
+- Tangent-heavy training gives a small lane/vectorized gain and a small dense-map gain, but not enough for 0.6.
+- The gain trades against stop-line: exact stop-line F1 falls from row-scan reference `0.4483` to `0.4348`.
+- Best objective `0.6122` is below prior row-scan exact objective `0.6144`.
+- Therefore this is not a broader-val512 candidate.
+
+하지 말 것:
+
+- tangent-loss-only 강화를 같은 형태로 반복하지 않는다.
+- dense centerline-core `+0.0036`을 lane instance-stability success로 표현하지 않는다.
+- lane task F1 `+0.0033`만 보고 stop-line regression을 무시하지 않는다.
+
+다음:
+
+- lane을 계속한다면 tangent/support/color loss reweighting만으로는 부족하다. 새로운 축은 candidate/instance-level confidence를 training target으로 직접 만들거나, row-scan partial-positive를 stop-line/crosswalk retention과 같이 보는 통합 contract여야 한다.
+
+## 51. 2026-05-11 Gate 3 lane row-scan dynamic hard-negative margin: FP suppression does not beat row-scan reference
+
+맥락:
+
+- row-scan vectorizer is the strongest lane partial-positive so far, but residual export showed side/right FP risk.
+- Negative-pixel margin and residual-risk local separation were already weak or negative. This run narrowed the pressure to current high-confidence predicted centerline pixels outside GT support, instead of penalizing all negative pixels.
+- The question was whether dynamic top-k hard negatives can reduce row-scan FP while keeping lane recall and stop-line/crosswalk retention.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-hard-negative-margin`
+- `model/engine/loss.py` adds opt-in seg-first dynamic hard-negative loss:
+  - candidate mask: valid pixels outside `lane_seg_support`.
+  - ranking score: detached current `lane_seg_centerline_logits.sigmoid()`.
+  - loss: top-k selected current probabilities are penalized by squared margin `relu(prob - margin)^2`.
+- Config/export/runtime fields were added:
+  - `lane_segfirst_hard_negative_weight`
+  - `lane_segfirst_hard_negative_topk`
+  - `lane_segfirst_hard_negative_margin`
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_hard_negative_margin`, based on row-scan baseline with hard-negative weight `0.25`, top-k `4096`, margin `0.20`.
+
+실행:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_hard_negative_margin --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_hard_negative_margin --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_hard_negative_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_145113`
+- auto-downloaded `yolo26s.pt` files were moved under `runs/removable/lane_row_scan_hard_negative_margin_weight_files_20260511/`.
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| hard-negative margin | 1 | `0.5842` | `0.5306` | `0.2000` | `0.6790` | `1036 / 534 / 1299` | `10 / 35 / 45` |
+| hard-negative margin | 2 | `0.6121` | `0.5556` | `0.4348` | `0.5854` | `1104 / 480 / 1286` | `25 / 30 / 35` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here |
+| tangent-stability reference | 2 | `0.6122` | `0.5555` | `0.4348` | `0.5854` | `1104 / 481 / 1286` | `25 / 30 / 35` |
+
+판단:
+
+- Dynamic hard-negative top-k produces a tiny lane FP reduction versus tangent-stability (`481 -> 480`) and the same stop-line regression.
+- It does not beat prior row-scan objective (`0.6121 < 0.6144`) and does not preserve stop-line (`0.4348 < 0.4483`).
+- This is not a broader-val512 candidate and not a 0.6 path.
+
+하지 말 것:
+
+- hard-negative margin-only를 같은 weight/top-k/margin family로 longer run 확장하지 않는다.
+- tiny lane FP reduction을 row-scan stability success로 표현하지 않는다.
+- stop-line regression을 무시하고 lane F1 소수점 gain만 채택하지 않는다.
+
+다음:
+
+- lane을 계속한다면 hard-negative-only가 아니라 recall/precision/retention을 같이 보는 instance-level training contract가 필요하다.
+- row-scan partial-positive를 보존하려면 lane-only FP suppression보다 stop-line/crosswalk retention과 같이 묶인 gate를 먼저 요구한다.
+
+## 52. 2026-05-11 Gate 3 lane row-scan centerline focal: tiny task-F1 gain still misses the objective gate
+
+맥락:
+
+- row-scan vectorizer remains the strongest lane partial-positive, but prior tangent-stability and dynamic hard-negative training-side pressure did not beat the row-scan exact objective.
+- The next narrow question was whether centerline BCE/Dice needed focal positive/negative calibration instead of tangent-only or hard-negative-only pressure.
+- This was kept as a single-axis, default-off loss addition.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-centerline-focal`
+- `model/engine/loss.py` adds opt-in seg-first `centerline_focal` loss weight inside `lane_segfirst_loss_weights`.
+- The default weight is `0.0`, so existing configs keep the same behavior unless the experiment explicitly enables it.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_centerline_focal`, based on the row-scan baseline with:
+  - `centerline_bce=2.0`
+  - `centerline_dice=2.0`
+  - `centerline_focal=0.5`
+  - `support_bce=0.15`
+  - `tangent=0.35`
+  - `color=0.5`
+  - `type=0.25`
+- `test/test_run_pv26_train.py` verifies the new loss weight is preserved by the training config path.
+
+실행:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_centerline_focal --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_centerline_focal --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_centerline_focal_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_151249`
+- auto-downloaded `yolo26s.pt` files were moved under `runs/removable/lane_row_scan_centerline_focal_weight_files_20260511/`.
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| centerline focal | 1 | `0.5851` | `0.5309` | `0.2000` | `0.6790` | `1038 / 537 / 1297` | `10 / 35 / 45` |
+| centerline focal | 2 | `0.6134` | `0.5551` | `0.4522` | `0.5854` | `1103 / 481 / 1287` | `26 / 29 / 34` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here |
+| hard-negative margin reference | 2 | `0.6121` | `0.5556` | `0.4348` | `0.5854` | `1104 / 480 / 1286` | `25 / 30 / 35` |
+
+판단:
+
+- Centerline focal gives a tiny lane/stop-line task-F1 improvement over the prior row-scan reference, but the selection objective is still lower (`0.6134 < 0.6144`).
+- It is better than the hard-negative margin objective (`0.6134 > 0.6121`) and avoids that stop-line regression, but the gain is too small and does not clear the exact gate.
+- This is not a broader-val512 candidate and not a 0.6 path.
+
+하지 말 것:
+
+- centerline-focal-only를 같은 weight family로 longer run 확장하지 않는다.
+- task F1 소수점 gain만 보고 row-scan baseline을 대체하지 않는다.
+- objective gate 미통과를 무시하고 dense/broader validation을 진행하지 않는다.
+
+다음:
+
+- lane을 계속한다면 focal/BCE/Dice reweighting-only가 아니라 row-scan instance confidence를 training target으로 직접 만들거나, lane/stop-line/crosswalk retention을 함께 보는 contract가 필요하다.
+
+## 53. 2026-05-11 Row-scan + stop-line PCA-threshold integration: broader objective crosses 0.6 but task F1 still fails
+
+맥락:
+
+- row-scan vectorizer는 broader-val512에서 lane F1을 `0.5101 -> 0.5279`로 올렸지만 stop-line은 `0.4083` 그대로였다.
+- stop-line PCA-threshold reference는 original checkpoint에서 broader-val512 stop-line F1 `0.4699`까지 올렸지만 lane은 row-scan gain을 받지 못했다.
+- 이번 질문은 retrain 없이 original checkpoint에 row-scan lane vectorizer와 stop-line `mask=0.80`, `min_instance_score=0.94` postprocess override를 같이 적용하면 통합 baseline이 얼마나 올라가는지였다.
+
+구현:
+
+- branch: `exp/lane-family-f1/row-scan-stop-pca-integration`
+- `tools/run_pv26_lane60_probe.py`에 `core_centerline_refine_row_scan_stop_pca_reference` experiment alias를 추가했다. 학습 config에는 row-scan lane 설정만 넣고, postprocess-only stop-line threshold는 evaluator CLI flag로 분리했다.
+- `tools/evaluate_pv26_lane60_checkpoint.py`에 worktree용 `--dataset-root` inference와 evaluator-only `--stop-line-mask-binary-threshold`, `--stop-line-min-instance-score` override를 추가했다.
+
+실행:
+
+- smoke: `PYTHONPATH=. python3 tools/evaluate_pv26_lane60_checkpoint.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --lane60-experiment core_centerline_refine_row_scan_stop_pca_reference --max-val-batches 4 --validation-epoch 2 --batch-size 4 --device cuda:0 --stop-line-mask-binary-threshold 0.80 --stop-line-min-instance-score 0.94 --output-dir /tmp/pv26_row_scan_stop_pca_smoke`
+- exact val128: same args with `--max-val-batches 128` and output `analysis_exports/exact_checkpoint_eval_row_scan_stop_pca_reference_epoch2`.
+- broader-val512: same args with `--max-val-batches 512` and output `analysis_exports/broader_val512_row_scan_stop_pca_reference_epoch2`.
+
+결과:
+
+- exact val128 objective: `0.6127204864022606`.
+- exact val128 lane/stop/cross F1: `0.5522 / 0.4364 / 0.5854`.
+- broader-val512 objective: `0.6018628051001931`.
+- broader-val512 lane/stop/cross F1: `0.5279 / 0.4235 / 0.5854`.
+- broader support lane/stop/cross: `9477 / 271 / 395`.
+
+판단:
+
+- broader objective `0.6019`는 objective-only partial-positive지만, top-level goal은 objective가 아니라 task별 F1이다.
+- row-scan lane gain은 유지되지만 broader lane F1은 `0.5279`에 머문다.
+- stop-line은 row-scan-only `0.4083`보다 낫지만 PCA-only broader reference `0.4699`보다 낮다.
+- crosswalk는 `0.5854` 그대로다.
+- 따라서 이 결과는 integration partial-positive evidence이지, success gate나 deployment/default 후보가 아니다.
+
+하지 말 것:
+
+- broader objective `>0.60`을 lane-family F1 0.6+ success로 표현하지 않는다.
+- row-scan + stop-line PCA-threshold 조합을 default/export 후보로 승격하지 않는다.
+- stop-line threshold-only integration을 더 촘촘하게 sweep하는 방향으로 반복하지 않는다.
+
+다음:
+
+- 다음 작업은 더 좁아졌다: row-scan은 실제 lane-side partial-positive지만, stop-line은 lane/crosswalk를 해치지 않으면서 PCA-only broader reference를 넘는 model-side candidate instance validator나 그에 준하는 새 contract가 필요하다.
+- 다음 축이 lane이면 row-scan의 broader lane gain을 유지하면서 side/right FP를 더 만들지 않아야 한다.
+- 다음 축이 stop-line이면 postprocess threshold-only integration이 아니라 candidate validation/competition을 직접 겨냥해야 한다.
+
+## 54. 2026-05-11 Row-scan risk-bucket sampler: oversampling residual lanes does not recover recall
+
+맥락:
+
+- row-scan residual export showed the remaining lane FN concentrated in left/truncated/high-aspect geometry buckets.
+- Prior residual local separation, tangent-only, hard-negative-only, and centerline-focal-only runs did not clear the row-scan exact gate.
+- This run tested a feeder-contract axis instead of another loss-weight tweak: make those residual-risk lane scenes explicit task-positive samples while preserving stop-line/crosswalk slots.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-risk-bucket-sampler`
+- `model/data/sampler.py` adds a `lane_risk` task-positive bucket. It marks supervised lanes as residual-risk when visible points are side-biased, truncated above half image height, or high-aspect.
+- The sampler now respects dataset source masks before opening scene JSON, so det-only sources cannot become false lane/stop/cross positives.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_risk_bucket_sampler`, based on the row-scan contract with `task_positive_task=multi:lane_risk,stopline,crosswalk` and `task_positive_fraction=1.0`.
+- `test/test_pv26_balanced_sampler.py` locks both the `lane_risk` quota contract and source-mask filtering.
+
+실행:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_risk_bucket_sampler --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_risk_bucket_sampler --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_risk_bucket_sampler_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_160840`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| risk-bucket sampler | 1 | `0.5823` | `0.5334` | `0.2157` | `0.6752` | `1069 / 604 / 1266` | `11 / 36 / 44` |
+| risk-bucket sampler | 2 | `0.5957` | `0.5494` | `0.3964` | `0.5478` | `1081 / 464 / 1309` | `22 / 29 / 38` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here |
+
+판단:
+
+- Oversampling residual-risk lane scenes reduced lane FP but did not improve lane recall; lane F1 stayed below the row-scan reference (`0.5494 < 0.5522`).
+- Stop-line retention regressed hard (`0.3964 < 0.4483`), and crosswalk epoch-2 F1 also fell (`0.5478 < 0.5854`).
+- Best objective `0.5957` misses the exact gate and is far below the row-scan reference `0.6144`.
+- This is negative evidence for sampler-exposure-only as a lane recall fix.
+
+하지 말 것:
+
+- `lane_risk` oversampling alone should not be extended to broader-val512 or longer runs.
+- Do not interpret reduced lane FP as progress when lane recall and stop-line/crosswalk retention fall.
+- Do not repeat this as a slightly different risk-bucket threshold sweep without a new model-side contract.
+
+다음:
+
+- Lane-side work needs a model-side instance confidence/assignment contract, not just more exposure to residual-risk scenes.
+- Stop-line-side work remains the cleaner next axis if it can improve candidate decision/calibration without sacrificing row-scan lane and crosswalk retention.
+
+## 55. 2026-05-11 Carry-over stop-line validator warm-bias evidence: direct dense gate is still closed
+
+맥락:
+
+- A side branch tested whether the earlier direct validator gate collapsed only because the new validator map started below `stop_line_min_instance_score=0.94`.
+- The code branch itself remains a negative experiment and is not merged into the active implementation surface.
+
+구현:
+
+- source branch: `exp/lane-family-f1/stopline-validator-warm-bias`
+- `StopLineDenseLocalHead.candidate_validator_logits` was initialized with zero weight and positive bias.
+- `tools/run_pv26_lane60_probe.py` used `core_centerline_refine_stop_candidate_validator_warm_bias`.
+- Bias `2.0` was tried first, then `4.0` because sigmoid(`2.0`) is below the `0.94` instance-score threshold.
+
+실행:
+
+- smoke bias `2.0`: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_stop_candidate_validator_warm_bias --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke bias `4.0`: same command after raising the init bias.
+- smoke runs:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_candidate_validator_warm_bias_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_153556`
+  - `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_candidate_validator_warm_bias_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_153828`
+
+결과:
+
+| Variant | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| warm bias `2.0` smoke | 1 | `0.6104` | `0.4806` | `0.0000` | `0.7273` | `0 / 2 / 2` |
+| warm bias `4.0` smoke | 1 | `0.6104` | `0.4806` | `0.0000` | `0.7273` | `0 / 2 / 2` |
+
+판단:
+
+- Warm-bias init alone does not recover direct validator gate output on the smoke slice.
+- The failure is not just the raw initial validator probability being below the instance-score threshold.
+- This is not an exact val128 candidate and not a branch to merge.
+
+하지 말 것:
+
+- candidate-validator warm-bias-only를 exact/broader run으로 확장하지 않는다.
+- tiny smoke objective를 성능 개선으로 해석하지 않는다. Stop-line F1은 `0.0000`이다.
+
+다음:
+
+- stop-line을 계속한다면 direct dense-map gate가 아니라 candidate-level decision/calibration contract로 바꾼다.
+
+## 56. 2026-05-11 Stop-line proposal competition loss: center/selector distribution pressure is not enough
+
+맥락:
+
+- The remaining stop-line evidence says the candidate pool has headroom, but production scoring cannot choose the right candidate reliably.
+- Prior hard-negative ranking loss improved stop-line over the raw baseline but hurt lane/crosswalk and stayed below PCA/angle-mask references.
+- This run tested a narrower proposal reliability loss: make center and selector proposal maps compete over the GT center heatmap distribution without changing postprocess thresholds or adding a direct validator gate.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-competition-calibration`
+- `model/engine/loss.py` adds opt-in `stopline_proposal_competition_weight`.
+- The loss builds fused proposal logits from `logsumexp(stop_line_center_logits, stop_line_selector_map_logits)` when the selector map matches the center map, normalizes the GT `stop_line_center_heatmap`, and applies KL over the full dense map for supervised stop-line rows.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` thread the new train default into `PV26MultiTaskLoss`.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_stop_proposal_competition`, based on the row-scan contract with `stopline_center_target_mode=heatmap`, selector/geometry/local-x auxiliaries, and `stopline_proposal_competition_weight=0.5`.
+- `test/test_pv26_loss_runtime.py` locks that the loss is opt-in and backpropagates through both center and selector-map logits.
+
+실행:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_stop_proposal_competition --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_stop_proposal_competition --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_proposal_competition_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_163309`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_proposal_competition_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_163515`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| smoke | 1 | `0.6309` | `0.5191` | `0.0000` | `0.7273` | `34 / 18 / 45` | `0 / 1 / 2` |
+| proposal competition | 1 | `0.5820` | `0.5330` | `0.2083` | `0.6707` | `1042 / 533 / 1293` | `10 / 31 / 45` |
+| proposal competition | 2 | `0.6051` | `0.5552` | `0.4107` | `0.5854` | `1103 / 480 / 1287` | `23 / 29 / 37` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here |
+
+판단:
+
+- The exact run completed cleanly with `skipped_steps=0`, so this is valid negative training evidence, not a runtime failure.
+- Lane F1 nudged above the prior row-scan reference (`0.5552 > 0.5522`), but the selection objective is lower (`0.6051 < 0.6144`) and stop-line regressed (`0.4107 < 0.4483`).
+- Stop-line TP also dropped versus the row-scan reference (`23` vs prior `26` implied by the exact baseline table), so the proposal distribution pressure did not recover the candidate decision bottleneck.
+- The added dense KL path is computationally expensive in this run: loss time was about `125ms` per batch window while forward/backward were about `10ms / 7ms`.
+- This is not a broader-val512 candidate and not a 0.6 path.
+
+하지 말 것:
+
+- Do not extend `stopline_proposal_competition_weight=0.5` to broader-val512 or longer runs.
+- Do not treat objective `0.6051` as progress while stop-line is below both the exact baseline and row-scan reference.
+- Do not repeat proposal-distribution KL loss-only as a different weight sweep without a new candidate instance assignment/validation contract.
+
+다음:
+
+- Stop-line work should move away from dense-map distribution pressure alone.
+- The next stop-line candidate must supervise candidate-level true/false decisions or instance assignment more directly, or the work should return to lane instance stability while preserving stop-line/crosswalk retention.
+
+## 57. 2026-05-11 Modern task-head merge replay: exact objective improves, task F1 goal still fails
+
+맥락:
+
+- Row-scan lane vectorizer is a postprocess/decode gain on the source checkpoint, not a separately trained row-scan checkpoint.
+- The proposal-rank stop-line run produced a better exact stop-line head (`0.4918`) but had poor lane/crosswalk retention as a full checkpoint.
+- The question was whether the already-supported task-head merge tool could combine source/row-scan lane behavior, the better stop-line task head, and crosswalk retention without retraining another mixed objective.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-competition-calibration`
+- Tool: `tools/merge_pv26_lane_family_task_heads.py`
+- Base/lane checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt`
+- Stop-line checkpoint: `runs/pv26_exhaustive_od_lane_train/stopline_proposal_rank_w025_val128_default_20260511_113639/phase_4/checkpoints/best_stop_line.pt`
+- Attempt 1 crosswalk checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_centerline_focal_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_151249/phase_4/checkpoints/best_crosswalk.pt`
+- Attempt 2 crosswalk checkpoint: source checkpoint.
+- Evaluation used `tools/evaluate_pv26_lane60_checkpoint.py` with `--lane60-experiment core_centerline_refine_row_scan_vectorizer`, exact `--max-val-batches 128`, epoch `2`, batch size `4`.
+
+Artifacts:
+
+- Attempt 1: `runs/pv26_exhaustive_od_lane_train/lane60_modern_task_head_merge_row_scan_rank_stop_cross_20260511/analysis_exports/exact_val128_row_scan_epoch2/summary.json`
+- Attempt 2: `runs/pv26_exhaustive_od_lane_train/lane60_modern_task_head_merge_row_scan_rank_stop_source_cross_20260511/analysis_exports/exact_val128_row_scan_epoch2/summary.json`
+- Attempt 2 broader-val512: `runs/pv26_exhaustive_od_lane_train/lane60_modern_task_head_merge_row_scan_rank_stop_source_cross_20260511/analysis_exports/broader_val512_row_scan_epoch2/summary.json`
+
+결과:
+
+| Replay | Slice | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| head merge: rank stop + focal cross | exact val128 | `0.6143` | `0.5522` | `0.4918` | `0.5535` | `1097 / 486 / 1293` | `30 / 32 / 30` | `44 / 34 / 37` |
+| head merge: rank stop + source cross | exact val128 | `0.6196` | `0.5522` | `0.4918` | `0.5854` | `1097 / 486 / 1293` | `30 / 32 / 30` | `48 / 35 / 33` |
+| head merge: rank stop + source cross | broader val512 | `0.5977` | `0.5279` | `0.4079` | `0.5854` | `4153 / 2105 / 5324` | `103 / 131 / 168` | `216 / 127 / 179` |
+| prior row-scan reference | exact val128 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+| prior row-scan reference | broader val512 | `0.5981` | `0.5279` | `0.4083` | `0.5854` | `4153 / 2105 / 5324` | not recorded here | not recorded here |
+
+판단:
+
+- This is a valid exact replay signal, not a training result: it composes task heads and evaluates them under the row-scan decode contract.
+- The source-cross merge is the better variant. It raises exact objective above the prior row-scan reference (`0.6196 > 0.6144`) and preserves source crosswalk F1.
+- The improvement comes from stop-line TP increasing to `30`, but stop-line precision is still weak (`30 / 32 / 30`), and stop-line F1 `0.4918` remains below the PCA val128 reference `0.5133` and angle-mask production reference `0.5085`.
+- The broader-val512 replay removes the exact-only gain. Objective is `0.5977`, below the prior row-scan broader objective `0.5981`, and stop-line is effectively unchanged/slightly worse (`0.4079` vs `0.4083`).
+- The focal-cross transplant is worse because it drops crosswalk F1 from `0.5854` to `0.5535`.
+- This is not a final success: lane, stop-line, and crosswalk are still below the all-task `>=0.60` goal.
+
+하지 말 것:
+
+- Do not call the `0.6196` exact objective a lane-family 0.6 success.
+- Do not broaden the current source-cross head merge further; val512 already erased the exact gain.
+- Do not transplant the focal-cross task head; it loses crosswalk retention.
+- Do not turn task-head merge into another blind checkpoint-composition sweep unless the next source has a clearly better task-specific head and a retention hypothesis.
+
+다음:
+
+- The source-cross head merge is only an exact-slice partial-positive.
+- For the actual goal, this path is closed. The next architecture work should target candidate-level stop-line precision or lane instance stability with crosswalk retention, not another dense loss-only or crosswalk-head transplant.
+
+## 58. 2026-05-11 Stop-line candidate assignment loss: direct candidate supervision collapses stop-line
+
+맥락:
+
+- The candidate-pool audits showed that top-k stop-line candidates contain valid segments, but production scoring cannot choose them reliably.
+- Proposal-distribution KL and task-head merge did not clear the gate.
+- This run tested the narrower next question: can the existing center/selector top-k candidates learn true/false assignment and geometry directly, without adding another dense validator gate?
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-instance-assignment`
+- `model/engine/loss.py` adds opt-in `stopline_candidate_assignment_weight` and `stopline_candidate_assignment_topk`.
+- The loss decodes top-k center/selector proposal cells using `center_offset`, `angle`, and `half_length`, assigns candidate segments to GT stop-line endpoints, supervises true/false candidate logits, ranks assigned positives above hard negatives, and adds normalized endpoint geometry loss.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_stop_candidate_assignment`, based on the row-scan contract with `stopline_center_target_mode=heatmap`, selector/geometry/local-x auxiliaries, `stopline_candidate_assignment_weight=0.5`, and `stopline_candidate_assignment_topk=32`.
+- `test/test_pv26_loss_runtime.py` locks that the loss is opt-in and backpropagates through center logits, selector-map logits, center offset, angle, and half-length.
+
+Artifacts:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_stop_candidate_assignment --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_stop_candidate_assignment --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_assignment_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_172135`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_assignment_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_172340`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| smoke | 1 | `0.6305` | `0.5191` | `0.0000` | `0.7273` | `34 / 18 / 45` | `0 / 1 / 2` | `4 / 2 / 1` |
+| candidate assignment | 1 | `0.5939` | `0.5331` | `0.0000` | `0.6748` | `1042 / 532 / 1293` | `0 / 3 / 55` | `55 / 25 / 28` |
+| candidate assignment | 2 | `0.5536` | `0.5555` | `0.0571` | `0.5818` | `1103 / 478 / 1287` | `2 / 8 / 58` | `48 / 36 / 33` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+
+판단:
+
+- The exact run completed cleanly with `skipped_steps=0`, so this is valid negative training evidence, not a runtime failure.
+- Lane F1 nudged above the row-scan reference by epoch2, but the objective collapsed (`0.5536 < 0.6144`) because stop-line stayed near zero and crosswalk slipped below the reference.
+- Stop-line task-best is only `0.0571` at epoch2. This is worse than the baseline, row-scan reference, PCA reference, angle-mask production, proposal competition, and head-merge replay.
+- The loss is also expensive in the current Python-loop form: loss time was about `126ms` per batch window while forward/backward were about `10ms / 8ms`.
+- Therefore this is not a broader-val512 candidate and not a 0.6 path.
+
+하지 말 것:
+
+- Do not extend `stopline_candidate_assignment_weight=0.5` to broader-val512 or longer runs.
+- Do not treat candidate assignment as solved just because it is instance-level; tied to the current center/selector top-k pool, it did not recover stop-line precision or recall.
+- Do not repeat this as a simple top-k/weight sweep without a different candidate construction or decode contract.
+
+다음:
+
+- Stop-line work should not stay in loss-only pressure on the existing top-k center/selector candidates.
+- The remaining useful stop-line directions are a different candidate construction/readout contract or a return to lane instance stability with explicit stop-line/crosswalk retention checks.
+
+## 59. 2026-05-11 Lane row-anchor recall loss: direct anchor-row pressure increases FP
+
+맥락:
+
+- Row-scan vectorization gave the strongest lane-side partial-positive so far, but the remaining failure mode is predicted centerline evidence stability rather than semantic attrs or support-map availability.
+- Prior tangent-only, dynamic hard-negative-only, focal-only, and residual-risk sampler-only runs did not clear the row-scan exact gate.
+- This run tested a narrower lane-side training contract: supervise visible GT anchor-row points directly on the predicted centerline evidence used by row-scan.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-anchor-recall`
+- `model/engine/loss.py` adds opt-in `lane_segfirst_row_anchor_recall_weight` and `lane_segfirst_row_anchor_recall_radius`.
+- The loss maps the 16 lane anchor rows into dense-map coordinates, max-pools centerline logits within the configured radius, and applies positive BCE at visible GT anchor x positions.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_row_anchor_recall`, based on the row-scan contract with `lane_segfirst_row_anchor_recall_weight=0.5` and `radius=1`.
+- `test/test_pv26_loss_runtime.py` locks that the loss is opt-in and backpropagates through lane centerline logits; `test/test_run_pv26_train.py` locks YAML/default config parsing.
+
+Artifacts:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_row_anchor_recall --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_row_anchor_recall --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_row_anchor_recall_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_174813`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_row_anchor_recall_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_175007`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| smoke | 1 | `0.6361` | `0.5344` | `0.0000` | `0.7273` | not recorded here | not recorded here | not recorded here |
+| row-anchor recall | 1 | `0.5835` | `0.5307` | `0.2000` | `0.6790` | `1092 / 688 / 1243` | `10 / 35 / 45` | `55 / 24 / 28` |
+| row-anchor recall | 2 | `0.6106` | `0.5512` | `0.4310` | `0.5854` | `1141 / 609 / 1249` | `25 / 31 / 35` | `48 / 35 / 33` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+
+판단:
+
+- The exact run completed cleanly with `skipped_steps=0`, so this is valid negative training evidence.
+- Lane TP increased versus the row-scan reference (`1141 > 1097`), but FP also jumped (`609 > 486`), so lane F1 is slightly lower (`0.5512 < 0.5522`).
+- Stop-line also regressed (`0.4310 < 0.4483`), and the best objective is below the row-scan reference (`0.6106 < 0.6144`).
+- Epoch1 crosswalk task-best `0.6790` does not rescue the axis because lane/stop-line are worse on that checkpoint and the all-task objective stays below the row-scan gate.
+- Therefore this is not a broader-val512 candidate and not a 0.6 path.
+
+하지 말 것:
+
+- Do not extend `lane_segfirst_row_anchor_recall_weight=0.5` to broader-val512 or longer runs.
+- Do not treat direct anchor-row positive pressure as solved centerline evidence; it raised recall-like TP but added too many lane FP.
+- Do not repeat this as a simple radius/weight sweep without an explicit FP-suppression or instance-selection contract.
+
+다음:
+
+- Lane work should move away from positive-anchor-only pressure and toward an instance-aware centerline evidence contract that controls over-link/fragment FP.
+- Stop-line remains the larger gap; if returning there, use a different candidate construction/readout contract rather than loss-only pressure on the current top-k candidate pool.
+
+## 60. 2026-05-11 Lane row-anchor local contrast: FP control helps but stays exact-only
+
+맥락:
+
+- Direct row-anchor positive pressure raised lane TP but also increased FP and regressed stop-line.
+- This run tested the immediate repair: keep GT anchor-row positive pressure, but also suppress high-logit negative cells on the same anchor rows outside a small GT-near exclusion band.
+- The purpose was to check whether predicted centerline evidence can be stabilized without repeating global hard-negative or focal-only pressure.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-anchor-contrast`
+- `model/engine/loss.py` adds opt-in `lane_segfirst_row_anchor_contrast_weight`, `radius`, `negative_gap`, and `negative_topk`.
+- The loss max-pools positive centerline logits near visible GT anchor points, then samples the highest same-row negative logits outside the GT-near band and applies negative BCE.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_row_anchor_contrast`, based on the row-scan contract with `weight=0.5`, `radius=1`, `negative_gap=4`, and `negative_topk=256`.
+- Runtime/config tests cover opt-in backprop and YAML/default parsing.
+
+Artifacts:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_row_anchor_contrast --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_row_anchor_contrast --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_row_anchor_contrast_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_180829`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_row_anchor_contrast_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_181024`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| smoke | 1 | `0.6385` | `0.5385` | `0.0000` | `0.7273` | not recorded here | not recorded here | not recorded here |
+| row-anchor contrast | 1 | `0.5842` | `0.5286` | `0.2000` | `0.6790` | `1072 / 649 / 1263` | `10 / 35 / 45` | `55 / 24 / 28` |
+| row-anchor contrast | 2 | `0.6134` | `0.5559` | `0.4483` | `0.5854` | `1133 / 553 / 1257` | `26 / 30 / 34` | `48 / 35 / 33` |
+| prior row-anchor recall | 2 | `0.6106` | `0.5512` | `0.4310` | `0.5854` | `1141 / 609 / 1249` | `25 / 31 / 35` | `48 / 35 / 33` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+
+판단:
+
+- The exact run completed cleanly with `skipped_steps=0`, so this is valid training evidence.
+- Compared with positive-only row-anchor recall, local contrast reduced lane FP (`609 -> 553`) and restored stop-line to the row-scan reference (`0.4483`).
+- Compared with the prior row-scan reference, lane F1 is higher (`0.5559 > 0.5522`), but the gain is small and the selection objective remains lower (`0.6134 < 0.6144`).
+- This resembles prior tangent/focal exact-only small gains: useful evidence about FP pressure, but not enough for broader-val512 or default promotion.
+- Therefore this is a partial-positive exact result, not a 0.6 path.
+
+하지 말 것:
+
+- Do not extend this exact-only small gain to broader-val512 without first clearing the row-scan objective gate or adding a stronger instance-selection contract.
+- Do not repeat it as a simple `negative_gap` / `negative_topk` / weight sweep.
+- Do not call lane TP/FP movement a success while stop-line and crosswalk remain below the all-task 0.6 goal.
+
+다음:
+
+- Lane-side work needs instance-level selection or over-link control beyond row-anchor row-local BCE.
+- The larger gap is still stop-line; a new stop-line attempt should change candidate generation/readout, not add another loss on the current top-k candidates.
+
+## 61. 2026-05-11 Stop-line component proposal readout: component gating raises FP more than TP
+
+맥락:
+
+- Candidate pool evidence showed top-k proposal headroom, but score/length filters and validator replays failed to turn that into task F1.
+- Component/readout and visual audits showed many FN cases still have predicted mask/center signal, but simple no-anchor PCA, local score-window extraction, and pairwise component split are already negative.
+- This probe tested a narrower decode-only contract: choose one center/selector/max proposal inside each predicted mask component, then read the segment with predicted angle + mask extent.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-component-proposal-readout`
+- Added `tools/probe_pv26_stopline_component_proposal_readout.py`.
+- The tool preserves baseline lane/crosswalk predictions and replaces only `stop_lines`.
+- Each variant labels the predicted stop-line mask, filters small/short components, chooses the best proposal cell inside each component, and fits the segment from that component using predicted angle and mask extent.
+
+Artifacts:
+
+- smoke: same command shape with `--max-val-batches 4`; used only to verify tensor/metrics plumbing before exact val128.
+- exact val128: `python3 tools/probe_pv26_stopline_component_proposal_readout.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_component_proposal_readout_val128_epoch2`
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_component_proposal_readout_val128_epoch2`
+
+결과:
+
+| Variant | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| baseline | `0.5149` | `0.5267` | `0.4483` | `0.5854` | `26 / 30 / 34` | `56` |
+| component selector | `0.5097` | `0.5267` | `0.4308` | `0.5854` | `28 / 42 / 32` | `70` |
+| component max | `0.5097` | `0.5267` | `0.4308` | `0.5854` | `28 / 42 / 32` | `70` |
+| component max mask080 | `0.5090` | `0.5267` | `0.4286` | `0.5854` | `27 / 39 / 33` | `66` |
+| component center | `0.4958` | `0.5267` | `0.3846` | `0.5854` | `25 / 45 / 35` | `70` |
+
+판단:
+
+- This is read-only negative evidence. The tool ran the exact val128 replay and wrote `summary.json` / `variants.csv`.
+- The best component proposal variants recover two extra TP (`26 -> 28`) but add twelve FP (`30 -> 42`), so stop-line F1 falls from `0.4483` to `0.4308`.
+- The result is below both PCA val128 reference `0.5133` and predicted angle-mask production reference `0.5085`, so there is no broader-val512 gate.
+- Component-level proposal restriction does not solve the candidate FP problem; it mostly exposes more component candidates.
+
+하지 말 것:
+
+- Do not repeat component-per-proposal readout as a threshold-only or source-only sweep.
+- Do not promote component gating as a candidate-validator substitute.
+- Do not run broader-val512 for this axis.
+
+다음:
+
+- Stop-line needs a contract that supervises candidate false positives or validates instances before mask-extent readout.
+- If not opening a stronger stop-line instance-validator contract, return to Gate 3 lane instance stability while monitoring stop-line/crosswalk retention.
+
+## 62. 2026-05-11 Lane inter-lane gap margin: tiny lane gain does not pay for stop-line regression
+
+맥락:
+
+- Row-scan vectorization remains the best lane-side partial-positive, but it carries over-link/side FP risk.
+- Row-anchor recall raised lane TP but over-added FP; row-anchor contrast recovered some FP but still missed the row-scan objective gate.
+- This run tested a narrower over-link control: penalize centerline probability in same-row gaps between adjacent GT lane instances, without changing stop-line or crosswalk contracts.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-interlane-gap-margin`
+- `model/engine/loss.py` adds opt-in `lane_segfirst_interlane_gap_*` loss config.
+- The loss maps GT lane anchor-row points into dense-map coordinates, finds rows with adjacent visible lane instances, marks the interval between them as negative outside a positive radius, then applies a squared probability margin to top-k high-confidence gap pixels.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_interlane_gap_margin`, based on the row-scan contract with `lane_segfirst_interlane_gap_weight=0.35`, `min_gap=8`, `positive_radius=3`, `negative_topk=512`, and `margin=0.20`.
+- `test/test_pv26_loss_runtime.py` locks opt-in/backprop behavior, and `test/test_run_pv26_train.py` locks config/default parsing.
+
+Artifacts:
+
+- smoke: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_interlane_gap_margin --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `PYTHONPATH=. python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_interlane_gap_margin --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_interlane_gap_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_184340`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_interlane_gap_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_184535`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| inter-lane gap margin | 1 | `0.5848` | not selected | not selected | task-best `0.6790` | not recorded here | not recorded here | not recorded here |
+| inter-lane gap margin | 2 | `0.6122` | `0.5560` | `0.4348` | `0.5854` | `1104 / 477 / 1286` | `25 / 30 / 35` | `48 / 35 / 33` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+| prior row-anchor contrast | 2 | `0.6134` | `0.5559` | `0.4483` | `0.5854` | `1133 / 553 / 1257` | not recorded here | not recorded here |
+
+판단:
+
+- This is valid negative/partial-negative evidence. The run completed cleanly with `skipped_steps=0`.
+- The inter-lane gap margin does reduce lane FP versus row-anchor contrast (`553 -> 477`) and slightly improves lane F1 versus prior row-scan (`0.5522 -> 0.5560`).
+- The gain is too small to pay for retention loss: stop-line regresses from row-scan `0.4483` to `0.4348`, and objective stays below the row-scan gate (`0.6122 < 0.6144`).
+- Crosswalk task-best at epoch1 does not rescue the axis because the selected epoch2 objective still depends on lane/stop-line/crosswalk together.
+- There is no broader-val512 expansion for this branch.
+
+하지 말 것:
+
+- Do not repeat inter-lane gap margin as a simple min-gap / top-k / weight sweep.
+- Do not treat lane FP reduction alone as success while stop-line and objective regress.
+- Do not combine this loss with another new stop-line axis without first creating a separate single-axis gate.
+
+다음:
+
+- Lane work should move beyond row-local negative margins into an instance-level contract that improves centerline evidence without sacrificing stop-line/crosswalk retention.
+- Stop-line remains the larger gap; if returning there, change candidate generation/readout rather than adding another loss on the current top-k proposal family.
+
+## 63. 2026-05-11 Stop-line line-support readout: segment support reranking is still below stronger references
+
+맥락:
+
+- Candidate pool and rich-feature audits showed local proposal/window signal, but scalar/rich row-level replays did not become task-level stop-line success.
+- Component proposal readout raised recall only by adding too many FP.
+- This probe tested a non-GT postprocess/readout contract: decode top-k proposals into line segments with predicted angle + mask extent, then rank the candidate by support sampled along the actual decoded segment and nearby side bands.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-line-support-readout`
+- Added `tools/probe_pv26_stopline_line_support_readout.py`.
+- The probe preserves baseline lane/crosswalk predictions and replaces only `stop_lines`.
+- Candidate generation uses top-k center/selector/max proposal cells, predicted center offset, predicted angle, and mask extent. Candidate ranking uses line mask mean, line mask coverage, center/selector support along the segment, and side-band contrast.
+
+Artifacts:
+
+- smoke: `python3 tools/probe_pv26_stopline_line_support_readout.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 4 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_line_support_readout_smoke_val4_epoch2`
+- exact: `python3 tools/probe_pv26_stopline_line_support_readout.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_line_support_readout_val128_epoch2`
+- exact output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_line_support_readout_val128_epoch2`
+
+결과:
+
+| Variant | Objective proxy | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| line fused gate m045 | `0.5200` | `0.5267` | `0.4651` | `0.5854` | `30 / 39 / 30` | `69` |
+| selector line fused | `0.5189` | `0.5267` | `0.4615` | `0.5854` | `30 / 40 / 30` | `70` |
+| line fused | `0.5158` | `0.5267` | `0.4511` | `0.5854` | `30 / 43 / 30` | `73` |
+| baseline | `0.5149` | `0.5267` | `0.4483` | `0.5854` | `26 / 30 / 34` | `56` |
+| line mask | `0.5112` | `0.5267` | `0.4361` | `0.5854` | `29 / 44 / 31` | `73` |
+
+판단:
+
+- This is read-only partial/negative evidence. The smoke and exact val128 replays completed and wrote `summary.json` / `variants.csv`.
+- The best line-support variant raises stop-line recall (`26 -> 30` TP) but also adds FP (`30 -> 39`), so the F1 gain is small (`0.4483 -> 0.4651`).
+- It remains below stronger existing stop-line references: PCA val128 `0.5133`, predicted angle-mask production `0.5085`, and task-head merge exact `0.4918`.
+- Because it does not beat those references or approach the `0.60` target, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat top-k line-support reranking as a threshold/grid sweep.
+- Do not treat segment support scoring as a candidate-validator substitute.
+- Do not combine this postprocess with another new stop-line training axis without a separate single-axis gate.
+
+다음:
+
+- Stop-line still needs model-side candidate false-positive supervision or a genuinely different proposal construction/readout contract.
+- If no stronger stop-line contract is opened, return to lane instance stability with stop-line/crosswalk retention checks.
+
+## 64. 2026-05-11 Lane segment continuity contrast: lane F1 rises but retention still misses the gate
+
+맥락:
+
+- Row-scan remains the strongest lane partial-positive, but previous training-side pressure mostly produced tiny lane gains with stop-line regression.
+- Row-anchor recall increased TP but also FP. Row-anchor local contrast and inter-lane gap margin controlled different FP shapes but still missed the row-scan objective gate.
+- This test kept the same row-scan decode/postprocess contract and changed only one training-side lane auxiliary: sampled GT lane segment continuity with side-negative contrast.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-segment-continuity-contrast`
+- `model/engine/loss.py` adds opt-in `lane_segfirst_segment_continuity_*` loss config.
+- The loss samples visible GT lane segments between anchor rows, applies positive centerline pressure with a small radius, and applies negative margin at normal-offset side points.
+- Defaults are off (`lane_segfirst_segment_continuity_weight=0.0`), so existing presets keep the same behavior unless a probe explicitly enables it.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_segment_continuity_contrast`, based on the row-scan contract with:
+  - `lane_segfirst_segment_continuity_weight=0.35`
+  - `lane_segfirst_segment_continuity_positive_radius=1`
+  - `lane_segfirst_segment_continuity_samples_per_segment=5`
+  - `lane_segfirst_segment_continuity_negative_offset=4.0`
+  - `lane_segfirst_segment_continuity_negative_topk=512`
+  - `lane_segfirst_segment_continuity_margin=0.20`
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_segment_continuity_contrast --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_segment_continuity_contrast --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_segment_continuity_contrast_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_192520`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_segment_continuity_contrast_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_192713`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| segment continuity contrast | 1 | `0.5840` | `0.5303` | `0.2000` | `0.6790` | `1076 / 647 / 1259` | `10 / 35 / 45` | `55 / 24 / 28` |
+| segment continuity contrast | 2 | `0.6127` | `0.5594` | `0.4348` | `0.5854` | `1142 / 551 / 1248` | `25 / 30 / 35` | `48 / 35 / 33` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+| prior row-anchor contrast | 2 | `0.6134` | `0.5559` | `0.4483` | `0.5854` | `1133 / 553 / 1257` | not recorded here | not recorded here |
+| prior inter-lane gap margin | 2 | `0.6122` | `0.5560` | `0.4348` | `0.5854` | `1104 / 477 / 1286` | `25 / 30 / 35` | `48 / 35 / 33` |
+
+판단:
+
+- This is partial/negative evidence.
+- Segment continuity contrast gives the strongest lane F1 among the recent lane-loss probes (`0.5594`) and raises lane TP versus row-scan (`1097 -> 1142`).
+- It pays for that with more lane FP than row-scan (`486 -> 551`) and stop-line regression (`0.4483 -> 0.4348`).
+- The selection objective is still below the row-scan exact reference (`0.6127 < 0.6144`) and below row-anchor contrast (`0.6134`), so this is not a broader-val512 candidate.
+
+하지 말 것:
+
+- Do not repeat segment-continuity-only as a weight/radius/offset sweep.
+- Do not treat the higher lane F1 alone as a gate pass while stop-line regresses.
+- Do not bundle this loss with another new lane or stop-line change without a separate single-axis gate.
+
+다음:
+
+- Lane-side work should move away from local GT-segment pressure alone.
+- The remaining promising direction is a contract that selects/validates predicted lane instances while preserving stop-line/crosswalk retention, or a stop-line candidate construction/readout change that can lift the largest remaining gap.
+
+## 65. 2026-05-11 Stop-line candidate consensus readout: candidate agreement is not a validator
+
+맥락:
+
+- Candidate-pool and rich-feature audits showed real oracle and row-level signal, but task-level production replay stayed below PCA/angle-mask references.
+- This read-only probe asked a narrower question: if several top-k proposals agree on similar segment geometry, can that candidate consensus suppress isolated high-score FP without adding new supervision?
+- This keeps the same checkpoint and replaces only the stop-line selection variant during replay.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-consensus-readout`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds default-off consensus variants:
+  - `max_top10_consensus_d48_c2`
+  - `max_top20_consensus_d32_c2`
+  - `max_top20_consensus_d48_c2`
+  - `max_top20_consensus_d48_c3`
+- Each variant computes nearby candidate agreement from mean segment distance and angle error, then ranks by consensus score/count before normal candidate selection.
+- `test/test_pv26_threshold_probe.py` covers the core behavior: an isolated high-score segment is rejected when two lower-score nearby candidates agree.
+
+실행:
+
+- smoke: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 4 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_consensus_smoke_val4_epoch2`
+- exact: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_consensus_val128_epoch2`
+- exact outputs: `summary.json`, `variants.csv`, `candidate_features.csv`.
+
+결과:
+
+| Variant | Objective proxy | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `oracle_max_top10_positive` | `0.6015` | `0.5267` | `0.7368` | `0.5854` | `35 / 0 / 25` | `35` |
+| `max_top10_score_s080` | `0.5330` | `0.5267` | `0.5085` | `0.5854` | `30 / 28 / 30` | `58` |
+| `max_top20_consensus_d48_c3` | `0.5216` | `0.5267` | `0.4706` | `0.5854` | `28 / 31 / 32` | `59` |
+| `max_top20_consensus_d48_c2` | `0.5162` | `0.5267` | `0.4526` | `0.5854` | `31 / 46 / 29` | `77` |
+| `baseline` | `0.5149` | `0.5267` | `0.4483` | `0.5854` | `26 / 30 / 34` | `56` |
+
+판단:
+
+- This is partial/negative evidence.
+- The oracle-positive rows confirm the candidate pool still contains enough valid stop-line segments, but that is an oracle-only selector.
+- The best consensus production variant beats baseline only weakly (`0.4483 -> 0.4706`) and remains below stronger references: `max_top10_score_s080`/angle-mask production `0.5085`, PCA val128 `0.5133`, and task-head merge exact `0.4918`.
+- C2 consensus raises recall but overproduces FP, and C3 consensus suppresses FP only by losing too much TP.
+- Candidate agreement alone is not a sufficient FP validator, so there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat candidate agreement/consensus-only as a distance/count/angle threshold sweep.
+- Do not treat oracle-positive candidate selection as production evidence.
+- Do not combine consensus readout with another new axis without a separate single-axis gate.
+
+다음:
+
+- Stop-line should not continue with another score/length/agreement-only candidate selector.
+- A future stop-line axis needs a different candidate generation/readout contract or a supervised validator that changes task-level selection, not just post-hoc agreement.
+
+## 66. 2026-05-11 Stop-line delayed candidate-validator aux: map mixing stays below references
+
+맥락:
+
+- Direct model-side candidate validator gate had collapsed to stop-line F1 `0.0000`.
+- Calibrated validator map mixing partly recovered that direct collapse but still stayed below PCA and angle-mask references.
+- This test asked a narrower delayed question: keep the production stop-line component gate at `center`, train a dense candidate-validator auxiliary only as hard-negative supervision, then replay validator map mixing after training.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-delayed-validator-aux`
+- `model/net/stopline_head_line.py` adds `stop_line_candidate_validator_logits`.
+- `model/engine/loss.py` adds opt-in `stopline_candidate_validator_*` loss fields. The target uses stop-line center heatmap positives and hard negatives sampled from detached center/selector proposal maps outside a local exclusion radius.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed`.
+- `tools/probe_pv26_stopline_pred_angle_mask_extent.py` adds validator-map replay variants: `validator`, `max_validator`, `blend_validator`, and `product_validator`.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- replay: `python3 tools/probe_pv26_stopline_pred_angle_mask_extent.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_201223/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_201223/analysis_exports/delayed_validator_replay_val128_epoch2`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_201022`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_201223`
+- replay output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_stop_candidate_validator_aux_delayed_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_201223/analysis_exports/delayed_validator_replay_val128_epoch2`
+
+training 결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| delayed validator aux | 1 | `0.5857` | `0.5308` | `0.1961` | `0.6790` | `1038 / 538 / 1297` | `10 / 37 / 45` | `55 / 24 / 28` |
+| delayed validator aux | 2 | `0.6128` | `0.5546` | `0.4425` | `0.5854` | `1102 / 482 / 1288` | `25 / 28 / 35` | `48 / 35 / 33` |
+| prior row-scan reference | 2 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `1097 / 486 / 1293` | not recorded here | not recorded here |
+
+replay 결과:
+
+| Variant | Objective proxy | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `product_validator_top3_s040_mask050_band4_fallback` | `0.5235` | `0.5253` | `0.4793` | `0.5854` | `29 / 32 / 31` | `61` |
+| `max_validator_top3_s020_mask050_band4_fallback` | `0.5178` | `0.5253` | `0.4603` | `0.5854` | `29 / 37 / 31` | `66` |
+| `pred_selector_top3_s020_mask050_band4` | `0.5178` | `0.5253` | `0.4602` | `0.5854` | `26 / 27 / 34` | `53` |
+| `baseline` | `0.5125` | `0.5253` | `0.4425` | `0.5854` | `25 / 28 / 35` | `53` |
+| `validator_top3_s020_mask050_band4_fallback` | `0.5125` | `0.5253` | `0.4425` | `0.5854` | `25 / 28 / 35` | `53` |
+
+판단:
+
+- This is partial/negative evidence.
+- Training completed cleanly with `skipped_steps=0`; the weak result is not a runtime failure.
+- The delayed aux raises lane F1 slightly over the prior row-scan reference (`0.5522 -> 0.5546`) but loses stop-line (`0.4483 -> 0.4425`) and objective (`0.6144 -> 0.6128`).
+- Validator-map replay improves stop-line over the same checkpoint baseline (`0.4425 -> 0.4793`) but remains below stronger exact references: task-head merge `0.4918`, angle-mask production `0.5085`, and PCA `0.5133`.
+- Therefore this branch is not a broader-val512 candidate and not a 0.6 path.
+
+하지 말 것:
+
+- Do not expand delayed dense candidate-validator auxiliary to a longer run on this evidence.
+- Do not treat `product_validator` map mixing as a production stop-line fix; it is still below stronger exact references.
+- Do not repeat current center/selector hard-negative validator aux as a weight/top-k/radius sweep without a different candidate/readout contract.
+
+다음:
+
+- Stop-line should move away from current center/selector map mixing and toward a genuinely different candidate generation/readout contract, or pause stop-line and return to lane instance stability with stop-line/crosswalk retention checks.
+
+## 67. 2026-05-11 Lane row-scan tangent-link: broader objective improves, task gate still fails
+
+맥락:
+
+- Prior `row_scan` vectorizer proved that row-cluster linking can recover lane continuity without retraining, but broader-val512 objective stayed below 0.6 and over-link risk remained.
+- Earlier tangent-loss-only training strengthened dense tangent/core signal only slightly and regressed stop-line/objective.
+- This test asked a narrower decode-only question: use the already predicted `tangent_axis` only to choose row-cluster track assignment, without changing training loss or task heads.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-tangent-link`
+- `model/engine/lane_segfirst_vectorizer.py` adds opt-in `row_scan_tangent` track mode. It links bottom-to-top, orients local tangents upward, and scores candidate continuation by tangent-expected x plus direct dx and row gap.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_link`, identical to the row-scan probe except `lane_segfirst_track_mode: row_scan_tangent`.
+- `test/test_lane_segfirst_vectorizer.py` adds a unit case where greedy row-scan picks the nearest lower cluster but tangent-link picks the direction-consistent cluster.
+
+실행:
+
+- exact replay: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_link_val128_epoch2`
+- broader replay: same command with `--max-val-batches 512` and output `analysis_exports/lane_row_scan_tangent_link_val512_epoch2`
+- stop-line integration check: same exact replay plus `--stop-line-mask-binary-threshold 0.80`, output `analysis_exports/lane_row_scan_tangent_link_stop_pca_val128_epoch2`
+
+결과:
+
+| Replay | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Support lane/stop/cross |
+| --- | ---: | ---: | ---: | ---: | --- |
+| prior row-scan exact val128 | `0.6144` | `0.5522` | `0.4483` | `0.5854` | `2390 / 60 / 81` |
+| tangent-link exact val128 | `0.6187` | `0.5633` | `0.4483` | `0.5854` | `2390 / 60 / 81` |
+| tangent-link + stop mask `0.80` exact val128 | `0.6171` | `0.5633` | `0.4364` | `0.5854` | `2390 / 60 / 81` |
+| prior row-scan broader-val512 | `0.5981` | `0.5279` | `0.4083` | `0.5854` | `9477 / 271 / 395` |
+| tangent-link broader-val512 | `0.6027` | `0.5407` | `0.4083` | `0.5854` | `9477 / 271 / 395` |
+
+판단:
+
+- This is partial-positive lane evidence, not goal success.
+- The lane gain survives broader-val512 (`0.5279 -> 0.5407`) and objective crosses 0.6 (`0.5981 -> 0.6027`).
+- Stop-line does not improve (`0.4083` broader) and crosswalk remains below 0.6 (`0.5854`), so the all-task F1 gate still fails.
+- Combining tangent-link with stop-line `mask=0.80` is worse than tangent-link alone on exact val128 (`0.4483 -> 0.4364` stop-line), so it is not broadened.
+
+하지 말 것:
+
+- Do not run a tangent-link cost/weight/alias sweep as the next axis.
+- Do not treat broader objective `0.6027` as success while stop-line and crosswalk are below 0.6.
+- Do not combine tangent-link with another new stop-line/crosswalk knob without a separate single-axis gate.
+
+다음:
+
+- Treat `row_scan_tangent` as the current best opt-in lane replay reference.
+- The next success path must either lift stop-line/crosswalk on top of this lane reference, or change predicted centerline instance stability in a way that preserves stop-line/crosswalk retention.
+
+## 68. 2026-05-11 Stop-line lane-context readout: lane geometry does not rescue candidate selection
+
+맥락:
+
+- `row_scan_tangent` became the current best lane replay reference, but stop-line stayed at exact `0.4483` and broader `0.4083`.
+- Candidate-pool and consensus probes showed valid stop-line proposals exist, but score/length/agreement-only selection stays below PCA/angle-mask references.
+- This read-only probe asked whether predicted lane geometry can act as a non-GT context signal: a real stop-line should often cross or sit near predicted lane instances, while isolated FP segments may not.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-lane-context-readout`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds lane-context candidate features: `lane_cross_count_24`, `lane_cross_count_48`, `lane_cross_count_72`, `lane_min_distance`, `lane_mean_near_distance`, and `lane_support_score`.
+- The probe adds production variants `max_top10_lane_cross48_c1`, `max_top20_lane_cross48_c1`, and `max_top20_lane_cross48_c2`.
+- The probe also accepts `--lane-segfirst-track-mode`, so this exact replay used `row_scan_tangent` lane predictions rather than the default component lane decoder.
+- `test/test_pv26_threshold_probe.py` covers lane-context sorting/filtering and feature counting.
+
+실행:
+
+- exact replay: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --lane-segfirst-track-mode row_scan_tangent --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_lane_context_readout_val128_epoch2`
+- output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_lane_context_readout_val128_epoch2`
+
+결과:
+
+| Variant | Objective proxy | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `oracle_max_top10_positive` | `0.6198` | `0.5633` | `0.7368` | `0.5854` | `35 / 0 / 25` | `35` |
+| `max_top10_score_s080` | `0.5513` | `0.5633` | `0.5085` | `0.5854` | `30 / 28 / 30` | `58` |
+| `max_top20_consensus_d48_c3` | `0.5399` | `0.5633` | `0.4706` | `0.5854` | `28 / 31 / 32` | `59` |
+| `max_top10_lane_cross48_c1` | `0.5396` | `0.5633` | `0.4696` | `0.5854` | `27 / 28 / 33` | `55` |
+| `baseline` | `0.5332` | `0.5633` | `0.4483` | `0.5854` | `26 / 30 / 34` | `56` |
+| `max_top20_lane_cross48_c2` | `0.5022` | `0.5633` | `0.3448` | `0.5854` | `15 / 12 / 45` | `27` |
+
+판단:
+
+- This is partial/negative evidence.
+- Lane context can remove some FP, but it also loses TP. Best lane-context improves baseline only weakly (`0.4483 -> 0.4696`) and stays below stronger non-oracle references: score-threshold/angle-mask `0.5085`, PCA exact `0.5133`, task-head merge `0.4918`, and delayed validator replay `0.4793`.
+- The strict `c2` variant raises precision but collapses recall (`15 / 12 / 45`), so predicted lane crossing count is not a sufficient stop-line validator.
+- Because it fails the exact gate and trails existing references, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat lane-context readout as a distance/count threshold sweep.
+- Do not treat lane-crossing context as a candidate-validator substitute.
+- Do not combine lane-context readout with another new stop-line/crosswalk knob without a separate single-axis gate.
+
+다음:
+
+- Stop-line still needs a different candidate generation/readout contract, not another filter on the current center/selector top-k proposal family.
+- If the next step stays on lane, it should change instance stability while explicitly preserving stop-line/crosswalk retention.
+
+## 69. 2026-05-11 Row-scan-tangent balanced retention: loss weights do not preserve stop-line
+
+맥락:
+
+- `row_scan_tangent` is the current best lane replay reference: exact val128 objective `0.6187`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`; broader-val512 objective `0.6027`, lane/stop/cross F1 `0.5407 / 0.4083 / 0.5854`.
+- The remaining gap is not lane alone. Stop-line and crosswalk must rise together, and prior lane-only losses often regressed stop-line.
+- This run asked whether a simple training-side retention balance can keep tangent-link lane quality while giving stop-line/crosswalk more loss weight.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-tangent-balanced-retain`
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_balanced_retain`.
+- The experiment keeps `lane_segfirst_track_mode: row_scan_tangent`, freezes the trunk, uses `head_lr=1e-4`, and changes only lane-family loss balance: lane `2.0`, stop-line `2.25`, crosswalk `1.75`.
+- It keeps the existing core centerline and stop-line heatmap/selector/geometry/local-x auxiliaries.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_balanced_retain --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_balanced_retain --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_balanced_retain_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_210930`
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` | - | - | - |
+| balanced-retain epoch1 | `0.5884` | `0.5424` | `0.1980` | `0.6748` | `1059 / 511 / 1276` | `10 / 36 / 45` | `55 / 25 / 28` |
+| balanced-retain epoch2 | `0.6147` | `0.5607` | `0.4310` | `0.5854` | `1117 / 477 / 1273` | `25 / 31 / 35` | `48 / 35 / 33` |
+
+판단:
+
+- This is negative evidence for loss-weight-only retention.
+- Crosswalk task-best improves at epoch1 (`0.6748`), but the selected best objective is epoch2 and crosswalk returns to `0.5854`.
+- Final objective `0.6147`, lane `0.5607`, and stop-line `0.4310` are all below the tangent-link exact reference `0.6187`, `0.5633`, and `0.4483`.
+- Because the exact gate is below the current reference, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat simple lane/stop-line/crosswalk loss-weight balancing as the next axis.
+- Do not use epoch1 crosswalk task-best as success evidence when the selected objective and stop-line fail.
+- Do not combine retention-balance with another new decoder/readout knob without a separate single-axis gate.
+
+다음:
+
+- Keep `row_scan_tangent` as the current lane replay reference.
+- If the next lane axis trains again, it needs a more explicit instance-stability contract than scalar loss reweighting.
+- If the next stop-line axis resumes, it should change candidate generation/readout geometry rather than reweight the existing center/selector contract.
+
+## 70. 2026-05-11 Stop-line local-centerline selector: target reshape is too small
+
+맥락:
+
+- Candidate-pool audits showed that valid stop-line segments exist inside top-k proposals, but score/length/rich-feature selection and dense validator variants did not transfer that headroom to task F1.
+- The next stop-line gate called for a candidate generation/readout contract change rather than another filter on the same center/selector proposals.
+- This run asked whether the center/selector proposal maps themselves could be improved by targeting local stop-line centerline support around the GT center, while keeping the `row_scan_tangent` lane reference unchanged.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-local-centerline-selector`
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_stop_local_centerline_selector`.
+- The experiment keeps `lane_segfirst_track_mode: row_scan_tangent` and the tangent-link lane-family weights.
+- The only stop-line contract change is `stopline_center_target_mode=local_union` plus `stopline_selector_target_mode=local_centerline`; geometry/local-x auxiliaries stay unchanged.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stop_local_centerline_selector --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stop_local_centerline_selector --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_local_centerline_selector_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_213114`
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` | - | - | - |
+| local-centerline selector epoch1 | `0.5945` | `0.5409` | `0.2330` | `0.6790` | `1057 / 516 / 1278` | `12 / 36 / 43` | `55 / 24 / 28` |
+| local-centerline selector epoch2 | `0.6167` | `0.5607` | `0.4522` | `0.5854` | `1117 / 477 / 1273` | `26 / 29 / 34` | `48 / 35 / 33` |
+
+판단:
+
+- This is weak partial-positive stop-line evidence but not a gate pass.
+- Stop-line improves only `0.4483 -> 0.4522`, and the gain is far below stronger exact references: lane-context `0.4696`, delayed-validator replay `0.4793`, task-head merge `0.4918`, angle-mask production `0.5085`, and PCA `0.5133`.
+- Objective `0.6167` and lane `0.5607` are below the tangent-link exact reference `0.6187` and `0.5633`.
+- Because the exact gate misses the current reference, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat `local_union` / `local_centerline` target reshaping as a weight/mode sweep.
+- Do not treat the tiny stop-line exact gain as a broader candidate.
+- Do not combine this selector target with another new stop-line decoder without a separate single-axis gate.
+
+다음:
+
+- The stop-line target-map reshaping family is still not enough. A future stop-line attempt should change the actual candidate generation/readout geometry or move back to lane instance stability with explicit roadmark retention.
+
+## 71. 2026-05-11 Stop-line geometry-aware candidate validator: endpoint labels help a little, readout worsens
+
+맥락:
+
+- Candidate-pool and rich-feature audits showed valid stop-line candidates inside the current top-k proposal family, but scalar/rich threshold replay, dense validator auxiliary, assignment loss, consensus readout, lane-context readout, and local-centerline target reshaping did not turn that headroom into task F1 0.6.
+- This run kept the `row_scan_tangent` lane reference and asked whether candidate-validator supervision should be tied to decoded segment geometry rather than center heatmap positives and generic hard negatives.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-geometry-candidate-validator`
+- `model/engine/loss.py` adds opt-in `stopline_candidate_geometry_validator_*` loss fields. The loss samples current top-k center/selector proposals, decodes their predicted endpoint segments from center offset, angle, and half-length, and labels candidate-validator logits by distance to GT stop-line endpoints.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_stop_geometry_validator`.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` thread the new opt-in config fields. Defaults remain disabled.
+- `test/test_pv26_loss_runtime.py` adds a focused backward test for the new candidate-geometry validator loss.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stop_geometry_validator --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stop_geometry_validator --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- replay: `python3 tools/probe_pv26_stopline_pred_angle_mask_extent.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_215624/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_215624/analysis_exports/geometry_validator_replay_val128_epoch2`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_215430`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_215624`
+- replay output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_215624/analysis_exports/geometry_validator_replay_val128_epoch2`
+- exact runtime: `skipped_steps=0`, best epoch `2`, phase duration `540.56s`.
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` | - | - | - |
+| local-centerline selector reference | `0.6167` | `0.5607` | `0.4522` | `0.5854` | `1117 / 477 / 1273` | `26 / 29 / 34` | `48 / 35 / 33` |
+| geometry-validator epoch1 | `0.5901` | `0.5411` | `0.1980` | `0.6790` | `1057 / 515 / 1278` | `10 / 36 / 45` | `55 / 24 / 28` |
+| geometry-validator epoch2 | `0.6182` | `0.5607` | `0.4655` | `0.5854` | `1117 / 477 / 1273` | `27 / 29 / 33` | `48 / 35 / 33` |
+
+Validator replay:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | --- | ---: |
+| baseline | `0.4655` | `27 / 29 / 33` | `56` |
+| `blend_validator_top3_s020_mask050_band4_fallback` | `0.3973` | `29 / 57 / 31` | `86` |
+| `product_validator_top3_s040_mask050_band4_fallback` | `0.3889` | `28 / 56 / 32` | `84` |
+| `max_validator_top3_s020_mask050_band4_fallback` | `0.3692` | `24 / 46 / 36` | `70` |
+| `validator_top3_s020_mask050_band4_fallback` | `0.3077` | `20 / 50 / 40` | `70` |
+
+판단:
+
+- This is partial/negative evidence.
+- Geometry-aware labels improve stop-line versus tangent-link and local-centerline selector references (`0.4483 -> 0.4655`), but the gain is still below stronger exact stop-line references: delayed-validator replay `0.4793`, task-head merge `0.4918`, angle-mask production `0.5085`, and PCA `0.5133`.
+- Objective `0.6182` and lane `0.5607` remain below the tangent-link exact reference `0.6187` and `0.5633`.
+- The validator map itself is not a useful production readout on this checkpoint. All validator replay variants are worse than the baseline center gate.
+- Because the exact gate misses the current reference and replay worsens, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat geometry-aware candidate-validator loss as a top-k/weight sweep on the same current center/selector proposal family.
+- Do not treat validator-map replay as a production stop-line decoder.
+- Do not combine this validator loss with another new stop-line knob without a separate single-axis gate.
+
+다음:
+
+- The current center/selector top-k candidate-validator family is closed unless candidate generation/readout changes materially.
+- Stop-line should either change the candidate generation/readout contract itself or pause while lane instance stability is improved with explicit stop-line/crosswalk retention checks.
+
+## 72. 2026-05-11 Lane row-scan tangent support gate: support gating is effectively no-op
+
+맥락:
+
+- Lane support map pixel F1 is much stronger than centerline core, but prior support substitution and support bridge/closing probes failed.
+- This readout-only probe asked a narrower question: keep centerline as the lane source, keep `row_scan_tangent`, and only drop centerline pixels whose predicted support is below `0.5`.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-tangent-support-gate`
+- `model/engine/lane_segfirst_vectorizer.py` adds opt-in `row_scan_tangent_support_gate` track mode.
+- The mode does not substitute support for centerline. It applies `centerline >= lane_obj_threshold` and `support >= 0.5` before the existing tangent-guided row-scan linking.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_support_gate`.
+- `test/test_lane_segfirst_vectorizer.py` adds a unit case where a low-support centerline spur is removed.
+
+실행:
+
+- exact replay: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --lane60-experiment core_centerline_refine_row_scan_tangent_support_gate --preset default --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_support_gate_val128_epoch2`
+- replay output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_support_gate_val128_epoch2`
+
+결과:
+
+| Replay | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | - | - | - |
+| tangent support gate exact val128 | `0.6187189441` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` | `26 / 30 / 34` | `48 / 35 / 33` |
+
+판단:
+
+- This is no-op/negative evidence.
+- The objective difference is only `+0.0000023678`, and task F1 values are unchanged at document precision.
+- Support gating did not create a meaningful lane FP/TP trade-off on the exact slice, so there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat this as a support-threshold sweep.
+- Do not treat strong support pixel F1 as evidence that support-gated vectorization will improve lane task F1.
+
+다음:
+
+- Lane still needs a training-side instance contract that changes centerline evidence itself, not another postprocess support gate.
+
+## 73. 2026-05-11 Lane row-scan tangent segment MIL: lane improves slightly, joint gate misses
+
+맥락:
+
+- The support gate showed that readout-side support filtering is effectively no-op on the tangent-link reference.
+- This run moved back to training-side lane evidence and asked whether each visible GT lane segment can directly keep centerline logits alive along the segment.
+- It is not the closed `segment_continuity_contrast` family: there is no side normal-offset negative margin, and the loss averages positive segment evidence per lane instance.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-segment-mil`
+- `model/engine/loss.py` adds opt-in `lane_segfirst_segment_mil_*` fields and `seg_segment_mil` loss breakdown.
+- The loss samples points along each visible GT lane segment, max-pools centerline logits within `positive_radius`, and applies positive BCE per segment/lane.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` pass the new train defaults through to `PV26MultiTaskLoss`.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_segment_mil` with `lane_segfirst_track_mode: row_scan_tangent` and `lane_segfirst_segment_mil_weight: 0.35`.
+- `test/test_pv26_loss_runtime.py` adds an opt-in backpropagation test for the new loss.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_segment_mil --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_segment_mil --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_223515`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_223714`
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | - | - | - |
+| segment-MIL epoch1 | `0.5911242361` | `0.5546` | `0.2000` | `0.6790` | `1125 / 597 / 1210` | `10 / 35 / 45` | `55 / 24 / 28` |
+| segment-MIL epoch2 | `0.6161803030` | `0.5655` | `0.4348` | `0.5854` | `1161 / 555 / 1229` | `25 / 30 / 35` | `48 / 35 / 33` |
+
+판단:
+
+- This is lane partial-positive but joint-gate negative evidence.
+- Lane F1 improves over tangent-link exact by about `+0.0022`, and lane TP rises from support-gate/tangent reference `1121` to `1161`.
+- The gain comes with more lane FP (`469 -> 555`) and stop-line regression (`0.4483 -> 0.4348`), so objective stays below the tangent-link exact reference (`0.6161803030 < 0.6187165763`).
+- Because the exact gate misses the current reference and the all-task F1 gate still fails, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat this as a segment-MIL weight/radius/sample-count sweep on the same tangent-link setup.
+- Do not call the lane-F1 bump a success without stop-line/crosswalk retention.
+- Do not merge it with another stop-line knob in the same branch; that would hide whether retention or lane evidence caused the result.
+
+다음:
+
+- Positive-only segment evidence can raise lane recall slightly, but it does not solve the joint objective.
+- The next lane-side attempt needs either a stronger instance-level contract that controls FP/recovery together, or a retention-aware contract that explicitly protects stop-line/crosswalk while changing lane centerline evidence.
+
+## 74. 2026-05-11 Lane-head-only retention schedule: exact-only best, stop-line still blocks
+
+맥락:
+
+- Segment-MIL made a small lane F1 gain but regressed stop-line.
+- This run tested whether the same lane evidence can be isolated to the lane head while freezing trunk, detector/TL heads, stop-line head, and crosswalk head.
+- This is a schedule/freeze-policy axis, not a new lane loss sweep. It keeps `roadmark_joint` evaluation and only narrows which parameters update.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-head-only-retain`
+- `model/engine/trainer.py` adds freeze policy `lane_head_only`.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only`.
+- `test/test_pv26_trainer.py` verifies that the policy freezes trunk, detector/TL, stop-line, and crosswalk parameters while leaving lane head parameters trainable.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_225822`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022`
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` | `26 / 30 / 34` | `48 / 35 / 33` |
+| segment-MIL epoch2 | `0.6161803030` | `0.5655` | `0.4348` | `0.5854` | `1161 / 555 / 1229` | `25 / 30 / 35` | `48 / 35 / 33` |
+| segment-MIL lane-head-only epoch1 | `0.5939593002` | `0.5516` | `0.1980` | `0.6748` | `1122 / 611 / 1213` | `10 / 36 / 45` | `55 / 25 / 28` |
+| segment-MIL lane-head-only epoch2 | `0.6193428422` | `0.5660` | `0.4483` | `0.5926` | `1162 / 554 / 1228` | `26 / 30 / 34` | `48 / 33 / 33` |
+
+판단:
+
+- This is exact-only partial-positive evidence.
+- Lane-head-only retention preserves stop-line relative to tangent-link (`0.4483`) and avoids the segment-MIL stop-line drop (`0.4348`).
+- It also makes a tiny new exact objective best (`0.6193428422` vs `0.6187165763`) and a tiny lane F1 best (`0.5660` vs `0.5655`).
+- The gain is too small to justify broader-val512 expansion by itself, and the all-task gate still fails because stop-line remains `0.4483`.
+
+하지 말 것:
+
+- Do not repeat this as a lane-head-only LR/epoch sweep without a new evidence contract.
+- Do not treat exact objective `0.6193` as final progress toward the broader all-task F1 goal.
+- Do not combine this with another stop-line knob in the same branch; the useful evidence here is only that lane-head-only can retain frozen stop/cross outputs.
+
+다음:
+
+- If lane-side work continues, it needs a stronger instance-level centerline contract than positive-only segment evidence.
+- If stop-line work resumes, this result says freezing non-lane heads can protect existing outputs, but it does not solve stop-line candidate generation/readout.
+
+## 75. 2026-05-11 Stop-line-head-only geometry validator: freezing other heads does not lift stop-line
+
+맥락:
+
+- The geometry-aware candidate-validator loss gave the best recent stop-line training-side exact result (`0.4655`) but missed the tangent-link objective/lane reference.
+- Lane-head-only retention showed that freezing non-target heads can protect existing outputs.
+- This run asked the symmetric stop-line question: keep the same geometry-validator stop-line supervision, freeze trunk, detector/TL, lane, and crosswalk, and train only `stop_line_head`.
+- This is a schedule/freeze-policy axis around an existing stop-line loss, not a new loss/readout family.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-head-only-geometry-validator`
+- `model/engine/trainer.py` adds freeze policy `stop_line_head_only`.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_stop_geometry_validator_stop_head_only`.
+- `test/test_pv26_trainer.py` verifies that the policy freezes trunk, detector/TL, lane, and crosswalk parameters while leaving stop-line head parameters trainable.
+
+실행:
+
+- smoke: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stop_geometry_validator_stop_head_only --epochs 1 --train-batches 8 --val-batches 4 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_tangent_stop_geometry_validator_stop_head_only --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_stop_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_231620`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_geometry_validator_stop_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_231815`
+- exact runtime: `skipped_steps=0`, best epoch `2`, phase duration `404.75s`.
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` | `26 / 30 / 34` | `48 / 35 / 33` |
+| geometry-validator epoch2 | `0.6182` | `0.5607` | `0.4655` | `0.5854` | `1117 / 477 / 1273` | `27 / 29 / 33` | `48 / 35 / 33` |
+| stop-head-only geometry-validator epoch1 | `0.5964257895` | `0.5551` | `0.2245` | `0.6748` | `1093 / 510 / 1242` | `11 / 32 / 44` | `55 / 25 / 28` |
+| stop-head-only geometry-validator epoch2 | `0.6179851857` | `0.5640` | `0.4386` | `0.5926` | `1121 / 464 / 1269` | `25 / 29 / 35` | `48 / 33 / 33` |
+
+판단:
+
+- This is negative evidence.
+- Stop-line-head-only training does not preserve the geometry-validator stop-line gain: `0.4655 -> 0.4386`.
+- It also misses the tangent-link objective reference (`0.6179851857 < 0.6187165763`) and leaves the all-task gate blocked.
+- Lane/crosswalk retention is acceptable, but the target task regresses. There is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat stop-line-head-only geometry-validator as an LR/epoch sweep.
+- Do not treat head isolation itself as a stop-line rescue. It protected lane/crosswalk but did not improve the stop-line head.
+- Do not combine this freeze policy with another stop-line loss/readout knob without a separate single-axis gate.
+
+다음:
+
+- Stop-line remains blocked by candidate generation/readout, not by simple head-only retention.
+- If stop-line resumes, it needs a materially different candidate/readout contract rather than another schedule around current center/selector top-k validator supervision.
+
+## 76. 2026-05-11 Stop-line crosswalk-context readout: predicted crosswalk proximity is a bad selector
+
+맥락:
+
+- Lane-context readout had already shown that predicted lane crossing count is not enough to validate stop-line candidates.
+- Crosswalk prediction was still an untested non-GT context signal: true stop-lines often sit near crosswalk polygons, so predicted crosswalk proximity might suppress isolated stop-line candidates.
+- This run kept the same checkpoint and candidate-pool generation, then added read-only candidate features from predicted crosswalk polygons. It does not change model weights or stop-line training.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-crosswalk-context-readout`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds crosswalk proximity features per stop-line candidate:
+  - `crosswalk_near_count_24`
+  - `crosswalk_near_count_48`
+  - `crosswalk_near_count_72`
+  - `crosswalk_min_distance`
+  - `crosswalk_support_score`
+- The probe adds three read-only variants:
+  - `max_top10_crosswalk_context`
+  - `max_top20_crosswalk_context`
+  - `max_top20_crosswalk_near48_c1`
+- Existing lane-context, score, consensus, and oracle variants stay unchanged.
+
+실행:
+
+- smoke: same probe command with `--max-val-batches 4`; the temporary output was removed after runtime verification.
+- exact: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --lane-segfirst-track-mode row_scan_tangent --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_crosswalk_context_val128_epoch2`
+- exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_crosswalk_context_val128_epoch2/summary.json`
+
+결과:
+
+| Variant | Objective proxy | Stop-line F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | --- | ---: |
+| oracle top20 positive | `0.6198` | `0.7368` | `35 / 0 / 25` | `35` |
+| score threshold reference `max_top10_score_s080` | `0.5513` | `0.5085` | `30 / 28 / 30` | `58` |
+| baseline | `0.5332` | `0.4483` | `26 / 30 / 34` | `56` |
+| `max_top10_crosswalk_context` | `0.5130` | `0.3810` | `28 / 59 / 32` | `87` |
+| `max_top20_crosswalk_context` | `0.4967` | `0.3265` | `24 / 63 / 36` | `87` |
+| `max_top20_crosswalk_near48_c1` | `0.4619` | `0.2105` | `10 / 25 / 50` | `35` |
+
+판단:
+
+- This is negative evidence.
+- Crosswalk-context ranking increases FP badly (`30 -> 59/63`) or collapses recall under the near48 gate.
+- The best crosswalk-context variant is below baseline (`0.3810 < 0.4483`) and far below the existing score-threshold/angle-mask reference (`0.5085`).
+- Oracle-positive headroom is still present (`0.7368`), but predicted crosswalk proximity is not the missing selector.
+- There is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat crosswalk-context-only stop-line candidate ranking or near-distance filtering.
+- Do not treat roadmark co-occurrence as a substitute for candidate-level geometry validation.
+- Do not combine crosswalk-context with another filter unless a separate audit shows it fixes FP without the recall collapse seen here.
+
+다음:
+
+- Stop-line still needs a different candidate construction/readout or learned validation contract. Predicted context from lane or crosswalk is not sufficient by itself.
+- If returning to lane, keep explicit stop-line/crosswalk retention gates; context-only filtering does not move the stop-line bottleneck.
+
+## 77. 2026-05-11 Lane segment-continuity + lane-head-only: retention does not preserve a stronger lane gain
+
+맥락:
+
+- Segment-continuity contrast was the strongest recent lane-loss-only signal, but it regressed stop-line and missed the row-scan objective gate.
+- Segment-MIL + lane-head-only showed that freezing trunk, detector/TL, stop-line, and crosswalk heads can retain frozen roadmark outputs, but its lane gain was still exact-only.
+- This run asked a narrow question: if the better side-negative segment-continuity loss is applied only to the lane head, does the lane gain survive without stop/cross corruption?
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-segment-continuity-lane-head-retain`
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_segment_continuity_lane_head_only`.
+- The experiment keeps the prior segment-continuity parameters:
+  - `lane_segfirst_track_mode=row_scan`
+  - `lane_segfirst_segment_continuity_weight=0.35`
+  - `positive_radius=1`
+  - `samples_per_segment=5`
+  - `negative_offset=4.0`
+  - `negative_topk=512`
+  - `margin=0.20`
+- The single changed contract is `freeze_policy=lane_head_only`.
+
+실행:
+
+- smoke: same probe command with `--epochs 1 --train-batches 2 --val-batches 2`; the temporary output was removed after runtime verification.
+- exact: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --experiment core_centerline_refine_row_scan_segment_continuity_lane_head_only --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- exact run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_segment_continuity_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_235030`
+- exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_segment_continuity_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_235030/phase_4/history/epochs.jsonl`
+- exact runtime: completed 2 epochs, `skipped_steps=0`, best epoch `2`, phase duration `405.21s`.
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` | `26 / 30 / 34` | `48 / 35 / 33` |
+| segment-continuity full-head epoch2 | `0.6127` | `0.5594` | `0.4348` | `0.5854` | `1142 / 551 / 1248` | `25 / 30 / 35` | `48 / 35 / 33` |
+| segment-MIL lane-head-only epoch2 | `0.6193428422` | `0.5660` | `0.4483` | `0.5926` | `1162 / 554 / 1228` | `26 / 30 / 34` | `48 / 33 / 33` |
+| segment-continuity lane-head-only epoch1 | `0.5880055338` | `0.5318` | `0.1980` | `0.6748` | `1079 / 644 / 1256` | `10 / 36 / 45` | `55 / 25 / 28` |
+| segment-continuity lane-head-only epoch2 | `0.6157263716` | `0.5590` | `0.4483` | `0.5926` | `1141 / 551 / 1249` | `26 / 30 / 34` | `48 / 33 / 33` |
+
+판단:
+
+- This is negative evidence.
+- Lane-head-only freeze restores stop-line/crosswalk retention at epoch2, but the lane signal does not improve.
+- It is below tangent-link reference objective (`0.6157 < 0.6187`), below segment-MIL lane-head-only objective (`0.6157 < 0.6193`), and below segment-continuity full-head lane F1 (`0.5590 < 0.5594`).
+- There is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat segment-continuity + lane-head-only as an LR/epoch/weight sweep.
+- Do not treat lane-head-only freeze as a general lane rescue; it retained stop/cross here but did not preserve a stronger lane gain.
+- Do not combine segment-continuity with another lane loss unless the new contract explains how it changes instance evidence rather than only reweighting the same segment samples.
+
+다음:
+
+- Lane still needs a materially different instance-level centerline contract, not another segment-continuity retention variant.
+- Stop-line remains the larger blocker; if returning there, the next step must change candidate generation/readout rather than current top-k validator/context/filtering.
+
+## 78. 2026-05-12 Stop-line mask-ridge readout: medial mask geometry is not enough
+
+맥락:
+
+- Current stop-line top-k proposal/validator/context families were closed below PCA and angle-mask references.
+- This probe asked a narrower candidate-generation question: can predicted stop-line mask components themselves provide a better center/axis if we read the distance-transform ridge/medial line instead of using center/selector top-k cells?
+- This is read-only. It does not change model weights, production postprocess defaults, or GT labels.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-mask-ridge-readout`
+- Added `tools/probe_pv26_stopline_mask_ridge_readout.py`.
+- The probe derives ridge pixels from `stop_line_mask_logits` via `distance_transform_edt` + local maxima, then fits either:
+  - ridge-only PCA/horizontal extents, or
+  - ridge center/axis with component-band extent.
+- No GT center, GT mask, center/selector proposal top-k, candidate validator map, lane context, or crosswalk context is used.
+
+실행:
+
+- smoke: same probe with `--max-val-batches 2`; temporary output was removed after runtime verification.
+- exact: `python3 tools/probe_pv26_stopline_mask_ridge_readout.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_mask_ridge_readout_val128_epoch2`
+- exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_mask_ridge_readout_val128_epoch2/summary.json`
+
+결과:
+
+| Variant | Objective proxy | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `ridge_horiz_component_band3_mask080` | `0.51655557396` | `0.5267` | `0.4538` | `0.5854` | `27 / 32 / 33` | `59` |
+| baseline | `0.51490387880` | `0.5267` | `0.4483` | `0.5854` | `26 / 30 / 34` | `56` |
+| `ridge_pca_component_band3_mask080_fallback` | `0.50828997264` | `0.5267` | `0.4262` | `0.5854` | `26 / 36 / 34` | `62` |
+| `ridge_pca_component_band3_mask080` | `0.50753976424` | `0.5267` | `0.4237` | `0.5854` | `25 / 33 / 35` | `58` |
+| `ridge_pca_ridge_mask050` | `0.45346459844` | `0.5267` | `0.2435` | `0.5854` | `14 / 41 / 46` | `55` |
+| `ridge_horiz_ridge_mask080` | `0.45069139045` | `0.5267` | `0.2342` | `0.5854` | `13 / 38 / 47` | `51` |
+| `ridge_pca_ridge_mask080` | `0.44097157889` | `0.5267` | `0.2018` | `0.5854` | `11 / 38 / 49` | `49` |
+
+판단:
+
+- This is negative evidence.
+- The best ridge variant only moves stop-line F1 from `0.4483` to `0.4538` (`+0.0055`) and adds FP (`30 -> 32`) for one extra TP.
+- It is below PCA val128 reference `0.5133`, angle-mask production `0.5085`, task-head merge `0.4918`, delayed validator replay `0.4793`, lane-context `0.4696`, and line-support `0.4651`.
+- Pure ridge-only extents are especially bad (`0.2018` to `0.2435`), so the predicted mask medial line does not carry enough stable endpoint/instance information by itself.
+- There is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat distance-transform ridge/medial readout-only as a stop-line production fix.
+- Do not treat the tiny exact val128 baseline gain as a new gate; it is below all meaningful stop-line references.
+- Do not combine ridge with score/context filters unless a separate premise audit shows a new signal that is not the same component-mask readout family.
+
+다음:
+
+- Stop-line is still blocked by candidate generation/readout, but simple mask geometry extraction is not enough.
+- The next useful move is either a genuinely learned candidate-instance contract not tied to current top-k/map-mixing families, or returning to lane instance stability with explicit stop-line/crosswalk retention checks.
+
+## 79. 2026-05-12 Lane row-scan tangent component: component boundary loses too many TP
+
+맥락:
+
+- The current best lane replay is `row_scan_tangent_link`, but it scans the whole centerline binary globally. That can bridge disconnected pieces and creates an over-link risk.
+- This probe asked a narrower read-only vectorizer question: if tangent row-scan is limited to connected components, does it remove enough over-link FP without losing too much lane recall?
+- This does not change model weights, training targets, stop-line decode, crosswalk decode, or production defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-component-tangent`
+- Added `row_scan_tangent_component` / alias support to `LaneSegFirstVectorizerConfig.track_mode`.
+- Added probe experiment `core_centerline_refine_row_scan_tangent_component` to `tools/run_pv26_lane60_probe.py`.
+- Added a unit test that proves `row_scan_tangent` bridges a vertical gap while `row_scan_tangent_component` keeps the two connected components separate.
+
+실행:
+
+- unit: `python3 -m pytest -q test/test_lane_segfirst_vectorizer.py`
+- compile: `python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/run_pv26_lane60_probe.py`
+- smoke: same exact command with `--max-val-batches 2` and a temporary output directory; the temporary output was removed after runtime verification.
+- exact: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --lane60-experiment core_centerline_refine_row_scan_tangent_component --preset default --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_component_val128_epoch2`
+- exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_component_val128_epoch2/summary.json`
+- The temporary smoke output was removed. The auto-downloaded worktree `yolo26s.pt` and generated `__pycache__` folders were moved under `runs/removable/lane_row_scan_component_tangent_worktree_artifacts_20260512/` instead of being deleted.
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| baseline exact reference | `0.6088677363` | `0.5267` | `0.4483` | `0.5854` | - | `26 / 30 / 34` | `48 / 35 / 33` |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` | `26 / 30 / 34` | `48 / 35 / 33` |
+| tangent component exact val128 | `0.6106257252` | `0.5305` | `0.4483` | `0.5854` | `1030 / 463 / 1360` | `26 / 30 / 34` | `48 / 35 / 33` |
+
+판단:
+
+- This is negative evidence.
+- Component-limited tangent row-scan slightly improves lane F1 over the baseline reference, but it loses too much TP compared with tangent-link (`1121 -> 1030`) while reducing FP only `469 -> 463`.
+- Stop-line and crosswalk are unchanged, so the all-task F1 gate still fails.
+- Because exact val128 is far below the tangent-link lane reference, there is no broader-val512 expansion.
+
+하지 말 것:
+
+- Do not repeat component-limited tangent row-scan as a lane over-link fix.
+- Do not tune this by component size/gap/threshold sweeps; that would be the same readout family and starts below the existing tangent-link reference.
+
+다음:
+
+- Lane-side next work must change predicted centerline evidence or a training-side instance contract, not just constrain row-scan connectivity.
+- Stop-line remains the larger blocker; if returning there, avoid current top-k validator/context/filter/readout families and change candidate generation/readout contract itself.
+
+## 80. 2026-05-12 Crosswalk broader shape sweep: postprocess-only still misses 0.6
+
+맥락:
+
+- Crosswalk is the smallest remaining task gap, but the exact val128 `cross_mask=0.40`, `cross_area=32` candidate failed broader-val512.
+- This probe asked whether broader-val512 has any crosswalk-only object/mask/component-area/polygon-area/aspect/top-k postprocess setting that can reach F1 `0.60`, without changing lane or stop-line thresholds.
+- This is read-only. It does not change model weights, labels, lane decode, or stop-line decode.
+
+구현:
+
+- branch: `exp/lane-family-f1/crosswalk-broader-shape-sweep`
+- Reused existing `tools/probe_pv26_lane60_postprocess_thresholds.py`.
+- Evaluated `64` crosswalk-only variants: object threshold, mask threshold, component area, polygon area, bbox aspect, max components, and area/top-k combinations.
+
+실행:
+
+- broader sweep: `python3 tools/probe_pv26_lane60_postprocess_thresholds.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --lane60-experiment core_centerline_refine_cross_retain --phase-index 4 --max-val-batches 512 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --variants <64 crosswalk-only variants> --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_broader_shape_sweep_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_broader_shape_sweep_val512_epoch2/summary.json`
+- Worktree symlinks and generated `__pycache__` folders were moved under `runs/removable/crosswalk_broader_shape_sweep_worktree_artifacts_20260512/`.
+
+결과:
+
+| Variant | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Cross P/R | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `baseline` | `0.5943` | `0.5101` | `0.4083` | `0.5854` | - | - |
+| `cross_mask_0.70` | `0.5970434363` | `0.5101` | `0.4083` | `0.5887` | `0.6635 / 0.5291` | `209 / 106 / 186` |
+| `cross_aspect_1.5` | `0.5967210907` | `0.5101` | `0.4083` | `0.5939` | `0.5698 / 0.6203` | `245 / 185 / 150` |
+| `cross_aspect_2.0` | `0.5964446010` | `0.5101` | `0.4083` | `0.5960` | `0.5872 / 0.6051` | `239 / 168 / 156` |
+| `cross_area_40` | `0.5946824309` | `0.5101` | `0.4083` | `0.5931` | `0.7210 / 0.5038` | `199 / 77 / 196` |
+
+판단:
+
+- This is negative evidence for postprocess-only crosswalk rescue.
+- `0/64` variants reached broader-val512 crosswalk F1 `>=0.60`.
+- The best crosswalk F1 is `0.5960`, still below the target, and lane/stop-line remain unchanged below target.
+- Because the broader target fails even under a wider crosswalk-only shape sweep, there is no default/export promotion.
+
+하지 말 것:
+
+- Do not repeat crosswalk object/mask/component-area/polygon-area/aspect/top-k threshold sweeps as a postprocess-only success path.
+- Do not use exact val128 crosswalk `0.6027` as a default/export argument without broader success.
+
+다음:
+
+- Crosswalk is still close, but simple shape filtering is exhausted.
+- The active path should return to stop-line first and lane second. Crosswalk should only be reopened with training-side retention evidence or a representation-aware decode contract.
+
+## 81. 2026-05-12 Stop-line candidate gap audit: denser pool helps oracle only
+
+맥락:
+
+- Gate 2 stop-line evidence said GT-near local proposal signal exists, but the existing `min_gap=10` top20 candidate pool only gave oracle-positive stop-line F1 `0.6517`.
+- This read-only probe asked whether the top-k NMS gap itself was hiding valid candidates: use the same checkpoint and same mask-extent readout, but decode `gap6/top20` and `gap4/top50` pools in addition to the original `gap10/top20`.
+- This does not change model weights, labels, training targets, or deployment defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-gap-audit`
+- `tools/probe_pv26_stopline_candidate_pool.py` now carries `CandidateVariant.min_gap`.
+- `_decode_candidates()` accepts `min_gap` and records `proposal_min_gap` in candidate feature rows.
+- The probe decodes one candidate pool per `(source, top_k, min_gap)` generation key, so legacy variants still use the original `gap10/top20` behavior while new variants use their own denser pools.
+- Added six variants: `gap6_max_top20_score_s080`, `gap6_max_top20_longest`, `gap6_oracle_max_top20_positive`, `gap4_max_top50_score_s080`, `gap4_max_top50_longest`, `gap4_oracle_max_top50_positive`.
+
+실행:
+
+- compile: `python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py`
+- smoke: same command with `--max-val-batches 4` and a temporary output directory, removed after runtime verification.
+- broader replay: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --max-val-batches 512 --validation-epoch 2 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_gap_audit_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_candidate_gap_audit_val512_epoch2/summary.json`
+
+결과:
+
+| Variant | Stop-line F1 | Stop P/R | Stop TP/FP/FN | Pred count | Objective proxy |
+| --- | ---: | ---: | --- | ---: | ---: |
+| baseline | `0.4083` | `0.4689 / 0.3616` | `98 / 111 / 173` | `209` | `0.4946` |
+| `max_top10_score_s080` | `0.4371` | `0.4953 / 0.3911` | `106 / 108 / 165` | `214` | `0.5033` |
+| `oracle_max_top20_positive` | `0.6517` | `1.0000 / 0.4834` | `131 / 0 / 140` | `131` | `0.5676` |
+| `gap6_max_top20_score_s080` | `0.4371` | `0.4953 / 0.3911` | `106 / 108 / 165` | `214` | `0.5033` |
+| `gap6_oracle_max_top20_positive` | `0.6683` | `1.0000 / 0.5018` | `136 / 0 / 135` | `136` | `0.5726` |
+| `gap4_max_top50_score_s080` | `0.4371` | `0.4953 / 0.3911` | `106 / 108 / 165` | `214` | `0.5033` |
+| `gap4_oracle_max_top50_positive` | `0.6877` | `1.0000 / 0.5240` | `142 / 0 / 129` | `142` | `0.5784` |
+
+판단:
+
+- This is partial evidence for candidate generation headroom, but negative evidence for gap/top-k-only production.
+- Smaller candidate NMS gap plus larger top-k finds more oracle-selectable valid segments: oracle TP increases `131 -> 142`.
+- The production score-threshold variants do not improve at all: `gap6` and `gap4` both remain `0.4371`, exactly matching the old `max_top10_score_s080`.
+- The broader production stop-line reference is still PCA `0.4699`, so the denser candidate pool is not a deployment/default candidate.
+- The useful next question is not "more top-k"; it is how to select from a denser candidate set without GT. That likely requires a task-level selector/readout contract, not another score/length/filter sweep.
+
+하지 말 것:
+
+- Do not repeat candidate gap/top-k-only widening as a production fix.
+- Do not cite oracle-positive gap4/top50 as achieved model performance; it uses GT selection.
+- Do not combine this with score/length/context thresholds unless the selector contract changes materially.
+
+다음:
+
+- If stop-line continues, use the denser candidate evidence only as a premise for a task-aware selector/readout contract.
+- Otherwise return to Gate 3 lane instance stability while preserving stop-line/crosswalk retention.
+
+## 82. 2026-05-12 Stop-line gap4 rich-selector replay: denser candidates still miss PCA
+
+맥락:
+
+- Section 81 showed that denser `gap4/top50` candidates raise oracle-positive stop-line headroom to F1 `0.6877`, TP/FP/FN `142 / 0 / 129`.
+- The production `gap4_max_top50_score_s080` variant stayed at F1 `0.4371`, exactly matching the old score-threshold result.
+- This follow-up asked whether the existing held-out rich-validator replay can select from the denser pool without GT. It is still read-only and does not change model weights, training targets, labels, or deployment defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-gap4-rich-selector-audit`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds `--rich-validator-min-gap`, defaulting to the legacy `10.0`.
+- When `--rich-validator-replay` is enabled, the replay candidate pool now uses `(source=max, top_k=rich_validator_top_k, min_gap=rich_validator_min_gap)`.
+- `summary.json` records the rich replay generation key so the held-out selector result is tied to the candidate pool that produced it.
+
+실행:
+
+- compile: `python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py`
+- smoke: same command with `--max-val-batches 4`, `--rich-validator-top-k 50`, and `--rich-validator-min-gap 4.0`; temporary output was removed after verifying the code path.
+- broader replay: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --max-val-batches 512 --validation-epoch 2 --device cuda:0 --rich-validator-replay --rich-validator-top-k 50 --rich-validator-min-gap 4.0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_rich_selector_replay_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_rich_selector_replay_val512_epoch2/summary.json`
+
+결과:
+
+Rich replay generation key: `source=max`, `top_k=50`, `min_gap=4.0`.
+
+| Split | Variant | Stop-line F1 | Stop P/R | Stop TP/FP/FN | Pred count | Threshold | Objective proxy |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |
+| train | baseline | `0.4269` | `0.4909 / 0.3776` | `54 / 56 / 89` | `110` | - | `0.5028` |
+| heldout | baseline | `0.3877` | `0.4444 / 0.3438` | `44 / 55 / 84` | `99` | - | `0.4857` |
+| heldout | `rich_logistic_task_threshold` | `0.4190` | `0.5366 / 0.3438` | `44 / 38 / 84` | `82` | `0.7196` | `0.4951` |
+| heldout | `rich_logistic_row_threshold` | `0.4298` | `0.4900 / 0.3828` | `49 / 51 / 79` | `100` | `0.4789` | `0.4984` |
+| train | `selector_r4_max_task_threshold` | `0.4711` | `0.5758 / 0.3986` | `57 / 42 / 86` | `99` | `0.9993` | `0.5161` |
+| heldout | `selector_r4_max_task_threshold` | `0.4537` | `0.5568 / 0.3828` | `49 / 39 / 79` | `88` | `0.9993` | `0.5055` |
+
+Reference rows from the same run:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred count | Objective proxy |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.4083` | `98 / 111 / 173` | `209` | `0.4946` |
+| `max_top10_score_s080` | `0.4371` | `106 / 108 / 165` | `214` | `0.5033` |
+| `gap4_max_top50_score_s080` | `0.4371` | `106 / 108 / 165` | `214` | `0.5033` |
+| `gap4_oracle_max_top50_positive` | `0.6877` | `142 / 0 / 129` | `142` | `0.5784` |
+
+판단:
+
+- This is weak positive evidence for richer selector signal on denser candidates, but it is not a gate pass.
+- `selector_r4_max` improves the held-out task replay from prior gap10/top20 `0.4259` to gap4/top50 `0.4537`, and it improves over the same held-out baseline `0.3877`.
+- The result still misses the broader PCA reference `0.4699` and remains far below stop-line F1 `0.60`.
+- The best held-out row is still a validation-half-trained CSV threshold replay, not a production decoder or model-side contract.
+
+하지 말 것:
+
+- Do not promote gap4/top50 rich-selector threshold replay to default decode.
+- Do not tune more CSV thresholds on the same replay as a stop-line success path.
+- Do not cite gap4 oracle-positive F1 `0.6877` as achieved model performance.
+
+다음:
+
+- If stop-line continues, the next useful axis must turn denser candidate evidence into a real task-level selector/readout contract, not another held-out CSV threshold.
+- Otherwise return to Gate 3 lane instance stability while keeping stop-line/crosswalk retention gates explicit.
+
+## 83. 2026-05-12 Composite postprocess lower-bound: objective rises, task F1 still fails
+
+맥락:
+
+- The active target is not `phase_objective >= 0.60`; it is broader-val lane / stop-line / crosswalk F1 all `>= 0.60`.
+- Recent weak-positive pieces were separated: row-scan tangent lane replay, stop-line PCA-threshold reference, and crosswalk `cross_aspect_2.0`.
+- This read-only replay asked where the current composite postprocess lower-bound lands if those weak-positive pieces are evaluated together on the same checkpoint and same broader-val512 slice.
+
+구현:
+
+- branch: `exp/lane-family-f1/composite-postprocess-lower-bound`
+- `tools/evaluate_pv26_lane60_checkpoint.py` now accepts evaluator-only crosswalk postprocess overrides:
+  `--crosswalk-obj-threshold`, `--crosswalk-mask-binary-threshold`, `--crosswalk-min-component-pixels`, `--crosswalk-max-components`, `--crosswalk-min-polygon-area-px`, and `--crosswalk-min-bbox-aspect`.
+- This mirrors the existing evaluator-only stop-line overrides and does not change training config, labels, checkpoint weights, or deployment defaults.
+
+실행:
+
+- compile: `python3 -m py_compile tools/evaluate_pv26_lane60_checkpoint.py`
+- docs sync: `python3 -m pytest -q test/test_docs_sync.py`
+- diff check: `git diff --check`
+- smoke: same command with `--max-val-batches 4`, temporary output removed after verifying that stop-line and crosswalk overrides were present in `postprocess_config`.
+- broader replay: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 512 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --stop-line-mask-binary-threshold 0.80 --stop-line-min-instance-score 0.94 --crosswalk-min-bbox-aspect 2.0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/composite_postprocess_lower_bound_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/composite_postprocess_lower_bound_val512_epoch2/summary.json`
+
+결과:
+
+Postprocess overrides:
+
+- stop-line `mask=0.80`
+- stop-line `min_instance_score=0.94`
+- crosswalk `min_bbox_aspect=2.0`
+
+| Replay | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| baseline broader geometry filters | `0.5943` | `0.5101` | `0.4083` | `0.5854` | `3902 / 1920 / 5575` | `98 / 111 / 173` | `216 / 127 / 179` |
+| row-scan tangent lane replay | `0.6027` | `0.5407` | `0.4083` | `0.5854` | - | - | - |
+| composite lower-bound | `0.6086` | `0.5407` | `0.4235` | `0.5960` | `4252 / 2000 / 5225` | `101 / 105 / 170` | `239 / 168 / 156` |
+
+판단:
+
+- This raises the objective-only number, but it is still a failure against the actual all-task target.
+- Crosswalk is close (`0.5960`) but remains below `0.60`.
+- Lane remains below `0.60` even with row-scan tangent (`0.5407`).
+- Stop-line remains the main blocker. The stop-line threshold override gives `0.4235` in the row-scan tangent composite, far below the PCA-only broader reference `0.4699` and below the target.
+- Weak-positive postprocess pieces do not add up to the real goal; they mostly quantify remaining gaps.
+
+하지 말 것:
+
+- Do not call composite objective `0.6086` a lane-family success.
+- Do not promote row-scan tangent + stop PCA threshold + crosswalk aspect as deployment/default.
+- Do not spend another branch on combining known weak-positive postprocess knobs unless it changes the underlying stop-line or lane contract.
+
+다음:
+
+- Stop-line still needs a contract that recovers or selects valid segments under the lane-side replay instead of relying on PCA/threshold-only recovery.
+- Lane still needs instance-level centerline stability beyond tangent row-scan.
+- Crosswalk is close enough that it should be retained while the next stop-line or lane contract changes, not reopened as another threshold sweep.
+
+## 84. 2026-05-12 Stop-line gap4 candidate feature rank diagnostic: ranking is not the whole gate
+
+맥락:
+
+- The gap4/top50 candidate pool has oracle-positive headroom, but score/length production and held-out rich-selector replay still miss PCA and the 0.6 target.
+- The next stop-line question is whether the remaining failure is candidate-internal ranking or sample-level emit/no-emit gating.
+- This read-only diagnostic reuses the saved `candidate_features.csv` from the gap4 rich-selector replay. It uses oracle labels only for analysis and is not a production decoder.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-gap4-rank-diagnostic`
+- Added `tools/analyze_stopline_candidate_feature_ranking.py`.
+- The tool filters candidate rows by `(proposal_source=max, proposal_min_gap=4.0, proposal_rank<=50)`, groups them by validation sample, and ranks candidates by non-GT scalar/local-map features.
+- It writes `summary.json`, `feature_rank_summary.csv`, and `feature_rank_details.csv`.
+
+실행:
+
+- compile: `python3 -m py_compile tools/analyze_stopline_candidate_feature_ranking.py`
+- docs sync: `python3 -m pytest -q test/test_docs_sync.py`
+- diff check: `git diff --check`
+- diagnostic: `python3 tools/analyze_stopline_candidate_feature_ranking.py --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_rich_selector_replay_val512_epoch2/candidate_features.csv --proposal-source max --proposal-min-gap 4.0 --max-proposal-rank 50 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_candidate_feature_rank_diagnostic_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_candidate_feature_rank_diagnostic_val512_epoch2/summary.json`
+
+결과:
+
+- candidate rows after filtering: `9575`
+- samples with any decoded candidate: `369`
+- samples with at least one oracle-positive candidate: `142`
+- candidate-bearing samples with no oracle-positive candidate: `227`
+- oracle-positive candidate rows: `2889`
+
+| Feature | Positive-sample top1 hit | Positive-sample top3 hit | Positive-sample top10 hit | Mean best oracle rank | Top1 positive rate over all candidate samples |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `mask_r4_max` | `0.8169` | `0.8732` | `0.9296` | `2.9225` | `0.3144` |
+| `proposal_rank` | `0.7958` | `0.8873` | `0.9155` | `3.5634` | `0.3062` |
+| `score` | `0.7958` | `0.8873` | `0.9155` | `3.5634` | `0.3062` |
+| `selector_r4_max` | `0.7887` | `0.8521` | `0.9366` | `2.8662` | `0.3035` |
+| `center_r4_max` | `0.7606` | `0.8169` | `0.9296` | `3.0634` | `0.2927` |
+
+판단:
+
+- Inside samples that already contain an oracle-positive candidate, simple local-map features often rank that candidate very high.
+- The hard part is not only candidate-internal ordering. Among candidate-bearing samples, `227/369` have no oracle-positive candidate at all.
+- If a decoder emits one top-ranked candidate for every candidate-bearing sample, the all-sample top1 oracle-positive rate is only about `0.31`, even for the best feature.
+- Therefore the next stop-line contract needs a sample/candidate emission gate or confidence calibration that suppresses candidate-bearing negatives, not another ranking-only feature threshold.
+
+하지 말 것:
+
+- Do not treat positive-sample top1 rank `0.8169` as task F1.
+- Do not run another top-k ranking feature sweep without an emit/no-emit gate.
+- Do not cite oracle labels in this diagnostic as production evidence.
+
+다음:
+
+- A useful stop-line axis should train or decode a task-level candidate emission gate that sees negative candidate-bearing samples explicitly.
+- If that is not the next axis, return to lane instance stability while preserving stop-line/crosswalk retention.
+
+## 85. 2026-05-12 Stop-line gap4 sample gate audit: emit/no-emit is promising but still surrogate
+
+맥락:
+
+- Section 84 showed that positive samples often rank an oracle-positive candidate near the top, but many candidate-bearing samples are negative.
+- This read-only diagnostic asks whether a sample-level emit/no-emit gate can suppress negative candidate-bearing samples before emitting the top-ranked gap4/top50 candidate.
+- It reuses saved `candidate_features.csv` from the gap4 rich-selector replay and uses oracle labels only for analysis. It is not task F1 and not a production decoder.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-gap4-sample-gate-audit`
+- Added `tools/analyze_stopline_candidate_sample_gate.py`.
+- The tool filters candidate rows by `(proposal_source=max, proposal_min_gap=4.0, proposal_rank<=50)`, groups them by validation sample, aggregates max/mean/top5 feature summaries, trains a weighted logistic sample gate on the first half of batches, and evaluates on the held-out half.
+- It writes `sample_gate_rows.csv`, `sample_features.csv`, and `summary.json`.
+
+실행:
+
+- compile: `python3 -m py_compile tools/analyze_stopline_candidate_sample_gate.py`
+- diagnostic: `python3 tools/analyze_stopline_candidate_sample_gate.py --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_rich_selector_replay_val512_epoch2/candidate_features.csv --proposal-source max --proposal-min-gap 4.0 --max-proposal-rank 50 --rank-feature mask_r4_max --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_candidate_sample_gate_audit_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_candidate_sample_gate_audit_val512_epoch2/summary.json`
+
+결과:
+
+- split: train `182` candidate-bearing samples, held-out `187`.
+- threshold selected on train: `0.24711117624463913`.
+
+| Variant | Split | Sample F1 | Selection F1 | Selection TP/FP/FN | Predicted positive samples |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `emit_all_top_ranked` | train | `0.6054` | `0.4751` | `62 / 120 / 17` | `182` |
+| `emit_all_top_ranked` | heldout | `0.5040` | `0.4320` | `54 / 133 / 9` | `187` |
+| `sample_logistic_gate` | train | `0.8280` | `0.6559` | `61 / 46 / 18` | `107` |
+| `sample_logistic_gate` | heldout | `0.6585` | `0.5732` | `47 / 54 / 16` | `101` |
+
+판단:
+
+- The held-out gate improves surrogate selection F1 from `0.4320` to `0.5732` by suppressing many negative candidate-bearing samples.
+- This is the strongest evidence so far that the next stop-line issue is not only candidate-internal ranking; it is also emit/no-emit calibration at the sample or instance level.
+- However, the metric is an oracle-label surrogate over saved candidate rows. It is not evaluator task F1, does not output endpoint predictions, and does not prove a production decoder.
+
+하지 말 것:
+
+- Do not cite sample gate F1 `0.5732` as stop-line task F1.
+- Do not stop at more CSV surrogate thresholding.
+- Do not promote a logistic CSV sample gate as default without actual task replay or model-side integration.
+
+다음:
+
+- Convert the sample gate premise into an actual task replay in `tools/probe_pv26_stopline_candidate_pool.py`, including endpoint/raw metric output.
+- If replay is still below PCA/angle-mask references, switch to a model-side emit gate that explicitly trains on negative candidate-bearing samples, or return to lane instance stability with stop-line/crosswalk retention gates.
+
+## 86. 2026-05-12 Stop-line gap4 sample-gate task replay: surrogate does not transfer
+
+맥락:
+
+- Section 85 showed a strong held-out oracle-label surrogate signal: sample-level logistic gate selection F1 `0.5732`.
+- This follow-up tests the real question: if the same sample gate emits the top `mask_r4_max` gap4/top50 candidate, does evaluator stop-line task F1 improve on held-out validation?
+- This is read-only. It does not change model weights, labels, training config, or production defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-gap4-sample-gate-task-replay`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds `--sample-gate-replay`.
+- The replay trains a sample-level logistic gate on the first validation half, caches each sample's top-ranked candidate prediction, selects threshold on train task F1, and evaluates held-out task F1.
+- It writes `sample_gate_variants.csv`, `sample_gate_samples.csv`, and `summary.json` under the probe output directory.
+- A first val512 run was interrupted after writing partial `variants.csv` and `candidate_features.csv` because threshold search recomputed candidate dedupe for every threshold. The partial artifact was moved to `runs/removable/stopline_gap4_sample_gate_task_replay_partial_20260512/`, and the implementation now caches per-sample predictions before threshold search.
+
+실행:
+
+- compile: `python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py`
+- diff check: `git diff --check`
+- smoke: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 4 --validation-epoch 2 --device cuda:0 --sample-gate-replay --sample-gate-top-k 50 --sample-gate-min-gap 4.0 --sample-gate-rank-feature mask_r4_max --output-dir /tmp/stopline_gap4_sample_gate_task_replay_smoke`
+- val512 replay: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --preset default --phase-index 4 --max-val-batches 512 --validation-epoch 2 --device cuda:0 --sample-gate-replay --sample-gate-top-k 50 --sample-gate-min-gap 4.0 --sample-gate-rank-feature mask_r4_max --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_sample_gate_task_replay_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_sample_gate_task_replay_val512_epoch2/summary.json`
+
+결과:
+
+- split: train `1024` samples, held-out `1024` samples.
+- candidate-bearing samples: train `182`, held-out `187`.
+- selected task threshold: `0.2471111762446392`.
+
+| Split | Variant | Stop-line F1 | Stop TP/FP/FN | Pred stop-lines |
+| --- | --- | ---: | ---: | ---: |
+| train | baseline | `0.4269` | `54 / 56 / 89` | `110` |
+| train | `emit_all_top_ranked` | `0.3631` | `59 / 123 / 84` | `182` |
+| train | `sample_gate_task_threshold` | `0.4640` | `58 / 49 / 85` | `107` |
+| held-out | baseline | `0.3877` | `44 / 55 / 84` | `99` |
+| held-out | `emit_all_top_ranked` | `0.3175` | `50 / 137 / 78` | `187` |
+| held-out | `sample_gate_task_threshold` | `0.3843` | `44 / 57 / 84` | `101` |
+
+판단:
+
+- Train improves from `0.4269` to `0.4640`, but held-out gets slightly worse: `0.3877 -> 0.3843`.
+- The full val512 split-sum for the sample gate is TP/FP/FN `102 / 106 / 169`, stop-line F1 `0.4259`, still below the PCA broader reference `0.4699` and far below target `0.60`.
+- The surrogate gain was real for oracle-label selection bookkeeping, but it does not transfer to actual task F1 under this CSV logistic sample-gate replay.
+
+하지 말 것:
+
+- Do not cite train split gain as production evidence.
+- Do not repeat CSV logistic sample-gate threshold sweeps on the same features.
+- Do not treat surrogate selection F1 `0.5732` as a reason to bypass held-out task replay.
+
+다음:
+
+- Close CSV/post-hoc sample-gate replay as a production path.
+- If stop-line continues, it needs a model-side emit/select contract trained and validated under real task metrics, not another saved-CSV threshold replay.
+- Otherwise return to Gate 3 lane instance stability while keeping stop-line and crosswalk retention explicit.
+
+## 87. 2026-05-12 Stop-line model-side presence emit gate: implementation works, exact task F1 does not
+
+맥락:
+
+- Section 86 closed CSV/post-hoc sample-gate replay as a production path.
+- This follow-up moves the emit/no-emit premise into the model: train a sample-level stop-line presence logit and use it as an opt-in postprocess emission gate.
+- This is a single-axis stop-line experiment on top of the row-scan/tangent lane contract.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-presence-emit-gate`
+- `model/net/stopline_head_line.py` adds `stop_line_presence_logits`.
+- `model/engine/loss.py` adds opt-in `stopline_presence_aux_weight`; default is `0.0`.
+- `model/engine/postprocess.py` adds opt-in `stop_line_presence_threshold`; default is `0.0`, so existing decoding stays unchanged.
+- `tools/run_pv26_lane60_probe.py` adds `--dataset-root` so detached worktrees can run the canonical dataset without local dataset symlinks.
+- Probe preset: `core_centerline_refine_row_scan_tangent_stop_presence_emit_gate`, with `stopline_presence_aux_weight=0.5` and `stop_line_presence_threshold=0.35`.
+
+검증:
+
+- compile: `python3 -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/evaluate_pv26_lane60_checkpoint.py tools/run_pv26_lane60_probe.py`
+- tests: `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py test/test_pv26_postprocess.py test/test_docs_sync.py`
+- result: `100 passed, 264 warnings`
+- diff check: `git diff --check`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed with `stopline_presence_aux_weight=0.5` and `stop_line_presence_threshold=0.35` present in the run summary.
+
+실행:
+
+- command: `PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset> python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root "$PV26_DATASET_ROOT" --experiment core_centerline_refine_row_scan_tangent_stop_presence_emit_gate --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_presence_emit_gate_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_032303/phase_4/summary.json`
+- best checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_presence_emit_gate_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_032303/phase_4/checkpoints/best.pt`
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- |
+| tangent-link exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` | `26 / 30 / 34` |
+| presence emit gate epoch2 | `0.6102` | `0.5606` | `0.4112` | `0.5854` | `22 / 25 / 38` |
+
+Additional epoch2 counts:
+
+- lane TP/FP/FN: `1117 / 478 / 1273`
+- stop-line TP/FP/FN: `22 / 25 / 38`
+- crosswalk TP/FP/FN: `48 / 35 / 33`
+- task-best crosswalk reached `0.6790` at epoch1, but the phase-best checkpoint is selected by objective and still fails stop-line.
+
+판단:
+
+- The implementation path is valid: config parsing, head output, loss backprop, postprocess suppression, checkpoint handoff, smoke, and 2-epoch probe all run.
+- The exact task result is negative for the stop-line goal. Presence gating reduced FP slightly, but TP also fell (`26 -> 22`) and stop-line F1 dropped (`0.4483 -> 0.4112`).
+- Objective and lane also stayed below the tangent-link exact reference, so there is no reason to run broader-val512 for this axis.
+
+하지 말 것:
+
+- Do not extend `stopline_presence_aux_weight=0.5` / `stop_line_presence_threshold=0.35` to broader-val512 or longer runs.
+- Do not sweep presence threshold/loss weight as a standalone stop-line rescue.
+- Do not treat task-best crosswalk from this run as evidence for the all-task lane-family goal.
+
+다음:
+
+- Close presence-only model-side emit gating as a production path.
+- If stop-line continues, the next model-side selector must use richer candidate/geometry evidence than sample-level presence alone, and it must be judged by actual task F1.
+- Otherwise return to Gate 3 lane instance stability while explicitly preserving stop-line and crosswalk retention.
+
+## 88. 2026-05-12 Stop-line proposal-stat emit gate: denser presence evidence still drops stop-line F1
+
+맥락:
+
+- Section 87 showed that sample-level presence-only emit gating reduced false positives but lost more true positives, so exact stop-line F1 fell below the tangent-link reference.
+- This follow-up keeps the same model-side emit-gate contract but feeds the presence decision with dense proposal-map evidence: max/mean statistics from stop-line mask, center, selector, row, and x logits.
+- This is a single-axis stop-line experiment on top of the presence emit-gate infrastructure and the row-scan/tangent lane contract.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-proposal-stat-emit-gate`
+- `model/net/stopline_head_line.py` adds `_presence_map_stats()` and `presence_stat_head`.
+- `stop_line_presence_logits` is now `presence_head(selector_feat) + presence_stat_head(presence_stats)` for this branch.
+- `tools/run_pv26_lane60_probe.py` adds probe preset `core_centerline_refine_row_scan_tangent_stop_proposal_stat_emit_gate`.
+- The preset keeps `lane_segfirst_track_mode=row_scan_tangent`, `stopline_presence_aux_weight=0.5`, and `stop_line_presence_threshold=0.35`.
+
+검증:
+
+- compile: `python3 -m py_compile model/net/stopline_head_line.py tools/run_pv26_lane60_probe.py`
+- tests: `python3 -m pytest -q test/test_pv26_heads.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py test/test_pv26_postprocess.py`
+- result: `87 passed, 264 warnings`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed with `stopline_presence_aux_weight=0.5` and `stop_line_presence_threshold=0.35` present in the run summary.
+
+실행:
+
+- command: `PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset> python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root "$PV26_DATASET_ROOT" --experiment core_centerline_refine_row_scan_tangent_stop_proposal_stat_emit_gate --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_proposal_stat_emit_gate_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_034155/phase_4/summary.json`
+- best checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_proposal_stat_emit_gate_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_034155/phase_4/checkpoints/best.pt`
+
+결과:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- |
+| tangent-link exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` | `26 / 30 / 34` |
+| presence emit gate epoch2 | `0.6102` | `0.5606` | `0.4112` | `0.5854` | `22 / 25 / 38` |
+| proposal-stat emit gate epoch2 | `0.6120` | `0.5611` | `0.4074` | `0.5854` | `22 / 26 / 38` |
+
+Additional epoch2 counts:
+
+- lane TP/FP/FN: `1118 / 477 / 1272`
+- stop-line TP/FP/FN: `22 / 26 / 38`
+- crosswalk TP/FP/FN: `48 / 35 / 33`
+- task-best crosswalk reached `0.6790` at epoch1, but the phase-best checkpoint is selected by objective and still fails stop-line.
+
+판단:
+
+- Dense proposal-map statistics did not fix the model-side emit gate. Stop-line TP stayed at `22`, FP rose from the presence-only `25` to `26`, and stop-line F1 fell slightly further (`0.4112 -> 0.4074`).
+- Lane/objective are also still below the tangent-link exact reference, and crosswalk at the selected checkpoint is unchanged.
+- This is a valid negative result for the richer presence-stat family. There is no reason to run broader-val512 or a longer run for this axis.
+
+하지 말 것:
+
+- Do not extend `core_centerline_refine_row_scan_tangent_stop_proposal_stat_emit_gate` to broader-val512 or longer runs.
+- Do not sweep dense proposal-stat presence heads, presence thresholds, or presence auxiliary weights as a standalone stop-line rescue.
+- Do not treat epoch1 task-best crosswalk from this run as evidence for the all-task lane-family goal.
+
+다음:
+
+- Close proposal-stat model-side emit gating as a production path.
+- If stop-line continues, the next axis must change the candidate generation/readout or model-side select contract itself, not add more sample-level presence evidence on top of the current center/selector maps.
+- Otherwise return to Gate 3 lane predicted-centerline instance stability while explicitly preserving stop-line and crosswalk retention.
+
+## 89. 2026-05-12 Stop-line gap4 baseline rescue replay: preserving baseline still misses PCA
+
+맥락:
+
+- Section 86 showed that gap4/top50 sample-gate task replay overfit the train split and failed on held-out task F1.
+- That replay replaced stop-line predictions with the gated top candidate. This follow-up asks a narrower read-only postprocess question: if the sample gate only rescues baseline predictions by fallback/append, does the headroom transfer without losing baseline retention?
+- This is still not a model-side contract and not a production decoder. It is a bounded replay to close the baseline-preserving variant of the same sample-gate family.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-gap4-baseline-rescue-replay`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds `--dataset-root` so detached worktrees can run the canonical dataset without local dataset symlinks.
+- The same tool adds opt-in `--sample-gate-rescue-replay`.
+- Rescue modes:
+  - `baseline_or_gate`: keep baseline stop-line if it exists, otherwise emit the gated top candidate.
+  - `gate_or_baseline`: emit the gated top candidate when the gate passes, otherwise keep baseline.
+  - `baseline_plus_gate_max2`: append the gated top candidate to baseline and dedupe, allowing up to two stop-lines.
+
+검증:
+
+- compile: `python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py`
+- diff check: `git diff --check`
+- smoke: val4 replay completed with `--sample-gate-rescue-replay` and wrote `sample_gate_variants.csv`.
+
+실행:
+
+- command: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --preset default --phase-index 4 --max-val-batches 512 --validation-epoch 2 --device cuda:0 --sample-gate-rescue-replay --sample-gate-top-k 50 --sample-gate-min-gap 4.0 --sample-gate-rank-feature mask_r4_max --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_baseline_rescue_replay_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_baseline_rescue_replay_val512_epoch2/{summary.json,sample_gate_variants.csv,candidate_features.csv}`
+
+결과:
+
+| Variant | Split basis | Stop-line F1 | Stop TP/FP/FN | 판단 |
+| --- | --- | ---: | ---: | --- |
+| baseline | full val512 | `0.4083` | `98 / 111 / 173` | reference |
+| sample-gate actual task replay | full val512 | `0.4259` | `102 / 106 / 169` | prior weak result, below PCA |
+| `baseline_or_gate` | full val512 | `0.4165` | `106 / 132 / 165` | rescue best, below prior replay |
+| `gate_or_baseline` | full val512 | `0.4126` | `105 / 133 / 166` | below prior replay |
+| `baseline_plus_gate_max2` | full val512 | `0.4141` | `100 / 112 / 171` | below prior replay |
+| `max_top10_score_s080` / `gap4_max_top50_score_s080` | full val512 | `0.4371` | `106 / 108 / 165` | production score threshold reference |
+| PCA broader reference | full val512 | `0.4699` | `113 / 97 / 158` | still stronger weak-positive |
+
+Held-out details from `sample_gate_variants.csv`:
+
+- held-out baseline: lane/stop/cross F1 `0.5125 / 0.3877 / 0.5659`, stop TP/FP/FN `44 / 55 / 84`.
+- held-out `baseline_or_gate`: `0.5125 / 0.3868 / 0.5659`, stop TP/FP/FN `47 / 68 / 81`.
+- held-out `gate_or_baseline`: `0.5125 / 0.3786 / 0.5659`, stop TP/FP/FN `46 / 69 / 82`.
+- held-out `baseline_plus_gate_max2`: `0.5125 / 0.3947 / 0.5659`, stop TP/FP/FN `45 / 55 / 83`.
+
+판단:
+
+- Baseline-preserving rescue avoids the most obvious failure mode of replacing every sample, but it still does not transfer the oracle/surrogate headroom to task F1.
+- The best full-val512 rescue F1 `0.4165` is only slightly above baseline `0.4083` and below the prior sample-gate actual replay `0.4259`.
+- It is also below score-threshold production `0.4371` and the PCA broader reference `0.4699`, so there is no reason to promote or broaden this family.
+
+하지 말 것:
+
+- Do not sweep fallback/append thresholds for this sample-gate rescue family.
+- Do not cite the full-val512 rescue improvement over baseline as stop-line progress; it is weaker than already closed references.
+- Do not treat baseline retention as enough evidence when task F1 remains below PCA and the 0.6 target.
+
+다음:
+
+- Close gap4/top50 sample-gate baseline rescue as a production path.
+- Stop-line should either change candidate generation/readout or model-side select contract more fundamentally, or pause while Gate 3 lane instance stability is pursued with explicit stop-line/crosswalk retention checks.
+
+## 90. 2026-05-12 Lane row-scan tangent no-augmentation probe: runtime axis does not rescue retention
+
+맥락:
+
+- Section 89 closed the latest stop-line sample-gate rescue family.
+- Many lane-side row-scan/tangent readout, loss, sampler, and retention variants are already closed.
+- This follow-up isolates one remaining preprocessing/runtime question: does stage-4 train augmentation itself perturb the small roadmark tasks when the `row_scan_tangent` lane contract is kept fixed?
+- This is a single-axis probe. It does not change the vectorizer, loss weights, stop-line readout, or crosswalk postprocess.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-tangent-no-aug`
+- `tools/run_pv26_lane60_probe.py` adds probe preset `core_centerline_refine_row_scan_tangent_no_aug`.
+- The preset keeps `lane_segfirst_track_mode=row_scan_tangent`, keeps the tangent-link loss/postprocess contract, and adds `train_defaults_overrides` with `train_augmentation=False`, `train_augmentation_seed=None`.
+- `_lane60_scenario()` now applies optional experiment-level train-default overrides before building the phase scenario.
+- `test/test_run_pv26_lane60_probe.py` verifies that the no-augmentation preset propagates into both `scenario.train_defaults` and the phase train config.
+
+검증:
+
+- compile: `python3 -m py_compile tools/run_pv26_lane60_probe.py`
+- tests: `python3 -m pytest -q test/test_run_pv26_lane60_probe.py test/test_run_pv26_train.py`
+- result: `51 passed, 264 warnings`
+- final docs-sync verification: `python3 -m pytest -q test/test_run_pv26_lane60_probe.py test/test_run_pv26_train.py test/test_docs_sync.py`
+- final result: `64 passed, 264 warnings`
+- smoke: train8/val4, 1 epoch on `cuda:0`, completed and confirmed `train_augmentation=false`, `train_augmentation_seed=null`, and `lane_segfirst_track_mode=row_scan_tangent` in the run summary.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_no_aug --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_no_aug_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_044501/phase_4/summary.json`
+- best checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_no_aug_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_044501/phase_4/checkpoints/best.pt`
+
+결과:
+
+| Run | Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| tangent-link exact reference | 2 | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` | `26 / 30 / 34` | `48 / 35 / 33` |
+| no-aug exact | 1 | `0.5901213504` | `0.5373` | `0.2667` | `0.6788` | `1044 / 507 / 1291` | `14 / 36 / 41` | `56 / 26 / 27` |
+| no-aug exact | 2 | `0.6093231419` | `0.5595` | `0.4298` | `0.5476` | `1109 / 465 / 1281` | `26 / 35 / 34` | `46 / 41 / 35` |
+
+Additional config evidence:
+
+- `phase_train_config.train_augmentation=false`
+- `phase_train_config.train_augmentation_seed=null`
+- `lane_segfirst_track_mode=row_scan_tangent`
+
+판단:
+
+- Disabling stage-4 train augmentation is not a rescue path. The selected epoch2 checkpoint is below the tangent-link exact reference on objective, lane F1, stop-line F1, and crosswalk F1.
+- Epoch1 crosswalk task-best `0.6788` is not a joint checkpoint signal; stop-line collapses to `0.2667` there.
+- Epoch2 recovers stop-line somewhat, but it still trails tangent-link (`0.4298 < 0.4483`) and crosswalk retention is worse (`0.5476 < 0.5854`).
+- There is no reason to run broader-val512 or longer runs for this axis.
+
+하지 말 것:
+
+- Do not repeat augmentation-off as a lane/stop-line/crosswalk retention fix.
+- Do not cite the epoch1 crosswalk task-best as all-task progress.
+- Do not broaden this exact run to val512 unless a separate new contract changes the actual task behavior.
+
+다음:
+
+- Close train-augmentation-off as a preprocessing/runtime rescue path.
+- Continue only with a new one-axis contract that changes predicted lane instance evidence or stop-line candidate selection/readout more fundamentally while preserving crosswalk retention.
+
+## 91. 2026-05-12 Crosswalk hull decode replay: broader crosswalk gap closes, all-task gate still fails
+
+맥락:
+
+- Section 80 closed simple broader crosswalk object/mask/component-area/polygon-area/aspect/top-k threshold sweeps: best broader crosswalk F1 was `0.5960`, still below `0.60`.
+- This follow-up isolates one representation question: does forcing every predicted crosswalk mask component into a minimum-area rectangle lose useful shape evidence?
+- This is a single-axis postprocess/decode probe. It does not change the checkpoint, training, lane vectorizer, or stop-line readout except for the final composite replay that combines already-known weak-positive stop-line thresholds.
+
+구현:
+
+- branch: `exp/lane-family-f1/crosswalk-hull-decode`
+- `model/engine/postprocess.py` adds opt-in `PV26PostprocessConfig.crosswalk_polygon_mode`.
+- Default behavior remains `rect`; `hull` uses the predicted component convex hull before fixed-count polygon sampling.
+- `tools/evaluate_pv26_lane60_checkpoint.py` adds `--crosswalk-polygon-mode {rect,hull}`.
+- `tools/probe_pv26_lane60_postprocess_thresholds.py` adds `--dataset-root` for detached worktrees and crosswalk hull variants.
+- `test/test_pv26_postprocess.py` verifies that hull mode changes the decoded polygon shape on an L-shaped component.
+
+검증:
+
+- compile: `python3 -m py_compile model/engine/postprocess.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane60_postprocess_thresholds.py`
+- tests: `python3 -m pytest -q test/test_pv26_postprocess.py`
+- result: `7 passed`
+- broader replay artifacts were moved under the source run `analysis_exports/` so durable docs do not depend on temporary paths.
+
+실행:
+
+- exact val128 threshold probe: `python3 tools/probe_pv26_lane60_postprocess_thresholds.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --variants baseline,cross_aspect_2.0,cross_polygon_hull,cross_polygon_hull__aspect_2.0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_hull_decode_val128_epoch2`
+- broader val512 crosswalk replay: `python3 tools/probe_pv26_lane60_postprocess_thresholds.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 512 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --variants baseline,cross_polygon_hull --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_hull_decode_val512_epoch2`
+- composite replay: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 512 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --stop-line-mask-binary-threshold 0.80 --stop-line-min-instance-score 0.94 --crosswalk-polygon-mode hull --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/crosswalk_hull_stop_pca_composite_val512_epoch2`
+
+결과:
+
+| Replay | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- |
+| exact baseline | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` | `48 / 35 / 33` |
+| exact `cross_polygon_hull` | `0.6246557098` | `0.5633` | `0.4483` | `0.5988` | `50 / 36 / 31` |
+| broader baseline | `0.6027206181` | `0.5407` | `0.4083` | `0.5854` | `216 / 127 / 179` |
+| broader `cross_polygon_hull` | `0.6127256636` | `0.5407` | `0.4083` | `0.6187` | `232 / 123 / 163` |
+| broader hull + stop thresholds | `0.6165299146` | `0.5407` | `0.4235` | `0.6187` | `232 / 123 / 163` |
+
+Artifact:
+
+- `analysis_exports/crosswalk_hull_decode_val128_epoch2/{summary.json,thresholds.csv}`
+- `analysis_exports/crosswalk_hull_decode_val512_epoch2/{summary.json,thresholds.csv}`
+- `analysis_exports/crosswalk_hull_stop_pca_composite_val512_epoch2/{summary.json,metrics.csv}`
+
+판단:
+
+- This is a real broader crosswalk partial-positive. Hull decode changes the representation rather than only tightening thresholds, and broader-val512 crosswalk F1 moves `0.5854 -> 0.6187`.
+- It does not solve the lane-family target. With the best current composite, lane and stop-line remain `0.5407 / 0.4235`, below the required `0.60`.
+- The result should be carried forward as a crosswalk-retention piece while pursuing stop-line/lane, not promoted as a final/default all-task solution by itself.
+
+하지 말 것:
+
+- Do not call `crosswalk_polygon_mode=hull` an all-task success.
+- Do not repeat simple hull/aspect/threshold sweeps as the next crosswalk path unless the representation contract changes again.
+- Do not use the higher composite objective `0.6165` as a replacement for the task-F1 gate.
+
+다음:
+
+- Treat broader crosswalk retention as currently closed under opt-in hull decode.
+- Continue on the remaining blockers: stop-line first, lane second.
+- If stop-line/lane work changes the crosswalk head or postprocess, keep `crosswalk_polygon_mode=hull` in the retention replay to verify the crosswalk pass survives.
+
+## 92. 2026-05-12 Stop-line selector feature-patch validator: raw selector embeddings do not transfer
+
+맥락:
+
+- Gap4/top50 rich-selector replay showed that scalar local map features move some row signal into held-out task F1, but still miss PCA and the 0.6 target.
+- This follow-up asks a narrower diagnostic question: does the dense selector feature embedding contain stronger candidate-validity evidence than exported center/selector/mask scalar windows?
+- This is a read-only validator audit on the existing checkpoint. It does not change training, labels, checkpoint weights, or production postprocess defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-feature-patch-validator-audit`
+- `model/net/stopline_head_line.py` now exposes opt-in diagnostic output `stop_line_selector_feature`.
+- `tools/probe_pv26_stopline_candidate_pool.py` adds `--feature-patch-validator-replay` and `--feature-patch-radius`.
+- The replay appends 128-channel local patch means at both proposal and decoded centers, for 256 additional selector embedding features and 289 total validator features.
+- The rich-validator replay was also made tractable for top-1 stop-line selection: final validator rows reuse stop-line fast summaries instead of recomputing full lane-family metrics, and `max_components=1` skips redundant candidate dedupe after sorting.
+
+검증:
+
+- compile: `python3 -m py_compile model/net/stopline_head_line.py tools/probe_pv26_stopline_candidate_pool.py`
+- tests: `python3 -m pytest -q test/test_pv26_threshold_probe.py`
+- result: `9 passed`
+- smoke: val4 `--feature-patch-validator-replay` completed and confirmed 289 replay features.
+
+실행:
+
+- command: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --preset default --phase-index 4 --max-val-batches 512 --validation-epoch 2 --device cuda:0 --feature-patch-validator-replay --rich-validator-top-k 50 --rich-validator-min-gap 4.0 --rich-validator-steps 200 --rich-validator-threshold-grid 21 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_feature_patch_validator_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_feature_patch_validator_val512_epoch2/{summary.json,feature_patch_validator_variants.csv,candidate_features.csv}`
+
+결과:
+
+- candidate rows: `15629`
+- oracle-positive candidate rows: `4683`
+- train split: `1024` samples, `4932` top50 train candidates, `1598` positives.
+- held-out split: `1024` samples.
+
+| Split | Variant | Stop-line F1 | Stop TP/FP/FN | Threshold | 판단 |
+| --- | --- | ---: | ---: | ---: | --- |
+| train | baseline | `0.4269` | `54 / 56 / 89` |  | reference |
+| held-out | baseline | `0.3877` | `44 / 55 / 84` |  | reference |
+| train | `rich_logistic_task_threshold` | `0.4691` | `57 / 43 / 86` | `0.659217` | train gain |
+| held-out | `rich_logistic_task_threshold` | `0.3982` | `44 / 49 / 84` | `0.659217` | weak, below selector/PCA |
+| held-out | `rich_logistic_row_threshold` | `0.3947` | `45 / 55 / 83` | `0.575161` | weak |
+| held-out | `selector_r4_max_task_threshold` | `0.4558` | `49 / 38 / 79` | `0.999376` | still stronger than feature-patch logistic |
+| full val512 | PCA broader reference | `0.4699` | `113 / 97 / 158` |  | still stronger weak-positive |
+
+판단:
+
+- Selector feature patches did not improve the task-level validator story. Held-out feature-patch logistic only moved baseline `0.3877 -> 0.3982`.
+- The older scalar `selector_r4_max` replay remains stronger on the same split (`0.4558`) and still misses PCA (`0.4699`) plus the 0.6 target.
+- The dense selector embedding may contain information, but this offline logistic replay does not justify a new model-side MLP/feature-patch validator run by itself.
+- The code changes are useful as diagnostic plumbing and replay speedups, not as a production decoder.
+
+하지 말 것:
+
+- Do not treat selector feature-patch logistic replay as stop-line progress.
+- Do not sweep patch radius, logistic steps, or threshold grid as a production rescue.
+- Do not extend this exact offline validator family to a longer model-side run without a different training/readout contract.
+
+다음:
+
+- Close raw selector feature-patch validator replay as a production path.
+- If stop-line continues, change the candidate generation/readout or model-side select contract more fundamentally.
+- Otherwise return to lane instance stability while preserving stop-line and crosswalk retention gates.
+
+## 93. 2026-05-12 Lane row-scan tangent oracle audit: linking axis is not the main lane headroom
+
+맥락:
+
+- Lane is still below the broader-val512 `0.60` target even after row-scan/tangent-link partial positives.
+- Previous lane probes closed many training-side and postprocess-only axes: tangent-loss-only, component-limited tangent readout, support gate, residual-risk sampler/losses, row-anchor losses, inter-lane gap, segment-continuity, and lane-head-only retention schedules.
+- This read-only audit asks one narrower question before another training run: if row-scan/tangent linking had perfect tangent direction, would lane F1 move, or is the stronger headroom still predicted centerline coverage/quality?
+- The checkpoint, weights, labels, and production defaults are unchanged.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-link-oracle-audit`
+- Added `tools/probe_pv26_lane_tangent_oracle.py`.
+- The probe reuses the lane60 scenario/evaluator and postprocesses four same-forward variants:
+  - `baseline`: unchanged predictions.
+  - `gt_tangent_axis`: replace only `lane_seg_tangent_axis` with encoded GT tangent targets.
+  - `gt_centerline_core`: replace only `lane_seg_centerline_logits` with logits from encoded GT centerline-core targets.
+  - `gt_centerline_core_gt_tangent`: replace both maps.
+- Added `test/test_pv26_lane_tangent_oracle.py` for variant selection and map replacement behavior.
+
+검증:
+
+- compile: `python3 -m py_compile tools/probe_pv26_lane_tangent_oracle.py`
+- tests: `python3 -m pytest -q test/test_pv26_lane_tangent_oracle.py test/test_lane_segfirst_vectorizer.py test/test_docs_sync.py`
+- result: `23 passed`
+- smoke: val4 completed and showed GT centerline helps while GT tangent alone is near baseline.
+
+실행:
+
+- command: `python3 tools/probe_pv26_lane_tangent_oracle.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --phase-index 4 --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_tangent_oracle_val128_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_tangent_oracle_val128_epoch2/{summary.json,lane_tangent_oracle.csv}`
+
+결과:
+
+| Variant | Objective proxy | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `baseline` | `0.5332142208` | `0.5633` | `1121 / 469 / 1269` | `0.4483` | `0.5854` |
+| `gt_tangent_axis` | `0.5320989158` | `0.5611` | `1116 / 472 / 1274` | `0.4483` | `0.5854` |
+| `gt_centerline_core` | `0.5904327014` | `0.6778` | `1243 / 35 / 1147` | `0.4483` | `0.5854` |
+| `gt_centerline_core_gt_tangent` | `0.5906128931` | `0.6781` | `1244 / 35 / 1146` | `0.4483` | `0.5854` |
+
+판단:
+
+- GT tangent axis does not improve row-scan/tangent-link. It slightly lowers lane F1 (`0.5633 -> 0.5611`) and does not reduce lane FP.
+- GT centerline core is the real oracle headroom. It raises exact val128 lane F1 to `0.6778` and cuts lane FP `469 -> 35` while also adding TP `1121 -> 1243`.
+- Adding GT tangent on top of GT centerline is only noise-level (`0.6778 -> 0.6781`), so the row-link tangent direction is not the next dominant bottleneck.
+- This is not a production score: GT centerline is an oracle replacement. The useful conclusion is narrower: next lane work should improve predicted centerline instance coverage/quality, especially before vectorization, rather than another tangent/linking cost or threshold sweep.
+
+하지 말 것:
+
+- Do not repeat row-scan/tangent-link cost sweeps, tangent-axis oracle variants, or tangent-only loss reinforcement as the next lane path.
+- Do not treat `gt_centerline_core` lane F1 as deployable model performance.
+- Do not merge a lane-only oracle result into the all-task success story; stop-line remains `0.4483` on exact val128 and lower on broader composites.
+
+다음:
+
+- Close the linking-oracle premise check as read-only evidence.
+- If lane continues, define a model-side centerline instance contract that directly improves predicted centerline core coverage/quality, then verify with dense-map PR, exact task F1, broader-val replay, and visual comparison.
+- Preserve crosswalk hull retention and stop-line gates when combining any lane improvement.
+
+## 94. 2026-05-12 Lane centerline instance-balance: positive instance weighting is only a tiny lane gain
+
+맥락:
+
+- Section 93 showed that GT tangent does not help row-scan linking, while GT centerline-core replacement gives large lane oracle headroom.
+- This follow-up tries a minimal training-side centerline instance contract: keep the row-scan/tangent decode and all stop-line/crosswalk settings fixed, but make each lane instance contribute equal positive centerline-core weight instead of letting long/large lane cores dominate the positive loss.
+- This is not a sampler, tangent, threshold, or postprocess axis.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-centerline-instance-balance`
+- `model/engine/lane_segfirst_vectorizer.py` now emits `centerline_instance_weight` from the target renderer.
+- `model/data/roadmark_v2_targets.py` and `model/data/target_encoder.py` carry it as `lane_seg_centerline_instance_weight`.
+- `model/engine/loss.py` adds opt-in `lane_segfirst_instance_centerline_weight`; default is `0.0`.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` pass the new config knob through to the loss.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_instance_balance` with `lane_segfirst_instance_centerline_weight=0.35`.
+
+검증:
+
+- compile: `python3 -m py_compile model/engine/lane_segfirst_vectorizer.py model/data/roadmark_v2_targets.py model/data/target_encoder.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- tests: `python3 -m pytest -q test/test_lane_segfirst_vectorizer.py test/test_pv26_loss_runtime.py test/test_docs_sync.py`
+- result: `48 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `lane_segfirst_instance_centerline_weight=0.35` in the runtime summary.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_instance_balance --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_balance_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_071343/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5898544982` | `0.5513` | `1133 / 642 / 1202` | `0.2000` | `10 / 35 / 45` | `0.6790` |
+| 2 | `0.6161312489` | `0.5654` | `1171 / 581 / 1219` | `0.4310` | `25 / 31 / 35` | `0.5854` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`, lane TP/FP/FN `1121 / 469 / 1269`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`, lane TP/FP/FN `1162 / 554 / 1228`.
+
+판단:
+
+- Instance-balanced positive centerline weighting makes a tiny lane gain over tangent-link (`0.5633 -> 0.5654`) and improves TP (`1121 -> 1171`), but it also raises lane FP (`469 -> 581`).
+- It does not beat the segment-MIL lane-head-only exact best and it regresses stop-line (`0.4483 -> 0.4310`).
+- Epoch1 crosswalk task-best `0.6790` is not useful for the selected checkpoint because lane and stop-line are weaker, and epoch2 crosswalk returns to `0.5854`.
+- The implementation is valid plumbing, but this single-axis loss is not a broader-val512 expansion path.
+
+하지 말 것:
+
+- Do not sweep `lane_segfirst_instance_centerline_weight` as weight-only lane rescue.
+- Do not combine this with stop-line/crosswalk changes before a stronger exact lane/retention signal exists.
+- Do not treat the higher lane TP as success when FP and stop-line regression erase the benefit.
+
+다음:
+
+- Close instance-balanced positive centerline loss-only as a weak partial/negative lane axis.
+- If lane continues, the next centerline contract needs to improve centerline coverage without increasing lane FP and without stop-line regression.
+
+## 95. 2026-05-12 Stop-line mask-angle-field auxiliary: mask-wide angle supervision does not recover stop-line
+
+맥락:
+
+- Section 39 showed an upper-bound hint: GT center + predicted angle + angle-anchored mask extent can reach exact val128 stop-line F1 `0.6126`, so mask support contains useful length/axis signal.
+- Section 40 also showed the production bottleneck: predicted center/selector proposal + angle-mask extent readout only reached exact val128 stop-line F1 `0.5085`, below the PCA reference.
+- This follow-up tests a narrower training-side question: supervise the existing `stop_line_angle` map over the stop-line mask support so angle evidence is not center-cell-only.
+- This is not the earlier heatmap-support geometry fill. It does not fill offset/angle/half-length over center heatmap support, and it does not change half-length, selector, validator, presence, or postprocess defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-mask-angle-field`
+- `model/data/roadmark_v2_targets.py` now renders `stop_line_mask_angle` and `stop_line_mask_angle_valid` over the stop-line mask width.
+- `model/data/target_encoder.py` carries those tensors into the `roadmark_v2` batch target.
+- `model/engine/loss.py` adds an opt-in sign-invariant masked axis cosine auxiliary on `stop_line_angle`.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` pass `stopline_mask_angle_aux_weight` through to the loss.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_stop_mask_angle_field` with `stopline_mask_angle_aux_weight=0.5`.
+
+검증:
+
+- compile: `python3 -m py_compile model/data/roadmark_v2_targets.py model/data/target_encoder.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- focused tests: `python3 -m pytest -q test/test_roadmark_native_contract.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`
+- result: `83 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `stopline_mask_angle_aux_weight=0.5` in the runtime summary.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_stop_mask_angle_field --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_mask_angle_field_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_073831/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5881902110` | `0.5403` | `1055 / 515 / 1280` | `0.1980` | `10 / 36 / 45` | `0.6790` |
+| 2 | `0.6151907603` | `0.5606` | `1117 / 478 / 1273` | `0.4348` | `25 / 30 / 35` | `0.5854` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`.
+- stronger stop-line exact references remain above this run: PCA `0.5133`, predicted angle-mask production `0.5085`, task-head merge `0.4918`.
+
+판단:
+
+- Runtime and plumbing are valid, but the exact gate fails.
+- The new auxiliary is below tangent-link on objective, lane F1, and stop-line F1.
+- It is only slightly above instance-balance stop-line F1 (`0.4310 -> 0.4348`) while still below the stronger stop-line references.
+- Mask-wide angle supervision alone does not recover the production proposal/readout bottleneck, so broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- Do not sweep `stopline_mask_angle_aux_weight` as a weight-only stop-line rescue.
+- Do not repeat mask-angle-field-only training without a different selector/readout contract.
+- Do not treat the Section 39 angle-mask upper-bound as evidence that angle-field supervision alone solves production stop-line.
+
+다음:
+
+- Close mask-wide stop-line angle-field loss-only as negative evidence.
+- If stop-line continues, change candidate generation/readout/selector contract itself instead of adding another auxiliary to the current center/selector proposal family.
+- If lane continues, require a centerline evidence contract that does not increase lane FP and does not regress stop-line/crosswalk retention.
+
+## 96. 2026-05-12 Stop-line denser candidate-select contract: presence/max-validator gate suppresses emission
+
+맥락:
+
+- Gap4/top50 candidate-pool audits showed oracle headroom, but score/length filters, rich CSV validators, sample-level emit gates, rescue replays, cold dense validator gates, delayed validator auxiliaries, and simple calibrated map mixing did not transfer to production task F1.
+- Geometry-aware candidate-validator loss on current top-k candidates reached exact val128 stop-line F1 `0.4655`, but still missed tangent-link objective and stronger PCA/angle-mask/task-head references.
+- This follow-up isolates one training-side select/emit question: if denser spaced candidates are directly supervised, can the model learn which candidate should emit instead of relying on post-hoc CSV/logistic selection?
+- It is not a lane/crosswalk architecture change, not a gap/top-k-only pool widening, and not a threshold sweep.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-select-contract`
+- `model/engine/loss.py` adds opt-in `stopline_candidate_select_weight`, `stopline_candidate_select_topk`, and `stopline_candidate_select_min_gap`.
+- The loss samples spaced top-k candidates from detached `max(center, selector)`, decodes candidate geometry from existing center/angle/half-length maps, supervises `stop_line_candidate_validator_logits`, and also supervises `stop_line_presence_logits` from whether a feasible candidate exists.
+- `model/engine/postprocess.py` lets stop-line component gating read `validator`, `max_validator`, or `product_validator`, and the probe uses `max_validator`.
+- `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py` wire the opt-in experiment `core_centerline_refine_row_scan_tangent_stop_candidate_select_gap4` with `stopline_candidate_select_weight=0.5`, top-k `50`, min-gap `4.0`, and `stop_line_presence_threshold=0.35`.
+
+검증:
+
+- compile: `python3 -m py_compile model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- focused tests: `python3 -m pytest -q test/test_pv26_loss_runtime.py::PV26LossRuntimeTests::test_stopline_candidate_select_loss_is_opt_in_and_backpropagates test/test_pv26_postprocess.py::PV26PostprocessTests::test_postprocess_accepts_candidate_validator_component_gate test/test_run_pv26_train.py::RunPV26TrainScenarioTests::test_load_meta_train_scenario_applies_user_yaml_overrides`
+- broader relevant tests: `python3 -m pytest -q test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_run_pv26_train.py`
+- result: focused `3 passed`; broader relevant `87 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `stopline_candidate_select_weight=0.5`, top-k `50`, min-gap `4.0`, `stop_line_component_gate_source=max_validator`, and `stop_line_presence_threshold=0.35` in the runtime summary.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_stop_candidate_select_gap4 --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_candidate_select_gap4_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_080843/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5980293261` | `0.5418` | `1059 / 515 / 1276` | `0.0000` | `0 / 0 / 55` | `0.6832` |
+| 2 | `0.5855145029` | `0.5612` | `1118 / 476 / 1272` | `0.0000` | `0 / 0 / 60` | `0.5854` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`.
+- geometry-aware candidate-validator exact reference: objective `0.6182`, lane/stop/cross F1 `0.5607 / 0.4655 / 0.5854`.
+- stronger stop-line exact references remain above this run: PCA `0.5133`, predicted angle-mask production `0.5085`, task-head merge `0.4918`.
+
+판단:
+
+- Runtime and plumbing are valid: `skipped_steps=0`, smoke completed, exact completed, and the opt-in knobs are present in the runtime summary.
+- The exact gate fails hard because stop-line emission is fully suppressed. Epoch1/2 stop-line TP and FP are both `0`, so the model/readout emits no stop-line instances.
+- The reported selection component still uses a support/reliability fallback score of `0.45`, so objective alone hides the actual task failure. The task F1/TP/FP/FN table is the deciding evidence.
+- Candidate-select loss is also expensive in the current implementation: exact step loss time was about `136 ms`, so this contract adds runtime cost without producing task gain.
+- Broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- Do not repeat denser gap4/top50 candidate-select with the same presence/max-validator gate as a longer run or threshold sweep.
+- Do not treat `phase_objective=0.5980` as partial success when stop-line task F1 is `0.0000`.
+- Do not present candidate-feasible presence supervision as solved emit/no-emit gating without task-level TP/FP/FN evidence.
+
+다음:
+
+- Close denser candidate-select + presence/max-validator gate as negative evidence.
+- If stop-line continues, the next candidate selector must avoid suppressing all emissions and should be preflighted against direct task TP/FP/FN before longer training.
+- If no such select/readout contract is available, return to Gate 3 lane predicted centerline instance stability while preserving stop-line and crosswalk retention gates.
+
+## 97. 2026-05-12 Lane centerline threshold oracle: calibration-only does not recover lane 0.6
+
+맥락:
+
+- Section 93 showed that GT tangent direction does not help row-scan linking, while GT centerline-core replacement raises exact val128 lane F1 to `0.6778`.
+- Section 94 then tried instance-balanced positive centerline weighting. It made only a tiny lane gain and regressed stop-line.
+- This read-only follow-up asks a narrower question before another lane training contract: is the remaining lane gap mostly global/sample threshold calibration of the predicted centerline core, or does threshold calibration itself fail to reach the 0.6 gate?
+- It keeps the checkpoint, model, losses, sampler, and default postprocess code unchanged. It only replays postprocess with candidate lane thresholds and one per-sample dense-core threshold oracle.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-centerline-threshold-oracle`
+- `tools/probe_pv26_lane_centerline_threshold_oracle.py` loads a fixed lane60 checkpoint, forwards validation batches once, and evaluates:
+  - global `lane_obj_threshold` candidates: `0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80`
+  - `sample_oracle_dense_core`: chooses the best threshold per sample by dense binary F1 against encoded `lane_seg_centerline_core`, then runs normal postprocess for that sample.
+- Outputs are `summary.json`, `threshold_oracle.csv`, and `dense_oracle_samples.csv`.
+- `test/test_pv26_lane_threshold_oracle.py` covers threshold parsing, dense-core threshold choice, and prediction-batch slicing.
+
+검증:
+
+- compile: `python3 -m py_compile tools/probe_pv26_lane_centerline_threshold_oracle.py`
+- focused tests: `python3 -m pytest -q test/test_pv26_lane_threshold_oracle.py`
+- result: focused `3 passed`
+- smoke: val2 on `cuda:0`, with `--crosswalk-polygon-mode hull`, completed and wrote the smoke export.
+
+실행:
+
+- command: `python3 tools/probe_pv26_lane_centerline_threshold_oracle.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --crosswalk-polygon-mode hull --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_centerline_threshold_oracle_val128_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_centerline_threshold_oracle_val128_epoch2/{summary.json,threshold_oracle.csv,dense_oracle_samples.csv}`
+
+결과:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 | Phase proxy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `global_t020` | `0.5641` | `1153 / 545 / 1237` | `0.4483` | `0.5988` | `0.5363` |
+| `global_t045` | `0.5633` | `1121 / 469 / 1269` | `0.4483` | `0.5988` | `0.5359` |
+| `sample_oracle_dense_core` | `0.5482` | `1074 / 454 / 1316` | `0.4483` | `0.5988` | `0.5284` |
+
+Dense-core oracle selected threshold histogram:
+
+| Threshold | Samples |
+| ---: | ---: |
+| `0.20` | `57` |
+| `0.25` | `14` |
+| `0.30` | `7` |
+| `0.35` | `12` |
+| `0.40` | `14` |
+| `0.45` | `14` |
+| `0.50` | `18` |
+| `0.55` | `21` |
+| `0.60` | `26` |
+| `0.70` | `58` |
+| `0.80` | `271` |
+
+비교:
+
+- Current tangent-link exact reference is `global_t045`-like: lane F1 `0.5633`, TP/FP/FN `1121 / 469 / 1269`.
+- The best global threshold `0.20` raises TP by `+32` but also raises FP by `+76`, so lane F1 moves only `0.5633 -> 0.5641`.
+- Exact lane-head-only best remains higher at `0.5660`.
+- The sample-wise dense-core oracle is not helpful for task vectorization: it over-selects high thresholds and drops lane TP, ending at lane F1 `0.5482`.
+- Crosswalk `0.5988` here is the exact hull decode result and remains just below exact 0.6; broader hull partial-positive is already tracked separately in Section 83.
+
+판단:
+
+- Global threshold calibration does not unlock lane 0.6.
+- Per-sample dense-core threshold oracle is not a useful production or training direction in its current form; dense pixel F1 selection does not transfer to lane vector F1.
+- The earlier GT-centerline oracle headroom remains real, but the missing piece is not a scalar threshold. It is predicted centerline instance quality/recovery.
+- Broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- Do not repeat lane global/sample centerline threshold-only calibration as the next lane path.
+- Do not treat `global_t020` as meaningful progress just because it is the best row in this audit; it is still below the exact lane-head-only reference and far below the 0.6 gate.
+- Do not use dense-core pixel oracle threshold selection as task success evidence without lane vector TP/FP/FN improvement.
+
+다음:
+
+- Close lane threshold-only calibration/readout as negative evidence.
+- If lane continues, require a stronger predicted-centerline instance contract that improves vector TP without adding proportional FP, then verify dense-map behavior, exact task F1, broader-val replay, and crosswalk/stop-line retention.
+
+## 98. 2026-05-12 Stop-line candidate-select gate replay: presence gate caused the zero-emission collapse
+
+맥락:
+
+- Section 96 trained a denser gap4/top50 candidate-select contract and read it with `stop_line_component_gate_source=max_validator` plus `stop_line_presence_threshold=0.35`.
+- The exact run emitted no stop-lines: epoch2 stop-line F1 `0.0000`, TP/FP/FN `0 / 0 / 60`.
+- The open diagnostic question was whether the candidate-select checkpoint itself corrupted stop-line prediction, whether the validator gate was unusable, or whether the sample-level presence gate suppressed all emissions.
+- This follow-up is evaluator-only. It replays the same candidate-select `best.pt` with different stop-line gate settings and does not change the model, loss, sampler, or checkpoint.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-select-gate-replay`
+- `tools/evaluate_pv26_lane60_checkpoint.py` adds `--stop-line-component-gate-source` so a checkpoint can be replayed with `center`, `selector`, `max`, `validator`, `max_validator`, or `product_validator` without changing train config defaults.
+- `test/test_evaluate_pv26_lane60_checkpoint.py` covers the evaluator-only stop-line component gate override.
+
+검증:
+
+- compile: `python3 -m py_compile tools/evaluate_pv26_lane60_checkpoint.py`
+- focused tests: `python3 -m pytest -q test/test_evaluate_pv26_lane60_checkpoint.py test/test_pv26_postprocess.py::PV26PostprocessTests::test_postprocess_accepts_candidate_validator_component_gate`
+- result: focused `2 passed`
+- help surface: `python3 tools/evaluate_pv26_lane60_checkpoint.py --help` shows `--stop-line-component-gate-source`.
+
+실행:
+
+- default replay: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_candidate_select_gap4_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_080843/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_stop_candidate_select_gap4 --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_candidate_select_gap4_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_080843/analysis_exports/candidate_select_gate_replay_default_val128_epoch2`
+- no-presence replay: same command plus `--stop-line-component-gate-source max_validator --stop-line-presence-threshold 0.0`, output `analysis_exports/candidate_select_gate_replay_max_validator_no_presence_val128_epoch2`
+- center replay: same command plus `--stop-line-component-gate-source center --stop-line-presence-threshold 0.0`, output `analysis_exports/candidate_select_gate_replay_center_no_presence_val128_epoch2`
+
+결과:
+
+| Replay | Gate | Presence threshold | Objective | Lane F1 | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| default | `max_validator` | `0.35` | `0.5785902881` | `0.5540` | `0.0000` | `0 / 0 / 60` | `0.5590` |
+| no-presence | `max_validator` | `0.00` | `0.6048166176` | `0.5540` | `0.4483` | `26 / 30 / 34` | `0.5590` |
+| center fallback | `center` | `0.00` | `0.6041245235` | `0.5540` | `0.4386` | `25 / 29 / 35` | `0.5590` |
+
+판단:
+
+- The zero-emission collapse is caused primarily by the sample-level presence gate. Keeping `max_validator` but setting presence threshold to `0.0` restores stop-line TP/FP/FN to `26 / 30 / 34`.
+- `max_validator` without presence is slightly better than center fallback on this checkpoint (`0.4483` vs `0.4386`), so the validator map is not by itself the immediate collapse source.
+- This still does not create progress toward stop-line 0.6. The recovered stop-line F1 is only tangent-link-level, far below PCA exact `0.5133`, angle-mask exact `0.5085`, and the 0.6 target.
+- Crosswalk on this `best.pt` replay is `0.5590`, weaker than the normal tangent-link exact crosswalk reference.
+- Broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- Do not retry the same candidate-select contract by only lowering/removing `stop_line_presence_threshold`; it recovers emission but not a better stop-line path.
+- Do not blame `max_validator` alone for the zero-emission failure; the presence gate is the direct suppressor in this replay.
+- Do not promote this evaluator replay as a candidate-select success. It is only failure isolation evidence.
+
+다음:
+
+- Close candidate-select presence-gate rescue as diagnostic/negative evidence.
+- A future stop-line select contract must either avoid sample-level hard emission gates until calibrated, or prove the gate with task TP/FP/FN before training longer.
+- Since the recovered task F1 is only baseline-level, return to either a genuinely different stop-line emit/select contract or Gate 3 lane predicted-centerline instance stability.
+
+## 99. 2026-05-12 Lane soft-instance shell: soft side supervision is still only a tiny lane gain
+
+맥락:
+
+- Section 93 showed that GT tangent direction does not help row-scan linking, while GT centerline-core replacement gives large lane oracle headroom.
+- Section 94 tried instance-balanced positive core weighting. It increased lane TP but also increased FP and regressed stop-line.
+- Section 97 closed global/sample threshold calibration as a lane 0.6 path.
+- This follow-up keeps the core centerline target, row-scan tangent vectorizer, stop-line settings, crosswalk settings, sampler, and freeze policy fixed. It adds only a separate per-instance soft-shell auxiliary around each GT lane centerline, so each lane contributes balanced side-band evidence without replacing the core target.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-soft-instance-shell`
+- `model/engine/lane_segfirst_vectorizer.py` emits `centerline_soft_instance_weight`: a per-lane normalized Gaussian shell around the centerline core, excluding the core pixels.
+- `model/data/roadmark_v2_targets.py` and `model/data/target_encoder.py` carry it as `lane_seg_centerline_soft_instance_weight`.
+- `model/engine/loss.py` adds opt-in `lane_segfirst_soft_instance_centerline_weight`; default is `0.0`.
+- `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py` wire `core_centerline_refine_row_scan_tangent_soft_instance_shell` with `lane_segfirst_soft_instance_centerline_weight=0.35`.
+
+검증:
+
+- compile: `python3 -m py_compile model/data/target_encoder.py model/data/roadmark_v2_targets.py model/engine/lane_segfirst_vectorizer.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- focused tests: `python3 -m pytest -q test/test_lane_segfirst_vectorizer.py::LaneSegFirstVectorizerTests::test_soft_instance_weight_balances_lane_shells test/test_pv26_loss_runtime.py::PV26LossRuntimeTests::test_lane_soft_instance_centerline_loss_is_opt_in_and_backpropagates test/test_run_pv26_lane60_probe.py::RunPV26Lane60ProbeTests::test_soft_instance_shell_probe_keeps_tangent_link_contract`
+- result: focused `3 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed after adding the new target key to the batch encoder. It confirmed `lane_segfirst_soft_instance_centerline_weight=0.35` and `skipped_steps=0` in the runtime summary.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_soft_instance_shell --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_soft_instance_shell_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_093000/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5912959509` | `0.5538` | `1111 / 566 / 1224` | `0.2000` | `10 / 35 / 45` | `0.6790` | `55 / 24 / 28` |
+| 2 | `0.6159063607` | `0.5641` | `1144 / 522 / 1246` | `0.4348` | `25 / 30 / 35` | `0.5854` | `48 / 35 / 33` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`, lane TP/FP/FN `1121 / 469 / 1269`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`, lane TP/FP/FN `1162 / 554 / 1228`.
+- instance-balanced positive centerline exact: objective `0.6161312489`, lane/stop/cross F1 `0.5654 / 0.4310 / 0.5854`, lane TP/FP/FN `1171 / 581 / 1219`.
+
+판단:
+
+- Runtime and plumbing are valid: smoke and exact completed, the opt-in knob appears in the summary, and exact `skipped_steps=0`.
+- The soft-shell auxiliary gives only a noise-level lane F1 gain over tangent-link (`0.5633 -> 0.5641`) while increasing lane FP (`469 -> 522`) and lowering stop-line (`0.4483 -> 0.4348`).
+- It does not beat the segment-MIL lane-head-only exact best and does not create a broader-val512 expansion condition.
+- Epoch1 crosswalk task-best `0.6790` is not the selected objective-best checkpoint and does not solve the lane/stop-line gates.
+
+하지 말 것:
+
+- Do not sweep `lane_segfirst_soft_instance_centerline_weight`, shell radius, or shell sigma as a weight-only lane rescue.
+- Do not treat side-band soft target supervision as a stronger predicted-centerline instance contract by itself.
+- Do not promote epoch1 crosswalk task-best as joint progress when lane and stop-line remain below target.
+
+다음:
+
+- Close soft-instance centerline shell auxiliary-only as weak partial/negative lane evidence.
+- If lane continues, require a more direct predicted-centerline instance recovery contract that improves vector TP without proportional FP and preserves stop-line/crosswalk.
+- If stop-line continues, use a genuinely different emit/select/readout contract rather than another current candidate-validator/presence family repeat.
+
+## 100. 2026-05-12 Lane soft-ignore band: removing shell negatives collapses lane recall
+
+맥락:
+
+- Section 93 showed that GT tangent direction does not help row-scan linking, while GT centerline-core replacement gives large lane oracle headroom.
+- Section 94 tried instance-balanced core positive weighting; Section 99 tried instance-balanced soft-shell side supervision. Both were only weak partial/negative because FP or stop-line regression grew with the tiny lane gain.
+- This follow-up asks the opposite soft-band question: instead of pushing the soft shell as positive evidence, do not punish soft-shell pixels as core-target negatives.
+- It keeps the core centerline target, row-scan tangent vectorizer, stop-line settings, crosswalk settings, sampler, and freeze policy fixed. The only training-axis change is an opt-in centerline loss mask.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-centerline-soft-ignore`
+- `model/engine/loss.py` adds `lane_segfirst_centerline_ignore_soft_threshold`; default is `0.0`.
+- When the threshold is positive, non-core pixels with `lane_seg_centerline_soft >= threshold` are excluded from centerline BCE/Dice/Focal only. Support, tangent, color/type, stop-line, and crosswalk losses keep their existing masks.
+- `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py` wire `core_centerline_refine_row_scan_tangent_soft_ignore_band` with threshold `0.20`.
+
+검증:
+
+- compile: `python3 -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- focused tests: `python3 -m pytest -q test/test_pv26_loss_runtime.py::PV26LossRuntimeTests::test_lane_centerline_soft_ignore_excludes_shell_from_core_loss test/test_run_pv26_lane60_probe.py::RunPV26Lane60ProbeTests::test_soft_ignore_band_probe_keeps_tangent_link_contract`
+- result: focused `2 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `lane_segfirst_centerline_ignore_soft_threshold=0.2`, `skipped_steps=0`.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_soft_ignore_band --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_soft_ignore_band_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_095254/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5788617262` | `0.5078` | `966 / 504 / 1369` | `0.1980` | `10 / 36 / 45` | `0.6790` | `55 / 24 / 28` |
+| 2 | `0.6088389162` | `0.5360` | `1032 / 429 / 1358` | `0.4348` | `25 / 30 / 35` | `0.5854` | `48 / 35 / 33` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`, lane TP/FP/FN `1121 / 469 / 1269`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`, lane TP/FP/FN `1162 / 554 / 1228`.
+- instance-balanced positive centerline exact: objective `0.6161312489`, lane/stop/cross F1 `0.5654 / 0.4310 / 0.5854`, lane TP/FP/FN `1171 / 581 / 1219`.
+- soft-instance shell exact: objective `0.6159063607`, lane/stop/cross F1 `0.5641 / 0.4348 / 0.5854`, lane TP/FP/FN `1144 / 522 / 1246`.
+
+판단:
+
+- Runtime and plumbing are valid: smoke and exact completed, the opt-in knob appears in the summary, and exact `skipped_steps=0`.
+- The soft-ignore mask does reduce lane FP versus tangent-link (`469 -> 429`), but it also loses much more lane TP (`1121 -> 1032`) and raises FN (`1269 -> 1358`).
+- This is the wrong trade-off for Gate 3: lane recall falls to `0.5360`, far below the current exact lane references.
+- Stop-line is also below tangent-link (`0.4483 -> 0.4348`), and crosswalk only matches the normal epoch2 baseline.
+- Broader-val512로 확장하지 않는다.
+
+하지 말 것:
+
+- Do not sweep `lane_segfirst_centerline_ignore_soft_threshold` as a threshold-only lane rescue.
+- Do not repeat the same soft-band idea as either positive side supervision or negative-mask-only calibration.
+- Do not treat FP reduction as progress when vectorized lane TP/FN move this far backward.
+
+다음:
+
+- Close soft-band ignore masking as negative lane evidence.
+- If lane continues, require a direct predicted-centerline instance recovery contract that improves TP without proportional FP and keeps stop-line/crosswalk retention explicit.
+- If stop-line continues, use a genuinely different emit/select/readout contract rather than another current candidate-validator/presence family repeat.
+
+## 101. 2026-05-12 Segment-MIL lane-head-only broader composite: objective nudges, stop-line remains the blocker
+
+맥락:
+
+- Section 77 made `core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only` the exact val128 lane-retention best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`.
+- It was previously kept as exact-only evidence because the gain over tangent-link was tiny.
+- This read-only replay checks whether that exact best transfers to broader-val512 when paired with the current opt-in composite postprocess: stop-line `mask=0.80`, stop-line `min_instance_score=0.94`, and crosswalk `polygon_mode=hull`.
+
+실행:
+
+- branch: `exp/lane-family-f1/lane-segment-mil-broader-composite`
+- command: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/checkpoints/best.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only --preset default --max-val-batches 512 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --stop-line-mask-binary-threshold 0.80 --stop-line-min-instance-score 0.94 --crosswalk-polygon-mode hull --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/analysis_exports/segment_mil_lane_head_only_hull_stop_pca_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/analysis_exports/segment_mil_lane_head_only_hull_stop_pca_val512_epoch2/{summary.json,metrics.csv}`
+
+결과:
+
+| Replay | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| segment-MIL lane-head-only + stop PCA + hull | `0.6167526016` | `0.5480` | `4457 / 2333 / 5020` | `0.4184` | `100 / 107 / 171` | `0.6185` | `231 / 121 / 164` |
+
+비교:
+
+- prior row-scan tangent + stop PCA + hull composite: objective `0.6165299146`, lane/stop/cross F1 `0.5407 / 0.4235 / 0.6187`.
+- row-scan tangent broader lane replay without composite stop/cross overrides: objective `0.6027206157`, lane/stop/cross F1 `0.5407 / 0.4083 / 0.5854`.
+- stop-line PCA-only broader reference remains higher for stop-line at `0.4699`.
+
+판단:
+
+- Segment-MIL lane-head-only transfers a small broader lane gain over row-scan tangent (`0.5407 -> 0.5480`) and slightly raises composite objective.
+- The composite still fails the actual all-task target because lane remains below `0.60` and stop-line drops to `0.4184`.
+- The new objective best is not a stop-line improvement; it is lower than the prior composite stop-line `0.4235` and much lower than PCA-only broader `0.4699`.
+- Broader-val512 all-task success is not achieved, and this checkpoint/postprocess bundle is not a default/export candidate.
+
+다음:
+
+- Keep this as broader objective partial-positive evidence only.
+- Do not spend another lane-head-only schedule sweep on the same segment-MIL contract; the transferred lane gain is still too small and stop-line remains the blocker.
+- Continue with either a truly different stop-line emit/select/readout contract or a lane instance-recovery contract that preserves stop-line/crosswalk retention.
+
+## 102. 2026-05-12 Lane row-distribution centerline loss: exact lane nudge is not enough
+
+맥락:
+
+- Section 93 showed that GT centerline-core replacement has large lane oracle headroom, while tangent-axis replacement does not.
+- Section 97 made segment-MIL + lane-head-only the exact val128 reference, but broader composite replay in Section 101 still left stop-line below target.
+- This probe tests a different lane-only pressure: for each supervised row, normalize GT centerline-core pixels over columns and train the centerline logits as a row-wise distribution.
+- The probe keeps core centerline target, row-scan tangent vectorizer, lane-family-head-only freeze, stop-line settings, crosswalk settings, sampler, and train/val volume fixed. The only new training-axis knob is `lane_segfirst_row_distribution_weight=0.25`.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-distribution-centerline`
+- `model/engine/loss.py` adds opt-in `seg_row_distribution` loss and exports `lane_segfirst_row_distribution_weight`.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` wire the new default/config field.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_row_distribution`.
+
+검증:
+
+- compile: `python3 -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- focused tests: `python3 -m pytest -q test/test_pv26_loss_runtime.py::PV26LossRuntimeTests::test_lane_row_distribution_loss_is_opt_in_and_backpropagates test/test_run_pv26_lane60_probe.py::RunPV26Lane60ProbeTests::test_row_distribution_probe_keeps_tangent_link_contract`
+- result: focused `2 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `lane_segfirst_row_distribution_weight=0.25`, `skipped_steps=0`.
+- exact: train512/val128, 2 epochs on `cuda:0`, completed with `skipped_steps=0`.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_row_distribution --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_row_distribution_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_102925/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5887239363` | `0.5449` | `1065 / 509 / 1270` | `0.2000` | `10 / 35 / 45` | `0.6790` | `55 / 24 / 28` |
+| 2 | `0.6174723013` | `0.5659` | `1127 / 466 / 1263` | `0.4483` | `26 / 30 / 34` | `0.5854` | `48 / 35 / 33` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`, lane TP/FP/FN `1121 / 469 / 1269`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`, lane TP/FP/FN `1162 / 554 / 1228`.
+- Row-distribution gives a tiny lane gain over tangent-link (`0.5633 -> 0.5659`, TP `+6`, FP `-3`, FN `-6`) and preserves stop-line/crosswalk, but objective remains below tangent-link and segment-MIL lane-head-only.
+
+판단:
+
+- Runtime and plumbing are valid: smoke and exact completed, the opt-in knob appears in the summary, gradients are covered by focused loss test, and exact `skipped_steps=0`.
+- The exact gain is too small to justify broader-val512 expansion by itself.
+- This is weak exact partial-positive lane evidence, not all-task progress: lane, stop-line, and crosswalk still do not all exceed `0.60`.
+
+하지 말 것:
+
+- Do not sweep `lane_segfirst_row_distribution_weight` as a weight-only lane rescue.
+- Do not treat row-wise core distribution pressure as a replacement for a stronger instance recovery contract.
+- Do not promote this branch over segment-MIL lane-head-only without new broader evidence.
+
+다음:
+
+- Close row-distribution-only as weak partial/negative lane evidence.
+- If lane continues, require a centerline instance recovery contract that gives larger TP gain without proportional FP and keeps stop-line/crosswalk retention explicit.
+- If stop-line continues, use a genuinely different emit/select/readout contract rather than another current candidate-validator/presence family repeat.
+
+## 103. 2026-05-12 Lane segment-MIL + row-distribution: combining weak signals does not beat the best exact lane probe
+
+맥락:
+
+- Section 74 made segment-MIL + lane-head-only the exact val128 reference: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`.
+- Section 102 showed row-distribution-only preserves stop-line and reduces lane FP slightly, but the gain is too small and objective stays below the reference.
+- This probe tests whether the two weak lane signals are complementary: segment-level positive evidence for visible GT lane segments plus row-wise GT core distribution pressure.
+- The probe keeps core centerline target, row-scan tangent vectorizer, lane-head-only freeze, stop-line settings, crosswalk settings, sampler, and train/val volume fixed. The only new axis is the combined lane loss contract: `lane_segfirst_segment_mil_weight=0.35` and `lane_segfirst_row_distribution_weight=0.25`.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-segment-mil-row-distribution`
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_segment_mil_row_distribution`.
+- `test/test_run_pv26_lane60_probe.py` checks that the probe combines lane-head-only retention, `row_scan_tangent`, core centerline target, segment-MIL, and row-distribution weights.
+
+검증:
+
+- compile: `python3 -m py_compile tools/run_pv26_lane60_probe.py`
+- focused test: `python3 -m pytest -q test/test_run_pv26_lane60_probe.py::RunPV26Lane60ProbeTests::test_segment_mil_row_distribution_probe_combines_lane_contracts`
+- result: focused `1 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `lane_segfirst_segment_mil_weight=0.35`, `lane_segfirst_row_distribution_weight=0.25`, `skipped_steps=0`.
+- exact: train512/val128, 2 epochs on `cuda:0`, completed with `skipped_steps=0`.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_segment_mil_row_distribution --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_row_distribution_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_110938/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5941252367` | `0.5531` | `1124 / 605 / 1211` | `0.1980` | `10 / 36 / 45` | `0.6748` | `55 / 25 / 28` |
+| 2 | `0.6186643159` | `0.5621` | `1152 / 557 / 1238` | `0.4483` | `26 / 30 / 34` | `0.5926` | `48 / 33 / 33` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`, lane TP/FP/FN `1121 / 469 / 1269`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`, lane TP/FP/FN `1162 / 554 / 1228`.
+- row-distribution-only exact: objective `0.6174723013`, lane/stop/cross F1 `0.5659 / 0.4483 / 0.5854`, lane TP/FP/FN `1127 / 466 / 1263`.
+- The combined probe keeps stop-line at `0.4483` and crosswalk at `0.5926`, but lane F1 is below both segment-MIL lane-head-only and row-distribution-only.
+
+판단:
+
+- Runtime and plumbing are valid: smoke and exact completed, both opt-in knobs appear in the summary, and exact `skipped_steps=0`.
+- Combining the two weak lane signals does not add constructively. It gives more lane TP than row-distribution-only (`1152` vs `1127`) but also much more FP (`557` vs `466`), and still loses to segment-MIL lane-head-only on lane F1 and objective.
+- It does not create a broader-val512 expansion condition.
+- This is negative evidence against stacking small lane centerline regularizers under the same lane-head-only retention schedule.
+
+하지 말 것:
+
+- Do not sweep segment-MIL weight, row-distribution weight, or the same lane-head-only schedule as a combined weight-only rescue.
+- Do not treat a preserved stop-line/crosswalk score as progress when lane F1 is lower than the existing exact best.
+- Do not promote this branch over segment-MIL lane-head-only without new broader evidence.
+
+다음:
+
+- Close segment-MIL + row-distribution as negative lane evidence.
+- If lane continues, require a stronger predicted-centerline instance recovery contract that increases vector TP without proportional FP and explicitly preserves stop-line/crosswalk.
+- If stop-line continues, use a genuinely different emit/select/readout contract rather than another current candidate-validator/presence/readout family repeat.
+
+## 104. 2026-05-12 Lane row-scan tangent upper-trunk capacity: stop-line nudges, lane regresses
+
+맥락:
+
+- Section 103 closed segment-MIL + row-distribution because combining two weak lane signals did not beat the segment-MIL lane-head-only exact best.
+- Several prior lane probes were head/loss/readout-only and kept the upper trunk frozen.
+- This probe asks whether the tangent-link lane contract needs a small upper-trunk feature adaptation rather than another lane-head-only regularizer.
+- It keeps the core centerline target, `row_scan_tangent` vectorizer, lane loss weights, stop-line settings, crosswalk settings, sampler, and train/val volume fixed. The only axis is freeze scope/capacity: `lane_family_plus_upper_trunk` with trunk LR `2e-6` and head LR `1e-4`.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-tangent-upper-trunk`
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_upper_trunk`.
+- `test/test_run_pv26_lane60_probe.py` checks that the probe reopens only the capacity/freeze-scope axis while preserving `row_scan_tangent`, core target, and the multi-task positive sampler.
+
+검증:
+
+- compile: `python3 -m py_compile tools/run_pv26_lane60_probe.py`
+- focused test: `python3 -m pytest -q test/test_run_pv26_lane60_probe.py::RunPV26Lane60ProbeTests::test_tangent_upper_trunk_probe_reopens_only_capacity_axis`
+- result: focused `1 passed`
+- smoke: train2/val2, 1 epoch on `cuda:0`, completed and confirmed `freeze_policy=lane_family_plus_upper_trunk`, `trunk_lr=2e-6`, `lane_segfirst_track_mode=row_scan_tangent`, `skipped_steps=0`.
+- exact: train512/val128, 2 epochs on `cuda:0`, completed with `skipped_steps=0`.
+
+실행:
+
+- command: `python3 tools/run_pv26_lane60_probe.py --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --experiment core_centerline_refine_row_scan_tangent_upper_trunk --epochs 2 --train-batches 512 --val-batches 128 --batch-size 4 --device cuda:0 --run-root runs/pv26_exhaustive_od_lane_train`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_upper_trunk_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_113104/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`
+
+결과:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5878829845` | `0.5407` | `1056 / 515 / 1279` | `0.2000` | `10 / 35 / 45` | `0.6790` | `55 / 24 / 28` |
+| 2 | `0.6169717875` | `0.5597` | `1115 / 479 / 1275` | `0.4561` | `26 / 28 / 34` | `0.5854` | `48 / 35 / 33` |
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`, lane TP/FP/FN `1121 / 469 / 1269`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`, lane TP/FP/FN `1162 / 554 / 1228`.
+- row-distribution-only exact: objective `0.6174723013`, lane/stop/cross F1 `0.5659 / 0.4483 / 0.5854`, lane TP/FP/FN `1127 / 466 / 1263`.
+- segment-MIL + row-distribution exact: objective `0.6186643159`, lane/stop/cross F1 `0.5621 / 0.4483 / 0.5926`, lane TP/FP/FN `1152 / 557 / 1238`.
+
+판단:
+
+- Runtime and plumbing are valid: smoke and exact completed, the opt-in freeze policy appears in the summary, and exact `skipped_steps=0`.
+- Upper-trunk adaptation nudges stop-line above tangent-link exact (`0.4483 -> 0.4561`) and reduces stop-line FP (`30 -> 28`), but it does not solve the actual stop-line target.
+- The lane side moves backward: lane F1 drops below tangent-link, row-distribution-only, segment-MIL lane-head-only, and segment-MIL + row-distribution.
+- Because the objective is below the current exact references and lane regresses, there is no broader-val512 expansion condition.
+- This closes capacity/freeze-scope-only as a lane rescue on the current tangent-link contract.
+
+하지 말 것:
+
+- Do not repeat upper-trunk unfreeze with only LR/schedule tweaks on the same `row_scan_tangent` contract.
+- Do not treat the small stop-line bump as all-task progress when lane F1 moves away from the exact lane reference.
+- Do not merge this with segment-MIL/row-distribution unless a separate premise shows upper-trunk features raise lane TP without proportional FP.
+
+다음:
+
+- Keep `exp/lane-family-f1/lane-row-scan-tangent-upper-trunk` as negative/diagnostic evidence.
+- If lane continues, require a stronger predicted-centerline instance recovery contract rather than another head-freeze or trunk-LR capacity tweak.
+- If stop-line continues, use a genuinely different emit/select/readout contract; a tiny stop-line bump from trunk unfreeze is not enough to reopen the current candidate-validator/presence/readout family.
+
+## 105. 2026-05-12 Segment-MIL lane + proposal-rank stop head merge: exact improves, broader rejects it
+
+맥락:
+
+- Section 74 made `core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only` the best exact lane-retention checkpoint, with lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`.
+- Section 78's proposal-rank stop-line checkpoint had the best exact stop-line task head among modern stop-line training attempts, with stop-line F1 `0.4918`.
+- Section 101 showed that segment-MIL lane-head-only plus stop-PCA/hull broader composite is the current broader objective best, but stop-line remains weak at `0.4184`.
+- This experiment asks whether a targeted task-head merge can keep the segment-MIL lane/crosswalk retention while importing the proposal-rank stop-line head.
+
+구현:
+
+- branch: `exp/lane-family-f1/task-head-merge-segment-mil-rank-stop`
+- source checkpoint family: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022`
+- stop-line source: `runs/pv26_exhaustive_od_lane_train/stopline_proposal_rank_w025_val128_default_20260511_113639/phase_4/checkpoints/best_stop_line.pt`
+- variant A wrote `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_cross_20260512/merged_task_heads.pt` and used the segment-MIL `best_crosswalk.pt`.
+- variant B wrote `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/merged_task_heads.pt` and kept crosswalk from the segment-MIL source `best.pt`.
+- Merge replacement counts were crosswalk `156`, lane `195`, stop-line `390`.
+
+검증:
+
+- exact val128 replay for both variants completed on `cuda:0`.
+- broader val512 replay for variant B completed on `cuda:0`.
+- broader replay used the same composite evaluator overrides as the current broader reference: stop-line `mask=0.80`, stop-line `min_instance_score=0.94`, and crosswalk `polygon_mode=hull`.
+
+결과:
+
+| Variant | Scope | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A: task-best cross | exact val128 | `0.6242923599` | `0.5660` | `1162 / 554 / 1228` | `0.4918` | `30 / 32 / 30` | `0.5818` | `48 / 36 / 33` |
+| B: source cross | exact val128 | `0.6248193729` | `0.5660` | `1162 / 554 / 1228` | `0.4918` | `30 / 32 / 30` | `0.5926` | `48 / 33 / 33` |
+| B: source cross | broader val512 | `0.6129801219` | `0.5480` | `4457 / 2333 / 5020` | `0.3976` | `100 / 132 / 171` | `0.6185` | `231 / 121 / 164` |
+
+비교:
+
+- Current broader best composite by objective: objective `0.6167526016`, lane/stop/cross F1 `0.5480 / 0.4184 / 0.6185`, stop TP/FP/FN `100 / 107 / 171`.
+- Variant B keeps the same broader lane and crosswalk F1 as that reference, but stop-line drops from `0.4184` to `0.3976` because FP increases from `107` to `132` while TP/FN stay `100 / 171`.
+- Exact val128 overstates the gain: stop-line exact F1 improves to `0.4918`, but the broader slice does not retain that precision.
+
+판단:
+
+- The merge implementation is valid and useful diagnostically: task-specific checkpoint heads can be combined, and exact val128 can show clean task gains.
+- The broader replay rejects this composition as a candidate. It lowers objective below current broader best and worsens the largest bottleneck, stop-line.
+- This is exact partial-positive but broader negative evidence. It is not all-task success, not a default/export candidate, and not a reason to reopen task-head merge as a broad sweep.
+
+하지 말 것:
+
+- Do not repeat task-head merge using only exact-val task-best heads as the selection rule.
+- Do not claim exact `0.6248` objective as progress toward the active goal without broader task F1 retention.
+- Do not transplant a stop-line head unless the premise explains broader FP suppression, not just exact-val TP recovery.
+
+다음:
+
+- Keep `exp/lane-family-f1/task-head-merge-segment-mil-rank-stop` as composition partial/negative evidence.
+- Current broader best remains the segment-MIL lane-head-only + stop-PCA/hull composite at objective `0.6167526016`, lane/stop/cross F1 `0.5480 / 0.4184 / 0.6185`.
+- Next stop-line work should change the broader FP/emit/readout contract directly; exact subset task-head recombination is not enough.
+
+## 106. 2026-05-12 Git-history backfill: support-conditioned/dilated lane heads and stop-line center stem are already closed
+
+맥락:
+
+- While choosing the next branch/worktree, `git worktree list` showed three relevant experiment branches that were not reflected in the latest status branch.
+- These branches tested architecture-level axes rather than threshold sweeps:
+  - lane centerline receptive-field widening.
+  - lane support-conditioned centerline refinement.
+  - stop-line center stem wiring.
+- Because the active plan forbids repeating closed axes, their results are backfilled here as branch evidence before starting another experiment.
+
+Backfilled branch: `exp/lane-family-f1/lane-centerline-dilated-context`
+
+- change: `model/net/lane_head_segfirst.py` added a gated dilated centerline context block with dilation 2 then 4 before `centerline_logits`.
+- probe: `core_centerline_refine_row_scan_tangent_dilated_context`.
+- validation in branch: compile passed, `test/test_pv26_heads.py` and `test/test_run_pv26_lane60_probe.py` passed, smoke train8/val4 completed, exact train512/val128 completed with `skipped_steps=0`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_dilated_context_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_053243/phase_4/summary.json`.
+- result epoch2: objective `0.6154790805`, lane/stop/cross F1 `0.5617 / 0.4348 / 0.5854`, lane TP/FP/FN `1118 / 473 / 1272`, stop TP/FP/FN `25 / 30 / 35`.
+
+Backfilled branch: `exp/lane-family-f1/lane-support-conditioned-centerline`
+
+- change: `model/net/lane_head_segfirst.py` computed support logits first, detached `sigmoid(support_logits)`, concatenated it with lane features, and added a gated residual centerline refinement branch.
+- probe: `core_centerline_refine_row_scan_tangent_support_conditioned`.
+- validation in branch: compile passed, `test/test_lane_segfirst_head.py`, `test/test_run_pv26_lane60_probe.py`, and `test/test_roadmark_native_contract.py::RoadmarkNativeContractTest::test_segfirst_joint_loss_is_finite_on_synthetic_roadmark_batch` passed, smoke completed with `skipped_steps=0`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_support_conditioned_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_090151/phase_4/{summary.json,history/epochs.jsonl,checkpoints/best.pt}`.
+- result epoch2: objective `0.6152049122`, lane/stop/cross F1 `0.5607 / 0.4348 / 0.5854`, lane TP/FP/FN `1117 / 477 / 1273`, stop TP/FP/FN `25 / 30 / 35`.
+
+Backfilled branch: `exp/lane-family-f1/stopline-center-stem`
+
+- change: `model/net/stopline_head_line.py` wired the existing `center_stem` into center logits, center offset, angle, and half-length outputs instead of leaving it unused for those center outputs.
+- validation in branch: gradient test confirmed `stop_line_center_logits` backward reaches `center_stem`; exact short probe completed.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_190556/phase_4/summary.json`.
+- result epoch2: objective `0.5977`, lane/stop/cross F1 `0.5249 / 0.3704 / 0.5818`, stop TP/FP/FN `20 / 28 / 40`.
+
+비교:
+
+- tangent-link exact reference: objective `0.6187165763`, lane/stop/cross F1 `0.5633 / 0.4483 / 0.5854`.
+- segment-MIL lane-head-only exact best: objective `0.6193428422`, lane/stop/cross F1 `0.5660 / 0.4483 / 0.5926`.
+- Both lane architecture probes trail these exact references on objective, lane F1, and stop-line retention.
+- Stop-line center-stem cleanup trails the exact stop-line baseline badly (`0.4483 -> 0.3704`).
+
+판단:
+
+- The three branches are valid negative evidence but not merge candidates.
+- Lane receptive-field widening and detached support-conditioned refinement do not solve predicted centerline instance recovery.
+- Stop-line center-stem wiring is a plausible cleanup, but it does not improve the active stop-line metric and should not be adopted on the goal path.
+- This backfill keeps the latest docs aligned with branch history and prevents repeating the same architecture ideas.
+
+하지 말 것:
+
+- Do not repeat centerline-branch dilated context as dilation/depth/gate-init tweaks.
+- Do not repeat detached support-conditioned centerline refinement as a longer run, LR sweep, or gate sweep.
+- Do not treat stop-line center-stem wiring as a stop-line rescue path.
+
+다음:
+
+- Keep all three branches as negative branch evidence.
+- If lane continues, require a different instance-level centerline contract, not feature-context widening or support-conditioned residual refinement.
+- If stop-line continues, require a candidate generation/readout/emit contract that directly addresses broader FP/TP behavior, not center-stem cleanup.
+
+## 107. 2026-05-12 Stop-line component topology rich-validator audit: mask-shape features still do not beat selector-only replay
+
+맥락:
+
+- Stop-line broader-val512 remains the largest bottleneck: current broader best by objective has lane/stop/cross F1 `0.5480 / 0.4184 / 0.6185`.
+- Existing candidate-pool probes showed two separate facts:
+  - gap4/top50 candidate pools have oracle headroom; oracle selection can reach stop-line F1 `0.6877`.
+  - learned/offline rich validators and sample gates have not transferred enough to task F1.
+- The untested premise here is whether global predicted-mask component topology explains false-positive stop-line candidates better than only local center/selector/mask windows.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-component-topology-audit`
+- `tools/probe_pv26_stopline_candidate_pool.py` adds component topology features for the selected predicted mask component:
+  - component count, area, bbox area/density/aspect.
+  - SVD length/thickness/aspect.
+  - component mask mean/max.
+  - area rank, border touch flag, proposal/decoded center membership flags.
+- These features are added to rich-validator feature export and sample-gate aggregate features.
+- `test/test_pv26_threshold_probe.py` covers component topology extraction and rich-feature vector inclusion.
+- This is a read-only audit: no checkpoint weights, train config, postprocess default, or evaluator default is changed.
+
+검증:
+
+- compile: `python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py`
+- focused test: `python3 -m pytest -q test/test_pv26_threshold_probe.py`
+- result: focused `10 passed`
+- audit replay completed on `cuda:0`.
+
+실행:
+
+- command: `python3 tools/probe_pv26_stopline_candidate_pool.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --max-val-batches 512 --validation-epoch 2 --device cuda:0 --rich-validator-replay --rich-validator-top-k 50 --rich-validator-min-gap 4.0 --rich-validator-threshold-grid 101 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_component_topology_rich_val512_epoch2`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_component_topology_rich_val512_epoch2/{summary.json,variants.csv,rich_validator_variants.csv,candidate_features.csv}`
+- candidate rows: `15629`
+- oracle-positive candidate rows: `4683`
+- oracle-positive rate: `0.2996`
+
+Standard candidate-pool reference:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Objective proxy |
+| --- | ---: | ---: | ---: |
+| baseline | `0.4083` | `98 / 111 / 173` | `0.4946` |
+| max_top10_score_s080 | `0.4371` | `106 / 108 / 165` | `0.5033` |
+| gap4_max_top50_score_s080 | `0.4371` | `106 / 108 / 165` | `0.5033` |
+| gap4_oracle_max_top50_positive | `0.6877` | `142 / 0 / 129` | `0.5784` |
+
+Rich-validator half-split task replay:
+
+| Split | Variant | Stop-line F1 | Stop TP/FP/FN | Threshold |
+| --- | --- | ---: | ---: | ---: |
+| train | baseline | `0.4269` | `54 / 56 / 89` | - |
+| heldout | baseline | `0.3877` | `44 / 55 / 84` | - |
+| train | rich_logistic_task_threshold | `0.4672` | `57 / 44 / 86` | `0.5158` |
+| heldout | rich_logistic_task_threshold | `0.4126` | `46 / 49 / 82` | `0.5158` |
+| train | rich_logistic_row_threshold | `0.4634` | `57 / 46 / 86` | `0.4975` |
+| heldout | rich_logistic_row_threshold | `0.4107` | `46 / 50 / 82` | `0.4975` |
+| train | selector_r4_max_task_threshold | `0.4711` | `57 / 42 / 86` | `0.9993` |
+| heldout | selector_r4_max_task_threshold | `0.4537` | `49 / 39 / 79` | `0.9993` |
+
+비교:
+
+- Component-topology rich logistic improves held-out over the half-split baseline (`0.3877 -> 0.4126`), so the feature family has some signal.
+- It is still worse than the simple `selector_r4_max` held-out threshold replay (`0.4537`).
+- It also remains below the broader PCA reference `0.4699`, and far below the active `0.60` stop-line target.
+- The oracle row (`0.6877`) still shows candidate headroom, but the topology logistic does not recover that headroom without GT selection.
+
+판단:
+
+- This closes "predicted component topology as offline rich-validator feature" as a production path.
+- The failure is not lack of candidate pool: gap4/top50 oracle remains high.
+- The failure is also not just missing global mask-shape columns in the CSV validator. Component topology does not supply enough FP/emit separation to beat selector-local replay.
+- This remains read-only diagnostic evidence. It should not be treated as a model-side validator head success, default decoder candidate, or broader stop-line fix.
+
+하지 말 것:
+
+- Do not repeat component topology feature additions as richer CSV/logistic threshold sweeps.
+- Do not claim component topology rich-validator replay as production decoder evidence.
+- Do not use the gap4/top50 oracle row to justify deployment; it uses GT distance.
+- Do not move to a longer train run from this audit alone.
+
+다음:
+
+- Keep `exp/lane-family-f1/stopline-component-topology-audit` as read-only negative evidence.
+- If stop-line continues, the next axis needs a genuinely different emit/select/readout contract, not more offline scalar/window/topology columns over the same current center/selector candidate pool.
+- Otherwise shift back to Gate 3 lane predicted centerline instance stability while preserving stop-line/crosswalk retention.
+
+## 108. 2026-05-12 Lane-head transplant onto original stop/cross base: new broader objective best, still not task-F1 success
+
+맥락:
+
+- Section 101 made segment-MIL lane-head-only + stop-threshold + hull the best broader objective composite at `0.6167526016`, but stop-line fell to `0.4184`.
+- The segment-MIL lane-head-only run produced the best exact lane retention signal, but the full checkpoint broader replay did not preserve the original stop/cross behavior as well as desired.
+- This replay asks a narrower composition question: can the segment-MIL lane head be transplanted onto the original base checkpoint while keeping original stop-line/crosswalk heads?
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-head-transplant-original-stop-pca`
+- output checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`
+- merge command used `tools/merge_pv26_lane_family_task_heads.py`:
+  - base checkpoint: original `phase_4/checkpoints/best.pt`
+  - lane checkpoint: segment-MIL lane-head-only `phase_4/checkpoints/best_lane.pt`
+  - stop-line checkpoint: original `phase_4/checkpoints/best.pt`
+  - crosswalk checkpoint: original `phase_4/checkpoints/best.pt`
+- replacement counts: lane `195`, stop-line `390`, crosswalk `156`.
+- No training was run; this is checkpoint composition plus evaluator replay.
+
+검증:
+
+- exact val128 replay completed on `cuda:0`.
+- broader val512 replay completed on `cuda:0`.
+- broader replay used row-scan tangent lane decode plus evaluator-only stop-line `mask=0.80`, stop-line `min_instance_score=0.94`, stop-line `presence=0.0`, and crosswalk `polygon_mode=hull`.
+
+실행:
+
+- exact command: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 128 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/exact_val128_row_scan_tangent_epoch2`
+- broader command: `python3 tools/evaluate_pv26_lane60_checkpoint.py --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset --lane60-experiment core_centerline_refine_row_scan_tangent_link --preset default --max-val-batches 512 --validation-epoch 2 --train-batches 512 --batch-size 4 --device cuda:0 --stop-line-mask-binary-threshold 0.80 --stop-line-min-instance-score 0.94 --stop-line-presence-threshold 0.0 --crosswalk-polygon-mode hull --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_stop_pca_hull_epoch2`
+
+결과:
+
+| Scope | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| exact val128 | `0.6193289563` | `0.5660` | `1162 / 554 / 1228` | `0.4483` | `26 / 30 / 34` | `0.5854` | `48 / 35 / 33` |
+| broader val512 | `0.6176617972` | `0.5480` | `4457 / 2333 / 5020` | `0.4235` | `101 / 105 / 170` | `0.6187` | `232 / 123 / 163` |
+
+비교:
+
+- Previous current broader best by objective: objective `0.6167526016`, lane/stop/cross F1 `0.5480 / 0.4184 / 0.6185`, stop TP/FP/FN `100 / 107 / 171`, cross TP/FP/FN `231 / 121 / 164`.
+- Original row-scan tangent + stop-threshold + hull composite: objective `0.6165299146`, lane/stop/cross F1 `0.5407 / 0.4235 / 0.6187`.
+- The transplant keeps the segment-MIL lane broader gain (`0.5480`) while preserving the original stop-line threshold replay (`0.4235`) and hull crosswalk (`0.6187`).
+- The improvement is real but small: objective `+0.0009` over the prior best, stop-line `+0.0051`, crosswalk `+0.0002`.
+
+판단:
+
+- This is the current broader objective best and should replace Section 101 as the status headline.
+- It is not all-task success: lane is still `0.0520` below target and stop-line is still `0.1765` below target.
+- The result supports a narrow composition rule: transplant only the lane head onto the original stop/cross base is cleaner than using the full segment-MIL checkpoint for the broader composite.
+- It does not reopen broad task-head merge sweeps. The failed proposal-rank stop-head transplant remains negative because it reduced broader stop-line precision.
+
+하지 말 것:
+
+- Do not call this lane-family F1 0.6 success; only objective is above 0.6.
+- Do not repeat exact-best stop-head transplants without a broader FP-suppression premise.
+- Do not treat this small objective gain as a reason to stop lane/stop-line work.
+
+다음:
+
+- Use this artifact as the current broader objective baseline.
+- Continue with the same top-level priorities: stop-line needs a new emit/select/readout contract to close `0.4235 -> 0.60`; lane still needs predicted centerline instance recovery to close `0.5480 -> 0.60`.
+- Any next experiment must preserve the hull crosswalk pass and should compare against this composite, not the older full segment-MIL checkpoint composite.
+
+## 109. 2026-05-12 Stop-line sample-tree gate audit: nonlinear sample gate does not beat logistic surrogate
+
+맥락:
+
+- Section 85 showed gap4/top50 candidate-bearing samples have oracle-label sample-gate signal: held-out emit-all surrogate selection F1 `0.4320`, logistic gate `0.5732`.
+- Section 86 and Section 89 showed that this CSV sample-gate signal did not transfer to actual task F1 or baseline-rescue task replay.
+- This audit asks one narrower question before abandoning the CSV sample-gate family: was the previous surrogate limited because the gate was linear?
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-sample-tree-gate-audit`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_sample_tree_gate_audit_val512_epoch2/summary.json`
+- `tools/analyze_stopline_candidate_sample_gate.py` now adds a dependency-free shallow greedy decision-tree gate.
+- The tree trains on the same first-half validation batches and is evaluated on the same held-out half.
+- The metric remains surrogate selection F1: emit the top candidate ranked by `mask_r4_max` when the sample gate fires.
+- No checkpoint, model weights, postprocess decoder, or evaluator task replay changed.
+
+실행:
+
+- command: `python3 tools/analyze_stopline_candidate_sample_gate.py --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_rich_selector_replay_val512_epoch2/candidate_features.csv --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_gap4_sample_tree_gate_audit_val512_epoch2 --proposal-source max --proposal-min-gap 4.0 --max-proposal-rank 50 --rank-feature mask_r4_max --tree-depth 3 --tree-min-leaf 12 --tree-threshold-grid 16`
+- tests: `python3 -m pytest -q test/test_stopline_candidate_sample_gate.py test/test_pv26_threshold_probe.py`
+
+결과:
+
+| Variant | Split | Sample F1 | Selection F1 | Selection TP/FP/FN |
+| --- | --- | ---: | ---: | ---: |
+| emit-all top-ranked | train | `0.6054` | `0.4751` | `62 / 120 / 17` |
+| emit-all top-ranked | held-out | `0.5040` | `0.4320` | `54 / 133 / 9` |
+| logistic sample gate | train | `0.8280` | `0.6559` | `61 / 46 / 18` |
+| logistic sample gate | held-out | `0.6585` | `0.5732` | `47 / 54 / 16` |
+| tree sample gate | train | `0.7560` | `0.5933` | `62 / 68 / 17` |
+| tree sample gate | held-out | `0.6413` | `0.5543` | `51 / 70 / 12` |
+
+Tree rule:
+
+- root split: `mask_r4_max_max <= 0.9962455` means no emit.
+- `mask_r4_max_max > 0.9962455` means emit.
+
+판단:
+
+- The tree increases held-out TP compared with logistic (`51` vs `47`) but also increases FP more (`70` vs `54`), so held-out surrogate selection F1 is lower (`0.5543` vs `0.5732`).
+- This means the earlier sample-gate failure is not simply because logistic was too linear.
+- This is still oracle-label surrogate bookkeeping, not evaluator task F1.
+- Given Sections 86 and 89, there is no reason to promote a nonlinear CSV sample gate to actual task replay unless the feature/readout contract changes first.
+
+하지 말 것:
+
+- Do not repeat CSV sample-gate complexity sweeps over the same aggregate features.
+- Do not treat `sample_tree_gate` as production decoder evidence.
+- Do not use the held-out surrogate selection F1 as stop-line task F1.
+- Do not spend another branch on random forest / deeper tree / MLP over the same saved candidate rows without a new feature or decoder contract.
+
+다음:
+
+- Keep this as negative evidence that the current gap4/top50 candidate sample aggregate features are not enough.
+- If stop-line continues, change candidate generation/readout or model-side selection semantics, not just the post-hoc gate class.
+- Otherwise shift back to Gate 3 lane predicted centerline stability while preserving the current broader composite baseline.
+
+## 110. 2026-05-12 Lane flip-TTA audit: centerline averaging gives a small broader lane gain
+
+맥락:
+
+- Section 108 made the current broader objective baseline by transplanting only the segment-MIL lane head onto the original stop/cross base and preserving stop-line PCA threshold plus hull crosswalk decode.
+- That baseline still failed task F1 success: broader lane/stop/cross F1 `0.5480 / 0.4235 / 0.6187`.
+- Prior lane probes showed GT centerline replacement has large headroom, while tangent-axis replacement and many row-scan cost/loss sweeps do not. This audit asks whether the predicted centerline map is unstable enough that horizontal flip TTA can recover some lane evidence without retraining.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-flip-tta-audit`
+- tool: `tools/probe_pv26_lane_flip_tta.py`
+- tests: `test/test_lane_flip_tta_probe.py`
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/exact_val128_current_best_epoch2/summary.json`
+- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/broader_val512_current_best_epoch2/summary.json`
+- The probe runs the same checkpoint and same lane60 postprocess path twice per batch: normal image and horizontal-flipped image.
+- It unflips only lane dense maps back into the original network coordinate frame. For tangent-axis maps, it also negates the x-axis channel after unflip.
+- The winning variant averages only `lane_seg_centerline_logits`. Stop-line and crosswalk predictions remain from the normal pass, so this is not a hidden stop/cross change.
+
+실행:
+
+- exact val128: `python3 tools/probe_pv26_lane_flip_tta.py --checkpoint <current-transplanted-composite> --source-run <source-run> --lane60-experiment core_centerline_refine_row_scan_tangent_link --dataset-root <dataset-root> --max-val-batches 128 --validation-epoch 2 --batch-size 4 --device auto --stop-line-mask-binary-threshold 0.8 --crosswalk-polygon-mode hull --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/exact_val128_current_best_epoch2`
+- broader val512: same command with `--max-val-batches 512 --variants baseline,flip_centerline_avg --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/broader_val512_current_best_epoch2`
+- verification: `python3 -m pytest -q test/test_lane_flip_tta_probe.py`
+
+Exact val128 result:
+
+| Variant | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` | `0.6296` | `0.5854` | `0.4364` | `0.5988` | `1200 / 510 / 1190` |
+| `baseline` | `0.6236` | `0.5660` | `0.4364` | `0.5988` | `1162 / 554 / 1228` |
+
+Broader val512 result:
+
+| Variant | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` | `0.6216` | `0.5577` | `0.4235` | `0.6187` | `4518 / 2206 / 4959` |
+| `baseline` | `0.6177` | `0.5480` | `0.4235` | `0.6187` | `4457 / 2333 / 5020` |
+
+판단:
+
+- Flip-centerline averaging is a real partial-positive, not just exact-subset noise: the broader lane F1 improves by `+0.0098`, TP increases by `+61`, FP decreases by `-127`, and FN decreases by `-61`.
+- The result supports the predicted-centerline-instability premise, but the gain is too small to close the lane target. Broader lane is still `0.0423` below 0.60.
+- Stop-line is unchanged and remains the primary bottleneck at `0.4235`.
+- This is a runtime/postprocess contract, not a new checkpoint or model-side representation fix.
+
+하지 말 것:
+
+- Do not call flip TTA a lane-family 0.6 solution.
+- Do not spend another branch on flip threshold/max/union sweeps unless there is a new centerline confidence or instance-selection premise. `flip_centerline_max` was worse than baseline on exact val128.
+- Do not merge TTA into default inference without accounting for the 2x lane-family forward cost and without a deployment/runtime decision.
+
+다음:
+
+- Treat `flip_centerline_avg` as the current broader objective baseline for comparison.
+- Lane still needs a stronger predicted-centerline instance recovery path to close `0.5577 -> 0.60`.
+- Stop-line still needs a new emit/select/readout contract to close `0.4235 -> 0.60`; flip TTA does not address that bottleneck.
+
+## 111. 2026-05-12 Stop-line flip-TTA audit: dense score/geometry averaging has no smoke signal
+
+맥락:
+
+- Section 110 showed lane centerline flip averaging gives a real but small broader lane gain.
+- The remaining largest bottleneck is still broader stop-line F1 `0.4235`.
+- This audit asks the parallel stop-line question: does a horizontal-flip forward pass stabilize stop-line dense score maps or geometry maps enough to justify a val128/broader replay?
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-flip-tta-audit`
+- tool: `tools/probe_pv26_stopline_flip_tta.py`
+- tests: `test/test_stopline_flip_tta_probe.py`
+- artifact smoke: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_flip_tta_audit_20260512/analysis_exports/smoke_val4_current_best_epoch2/summary.json`
+- The probe runs the same checkpoint and same lane60 postprocess path twice per batch: normal image and horizontal-flipped image.
+- It unflips stop-line dense score maps by width, center-offset x by `1 - x`, angle x by sign negation, and half-length by width.
+- Lane and crosswalk outputs remain from the normal pass, so this is not a hidden lane/crosswalk change.
+
+실행:
+
+- smoke val4 command used the current transplanted composite, `core_centerline_refine_row_scan_tangent_link`, validation epoch `2`, stop-line `mask=0.80`, and crosswalk `polygon_mode=hull`.
+- variants: `baseline`, `flip_stop_score_avg`, `flip_stop_geometry_avg`, `flip_stop_all_avg`.
+
+Smoke val4 result:
+
+| Variant | Objective | Lane F1 | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `baseline` | `0.6395` | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_stop_score_avg` | `0.6395` | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_stop_geometry_avg` | `0.6395` | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_stop_all_avg` | `0.6395` | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+
+판단:
+
+- All stop-line flip variants are identical to baseline on the smoke slice.
+- The slice is small, but the probe produced no positive signal at all, so expanding the same averaging contract to val128/broader is not the right next step.
+- This does not change the current broader best: lane/stop/cross F1 remains `0.5577 / 0.4235 / 0.6187` from Section 110.
+- Stop-line still needs a new emit/select/readout contract, not a simple symmetric score/geometry average.
+
+하지 말 것:
+
+- Do not spend another branch on stop-line flip score/geometry average variants without a new confidence, proposal-selection, or geometry-selection premise.
+- Do not interpret this smoke failure as evidence that lane flip TTA is invalid; Section 110 isolated lane centerline logits and did show broader lane gain.
+- Do not call current runtime TTA a lane-family success while stop-line remains at `0.4235`.
+
+다음:
+
+- Keep `flip_centerline_avg` as the current broader objective baseline.
+- Return to stop-line candidate selection/readout only if the axis changes materially.
+- Otherwise shift to lane predicted-centerline instance recovery, while preserving hull crosswalk and the current stop-line threshold contract.
+
+## 112. 2026-05-12 Lane flip-consistency instance evidence: broader lane partial-positive, still post-hoc
+
+맥락:
+
+- Section 110 showed flip-centerline averaging is a small broader lane partial-positive.
+- Section 111 showed stop-line flip averaging has no smoke signal.
+- The remaining lane question is whether normal/flip centerline agreement can act as an instance-level stability signal, instead of another centerline threshold/max/union sweep.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-flip-instance-evidence`
+- tool changed: `tools/probe_pv26_lane_instance_evidence.py`
+- test added: `test/test_lane_instance_evidence_probe.py`
+- new option: `--use-flip-consistency`
+- follow-up option: `--lane-flip-variant flip_centerline_avg`
+- The probe keeps the checkpoint and row-scan tangent decode fixed, runs a horizontal-flip forward pass, unflips lane dense outputs, and adds normal/flip centerline agreement and consensus features to the existing row-level lane instance evidence audit.
+- The follow-up can also apply the existing `flip_centerline_avg` lane dense merge before postprocess, then run the same read-only row gate on top of the current runtime lane baseline.
+- It is still read-only: task replay filters predicted lane instances by post-hoc feature thresholds or a logistic row classifier. It does not train a production decoder or checkpoint.
+
+Artifacts:
+
+- smoke val32: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/smoke_val32_current_best_epoch2/summary.json`
+- exact val128: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/exact_val128_current_best_epoch2/summary.json`
+- broader val512: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/broader_val512_current_best_epoch2/summary.json`
+- broader no-flip ablation: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/broader_val512_no_flip_ablation_epoch2/summary.json`
+- exact flip-centerline-avg baseline follow-up: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/exact_val128_flip_centerline_avg_instance_gate_epoch2/summary.json`
+- broader flip-centerline-avg baseline follow-up: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/broader_val512_flip_centerline_avg_instance_gate_epoch2/summary.json`
+
+Exact val128 result:
+
+| Split | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| heldout | baseline | `0.5843` | `603 / 262 / 596` | `0.4667` | `0.5952` |
+| heldout | logistic gate | `0.6002` | `566 / 121 / 633` | `0.4667` | `0.5952` |
+| heldout | center agreement mean | `0.5962` | `589 / 188 / 610` | `0.4667` | `0.5952` |
+| heldout | center consensus mean | `0.5945` | `601 / 222 / 598` | `0.4667` | `0.5952` |
+
+Broader val512 result:
+
+| Split | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| heldout | baseline | `0.5473` | `2186 / 1180 / 2436` | `0.3911` | `0.6054` |
+| heldout | logistic gate | `0.5660` | `2119 / 747 / 2503` | `0.3911` | `0.6054` |
+| heldout | flip center mean | `0.5587` | `2133 / 881 / 2489` | `0.3911` | `0.6054` |
+| heldout | center consensus mean | `0.5583` | `2132 / 883 / 2490` | `0.3911` | `0.6054` |
+
+Broader full split-count comparison:
+
+- baseline lane F1 `0.5480`, lane TP/FP/FN `4457 / 2333 / 5020`.
+- logistic gate lane F1 `0.5682`, lane TP/FP/FN `4332 / 1439 / 5145`.
+- The logistic gate removes `894` lane FP but also loses `125` TP and adds `125` FN.
+- Stop-line/crosswalk are unchanged by this lane-only replay and therefore do not solve the all-task gate.
+
+No-flip ablation:
+
+- The same broader val512 run without `--use-flip-consistency` gives logistic heldout lane F1 `0.5663`, TP/FP/FN `2122 / 750 / 2500`.
+- Full split-count no-flip logistic lane F1 is `0.5675`, TP/FP/FN `4327 / 1444 / 5150`.
+- This is essentially the same as the flip-consistency logistic result: heldout `0.5663` no-flip vs `0.5660` with flip features, full split-count `0.5675` no-flip vs `0.5682` with flip features.
+
+Flip-centerline-avg baseline follow-up:
+
+| Slice | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| exact val128 heldout | flip-centerline baseline | `0.6016` | `616 / 233 / 583` | `0.4667` | `0.5952` |
+| exact val128 heldout | logistic gate | `0.6125` | `588 / 133 / 611` | `0.4667` | `0.5952` |
+| broader val512 heldout | flip-centerline baseline | `0.5561` | `2212 / 1121 / 2410` | `0.3911` | `0.6054` |
+| broader val512 heldout | logistic gate | `0.5694` | `2171 / 832 / 2451` | `0.3911` | `0.6054` |
+
+- Full split-count broader logistic lane F1 is `0.5738`, TP/FP/FN `4455 / 1596 / 5022`, compared with the current flip-centerline runtime baseline `0.5577`, `4518 / 2206 / 4959`.
+- The gate removes `610` lane FP from the flip-centerline baseline but loses `63` TP and adds `63` FN.
+- Stop-line/crosswalk full split-count remain the current runtime values `0.4235 / 0.6187`, so the all-task gate still fails.
+
+판단:
+
+- This is a broader partial-positive for lane instance selection: the heldout val512 gain is `+0.0187` lane F1 and the full split-count gain is about `+0.0202` over the same non-TTA baseline.
+- It also shows the cost of the current post-hoc gate: precision rises, but recall falls. That is not enough to close broader lane `0.60`.
+- Flip-consistency single features are useful but not dominant by themselves. The no-flip ablation shows the logistic gain mostly comes from the existing map-local/shape features, not from the added flip-consistency columns.
+- Applying the same read-only gate on top of `flip_centerline_avg` is the best lane diagnostic so far, but broader full split-count lane F1 still stops at `0.5738`, and the exact heldout `0.6125` does not survive broader validation.
+- This is not comparable to a production model-side success unless the gate is turned into a train-time or decoder-side instance-stability contract and then replayed on the full broader protocol.
+
+하지 말 것:
+
+- Do not call the exact heldout `0.6002` lane F1 a lane-family 0.6 success. It is half-split, lane-only, post-hoc, and stop-line/crosswalk are below the all-task gate.
+- Do not call the exact heldout `0.6125` lane F1 from flip-centerline-avg plus logistic gate a lane-family success. Broader heldout is only `0.5694`, and stop-line remains the blocker.
+- Do not repeat static post-hoc lane instance threshold sweeps over the same feature rows.
+- Do not merge this as default inference. It is a diagnostic gate, not a deployed decoder.
+
+다음:
+
+- If continuing lane, use this as evidence for a model-side or decoder-side instance-stability contract that preserves recall while suppressing row-scan FP.
+- Do not make the next lane axis specifically about flip-consistency features; the broader ablation did not show meaningful incremental value over no-flip instance evidence.
+- Compare any such production attempt against both the current broader runtime baseline `0.5577 / 0.4235 / 0.6187` and the read-only diagnostic ceiling `0.5738 / 0.4235 / 0.6187`.
+- Stop-line remains the overall blocker and still needs a separate emit/select/readout contract.
+
+## 113. 2026-05-12 Stop-line GT sample-gate oracle: sample emission alone is not enough
+
+맥락:
+
+- Previous stop-line sample-gate work showed a surrogate split gain, but actual task replay did not transfer.
+- The remaining ambiguity was whether the failure was mostly sample-level emission or candidate ranking/geometry selection within samples that should emit.
+- This section adds an oracle diagnostic only: use GT stop-line sample presence to suppress emissions on negative samples, then compare non-oracle score/top-k ranking with local feature ranking.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-oracle-sample-gate-audit`
+- tool changed: `tools/probe_pv26_stopline_candidate_pool.py`
+- test changed: `test/test_pv26_threshold_probe.py`
+- new variant flag: `CandidateVariant.oracle_gt_sample_only`
+- new feature-rank support: `CandidateVariant.sort_feature`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_oracle_sample_gate_val512_epoch2/summary.json`
+- command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_stopline_candidate_pool.py \
+  --checkpoint "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt" \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --device auto \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --lane-segfirst-track-mode row_scan_tangent \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_oracle_sample_gate_val512_epoch2
+```
+
+Broader val512 result:
+
+| Variant | Stop-line F1 | TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| `baseline` | `0.4083` | `98 / 111 / 173` | `209` |
+| `max_top10_score_s080` | `0.4371` | `106 / 108 / 165` | `214` |
+| `gt_sample_gate_max_top10_score` | `0.4758` | `113 / 91 / 158` | `204` |
+| `gt_sample_gate_max_top10_score_s080` | `0.4743` | `106 / 70 / 165` | `176` |
+| `gt_sample_gate_gap4_max_top50_score_s080` | `0.4743` | `106 / 70 / 165` | `176` |
+| `gt_sample_gate_gap4_max_top50_mask_r4` | `0.4589` | `109 / 95 / 162` | `204` |
+| `gt_sample_gate_gap4_max_top50_selector_r4` | `0.4800` | `114 / 90 / 157` | `204` |
+| `oracle_max_top20_positive` | `0.6517` | `131 / 0 / 140` | `131` |
+| `gap4_oracle_max_top50_positive` | `0.6877` | `142 / 0 / 129` | `142` |
+
+판단:
+
+- Perfect GT sample presence improves score-threshold production from `0.4371` to `0.4758`, mostly by reducing FP while adding a few TP.
+- Adding the best tested local feature rank (`selector_r4_max`) only reaches `0.4800`; `mask_r4_max` is lower at `0.4589`.
+- This only barely clears the PCA broader reference `0.4699` and remains far below the `0.60` target.
+- The gap to oracle-positive candidate selection remains large: `0.4800` vs `0.6877`.
+- Therefore sample-level emission is a real source of FP, but it is not the dominant complete fix. Current-row local feature reranking is also insufficient; candidate generation/readout geometry remains the blocker.
+
+하지 말 것:
+
+- Do not treat GT sample-gate oracle-only replay as a production decoder.
+- Do not run another sample-emission classifier/threshold or same-row local feature-rank sweep as the next stop-line path.
+- Do not claim stop-line can reach 0.6 by solving sample presence only.
+
+다음:
+
+- Stop-line needs a materially different emit/select/readout contract that changes candidate generation or geometry selection, not only sample-level emission or same-row feature ranking.
+- If no such stop-line contract is ready, shift back to lane instance stability while keeping stop-line/crosswalk retention explicit.
+
+## 114. 2026-05-12 Lane instance oracle selection: current candidates can pass lane with perfect FP removal
+
+맥락:
+
+- Section 112 showed row-scan lane instance evidence has real held-out signal, but learned/post-hoc gates trade away TP and broader full lane F1 still stops below `0.60`.
+- The unresolved lane question is whether the current `flip_centerline_avg` candidate set itself lacks enough lane TP, or whether a stronger selector/readout could in principle push lane above `0.60`.
+- This section adds an oracle diagnostic only: keep the current checkpoint, row-scan tangent decode, flip-centerline average, stop-line retention override, and crosswalk hull retention fixed, then use GT matching to keep only lane predictions already matched as TP.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-instance-oracle-selection-audit`
+- tool changed: `tools/probe_pv26_lane_instance_evidence.py`
+- test changed: `test/test_lane_instance_evidence_probe.py`
+- new helper: `_oracle_tp_scores_by_row`
+- new option: `--skip-single-feature-replays`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_oracle_selection_20260512/analysis_exports/broader_val512_flip_centerline_avg_oracle_selection_retention_epoch2/summary.json`
+- command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_lane_instance_evidence.py \
+  --checkpoint "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt" \
+  --source-run "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/exhaustive_od_lane_default_20260505_032217" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device auto \
+  --lane-flip-variant flip_centerline_avg \
+  --stop-line-mask-binary-threshold 0.80 \
+  --stop-line-min-instance-score 0.94 \
+  --stop-line-presence-threshold 0.0 \
+  --crosswalk-polygon-mode hull \
+  --task-threshold-quantiles 21 \
+  --skip-single-feature-replays \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_oracle_selection_20260512/analysis_exports/broader_val512_flip_centerline_avg_oracle_selection_retention_epoch2
+```
+
+Broader val512 result:
+
+| Variant | Split | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 | Objective proxy |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `row_scan_baseline` | full | `0.5577` | `4518 / 2206 / 4959` | `0.4235` | `0.6187` | `0.5296` |
+| `oracle_keep_tp_only` | full | `0.6457` | `4518 / 0 / 4959` | `0.4235` | `0.6187` | `0.5736` |
+| `row_scan_baseline` | held-out | `0.5561` | `2212 / 1121 / 2410` | `0.3911` | `0.6054` | `0.5165` |
+| `logistic_task_threshold` | held-out | `0.5700` | `2173 / 830 / 2449` | `0.3911` | `0.6054` | `0.5234` |
+| `oracle_keep_tp_only` | held-out | `0.6474` | `2212 / 0 / 2410` | `0.3911` | `0.6054` | `0.5621` |
+
+판단:
+
+- Current row-scan/flip candidate generation has enough matched lane predictions for a perfect selector to pass lane `0.60`: full lane F1 `0.6457`.
+- The lane oracle gain is entirely FP removal in this diagnostic: TP remains `4518`, FN remains `4959`, FP drops `2206 -> 0`.
+- The learned logistic/post-hoc gate still cannot approximate that oracle: held-out lane F1 is only `0.5700`, and it loses TP `2212 -> 2173`.
+- This means the next lane-side production path should not be another static threshold replay. It needs a recall-preserving learned/decoder-side instance selector that suppresses FP without dropping matched TP.
+- This does not solve the active goal because stop-line remains `0.4235` full and `0.3911` held-out under the same retention config.
+
+하지 말 것:
+
+- Do not cite `oracle_keep_tp_only` as production lane success; it uses GT matching.
+- Do not repeat post-hoc lane row threshold/logistic sweeps over the same feature rows.
+- Do not ignore stop-line because lane has an oracle selector ceiling; all-task success still requires stop-line `>=0.60`.
+
+다음:
+
+- If lane is continued, turn the oracle gap into a production contract: learned/decoder-side lane instance selection with explicit recall preservation, then verify exact, broader, and stop-line/crosswalk retention.
+- If stop-line is continued, it still needs a candidate generation/readout contract change rather than current-row threshold/sample-gate replay.
+
+## 115. 2026-05-12 Lane row-scan duplicate suppression: near-duplicate geometry is not the oracle gap
+
+맥락:
+
+- Section 114 showed the current `flip_centerline_avg` row-scan candidate set has enough matched lane predictions for full lane F1 `0.6457` if a perfect selector removes all FP.
+- The smallest plausible production-side explanation was that a material fraction of the `2206` full-split FP might be same-class/same-type duplicate rows from row-scan over-emission.
+- This section tests only that one axis: keep the current checkpoint, row-scan tangent decode, flip-centerline average, stop-line retention override, and crosswalk hull retention fixed, then suppress same-schema lane rows whose mean point distance is `<=24` pixels.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-row-scan-duplicate-suppression`
+- tool changed: `tools/probe_pv26_lane_instance_evidence.py`
+- test changed: `test/test_lane_instance_evidence_probe.py`
+- new helpers: `_suppress_duplicate_lane_rows`, `_suppress_duplicate_lane_prediction_samples`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_duplicate_suppression_20260512/analysis_exports/broader_val512_flip_centerline_avg_duplicate_d24_retention_epoch2/summary.json`
+- command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_lane_instance_evidence.py \
+  --checkpoint "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt" \
+  --source-run "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/exhaustive_od_lane_default_20260505_032217" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device auto \
+  --lane-flip-variant flip_centerline_avg \
+  --stop-line-mask-binary-threshold 0.80 \
+  --stop-line-min-instance-score 0.94 \
+  --stop-line-presence-threshold 0.0 \
+  --crosswalk-polygon-mode hull \
+  --task-threshold-quantiles 21 \
+  --skip-single-feature-replays \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_duplicate_suppression_20260512/analysis_exports/broader_val512_flip_centerline_avg_duplicate_d24_retention_epoch2
+```
+
+Broader val512 result:
+
+| Variant | Split | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 | Objective proxy |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `row_scan_baseline` | full | `0.5577` | `4518 / 2206 / 4959` | `0.4235` | `0.6187` | `0.5296` |
+| `lane_duplicate_suppress_d24` | full | `0.5578` | `4518 / 2205 / 4959` | `0.4235` | `0.6187` | `0.5297` |
+| `row_scan_baseline` | held-out | `0.5561` | `2212 / 1121 / 2410` | `0.3911` | `0.6054` | `0.5165` |
+| `lane_duplicate_suppress_d24` | held-out | `0.5562` | `2212 / 1120 / 2410` | `0.3911` | `0.6054` | `0.5165` |
+| `logistic_task_threshold` | held-out | `0.5700` | `2173 / 830 / 2449` | `0.3911` | `0.6054` | `0.5234` |
+| `oracle_keep_tp_only` | full | `0.6457` | `4518 / 0 / 4959` | `0.4235` | `0.6187` | `0.5736` |
+
+판단:
+
+- `d24` duplicate suppression removes only one full-split FP: `2206 -> 2205`.
+- Lane F1 gain is noise-level: full `0.557743 -> 0.557778`, held-out `0.556128 -> 0.556198`.
+- TP/FN are unchanged, and stop-line/crosswalk retention is unchanged by construction.
+- Therefore the oracle selector gap is not primarily near-duplicate row-scan emissions.
+- Same-schema distance dedupe is a no-op/negative evidence path, not a production lane 0.6 fix.
+
+하지 말 것:
+
+- Do not run a distance-threshold sweep over the same duplicate-suppression contract unless a new diagnostic shows near-duplicate FP are common.
+- Do not present duplicate suppression as meaningful progress toward lane `0.60`; it removes one FP on broader val512.
+- Do not use this to weaken the Section 114 conclusion: the remaining lane gap still requires a recall-preserving selector/readout, not a simple dedupe.
+
+다음:
+
+- Lane-side work should move from distance dedupe to a model-side or decoder-side instance selection contract that can approach the oracle FP-removal gap without TP loss.
+- Stop-line remains the all-task bottleneck at broader full F1 `0.4235`; if resumed, it needs a different candidate generation/readout contract, not sample-gate or same-row feature ranking.
+
+## 116. 2026-05-12 Lane per-sample top-k cap: emission cap gives only a small lane gain
+
+맥락:
+
+- Section 114 showed full lane F1 could reach `0.6457` if a perfect selector removed every FP while preserving TP.
+- Section 115 showed near-duplicate row-scan lanes explain almost none of the FP gap.
+- This section tests one more simple production-plausible lane readout axis: maybe row-scan over-emits too many lanes per sample, and capping each sample to its top-scored candidates can remove FP with limited TP loss.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-sample-topk-cap-audit`
+- tool changed: `tools/probe_pv26_lane_instance_evidence.py`
+- test changed: `test/test_lane_instance_evidence_probe.py`
+- new helper: `_filter_prediction_samples_topk`
+- variant: `lane_sample_top5_logistic`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_sample_topk_cap_20260512/analysis_exports/broader_val512_flip_centerline_avg_sample_top5_logistic_retention_epoch2/summary.json`
+- command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_lane_instance_evidence.py \
+  --checkpoint "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt" \
+  --source-run "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/exhaustive_od_lane_default_20260505_032217" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device auto \
+  --lane-flip-variant flip_centerline_avg \
+  --stop-line-mask-binary-threshold 0.80 \
+  --stop-line-min-instance-score 0.94 \
+  --stop-line-presence-threshold 0.0 \
+  --crosswalk-polygon-mode hull \
+  --task-threshold-quantiles 21 \
+  --skip-single-feature-replays \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_sample_topk_cap_20260512/analysis_exports/broader_val512_flip_centerline_avg_sample_top5_logistic_retention_epoch2
+```
+
+Broader val512 result:
+
+| Variant | Split | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 | Mean F1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `row_scan_baseline` | full | `0.5577` | `4518 / 2206 / 4959` | `0.4235` | `0.6187` | `0.5333` |
+| `lane_sample_top5_logistic` | full | `0.5618` | `4490 / 2016 / 4987` | `0.4235` | `0.6187` | `0.5347` |
+| `row_scan_baseline` | held-out | `0.5561` | `2212 / 1121 / 2410` | `0.3911` | `0.6054` | `0.5175` |
+| `lane_sample_top5_logistic` | held-out | `0.5596` | `2201 / 1043 / 2421` | `0.3911` | `0.6054` | `0.5187` |
+| `logistic_task_threshold` | held-out | `0.5700` | `2173 / 830 / 2449` | `0.3911` | `0.6054` | `0.5222` |
+| `oracle_keep_tp_only` | full | `0.6457` | `4518 / 0 / 4959` | `0.4235` | `0.6187` | `0.5626` |
+
+판단:
+
+- Top5 capping does remove lane FP (`2206 -> 2016` full), but it also loses TP (`4518 -> 4490`).
+- Full lane F1 gain is only `+0.0041`, and held-out gain is only `+0.0035`.
+- It remains below the held-out logistic threshold diagnostic (`0.5700`) and far below the oracle selector ceiling (`0.6457`).
+- Therefore the row-scan oracle gap is not mainly a simple per-sample over-emission count problem.
+
+하지 말 것:
+
+- Do not turn this into a top-k sweep unless a new diagnostic shows sample-level over-emission count is the dominant FP source.
+- Do not promote sample top-k capping as a lane 0.6 path; it remains at full lane F1 `0.5618`.
+- Do not ignore stop-line: all-task success is still blocked by stop-line F1 `0.4235`.
+
+다음:
+
+- Lane-side work still needs a recall-preserving instance selector/readout that does more than cap sample emissions.
+- Stop-line remains the primary active bottleneck and needs a different candidate generation/readout contract.
+
+## 117. 2026-05-12 Stop-line candidate probe sync: current postprocess overrides are available on the latest branch
+
+맥락:
+
+- The current lane/stop/cross comparison contract uses evaluator-only stop-line retention overrides and hull crosswalk decode.
+- The latest lane-side branches carried the newer lane evidence docs and tooling, but their stop-line candidate-pool probe did not include the current-postprocess override args from `exp/lane-family-f1/stopline-rich-competition-replay`.
+- Starting another stop-line readout experiment without these args would compare against the wrong baseline contract.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-current-postprocess-probe-sync`
+- tool changed: `tools/probe_pv26_stopline_candidate_pool.py`
+- test changed: `test/test_pv26_threshold_probe.py`
+- added candidate-pool probe args: `--stop-line-mask-binary-threshold`, `--stop-line-min-instance-score`, `--stop-line-presence-threshold`, `--stop-line-component-gate-source`, and crosswalk postprocess override flags including `--crosswalk-polygon-mode`.
+- the probe now routes those args through `_postprocess_override_config` before building baseline predictions and candidate context.
+
+검증:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_pv26_threshold_probe.py`
+- `python3 -m pytest -q test/test_pv26_threshold_probe.py`
+- `git diff --check`
+
+판단:
+
+- This is not a new metric result and does not move the active F1 gate by itself.
+- It makes the next stop-line candidate/readout experiment comparable to the current broader runtime contract (`lane/stop/cross = 0.5577 / 0.4235 / 0.6187`) instead of the older baseline.
+
+## 118. 2026-05-12 Stop-line current-composite candidate-pool audit: oracle headroom remains, non-oracle selection still fails
+
+맥락:
+
+- Section 117 only synced the probe surface. This section runs the synced probe against the current broader composite checkpoint and postprocess contract.
+- The question is whether the current lane-head transplant + original stop-line/crosswalk bundle changes the stop-line candidate-pool story enough to reopen current-row feature selection.
+- This is read-only. It does not change checkpoint weights, model code, loss, sampler, feeder, or production postprocess defaults.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-current-candidate-pool-audit`
+- base: `exp/lane-family-f1/stopline-current-postprocess-probe-sync`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_val512_epoch2/{summary.json,variants.csv,candidate_features.csv}`
+- auto-downloaded `yolo26s.pt` was moved to `runs/removable/stopline-current-candidate-pool-audit-yolo26s.pt` instead of being deleted.
+
+Command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_stopline_candidate_pool.py \
+  --checkpoint "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt" \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --device auto \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --lane-segfirst-track-mode row_scan_tangent \
+  --stop-line-mask-binary-threshold 0.80 \
+  --stop-line-min-instance-score 0.94 \
+  --stop-line-presence-threshold 0.0 \
+  --crosswalk-polygon-mode hull \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_val512_epoch2
+```
+
+검증:
+
+- `max_val_batches=512`, `processed_batches=512`, `variant_count=30`.
+- The probe wrote `summary.json`, `variants.csv`, and `candidate_features.csv`.
+
+Broader val512 result:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 | Mean F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `gap4_oracle_max_top50_positive` | `0.6877` | `142 / 0 / 129` | `0.5480` | `0.6187` | `0.6181` |
+| `gap6_oracle_max_top20_positive` | `0.6683` | `136 / 0 / 135` | `0.5480` | `0.6187` | `0.6117` |
+| `oracle_max_top20_positive` | `0.6517` | `131 / 0 / 140` | `0.5480` | `0.6187` | `0.6061` |
+| `oracle_max_top10_positive` | `0.6450` | `129 / 0 / 142` | `0.5480` | `0.6187` | `0.6039` |
+| `gt_sample_gate_gap4_max_top50_selector_r4` | `0.4800` | `114 / 90 / 157` | `0.5480` | `0.6187` | `0.5489` |
+| `gt_sample_gate_max_top10_score` | `0.4758` | `113 / 91 / 158` | `0.5480` | `0.6187` | `0.5475` |
+| `max_top10_score_s080` | `0.4371` | `106 / 108 / 165` | `0.5480` | `0.6187` | `0.5346` |
+| `baseline` | `0.4235` | `101 / 105 / 170` | `0.5480` | `0.6187` | `0.5300` |
+
+판단:
+
+- Current-composite stop-line candidate generation still has oracle headroom: `gap4_oracle_max_top50_positive` reaches stop-line F1 `0.6877`.
+- The best non-oracle / semi-oracle selector in this audit is still only `0.4800`, and the best production-plausible score threshold row is `0.4371`.
+- The current composite therefore does not solve stop-line by replaying the existing candidate-pool/readout families. The remaining gap is still candidate selection / emit / readout, not lack of oracle-recoverable candidates.
+- This audit also does not solve lane: lane F1 remains `0.5480`, below `0.60`.
+
+하지 말 것:
+
+- Do not repeat the synced current-composite candidate-pool audit as another score, length, consensus, sample-gate, or same-row local-feature sweep.
+- Do not treat oracle-positive candidate selection as deployable evidence.
+- Do not promote the `0.6181` mean F1 oracle row as success; lane is still below `0.60`, and the stop-line row uses GT candidate selection.
+
+다음:
+
+- Stop-line still needs a genuinely different model-side select/emit/readout contract if it is continued.
+- If that contract is not ready, shift effort back to lane predicted-centerline instance stability while preserving this stop-line/crosswalk retention contract.
+
+## 119. 2026-05-12 Lane instance-validator contract: opt-in model-side candidate gate is wired
+
+맥락:
+
+- Sections 114-116 closed simple lane postprocess explanations: duplicate suppression and sample top-k caps do not recover the row-scan oracle gap.
+- Section 118 keeps the stop-line status anchored: current-composite stop-line has oracle candidate headroom, but existing non-oracle readout remains below target.
+- The next lane-side path therefore needs a model-side candidate selector, not another evaluator-only threshold/top-k sweep.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-instance-validator-contract`
+- base: `exp/lane-family-f1/stopline-current-candidate-pool-audit`
+- model head: `LaneSegFirstHead` now emits `lane_seg_instance_validator_logits`.
+- loss: `lane_segfirst_instance_validator_*` fields add opt-in component-level supervision over predicted centerline candidates:
+  - positive predicted components overlap GT centerline core.
+  - negative predicted components avoid GT support and ignore masks.
+  - ambiguous support/ignore overlaps are skipped to protect recall.
+- decode: `lane_segfirst_track_mode=row_scan_tangent_instance_validator` masks row-scan tangent candidates by `instance_validator >= 0.5`.
+- config/CLI: `TrainDefaultsConfig`, phase trainer construction, criterion export, and scenario override parsing all carry the new fields.
+- preset: `core_centerline_refine_row_scan_tangent_instance_validator` keeps the current lane/stop/cross loss balance and adds `lane_segfirst_instance_validator_weight=0.35`.
+
+검증:
+
+- `python3 -m py_compile model/net/lane_head_segfirst.py model/engine/lane_segfirst_vectorizer.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_lane_segfirst_vectorizer.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`
+- `python3 -m pytest -q test/test_lane_segfirst_vectorizer.py test/test_pv26_loss_runtime.py::PV26LossRuntimeTests::test_lane_instance_validator_loss_is_opt_in_and_backpropagates test/test_run_pv26_train.py::RunPV26TrainScenarioTests::test_load_meta_train_scenario_applies_user_yaml_overrides`
+- `git diff --check`
+- 2-train-batch / 2-val-batch smoke completed with weights-only handoff from the current lane60 source run.
+
+Smoke command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+SOURCE_RUN="$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
+python3 tools/run_pv26_lane60_probe.py \
+  --source-run "$SOURCE_RUN" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --experiment core_centerline_refine_row_scan_tangent_instance_validator \
+  --epochs 1 \
+  --train-batches 2 \
+  --val-batches 2 \
+  --batch-size 2 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Smoke result:
+
+- status: `completed`
+- phase: `lane_family_finetune_core_centerline_refine_row_scan_tangent_instance_validator`
+- train batches / val batches: `2 / 2`
+- best phase objective: `0.4742`
+- tiny-slice task F1: lane `0.2000`, stop-line `0.0000`, crosswalk `0.6667`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_192740`
+- auto-downloaded `yolo26s.pt` copies were moved to `runs/removable/` instead of being deleted.
+
+판단:
+
+- This is an implementation/contract success, not a metric success. The tiny-slice smoke only proves that the new head, opt-in loss, config propagation, checkpoint migration, and postprocess mode run together.
+- The lane F1 target is still open. The active broader lane number remains below `0.60`, and this branch has not yet produced a full held-out improvement.
+- The new path is materially different from the closed postprocess sweeps because it trains a candidate-validity signal on predicted components before row-scan tangent decode.
+
+하지 말 것:
+
+- Do not compare the 2-batch smoke F1 to held-out/full validation results.
+- Do not use `--device auto` with this probe until the launcher normalizes it before constructing `torch.device`.
+- Do not stack additional lane knobs onto the first real run; test the validator contract as a single axis.
+
+다음:
+
+- Run the instance-validator preset as the next single-axis lane experiment using the current lane60 source run and the same stop-line/crosswalk retention contract.
+- If full validation does not improve lane precision without hurting recall, inspect validator logits against row-scan FP components before changing loss weight or threshold.
+
+## 120. 2026-05-12 Lane instance-validator exact gate: contract runs, but lane regresses below current references
+
+맥락:
+
+- Section 119 only proved the new model-side validator contract was wired.
+- The next gate is the standard exact-val128 lane60 probe: `2` epochs, `512` train batches, `128` val batches, batch size `4`.
+- The comparison is against existing exact references, especially tangent-link, row-distribution-only, and segment-MIL lane-head-only.
+
+구현:
+
+- branch: `exp/lane-family-f1/lane-instance-validator-contract`
+- experiment: `core_centerline_refine_row_scan_tangent_instance_validator`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_193428`
+- auto-downloaded `yolo26s.pt` copy was moved to `runs/removable/lane-instance-validator-contract-yolo26s-exact-val128.pt` instead of being deleted.
+
+Command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+SOURCE_RUN="$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
+python3 tools/run_pv26_lane60_probe.py \
+  --source-run "$SOURCE_RUN" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --experiment core_centerline_refine_row_scan_tangent_instance_validator \
+  --epochs 2 \
+  --train-batches 512 \
+  --val-batches 128 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+검증:
+
+- status: `completed`
+- completed phase: `lane_family_finetune_core_centerline_refine_row_scan_tangent_instance_validator`
+- completed epochs: `2`
+- best checkpoint: `phase_4/checkpoints/best.pt`
+- no non-finite loss / OOM / checkpoint migration failure observed.
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5854` | `0.5338` | `0.2000` | `0.6790` | `1043 / 530 / 1292` | `10 / 35 / 45` |
+| 2 | `0.6143` | `0.5523` | `0.4522` | `0.5854` | `1099 / 491 / 1291` | `26 / 29 / 34` |
+
+Reference comparison:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `row_scan_tangent_link` | `0.6187` | `0.5633` | `0.4483` | `0.5854` | `1121 / 469 / 1269` |
+| `row_scan_tangent_row_distribution` | `0.6175` | `0.5659` | `0.4483` | `0.5854` | `1127 / 466 / 1263` |
+| `row_scan_tangent_segment_mil_lane_head_only` | `0.6193` | `0.5660` | `0.4483` | `0.5926` | `1162 / 554 / 1228` |
+| `row_scan_tangent_instance_validator` | `0.6143` | `0.5523` | `0.4522` | `0.5854` | `1099 / 491 / 1291` |
+
+판단:
+
+- The instance-validator contract is runnable at standard exact-val128 scale.
+- It does not pass the expansion gate. Objective `0.6143` is below tangent-link `0.6187`, row-distribution `0.6175`, and segment-MIL lane-head-only `0.6193`.
+- Lane F1 regresses to `0.5523`, below all three current exact lane references. FP falls relative to segment-MIL lane-head-only, but TP also falls and FN rises.
+- Stop-line F1 `0.4522` is a small exact-slice improvement over tangent-link `0.4483`, but it is not enough to offset lane regression and does not address the broader stop-line bottleneck.
+
+하지 말 것:
+
+- Do not broaden this `weight=0.35`, threshold `0.45` validator run to val512.
+- Do not stack validator with other lane losses before inspecting whether the validator is rejecting true lane components.
+- Do not treat the epoch-1 crosswalk `0.6790` task-best as success; the selected epoch-2 checkpoint falls back to `0.5854`, and the active goal requires lane/stop/cross all `>=0.60`.
+
+다음:
+
+- Inspect validator logits against row-scan FP and FN components before changing weight or threshold.
+- If the validator rejects true positives, the next lane axis should not be a stronger validator threshold; it should target predicted centerline recall/coverage.
+- Stop-line remains the larger goal blocker and still needs a new model-side select/emit/readout contract.
+
+## 121. 2026-05-12 Lane validator-logit audit: oracle selector headroom exists, learned validator is too weak as a gate
+
+맥락:
+
+- Section 120 closed the first exact-val128 instance-validator training gate because lane F1 regressed below current references.
+- The remaining question was whether the new validator logits contain a usable TP/FP separation signal that could justify a threshold or loss-weight adjustment.
+- To avoid measuring the already-gated decode against itself, this audit uses the failed validator checkpoint but generates row candidates with the existing `core_centerline_refine_row_scan_tangent_link` vectorizer.
+
+구현:
+
+- `tools/probe_pv26_lane_instance_evidence.py` now records `instance_validator` map features when a checkpoint emits `lane_seg_instance_validator_logits`.
+- If the checkpoint does not emit the validator map, the evidence probe keeps the previous feature surface by filling validator features with ones.
+- Added validator mask/point statistics to the logistic feature set and single-feature threshold replay list.
+- Regression coverage: `test/test_lane_instance_evidence_probe.py` asserts the validator feature surface is present.
+
+Artifact:
+
+- source checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_193428/phase_4/checkpoints/best.pt`
+- audit output: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_193428/analysis_exports/validator_logits_on_tangent_candidates_val128_epoch2`
+- copied root `yolo26s.pt` was moved to `runs/removable/lane-instance-validator-contract-yolo26s-validator-diagnostic.pt` instead of being deleted.
+
+Command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+SOURCE_RUN="$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
+CHECKPOINT="runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_193428/phase_4/checkpoints/best.pt"
+python3 tools/probe_pv26_lane_instance_evidence.py \
+  --checkpoint "$CHECKPOINT" \
+  --source-run "$SOURCE_RUN" \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --max-val-batches 128 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --steps 1000 \
+  --task-threshold-quantiles 21 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_instance_validator_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_193428/analysis_exports/validator_logits_on_tangent_candidates_val128_epoch2
+```
+
+결과:
+
+| Replay | Split | Lane F1 | Lane P/R | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| baseline row-scan tangent candidates | heldout | `0.5576` | `0.6971 / 0.4646` | `557 / 242 / 642` | `0.5246` | `0.5542` |
+| best validator-only feature threshold | heldout | `0.5577` | `0.7194 / 0.4554` | `546 / 213 / 653` | `0.5246` | `0.5542` |
+| logistic all-feature threshold | heldout | `0.5649` | `0.8157 / 0.4320` | `518 / 117 / 681` | `0.5246` | `0.5542` |
+| top-5 logistic sample cap | heldout | `0.5619` | `0.7128 / 0.4637` | `556 / 224 / 643` | `0.5246` | `0.5542` |
+| oracle TP-only selector | heldout | `0.6344` | `1.0000 / 0.4646` | `557 / 0 / 642` | `0.5246` | `0.5542` |
+
+Validator feature signal:
+
+| Feature | Heldout AUC | Heldout AP | Heldout lane F1 after task threshold |
+| --- | ---: | ---: | ---: |
+| `validator_mask_mean` | `0.7298` | `0.8540` | `0.5576` |
+| `validator_mask_q10` | `0.7168` | `0.8500` | `0.5576` |
+| `validator_point_mean` | `0.7462` | `0.8639` | `0.5577` |
+| `validator_point_q10` | `0.7396` | `0.8598` | `0.5576` |
+
+판단:
+
+- The oracle selector still shows lane FP headroom: with the same candidate recall, perfect FP removal would lift heldout lane F1 to `0.6344`.
+- The learned validator logits are not strong enough to claim that headroom. The best validator-only threshold gains only `+0.0002` lane F1 over heldout baseline and loses `11` TP while removing `29` FP.
+- Logistic replay can remove more FP, but it trades recall for precision (`557 -> 518` TP, `642 -> 681` FN) and is a post-hoc row evidence classifier, not a production model-side lane contract.
+- Stop-line and crosswalk are unchanged by this lane audit, so the broader all-task goal is still blocked by stop-line first and lane second.
+
+하지 말 것:
+
+- Do not tune `lane_segfirst_instance_validator_weight`, `lane_segfirst_instance_validator_threshold`, or validator-logit thresholds around this checkpoint.
+- Do not broaden the validator checkpoint to val512.
+- Do not treat logistic row evidence replay as a production lane selector.
+
+다음:
+
+- Close the current instance-validator axis.
+- For lane, only continue if the next branch changes the model-side selector signal itself, not just a threshold over the current validator logits.
+- For the global F1 `>=0.60` goal, prioritize stop-line select/emit/readout because the current broader composite is still lane/stop/cross `0.5577 / 0.4235 / 0.6187`.
+
+## 122. 2026-05-12 Stop-line candidate manifest audit: make current-composite FP/misrank samples traceable
+
+맥락:
+
+- Section 118 showed current-composite stop-line candidate generation still has oracle headroom, but non-oracle selection remains far below the F1 `0.60` target.
+- The existing `candidate_features.csv` had batch/sample indices and candidate features, but not stable sample ids, image paths, GT points, or candidate points.
+- That made it hard to visually separate three different failure modes: high-confidence GT-negative FP, positive-sample wrong-candidate selection, and samples where no oracle-positive candidate is present.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-manifest-audit`
+- `tools/probe_pv26_stopline_candidate_pool.py` now adds manifest columns to `candidate_features.csv`:
+  - `sample_id`
+  - `dataset_key`
+  - `image_path`
+  - `gt_stop_line_count`
+  - `gt_stop_line_points_json`
+  - `candidate_points_json`
+- New visualizer: `tools/visualize_pv26_stopline_candidate_manifest.py`
+- Visualizer buckets:
+  - `gt_negative_top_fp`
+  - `positive_sample_misrank`
+  - `positive_sample_no_oracle_candidate`
+  - `positive_sample_top_oracle`
+
+Artifacts:
+
+- manifest probe output: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2`
+- visual audit output: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_visual_audit_val512_epoch2`
+- auto-downloaded `yolo26s.pt` was moved to `runs/removable/stopline-candidate-manifest-audit-yolo26s.pt` instead of being deleted.
+
+Probe command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_stopline_candidate_pool.py \
+  --checkpoint "$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt" \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --device cuda:0 \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --lane-segfirst-track-mode row_scan_tangent \
+  --stop-line-mask-binary-threshold 0.80 \
+  --stop-line-min-instance-score 0.94 \
+  --stop-line-presence-threshold 0.0 \
+  --crosswalk-polygon-mode hull \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2
+```
+
+Visual audit command:
+
+```bash
+python3 tools/visualize_pv26_stopline_candidate_manifest.py \
+  --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2/candidate_features.csv \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_visual_audit_val512_epoch2 \
+  --proposal-source max \
+  --proposal-min-gap 4.0 \
+  --top-k 50 \
+  --max-per-bucket 16 \
+  --max-width 960
+```
+
+검증:
+
+- `processed_batches=512`
+- `candidate_count=15629`
+- `candidate_oracle_positive_count=4683`
+- `candidate_features.csv` includes all six manifest columns listed above.
+- Visual audit wrote `64` overlays: `16` per bucket.
+- Current-composite metrics remain unchanged from Section 118:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `gap4_oracle_max_top50_positive` | `0.6877` | `142 / 0 / 129` | `0.5480` | `0.6187` |
+| `gt_sample_gate_gap4_max_top50_selector_r4` | `0.4800` | `114 / 90 / 157` | `0.5480` | `0.6187` |
+| `max_top10_score_s080` | `0.4371` | `106 / 108 / 165` | `0.5480` | `0.6187` |
+| `baseline` | `0.4235` | `101 / 105 / 170` | `0.5480` | `0.6187` |
+
+판단:
+
+- This is not an F1 improvement and not a gate pass.
+- It makes the next stop-line contract reviewable by sample id and image, instead of relying only on aggregate candidate features.
+- The metric story is unchanged: oracle-positive selection has enough stop-line headroom, but current non-oracle selection still fails.
+
+다음:
+
+- Inspect the visual audit before implementing another stop-line select/emit/readout branch.
+- If the dominant bucket is GT-negative high-confidence markings, the next branch needs stronger negative/sample-level suppression without killing true positive samples.
+- If the dominant bucket is positive-sample misrank or no-oracle-candidate, the next branch should change candidate generation/readout rather than another post-hoc threshold.
+
+## 123. 2026-05-12 Stop-line hard-negative sampler short run: negative exposure does not pass the gate
+
+맥락:
+
+- Section 122 made the current-composite stop-line candidate failures traceable by sample id, image path, GT points, and candidate points.
+- The visual audit exposed a concrete feeder-side premise worth testing: many high-score stop-line emissions come from stop-line-capable lane-source images with no stop-line GT.
+- This section tests only that premise: give the trainer an explicit `stopline_negative` bucket and do not change the model, decode contract, loss weights, or lane/crosswalk retention settings.
+
+구현:
+
+- branch: `exp/lane-family-f1/stopline-candidate-manifest-audit`
+- `model/data/sampler.py` adds `stopline_negative` aliases for task-positive sampling.
+- The `stopline_negative` source mask maps to `stop_line`, then accepts samples where the source can supervise stop-line but the scene has no stop-line GT.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_stopline_hard_negative_sampler`.
+- The probe keeps the row-scan/tangent/core lane contract, `lane_family_heads_only` freeze policy, LR, and lane/stop-line/crosswalk loss weights fixed.
+- The only training-data contract change is `task_positive_task=multi:lane,stopline,stopline_negative,crosswalk` with `task_positive_fraction=1.0`.
+- Regression coverage verifies the new sampler bucket and the probe preset contract.
+
+Command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+SOURCE_RUN="$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
+python3 tools/run_pv26_lane60_probe.py \
+  --source-run "$SOURCE_RUN" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --experiment core_centerline_refine_row_scan_tangent_stopline_hard_negative_sampler \
+  --epochs 2 \
+  --train-batches 512 \
+  --val-batches 128 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Artifacts:
+
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stopline_hard_negative_sampler_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_204742`
+- history: `phase_4/history/epochs.jsonl`
+- summary: `summary.json`
+- best checkpoint: `phase_4/checkpoints/best.pt`
+- auto-downloaded root `yolo26s.pt` was moved to `runs/removable/stopline-hard-negative-sampler-yolo26s.pt` instead of being deleted.
+
+검증:
+
+- status: `completed`
+- completed phase: `lane_family_finetune_core_centerline_refine_row_scan_tangent_stopline_hard_negative_sampler`
+- completed epochs: `2`
+- best epoch: `2`
+- best phase objective: `0.6063165291`
+- best checkpoint: `phase_4/checkpoints/best.pt`
+- runtime had no non-finite loss, OOM, or skipped optimizer steps in the observed logs.
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5869` | `0.5380` | `0.2115` | `0.6667` | `1040 / 491 / 1295` | `11 / 38 / 44` | `53 / 23 / 30` |
+| 2 | `0.6063` | `0.5475` | `0.4561` | `0.5644` | `1072 / 454 / 1318` | `26 / 28 / 34` | `46 / 36 / 35` |
+
+Reference comparison:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `row_scan_tangent_link` exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` |
+| `row_scan_tangent_segment_mil_lane_head_only` exact reference | `0.6193` | `0.5660` | `0.4483` | `0.5926` |
+| `stopline_hard_negative_sampler` | `0.6063` | `0.5475` | `0.4561` | `0.5644` |
+
+판단:
+
+- This is not a gate pass.
+- Stop-line F1 increases only slightly over the exact tangent-link reference (`0.4483 -> 0.4561`), and the gain is far below the broader target gap.
+- Lane and crosswalk retention both regress, and objective is below the current exact references.
+- The result is useful negative evidence: explicit GT-negative exposure alone does not turn the existing stop-line candidates into a reliable selector/readout.
+- Do not broaden this run to val512.
+
+하지 말 것:
+
+- Do not repeat `stopline_negative` quota, weight, or epoch sweeps as a production fix.
+- Do not treat epoch-1 crosswalk `0.6667` as success; the selected checkpoint is epoch 2 and crosswalk falls to `0.5644`.
+- Do not frame the tiny stop-line exact gain as a 0.6 path without a new selector/readout premise.
+
+다음:
+
+- Stop-line work should change emit/select/readout or candidate generation, not only the sampler.
+- If no new stop-line readout premise is available from the visual audit, return to lane instance stability while preserving the current stop-line/crosswalk runtime contract.
+
+## 124. 2026-05-12 Stop-line candidate failure-mode audit: no-oracle positives are larger than misrank positives
+
+맥락:
+
+- Section 122 created the current-composite visual audit, but the contact sheets were still a review aid rather than a reusable gate.
+- Section 123 tested the feeder-only interpretation of GT-negative high-score samples and closed it as a standalone rescue.
+- The remaining question is whether the next stop-line branch should be a selector/ranker or a candidate-generation/readout change.
+
+구현:
+
+- New tool: `tools/analyze_pv26_stopline_candidate_manifest.py`
+- Input: `candidate_features.csv` from the current-composite candidate manifest probe.
+- Output:
+  - `summary.json`
+  - `sample_failures.csv`
+- The tool groups candidate rows by sample id for one proposal family, then labels each sample as:
+  - `gt_negative_candidate_bearing`
+  - `positive_top_oracle`
+  - `positive_misrank`
+  - `positive_no_oracle`
+- Regression coverage: `test/test_stopline_candidate_manifest_analysis.py`
+
+Command:
+
+```bash
+python3 tools/analyze_pv26_stopline_candidate_manifest.py \
+  --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2/candidate_features.csv \
+  --proposal-source max \
+  --proposal-min-gap 4.0 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_failure_audit_val512_epoch2
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_failure_audit_val512_epoch2/summary.json`
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_failure_audit_val512_epoch2/sample_failures.csv`
+
+Result:
+
+| Bucket | Samples |
+| --- | ---: |
+| `gt_negative_candidate_bearing` | `165` |
+| `positive_top_oracle` | `113` |
+| `positive_misrank` | `29` |
+| `positive_no_oracle` | `62` |
+
+Additional summary:
+
+- gap4/max candidate rows: `9575`
+- candidate-bearing samples: `369`
+- positive candidate-bearing samples: `204`
+- positive top-oracle rate: `0.5539`
+- positive has-oracle rate: `0.6961`
+- positive no-oracle nearest-distance bins: `40_80=28`, `gte80=34`
+- negative top-score quantiles: q50 `0.6893`, q90 `0.9998`, q99 `1.0000`, max `1.0000`
+
+판단:
+
+- Selector/ranker-only work can address the `29` positive misrank samples, but it cannot recover the `62` positive no-oracle samples without changing candidate generation or readout.
+- The no-oracle bucket is not a near-threshold artifact: the nearest candidate distance is at least `40px`, and more than half are `>=80px`.
+- This makes the next stop-line branch more specific: target midpoint proposal recovery or a new non-top-k candidate generation/readout contract.
+
+하지 말 것:
+
+- Do not run another selector/ranker threshold replay as the next stop-line axis unless it also changes candidate generation.
+- Do not treat the `165` GT-negative candidate-bearing samples as proof that negative exposure alone is enough; Section 123 already tested and closed that premise.
+
+다음:
+
+- A viable stop-line branch must improve candidate generation for positive no-oracle samples while preserving the existing top-oracle positives.
+- If that branch is not immediately clear, switch back to lane instance stability with the current stop-line/crosswalk retention contract instead of running another stop-line micro-sweep.
+
+## 125. 2026-05-12 Stop-line center-rank margin short run: midpoint ranking alone is insufficient
+
+맥락:
+
+- Section 124 showed positive no-oracle samples (`62`) outnumber positive misrank samples (`29`) in the current-composite gap4/max candidate manifest.
+- That makes selector-threshold or ranker-only follow-up too narrow.
+- This branch tests a more direct midpoint proposal premise: push GT stop-line midpoint proposal logits above top hard-negative center/selector proposals.
+
+구현:
+
+- `model/engine/loss.py` adds opt-in `stopline_center_rank_margin_*` knobs.
+- The loss combines center and selector logits in the same family as existing proposal competition, then applies a hard-negative margin against non-GT-center proposals outside a small exclusion radius.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` pass the new knobs through training config.
+- `tools/run_pv26_lane60_probe.py` adds `core_centerline_refine_row_scan_tangent_stop_center_rank_margin`.
+- The probe keeps row-scan/tangent, core lane target, loss weights, sampler, and `lane_family_heads_only` freeze policy fixed.
+- Regression coverage:
+  - `test/test_pv26_loss_runtime.py`
+  - `test/test_run_pv26_lane60_probe.py`
+  - `test/test_run_pv26_train.py`
+
+Command:
+
+```bash
+PV26_MAIN_REPO=<path-to-main-yolopv26>
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+SOURCE_RUN="$PV26_MAIN_REPO/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
+python3 tools/run_pv26_lane60_probe.py \
+  --source-run "$SOURCE_RUN" \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --experiment core_centerline_refine_row_scan_tangent_stop_center_rank_margin \
+  --epochs 2 \
+  --train-batches 512 \
+  --val-batches 128 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Artifacts:
+
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813`
+- history: `phase_4/history/epochs.jsonl`
+- summary: `summary.json`
+- best checkpoint: `phase_4/checkpoints/best.pt`
+- auto-downloaded root `yolo26s.pt` was moved to `runs/removable/stopline-center-rank-margin-yolo26s.pt` instead of being deleted.
+
+검증:
+
+- status: `completed`
+- completed epochs: `2`
+- best epoch: `2`
+- best phase objective: `0.6170336494`
+- phase summary `skipped_steps=0`
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5851` | `0.5433` | `0.2178` | `0.6790` | `1060 / 507 / 1275` | `11 / 35 / 44` | `55 / 24 / 28` |
+| 2 | `0.6170` | `0.5605` | `0.4602` | `0.5854` | `1117 / 479 / 1273` | `26 / 27 / 34` | `48 / 35 / 33` |
+
+Reference comparison:
+
+| Run | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `row_scan_tangent_link` exact reference | `0.6187` | `0.5633` | `0.4483` | `0.5854` |
+| `row_scan_tangent_segment_mil_lane_head_only` exact reference | `0.6193` | `0.5660` | `0.4483` | `0.5926` |
+| `stop_geometry_validator` exact reference | `0.6182` | `0.5607` | `0.4655` | `0.5854` |
+| `stop_center_rank_margin` | `0.6170` | `0.5605` | `0.4602` | `0.5854` |
+
+판단:
+
+- Runtime and plumbing are valid.
+- The margin loss gives a small exact stop-line gain over tangent-link (`0.4483 -> 0.4602`) and reduces stop-line FP by `3`, but it does not beat the geometry-validator stop-line reference and does not recover lane/objective.
+- Objective is below the current exact references, and lane is below tangent-link/segment-MIL references.
+- This is not a broader-val512 expansion path.
+
+하지 말 것:
+
+- Do not repeat this as a `stopline_center_rank_margin_weight/topk/margin` sweep.
+- Do not treat the epoch-1 crosswalk `0.6790` task-best as success; the selected epoch-2 checkpoint returns to `0.5854`.
+- Do not claim midpoint proposal recovery is solved; this margin-only contract was too weak.
+
+다음:
+
+- Stop-line work still needs candidate generation/readout that recovers positive no-oracle samples without sacrificing existing top-oracle positives.
+- If no materially different stop-line candidate-generation premise is available, switch back to lane instance stability under the current stop-line/crosswalk retention contract.
+
+## 126. 2026-05-12 Center-rank checkpoint readout replay: angle-mask extent still misses prior references
+
+맥락:
+
+- Section 125 showed the center-rank margin training run is valid but below exact references under standard decode.
+- The remaining question was whether the loss nevertheless improved proposal quality enough for the stronger predicted-proposal + angle-anchored mask-extent readout family.
+- This replay keeps the checkpoint fixed and changes only the stop-line readout probe.
+
+구현:
+
+- `tools/probe_pv26_stopline_pred_angle_mask_extent.py` now accepts `--dataset-root`, matching the detached-worktree contract already used by the candidate-pool probe.
+- The replay preserves lane and crosswalk predictions from the probe baseline, and replaces only stop-line predictions per readout variant.
+
+Command:
+
+```bash
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+CHECKPOINT="runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/phase_4/checkpoints/best.pt"
+python3 tools/probe_pv26_stopline_pred_angle_mask_extent.py \
+  --checkpoint "$CHECKPOINT" \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 128 \
+  --validation-epoch 2 \
+  --device cuda:0 \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/analysis_exports/stopline_pred_angle_mask_extent_val128_epoch2
+```
+
+Artifacts:
+
+- summary: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/analysis_exports/stopline_pred_angle_mask_extent_val128_epoch2/summary.json`
+- variants: `variants.csv`
+- smoke output was temporary and is not canonical evidence.
+- auto-downloaded root `yolo26s.pt` was moved to `runs/removable/stopline-center-rank-margin-pred-angle-yolo26s.pt` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Objective proxy | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `pred_selector_top1_s060_mask050_band4` | `0.5309` | `0.5252` | `0.5042` | `0.5854` | `30 / 29 / 30` |
+| `pred_selector_top1_s040_mask050_band4_fallback` | `0.5309` | `0.5252` | `0.5041` | `0.5854` | `31 / 32 / 29` |
+| `pred_selector_top3_s020_mask050_band4` | `0.5297` | `0.5252` | `0.5000` | `0.5854` | `30 / 30 / 30` |
+| `baseline` | `0.5177` | `0.5252` | `0.4602` | `0.5854` | `26 / 27 / 34` |
+
+판단:
+
+- The replay confirms center-rank training did improve usable stop-line proposal/readout signal over this checkpoint baseline (`0.4602 -> 0.5042`).
+- It still misses the prior predicted angle-mask production exact reference `0.5085` and PCA val128 reference `0.5133`.
+- Lane in this probe is the probe baseline lane contract, not the row-scan tangent training summary, so the decision is based on stop-line readout comparison.
+- This is not a broader-val512 expansion path.
+
+하지 말 것:
+
+- Do not broaden the center-rank checkpoint through predicted angle-mask extent replay.
+- Do not use this as evidence for another center-rank margin sweep.
+
+다음:
+
+- Stop-line still needs a materially different candidate-generation/readout contract, not a replay of existing angle-mask extent variants.
+- If no new stop-line premise is available, return to lane instance stability under the current stop-line/crosswalk retention contract.
+
+## 127. 2026-05-12 Segment-MIL lane-head-only flip-TTA replay: exact gain does not survive broader ranking
+
+맥락:
+
+- The strongest lane-side production hint was `flip_centerline_avg`, but the current broader goal is still blocked by lane below `0.60` and stop-line below `0.60`.
+- `core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only` had the best exact lane F1 among recent train-time lane probes, so this replay checks whether the same lane flip-TTA postprocess gives a better fixed-checkpoint composite.
+- This is read-only: no training and no checkpoint change.
+
+Command:
+
+```bash
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+SOURCE_RUN="runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412"
+CHECKPOINT="runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/checkpoints/best.pt"
+python3 tools/probe_pv26_lane_flip_tta.py \
+  --checkpoint "$CHECKPOINT" \
+  --source-run "$SOURCE_RUN" \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --variants baseline,flip_centerline_avg \
+  --stop-line-mask-binary-threshold 0.80 \
+  --crosswalk-polygon-mode hull \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_on_segment_mil_lane_head_only_20260512/analysis_exports/broader_val512_epoch2
+```
+
+Artifacts:
+
+- exact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_on_segment_mil_lane_head_only_20260512/analysis_exports/exact_val128_epoch2/summary.json`
+- broader: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_on_segment_mil_lane_head_only_20260512/analysis_exports/broader_val512_epoch2/summary.json`
+- auto-downloaded root `yolo26s.pt` was moved to `runs/removable/lane-flip-tta-segment-mil-yolo26s.pt` instead of being deleted.
+
+Results:
+
+| Split | Variant | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| exact val128 | `baseline` | `0.6238` | `0.5660` | `0.4364` | `0.6061` | `1162 / 554 / 1228` | `24 / 26 / 36` |
+| exact val128 | `flip_centerline_avg` | `0.6298` | `0.5854` | `0.4364` | `0.6061` | `1200 / 510 / 1190` | `24 / 26 / 36` |
+| broader val512 | `baseline` | `0.6168` | `0.5480` | `0.4184` | `0.6185` | `4457 / 2333 / 5020` | `100 / 107 / 171` |
+| broader val512 | `flip_centerline_avg` | `0.6207` | `0.5577` | `0.4184` | `0.6185` | `4518 / 2206 / 4959` | `100 / 107 / 171` |
+
+판단:
+
+- The exact split repeats the known flip-TTA lane gain and reaches lane `0.5854`.
+- Broader lane is `0.5577`, effectively the same as the current broader best lane, but stop-line is worse (`0.4184` vs current `0.4235`).
+- The broader objective `0.6207` is below the current broader best `0.6216`.
+- This combination is not a new default and not a success path by itself.
+
+하지 말 것:
+
+- Do not promote segment-MIL lane-head-only + flip-centerline TTA from exact val128 alone.
+- Do not broaden this same fixed-checkpoint postprocess again without a new stop-line retention premise.
+
+다음:
+
+- Lane-side postprocess can still lift precision, but the broader all-task gate remains stop-line first and lane second.
+- The next useful axis must either improve stop-line retention or add a genuinely stronger lane instance selector that does not leave stop-line below the current broader best.
+
+## 128. 2026-05-12 Center-rank proposal recall audit: midpoint ranking barely moves the candidate map
+
+맥락:
+
+- Section 125 showed `core_centerline_refine_row_scan_tangent_stop_center_rank_margin` is runnable but not strong enough under standard decode.
+- Section 126 showed the same checkpoint with predicted-proposal + angle-anchored mask-extent readout improves over its own baseline but still misses prior angle-mask/PCA references.
+- The remaining question was whether the center-rank margin loss at least improved GT midpoint proposal recall enough to justify a different candidate-generation follow-up.
+
+구현:
+
+- `tools/probe_pv26_stopline_proposal_recall.py` now accepts `--dataset-root`, matching the detached-worktree contract used by the newer stop-line probes.
+- The audit keeps the center-rank checkpoint fixed and records only proposal-map local score/top-k recall.
+
+Command:
+
+```bash
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+CHECKPOINT="runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/phase_4/checkpoints/best.pt"
+python3 tools/probe_pv26_stopline_proposal_recall.py \
+  --checkpoint "$CHECKPOINT" \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 128 \
+  --validation-epoch 2 \
+  --device cuda:0 \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/analysis_exports/stopline_proposal_recall_val128_epoch2
+```
+
+Artifacts:
+
+- summary: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_stop_center_rank_margin_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260512_212813/analysis_exports/stopline_proposal_recall_val128_epoch2/summary.json`
+- aggregate CSV: `proposal_recall.csv`
+- per-GT CSV: `per_gt.csv`
+- auto-downloaded root `yolo26s.pt` was moved to `runs/removable/stopline-center-rank-margin-proposal-recall-yolo26s.pt` instead of being deleted.
+
+검증:
+
+- `processed_batches=128`
+- `bad_gt=0`
+- `missing_maps=0`
+
+Exact val128 comparison:
+
+| Source | Checkpoint | `max_r8 >= 0.6` | top3-hit-r8 | top10-hit-r8 | raw rank top3 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `max` | original reference | `50 / 60` | `37 / 60` | `53 / 60` | `9 / 60` |
+| `max` | center-rank margin | `50 / 60` | `39 / 60` | `52 / 60` | `11 / 60` |
+| `center` | original reference | `50 / 60` | `38 / 60` | `54 / 60` | not recorded in section 41 |
+| `center` | center-rank margin | `50 / 60` | `37 / 60` | `55 / 60` | `7 / 60` |
+| `selector` | original reference | `46 / 60` | `35 / 60` | `51 / 60` | not recorded in section 41 |
+| `selector` | center-rank margin | `45 / 60` | `36 / 60` | `48 / 60` | `11 / 60` |
+
+판단:
+
+- Center-rank margin does not increase the local `max_r8 >= 0.6` recall at all on the `max` source.
+- Low top-k movement is tiny: `max` top3-hit-r8 improves by only `+2` GTs and raw rank top3 by only `+2` GTs, while top10-hit-r8 drops by `1`.
+- This does not explain or recover the positive no-oracle bucket from Section 124.
+- The center-rank family is therefore closed as a midpoint proposal recovery path, not just as a decode/readout path.
+
+하지 말 것:
+
+- Do not treat center-rank proposal recall as candidate-generation recovery.
+- Do not run another `stopline_center_rank_margin_weight/topk/margin` sweep based on the tiny top3 movement.
+- Do not broaden this checkpoint through a new proposal-recall-only premise.
+
+다음:
+
+- Stop-line still needs a materially different candidate-generation/readout contract that creates valid candidates for positive no-oracle samples while preserving existing top-oracle positives.
+- If that premise is not available, switch back to lane instance stability under the current stop-line/crosswalk retention contract.
+
+## 129. 2026-05-12 Lane geometry-filter exact probe: stricter bbox filters trade away too much TP
+
+맥락:
+
+- The current broader composite still has lane below `0.60`, and the lane oracle selector audit showed FP headroom.
+- Duplicate suppression and per-sample top-k caps already failed to explain the oracle gap.
+- This read-only probe checks one last simple postprocess premise before another model-side lane contract: whether stricter lane bbox area/aspect filters can remove enough FP without losing too much TP.
+
+구현:
+
+- Tool: `tools/probe_pv26_lane60_postprocess_thresholds.py`
+- Checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`
+- Experiment config: `core_centerline_refine_row_scan_tangent_link`
+- Split: exact val128, validation epoch 2.
+- This is read-only; no training and no checkpoint change.
+
+Command:
+
+```bash
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_lane60_postprocess_thresholds.py \
+  --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --preset default \
+  --max-val-batches 128 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --variants baseline,lane_bbox_area_8192,lane_max_aspect_4.0,lane_bbox_area_4096__max_aspect_4.0,lane_bbox_area_8192__max_aspect_4.0,lane_bbox_area_8192__max_aspect_6.0 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_geometry_filter_probe_val128_epoch2
+```
+
+Artifacts:
+
+- summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_geometry_filter_probe_val128_epoch2/summary.json`
+- CSV: `thresholds.csv`
+- auto-downloaded root `yolo26s.pt` was moved to `runs/removable/lane-geometry-filter-probe-yolo26s.pt` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `baseline` | `0.6193` | `0.5660` | `1162 / 554 / 1228` | `0.4483` | `0.5854` |
+| `lane_bbox_area_8192` | `0.6176` | `0.5580` | `1097 / 445 / 1293` | `0.4483` | `0.5854` |
+| `lane_max_aspect_4.0` | `0.6169` | `0.5558` | `1110 / 494 / 1280` | `0.4483` | `0.5854` |
+| `lane_bbox_area_8192__max_aspect_4.0` | `0.6147` | `0.5462` | `1047 / 397 / 1343` | `0.4483` | `0.5854` |
+
+판단:
+
+- Stricter geometry filters remove FP, but the TP loss is too large.
+- The best stricter variant by objective, `lane_bbox_area_8192`, removes `109` FP but loses `65` TP and adds `65` FN, dropping lane F1 from `0.5660` to `0.5580`.
+- This is not a lane `0.6` path and does not justify broader-val512 replay.
+
+하지 말 것:
+
+- Do not repeat bbox area/aspect-only sweeps on this lane-head transplant checkpoint.
+- Do not treat precision-only movement as useful if TP/FN moves against the lane goal.
+
+다음:
+
+- Lane needs a recall-preserving instance selector or stronger predicted-centerline evidence, not stricter geometric pruning.
+- Global priority remains stop-line first unless a materially different lane instance-stability contract is available.
+
+## 130. 2026-05-12 Enriched stop-line candidate manifest: no-oracle positives are short, far, high-score fragments
+
+맥락:
+
+- Section 124 split the current-composite stop-line candidate failures into GT-negative, positive top-oracle, positive misrank, and positive no-oracle buckets.
+- Section 128 closed center-rank margin as a midpoint proposal recovery path.
+- The remaining stop-line question is what the positive no-oracle bucket looks like geometrically: weak scores, bad angles, short fragments, or wrong centers.
+
+구현:
+
+- `tools/analyze_pv26_stopline_candidate_manifest.py` now adds:
+  - `gt_max_length`
+  - `top_length_ratio`
+  - `nearest_length_ratio`
+  - bucket-level dataset counts
+  - bucket-level numeric quantiles for candidate count, score, distance, angle, length, and length ratio.
+- Regression coverage updates `test/test_stopline_candidate_manifest_analysis.py`.
+
+Command:
+
+```bash
+python3 tools/analyze_pv26_stopline_candidate_manifest.py \
+  --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2/candidate_features.csv \
+  --proposal-source max \
+  --proposal-min-gap 4.0 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_failure_audit_enriched_val512_epoch2
+```
+
+Artifacts:
+
+- summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_manifest_failure_audit_enriched_val512_epoch2/summary.json`
+- sample rows: `sample_failures.csv`
+
+Key enriched quantiles:
+
+| Bucket | top score q50 | nearest distance q50 | nearest angle q50 | nearest length q50 | nearest length ratio q50 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `positive_top_oracle` | `0.9999` | `11.49` | `1.00` | `35.17` | `0.148` |
+| `positive_misrank` | `0.9999` | `28.01` | `1.40` | `55.35` | `0.143` |
+| `positive_no_oracle` | `0.9998` | `89.98` | `1.86` | `24.01` | `0.066` |
+| `gt_negative_candidate_bearing` | `0.6893` | n/a | n/a | `8.00` | n/a |
+
+Additional observations:
+
+- `positive_no_oracle` top-score q90 is `0.9999`, so those failures are not simply low-confidence candidates.
+- `positive_no_oracle` nearest angle error is usually small, with q50 `1.86deg` and q90 `6.78deg`.
+- The stronger signal is center/extent: nearest distance q50 is `89.98px`, q90 `260.60px`; nearest length ratio q50 is only `0.066`, q90 `0.141`.
+
+판단:
+
+- The current positive no-oracle failure mode is high-confidence short fragments far from the GT stop-line midpoint, not a simple score/rank threshold problem.
+- A viable stop-line branch must recover center proposal and full extent together, or use a non-top-k readout that can relocate from short fragment evidence to the full stop-line.
+- This strengthens the previous instruction not to run more threshold/ranker-only stop-line branches.
+
+하지 말 것:
+
+- Do not interpret the positive no-oracle bucket as low-score recall waiting for threshold lowering.
+- Do not use sample-gate/ranker-only fixes as the next stop-line path unless they also change center/extent generation.
+
+다음:
+
+- The next stop-line architecture premise should target high-confidence short-fragment-to-full-line recovery.
+- If that premise is not available, lane instance stability remains the fallback, but stop-line is still the larger all-task blocker.
