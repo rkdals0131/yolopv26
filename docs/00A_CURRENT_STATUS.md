@@ -211,6 +211,16 @@ Latest lane instance safety-gate replay:
 - `keep_topk=1..8` all reduce heldout/full lane F1 versus logistic-only because FP comes back faster than TP.
 - 판단: top-K safety fallback does not solve the logistic gate's recall tradeoff and remains below the earlier full split-count logistic diagnostic `0.5738`, current lane oracle `0.6457`, and the `0.60` target. Do not convert this into a production safety gate.
 
+Latest lane instance score-gate replay:
+
+- branch/worktree: `exp/lane-family-f1/lane-instance-validator-score-rank`.
+- code commit: `7975e77` adds an opt-in `row_scan_tangent_instance_score_gate` decoder that generates row-scan tangent candidates from the unmasked centerline, then filters completed lane candidates by their mean `instance_validator` score.
+- replay artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_score_gate_replay_20260513/analysis_exports/instance_score_gate_replay_val128_epoch2/summary.json`.
+- source checkpoint: previous `core_centerline_refine_row_scan_tangent_instance_validator` best checkpoint, evaluated with `core_centerline_refine_row_scan_tangent_instance_score_gate`.
+- exact val128 epoch2 objective: `0.6143914132`.
+- lane / stop-line / crosswalk F1: `0.5529 / 0.4522 / 0.5854`.
+- 판단: candidate-level score gating avoids the hard pixel-mask recall cut in code, but the metric is effectively flat against hard validator `0.6142642145`, `0.5523 / 0.4522 / 0.5854`, and still below tangent-link exact `0.6187165763`, `0.5633 / 0.4483 / 0.5854`. Do not launch full training or sweep validator score thresholds from this checkpoint.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`

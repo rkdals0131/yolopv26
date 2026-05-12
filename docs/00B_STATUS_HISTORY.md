@@ -7276,3 +7276,64 @@ Result:
 - Lane selector work still needs a different production contract, not top-K fallback around the same logistic row gate.
 - The useful target remains recall-preserving FP suppression, but the current row features plus top-K safety are not enough.
 - Stop-line remains the larger all-task blocker.
+
+## 139. 2026-05-13 Lane instance score gate: candidate-level gating is flat against hard validator
+
+맥락:
+
+- Section 111 closed the first learned lane instance-validator checkpoint because the hard validator decoder masked centerline pixels before row-scan linking, losing lane recall.
+- Section 138 closed top-K safety fallback around the post-hoc logistic gate.
+- The remaining cheap question was whether the same learned validator logits become useful if they are applied after row-scan candidate generation instead of before it.
+
+실행:
+
+- Branch/worktree: `exp/lane-family-f1/lane-instance-validator-score-rank`.
+- Code commit: `7975e77`.
+- Added opt-in `row_scan_tangent_instance_score_gate` / alias modes in `model/engine/lane_segfirst_vectorizer.py`.
+- The new mode leaves `centerline_core` unmasked, generates row-scan tangent candidates, computes mean `instance_validator` over each completed candidate track, and drops only candidates below `lane_segfirst_instance_validator_threshold`.
+- Wired `lane_segfirst_instance_validator_threshold` through `PV26PostprocessConfig` and `tools/pv26_train/cli.py`.
+- Added probe preset `core_centerline_refine_row_scan_tangent_instance_score_gate`.
+- Kept the existing `row_scan_tangent_instance_validator` hard-mask mode intact for historical replay compatibility.
+
+Verification:
+
+- `python3 -m py_compile model/engine/lane_segfirst_vectorizer.py model/engine/postprocess.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_lane_segfirst_vectorizer.py test/test_run_pv26_lane60_probe.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_segfirst_vectorizer.py test/test_run_pv26_lane60_probe.py test/test_run_pv26_train.py`
+- result: `70 passed, 280 warnings`.
+- `git diff --check`
+
+Replay:
+
+- Source checkpoint: previous `core_centerline_refine_row_scan_tangent_instance_validator` best checkpoint.
+- Evaluator experiment: `core_centerline_refine_row_scan_tangent_instance_score_gate`.
+- Output: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_score_gate_replay_20260513/analysis_exports/instance_score_gate_replay_val128_epoch2/summary.json`.
+
+```bash
+PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 tools/evaluate_pv26_lane60_checkpoint.py \
+  --checkpoint <previous-instance-validator-run>/phase_4/checkpoints/best.pt \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_instance_score_gate \
+  --validation-epoch 2 --max-val-batches 128 --batch-size 4 --device cuda:0 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_score_gate_replay_20260513/analysis_exports/instance_score_gate_replay_val128_epoch2
+```
+
+Result:
+
+| Variant | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| hard validator exact reference | `0.6142642145` | `0.5523` | `0.4522` | `0.5854` |
+| candidate score-gate replay | `0.6143914132` | `0.5529` | `0.4522` | `0.5854` |
+| tangent-link exact reference | `0.6187165763` | `0.5633` | `0.4483` | `0.5854` |
+
+판단:
+
+- Candidate-level score gating fixes the decoder shape risk of pre-masking centerline pixels, but it does not recover metric headroom.
+- The replay is only `+0.0001` objective and `+0.0006` lane F1 over the hard validator reference, and remains below the tangent-link exact lane/objective reference.
+- Do not launch full two-epoch training from this branch.
+- Do not repeat this as `instance_validator_threshold`, validator score statistic, or threshold-sweep work unless a new model-side validator signal first beats tangent-link in cheap replay.
+
+다음:
+
+- The current learned validator logits are not a recall-preserving production selector.
+- Lane still needs a stronger model-side/decoder-side instance-stability contract, not another threshold over the same validator checkpoint.
+- Stop-line remains the largest all-task blocker unless the next lane idea materially changes candidate evidence instead of only candidate filtering.
