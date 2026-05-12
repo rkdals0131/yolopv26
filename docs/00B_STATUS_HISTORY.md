@@ -7721,3 +7721,43 @@ Result:
 - It improves over gated multi-instance `0.5061`, mostly by reducing FP while preserving TP.
 - This is a real readout signal, but still far below stop-line `0.60`.
 - Do not continue as a projection-gap/angle/offset sweep. A useful next step needs a new source of midpoint/candidate recovery or a stronger no-GT selector that moves more than this small FP correction.
+
+## 148. 2026-05-13 Stop-line projection competition replay: length evidence lifts the split readout
+
+맥락:
+
+- Section 147 fixed over-merged fragment groups by projection-gap splitting and reached stop-line F1 `0.5112`.
+- A remaining non-training question was whether projection-split union groups should still always win by union score, or whether high-confidence single candidates should compete by no-GT length evidence.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-projection-split`.
+- Code commit: `e00df5f`.
+- Added `tools/probe_pv26_stopline_fragment_projection_competition_readout.py`.
+- Added `test/test_stopline_fragment_projection_competition_readout.py`.
+- Contract: generate projection-split union proposals, add high-confidence single candidates, rank by `length`/`component_svd_length`, then apply a conservative second-fragment gate.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_projection_competition_readout.py test/test_stopline_fragment_projection_competition_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_projection_competition_readout.py`
+- result: `10 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_projection_competition_readout_val512_epoch2/summary.json`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| `proj_comp_length_s090_top2_second_frag5` | `0.5164` | `126 / 91 / 145` | `217` |
+| `proj_comp_component_length_s090_top2_second_frag5` | `0.5164` | `126 / 91 / 145` | `217` |
+| `proj_comp_length_s080_top2_second_frag5` | `0.5163` | `127 / 94 / 144` | `221` |
+| `proj_comp_length_s090_top1` | `0.5114` | `123 / 87 / 148` | `210` |
+
+판단:
+
+- Projection competition is the current local stop-line readout best: `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- It is a real improvement over projection split `0.5112`, but still far below the `0.60` task target.
+- Do not continue as a length/min-score/rank-feature sweep. The next useful stop-line axis must add a new signal or recover more candidate/midpoint structure.
