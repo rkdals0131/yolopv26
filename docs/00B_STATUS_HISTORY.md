@@ -6879,3 +6879,65 @@ Task-best:
 - Do not repeat this as a weight sweep unless a new premise changes where the consistency pressure is applied.
 - Keep the current broader objective best as the runtime/postprocess composite `0.6216194906`, lane/stop/cross `0.5577 / 0.4235 / 0.6187`.
 - The all-task goal still needs stop-line center/extent recovery and lane recall/FP improvement; flip-consistency did not materially help either blocker.
+
+## 133. 2026-05-13 Lane endpoint-extension readout: exact regression below tangent-link reference
+
+맥락:
+
+- Lane oracle selector headroom exists, but threshold/dedupe/top-k cap/flip regularizer are closed.
+- This read-only probe asked whether decoded row-scan-tangent lane polylines are simply too short and can be fixed by endpoint extrapolation.
+- The checkpoint, row-scan-tangent decoder, stop-line/crosswalk predictions, sampler, and validation slice stay fixed; only decoded lane endpoints change before matching.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-endpoint-extension-readout`.
+- Code commit: `8f5c3a0`.
+- Added `tools/probe_pv26_lane60_lane_endpoint_extend.py`.
+- The branch carries the row-scan-tangent dependency because develop does not contain the tangent-link preset.
+- Variants extend decoded lane polyline top/bottom endpoints by fixed raw-pixel distances: `top32`, `top64`, `top96`, `bottom32`, `bottom64`, `both32`, `both64`.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane60_lane_endpoint_extend.py model/engine/lane_segfirst_vectorizer.py tools/run_pv26_lane60_probe.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_probe_pv26_lane60_lane_endpoint_extend.py test/test_lane_segfirst_vectorizer.py::LaneSegFirstVectorizerTests::test_row_scan_tangent_link_uses_local_direction_for_assignment`
+- Result: `3 passed`.
+
+Exact command:
+
+```bash
+python3 tools/probe_pv26_lane60_lane_endpoint_extend.py \
+  --checkpoint <pv26-develop-repo>/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt \
+  --source-run <pv26-develop-repo>/runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --max-val-batches 128 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane_endpoint_extend_val128_epoch2
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane_endpoint_extend_val128_epoch2/summary.json`
+
+Exact val128 result:
+
+| Variant | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `baseline` | `0.6187165763` | `0.5633` | `1121 / 469 / 1269` | `0.4483` | `0.5854` |
+| `top32` | `0.5998086929` | `0.5503` | `1095 / 495 / 1295` | `0.4483` | `0.5854` |
+| `both32` | `0.5977964586` | `0.5513` | `1097 / 493 / 1293` | `0.4483` | `0.5854` |
+| `bottom32` | `0.5944953442` | `0.5462` | `1087 / 503 / 1303` | `0.4483` | `0.5854` |
+| `top64` | `0.5531216259` | `0.4849` | `965 / 625 / 1425` | `0.4483` | `0.5854` |
+| `both64` | `0.5519342546` | `0.5025` | `1000 / 590 / 1390` | `0.4483` | `0.5854` |
+| `bottom64` | `0.5466021146` | `0.4663` | `928 / 662 / 1462` | `0.4483` | `0.5854` |
+| `top96` | `0.4548022070` | `0.1503` | `299 / 1291 / 2091` | `0.4483` | `0.5854` |
+
+판단:
+
+- All fixed extension variants regress below the tangent-link baseline.
+- The best by objective, `top32`, loses lane TP and increases FP.
+- The issue is not simply that decoded polylines are too short; unconditional extension distorts matching.
+- Do not broaden to val512.
+- Do not repeat fixed-distance extension sweeps unless a new signal conditions when extension is safe.

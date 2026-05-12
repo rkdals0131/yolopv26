@@ -152,6 +152,17 @@ Latest lane flip-consistency training probe:
 - skipped steps: `0`.
 - 판단: runtime is stable, but the exact metric regresses below tangent-link reference `0.6187`, `0.5633 / 0.4483 / 0.5854`; the epoch1 crosswalk spike is not enough because the best objective checkpoint misses all three task targets. Flip-consistency-regularizer-only is not a broader-val512 expansion path.
 
+Latest lane endpoint-extension readout probe:
+
+- branch/worktree: `exp/lane-family-f1/lane-endpoint-extension-readout`.
+- code commit: `8f5c3a0` adds a read-only fixed-distance endpoint-extension probe on top of the row-scan-tangent readout.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_endpoint_extend_val128_epoch2/summary.json`.
+- changed axis: keep the checkpoint, row-scan-tangent decoder, stop-line/crosswalk predictions, sampler, and validation slice fixed, then extend decoded lane polyline endpoints by fixed raw-pixel distances before matching.
+- exact val128 baseline objective and lane/stop/cross F1: `0.6187165763`, `0.5633 / 0.4483 / 0.5854`.
+- best extension by objective: `top32`, objective `0.5998086929`, lane/stop/cross F1 `0.5503 / 0.4483 / 0.5854`.
+- lane TP/FP/FN baseline: `1121 / 469 / 1269`; `top32`: `1095 / 495 / 1295`.
+- 판단: fixed top/bottom endpoint extension hurts lane TP and FP at exact val128, so it is not a broader-val512 expansion path. Do not repeat as a distance sweep unless a new conditioning signal decides when extension is safe.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`
