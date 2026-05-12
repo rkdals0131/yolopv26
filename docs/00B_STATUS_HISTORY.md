@@ -8110,3 +8110,54 @@ Audit result:
 - The baseline projection-competition replay remains the best scenario.
 - Even the nearest-GT-oracle anchor-shift variant loses TP, adds FP, and adds FN relative to the reference, so the gap is not a simple decoded-center/proposal-anchor mismatch.
 - Do not repeat anchor/offset shifting. The next stop-line edit must create new local-neighborhood candidate geometry from dense score islands or a richer emit/select contract, rather than shifting or stretching current fragments.
+
+## 157. 2026-05-13 Stop-line no-oracle local proposal geometry: local cells still decode bad segments
+
+맥락:
+
+- Section 155 showed positive no-oracle samples often still have dense max-source signal near GT.
+- Section 156 showed shifting current segments back toward proposal anchors does not rescue the bucket.
+- The next diagnostic was whether the exported candidate row closest to each positive-no-oracle GT cell already carries usable geometry. If yes, selection/ranking would still be plausible; if no, the bottleneck is local geometry generation/readout.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- Code commit: `eee5085`.
+- Added `tools/analyze_pv26_stopline_no_oracle_local_proposal_geometry.py`.
+- Added `test/test_stopline_no_oracle_local_proposal_geometry.py`.
+- Contract: join `stopline_proposal_recall` per-GT rows, candidate-manifest failure buckets, and exported candidate rows by batch/sample id. For positive-no-oracle max-source GT rows, measure the nearest proposal candidate around the GT cell. This is GT-joined diagnostic evidence, not a production selector.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_no_oracle_local_proposal_geometry.py test/test_stopline_no_oracle_local_proposal_geometry.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_no_oracle_extension_budget.py test/test_stopline_no_oracle_proposal_recall.py test/test_stopline_no_oracle_anchor_shift.py test/test_stopline_no_oracle_local_proposal_geometry.py`
+- result: `4 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_local_proposal_geometry_val512_epoch2/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/stopline-no-oracle-local-proposal-geometry-artifacts-20260513/` instead of being deleted.
+
+Audit result:
+
+| Measure | Count / q50 |
+| --- | ---: |
+| positive-no-oracle max-source GT rows | `69` |
+| `top20_hit_r8` | `61` |
+| nearest exported candidate within r8 | `51` |
+| nearest exported candidate within r8 and top20 | `35` |
+| local candidate `nearest_gt_distance <= 40` | `0` |
+| local candidate `nearest_gt_distance <= 80` | `20` |
+| local midpoint `<= 40` and length ratio `>= 0.50` | `5` |
+| local midpoint `<= 80` and length ratio `>= 0.50` | `15` |
+| local proposal distance q50 | `2.00` output px |
+| local proposal rank q50 | `9` |
+| local max_r8 q50 | `0.9952` |
+| local candidate score q50 | `0.7141` |
+| local candidate nearest distance q50 | `95.36px` |
+| local midpoint distance q50 | `68.59px` |
+| local length ratio q50 | `0.5437` |
+| local angle error q50 | `2.59deg` |
+
+판단:
+
+- Local proposal cells are often close to the GT cell and have strong max-source signal, but the decoded candidate segment still does not match: `0 / 51` local candidates are within the 40px match distance.
+- This closes "just choose the local top20 proposal cell" as a recovery story. The problem is not only rank, score, length, or proposal anchor; it is how local score-island evidence becomes full stop-line geometry.
+- The next stop-line edit must produce different local-neighborhood geometry or a materially richer emit/select/readout contract. It should not be another top-k-local-cell selector, fragment extension, anchor shift, or threshold/ranker replay.

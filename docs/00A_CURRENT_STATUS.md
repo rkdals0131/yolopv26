@@ -168,6 +168,16 @@ Latest stop-line no-oracle anchor-shift audit:
 - all anchor-shift variants collapse to F1 `0.4475`, TP/FP/FN `113 / 121 / 158`.
 - 판단: the no-oracle gap is not solved by a simple proposal-anchor vs decoded-anchor correction. Next stop-line work needs a richer local-neighborhood candidate geometry signal, not anchor shifting.
 
+Latest stop-line no-oracle local proposal geometry audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- code commit: `eee5085`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_local_proposal_geometry_val512_epoch2/summary.json`.
+- changed axis: join positive-no-oracle GT rows to the nearest exported max-source proposal candidate, testing whether local proposal cells near GT already decode usable geometry.
+- positive-no-oracle GT rows: `69`; `top20_hit_r8` is `61`, and nearest exported candidate is within r8 for `51`.
+- local candidate quality: `nearest_gt_distance <= 40` is `0 / 51`; q50 local candidate nearest distance `95.36px`, midpoint distance `68.59px`, length ratio `0.5437`, angle error `2.59deg`.
+- 판단: local score/proposal cells are often near GT, but the exported candidate geometry still does not become matched stop-line segments. The next stop-line edit must create a new local geometry readout from the score island or change the emit/select/readout contract; just selecting local top20 cells is not enough.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
