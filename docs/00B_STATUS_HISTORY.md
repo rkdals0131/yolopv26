@@ -7773,10 +7773,10 @@ Result:
 구현:
 
 - Branch/worktree: `exp/lane-family-f1/stopline-projection-selector-audit`.
-- Code commit: `4d16e2f`.
+- Code commits: `4d16e2f`, `d3871ee`.
 - Added `tools/analyze_pv26_stopline_projection_competition_selector.py`.
 - Added `test/test_stopline_projection_competition_selector_audit.py`.
-- Contract: replay the projection-competition predictions, use GT only to label TP/FP for evaluation, then sweep single-feature no-GT gates over prediction/source-candidate features.
+- Contract: replay the projection-competition predictions, use GT only to label TP/FP for evaluation, sweep single-feature no-GT gates over prediction/source-candidate features, then train a deterministic no-GT logistic gate on alternating sample IDs and evaluate held-out transfer.
 
 Verification:
 
@@ -7794,10 +7794,14 @@ Result:
 | --- | ---: | ---: | ---: |
 | baseline projection competition | `0.5164` | `126 / 91 / 145` | `217` |
 | best no-GT single-feature gate: `component_svd_thickness_mean >= 4.681936370001899` | `0.5250` | `126 / 83 / 145` | `209` |
+| multifeature logistic, held-out baseline | `0.4848` | `56 / 49 / 70` | `105` |
+| multifeature logistic, held-out gate | `0.4369` | `45 / 35 / 81` | `80` |
+| multifeature logistic, full replay | `0.5336` | `115 / 45 / 156` | `160` |
 | GT-presence oracle control | `0.5575` | `126 / 55 / 145` | `181` |
 
 판단:
 
 - The best production-legal single-feature gate removes only `8` FP and does not recover recall.
+- The multifeature logistic gate overfits: train F1 reaches `0.6635`, but held-out F1 drops below baseline (`0.4369` vs `0.4848`) and full replay loses `11` TP.
 - The GT-presence control shows FP-suppression headroom, but it uses oracle sample presence and is not a production selector.
-- Do not continue as a projection-competition selector feature/threshold sweep. A useful next axis needs a richer learned/no-GT signal or actual candidate/midpoint recovery.
+- Do not continue as a projection-competition selector feature/threshold/logistic sweep. A useful next axis needs a materially new signal or actual candidate/midpoint recovery.
