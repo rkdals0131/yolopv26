@@ -163,6 +163,18 @@ Latest lane endpoint-extension readout probe:
 - lane TP/FP/FN baseline: `1121 / 469 / 1269`; `top32`: `1095 / 495 / 1295`.
 - 판단: fixed top/bottom endpoint extension hurts lane TP and FP at exact val128, so it is not a broader-val512 expansion path. Do not repeat as a distance sweep unless a new conditioning signal decides when extension is safe.
 
+Latest lane positive-core flip-consistency training probe:
+
+- branch/worktree: `exp/lane-family-f1/lane-positive-core-flip-consistency`.
+- code commit: `572f8a4` adds `lane_flip_consistency_mask_mode` and a row-scan-tangent positive-core consistency preset.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_positive_flip_consistency_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_012145/phase_4/history/epochs.jsonl`.
+- changed axis: keep row-scan-tangent, checkpoint, task weights, sampler, and consistency weight fixed, then restrict flip-consistency MSE to supervised `lane_seg_centerline_core` positive pixels.
+- exact val128 epoch2 objective: `0.5981680601`
+- lane / stop-line / crosswalk F1: `0.5513 / 0.3966 / 0.5548`
+- task-best F1: lane `0.5513` epoch2, stop-line `0.3966` epoch2, crosswalk `0.6711` epoch1.
+- skipped steps: `0`.
+- 판단: runtime is stable, but positive-core-only consistency does not rescue the global flip-consistency regression. It is below tangent-link `0.6187`, `0.5633 / 0.4483 / 0.5854` and slightly below global flip-consistency objective `0.5991166581`, so do not broaden to val512.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`

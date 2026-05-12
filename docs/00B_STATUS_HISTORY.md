@@ -6941,3 +6941,73 @@ Exact val128 result:
 - The issue is not simply that decoded polylines are too short; unconditional extension distorts matching.
 - Do not broaden to val512.
 - Do not repeat fixed-distance extension sweeps unless a new signal conditions when extension is safe.
+
+## 134. 2026-05-13 Lane positive-core flip consistency: pressure-location change still misses exact gate
+
+맥락:
+
+- Section 132 closed global flip-consistency regularization because the all-pixel consistency pressure regressed exact val128 metrics.
+- The only remaining revisit premise was to change where the consistency pressure is applied, not to sweep the same weight.
+- This branch tests whether supervising consistency only on encoded lane centerline-core positive pixels preserves the possible flip-invariance signal without pulling background and soft support pixels.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-positive-core-flip-consistency`.
+- Code commit: `572f8a4`.
+- Added `lane_flip_consistency_mask_mode` with default `all`, preserving the previous global behavior.
+- Added `centerline_core` and `centerline_support` mask modes for opt-in target-masked consistency.
+- Added probe preset `core_centerline_refine_row_scan_tangent_positive_flip_consistency`.
+- The preset keeps row-scan-tangent, the source checkpoint, task weights, sampler shape, and `lane_flip_consistency_weight=0.25` fixed; only the consistency mask changes to `centerline_core`.
+
+Verification:
+
+- `python3 -m py_compile model/engine/_trainer_step.py model/engine/trainer.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`
+- `python3 -m pytest -q test/test_pv26_runtime_sanity.py::PV26PreparedDatasetRuntimeSanityTests::test_train_step_adds_opt_in_lane_flip_consistency_loss test/test_pv26_runtime_sanity.py::PV26PreparedDatasetRuntimeSanityTests::test_train_step_can_mask_lane_flip_consistency_to_centerline_core test/test_run_pv26_lane60_probe.py`
+- Result: `4 passed`.
+
+Exact command:
+
+```bash
+python3 tools/run_pv26_lane60_probe.py \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --experiment core_centerline_refine_row_scan_tangent_positive_flip_consistency \
+  --epochs 2 \
+  --train-batches 1024 \
+  --val-batches 256 \
+  --batch-size 2 \
+  --device cuda:0 \
+  --run-root runs/pv26_exhaustive_od_lane_train
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_positive_flip_consistency_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_012145/phase_4/history/epochs.jsonl`
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5854027731` | `0.5323` | `1035 / 519 / 1300` | `0.2264` | `12 / 39 / 43` | `0.6711` |
+| 2 | `0.5981680601` | `0.5513` | `1097 / 493 / 1293` | `0.3966` | `23 / 33 / 37` | `0.5548` |
+
+Task-best:
+
+- lane F1 `0.5512562814` at epoch2.
+- stop-line F1 `0.3965517241` at epoch2.
+- crosswalk F1 `0.6710526316` at epoch1.
+- skipped steps: `0`.
+
+판단:
+
+- Runtime is stable, so this is valid negative evidence.
+- Moving consistency pressure from all pixels to GT centerline-core positives does not rescue the global flip-consistency regression.
+- Best exact objective `0.5981680601` is below tangent-link `0.6187` and slightly below global flip-consistency `0.5991166581`.
+- Epoch2 lane/stop/cross F1 `0.5513 / 0.3966 / 0.5548` is below tangent-link `0.5633 / 0.4483 / 0.5854`.
+- Do not broaden to val512.
+- Do not run a mask-mode or weight sweep unless a materially new instance-level signal changes the premise.
+
+다음:
+
+- Flip-consistency is now closed both as global all-pixel pressure and positive-core-only pressure.
+- The next lane-side branch needs a recall-preserving instance-stability contract, not another mask or threshold variant.
+- The top-level blocker remains lane below `0.60` and stop-line well below `0.60` on broader validation.
