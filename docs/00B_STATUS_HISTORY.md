@@ -7480,3 +7480,81 @@ Result:
 - The opt-in postprocess/evaluator path exactly reproduces the CSV fragment-union stop-line result, so the signal is not just an offline artifact.
 - It is still a partial success only: stop-line remains below `0.60`, lane remains below `0.60`, and the all-task goal is not met.
 - Do not make fragment-union default or start another knob sweep around top-k/min-gap/min-score/angle/offset. The next useful stop-line work must improve midpoint/candidate generation or reduce false positives beyond the reproduced `0.4948` ceiling.
+
+## 142. 2026-05-13 Stop-line seed-extension replay: lower-score extenders regress the union signal
+
+맥락:
+
+- Section 141 left a concrete follow-up: whether the union seed clusters were too short, and whether lower-score same-line fragments could safely extend them without creating new standalone predictions.
+- This branch keeps the current-composite candidate CSV fixed and uses GT only for evaluation.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-seed-extend`.
+- Code commit: `900c9b8`.
+- Added `tools/probe_pv26_stopline_fragment_seed_extend_readout.py`.
+- Added `test/test_stopline_fragment_seed_extend_readout.py`.
+- Contract: high-score seed clusters can emit predictions; lower-score fragments can only attach to an existing seed cluster.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_seed_extend_readout.py test/test_stopline_fragment_seed_extend_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_seed_extend_readout.py`
+- result: `8 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_seed_extend_readout_val512_epoch2/summary.json`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN |
+| --- | ---: | ---: |
+| `seed_extend_s080_e065_c2_fallback_top` | `0.4742` | `115 / 99 / 156` |
+| `seed_extend_s080_e050_c2_fallback_top` | `0.4619` | `112 / 102 / 159` |
+| `seed_extend_s080_e050_c2_no_fallback` | `0.4563` | `107 / 91 / 164` |
+
+판단:
+
+- Seed extension does not beat fragment union `0.4948`; it loses TP and adds FP.
+- The failure suggests low-score fragments are not safe extenders under the current attachment rule.
+- Do not continue this as an extender score sweep unless a new non-score attachment signal changes the contract.
+
+## 143. 2026-05-13 Stop-line length competition replay: tiny improvement over fragment union
+
+맥락:
+
+- Seed extension was negative, but a narrower question remained: when no-GT length evidence says a high-confidence single candidate is more plausible than the union group, can it reduce FP without losing the union signal?
+- This is still a CSV replay over the fixed current-composite candidate pool, not a production decoder.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-length-competition`.
+- Code commit: `1619fd9`.
+- Added `tools/probe_pv26_stopline_fragment_length_competition_readout.py`.
+- Added `test/test_stopline_fragment_length_competition_readout.py`.
+- Contract: emit one stop-line per sample by ranking union-group proposals and high-confidence single proposals with no-GT length evidence.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_length_competition_readout.py test/test_stopline_fragment_length_competition_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_length_competition_readout.py`
+- result: `8 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_length_competition_readout_val512_epoch2/summary.json`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Selected union/single/none |
+| --- | ---: | ---: | ---: |
+| `length_comp_single090_length` | `0.5031` | `121 / 89 / 150` | `198 / 12 / 159` |
+| `length_comp_single090_component_svd_length` | `0.5031` | `121 / 89 / 150` | `198 / 12 / 159` |
+| `length_comp_single080_length` | `0.5031` | `122 / 92 / 149` | `198 / 16 / 155` |
+
+판단:
+
+- This is a small partial-positive over fragment union: `0.4948 -> 0.5031`, with TP/FP/FN moving from `120 / 94 / 151` to `121 / 89 / 150`.
+- It still misses stop-line `0.60` by a wide margin and does not solve lane `0.60`.
+- Do not turn this into a feature-rank/min-score sweep. The next useful stop-line step needs stronger candidate generation/midpoint recovery or a selector that can keep the new TP while removing many more FP.

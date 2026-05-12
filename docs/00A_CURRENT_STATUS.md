@@ -339,7 +339,21 @@ Latest stop-line fragment-union readout replay:
 - TP/FP/FN stop-line: `120 / 94 / 151`.
 - non-fallback best: `union_a16_o48_s080_c2`, stop-line F1 `0.4936`, TP/FP/FN `116 / 83 / 155`.
 - productionized replay result: same broader-val512 stop-line F1 `0.4948453608`, TP/FP/FN `120 / 94 / 151`, lane/crosswalk F1 `0.5480 / 0.6187`, phase objective `0.6373915315`.
-- 판단: fragment union is the first current-composite stop-line replay in this lane to beat score-threshold production `0.4371`, PCA broader reference `0.4699`, and GT sample-gate + same-row feature rank `0.4800`, and the opt-in evaluator path reproduces the CSV result. It is still below `0.60`, remains an experiment-branch opt-in rather than a default decoder, and should not trigger another threshold-only sweep. The next stop-line step must improve candidate generation or midpoint recovery beyond this `0.4948` ceiling while preserving crosswalk hull retention and lane composition explicitly.
+- 판단: fragment union is the first current-composite stop-line replay in this lane to beat score-threshold production `0.4371`, PCA broader reference `0.4699`, and GT sample-gate + same-row feature rank `0.4800`, and the opt-in evaluator path reproduces the CSV result. It is still below `0.60`, remains an experiment-branch opt-in rather than a default decoder, and should not trigger another threshold-only sweep.
+
+Latest stop-line fragment follow-up replays:
+
+- seed-extension branch/worktree: `exp/lane-family-f1/stopline-fragment-seed-extend`.
+- seed-extension code commit: `900c9b8`.
+- seed-extension artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_seed_extend_readout_val512_epoch2/summary.json`.
+- seed-extension changed axis: preserve high-score union seed clusters, then let lower-score same-line fragments extend those clusters without creating standalone predictions.
+- seed-extension result: best `seed_extend_s080_e065_c2_fallback_top`, stop-line F1 `0.4742`, TP/FP/FN `115 / 99 / 156`.
+- length-competition branch/worktree: `exp/lane-family-f1/stopline-fragment-length-competition`.
+- length-competition code commit: `1619fd9`.
+- length-competition artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_length_competition_readout_val512_epoch2/summary.json`.
+- length-competition changed axis: keep union groups, let high-confidence single candidates compete with them, and rank the one emitted stop-line by no-GT length evidence.
+- length-competition result: best `length_comp_single090_length`, lane / stop-line / crosswalk F1 `0.5480 / 0.5031 / 0.6187`, stop-line TP/FP/FN `121 / 89 / 150`.
+- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but remains far below stop-line `0.60`; do not repeat it as a feature-rank or single-score sweep. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
 
 Latest stop-line center-rank margin probe:
 
