@@ -7946,3 +7946,50 @@ Smoke result:
 - Soft-ridge peak picking moved in the wrong direction before broader replay: it lost `3` TP, added `4` FP, and added `3` FN on the same val4 smoke slice.
 - Do not broaden `row_scan_tangent_soft_ridge` to val512.
 - Do not repeat this as a `threshold`, `peak-distance`, or ridge smoothing sweep unless a new non-GT signal explains how to avoid the observed TP loss and FP increase.
+
+## 153. 2026-05-13 Stop-line recovery-budget audit: selector-only is mathematically short
+
+맥락:
+
+- Stop-line remains the largest all-task blocker after crosswalk hull decode passed broader-val512 and lane reached only partial gains.
+- The best recent stop-line local reference is projection competition, not the current all-task composite: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- Prior selector, photometric, logistic, projection-gap, and projection-competition sweeps all improved FP slightly or overfit held-out splits, but none recovered the missing positive samples needed for F1 `0.60`.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.
+- Code commit: `ff70095`.
+- Added `tools/analyze_pv26_stopline_recovery_budget.py`.
+- Added `test/test_stopline_recovery_budget_audit.py`.
+- Contract: read a reference summary and candidate-manifest failure bucket summary, then compute exact TP recovery, FP removal, and oracle scenario budgets for a target stop-line F1. This is planning evidence only, not a production decoder.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_recovery_budget.py test/test_stopline_recovery_budget_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_recovery_budget_audit.py`
+- result: `2 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_recovery_budget_audit_20260513/analysis_exports/projection_competition_val512/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/stopline-recovery-budget-audit-artifacts-20260513/` instead of being deleted.
+
+Audit result:
+
+| Scenario | Stop-line F1 | TP/FP/FN |
+| --- | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` |
+| perfect positive-misrank recovery only | `0.5996` | `155 / 91 / 116` |
+| positive-misrank plus one no-oracle recovery | `0.6023` | `156 / 91 / 115` |
+| perfect positive-no-oracle recovery only | `0.6836` | `188 / 91 / 83` |
+| perfect misrank plus no-oracle recovery | `0.7496` | `217 / 91 / 54` |
+
+Budget:
+
+- Current FP preserved: needs `+30` recovered TP to reach F1 `0.60`.
+- Current TP preserved: needs removing `68 / 91` FP to reach F1 `0.60`.
+- Candidate-manifest buckets: positive top-oracle `113`, positive misrank `29`, positive no-oracle `62`, GT-negative candidate-bearing `165`.
+- Recovering all `62` positive-no-oracle samples can tolerate up to `76` added FP and still stay at F1 `>=0.60`.
+
+판단:
+
+- A pure selector/ranker branch over the currently oracle-bearing misrank positives is mathematically short by one TP unless it also removes FP.
+- FP-only recovery is also unrealistic because it must remove most current FP without losing any TP.
+- The next useful stop-line branch must target candidate generation or midpoint recovery for positive no-oracle samples with a no-GT signal, while tracking added FP. Do not repeat this as another selector/logistic/photometric/projection-threshold sweep.

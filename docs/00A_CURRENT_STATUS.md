@@ -125,6 +125,18 @@ Latest lane soft-ridge recovery readout smoke:
 - soft-ridge smoke lane F1: `0.5429`, TP/FP/FN `38 / 16 / 48`.
 - 판단: soft-ridge peak picking loses TP and adds FP even on val4 smoke. Do not broaden this readout to val512 or repeat it as a lane threshold sweep without a new non-GT signal that explains how ridge candidates avoid this regression.
 
+Latest stop-line recovery-budget audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.
+- code commit: `ff70095`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_recovery_budget_audit_20260513/analysis_exports/projection_competition_val512/summary.json`.
+- reference: projection-competition readout `proj_comp_length_s090_top2_second_frag5`, stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- candidate-manifest buckets: positive top-oracle `113`, positive misrank `29`, positive no-oracle `62`, GT-negative candidate-bearing `165`.
+- target math: at current FP, stop-line needs `+30` recovered TP to reach F1 `0.60`; FP-only recovery would need removing `68 / 91` FP without losing TP.
+- selector-only ceiling: recovering all `29` positive-misrank samples gives stop-line F1 `0.5996`, still just below target; misrank plus one no-oracle recovery gives `0.6023`.
+- no-oracle upper bound: recovering all `62` positive-no-oracle samples gives F1 `0.6836` and could tolerate up to `76` added FP while staying at `>=0.60`.
+- 판단: another selector/logistic/photometric/projection-threshold sweep is not the next useful stop-line axis. The next stop-line branch must add a no-GT candidate-generation or midpoint-recovery signal that reaches currently no-oracle positives while controlling added FP.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
