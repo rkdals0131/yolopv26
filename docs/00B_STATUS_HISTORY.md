@@ -8032,3 +8032,40 @@ Audit result:
 - The baseline projection-competition replay remains the best scenario.
 - Even the `nearest_gt_oracle` selector does not rescue no-oracle samples by length extension, so the no-oracle problem is not just short-fragment length. The current fragment midpoint/centering is often wrong enough that symmetric extension makes TP/FP/FN worse.
 - Do not implement or sweep simple min-length fragment extension. The next stop-line axis must create a new no-GT midpoint/candidate-generation signal rather than stretching current fragments.
+
+## 155. 2026-05-13 Stop-line no-oracle proposal recall: dense max-source signal remains
+
+맥락:
+
+- Section 154 closed simple fragment length extension.
+- The remaining question was whether positive no-oracle failures mean the dense center/selector maps are blank near GT, or whether local dense signal exists but the current top candidate/geometry decode misses it.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- Code commit: `07218b9`.
+- Added `tools/analyze_pv26_stopline_no_oracle_proposal_recall.py`.
+- Added `test/test_stopline_no_oracle_proposal_recall.py`.
+- Contract: join existing val512 `per_gt.csv` proposal-recall rows with candidate-manifest failure buckets using `candidate_features.csv` batch/sample ids. No new model run and no production postprocess change.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_no_oracle_proposal_recall.py test/test_stopline_no_oracle_proposal_recall.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_no_oracle_extension_budget.py test/test_stopline_no_oracle_proposal_recall.py`
+- result: `2 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_proposal_recall_bucket_val512_epoch2/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/stopline-no-oracle-proposal-recall-artifacts-20260513/` instead of being deleted.
+
+Positive-no-oracle result:
+
+| Source | GT count | `max_r8 >= 0.6` | `top1_hit_r8` | `top3_hit_r8` | `top20_hit_r8` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| center | `69` | `41` | `9` | `27` | `62` |
+| selector | `69` | `35` | `11` | `25` | `56` |
+| max | `69` | `44` | `12` | `27` | `61` |
+
+판단:
+
+- Positive no-oracle is not primarily dense-map absence. For the `max(center, selector)` source, `44 / 69` GTs still have local `max_r8 >= 0.6`, and `61 / 69` have a top20 cell within 8 output pixels.
+- The gap is the current candidate-selection/geometry contract: top1/top3 hit rates are much lower, and the selected fragments do not become matched full segments.
+- The next stop-line branch should create candidates from local max-source neighborhoods or learn a richer emit/select contract that can choose those neighborhoods and decode full geometry. It should not stretch current fragments or repeat score/length/photometric selectors.

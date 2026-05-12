@@ -147,6 +147,17 @@ Latest stop-line no-oracle fragment-extension budget:
 - best extension variants reach only `0.4713`, TP/FP/FN `119 / 115 / 152`.
 - 판단: positive no-oracle is not solved by simply extending short fragments around their current midpoint. Do not implement or sweep a min-length fragment-extension postprocess without a new no-GT centering/candidate-generation signal.
 
+Latest stop-line no-oracle proposal-recall bucket audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- code commit: `07218b9`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_proposal_recall_bucket_val512_epoch2/summary.json`.
+- changed axis: no new model run; join existing val512 per-GT proposal recall with candidate-manifest failure buckets.
+- positive-no-oracle GT count in the joined max-source rows: `69`.
+- max-source local signal: `max_r8 >= 0.6` is `44 / 69`, `max_r4 >= 0.6` is `36 / 69`.
+- top-k proximity: `top20_hit_r8` is `61 / 69`, while `top1_hit_r8` is only `12 / 69` and `top3_hit_r8` is `27 / 69`.
+- 판단: many no-oracle positives still have dense `max(center, selector)` signal near the GT center. The failure is not primarily dense-map absence; it is current top candidate selection / midpoint centering / geometry decode. The next stop-line branch should generate candidates from local max-source neighborhoods or learn a richer emit/select contract, not stretch selected fragments.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
