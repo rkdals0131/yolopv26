@@ -190,6 +190,17 @@ Latest stop-line no-oracle local recenter budget:
 - GT-midpoint+GT-length oracle opens the budget: F1 `0.6599`, TP/FP/FN `163 / 60 / 108`.
 - 판단: local angle evidence is usable only if the center/midpoint is correct. Length or anchor correction is not enough; the next production branch must infer the missing stop-line midpoint/center without GT.
 
+Latest stop-line score-island midpoint readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- code commit: `b5f29f5`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/score_island_midpoint_readout_val128_epoch2/summary.json`.
+- changed axis: add opt-in score-island weighted center mode to the existing predicted proposal + angle-mask extent readout; no GT centers, no training, stop-line predictions only.
+- exact val128 baseline stop-line F1: `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- existing selector-center reference remains best in this replay: `pred_selector_top1_s060_mask050_band4` stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`.
+- best island variant reaches only `0.4354`, TP/FP/FN `32 / 55 / 28`; wider island variants regress to `0.4218`.
+- 판단: score-island centroiding changes center placement slightly but increases FP and does not recover the midpoint budget. Do not broaden to val512 or turn this into a radius/relative-threshold sweep without a new non-GT FP-control signal.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`

@@ -8202,3 +8202,43 @@ Audit result:
 - Local proposal selection plus anchor/length fixes do not beat the `0.5164` projection-competition reference.
 - The GT-midpoint+GT-length oracle does beat the target and reaches stop-line recall `0.6015`, while using the local candidate direction. That means angle evidence is not the primary blocker once the center is correct.
 - The next stop-line branch must infer/recover the full stop-line midpoint/center from local evidence without GT. Do not spend another branch on anchor shift, min-length/GT-length-style extent repair, or local-cell selection unless it changes the midpoint-generation contract.
+
+## 159. 2026-05-13 Stop-line score-island midpoint readout: weighted local centers add FP
+
+맥락:
+
+- Section 158 showed that the missing oracle is stop-line midpoint/center, not angle alone.
+- The next no-GT premise was whether a local score island around a high `max(center, selector)` proposal contains enough centroid information to move the readout midpoint without using GT.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- Code commit: `b5f29f5`.
+- Added opt-in `center_mode="score_island"` variants to `tools/probe_pv26_stopline_pred_angle_mask_extent.py`.
+- Added `test/test_stopline_score_island_midpoint_readout.py`.
+- Contract: keep the existing predicted proposal + angle-mask extent replay, but replace the seed `pred_offset` center with a weighted local proposal island center. This is production-style in the sense that it uses no GT centers, but it is still a readout probe, not a deployment default.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_score_island_midpoint_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_score_island_midpoint_readout.py`
+- result: `2 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/score_island_midpoint_readout_smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/score_island_midpoint_readout_val128_epoch2/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/stopline-score-island-midpoint-artifacts-20260513/` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP/FP/FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| existing `pred_selector_top1_s060_mask050_band4` | `0.5085` | `30 / 28 / 30` |
+| `island_max_top3_s040_r4_rel070_mask050_band4_fallback` | `0.4354` | `32 / 55 / 28` |
+| `island_max_top3_s040_r8_rel070_mask050_band4_fallback` | `0.4218` | `31 / 56 / 29` |
+| `island_max_top5_s020_r8_rel060_mask050_band4_fallback` | `0.4218` | `31 / 56 / 29` |
+
+판단:
+
+- Score-island weighted center does not recover the midpoint budget. It can add recall (`32` TP in the best island variant) but adds too many FP (`55`) and falls below both the baseline and the existing selector-center angle-mask reference.
+- Do not broaden this to val512.
+- Do not repeat this as an island radius / relative-threshold / min-score sweep unless a materially new non-GT signal explains FP control.

@@ -132,6 +132,7 @@
 - stop-line no-oracle 후보를 proposal-cell anchor shift만으로 회복하는 sweep을 반복하지 않는다.
 - stop-line no-oracle 후보를 GT 근처 local top20 proposal cell 선택만으로 회복한다고 가정하지 않는다.
 - stop-line no-oracle 후보를 local proposal anchor + length/extent repair만으로 회복하는 sweep을 반복하지 않는다.
+- stop-line score-island weighted center를 radius/relative-threshold/min-score sweep으로 반복하지 않는다.
 - candidate agreement/consensus-only를 stop-line production fix로 반복하지 않는다.
 - lane-context readout-only를 stop-line production fix로 반복하지 않는다.
 - crosswalk-context readout-only를 stop-line production fix로 반복하지 않는다.
@@ -320,6 +321,7 @@ Gate 상태:
 - The first midpoint-rank training attempt, `core_centerline_refine_row_scan_tangent_stop_center_rank_margin`, is valid but insufficient: exact val128 objective `0.6170`, lane/stop/cross F1 `0.5605 / 0.4602 / 0.5854`. It is below tangent-link and segment-MIL exact references, and the stop-line gain does not beat geometry-validator `0.4655`. Do not broaden or repeat as a margin-only sweep.
 - The same checkpoint with predicted-proposal + angle-anchored mask-extent replay reaches best exact stop-line F1 `0.5042`, TP/FP/FN `30 / 29 / 30`, but remains below prior angle-mask production `0.5085` and PCA val128 `0.5133`. This closes center-rank-margin + existing readout replay as an expansion path.
 - Center-rank proposal recall also does not show enough candidate-generation recovery. Exact val128 `max` source stayed at `max_r8 >= 0.6` `50/60`, top3-hit-r8 only moved `37/60 -> 39/60`, top10-hit-r8 fell `53/60 -> 52/60`, and raw rank top3 moved `9/60 -> 11/60`.
+- Score-island weighted center readout is also closed. It changed the existing predicted proposal + angle-mask extent replay to use a weighted local `max(center, selector)` island center, but exact val128 best island stop-line F1 was only `0.4354`, TP/FP/FN `32 / 55 / 28`, below baseline `0.4483` and the existing selector-center reference `0.5085`.
 - PCA component 후보는 weak-positive reference로 보관하되, deployment default 승격 후보로 보지 않는다.
 
 성공 기준:
