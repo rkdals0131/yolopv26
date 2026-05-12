@@ -7337,3 +7337,71 @@ Result:
 - The current learned validator logits are not a recall-preserving production selector.
 - Lane still needs a stronger model-side/decoder-side instance-stability contract, not another threshold over the same validator checkpoint.
 - Stop-line remains the largest all-task blocker unless the next lane idea materially changes candidate evidence instead of only candidate filtering.
+
+## 140. 2026-05-13 Stop-line fragment union readout: broader positive, not production yet
+
+맥락:
+
+- Section 130/137 showed positive no-oracle stop-line failures are high-confidence short fragments far from the GT midpoint.
+- The learned dense fragment-to-center extent head collapsed, so the next cheaper question was whether multiple existing short fragments can be grouped into a longer same-line prediction without retraining.
+- This replay uses the exported current-composite `candidate_features.csv`; GT is used only to score the emitted predictions.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-union-readout`.
+- Code commit: `0b8aa6f`.
+- Added `tools/probe_pv26_stopline_fragment_union_readout.py`.
+- Added `test/test_stopline_fragment_union_readout.py`.
+- The replay filters `gap4/max/top50` candidates, clusters candidates with similar axis and normal offset, merges endpoints along the shared axis, and evaluates one stop-line prediction per sample.
+- Missing no-candidate GT stop-lines are added as FN from summary support accounting.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_union_readout.py test/test_stopline_fragment_union_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py`
+- result: `4 passed`.
+- `git diff --check`
+
+Replay:
+
+```bash
+PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_pv26_stopline_fragment_union_readout.py \
+  --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2/candidate_features.csv \
+  --summary runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2/summary.json \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_readout_val512_epoch2
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_readout_val512_epoch2/summary.json`
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_readout_val512_epoch2/fragment_union_variants.csv`
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_readout_val512_epoch2/fragment_union_clusters.csv`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred count | Lane F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `union_a12_o36_s080_c2_fallback_top` | `0.4948` | `120 / 94 / 151` | `214` | `0.5480` | `0.6187` |
+| `union_a16_o48_s080_c2` | `0.4936` | `116 / 83 / 155` | `199` | `0.5480` | `0.6187` |
+| `union_a8_o24_s080_c2` | `0.4904` | `115 / 83 / 156` | `198` | `0.5480` | `0.6187` |
+| `union_a12_o36_s080_c2` | `0.4904` | `115 / 83 / 156` | `198` | `0.5480` | `0.6187` |
+| `union_a12_o36_s080_c1` | `0.4825` | `117 / 97 / 154` | `214` | `0.5480` | `0.6187` |
+| `union_a12_o36_s050_c2` | `0.3897` | `113 / 196 / 158` | `309` | `0.5480` | `0.6187` |
+
+Support accounting:
+
+- total stop-line support: `271`
+- candidate-bearing GT: `257`
+- missing-GT FN add-on: `14`
+
+판단:
+
+- This is a real broader positive signal for the current candidate set: best stop-line F1 `0.4948` beats score-threshold production `0.4371`, PCA broader reference `0.4699`, and GT sample-gate + same-row feature rank `0.4800`.
+- It is still far below the `0.60` target.
+- This is a CSV replay, not a production postprocess path. It should not be called solved or deployment-ready.
+- The signal specifically supports same-line fragment grouping/union, not another score threshold, ranker-only, sample gate, or learned dense fragment-to-center aux sweep.
+
+다음:
+
+- Wire this union contract into an opt-in model-output postprocess/evaluator path and re-evaluate on the checkpoint outputs.
+- Keep lane/crosswalk composition explicit: the current CSV replay inherits lane `0.5480` and hull crosswalk `0.6187`; combining with flip-centerline lane TTA must be verified as a separate runtime composition, not assumed.
