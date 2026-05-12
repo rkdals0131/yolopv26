@@ -7805,3 +7805,46 @@ Result:
 - The multifeature logistic gate overfits: train F1 reaches `0.6635`, but held-out F1 drops below baseline (`0.4369` vs `0.4848`) and full replay loses `11` TP.
 - The GT-presence control shows FP-suppression headroom, but it uses oracle sample presence and is not a production selector.
 - Do not continue as a projection-competition selector feature/threshold/logistic sweep. A useful next axis needs a materially new signal or actual candidate/midpoint recovery.
+
+## 150. 2026-05-13 Stop-line photometric selector audit: raw-image contrast is also weak
+
+맥락:
+
+- Section 149 closed exported projection-competition feature/logistic gates because they either moved only a few FP or overfit.
+- The next non-repeated no-GT question was whether the raw image itself contains a simple brightness/contrast signal around the selected stop-line segment that can suppress FP.
+- This is production-legal because it samples only the input image around predicted segments; GT is used only for TP/FP labels during audit.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-photometric-selector-audit`.
+- Code commit: `44f4f4e`.
+- Added `tools/analyze_pv26_stopline_projection_photometric_selector.py`.
+- Added `test/test_stopline_projection_photometric_selector_audit.py`.
+- Contract: replay the current projection-competition predictions, add raw-image luma/white/chroma/yellow and side-band contrast features around each emitted segment, then run the same no-GT threshold and alternating-sample held-out logistic protocol.
+
+Verification:
+
+- `python3 -m py_compile tools/analyze_pv26_stopline_projection_photometric_selector.py test/test_stopline_projection_photometric_selector_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_projection_competition_readout.py test/test_stopline_projection_competition_selector_audit.py test/test_stopline_projection_photometric_selector_audit.py`
+- result: `13 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_projection_photometric_selector_audit_val512_epoch2/summary.json`
+
+Result:
+
+| Selector | Stop-line F1 | Stop TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| baseline projection competition | `0.5164` | `126 / 91 / 145` | `217` |
+| best photometric rule: `photo_abs_contrast_side12 >= 8.923120498657227` | `0.5217` | `126 / 86 / 145` | `212` |
+| best rule after adding photometric features | `0.5250` | `126 / 83 / 145` | `209` |
+| photometric logistic, held-out baseline | `0.4848` | `56 / 49 / 70` | `105` |
+| photometric logistic, held-out gate | `0.4433` | `45 / 32 / 81` | `77` |
+| photometric logistic, full replay | `0.5442` | `114 / 34 / 157` | `148` |
+
+판단:
+
+- Raw-image contrast removes only `5` FP and does not recover recall; it is weaker than the previous thickness gate (`0.5217` vs `0.5250`).
+- Adding photometric features to the multifeature logistic makes train/full look better but still fails held-out (`0.4433` vs baseline `0.4848`) and loses `11` TP.
+- Do not continue as a raw-image brightness/contrast/photometric selector sweep. The next useful stop-line axis still needs actual candidate/midpoint recovery or a materially different no-GT signal.
