@@ -7680,3 +7680,44 @@ Result:
 - Gating the second prediction creates a tiny new local best: stop-line F1 `0.5061`.
 - This is still a weak partial-positive. It improves FP versus raw top-2, but gives back one TP and remains far below `0.60`.
 - Do not continue as a second-prediction threshold sweep. A useful next stop-line axis needs a new signal, not another length-ratio/score/fragment-count gate around these same 11 second predictions.
+
+## 147. 2026-05-13 Stop-line projection-split fragment replay: over-merge repair gives a small new best
+
+맥락:
+
+- Multi-instance inspection exposed very long fragment-union predictions, sometimes hundreds of pixels long, created by merging distant same-line fragment intervals.
+- The next non-threshold geometry question was whether splitting a union group by large projection gaps before merging can reduce over-merge FP while preserving the added recall.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-projection-split`.
+- Code commit: `a3636aa`.
+- Added `tools/probe_pv26_stopline_fragment_projection_split_readout.py`.
+- Added `test/test_stopline_fragment_projection_split_readout.py`.
+- Contract: keep gap4/top50/high-score fragment grouping, split each same-line group when sorted fragment intervals have a large projection gap, merge each subgroup, then apply a capped second-instance gate.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_projection_split_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_projection_split_readout.py`
+- result: `7 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_projection_split_readout_val512_epoch2/summary.json`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| `proj_split_a16_o48_gap320_c2_top2_second_lenratio070` | `0.5112` | `125 / 93 / 146` | `218` |
+| `proj_split_a16_o48_gap320_c2_top2_second_score108` | `0.5092` | `125 / 95 / 146` | `220` |
+| `proj_split_a16_o48_gap240_c2_top2_second_lenratio070` | `0.5081` | `125 / 96 / 146` | `221` |
+| `proj_split_a16_o48_gap320_c2_top2_raw` | `0.5040` | `126 / 103 / 145` | `229` |
+
+판단:
+
+- Projection splitting is the current local stop-line readout best: `0.5112`, TP/FP/FN `125 / 93 / 146`.
+- It improves over gated multi-instance `0.5061`, mostly by reducing FP while preserving TP.
+- This is a real readout signal, but still far below stop-line `0.60`.
+- Do not continue as a projection-gap/angle/offset sweep. A useful next step needs a new source of midpoint/candidate recovery or a stronger no-GT selector that moves more than this small FP correction.
