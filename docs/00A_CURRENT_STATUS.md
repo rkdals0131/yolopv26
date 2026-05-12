@@ -115,6 +115,16 @@ Latest lane FN recovery audit:
 - no-new-FP upper-bound control: recovering the `center_mean >= 0.30 or unmatched <=120px` subset would imply lane F1 `0.7564`, but this is diagnostic only and uses GT to count recoverable FNs.
 - 판단: lane still has recall-side headroom that is not explained by another FP selector threshold. The next lane branch should convert this into a recall-preserving decoder/model-side instance recovery contract; do not claim this read-only upper-bound as production lane success.
 
+Latest lane soft-ridge recovery readout smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
+- code commit: `ee85fd8`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_soft_ridge_recovery_audit_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- changed axis: add opt-in `row_scan_tangent_soft_ridge`, which selects per-row centerline probability ridge peaks before tangent linking, then replay it with the current flip-centerline broader composite settings at `lane_obj_threshold=0.30`.
+- smoke baseline row-scan-tangent lane F1: `0.5899`, TP/FP/FN `41 / 12 / 45`.
+- soft-ridge smoke lane F1: `0.5429`, TP/FP/FN `38 / 16 / 48`.
+- 판단: soft-ridge peak picking loses TP and adds FP even on val4 smoke. Do not broaden this readout to val512 or repeat it as a lane threshold sweep without a new non-GT signal that explains how ridge candidates avoid this regression.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`

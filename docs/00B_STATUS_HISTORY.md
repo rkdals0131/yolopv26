@@ -7910,3 +7910,39 @@ Upper-bound controls:
 - The audit shows enough recall-side headroom to justify a lane instance-recovery branch: the all-task lane gap needs roughly `489` extra TP at the current FP count to cross F1 `0.60`, while `1363` FNs already have moderate GT-line centerline evidence and `1698` have nearby unmatched tracks within `120px`.
 - This is not a production result. The recovery counts use GT to label missed lanes and assume no new FP.
 - Do not turn this into another post-hoc row threshold, top-K fallback, duplicate suppression, or endpoint extension sweep. The useful next lane axis is a recall-preserving decoder/model-side contract that can turn existing centerline evidence or nearby partial tracks into complete matched lane instances.
+
+## 152. 2026-05-13 Lane soft-ridge readout: probability peaks hurt smoke recall/precision
+
+맥락:
+
+- Section 151 showed that many missed lanes still have predicted centerline evidence or nearby unmatched tracks.
+- The first production-like follow-up was deliberately read-only: do not train, do not use GT at inference, and test whether centerline probability ridge peaks can become better row-scan tangent candidates than binary row clusters.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
+- Code commit: `ee85fd8`.
+- Added opt-in `row_scan_tangent_soft_ridge` to `model/engine/lane_segfirst_vectorizer.py`.
+- Added evaluator-only lane overrides to `tools/evaluate_pv26_lane60_checkpoint.py` and `tools/probe_pv26_lane_fn_recovery_audit.py`.
+- The smoke replay kept the current transplanted composite, `flip_centerline_avg`, stop-line mask `0.80`, stop-line score `0.94`, presence `0.0`, and hull crosswalk; only lane readout changed to soft-ridge at `lane_obj_threshold=0.30`.
+
+Verification:
+
+- `python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_segfirst_vectorizer.py test/test_evaluate_pv26_lane60_checkpoint.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_segfirst_vectorizer.py test/test_evaluate_pv26_lane60_checkpoint.py test/test_lane_fn_recovery_audit.py`
+- result: `15 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_soft_ridge_recovery_audit_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-soft-ridge-smoke-artifacts-20260513/` instead of being deleted.
+
+Smoke result:
+
+| Readout | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| prior row-scan-tangent smoke | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| soft-ridge t0.30 smoke | `0.5429` | `38 / 16 / 48` | `0.0000` | `0.5455` |
+
+판단:
+
+- Soft-ridge peak picking moved in the wrong direction before broader replay: it lost `3` TP, added `4` FP, and added `3` FN on the same val4 smoke slice.
+- Do not broaden `row_scan_tangent_soft_ridge` to val512.
+- Do not repeat this as a `threshold`, `peak-distance`, or ridge smoothing sweep unless a new non-GT signal explains how to avoid the observed TP loss and FP increase.
