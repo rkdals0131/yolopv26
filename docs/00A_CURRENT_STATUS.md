@@ -358,10 +358,13 @@ Latest stop-line fragment follow-up replays:
 - delta audit: union vs length labels are `fp_removed=3`, `tp_added=2`, `tp_lost=1`, `same=363`.
 - multi-instance branch/worktree: `exp/lane-family-f1/stopline-fragment-multi-instance`.
 - multi-instance code commit: `4c4dc91`.
+- multi-instance second-gate commit: `e795098`.
 - multi-instance artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_multi_instance_readout_val512_epoch2/summary.json`.
+- multi-instance gated artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_multi_instance_gated_readout_val512_epoch2/summary.json`.
 - multi-instance changed axis: keep fragment-union grouping but allow up to two predictions per sample to test whether the one-stop-line emit cap hides valid additional GT stop-lines.
 - multi-instance result: best `multi_a16_o48_s080_c2_top2_fallback`, lane / stop-line / crosswalk F1 `0.5480 / 0.5040 / 0.6187`, stop-line TP/FP/FN `125 / 100 / 146`.
-- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but the delta audit shows the gain is confined to six samples and mostly fallback suppression, not broad geometry recovery. Multi-instance top-2 is the current best stop-line readout by F1 (`0.5040`) and recovers four more TP than length competition, but adds eleven FP, so it is also only a weak partial-positive. Do not repeat these as feature-rank, single-score, or top-K sweeps. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
+- multi-instance gated result: best `multi_a16_o48_s080_c2_top2_second_lenratio070`, lane / stop-line / crosswalk F1 `0.5480 / 0.5061 / 0.6187`, stop-line TP/FP/FN `124 / 95 / 147`.
+- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but the delta audit shows the gain is confined to six samples and mostly fallback suppression, not broad geometry recovery. Multi-instance and second-instance gating are now the local stop-line best (`0.5061`) but still only weak partial positives: they trade between a few TP and FP, far from `0.60`. Do not repeat these as feature-rank, single-score, top-K, or second-prediction threshold sweeps. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
 
 Latest stop-line center-rank margin probe:
 

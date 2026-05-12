@@ -7638,3 +7638,45 @@ Result:
 - The gain comes with a bad trade: TP improves `121 -> 125`, but FP also increases `89 -> 100`.
 - This confirms the one-prediction cap is a real but small limiter, not the main stop-line blocker.
 - Do not turn this into a top-K/angle/offset sweep. A useful follow-up would need a no-GT second-instance selector that keeps the added TP without adding the FP.
+
+## 146. 2026-05-13 Stop-line gated second-instance replay: still only weakly positive
+
+맥락:
+
+- Section 145 showed raw top-2 emission recovers additional TP but adds too many FP.
+- The next bounded question was whether a no-GT gate applied only to the second prediction can preserve the extra recall while suppressing the worst added FP.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-multi-instance`.
+- Code commit: `e795098`.
+- Extended `tools/probe_pv26_stopline_fragment_multi_instance_readout.py` with optional second-prediction gates:
+  - `second_min_score`
+  - `second_min_fragment_count`
+  - `second_min_length_ratio`
+- Added regression coverage in `test/test_stopline_fragment_multi_instance_readout.py`.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_multi_instance_readout.py test/test_stopline_fragment_multi_instance_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_multi_instance_readout.py`
+- result: `8 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_multi_instance_gated_readout_val512_epoch2/summary.json`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| `multi_a16_o48_s080_c2_top2_second_lenratio070` | `0.5061` | `124 / 95 / 147` | `219` |
+| `multi_a16_o48_s080_c2_top2_second_score108` | `0.5051` | `124 / 96 / 147` | `220` |
+| `multi_a16_o48_s080_c2_top2_second_frag5` | `0.5051` | `124 / 96 / 147` | `220` |
+| `multi_a16_o48_s080_c2_top2_fallback` | `0.5040` | `125 / 100 / 146` | `225` |
+
+판단:
+
+- Gating the second prediction creates a tiny new local best: stop-line F1 `0.5061`.
+- This is still a weak partial-positive. It improves FP versus raw top-2, but gives back one TP and remains far below `0.60`.
+- Do not continue as a second-prediction threshold sweep. A useful next stop-line axis needs a new signal, not another length-ratio/score/fragment-count gate around these same 11 second predictions.
