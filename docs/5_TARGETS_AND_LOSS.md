@@ -25,9 +25,9 @@
 - lane
   - 16 anchor-row x / visibility
 - stop-line
-  - 2 endpoints + width
+  - 4-point canonical centerline
 - crosswalk
-  - 4-corner quad
+  - 16-point contour sequence
 
 ## internal target encoding
 
@@ -41,11 +41,10 @@
   - visibility logits 16
 - stop-line
   - objectness
-  - endpoints 2
-  - width 1
+  - canonical centerline points 4
 - crosswalk
   - objectness
-  - quad corners 4
+  - contour sequence points 16
 
 ## matching policy
 
@@ -110,8 +109,7 @@ L_total = λ_det * L_det
 ### stop-line loss
 
 - objectness `1.0`
-- endpoints SmoothL1 `6.0`
-- width SmoothL1 `1.0`
+- canonical centerline SmoothL1 `6.0`
 - angle/length `0.5`
 
 ### crosswalk loss

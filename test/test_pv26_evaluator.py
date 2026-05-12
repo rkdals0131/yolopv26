@@ -37,7 +37,6 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
     crosswalk = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
     lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
     stop_line_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
-    stop_line_width_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
     crosswalk_valid = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT), dtype=torch.bool)
 
     for batch_index in range(batch_size):
@@ -57,10 +56,10 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
         lane_valid[batch_index, 0] = True
 
         stop_line[batch_index, 0, 0] = 1.0
-        stop_line[batch_index, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0])
-        stop_line[batch_index, 0, 5] = 12.0
+        stop_line[batch_index, 0, 1:] = torch.tensor(
+            [100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0]
+        )
         stop_line_valid[batch_index, 0] = True
-        stop_line_width_valid[batch_index, 0] = True
 
         crosswalk[batch_index, 0, 0] = 1.0
         crosswalk[batch_index, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0])
@@ -89,7 +88,6 @@ def _make_encoded_batch(batch_size: int, q_det: int) -> dict:
             "crosswalk_source": torch.ones(batch_size, dtype=torch.bool),
             "lane_valid": lane_valid,
             "stop_line_valid": stop_line_valid,
-            "stop_line_width_valid": stop_line_width_valid,
             "crosswalk_valid": crosswalk_valid,
         },
         "meta": [
@@ -180,8 +178,9 @@ class _StaticHeads(nn.Module):
         lane[0, 0, LANE_VIS_SLICE] = 8.0
 
         stop_line[0, 0, 0] = 8.0
-        stop_line[0, 0, 1:5] = torch.tensor([100.0, 500.0, 340.0, 500.0])
-        stop_line[0, 0, 5] = 10.0
+        stop_line[0, 0, 1:] = torch.tensor(
+            [100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0]
+        )
 
         crosswalk[0, 0, 0] = 8.0
         crosswalk[0, 0, 1:9] = torch.tensor([200.0, 400.0, 380.0, 400.0, 380.0, 480.0, 200.0, 480.0])
