@@ -356,7 +356,12 @@ Latest stop-line fragment follow-up replays:
 - length-competition changed axis: keep union groups, let high-confidence single candidates compete with them, and rank the one emitted stop-line by no-GT length evidence.
 - length-competition result: best `length_comp_single090_length`, lane / stop-line / crosswalk F1 `0.5480 / 0.5031 / 0.6187`, stop-line TP/FP/FN `121 / 89 / 150`.
 - delta audit: union vs length labels are `fp_removed=3`, `tp_added=2`, `tp_lost=1`, `same=363`.
-- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but the delta audit shows the gain is confined to six samples and mostly fallback suppression, not broad geometry recovery. Do not repeat it as a feature-rank or single-score sweep. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
+- multi-instance branch/worktree: `exp/lane-family-f1/stopline-fragment-multi-instance`.
+- multi-instance code commit: `4c4dc91`.
+- multi-instance artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_multi_instance_readout_val512_epoch2/summary.json`.
+- multi-instance changed axis: keep fragment-union grouping but allow up to two predictions per sample to test whether the one-stop-line emit cap hides valid additional GT stop-lines.
+- multi-instance result: best `multi_a16_o48_s080_c2_top2_fallback`, lane / stop-line / crosswalk F1 `0.5480 / 0.5040 / 0.6187`, stop-line TP/FP/FN `125 / 100 / 146`.
+- 판단: low-score extension regresses and is closed. Length competition is a small partial-positive over fragment union (`0.4948 -> 0.5031`, `+1 TP`, `-5 FP`) but the delta audit shows the gain is confined to six samples and mostly fallback suppression, not broad geometry recovery. Multi-instance top-2 is the current best stop-line readout by F1 (`0.5040`) and recovers four more TP than length competition, but adds eleven FP, so it is also only a weak partial-positive. Do not repeat these as feature-rank, single-score, or top-K sweeps. The next stop-line step must improve candidate generation/midpoint recovery or introduce a stronger no-GT selector, while preserving crosswalk hull retention and lane composition explicitly.
 
 Latest stop-line center-rank margin probe:
 

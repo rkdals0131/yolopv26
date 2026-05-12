@@ -7597,3 +7597,44 @@ Result:
 - The gain is real but too narrow to justify a production path or another length-feature sweep.
 - The changed samples show fallback suppression behavior: some low-confidence no-cluster emissions disappear, one true positive also disappears, and only two samples add TP.
 - Next stop-line work should not keep tuning this fallback gate. It needs a materially stronger no-GT selector or a candidate/midpoint generation change that affects many more than six samples.
+
+## 145. 2026-05-13 Stop-line multi-instance fragment replay: top-2 recovers TP but adds FP
+
+맥락:
+
+- Section 144 showed length competition barely changed the sample set.
+- The remaining FN analysis showed many positive FN samples have multiple GT stop-lines, while the current fragment readouts emit at most one stop-line prediction per sample.
+- This branch asks whether relaxing that one-prediction cap is enough to recover broader stop-line F1.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-multi-instance`.
+- Code commit: `4c4dc91`.
+- Added `tools/probe_pv26_stopline_fragment_multi_instance_readout.py`.
+- Added `test/test_stopline_fragment_multi_instance_readout.py`.
+- Contract: keep the same gap4/top50/high-score fragment grouping, but cap emitted predictions at top-2 or top-3 per sample.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_fragment_multi_instance_readout.py test/test_stopline_fragment_multi_instance_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_multi_instance_readout.py`
+- result: `7 passed`.
+
+Replay artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_multi_instance_readout_val512_epoch2/summary.json`
+
+Result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: |
+| `multi_a16_o48_s080_c2_top2_fallback` | `0.5040` | `125 / 100 / 146` | `225` |
+| `multi_a16_o48_s080_c2_top3_fallback` | `0.5030` | `125 / 101 / 146` | `226` |
+| `multi_a12_o36_s080_c2_top2_fallback` | `0.4980` | `124 / 103 / 147` | `227` |
+
+판단:
+
+- Multi-instance top-2 is a tiny new stop-line readout best over length competition (`0.5031 -> 0.5040`).
+- The gain comes with a bad trade: TP improves `121 -> 125`, but FP also increases `89 -> 100`.
+- This confirms the one-prediction cap is a real but small limiter, not the main stop-line blocker.
+- Do not turn this into a top-K/angle/offset sweep. A useful follow-up would need a no-GT second-instance selector that keeps the added TP without adding the FP.
