@@ -178,6 +178,17 @@ Latest stop-line no-oracle local proposal geometry audit:
 - local candidate quality: `nearest_gt_distance <= 40` is `0 / 51`; q50 local candidate nearest distance `95.36px`, midpoint distance `68.59px`, length ratio `0.5437`, angle error `2.59deg`.
 - 판단: local score/proposal cells are often near GT, but the exported candidate geometry still does not become matched stop-line segments. The next stop-line edit must create a new local geometry readout from the score island or change the emit/select/readout contract; just selecting local top20 cells is not enough.
 
+Latest stop-line no-oracle local recenter budget:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- code commit: `063c2fa`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_local_recenter_budget_val512_epoch2/summary.json`.
+- changed axis: replay GT-joined local proposal candidates with progressively stronger oracles: raw local row, proposal-anchor recenter, min-length recenter, GT-length oracle, and GT-midpoint+GT-length oracle.
+- baseline projection competition: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- local raw/anchor/minlen/GT-length all stay below baseline: best non-midpoint oracle is `0.4939`, TP/FP/FN `122 / 101 / 149`.
+- GT-midpoint+GT-length oracle opens the budget: F1 `0.6599`, TP/FP/FN `163 / 60 / 108`.
+- 판단: local angle evidence is usable only if the center/midpoint is correct. Length or anchor correction is not enough; the next production branch must infer the missing stop-line midpoint/center without GT.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`

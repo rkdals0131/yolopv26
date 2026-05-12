@@ -8161,3 +8161,43 @@ Audit result:
 - Local proposal cells are often close to the GT cell and have strong max-source signal, but the decoded candidate segment still does not match: `0 / 51` local candidates are within the 40px match distance.
 - This closes "just choose the local top20 proposal cell" as a recovery story. The problem is not only rank, score, length, or proposal anchor; it is how local score-island evidence becomes full stop-line geometry.
 - The next stop-line edit must produce different local-neighborhood geometry or a materially richer emit/select/readout contract. It should not be another top-k-local-cell selector, fragment extension, anchor shift, or threshold/ranker replay.
+
+## 158. 2026-05-13 Stop-line no-oracle local recenter budget: midpoint is the missing oracle
+
+맥락:
+
+- Section 157 showed that local max-source proposal cells often exist near positive-no-oracle GT cells, but their exported segments still fail the 40px match.
+- The remaining cheap split was whether this is mostly length, anchor, or center. If local angle evidence is usable, then a GT-midpoint oracle should open budget even when local raw/anchor variants fail.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- Code commit: `063c2fa`.
+- Added `tools/analyze_pv26_stopline_no_oracle_local_recenter_budget.py`.
+- Added `test/test_stopline_no_oracle_local_recenter_budget.py`.
+- Contract: keep the projection-competition replay fixed, replace positive-no-oracle samples with GT-joined local proposal candidates, and progressively add recenter/length oracles. `local_gt_midpoint_gt_length_oracle` uses GT midpoint and GT length, so it is diagnostic only.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_no_oracle_local_recenter_budget.py test/test_stopline_no_oracle_local_recenter_budget.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_no_oracle_extension_budget.py test/test_stopline_no_oracle_proposal_recall.py test/test_stopline_no_oracle_anchor_shift.py test/test_stopline_no_oracle_local_proposal_geometry.py test/test_stopline_no_oracle_local_recenter_budget.py`
+- result: `5 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_local_recenter_budget_val512_epoch2/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/stopline-no-oracle-local-recenter-budget-artifacts-20260513/` instead of being deleted.
+
+Audit result:
+
+| Scenario | Stop-line F1 | TP/FP/FN |
+| --- | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` |
+| local raw | `0.4575` | `113 / 110 / 158` |
+| local anchor shift | `0.4575` | `113 / 110 / 158` |
+| local anchor minlen 240 | `0.4777` | `118 / 105 / 153` |
+| local anchor + GT length oracle | `0.4939` | `122 / 101 / 149` |
+| local GT midpoint + GT length oracle | `0.6599` | `163 / 60 / 108` |
+
+판단:
+
+- Local proposal selection plus anchor/length fixes do not beat the `0.5164` projection-competition reference.
+- The GT-midpoint+GT-length oracle does beat the target and reaches stop-line recall `0.6015`, while using the local candidate direction. That means angle evidence is not the primary blocker once the center is correct.
+- The next stop-line branch must infer/recover the full stop-line midpoint/center from local evidence without GT. Do not spend another branch on anchor shift, min-length/GT-length-style extent repair, or local-cell selection unless it changes the midpoint-generation contract.
