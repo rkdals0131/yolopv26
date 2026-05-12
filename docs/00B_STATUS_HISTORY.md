@@ -7236,3 +7236,43 @@ Task-best:
 - Learned dense fragment-to-center extent is closed as a stop-line architecture axis.
 - The stop-line blocker remains candidate generation/readout geometry, but it is not enough to supervise a fragment pixel to regress a global segment center directly.
 - A viable next stop-line branch must introduce a different emit/select/readout contract that preserves emissions and improves center proposal recovery, or the work should pivot back to lane instance stability while preserving the current stop-line/crosswalk contract.
+
+## 138. 2026-05-13 Lane instance safety gate: preserving top-K candidates brings FP back
+
+맥락:
+
+- Section 112 showed the existing row-level logistic gate is the best non-oracle lane instance selector so far, but it trades away TP and broader full lane F1 still stops below `0.60`.
+- Section 114 showed the current flip-centerline row-scan candidate set has enough TP for an oracle selector to reach full lane F1 `0.6457`.
+- The next small read-only question was whether the logistic gate's TP loss can be reduced by always preserving each sample's first K row-scan candidates by `pred_index`, then applying the logistic gate only to the remaining candidates.
+
+실행:
+
+- Worktree used for the replay setup: `exp/lane-family-f1/lane-instance-validator-score-rank`.
+- No code change was needed; this is a CSV replay over the existing lane instance evidence rows.
+- Source features: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_instance_evidence_20260512/analysis_exports/broader_val512_flip_centerline_avg_instance_gate_epoch2/lane_instance_features.csv`.
+- Output: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_safety_gate_replay_20260513/analysis_exports/broader_val512_flip_centerline_avg_safety_gate_epoch2/{summary.json,safety_gate_variants.csv}`.
+- Selection rule: for each `keep_topk`, choose the logistic threshold on the train half by lane F1, then evaluate heldout and full split-count.
+
+Result:
+
+| keep_topk | Threshold | Heldout lane F1 | Heldout TP/FP/FN | Full lane F1 | Full TP/FP/FN |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | `0.1535836312` | `0.5650` | `2142 / 818 / 2480` | `0.5705` | `4406 / 1564 / 5071` |
+| 1 | `0.1535836312` | `0.5634` | `2153 / 868 / 2469` | `0.5682` | `4419 / 1658 / 5058` |
+| 2 | `0.1535836312` | `0.5636` | `2173 / 916 / 2449` | `0.5672` | `4450 / 1763 / 5027` |
+| 3 | `0.1470197255` | `0.5621` | `2192 / 985 / 2430` | `0.5650` | `4481 / 1905 / 4996` |
+| 5 | `0.2315402073` | `0.5576` | `2204 / 1079 / 2418` | `0.5604` | `4505 / 2097 / 4972` |
+| 8 | `0.2542478381` | `0.5563` | `2212 / 1118 / 2410` | `0.5581` | `4517 / 2194 / 4960` |
+
+판단:
+
+- The recall-preserving fallback does not help. The best heldout variant is `keep_topk=0`, i.e. logistic-only.
+- Preserving top-K candidates recovers some TP, but FP returns faster, so full lane F1 drops from `0.5705` at `keep_topk=0` to `0.5682`, `0.5672`, then lower.
+- This is still below the earlier full split-count logistic diagnostic `0.5738`, the oracle TP-only lane ceiling `0.6457`, and the `0.60` target.
+- Do not implement this as a production safety gate or repeat as a K/threshold sweep.
+
+다음:
+
+- Lane selector work still needs a different production contract, not top-K fallback around the same logistic row gate.
+- The useful target remains recall-preserving FP suppression, but the current row features plus top-K safety are not enough.
+- Stop-line remains the larger all-task blocker.

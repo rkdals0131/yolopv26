@@ -201,6 +201,16 @@ Latest lane instance-embedding row-link probe:
 - skipped steps: `0`.
 - 판단: runtime and checkpoint handoff are stable, but the embedding-link axis is below tangent-link exact `0.6187165763`, `0.5633 / 0.4483 / 0.5854`; it also fails to beat soft-skeleton or segment-MIL lane-head-only exact references. Do not broaden to val512 or repeat as an embedding distance/weight sweep.
 
+Latest lane instance safety-gate replay:
+
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_safety_gate_replay_20260513/analysis_exports/broader_val512_flip_centerline_avg_safety_gate_epoch2/summary.json`.
+- source features: `lane60_lane_flip_instance_evidence_20260512` broader flip-centerline instance evidence CSV.
+- changed axis: keep the current flip-centerline row-scan candidates fixed, then preserve each sample's top-K candidates by `pred_index` while applying the existing logistic row gate to the rest.
+- best heldout variant: `keep_topk=0`, threshold `0.1535836312`, lane F1 `0.5650`, TP/FP/FN `2142 / 818 / 2480`.
+- full-split lane F1 for the same selected variant: `0.5705`, TP/FP/FN `4406 / 1564 / 5071`.
+- `keep_topk=1..8` all reduce heldout/full lane F1 versus logistic-only because FP comes back faster than TP.
+- 판단: top-K safety fallback does not solve the logistic gate's recall tradeoff and remains below the earlier full split-count logistic diagnostic `0.5738`, current lane oracle `0.6457`, and the `0.60` target. Do not convert this into a production safety gate.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`
