@@ -175,6 +175,19 @@ Latest lane positive-core flip-consistency training probe:
 - skipped steps: `0`.
 - 판단: runtime is stable, but positive-core-only consistency does not rescue the global flip-consistency regression. It is below tangent-link `0.6187`, `0.5633 / 0.4483 / 0.5854` and slightly below global flip-consistency objective `0.5991166581`, so do not broaden to val512.
 
+Latest lane soft-skeleton topology-loss probe:
+
+- branch/worktree: `exp/lane-family-f1/lane-centerline-soft-skeleton`.
+- code commit: `e7a6ebf` adds opt-in soft-skeleton/clDice-style centerline topology loss and a row-scan-tangent probe preset.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_soft_skeleton_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_020600/phase_4/history/epochs.jsonl`.
+- changed axis: keep row-scan-tangent, checkpoint, task weights, sampler, stop-line, and crosswalk fixed, then add only `lane_segfirst_soft_skeleton_weight=0.25` with `6` skeleton iterations.
+- exact val128 epoch2 objective: `0.6152102115`
+- lane / stop-line / crosswalk F1: `0.5609 / 0.4348 / 0.5854`
+- lane TP/FP/FN: `1114 / 468 / 1276`
+- task-best F1: lane `0.5609` epoch2, stop-line `0.4348` epoch2, crosswalk `0.6790` epoch1.
+- skipped steps: `0`.
+- 판단: runtime is stable, but topology-loss-only does not reach the tangent-link exact reference `0.6187165763`, `0.5633 / 0.4483 / 0.5854`; it also underperforms the earlier soft-shell auxiliary lane result. Do not broaden to val512 or repeat this as a weight/iteration sweep.
+
 Latest task-head merge with segment-MIL lane + rank-stop head:
 
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_task_head_merge_segment_mil_rank_stop_source_cross_20260512/analysis_exports/exact_val128_segment_mil_epoch2/summary.json`
