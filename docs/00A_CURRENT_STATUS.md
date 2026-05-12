@@ -329,14 +329,17 @@ Latest stop-line fragment-union readout replay:
 
 - branch/worktree: `exp/lane-family-f1/stopline-fragment-union-readout`.
 - code commit: `0b8aa6f` adds `tools/probe_pv26_stopline_fragment_union_readout.py` and regression coverage.
+- follow-up code commit: `ed9fc12` promotes the same readout into an opt-in model-output postprocess/evaluator path on the experiment branch.
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_readout_val512_epoch2/summary.json`.
+- productionized replay artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_postprocess_val512_epoch2/summary.json`.
 - changed axis: keep the current-composite candidate CSV fixed, then cluster same-line high-score short stop-line fragments and emit the merged segment. GT is used only for evaluation, not prediction.
 - support accounting: total stop-line support `271`, candidate-bearing GT `257`, missing-GT FN add-on `14`.
 - best broader-val512 variant: `union_a12_o36_s080_c2_fallback_top`.
 - lane / stop-line / crosswalk F1: `0.5480 / 0.4948 / 0.6187`.
 - TP/FP/FN stop-line: `120 / 94 / 151`.
 - non-fallback best: `union_a16_o48_s080_c2`, stop-line F1 `0.4936`, TP/FP/FN `116 / 83 / 155`.
-- 판단: fragment union is the first current-composite read-only stop-line replay in this lane to beat score-threshold production `0.4371`, PCA broader reference `0.4699`, and GT sample-gate + same-row feature rank `0.4800`. It is still below `0.60` and is a CSV replay, not a production postprocess contract. The next stop-line step is to wire the same union idea into an opt-in model-output postprocess/evaluator path and re-evaluate, while keeping crosswalk hull retention and lane TTA composition explicit.
+- productionized replay result: same broader-val512 stop-line F1 `0.4948453608`, TP/FP/FN `120 / 94 / 151`, lane/crosswalk F1 `0.5480 / 0.6187`, phase objective `0.6373915315`.
+- 판단: fragment union is the first current-composite stop-line replay in this lane to beat score-threshold production `0.4371`, PCA broader reference `0.4699`, and GT sample-gate + same-row feature rank `0.4800`, and the opt-in evaluator path reproduces the CSV result. It is still below `0.60`, remains an experiment-branch opt-in rather than a default decoder, and should not trigger another threshold-only sweep. The next stop-line step must improve candidate generation or midpoint recovery beyond this `0.4948` ceiling while preserving crosswalk hull retention and lane composition explicitly.
 
 Latest stop-line center-rank margin probe:
 

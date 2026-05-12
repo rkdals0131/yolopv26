@@ -7405,3 +7405,78 @@ Support accounting:
 
 - Wire this union contract into an opt-in model-output postprocess/evaluator path and re-evaluate on the checkpoint outputs.
 - Keep lane/crosswalk composition explicit: the current CSV replay inherits lane `0.5480` and hull crosswalk `0.6187`; combining with flip-centerline lane TTA must be verified as a separate runtime composition, not assumed.
+
+## 141. 2026-05-13 Stop-line fragment union postprocess: productionized replay matches CSV signal
+
+맥락:
+
+- Section 140 left one open question: whether fragment union was only a CSV artifact or could run through the normal model-output postprocess/evaluator surface.
+- The target was not to tune a new threshold family, but to reproduce the same `gap4/max/top50`, score `0.80`, angle `12deg`, offset `36px`, cluster-count `2`, fallback-top contract as an opt-in decoder path.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-union-readout`.
+- Code commit: `ed9fc12`.
+- Added opt-in `PV26PostprocessConfig` fields for fragment-union decode.
+- Added evaluator CLI overrides for the fragment-union fields.
+- Added regression coverage in `test/test_pv26_postprocess.py`, `test/test_run_pv26_train.py`, and `test/test_evaluate_pv26_lane60_checkpoint.py`.
+- The implementation remains an experiment-branch opt-in path; it is not a develop/default decoder.
+
+Verification:
+
+- `python3 -m py_compile model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/evaluate_pv26_lane60_checkpoint.py test/test_pv26_postprocess.py test/test_run_pv26_train.py test/test_evaluate_pv26_lane60_checkpoint.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_postprocess.py test/test_run_pv26_train.py test/test_evaluate_pv26_lane60_checkpoint.py`
+- result: `61 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_fragment_union_readout.py`
+- result: `4 passed`.
+- `git diff --check`
+
+Replay:
+
+```bash
+PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 tools/evaluate_pv26_lane60_checkpoint.py \
+  --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt \
+  --source-run runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412 \
+  --dataset-root seg_dataset/pv26_exhaustive_od_lane_dataset \
+  --lane60-experiment core_centerline_refine_row_scan_tangent_link \
+  --preset default \
+  --max-val-batches 512 \
+  --validation-epoch 2 \
+  --train-batches 512 \
+  --batch-size 4 \
+  --device cuda:0 \
+  --stop-line-mask-binary-threshold 0.80 \
+  --stop-line-min-instance-score 0.94 \
+  --stop-line-presence-threshold 0.0 \
+  --crosswalk-polygon-mode hull \
+  --stop-line-fragment-union-enabled \
+  --stop-line-fragment-union-top-k 50 \
+  --stop-line-fragment-union-min-gap 4.0 \
+  --stop-line-fragment-union-min-score 0.80 \
+  --stop-line-fragment-union-mask-threshold 0.50 \
+  --stop-line-fragment-union-normal-band 4.0 \
+  --stop-line-fragment-union-angle-threshold-deg 12.0 \
+  --stop-line-fragment-union-offset-threshold-px 36.0 \
+  --stop-line-fragment-union-min-cluster-count 2 \
+  --stop-line-fragment-union-fallback-top \
+  --output-dir runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_postprocess_val512_epoch2
+```
+
+Artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_postprocess_val512_epoch2/summary.json`
+- `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_fragment_union_postprocess_val512_epoch2/metrics.csv`
+
+Result:
+
+- phase objective: `0.6373915315`
+- lane / stop-line / crosswalk F1: `0.5480 / 0.4948 / 0.6187`
+- stop-line TP/FP/FN: `120 / 94 / 151`
+- stop-line precision/recall: `0.5607 / 0.4428`
+- stop-line support: `271`
+
+판단:
+
+- The opt-in postprocess/evaluator path exactly reproduces the CSV fragment-union stop-line result, so the signal is not just an offline artifact.
+- It is still a partial success only: stop-line remains below `0.60`, lane remains below `0.60`, and the all-task goal is not met.
+- Do not make fragment-union default or start another knob sweep around top-k/min-gap/min-score/angle/offset. The next useful stop-line work must improve midpoint/candidate generation or reduce false positives beyond the reproduced `0.4948` ceiling.
