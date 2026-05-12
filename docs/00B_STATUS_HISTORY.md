@@ -7197,6 +7197,8 @@ Artifact:
 
 - `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/phase_4/history/epochs.jsonl`
 - summary: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/summary.json`
+- fragment-disabled epoch1 replay: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/analysis_exports/epoch1_best_fragment_disabled_replay/summary.json`
+- fragment-disabled epoch2 replay: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_stop_fragment_extent_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260513_033355/analysis_exports/epoch2_fragment_disabled_replay/summary.json`
 
 Exact val128 result:
 
@@ -7204,6 +7206,13 @@ Exact val128 result:
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | `0.5499257237` | `0.5147` | `974 / 476 / 1361` | `0.0267` | `2 / 93 / 53` | `0.6625` | `53 / 24 / 30` |
 | 2 | `0.5421280619` | `0.5222` | `1004 / 451 / 1386` | `0.0519` | `4 / 90 / 56` | `0.5389` | `45 / 41 / 36` |
+
+Fragment-disabled replay on the same checkpoints:
+
+| Checkpoint | Validation epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `best.pt` | 1 | `0.5644276170` | `0.5147` | `0.1233` | `0.6625` |
+| `last.pt` | 2 | `0.5659099491` | `0.5222` | `0.2517` | `0.5389` |
 
 Task-best:
 
@@ -7217,6 +7226,7 @@ Task-best:
 
 - This is valid negative evidence: target/render/loss/postprocess wiring compiles, unit tests pass, smoke runs, and the exact run has no skipped steps.
 - The learned fragment-to-center extent contract does not recover the positive no-oracle bucket. It collapses stop-line task F1 far below tangent-link exact `0.4483`, PCA val128 `0.5133`, predicted angle-mask production `0.5085`, and read-only fragment-extent replay `0.4918`.
+- Fragment-disabled replay shows the new decode is a major part of the collapse, but not the only issue. Turning it off recovers stop-line F1 to `0.1233 / 0.2517`, still far below the original exact stop-line reference `0.4483`.
 - The best objective is also below tangent-link exact `0.6187165763`, segment-MIL lane-head-only exact `0.6193428422`, and current exact runtime-TTA reference `0.6296149306`.
 - Do not broaden to val512.
 - Do not repeat this as `stopline_fragment_extent_aux_weight`, fragment top-k, min-score, or longer-run sweep unless the proposal/readout contract changes materially.
