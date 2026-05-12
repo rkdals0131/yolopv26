@@ -8172,10 +8172,10 @@ Audit result:
 구현:
 
 - Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
-- Code commit: `063c2fa`.
+- Code commit: `063c2fa`, hardened by `0281346`.
 - Added `tools/analyze_pv26_stopline_no_oracle_local_recenter_budget.py`.
 - Added `test/test_stopline_no_oracle_local_recenter_budget.py`.
-- Contract: keep the projection-competition replay fixed, replace positive-no-oracle samples with GT-joined local proposal candidates, and progressively add recenter/length oracles. `local_gt_midpoint_gt_length_oracle` uses GT midpoint and GT length, so it is diagnostic only.
+- Contract: keep the projection-competition replay fixed, replace positive-no-oracle samples with GT-joined local proposal candidates, and progressively add recenter/length oracles. `local_gt_midpoint_gt_length_oracle` uses GT midpoint and GT length, so it is diagnostic only. The hardened version uses per-sample affine for proposal-cell-to-raw recentering when available and falls back to the global affine only when needed.
 
 Verification:
 
@@ -8184,6 +8184,7 @@ Verification:
 - result: `5 passed`.
 - Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_local_recenter_budget_val512_epoch2/summary.json`.
 - Generated Python caches were moved under branch-local `runs/removable/stopline-no-oracle-local-recenter-budget-artifacts-20260513/` instead of being deleted.
+- Method check: selected local samples with per-sample affine `47 / 47`; sample-affine fallback count `0`.
 
 Audit result:
 

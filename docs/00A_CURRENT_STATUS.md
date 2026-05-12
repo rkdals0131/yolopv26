@@ -181,9 +181,10 @@ Latest stop-line no-oracle local proposal geometry audit:
 Latest stop-line no-oracle local recenter budget:
 
 - branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
-- code commit: `063c2fa`.
+- code commit: `063c2fa`, hardened by `0281346` to prefer per-sample affine for proposal-cell-to-raw recentering.
 - artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_local_recenter_budget_val512_epoch2/summary.json`.
 - changed axis: replay GT-joined local proposal candidates with progressively stronger oracles: raw local row, proposal-anchor recenter, min-length recenter, GT-length oracle, and GT-midpoint+GT-length oracle.
+- method check: selected local samples with per-sample affine `47 / 47`; sample-affine fallback count `0`.
 - baseline projection competition: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
 - local raw/anchor/minlen/GT-length all stay below baseline: best non-midpoint oracle is `0.4939`, TP/FP/FN `122 / 101 / 149`.
 - GT-midpoint+GT-length oracle opens the budget: F1 `0.6599`, TP/FP/FN `163 / 60 / 108`.
