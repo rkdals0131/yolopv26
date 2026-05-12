@@ -7993,3 +7993,42 @@ Budget:
 - A pure selector/ranker branch over the currently oracle-bearing misrank positives is mathematically short by one TP unless it also removes FP.
 - FP-only recovery is also unrealistic because it must remove most current FP without losing any TP.
 - The next useful stop-line branch must target candidate generation or midpoint recovery for positive no-oracle samples with a no-GT signal, while tracking added FP. Do not repeat this as another selector/logistic/photometric/projection-threshold sweep.
+
+## 154. 2026-05-13 Stop-line no-oracle extension budget: current fragment midpoint is not enough
+
+맥락:
+
+- Section 153 showed that recovering no-oracle positives is the most useful stop-line budget.
+- The visual audit showed several no-oracle positives with high-confidence stop-line-looking fragments, so the next premise check was whether a simple no-GT min-length extension around the current candidate midpoint could turn those fragments into matched segments.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- Code commit: `fd6fab0`.
+- Added `tools/analyze_pv26_stopline_no_oracle_extension_budget.py`.
+- Added `test/test_stopline_no_oracle_extension_budget.py`.
+- Contract: keep the projection-competition replay fixed, replace only positive-no-oracle samples with min-length extensions of current candidate fragments, then score the full val512 stop-line replay. `top` and `longest_score_ge_080` are production-like selectors; `nearest_gt_oracle` is a GT-distance upper-bound diagnostic only.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_no_oracle_extension_budget.py test/test_stopline_no_oracle_extension_budget.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_no_oracle_extension_budget.py`
+- result: `1 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_extension_budget_val512_epoch2/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/stopline-no-oracle-extension-budget-artifacts-20260513/` instead of being deleted.
+
+Audit result:
+
+| Scenario | Stop-line F1 | TP/FP/FN |
+| --- | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` |
+| top fragment minlen 240 | `0.4713` | `119 / 115 / 152` |
+| longest high-score fragment minlen 240 | `0.4673` | `118 / 116 / 153` |
+| nearest-GT-oracle fragment minlen 240 | `0.4713` | `119 / 115 / 152` |
+| top fragment minlen 480 | `0.4554` | `115 / 119 / 156` |
+
+판단:
+
+- The baseline projection-competition replay remains the best scenario.
+- Even the `nearest_gt_oracle` selector does not rescue no-oracle samples by length extension, so the no-oracle problem is not just short-fragment length. The current fragment midpoint/centering is often wrong enough that symmetric extension makes TP/FP/FN worse.
+- Do not implement or sweep simple min-length fragment extension. The next stop-line axis must create a new no-GT midpoint/candidate-generation signal rather than stretching current fragments.

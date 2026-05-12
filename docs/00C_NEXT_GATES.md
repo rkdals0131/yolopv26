@@ -128,6 +128,7 @@
 - fragment-union projection competition selector를 raw-image photometric/contrast gate sweep으로 반복하지 않는다.
 - stop-line recovery-budget audit의 oracle TP budget을 production decoder success로 표현하지 않는다.
 - stop-line positive-misrank selector-only recovery를 0.6 path로 반복하지 않는다.
+- stop-line positive-no-oracle 후보를 current fragment midpoint 기준 min-length extension으로 회복하는 sweep을 반복하지 않는다.
 - candidate agreement/consensus-only를 stop-line production fix로 반복하지 않는다.
 - lane-context readout-only를 stop-line production fix로 반복하지 않는다.
 - crosswalk-context readout-only를 stop-line production fix로 반복하지 않는다.
@@ -262,6 +263,7 @@ Gate 상태:
 - candidate scalar-feature validator audit은 val512 candidate-row half split에서 logistic test AUC/AP `0.7894 / 0.5699`, candidate-level F1 `0.5651`을 보였다. score-only도 candidate-level F1 `0.5812`다. 하지만 candidate-row 분류는 task F1이 아니며 같은 scalar family의 production replay는 broader-val512 stop-line F1 `0.4371`에 머물렀다.
 - candidate rich-feature validator audit은 proposal/decoded center 좌표와 center/selector/mask local window features까지 넣으면 val512 candidate-row logistic test AUC/AP/F1 `0.8149 / 0.5950 / 0.6175`, oracle-best row F1 `0.6387`까지 오른다. `selector_r4_max` 단일 feature도 row F1 `0.6109`다. 하지만 task replay는 변하지 않으므로 production success가 아니라 model-side candidate instance validator의 전제 evidence다.
 - stop-line recovery-budget audit은 projection-competition reference `0.5164`, TP/FP/FN `126 / 91 / 145`에서 target F1 `0.60`까지 필요한 최소 회복량을 고정했다. Current FP에서 `+30` TP가 필요하고, FP-only path는 `68 / 91` FP 제거가 필요하다. Positive-misrank `29`개만 모두 회복해도 `0.5996`이라 selector/ranker-only는 수학적으로도 한 끗 부족하다. Positive no-oracle `62`개를 모두 회복하는 oracle upper bound는 F1 `0.6836`이고 added FP `76`까지 허용하므로, 다음 stop-line branch는 no-oracle candidate generation 또는 midpoint recovery를 겨냥해야 한다.
+- stop-line no-oracle fragment-extension budget은 current positive-no-oracle samples를 top/longest/nearest-GT-oracle fragment의 min-length extension으로 대체해도 baseline projection competition `0.5164`, TP/FP/FN `126 / 91 / 145`보다 모두 낮았다. Best extension은 F1 `0.4713`, TP/FP/FN `119 / 115 / 152`다. 따라서 no-oracle 문제는 단순 짧은 fragment 길이 부족이 아니라 current midpoint/centering 자체가 틀어진 문제로 본다.
 - candidate rich-validator held-out task replay는 row signal이 task selection으로 일부 옮겨짐을 보였지만 gate를 통과하지 못했다. val512 앞 half에서 threshold를 맞추고 뒤 half를 평가하면 held-out baseline stop-line F1 `0.3877`에서 rich logistic `0.4231`, `selector_r4_max` `0.4259`로 오른다. 하지만 PCA broader reference `0.4699`보다 낮고 목표 `0.60`과는 멀다.
 - selector feature-patch validator replay는 dense `stop_line_selector_feature`의 proposal/decoded local 128-channel patch mean까지 넣어도 gap4/top50 held-out rich logistic task F1 `0.3982`, TP/FP/FN `44 / 49 / 84`에 그쳤다. 기존 `selector_r4_max` threshold replay `0.4558`, PCA broader reference `0.4699`보다 낮아서 raw selector embedding patch를 offline validator로 키우는 방향은 현재 production path가 아니다.
 - model-side candidate instance validator head는 opt-in 구현과 smoke는 통과했지만 exact val128에서 실패했다. Direct `validator` gate는 epoch1/2 stop-line F1 `0.0000`이고, 같은 epoch2 checkpoint를 `center` gate로 되돌려도 stop-line F1 `0.4211`로 기준 `0.4483`보다 낮다.

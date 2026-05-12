@@ -137,6 +137,16 @@ Latest stop-line recovery-budget audit:
 - no-oracle upper bound: recovering all `62` positive-no-oracle samples gives F1 `0.6836` and could tolerate up to `76` added FP while staying at `>=0.60`.
 - 판단: another selector/logistic/photometric/projection-threshold sweep is not the next useful stop-line axis. The next stop-line branch must add a no-GT candidate-generation or midpoint-recovery signal that reaches currently no-oracle positives while controlling added FP.
 
+Latest stop-line no-oracle fragment-extension budget:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-midpoint-recovery-readout`.
+- code commit: `fd6fab0`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_mask_midpoint_recovery_readout_20260513/analysis_exports/no_oracle_extension_budget_val512_epoch2/summary.json`.
+- changed axis: replace only positive-no-oracle samples in the projection-competition replay with simple min-length extensions of current candidate fragments; compare top, longest-high-score, and nearest-GT-oracle candidate selectors.
+- baseline projection competition remains best: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- best extension variants reach only `0.4713`, TP/FP/FN `119 / 115 / 152`.
+- 판단: positive no-oracle is not solved by simply extending short fragments around their current midpoint. Do not implement or sweep a min-length fragment-extension postprocess without a new no-GT centering/candidate-generation signal.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
