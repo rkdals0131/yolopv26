@@ -6746,3 +6746,67 @@ Additional observations:
 
 - The next stop-line architecture premise should target high-confidence short-fragment-to-full-line recovery.
 - If that premise is not available, lane instance stability remains the fallback, but stop-line is still the larger all-task blocker.
+
+## 131. 2026-05-12 Stop-line fragment extent recovery probe: exact lift but below existing readout references
+
+맥락:
+
+- Section 130 showed that current positive no-oracle stop-line failures are high-score short fragments far from the GT midpoint.
+- The next read-only question was whether a production-style decoder can start from predicted proposal/fragment evidence and recover a fuller line extent without GT center, GT angle, or GT length.
+- This branch isolates that premise from training, sampler, and target changes.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-extent-probe`.
+- Added `tools/probe_pv26_stopline_fragment_extent_recovery.py`.
+- The probe uses predicted center/selector/max proposal cells plus predicted angle, then reads a gap-tolerant mask strip along that axis.
+- It deliberately does not use connected-component-only extent, GT center, GT angle, GT length, or oracle selection.
+- It replaces only `stop_lines`; lane and crosswalk predictions stay unchanged.
+
+Command:
+
+```bash
+PV26_DATASET_ROOT=<path-to-pv26_exhaustive_od_lane_dataset>
+python3 tools/probe_pv26_stopline_fragment_extent_recovery.py \
+  --checkpoint runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt \
+  --dataset-root "$PV26_DATASET_ROOT" \
+  --preset default \
+  --phase-index 4 \
+  --max-val-batches 128 \
+  --validation-epoch 2 \
+  --device cuda:0 \
+  --output-dir runs/pv26_exhaustive_od_lane_train/stopline_fragment_extent_probe_20260512/analysis_exports/exact_val128_epoch2
+```
+
+Artifacts:
+
+- summary: `runs/pv26_exhaustive_od_lane_train/stopline_fragment_extent_probe_20260512/analysis_exports/exact_val128_epoch2/summary.json`
+- CSV: `variants.csv`
+- smoke output was disposable and is not used as durable evidence.
+- auto-downloaded root `yolo26s.pt` plus generated `__pycache__` folders were moved under `runs/removable/stopline-fragment-extent-probe-*-artifacts-20260512/` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Objective | Stop-line F1 | Stop-line TP/FP/FN | Pred count |
+| --- | ---: | ---: | ---: | ---: |
+| `selector_top5_thr050_gap10_band4_fallback` | `0.5280` | `0.4918` | `30 / 32 / 30` | `62` |
+| `selector_top5_thr050_gap10_band4` | `0.5279` | `0.4915` | `29 / 29 / 31` | `58` |
+| `max_top3_thr050_gap6_band4` | `0.5192` | `0.4627` | `31 / 43 / 29` | `74` |
+| `baseline` | `0.5149` | `0.4483` | `26 / 30 / 34` | `56` |
+
+판단:
+
+- The gap-tolerant strip readout does recover some stop-line recall on exact val128: best F1 `0.4918` versus baseline `0.4483`.
+- It also improves mean point distance substantially (`17.92px -> 9.75px` for the best fallback variant), so the extent readout is not meaningless.
+- But it does not beat the already-known exact readout references: PCA val128 `0.5133` and predicted angle-mask production `0.5085`.
+- Therefore this is partial-positive diagnostic evidence, not a broader-val512 expansion path and not a production decoder.
+
+하지 말 것:
+
+- Do not repeat gap-tolerant strip readout as `top_k/mask_threshold/max_gap/band` sweeps on the same checkpoint.
+- Do not broaden this exact result unless a materially different center/extent proposal changes the reference comparison.
+
+다음:
+
+- Stop-line still needs a stronger center/extent generation contract, not another predicted-proposal readout-only variant.
+- If no such stop-line premise is available, switch to lane instance-stability work, but keep crosswalk hull retention unchanged.
