@@ -321,6 +321,15 @@ Latest lane point-repair oracle replay:
 - val128 oracle result: lane F1 `0.5854 -> 0.7332`, TP/FP/FN `1200 / 510 / 1190 -> 1503 / 207 / 887`; selected `322` of `510` unmatched predictions, with `18` duplicate targets and actual `+303` TP.
 - 판단: this proves actual lane point movement can pass the lane F1 gate when the target geometry is known, and it validates the replay machinery. It is oracle-only and leaves stop-line at `0.4483`, so it is not production success or all-task 0.6 evidence. The next lane step must infer comparable target geometry from no-GT signals.
 
+Latest lane point-repair regression premise:
+
+- branch/worktree: `exp/lane-family-f1/lane-point-repair-regression-premise`.
+- code commit: `199af80`.
+- artifact val128: `runs/pv26_exhaustive_od_lane_train/lane_point_repair_regression_premise_20260514/analysis_exports/val128_selected_translation_l2_10/summary.json`.
+- changed axis: use only prediction-side features from the oracle replay candidate CSV to predict a single pred-to-target translation vector with two-fold heldout ridge regression.
+- heldout result on the `322` oracle-selected val128 candidates: close-to-GT count improved only `24 -> 44`, while distance q50/q90 worsened `65.31 / 106.31 -> 66.89 / 110.11`; improved/worsened rows were `159 / 163`.
+- 판단: a simple no-GT feature-to-translation regressor is too weak and unstable to justify live decoder integration. Do not repeat this as an l2/feature/threshold tuning exercise without a new geometry signal.
+
 Latest lane repair geometry export:
 
 - branch/worktree: `exp/lane-family-f1/lane-repair-geometry-export`.

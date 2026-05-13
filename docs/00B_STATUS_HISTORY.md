@@ -9858,3 +9858,44 @@ Val128 result:
 - The point-repair replay machinery is valid: when target lane geometry is known and injected, the real evaluator records the expected lane TP recovery and FP/FN reduction.
 - This does not solve the goal. It uses GT geometry and leaves stop-line below `0.60`.
 - The next production lane branch must learn or infer the replacement geometry from no-GT signals. Repeating this as another oracle, distance threshold, or GT-point copy is not useful.
+
+## 195. 2026-05-14 Lane point repair regression premise: no-GT translation signal is weak
+
+맥락:
+
+- Section 194 showed that copying the nearest missed GT lane points into selected unmatched predictions moves actual lane metrics strongly.
+- The next question was whether prediction-side features alone can infer a useful replacement translation, before spending a live decoder branch on it.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-point-repair-regression-premise`.
+- Code commit: `199af80`.
+- Added `tools/analyze_pv26_lane_point_repair_regression_premise.py`.
+- Added `test/test_lane_point_repair_regression_premise.py`.
+- Input artifact: `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/val128_oracle_le120/lane_point_repair_candidates.csv`.
+- The analysis keeps only the `322` oracle-selected candidates, trains two-fold heldout ridge models from prediction-side features, predicts one translation vector per candidate, and evaluates distance to the nearest missed GT lane. It is artifact-only and not a live task-F1 replay.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_point_repair_regression_premise.py test/test_lane_point_repair_regression_premise.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_point_repair_regression_premise.py test/test_lane_point_repair_replay.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_regression_premise_20260514/analysis_exports/val128_selected_translation_l2_10/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_regression_premise_20260514/analysis_exports/val128_selected_translation_l2_10/lane_point_repair_regression_rows.csv`.
+
+Val128 heldout result:
+
+- rows: `322`.
+- baseline close count at `40px`: `24`.
+- predicted close count at `40px`: `44`.
+- baseline distance q50/q90: `65.31 / 106.31`.
+- predicted distance q50/q90: `66.89 / 110.11`.
+- improved/worsened rows: `159 / 163`.
+
+판단:
+
+- The close-count gain is real but small, and the median/tail distance gets worse.
+- A single no-GT feature-to-translation regressor is not stable enough to justify live evaluator integration.
+- Do not repeat this as an `l2`, feature-subset, or close-threshold sweep unless a new geometry signal is introduced.
