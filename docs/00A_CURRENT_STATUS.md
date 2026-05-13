@@ -159,6 +159,16 @@ Latest lane centerline-snap recovery readout smoke:
 - centerline-snap smoke lane F1: `0.5674`, TP/FP/FN `40 / 15 / 46`.
 - 판단: centerline snapping is less damaging than global soft-ridge peak generation but still loses TP and adds FP relative to the same smoke reference. Do not broaden this readout to val512 or repeat it as a snap-radius sweep without a new FP-control signal.
 
+Latest lane track-level translation readout smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-track-translation-readout`.
+- code commit: `01b3ac1`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_track_translation_readout_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- changed axis: add opt-in `row_scan_tangent_centerline_translate`, which preserves row-scan-tangent instance topology and y coordinates, then chooses one integer x offset for the whole decoded track by mean centerline score.
+- prior row-scan-tangent smoke lane F1: `0.5899`, TP/FP/FN `41 / 12 / 45`.
+- track-translation smoke lane F1: `0.5674`, TP/FP/FN `40 / 15 / 46`.
+- 판단: track-level uniform translation does not rescue the pair-geometry center-offset bucket. It matches the centerline-snap regression pattern, so do not broaden this readout to val512 or repeat it as a translation-radius/offset sweep without a materially new non-GT FP-control signal.
+
 Latest stop-line recovery-budget audit:
 
 - branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.

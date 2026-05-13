@@ -98,6 +98,7 @@
 - lane instance-validator candidate score-gate를 같은 checkpoint에서 threshold/statistic sweep으로 반복하지 않는다.
 - flip-centerline average 위의 post-hoc row gate exact `0.6125`를 lane-family success로 표현하거나 같은 threshold replay를 반복하지 않는다.
 - lane row-scan tangent soft-ridge readout을 `threshold/peak-distance` sweep으로 반복하지 않는다.
+- lane row-scan tangent centerline translation을 translation-radius/offset sweep으로 반복하지 않는다.
 - row-scan tangent segment-MIL + row-distribution 조합을 같은 lane-head-only retention schedule에서 weight-only로 반복하지 않는다.
 - row-scan tangent upper-trunk unfreeze를 LR/schedule/capacity-only sweep으로 반복하지 않는다.
 - lane-head transplant checkpoint에서 bbox area/aspect만 강화하는 geometry-filter sweep을 lane 0.6 path로 반복하지 않는다.
@@ -166,6 +167,7 @@
 - Pair-geometry audit shows the strongest nearby-track bucket is mostly a position/center-offset problem, not an angle or length-ratio problem: `center>=0.50 and unmatched<=80px` has length ratio q50 `0.974`, angle q50 `1.27deg`, y-overlap q50 `0.905`, but center distance q50 `50.11px`, just beyond the `40px` match threshold. The center-only bucket is different: no near unmatched track, length ratio q50 `2.091`, center distance q50 `182.80px`, y-overlap q50 `0.332`, so it likely needs instance generation rather than current-track repair.
 - The first production-like readout attempt from that evidence, `row_scan_tangent_soft_ridge` at `lane_obj_threshold=0.30`, failed val4 smoke: lane F1 moved `0.5899 -> 0.5429`, TP/FP/FN `41 / 12 / 45 -> 38 / 16 / 48`. Do not broaden it to val512 or repeat it as a peak/threshold sweep.
 - The constrained topology-preserving follow-up, `row_scan_tangent_centerline_snap`, also failed val4 smoke: lane F1 moved `0.5899 -> 0.5674`, TP/FP/FN `41 / 12 / 45 -> 40 / 15 / 46`. Do not broaden it to val512 or repeat it as a snap-radius sweep unless a materially new non-GT FP-control signal is added.
+- The track-level uniform translation follow-up, `row_scan_tangent_centerline_translate`, failed the same val4 smoke gate: lane F1 `0.5674`, TP/FP/FN `40 / 15 / 46`. This closes simple center-offset repair as a radius/offset sweep; a future lane branch needs a different instance-generation or FP-control signal.
 - crosswalk는 opt-in hull decode로 broader-val512 `0.6187`까지 올라 현재 gap은 닫혔다. 다음 stop-line/lane work에서는 이 crosswalk retention을 유지하는지 확인한다.
 
 실험 원칙:

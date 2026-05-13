@@ -8361,3 +8361,42 @@ Broader geometry result:
 - The strongest nearby-track bucket already has good length and direction: length ratio q50 `0.974`, angle q50 `1.27deg`, and y-overlap q50 `0.905`.
 - Its median center offset is still about `50px`, just beyond the `40px` match threshold. This explains why naive local x-snap can hurt: the repair is an instance-level positioning problem, not just "choose a higher local peak".
 - The center-only bucket is qualitatively different: nearest unmatched tracks are far, long, and low-overlap. That bucket likely needs instance generation from centerline evidence rather than repair of current tracks.
+
+## 163. 2026-05-13 Lane track-level translation readout: uniform offset still regresses
+
+맥락:
+
+- Section 162 showed that the strongest nearby-track bucket has good length, angle, and y-overlap, but a median center offset of about `50px`.
+- Section 160 already closed local pointwise centerline snapping. The remaining narrow readout question was whether a uniform track-level x translation could fix the center-offset bucket while preserving instance topology better than per-point snapping.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-track-translation-readout`.
+- Code commit: `01b3ac1`.
+- Added opt-in `row_scan_tangent_centerline_translate` aliases to `model/engine/lane_segfirst_vectorizer.py`.
+- Added regression coverage in `test/test_lane_segfirst_vectorizer.py`.
+- Contract: keep row-scan-tangent linking, instance topology, point count, and y coordinates fixed; choose one integer dx for the whole track by mean centerline score within a bounded search radius. This is a production-style no-GT readout probe, not a deployment default.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/engine/lane_segfirst_vectorizer.py test/test_lane_segfirst_vectorizer.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_segfirst_vectorizer.py`
+- result: `11 passed`.
+- `git diff --check`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_track_translation_readout_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-track-translation-smoke-artifacts-20260513/` instead of being deleted.
+
+Smoke result:
+
+| Readout | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| prior row-scan-tangent smoke | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| track-level translation smoke | `0.5674` | `40 / 15 / 46` | `0.0000` | `0.5455` |
+| centerline-snap smoke | `0.5674` | `40 / 15 / 46` | `0.0000` | `0.5455` |
+| prior soft-ridge smoke | `0.5429` | `38 / 16 / 48` | `0.0000` | `0.5455` |
+
+판단:
+
+- Uniform track translation does not recover the nearby-track center-offset bucket. It still loses `1` TP, adds `3` FP, and adds `1` FN relative to the same row-scan-tangent smoke reference.
+- Do not broaden this to val512.
+- Do not repeat this as a translation-radius/offset sweep unless a materially new non-GT FP-control signal explains how to avoid the observed FP increase.
