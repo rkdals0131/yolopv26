@@ -8725,3 +8725,72 @@ Result:
 - This is a better task-balance lower bound than the objective-best flip composite because stop-line moves `0.4235 -> 0.5164` while lane/crosswalk stay `0.5577 / 0.6187`.
 - It is still not all-task success. Lane remains `+0.0423` short of `0.60`, and stop-line remains `+0.0836` short.
 - Existing known partial positives do not already solve the goal when combined. The next experiment must still change either stop-line midpoint/candidate generation or lane instance recovery, not just recombine known readouts.
+
+## 172. 2026-05-13 Stop-line no-oracle axis-offset budget: center error is along the line, but length is also required
+
+맥락:
+
+- Section 158 showed that local no-oracle candidates become useful when GT midpoint and GT length are supplied, but anchor shift and symmetric min-length repair stay below the projection-competition reference.
+- Section 159 and score-island linefit closed local island centroid/linefit as a production-style midpoint recovery.
+- The remaining diagnostic question was whether the local candidates are off the true stop-line normal, or whether they lie on the same line but are shifted along the stop-line axis.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-offset-budget`.
+- Code commit: `68585c1`.
+- Added `tools/analyze_pv26_stopline_no_oracle_axis_offset_budget.py`.
+- Added `test/test_stopline_no_oracle_axis_offset_budget.py`.
+- Contract: keep the projection-competition baseline fixed and replace only positive-no-oracle local candidates with GT-only axis-projection oracle variants. This is a bottleneck diagnostic, not a production decoder.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile tools/analyze_pv26_stopline_no_oracle_axis_offset_budget.py test/test_stopline_no_oracle_axis_offset_budget.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_stopline_no_oracle_axis_offset_budget.py test/test_stopline_no_oracle_local_recenter_budget.py`.
+- result: `2 passed`.
+- Main artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_offset_budget_20260513/analysis_exports/val512_epoch2/summary.json`.
+- Fixed-minlen sweep artifact root: `runs/pv26_exhaustive_od_lane_train/stopline_axis_offset_budget_20260513/analysis_exports/axis_minlen_sweep_val512_epoch2/`.
+
+Axis-offset diagnostic:
+
+| Metric | Value |
+| --- | ---: |
+| selected local positive-no-oracle rows | `51` |
+| axis-dominant rows | `49` |
+| abs-along-offset q10 / q50 / q90 | `31.59 / 68.59 / 137.64` |
+| abs-normal-offset q10 / q50 / q90 | `0.30 / 2.31 / 13.47` |
+| normal offset `<=20px` | `49 / 51` |
+| normal offset `<=40px` | `50 / 51` |
+| length-ratio q10 / q50 / q90 | `0.195 / 0.544 / 1.608` |
+
+Val512 replay result:
+
+| Scenario | Stop-line F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` |
+| axis projection + keep candidate length oracle | `0.5142` | `127 / 96 / 144` |
+| axis projection + fixed minlen 240 oracle | `0.5547` | `137 / 86 / 134` |
+| axis projection + GT length oracle | `0.6559` | `162 / 61 / 109` |
+| GT midpoint + keep candidate length oracle | `0.5142` | `127 / 96 / 144` |
+| GT midpoint + GT length oracle | `0.6599` | `163 / 60 / 108` |
+
+Fixed-minlen sweep for axis projection:
+
+| Min length | Stop-line F1 | TP / FP / FN |
+| ---: | ---: | ---: |
+| `120` | `0.5344` | `132 / 91 / 139` |
+| `160` | `0.5385` | `133 / 90 / 138` |
+| `200` | `0.5425` | `134 / 89 / 137` |
+| `240` | `0.5547` | `137 / 86 / 134` |
+| `280` | `0.5466` | `135 / 88 / 136` |
+| `320` | `0.5385` | `133 / 90 / 138` |
+| `400` | `0.5101` | `126 / 97 / 145` |
+| `480` | `0.4980` | `123 / 100 / 148` |
+| `640` | `0.4737` | `117 / 106 / 154` |
+
+판단:
+
+- Positive-no-oracle local candidates are mostly on the correct stop-line normal; the dominant error is along the candidate line.
+- Axis-only GT projection plus GT length almost matches full GT-midpoint+GT-length oracle (`0.6559` vs `0.6599`), so the missing production contract is not primarily angle or normal recentering.
+- Candidate length remains a real bottleneck: keep-length stays flat at `0.5142`, and the best fixed min-length oracle reaches only `0.5547`.
+- Next stop-line work should infer both along-axis midpoint shift and extent/length from no-GT support. Do not repeat this as a production oracle, a fixed-minlen sweep, selector-only recovery, symmetric extension, or anchor-shift repair.

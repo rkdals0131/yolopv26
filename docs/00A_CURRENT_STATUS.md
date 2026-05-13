@@ -114,6 +114,18 @@ Current best broader task-balance replay:
 - lane-family mean/min F1: `0.5643 / 0.5164`.
 - 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0423` and stop-line needs `+0.0836`.
 
+Latest stop-line no-oracle axis-offset budget:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-offset-budget`.
+- code commit: `68585c1`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_offset_budget_20260513/analysis_exports/val512_epoch2/summary.json`.
+- changed axis: keep the projection-competition reference fixed, then replace only positive-no-oracle local candidates with GT-only axis-projection oracle variants to separate along-line center error, normal error, and length error.
+- local positive-no-oracle rows: `51`; axis-dominant rows: `49`; abs-normal-offset q50/q90: `2.31px / 13.47px`; abs-along-offset q50/q90: `68.59px / 137.64px`.
+- projection reference stop-line F1: `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- axis-projection + fixed minlen best (`minlen=240`) stop-line F1: `0.5547`, TP/FP/FN `137 / 86 / 134`.
+- axis-projection + GT-length oracle stop-line F1: `0.6559`, TP/FP/FN `162 / 61 / 109`, close to full GT-midpoint+GT-length oracle `0.6599`.
+- 판단: no-oracle local candidates are mostly wrong along the stop-line axis, not off the line. But fixed-length axis shift is still below `0.60`; a real production path needs a no-GT signal for both along-axis midpoint shift and stop-line extent/length, not another selector-only or symmetric extension sweep.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
