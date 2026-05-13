@@ -495,6 +495,18 @@ Latest lane row-scan tangent global-assignment smoke:
 - smoke val4 result: row-scan-tangent reference lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`; global-assignment lane F1 `0.5152`, TP/FP/FN `34 / 12 / 52`; stop-line/crosswalk F1 `0.0000 / 0.4000`.
 - 판단: global assignment fixes a synthetic greedy-conflict unit case, but in real val4 it loses seven lane TP without reducing FP. Do not broaden to val128/val512 or repeat as a Hungarian/global row-assignment variant unless a new recall-preserving signal first shows TP recovery.
 
+Latest lane scale-centerline TTA smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-scale-centerline-tta-smoke`.
+- code commit: `37804a4`.
+- artifact downscale smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_scale_centerline_tta_smoke_val4_epoch2/summary.json`.
+- artifact upscale smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_scale1125_centerline_tta_smoke_val4_epoch2/summary.json`.
+- changed axis: keep the current lane-head transplant, stop-line overrides, and hull crosswalk fixed; run one scale-resized input pass and average only the resized lane centerline logits back into the normal-pass dense map.
+- verification: `py_compile`, `pytest -q test/test_lane_flip_tta_probe.py`, then two val4 smokes for scale factors `0.875` and `1.125`.
+- downscale `0.875`: `flip_centerline_avg` lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`; `flip_scale_centerline_avg` lane F1 `0.5606`, `37 / 9 / 49`; `scale_centerline_avg` lane F1 `0.5414`, `36 / 11 / 50`.
+- upscale `1.125`: `flip_centerline_avg` lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`; `flip_scale_centerline_avg` lane F1 `0.5778`, `39 / 10 / 47`; `scale_centerline_avg` lane F1 `0.5373`, `36 / 12 / 50`.
+- 판단: single-scale centerline TTA raises the phase objective in one smoke row by reducing FP, but it loses lane TP versus the existing flip baseline in both scale directions. Do not broaden to val128/val512 or repeat as a scale-factor/interpolation sweep without a new recall-preserving premise.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

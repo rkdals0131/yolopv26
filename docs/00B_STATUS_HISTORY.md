@@ -10850,3 +10850,47 @@ Smoke val4:
 - The global assignment mode fixes the synthetic greedy-conflict test, but the real smoke slice loses seven lane TP and does not reduce FP.
 - This is worse than the existing row-scan-tangent reference and worse than recent failed repair/readout smokes.
 - Do not broaden this to val128/val512. Do not repeat as a global/Hungarian assignment variant unless a new recall-preserving signal first shows actual TP recovery.
+
+## 217. 2026-05-14 Lane scale-centerline TTA smoke: lower FP is not worth lost TP
+
+맥락:
+
+- Section 216 closed global row assignment, leaving lane runtime/preprocess work as one remaining non-repeated surface.
+- Horizontal flip centerline averaging is the current broader lane partial-positive, but flip max/union/threshold and post-hoc row gates are already closed.
+- This branch tested a different TTA axis: scale the input image once, resize only the resulting lane centerline logits back to the normal dense-map shape, and keep stop-line/crosswalk outputs from the normal pass.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-scale-centerline-tta-smoke`.
+- Code commit: `37804a4`.
+- Updated `tools/probe_pv26_lane_flip_tta.py`.
+- Updated `test/test_lane_flip_tta_probe.py`.
+- Added `scale_centerline_avg` and `flip_scale_centerline_avg` variants.
+- The implementation averages only `lane_seg_centerline_logits`; support/tangent/semantic maps, stop-line outputs, and crosswalk outputs stay anchored to the primary normal pass.
+- Smoke artifacts:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_scale_centerline_tta_smoke_val4_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_scale1125_centerline_tta_smoke_val4_epoch2/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `5 passed`.
+- Two val4 epoch-2 smokes completed with scale factors `0.875` and `1.125`.
+- Auto-downloaded `yolo26s.pt` in the temporary worktree was deleted because `/tmp` cleanup is allowed.
+
+Smoke val4:
+
+| Scale factor | Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| reference | `flip_centerline_avg` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `0.875` | `flip_scale_centerline_avg` | `0.5606` | `37 / 9 / 49` | `0.0000` | `0.5455` |
+| `0.875` | `scale_centerline_avg` | `0.5414` | `36 / 11 / 50` | `0.0000` | `0.5455` |
+| `1.125` | `flip_scale_centerline_avg` | `0.5778` | `39 / 10 / 47` | `0.0000` | `0.5455` |
+| `1.125` | `scale_centerline_avg` | `0.5373` | `36 / 12 / 50` | `0.0000` | `0.5455` |
+
+판단:
+
+- The `1.125` flip+scale row has a slightly higher phase objective than the flip reference because FP drops `12 -> 10`, but it loses two TP and adds two FN.
+- The active target is lane F1 `>=0.60`, not objective jitter or precision-only movement, so this is negative for the actual goal.
+- Do not broaden this to val128/val512. Do not repeat as scale-factor, interpolation, or scale-plus-flip weighting sweeps unless a new diagnostic first shows scale-derived TP recovery without recall loss.
