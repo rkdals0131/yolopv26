@@ -136,6 +136,15 @@ Latest stop-line axis-projected offset readout:
 - exact val128 axis-projected offset: stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`, mean point distance `13.51`.
 - 판단: current model center-offset already gives the same matched set after axis projection; the tiny point-distance improvement is not a stop-line F1 path. Do not broaden or repeat this as a `top_k`/threshold sweep.
 
+Latest stop-line axis-profile readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-profile-readout`.
+- tool: `tools/probe_pv26_stopline_axis_profile_readout.py`.
+- changed axis: keep the existing checkpoint fixed, replace only stop-line predictions, anchor on predicted proposal cells or predicted offset, then read midpoint/length from the predicted mask profile along the predicted stop-line axis.
+- val4 smoke: baseline and all profile variants had stop-line F1 `0.0000`; support was only TP/FP/FN `0 / 3 / 2` or `0 / 4 / 2`, so val128 was needed before closing the axis.
+- exact val128 best: `axis_profile_cell_top1_s060_mask050_band4` and `axis_profile_offset_top1_s060_mask050_band4` both reached stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`; baseline was `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- 판단: proposal-cell axis profile recovers the same matched set as the existing predicted angle/mask-extent and axis-projected-offset references, but does not beat the known exact stop-line references (`0.5085` / PCA `0.5133`) or the broader projection-competition reference `0.5164`. Do not broaden or repeat as a proposal-source/top-k/mask-threshold/normal-band sweep.
+
 Latest stop-line fragment axis contract:
 
 - branch/worktree: `exp/lane-family-f1/stopline-fragment-axis-contract`.
