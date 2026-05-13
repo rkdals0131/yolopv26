@@ -8242,3 +8242,41 @@ Exact val128 result:
 - Score-island weighted center does not recover the midpoint budget. It can add recall (`32` TP in the best island variant) but adds too many FP (`55`) and falls below both the baseline and the existing selector-center angle-mask reference.
 - Do not broaden this to val512.
 - Do not repeat this as an island radius / relative-threshold / min-score sweep unless a materially new non-GT signal explains FP control.
+
+## 160. 2026-05-13 Lane centerline-snap readout: topology preservation still adds FP
+
+맥락:
+
+- Section 151 showed that many lane FNs have either predicted centerline evidence or nearby unmatched row-scan tracks.
+- Section 152 closed global soft-ridge peak generation because it lost TP and added FP on the first smoke.
+- The narrower follow-up was to preserve the existing row-scan-tangent instance topology and only move each decoded track point's x coordinate to a local same-row centerline peak. This tests whether geometry repair of existing unmatched tracks is enough without generating new peak candidates.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-unmatched-track-pair-audit`.
+- Code commit: `43735cf`.
+- Added opt-in `row_scan_tangent_centerline_snap` to `model/engine/lane_segfirst_vectorizer.py`.
+- Added regression coverage in `test/test_lane_segfirst_vectorizer.py`.
+- Contract: keep row-scan-tangent linking, point count, y coordinates, and instance topology fixed; only snap x coordinates within a bounded same-row centerline window. This is a production-style no-GT readout probe, not a deployment default.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/engine/lane_segfirst_vectorizer.py test/test_lane_segfirst_vectorizer.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_segfirst_vectorizer.py`
+- result: `11 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_centerline_snap_recovery_audit_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-centerline-snap-smoke-artifacts-20260513/` instead of being deleted.
+
+Smoke result:
+
+| Readout | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| prior row-scan-tangent smoke | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| centerline-snap smoke | `0.5674` | `40 / 15 / 46` | `0.0000` | `0.5455` |
+| prior soft-ridge smoke | `0.5429` | `38 / 16 / 48` | `0.0000` | `0.5455` |
+
+판단:
+
+- Centerline snap is less damaging than global soft-ridge peak generation, but it still loses `1` TP, adds `3` FP, and adds `1` FN relative to the prior row-scan-tangent smoke reference.
+- Do not broaden this to val512.
+- Do not repeat this as a snap-radius/window sweep unless a materially new non-GT signal explains how to avoid the observed FP increase.

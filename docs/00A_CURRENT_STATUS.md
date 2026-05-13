@@ -125,6 +125,16 @@ Latest lane soft-ridge recovery readout smoke:
 - soft-ridge smoke lane F1: `0.5429`, TP/FP/FN `38 / 16 / 48`.
 - 판단: soft-ridge peak picking loses TP and adds FP even on val4 smoke. Do not broaden this readout to val512 or repeat it as a lane threshold sweep without a new non-GT signal that explains how ridge candidates avoid this regression.
 
+Latest lane centerline-snap recovery readout smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-unmatched-track-pair-audit`.
+- code commit: `43735cf`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_centerline_snap_recovery_audit_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- changed axis: add opt-in `row_scan_tangent_centerline_snap`, which preserves row-scan-tangent instance topology and only snaps existing track x coordinates to local same-row centerline peaks.
+- prior row-scan-tangent smoke lane F1: `0.5899`, TP/FP/FN `41 / 12 / 45`.
+- centerline-snap smoke lane F1: `0.5674`, TP/FP/FN `40 / 15 / 46`.
+- 판단: centerline snapping is less damaging than global soft-ridge peak generation but still loses TP and adds FP relative to the same smoke reference. Do not broaden this readout to val512 or repeat it as a snap-radius sweep without a new FP-control signal.
+
 Latest stop-line recovery-budget audit:
 
 - branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.
