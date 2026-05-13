@@ -156,6 +156,16 @@ Latest stop-line symmetric axis-profile readout:
 - exact val128: existing profile top1 stayed `0.5085`, TP/FP/FN `30 / 28 / 30`; symmetric top1 dropped to `0.2203`, TP/FP/FN `13 / 45 / 47`; symmetric top3 was `0.2185`, TP/FP/FN `13 / 46 / 47`.
 - 판단: the mask-profile asymmetry was not just harmful midpoint drift; forcing the proposal cell to be midpoint loses too many true positives and adds false positives. Do not broaden or repeat as a symmetric extent/top-k/proposal-threshold/normal-band sweep.
 
+Latest stop-line axis score-profile readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-score-profile-readout`.
+- code commit: `a6bb715`.
+- artifacts: `runs/pv26_exhaustive_od_lane_train/stopline_axis_score_profile_20260513/analysis_exports/{smoke_val4_epoch2,val128_epoch2,val512_epoch2}/summary.json`.
+- changed axis: keep the existing proposal-cell axis-profile readout fixed, but weight along-axis projection quantiles with `center`, `selector`, or fused score maps instead of mask probabilities.
+- exact val128: selector-profile top1 reached stop-line F1 `0.5254`, TP/FP/FN `31 / 27 / 29`, beating the mask-profile top1 reference `0.5085`, `30 / 28 / 30`.
+- broader val512: the same selector-profile top1 fell to stop-line F1 `0.4303`, TP/FP/FN `105 / 112 / 166`; best score-profile run was still only mask-profile top3 at `0.4531`, TP/FP/FN `111 / 108 / 160`, far below projection-competition `0.5164`, `126 / 91 / 145`.
+- 판단: score-profile weighting was an exact-split small positive but does not generalize to broader validation. Do not repeat it as a center/selector/fused profile-source or top-k/threshold/normal-band sweep.
+
 Latest stop-line fragment axis contract:
 
 - branch/worktree: `exp/lane-family-f1/stopline-fragment-axis-contract`.

@@ -9213,3 +9213,54 @@ Smoke val4 result:
 - The original tangent-link checkpoint removes lane TP when averaged with the current lane-head transplant.
 - Fixed dual-checkpoint averaging is not the missing recall-preserving centerline signal.
 - Do not broaden to val128 or repeat as checkpoint/weight/threshold averaging sweeps unless a new diagnostic first proves complementary TP recovery.
+
+## 183. 2026-05-13 Stop-line axis score-profile readout: exact gain does not survive broader validation
+
+맥락:
+
+- Section 175 showed mask-weighted axis-profile readout only tied existing exact references.
+- Section 181 showed symmetric midpoint forcing collapses TP.
+- The remaining narrow no-GT midpoint question was whether the same predicted-axis profile should be weighted by `center` or `selector` score maps instead of mask probabilities.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-score-profile-readout`.
+- Code commit: `a6bb715`.
+- Added `profile_source` to `tools/probe_pv26_stopline_axis_profile_readout.py`.
+- Added `test/test_stopline_axis_score_profile_readout.py`.
+- Contract: readout-only; keep checkpoint, proposal source, top-k, proposal threshold, mask threshold, and normal band fixed except for three fixed profile weight choices: `center`, `selector`, and fused `max(center, selector)`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_axis_profile_readout.py test/test_stopline_axis_score_profile_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_axis_score_profile_readout.py`
+- result: `2 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_score_profile_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_score_profile_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Broader artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_score_profile_20260513/analysis_exports/val512_epoch2/summary.json`.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| mask profile top1 | `0.5085` | `30 / 28 / 30` |
+| selector profile top1 | `0.5254` | `31 / 27 / 29` |
+| center profile top1 | `0.4915` | `29 / 29 / 31` |
+| fused profile top1 | `0.4915` | `29 / 29 / 31` |
+
+Broader val512 result:
+
+| Variant | Stop-line F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` |
+| best axis-profile broader, mask top3 | `0.4531` | `111 / 108 / 160` |
+| mask profile top1 | `0.4508` | `110 / 107 / 161` |
+| selector profile top1 | `0.4303` | `105 / 112 / 166` |
+| baseline in this replay | `0.4083` | `98 / 111 / 173` |
+
+판단:
+
+- Selector-profile weighting is a real exact split movement, not just formatting noise: it adds `+1 TP` and removes `1 FP` versus mask-profile top1 on val128.
+- The same signal does not generalize. On broader val512 it loses `21 TP` and adds `21 FP` versus the projection-competition reference.
+- Do not broaden further or repeat this as a center/selector/fused profile-source, top-k, threshold, or normal-band sweep.
