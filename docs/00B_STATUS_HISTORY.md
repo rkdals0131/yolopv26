@@ -10125,3 +10125,43 @@ Candidate summary:
 - The scorer is better than raw residual append and the prior shape gate on FP control, but it still does not beat baseline at val128.
 - The actual val128 movement is `+6 TP / +21 FP / -6 FN`, so precision loss erases the recall gain.
 - This closes residual repairability gating as a production path. Do not repeat it as a repairability score threshold, top-K budget, or residual candidate threshold sweep without a materially new no-GT FP-control or alignment signal.
+
+## 201. 2026-05-14 Stop-line P4 context head: coarse context is not enough
+
+맥락:
+
+- Most recent stop-line failures narrowed the blocker to no-GT midpoint/extent recovery, not another selector threshold.
+- The existing `StopLineDenseLocalHead` fused P2/P3 only, so the distinct model-side question was whether adding P4 coarse context to the stop-line head helps recover stop-line geometry without touching decoder thresholds.
+- This is a single architecture-axis smoke, not a selector/readout sweep.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-p4-context-head`.
+- Code commit: `1cb0bd7`.
+- Updated `StopLineDenseLocalHead` to accept a tuple of feature inputs and fused P2/P3/P4 for stop-line heads.
+- Added `core_centerline_refine_stopline_p4_context` to the lane60 probe runner.
+- Runtime artifact was temporary and intentionally not retained as a durable repo artifact.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/net/stopline_head_line.py model/net/roadmark_v2_heads.py test/test_pv26_heads.py test/test_roadmark_native_contract.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_heads.py test/test_roadmark_native_contract.py`.
+- result: `10 passed`.
+- `git diff --check`.
+- one-epoch train smoke with `128` train batches and no skipped steps.
+- same-evaluator val64 and val128 comparisons against the source checkpoint.
+
+Results:
+
+| comparison | objective | lane F1 | stop-line F1 | crosswalk F1 | stop-line TP / FP / FN |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| baseline val64 | `0.5994` | `0.4987` | `0.0000` | `0.6437` | `0 / 0 / 29` |
+| P4 context val64 | `0.5899` | `0.5154` | `0.2222` | `0.6829` | `6 / 22 / 20` |
+| baseline val128 | `0.5763` | `0.5267` | `0.0000` | `0.5854` | `0 / 0 / 60` |
+| P4 context val128 | `0.5642` | `0.4952` | `0.1980` | `0.6588` | `10 / 36 / 45` |
+
+판단:
+
+- P4 context does create stop-line predictions where the same evaluator baseline emits none, so it is not a pure wiring failure.
+- It still lowers phase objective on both val64 and val128, hurts lane on val128, and remains far below the known stop-line references such as exact geometry filters, PCA/profile references, and projection-competition replay.
+- Do not promote or broaden this branch as-is. Repeating it as a longer run, LR sweep, or random-fusion warm-start does not address the remaining stop-line midpoint/extent contract.
