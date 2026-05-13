@@ -11152,3 +11152,44 @@ Exact val128:
 - Axis-window recentering did move/decode candidate centers (`axis_window_center_ok=215`), but it added FP faster than useful TP recovery.
 - It is below both the baseline and the existing selector top1 reference on exact val128, so it is not a no-GT midpoint recovery path.
 - Do not broaden this to broader-val512. Do not repeat it as an axis-window radius, step, scoring-half-length, top-K, proposal-threshold, or fallback sweep without a materially new FP-control signal.
+
+## 224. 2026-05-14 Stop-line dense-Hough readout: global line vote loses recall and precision
+
+맥락:
+
+- The remaining stop-line gap still needs no-GT midpoint/extent recovery with explicit FP control.
+- Local axis-window recentering and proposal-island centroid recovery both added FP too quickly.
+- This branch tested a different fixed readout contract: vote globally over predicted stop-line mask, proposal, and angle maps to generate a line segment without using GT centers or GT lengths.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-dense-hough-readout`.
+- Code commit: `64c8439`.
+- Tool/test: `tools/probe_pv26_stopline_pred_angle_mask_extent.py`, `test/test_stopline_dense_hough_readout.py`.
+- Added fixed `DenseHoughVariant` candidates that bin predicted local angle and line-normal offset, then recover segment extent from weighted dense support.
+- The probe replaces only stop-line predictions while preserving the baseline lane and crosswalk predictions.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_dense_hough_readout.py`.
+- `pytest -q test/test_stopline_dense_hough_readout.py`.
+- result: `2 passed`.
+- `git diff --check`.
+- val4 smoke completed but had only two stop-line GTs and all production-style stop-line variants tied at F1 `0.0`, so exact val128 was used as the real gate.
+- exact val128 probe completed under `/tmp/yolopv26_stopline_dense_hough_val128`.
+
+Exact val128:
+
+| Variant | Stop-line F1 | Stop-line TP / FP / FN | Pred stop-lines | Phase objective proxy |
+| --- | ---: | ---: | ---: | ---: |
+| `pred_selector_top1_s060_mask050_band4` reference | `0.5085` | `30 / 28 / 30` | `58` | `0.5330` |
+| `baseline` | `0.4483` | `26 / 30 / 34` | `56` | `0.5149` |
+| `dense_hough_max_m080_p020_bins18_band4_min6` | `0.4000` | `24 / 36 / 36` | `60` | `0.5004` |
+| `dense_hough_selector_m050_p040_bins18_band3_min8` | `0.3717` | `21 / 32 / 39` | `53` | `0.4919` |
+| `dense_hough_max_m050_p020_bins18_band3_min8` | `0.3520` | `22 / 43 / 38` | `65` | `0.4860` |
+
+판단:
+
+- Dense global voting did generate candidate lines, but it lost TP and/or added FP compared with both baseline and the selector top1 reference.
+- The best Hough variant is not close enough to justify broader-val512.
+- Do not repeat this as angle-bin, rho-bin, normal-band, mask-threshold, proposal-threshold, or top-K tuning. A future stop-line branch still needs a materially new no-GT candidate-generation or FP-control signal.
