@@ -8794,3 +8794,45 @@ Fixed-minlen sweep for axis projection:
 - Axis-only GT projection plus GT length almost matches full GT-midpoint+GT-length oracle (`0.6559` vs `0.6599`), so the missing production contract is not primarily angle or normal recentering.
 - Candidate length remains a real bottleneck: keep-length stays flat at `0.5142`, and the best fixed min-length oracle reaches only `0.5547`.
 - Next stop-line work should infer both along-axis midpoint shift and extent/length from no-GT support. Do not repeat this as a production oracle, a fixed-minlen sweep, selector-only recovery, symmetric extension, or anchor-shift repair.
+
+## 173. 2026-05-13 Stop-line axis-projected offset readout: current center-offset has no extra F1 signal
+
+맥락:
+
+- Section 172 showed that GT-only axis projection plus GT length nearly matches full GT-midpoint+GT-length oracle.
+- The first production-style question was whether the existing `stop_line_center_offset` already contains a useful no-GT along-axis center signal, and whether dropping its normal component helps.
+- This branch keeps the existing predicted proposal + angle-mask extent readout fixed and changes only how the center is computed from the existing offset map.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-projected-offset-readout`.
+- Code commit: `107a0f5`.
+- Added opt-in `center_mode="axis_projected_offset"` variants to `tools/probe_pv26_stopline_pred_angle_mask_extent.py`.
+- Added unit coverage in `test/test_stopline_score_island_midpoint_readout.py`.
+- Contract: for each selected proposal cell, project the existing predicted center-offset vector onto the predicted stop-line angle axis and discard the normal component before mask-extent decoding.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_score_island_midpoint_readout.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_stopline_score_island_midpoint_readout.py`.
+- result: `3 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_projected_offset_readout_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_projected_offset_readout_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Auto-downloaded `yolo26s.pt` was moved under branch-local `runs/removable/stopline-axis-projected-offset-artifacts-20260513/` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP / FP / FN | Mean point distance |
+| --- | ---: | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` | `17.92` |
+| existing `pred_selector_top1_s060_mask050_band4` | `0.5085` | `30 / 28 / 30` | `13.62` |
+| `axisproj_selector_top1_s060_mask050_band4` | `0.5085` | `30 / 28 / 30` | `13.51` |
+| existing fallback | `0.5041` | `31 / 32 / 29` | `13.71` |
+| axis-projected fallback | `0.5041` | `31 / 32 / 29` | `13.60` |
+
+판단:
+
+- Axis projection of the existing center-offset slightly improves mean point distance but does not change matched TP/FP/FN or F1.
+- This closes the current center-offset map as a simple no-GT along-axis recovery source under the angle-mask extent readout.
+- Do not broaden this to val512 or repeat it as a `top_k`, proposal-threshold, mask-threshold, or fallback sweep. A future production branch needs a different no-GT center/extent signal, not a projection of the same offset head.

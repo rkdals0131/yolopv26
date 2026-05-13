@@ -126,6 +126,16 @@ Latest stop-line no-oracle axis-offset budget:
 - axis-projection + GT-length oracle stop-line F1: `0.6559`, TP/FP/FN `162 / 61 / 109`, close to full GT-midpoint+GT-length oracle `0.6599`.
 - 판단: no-oracle local candidates are mostly wrong along the stop-line axis, not off the line. But fixed-length axis shift is still below `0.60`; a real production path needs a no-GT signal for both along-axis midpoint shift and stop-line extent/length, not another selector-only or symmetric extension sweep.
 
+Latest stop-line axis-projected offset readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-projected-offset-readout`.
+- code commit: `107a0f5`.
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_projected_offset_readout_20260513/analysis_exports/val128_epoch2/summary.json`.
+- changed axis: keep the same predicted proposal + angle-mask extent readout, but project the existing predicted center offset onto the predicted stop-line angle axis before decoding.
+- exact val128 existing pred-offset reference: stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`, mean point distance `13.62`.
+- exact val128 axis-projected offset: stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`, mean point distance `13.51`.
+- 판단: current model center-offset already gives the same matched set after axis projection; the tiny point-distance improvement is not a stop-line F1 path. Do not broaden or repeat this as a `top_k`/threshold sweep.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
