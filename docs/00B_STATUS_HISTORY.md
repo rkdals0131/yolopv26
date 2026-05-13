@@ -10758,3 +10758,58 @@ Smoke val4:
 - Component-row projection does move selected geometry, but the move still does not cross any matching boundary on this smoke slice.
 - TP/FP/FN/F1 were exactly flat after repair.
 - Do not broaden this to val128. Do not repeat component-row/path projection as a connected-component or row-projection sweep unless a new alignment signal first changes TP/FP/FN.
+
+## 215. 2026-05-14 Stop-line fit-far visual audit and task-mask competition smoke: not enough signal
+
+맥락:
+
+- Section 210 closed predicted lane-crossing extent recovery, and the current stop-line ledger had no obvious safe readout knob left.
+- Before opening another stop-line branch, this pass checked whether fit-far false negatives still contain visible dense mask/center evidence that suggests a materially new no-GT signal.
+- The audit is read-only except for a small decode-probe branch used to test pixel/logit-level task-mask competition.
+
+구현:
+
+- Readout audit artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_readout_component_audit_val128_epoch2/summary.json`.
+- Visual artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_fit_far_visual_audit_val128_epoch2/manifest.json`.
+- Grid: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_fit_far_visual_audit_val128_epoch2/stopline_fit_far_bucket_grid.png`.
+- Branch: `exp/lane-family-f1/stopline-mask-task-competition-smoke`.
+- Code commit: `f20f494`.
+- Tool touched only `tools/probe_pv26_lane60_decode_variants.py`.
+- Added opt-in decode-probe variants that suppress `stop_line_mask_logits` with crosswalk mask probability or with crosswalk + lane probabilities. This tests pixel/logit-level task competition, not another crosswalk-context ranking replay.
+- Added `--variants` so the smoke can run only the baseline plus the four competition variants.
+- Compact result artifact: `analysis_exports/stopline_mask_task_competition_smoke_val128_epoch2/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane60_decode_variants.py`.
+- `PYTHONPYCACHEPREFIX=/tmp/pv26_stopline_readout_pycache python3 tools/probe_pv26_stopline_readout_components.py ... --max-val-batches 128 --validation-epoch 2`.
+- `PYTHONPYCACHEPREFIX=/tmp/pv26_stopline_visual_pycache python3 tools/visualize_pv26_stopline_fit_far_bucket.py ... --sample-count 12`.
+- `PYTHONPYCACHEPREFIX=/tmp/pv26_stopline_mask_comp_pycache python3 tools/probe_pv26_lane60_decode_variants.py ... --variants baseline,stop_mask_cross_comp050,stop_mask_cross_comp100,stop_mask_cross_lane_comp050,stop_mask_cross_lane_comp100`.
+
+Read-only audit:
+
+- val128 stop-line GT count: `60`.
+- production TP / recall: `26 / 0.4333`.
+- GTs with tube mask max `>=0.50`: `51 / 60`.
+- GTs with tube center max `>=0.50`: `50 / 60`.
+- no-anchor fit close count / recall: `34 / 0.5667`.
+- anchored fit close count / recall: `33 / 0.5500`.
+- fit-far bucket with production miss, mask/center evidence, and no-anchor distance `>40px`: `13` rows; `12` were rendered.
+
+Task-mask competition val128:
+
+| variant | lane F1 | stop-line F1 | stop-line TP / FP / FN | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5267` | `0.4483` | `26 / 30 / 34` | `0.5854` |
+| stop mask x crosswalk comp100 | `0.5267` | `0.4615` | `27 / 30 / 33` | `0.5854` |
+| stop mask x crosswalk comp050 | `0.5267` | `0.4211` | `24 / 30 / 36` | `0.5854` |
+| stop mask x crosswalk+lane comp050 | `0.5267` | `0.1429` | `6 / 18 / 54` | `0.5854` |
+| stop mask x crosswalk+lane comp100 | `0.5267` | `0.0541` | `2 / 12 / 58` | `0.5854` |
+
+판단:
+
+- The visual audit confirms many missed GTs still have dense mask/center signal, but the selected component often follows a crosswalk, lane, road stripe, or oversized region rather than producing a reliable stop-line candidate.
+- Crosswalk-only competition gives only `+1 TP` on exact val128, with no FP reduction. It remains below PCA/profile/projection-competition references and is far from stop-line `0.60`.
+- Adding lane competition collapses recall, so lane/logit suppression is not a viable stop-line recovery path under this checkpoint.
+- Do not broaden this to val512. Do not repeat as task-mask competition strength, crosswalk/lane source, or mask-threshold sweeps unless a new candidate-generation/midpoint signal first moves more than one TP while preserving FP.
+- With no materially different stop-line premise available from this visual pass, the next work should pivot back to lane instance stability while preserving the current stop-line/crosswalk retention contract.

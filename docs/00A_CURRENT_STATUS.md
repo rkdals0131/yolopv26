@@ -128,6 +128,21 @@ Latest stop-line lane-crossing extent readout:
 - exact val128 lane-extent c2: `0.0690`, TP/FP/FN `3 / 24 / 57`.
 - 판단: predicted lane crossings do not preserve TP after geometry repair. The variant emits the same `27` stop-lines as lane-cross c2 but collapses TP from `15` to `3`, so do not repeat this as a lane-crossing distance, margin, or top-k sweep.
 
+Latest stop-line fit-far visual + task-mask competition smoke:
+
+- branch/worktree: `exp/lane-family-f1/stopline-mask-task-competition-smoke`.
+- code commit: `f20f494`.
+- artifacts:
+  - `analysis_exports/stopline_readout_component_audit_val128_epoch2/summary.json`
+  - `analysis_exports/stopline_fit_far_visual_audit_val128_epoch2/manifest.json`
+  - `analysis_exports/stopline_mask_task_competition_smoke_val128_epoch2/summary.json`
+- changed axis: keep checkpoint and postprocess fixed, first inspect production-missed stop-line GTs with retained dense mask/center evidence, then test whether stop-line mask logits should be suppressed by crosswalk or lane task probabilities before decode.
+- read-only audit: val128 stop-line GT `60`; production TP `26`; GT tube mask max `>=0.50` for `51 / 60`; GT tube center max `>=0.50` for `50 / 60`; no-anchor fit close `34 / 60`; anchored fit close `33 / 60`.
+- exact val128 baseline lane/stop/cross F1: `0.5267 / 0.4483 / 0.5854`, stop-line TP/FP/FN `26 / 30 / 34`.
+- best task-mask competition: crosswalk-only suppression strength `1.0`, lane/stop/cross F1 `0.5267 / 0.4615 / 0.5854`, stop-line TP/FP/FN `27 / 30 / 33`.
+- lane-inclusive suppression collapses stop-line recall: best lane-inclusive row has stop-line F1 `0.1429`, TP/FP/FN `6 / 18 / 54`.
+- 판단: visual evidence confirms dense signal often exists, but task-mask competition only recovers one TP and remains below known stop-line references. Do not broaden or repeat as strength/source/mask-threshold sweeps. With no new stop-line premise from this pass, pivot back to lane instance-stability work while preserving the current stop-line/crosswalk retention contract.
+
 Latest stop-line local-x auxiliary smoke:
 
 - branch/worktree: `exp/lane-family-f1/stopline-local-x-aux-smoke`.
