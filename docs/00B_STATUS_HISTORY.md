@@ -9049,3 +9049,41 @@ Additional checks:
 - Lateral-duplicate style recovery is not mathematically dead, but only if it recovers a large nearby-track FN bucket.
 - The tight `unmatched<=80 and center>=0.50` bucket can tolerate only `172` added FP, so a narrow duplicate rule is fragile.
 - The next implementation may test one fixed duplicate-style smoke, but it must report TP recovery and added FP together. This budget must not be presented as production lane success or expanded into an offset/radius sweep.
+
+## 179. 2026-05-13 Lane centerline-duplicate smoke: preserving original track adds FP without TP recovery
+
+맥락:
+
+- Section 178 showed a duplicate-style lane recovery was only plausible if it recovered a large nearby-track FN bucket while controlling FP.
+- Section 158 had already closed track-level centerline translation when it replaced the original track.
+- This branch tested the narrow follow-up: keep the original row-scan-tangent track and add the centerline-translated copy only when the translation moves the track.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-centerline-duplicate-smoke`.
+- Code commit: `61be845`.
+- Added opt-in `row_scan_tangent_centerline_translate_duplicate` mode to `model/engine/lane_segfirst_vectorizer.py`.
+- Added explicit `--backbone-weights` evaluator/probe options to avoid implicit downloads under the low-disk root filesystem.
+- Added regression coverage in `test/test_lane_segfirst_vectorizer.py`.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_segfirst_vectorizer.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_lane_segfirst_vectorizer.py`.
+- result: `12 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_centerline_duplicate_smoke_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| row-scan-tangent smoke reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| centerline translation replacement | `0.5674` | `40 / 15 / 46` | `0.0000` | `0.5455` |
+| original + translated duplicate | `0.5594` | `40 / 17 / 46` | `0.0000` | `0.5455` |
+
+판단:
+
+- Preserving the original track does not recover extra TP on the smoke gate.
+- The duplicate adds FP beyond the replacement translation result, so the budget headroom does not transfer to this simple production-like readout.
+- Do not broaden this branch to val128/val512 or repeat it as a duplicate offset/radius sweep.

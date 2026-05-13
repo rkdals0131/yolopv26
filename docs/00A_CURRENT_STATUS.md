@@ -205,6 +205,16 @@ Latest lane lateral-duplicate budget audit:
 - `unmatched<=120 any center`: `1698` recoverable FN; no-added-FP upper-bound F1 `0.6946`, with `2821` added FP tolerance. If all current FP were duplicated and this whole bucket were recovered, the oracle-budget F1 is still `0.6184`.
 - 판단: this is not production success, but it says a one-axis lateral-duplicate smoke is not mathematically dead if it targets a large nearby-track bucket. The next implementation must prove TP recovery and added-FP cost together; do not turn this into an offset/radius sweep.
 
+Latest lane centerline-duplicate smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-centerline-duplicate-smoke`.
+- code commit: `61be845`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_centerline_duplicate_smoke_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- changed axis: keep the original row-scan-tangent track and emit a centerline-translated duplicate only when the translation moves the track.
+- smoke val4 result: lane F1 `0.5594`, TP/FP/FN `40 / 17 / 46`; stop-line/crosswalk `0.0000 / 0.5455`.
+- comparison: row-scan-tangent smoke reference was `0.5899`, TP/FP/FN `41 / 12 / 45`; replacement centerline translation was `0.5674`, TP/FP/FN `40 / 15 / 46`.
+- 판단: preserving the original track avoids replacing it, but the duplicate adds FP without recovering TP. Do not broaden this branch or repeat as a duplicate offset/radius sweep.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
