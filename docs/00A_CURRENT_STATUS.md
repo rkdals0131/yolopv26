@@ -209,6 +209,17 @@ Latest stop-line flip-consensus readout:
 - geometry: point averaging improved mean stop-line distance `17.92 -> 14.35` and angle error `2.12 -> 1.66`, but the matched set stayed only `28` TP.
 - 판단: candidate-level flip agreement is a small exact-only positive but remains below PCA val128 `0.5133`, angle-mask production `0.5085`, and broader projection-competition `0.5164`. Do not broaden or repeat as agreement-distance/top-k/point-average tuning without a new TP-preserving candidate-generation signal.
 
+Latest stop-line flip-union readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-flip-union-readout`.
+- code commit: `c0509f7`.
+- artifacts: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_flip_union_{smoke_val4_epoch2,val128_epoch2}/summary.json`.
+- changed axis: keep the fixed checkpoint and decoded normal/flip candidate pools, but emit flip-only or normal+flip union candidates instead of requiring candidate agreement.
+- smoke val4: all union variants still had stop-line F1 `0.0000`; they only increased FP from baseline `3` to `4-8`.
+- exact val128: best consensus remained `0.4667`, TP/FP/FN `28 / 32 / 32`; baseline was `0.4483`, `26 / 30 / 34`.
+- union result: `flip_only_top1` reached only `0.4306`, TP/FP/FN `31 / 53 / 29`; `normal_flip_union_top1` reached `0.4304`, `34 / 64 / 26`; `normal_flip_union_top2` raised TP to `37` but FP to `136`, dropping F1 to `0.3176`.
+- 판단: flip pass does contain some extra TP candidates, but not a TP-preserving candidate-generation signal. Union variants expand FP faster than recall, so do not broaden or repeat as flip-only/normal+flip top-k or component-count tuning without a new FP-control signal.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
