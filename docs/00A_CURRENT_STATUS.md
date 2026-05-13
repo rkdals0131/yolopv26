@@ -25,7 +25,7 @@ Run:
 
 - checkpoint: `phase_4/checkpoints/best.pt`
 - current objective-best composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/metrics.csv`
-- latest closed stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
+- retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
 Note: older exact-eval and visual-check exports were pruned from active `runs` during artifact cleanup. The numeric results below remain as historical evidence, but those old export directories are no longer current retained artifacts.
 
@@ -125,6 +125,18 @@ Latest lane task-mask context gate:
 - val512 reference `flip_centerline_avg`: objective `0.6216194906`, lane/stop/cross F1 `0.5577 / 0.4235 / 0.6187`, lane TP/FP/FN `4518 / 2206 / 4959`.
 - val512 best `flip_centerline_avg_lane_cross_comp050`: objective `0.6230558331`, lane/stop/cross F1 `0.5628 / 0.4235 / 0.6187`, lane TP/FP/FN `4532 / 2097 / 4945`.
 - 판단: this is a retained partial positive and the current objective-best broader runtime composite. It narrows the lane gap but does not close lane `0.60`, and it does nothing for the stop-line bottleneck.
+
+Latest stop-line scale dense TTA smoke:
+
+- branch/worktree: `exp/lane-family-f1/stopline-scale-dense-tta-smoke`.
+- code commit: `26a7f7e`.
+- changed axis: keep checkpoint, decode thresholds, current flip-centerline lane/crosswalk competition, and hull crosswalk fixed, then average only stop-line score maps, geometry maps, or both across resized input scales `0.875` and `1.125`.
+- smoke val4 support: lane/stop/cross `86 / 2 / 7`.
+- val4 reference `flip_centerline_avg_lane_cross_comp050`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, stop-line TP/FP/FN `0 / 3 / 2`.
+- val4 `flip_centerline_avg_lane_cross_comp050_stop_scale_score_avg`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, stop-line TP/FP/FN `0 / 3 / 2`.
+- val4 `flip_centerline_avg_lane_cross_comp050_stop_scale_geometry_avg`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, stop-line TP/FP/FN `0 / 3 / 2`.
+- val4 `flip_centerline_avg_lane_cross_comp050_stop_scale_all_avg`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, stop-line TP/FP/FN `0 / 3 / 2`.
+- 판단: stop-line scale dense TTA did not move TP/FP/FN even on the smoke slice. Do not broaden to val128/val512 or repeat as a scale-factor/map-subset sweep without a new no-GT stop-line signal.
 
 Latest stop-line lane-crossing extent readout:
 

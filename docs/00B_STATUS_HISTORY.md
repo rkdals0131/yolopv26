@@ -11248,3 +11248,54 @@ Broader val512:
 - The broader val512 check preserved that direction and improved lane by `+14 TP`, `-109 FP`, `-14 FN` versus the flip-centerline reference.
 - This is the new broader objective-best runtime composite, but it is still a partial success: lane remains below `0.60` by `0.0372`, and stop-line remains the main blocker at `0.4235`.
 - Do not turn this into a task-mask source/strength/mask-threshold sweep. If this path is promoted, keep the fixed crosswalk-only `0.50` lane gate and spend the next search budget on a genuinely new lane instance-stability signal or on the stop-line midpoint/extent bottleneck.
+
+## 226. 2026-05-14 Stop-line scale dense TTA smoke: no TP movement, close before widening
+
+맥락:
+
+- Stop-line remained the largest blocker after the lane task-mask gate: current broader objective-best lane/stop/cross F1 is `0.5628 / 0.4235 / 0.6187`.
+- Flip-based stop-line TTA and decoded-candidate agreement/union were already closed, but scale-resized dense stop-line map averaging had not been directly tested.
+- This branch tested one preprocess/runtime axis only: resized input scales `0.875` and `1.125`, merged back into the base prediction, with no threshold, selector, or training changes.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-scale-dense-tta-smoke`.
+- Code commit: `26a7f7e`.
+- Tool/test: `tools/probe_pv26_lane_flip_tta.py`, `test/test_lane_flip_tta_probe.py`.
+- Added stop-line scale variants:
+  - `baseline_stop_scale_score_avg`
+  - `baseline_stop_scale_geometry_avg`
+  - `baseline_stop_scale_all_avg`
+  - `flip_centerline_avg_lane_cross_comp050_stop_scale_score_avg`
+  - `flip_centerline_avg_lane_cross_comp050_stop_scale_geometry_avg`
+  - `flip_centerline_avg_lane_cross_comp050_stop_scale_all_avg`
+- Score mode averages only stop-line score/logit maps; geometry mode averages only center offset, angle, and half-length maps; all mode averages both groups.
+- Lane and crosswalk tensors remain governed by the selected base variant; this was not a lane or crosswalk axis.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `10 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint with current stop-line/crosswalk postprocess overrides.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Stop-line TP / FP / FN | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050` reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_stop_scale_score_avg` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_stop_scale_geometry_avg` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_stop_scale_all_avg` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `baseline_stop_scale_score_avg` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `baseline_stop_scale_geometry_avg` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| `baseline_stop_scale_all_avg` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+
+판단:
+
+- Scale-averaging stop-line dense score maps, geometry maps, or both produced exactly no stop-line TP/FP/FN movement on this smoke slice.
+- The support is small (`2` stop-line GTs), so this is not a broad negative theorem, but it is enough to avoid spending val128/val512 budget on this same runtime-only axis.
+- Do not repeat this as a scale-factor, score-map subset, geometry-map subset, or scale-count sweep unless paired with a materially new no-GT stop-line candidate-generation or FP-control signal.
