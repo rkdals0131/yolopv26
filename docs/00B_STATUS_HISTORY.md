@@ -8441,3 +8441,43 @@ Exact val128 result:
 - Score-island linefit does not solve no-oracle midpoint/geometry recovery. It matches selector-center TP but doubles FP relative to the existing selector-center reference.
 - Do not broaden this to val512.
 - Do not repeat this as an island radius, relative-threshold, or linefit-mode sweep without a materially new non-GT FP-control signal.
+
+## 165. 2026-05-13 Lane raw-vectorizer drop audit: many FNs exist before geometry filters
+
+맥락:
+
+- Sections 161-163 split lane FN headroom into nearby-track repair and centerline-only generation, then closed soft-ridge, local snap, and uniform translation readouts.
+- The open attribution question was whether centerline-only FNs truly lack generated candidates, or whether raw row-scan-tangent candidates exist before bbox-area/aspect geometry filters remove them.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-raw-vectorizer-drop-audit`.
+- Code commit: `0545315`.
+- Extended `tools/probe_pv26_lane_fn_recovery_audit.py` to record the nearest raw row-scan-tangent vectorizer candidate before lane geometry filters.
+- Added regression coverage in `test/test_lane_fn_recovery_audit.py`.
+- Contract: read-only attribution only. It does not change production postprocess, and it does not declare bbox filter removal safe.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_fn_recovery_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py`
+- result: `7 passed`.
+- `git diff --check`.
+- Val128 artifact: `runs/pv26_exhaustive_od_lane_train/lane_raw_vectorizer_drop_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Broader artifact: `runs/pv26_exhaustive_od_lane_train/lane_raw_vectorizer_drop_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-raw-vectorizer-drop-audit-artifacts-20260513/` instead of being deleted.
+
+Broader val512 result:
+
+| Group | Count | Raw `<=40px` | Area drops | Aspect drops | Pass-filter/assignment |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| all FN | `4913` | `854` | `497` | `37` | `340` |
+| center `>=0.50` and unmatched `<=80px` | `594` | `105` | `4` | `3` | `99` |
+| center `>=0.50` without unmatched `<=120px` | `512` | `207` | `119` | `14` | `82` |
+| unmatched `<=120px` without center `>=0.50` | `938` | `98` | `25` | `3` | `71` |
+
+판단:
+
+- The centerline-only bucket is not only a missing-candidate problem. For `center>=0.50 without unmatched<=120px`, raw vectorizer already places `207 / 512` candidates inside the 40px match threshold.
+- Bbox-area filtering explains a real subset (`119 / 512` in that bucket; `497 / 4913` all FN), so the next lane branch can test guarded rescue of area-filtered raw candidates.
+- Do not treat this as permission for a blind bbox-area/aspect sweep. Many raw-near candidates pass filters but still lose assignment, and many FNs only have raw candidates at `80/120px`, so the follow-up needs explicit FP control and task-retention checks.

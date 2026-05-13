@@ -169,6 +169,17 @@ Latest lane track-level translation readout smoke:
 - track-translation smoke lane F1: `0.5674`, TP/FP/FN `40 / 15 / 46`.
 - 판단: track-level uniform translation does not rescue the pair-geometry center-offset bucket. It matches the centerline-snap regression pattern, so do not broaden this readout to val512 or repeat it as a translation-radius/offset sweep without a materially new non-GT FP-control signal.
 
+Latest lane raw-vectorizer drop audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-raw-vectorizer-drop-audit`.
+- code commit: `0545315`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_raw_vectorizer_drop_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- changed axis: no production decoder change; for every FN lane, compare final predictions to raw row-scan-tangent vectorizer candidates before bbox-area/aspect geometry filters.
+- broader val512 audit baseline in this replay: lane/stop/cross F1 `0.5534 / 0.4235 / 0.6187`, lane TP/FP/FN `4564 / 2453 / 4913`.
+- all FN: raw vectorizer already has a `<=40px` candidate for `854 / 4913`; `497` of those fail bbox-area and `37` fail aspect.
+- `center>=0.50 without unmatched<=120px`: count `512`, raw vectorizer `<=40px` count `207`, area-filter drops `119`, aspect drops `14`, pass-filter/assignment cases `82`.
+- 판단: center-only FN is not pure candidate-generation absence. A meaningful lane follow-up can test a guarded area-filter rescue, but a blind bbox-area/aspect sweep is still not justified because many misses are raw `80/120px` or pass-filter assignment cases.
+
 Latest stop-line recovery-budget audit:
 
 - branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.

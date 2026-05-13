@@ -102,6 +102,7 @@
 - row-scan tangent segment-MIL + row-distribution 조합을 같은 lane-head-only retention schedule에서 weight-only로 반복하지 않는다.
 - row-scan tangent upper-trunk unfreeze를 LR/schedule/capacity-only sweep으로 반복하지 않는다.
 - lane-head transplant checkpoint에서 bbox area/aspect만 강화하는 geometry-filter sweep을 lane 0.6 path로 반복하지 않는다.
+- lane raw-vectorizer drop audit을 blind bbox-area/aspect 완화 sweep으로 해석하지 않는다.
 - lane centerline-branch dilated context를 dilation/depth/gate-init sweep으로 반복하지 않는다.
 - detached support-conditioned centerline refinement를 longer run/LR/gate sweep으로 반복하지 않는다.
 - stop-line center-stem wiring cleanup을 stop-line rescue path로 반복하지 않는다.
@@ -170,6 +171,7 @@
 - The first production-like readout attempt from that evidence, `row_scan_tangent_soft_ridge` at `lane_obj_threshold=0.30`, failed val4 smoke: lane F1 moved `0.5899 -> 0.5429`, TP/FP/FN `41 / 12 / 45 -> 38 / 16 / 48`. Do not broaden it to val512 or repeat it as a peak/threshold sweep.
 - The constrained topology-preserving follow-up, `row_scan_tangent_centerline_snap`, also failed val4 smoke: lane F1 moved `0.5899 -> 0.5674`, TP/FP/FN `41 / 12 / 45 -> 40 / 15 / 46`. Do not broaden it to val512 or repeat it as a snap-radius sweep unless a materially new non-GT FP-control signal is added.
 - The track-level uniform translation follow-up, `row_scan_tangent_centerline_translate`, failed the same val4 smoke gate: lane F1 `0.5674`, TP/FP/FN `40 / 15 / 46`. This closes simple center-offset repair as a radius/offset sweep; a future lane branch needs a different instance-generation or FP-control signal.
+- Raw-vectorizer drop audit shows a non-repeated lane follow-up exists: in broader val512, `854 / 4913` FNs already have raw row-scan-tangent candidates within `40px` before geometry filtering, and `497` of those fail bbox-area. For the center-only bucket, `207 / 512` are raw `<=40px` and `119` are area-filter drops. The next lane branch may test guarded area-filter rescue, but not a blind bbox-area/aspect sweep.
 - crosswalk는 opt-in hull decode로 broader-val512 `0.6187`까지 올라 현재 gap은 닫혔다. 다음 stop-line/lane work에서는 이 crosswalk retention을 유지하는지 확인한다.
 
 실험 원칙:
