@@ -10935,3 +10935,45 @@ Smoke val4:
 - Fixed input-shift averaging loses two TP and adds one FP versus the current flip-centerline reference.
 - This is not a hidden recall source for the lane gap; it is lower than both the flip reference and the scale `1.125` row from Section 217.
 - Do not broaden this to val128/val512. Do not repeat as shift-size, shift-direction, interpolation, or shift-weight sweeps unless a new diagnostic first shows TP recovery without recall loss.
+
+## 219. 2026-05-14 Lane photometric-centerline TTA smoke: brightness averaging trims FP but loses TP
+
+맥락:
+
+- Sections 217 and 218 closed geometric runtime TTA axes: single-scale input resize and fixed input shift both lost lane TP versus the existing flip-centerline reference.
+- This branch tested a distinct preprocessing/runtime axis that does not move geometry: brightness-gain perturbations, averaged only into the lane centerline logits.
+- The contract kept stop-line/crosswalk outputs, support/tangent maps, semantic maps, checkpoint composition, and postprocess thresholds fixed.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-photometric-centerline-tta-smoke`.
+- Code commit: `380ea44`.
+- Updated `tools/probe_pv26_lane_flip_tta.py`.
+- Updated `test/test_lane_flip_tta_probe.py`.
+- Added `photometric_centerline_avg` and `flip_photometric_centerline_avg` variants.
+- Added `--lane-photometric-gains`, defaulting to `0.90,1.10`; gain-adjusted image tensors are clamped to `[0, 1]`.
+- The implementation averages only `lane_seg_centerline_logits`; stop-line outputs, crosswalk outputs, support/tangent maps, semantic maps, and postprocess thresholds stay anchored to the primary normal pass.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- One val4 epoch-2 smoke completed with gains `0.90,1.10`.
+- Auto-downloaded `yolo26s.pt` and temporary caches in the `/tmp` worktree were deleted because `/tmp` cleanup is allowed.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `flip_photometric_centerline_avg` | `0.5672` | `38 / 10 / 48` | `0.0000` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0.5455` |
+| `photometric_centerline_avg` | `0.5401` | `37 / 14 / 49` | `0.0000` | `0.5455` |
+
+판단:
+
+- `flip_photometric_centerline_avg` improves phase objective slightly because FP drops `12 -> 10`, but it loses three TP and adds three FN versus the flip-centerline reference.
+- The active lane target is F1 `>=0.60`, so precision-only movement with TP loss is negative for this goal.
+- Do not broaden this to val128/val512. Do not repeat as photometric gain, brightness/contrast, or averaging-weight sweeps unless a new diagnostic first shows TP recovery without recall loss.
