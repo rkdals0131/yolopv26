@@ -299,6 +299,17 @@ Latest lane centerline-duplicate smoke:
 - comparison: row-scan-tangent smoke reference was `0.5899`, TP/FP/FN `41 / 12 / 45`; replacement centerline translation was `0.5674`, TP/FP/FN `40 / 15 / 46`.
 - 판단: preserving the original track avoids replacing it, but the duplicate adds FP without recovering TP. Do not broaden this branch or repeat as a duplicate offset/radius sweep.
 
+Latest lane ranked-translate repair smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-ranked-translate-repair-smoke`.
+- code commit: `621480f`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_ranked_translate_repair_smoke_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- changed axis: use the exported no-GT broad repairability ranker parameters from the replay artifact, score decoded lane predictions, and translate only the val-size-scaled top-ranked budget toward the local centerline ridge.
+- smoke val4 budget: `repair_topk=4`, `candidate_count=53`, `selected_count=4`, `selected_moved_count=0`.
+- baseline and repaired lane/stop/cross F1 were identical: `0.5899 / 0.0000 / 0.5455`.
+- lane TP/FP/FN stayed `41 / 12 / 45`; lane delta was `0` TP, `0` FP, `0` FN, `0.0` F1.
+- 판단: the broad ranker replay does not transfer to this simple geometry repair. The top-ranked rows were already on strong predicted centerline support and the fixed translate operation did not move them, so do not broaden this branch or repeat as a ranker top-K / translation-radius sweep.
+
 Latest lane residual-component candidates:
 
 - branch/worktree: `exp/lane-family-f1/lane-residual-component-candidates`.

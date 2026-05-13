@@ -9647,3 +9647,53 @@ Broader-val512 replay result:
 - The broad repair label is the stronger next premise: top-500 already clears lane `0.60` in oracle-repair replay with high selection precision.
 - This does not solve the production task. The replay assumes that selected repairable unmatched predictions can be moved/aligned into matched lanes without adding new FP or hurting stop-line/crosswalk.
 - The next lane branch should implement one budgeted no-GT geometry/instance-alignment repair path using this broad-ranker premise and report full TP/FP/FN plus stop-line/crosswalk retention. Do not rerun this as a threshold/top-K sweep or claim the replay as success.
+
+## 191. 2026-05-13 Lane ranked-translate repair smoke: broad ranker does not transfer to simple geometry repair
+
+맥락:
+
+- Section 190 exported fixed no-GT broad repairability ranker parameters and showed strong oracle-repair headroom.
+- The missing production premise was whether that ranker can drive a real geometry change, not just replay GT-labeled repair rows.
+- This smoke keeps the checkpoint/runtime reference fixed and changes only one thing: selected lane predictions are translated toward the local predicted centerline ridge.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-ranked-translate-repair-smoke`.
+- Code commit: `621480f`.
+- Added `tools/probe_pv26_lane_ranked_translate_repair.py`.
+- Added `test/test_lane_ranked_translate_repair.py`.
+- Contract: load `repairability_model_parameters.json`, score decoded predictions with inference-available features, use a val-size-scaled top-500/2048 repair budget, translate selected tracks within a fixed local x-radius, then recompute full PV26 lane-family metrics.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_ranked_translate_repair.py`.
+- result: `2 passed`.
+- `git diff --check`.
+- Smoke command completed with `--max-val-batches 4 --validation-epoch 2 --device auto`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_ranked_translate_repair_smoke_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_ranked_translate_repair_smoke_20260513/analysis_exports/smoke_val4_epoch2/metrics.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_ranked_translate_repair_smoke_20260513/analysis_exports/smoke_val4_epoch2/selected_repairs.csv`.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| ranked translate repair | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+
+Selected budget:
+
+- candidate rows: `53`.
+- repair top-k: `4`.
+- selected rows: `4`.
+- selected moved rows: `0`.
+- lane delta: `0.0` F1, `0` TP, `0` FP, `0` FN.
+
+판단:
+
+- This is the first real-metric check after the learned repairability replay, and it is flat.
+- The fixed ranker selected rows that already had very high predicted centerline/support evidence; the local translate repair chose `dx=0` for all selected rows.
+- Therefore the replay headroom does not transfer to simple ranker-budgeted centerline translation. Do not broaden this branch or repeat it as a ranker top-K, translation-radius, or local x-offset sweep.
+- A future lane repair attempt needs a materially different no-GT instance-alignment or instance-generation contract, with actual moved geometry and TP/FP/FN movement, before it deserves val128/val512 expansion.
