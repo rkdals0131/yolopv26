@@ -10220,3 +10220,48 @@ Val128 candidate accounting:
 - The val4 smoke looked plausible, but val128 shows the gate is effectively flat: lane F1 only moves `0.5854 -> 0.5860`.
 - The actual val128 movement is `+14 TP / +29 FP / -14 FN`, so the added FP almost cancels the recall gain.
 - This closes area-rescue repairability gating as a production path. Do not repeat it as a repairability score threshold, top-K budget, min-area, min-centerline, or max-per-sample sweep without a materially new no-GT FP-control or alignment signal.
+
+## 203. 2026-05-14 Stop-line zero-gated coarse context: safer coarse init still misses
+
+맥락:
+
+- Section 201 closed direct/random P4 context fusion as insufficient architecture-only evidence.
+- The remaining narrower model-side question was whether a baseline-preserving coarse residual path could do better: keep the existing P2/P3 stop-line fusion intact, feed P4/P5 through separate projectors, and add the coarse context through a near-zero gate.
+- This tests initialization and feature-routing safety only. It does not change the stop-line decoder or threshold contract.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-zero-gated-coarse-context`.
+- Code commit: `b495721`.
+- Added opt-in `stopline_coarse_context` config plumbing through `PV26Heads`, roadmark heads, train defaults, and CLI construction.
+- Extended `StopLineDenseLocalHead` with optional P4/P5 coarse projectors and `coarse_context_gate_logit=-6.0`, leaving the default P2/P3 path unchanged.
+- Added `core_centerline_refine_stopline_zero_gated_coarse` to the lane60 probe runner.
+- Runtime artifacts were temporary and intentionally not retained as durable repo artifacts.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/net/stopline_head_line.py model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_heads.py test/test_run_pv26_train.py`.
+- result: `56 passed`.
+- `git diff --check`.
+- one-epoch lane60 probe with `128` train batches, `128` val batches, and `0` skipped steps.
+
+Val128 result:
+
+| objective | lane F1 | stop-line F1 | crosswalk F1 | support lane/stop/cross |
+| ---: | ---: | ---: | ---: | ---: |
+| `0.5730` | `0.5073` | `0.1765` | `0.6628` | `2335 / 55 / 83` |
+
+Task accounting:
+
+| task | TP / FP / FN |
+| --- | ---: |
+| lane | `958 / 484 / 1377` |
+| stop-line | `9 / 38 / 46` |
+| crosswalk | `57 / 32 / 26` |
+
+판단:
+
+- Zero-gating made the architecture safer but did not recover stop-line: stop-line F1 stayed far below exact PCA/profile references and the broader projection-competition reference.
+- It is also below the direct P4-context stop-line result from Section 201 (`0.1980`), while lane remains below the current exact references.
+- Do not broaden or repeat this as a gate-init, LR, longer-run, P4/P5 projector, or delayed-unfreeze sweep. The next stop-line branch still needs a materially new no-GT midpoint/extent signal with FP control, not another coarse-context feature-routing variant.
