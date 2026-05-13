@@ -10314,3 +10314,49 @@ Candidate accounting:
 - Replacement prevented FP growth but did not recover any TP: the lane TP/FP/FN tuple stayed exactly `38 / 12 / 48`.
 - Since the fixed replacement variant has no smoke movement, there is no basis to broaden this branch to val128.
 - Do not repeat residual replacement as a nearest-distance, repairability-threshold, top-K, or residual component sweep without a new no-GT alignment signal that actually changes matched TP/FP/FN.
+
+## 205. 2026-05-14 Lane kNN residual premise: neighbor templates move close-count but worsen geometry spread
+
+맥락:
+
+- Sections 198-200 showed lane FP-to-TP repair has real oracle headroom, but simple no-GT translation and full-polyline ridge premises did not infer stable replacement geometry.
+- The remaining narrow question was whether prediction-side feature neighbors carry a non-parametric residual template that ridge regression missed.
+- This is an offline two-fold premise check, not a live decoder or checkpoint evaluation.
+
+구현:
+
+- Branch: `exp/lane-family-f1/lane-knn-residual-premise`.
+- Code commit: `4a38433`.
+- Tool: `tools/analyze_pv26_lane_knn_residual_premise.py`.
+- Test: `test/test_lane_knn_residual_premise.py`.
+- Input contract: score archived val128 unmatched-lane repair rows with the exported broad no-GT repairability model, keep the fixed `top_k=116` selection budget, then transfer residual templates from `k=5` feature-space neighbors across two folds.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane_knn_residual_premise_20260514/analysis_exports/val128_top116_k5/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_knn_residual_premise.py test/test_lane_knn_residual_premise.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_knn_residual_premise.py test/test_lane_repairability_polyline_selection_premise.py test/test_lane_point_repair_polyline_premise.py`.
+- result: `14 passed`.
+- `git diff --check`.
+
+Selection accounting:
+
+- eval rows: `482`.
+- selected rows: `116`.
+- broad repairable positives: `96 / 116 = 0.8276`.
+- tight repairable positives: `60`.
+
+Val128 geometry premise result:
+
+| variant | close rows <=40px | delta vs baseline | distance q50 | distance q90 | improved / worsened rows |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| baseline pred points | `8` | `0` | `65.06` | `148.49` | `0 / 0` |
+| kNN center delta | `20` | `+12` | `73.87` | `210.76` | `56 / 60` |
+| kNN point residual | `21` | `+13` | `75.17` | `212.43` | `50 / 66` |
+| kNN absolute polyline | `15` | `+7` | `84.05` | `253.23` | `43 / 73` |
+
+판단:
+
+- kNN residual templates slightly beat the prior selected-polyline premise on close-count (`20 -> 21`), but the geometry distribution gets worse: q50/q90 both move far above baseline and worsened rows outnumber improved rows for the best close-count variant.
+- This is not enough to justify live repair integration, because the premise only proves a small offline close-count gain and does not report actual lane TP/FP/FN movement.
+- Do not repeat this as a `k`, top-K, feature-distance, weighting, or residual-template sweep. A future lane repair branch needs a new no-GT alignment signal that improves geometry spread and then proves TP/FP/FN movement.
