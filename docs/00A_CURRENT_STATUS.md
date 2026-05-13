@@ -198,6 +198,17 @@ Latest stop-line raw-stripe midpoint audit:
 - feature summary: `382 / 405` candidate rows produced a raw-valid stripe, but raw-improved-to-positive rows were `0`; nearest-GT distance q50 worsened from `36.18px` to raw-repaired `156.92px`.
 - 판단: raw-image stripe contrast is not the missing no-GT along-axis midpoint/extent signal for current stop-line candidates. Do not broaden to val512 or repeat as raw-stripe top-k/confidence/band/smoothing/threshold sweeps without a materially new non-photometric FP-control or midpoint source.
 
+Latest stop-line flip-consensus readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-flip-consensus-readout`.
+- code commit: `8bbde1b`.
+- artifacts: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_flip_consensus_{smoke_val4_epoch2,val128_epoch2}/summary.json`.
+- changed axis: keep the checkpoint fixed, decode normal and horizontal-flip stop-line candidate pools separately, then emit only candidates whose decoded raw geometry agrees within `40px`; the second variant averages matched points.
+- smoke val4: both consensus variants were identical to baseline stop-line F1 `0.0000`, TP/FP/FN `0 / 3 / 2`.
+- exact val128: baseline stop-line F1 `0.4483`, TP/FP/FN `26 / 30 / 34`; best consensus `0.4667`, TP/FP/FN `28 / 32 / 32`.
+- geometry: point averaging improved mean stop-line distance `17.92 -> 14.35` and angle error `2.12 -> 1.66`, but the matched set stayed only `28` TP.
+- 판단: candidate-level flip agreement is a small exact-only positive but remains below PCA val128 `0.5133`, angle-mask production `0.5085`, and broader projection-competition `0.5164`. Do not broaden or repeat as agreement-distance/top-k/point-average tuning without a new TP-preserving candidate-generation signal.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
@@ -1196,6 +1207,7 @@ Lane Gate 3 dense-map probe:
 - row-scan tangent segment-MIL + row-distribution 조합은 segment-level positive evidence와 row-wise distribution pressure를 같은 lane-head-only retention schedule에 같이 얹어 봤지만 exact val128 gate를 넘지 못했다. Epoch2 objective는 `0.6186643159`, lane/stop/cross F1은 `0.5621 / 0.4483 / 0.5926`, lane TP/FP/FN은 `1152 / 557 / 1238`이다. Segment-MIL lane-head-only exact best `0.6193`, lane `0.5660`보다 낮고 row-distribution-only lane `0.5659`도 못 넘어 broader-val512로 확장하지 않는다.
 - lane no-GT kNN residual-template premise는 exported repairability scorer의 top-116 선택 위에서 feature-space 이웃의 geometry residual을 전이했다. Close rows는 `8 -> 21`로 조금 올랐지만 q50/q90 distance가 `65.06 / 148.49 -> 75.17 / 212.43`으로 악화되고 best close-count variant도 worsened rows가 improved rows보다 많았다(`66 / 50`). Offline close-count premise일 뿐 live lane TP/FP/FN 증거가 아니므로 k/top-K/feature-distance/weighting sweep으로 반복하지 않는다.
 - stop-line sample_id temporal-context audit은 archived exact val128 detector-context candidate rows에서 frame adjacency가 no-GT FP gate가 되는지 봤다. Gap `100`은 positive recall `0.32`, no-oracle positive recall `0.2857`로 너무 많은 TP를 버리고, gap `10000`은 positive recall `0.74`까지 오르지만 negative keep rate도 `0.7027`로 높다. Sparse validation candidate rows에서는 temporal adjacency를 frame-gap/sequence-prefix/score/smoothing sweep으로 반복하지 않는다.
+- stop-line flip-consensus readout은 normal/flip decoded candidate agreement를 no-GT FP-control signal로 봤지만 exact val128에서 stop-line F1 `0.4483 -> 0.4667`, TP/FP/FN `26/30/34 -> 28/32/32`에 그쳤다. Geometry distance는 좋아졌지만 stronger stop-line references를 못 넘으므로 agreement-distance/top-k/point-average sweep으로 반복하지 않는다.
 - 다음 lane 축은 row-scan/tangent-link 후처리 cost sweep, threshold integration, residual-risk local loss weight, post-hoc row-scan evidence threshold, tangent-loss-only 강화, dynamic hard-negative margin-only, centerline-focal-only, risk-bucket sampler-only, row-anchor-positive-only, row-anchor-contrast-only, inter-lane gap margin-only, segment-continuity-contrast-only, segment-continuity + lane-head-only retention, retention-balance loss-weight-only, segment-MIL-positive-only, row-distribution-only, segment-MIL + row-distribution 조합, lane-head-only retention schedule을 반복하는 방향이 아니라, predicted centerline evidence를 더 명시적인 instance 단위 contract로 안정화하거나 tangent-link lane partial-positive를 stop-line/crosswalk 목표와 같이 끌어올리는 contract로 좁힌다. stop-line을 재개한다면 current center/selector top-k 후보 위 validator/assignment/candidate-select loss, gap/top-k-only 후보 pool 확장, stop-line-head-only freeze schedule, lane/crosswalk context-only filtering이 아니라 emit을 죽이지 않는 새로운 selector/readout contract로 제한한다.
 - Gate 4 crosswalk postprocess probe는 exact val128에서 crosswalk F1을 `0.5854 -> 0.6027`로 올렸지만, broader-val512에서는 `0.5845`로 기준 `0.5854`보다 낮았다. crosswalk stricter component threshold는 exact-only partial-positive로 보관하고 채택하지 않는다.
 

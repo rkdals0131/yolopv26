@@ -10410,3 +10410,49 @@ Audit result:
 - Broad gaps recover positives only by keeping most negatives too. `gap=10000` keeps `74%` of positives but also `70.27%` of negatives.
 - The retained candidate CSV is exact-val128 only, and this audit does not produce task-F1 replay evidence. Treat temporal adjacency as closed for this dataset snapshot unless a denser temporal dataset and live task replay are available.
 - Do not repeat this as a frame-gap, sequence-prefix, score, or temporal-smoothing sweep on the same sparse validation candidate rows.
+
+## 207. 2026-05-14 Stop-line flip-consensus readout: candidate agreement is only a small exact positive
+
+맥락:
+
+- Stop-line still needs a no-GT FP-control or midpoint-generation signal.
+- Dense stop-line flip-TTA averaging had already been closed as a same-output smoke result; this branch tests a different contract: decode normal and horizontal-flip candidate pools separately, then require decoded geometry agreement.
+
+구현:
+
+- Branch: `exp/lane-family-f1/stopline-flip-consensus-readout`.
+- Code commit: `8bbde1b`.
+- Tool: `tools/probe_pv26_stopline_flip_consensus_readout.py`.
+- Test: `test/test_stopline_flip_consensus_readout.py`.
+- Input contract: run the fixed checkpoint twice per validation batch, unflip only stop-line dense outputs from the flipped pass, decode normal/flip `max` candidate pools, then emit a candidate only when the decoded raw stop-line geometries agree within `40px`.
+- Variants: keep the normal candidate geometry, or average normal/flip matched points.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_flip_consensus_smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_flip_consensus_val128_epoch2/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_flip_consensus_readout.py test/test_stopline_flip_consensus_readout.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_flip_consensus_readout.py`.
+- result: `5 passed`.
+- `git diff --check`.
+
+Smoke val4:
+
+- baseline stop-line F1: `0.0000`, TP/FP/FN `0 / 3 / 2`.
+- both consensus variants: `0.0000`, TP/FP/FN `0 / 3 / 2`.
+- candidate matches: `8`; selected lines: `3`.
+
+Exact val128:
+
+| variant | stop-line F1 | stop-line TP / FP / FN | pred stop-lines | mean point distance | mean angle error |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` | `56` | `17.92` | `2.12` |
+| flip-consensus keep-normal d40 | `0.4667` | `28 / 32 / 32` | `60` | `15.13` | `2.02` |
+| flip-consensus avg-points d40 | `0.4667` | `28 / 32 / 32` | `60` | `14.35` | `1.66` |
+
+판단:
+
+- Candidate-level flip agreement is not just no-op: it adds `+2 TP` while also adding `+2 FP`, and point averaging improves geometry error.
+- The gain is too small and remains below stronger exact references: PCA val128 `0.5133` and angle-mask production `0.5085`.
+- It also remains below the broader projection-competition reference `0.5164`, so broadening to val512 is not justified.
+- Do not repeat this as an agreement-distance, top-k, or point-average sweep unless a new TP-preserving candidate-generation signal is added.
