@@ -190,6 +190,17 @@ Latest lane guarded area-rescue readout:
 - guarded area-rescue val128 result: lane F1 `0.5716`, TP/FP/FN `1247 / 726 / 1143`; stop-line/crosswalk retained at `0.4364 / 0.5988`.
 - 판단: area rescue recovers `43` lane TP but adds `166` FP, so it lowers F1 and should not be broadened to val512. Do not repeat this as a max-per-sample/min-area/bbox-filter sweep without a new FP-control signal.
 
+Latest lane area-rescue center-score gate:
+
+- branch/worktree: `exp/lane-family-f1/lane-area-rescue-center-score-gate`.
+- code commit: `4482443`.
+- artifact exact val128: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_score_gate_20260513/analysis_exports/val128_epoch2_center075/summary.json`.
+- artifact broader val512: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_score_gate_20260513/analysis_exports/val512_epoch2_center075/summary.json`.
+- changed axis: keep area rescue opt-in, then require rescued lane candidates to have vectorizer track-level `lane_centerline_track_mean >= 0.75`.
+- exact val128 result: lane F1 `0.5846`, TP/FP/FN `1239 / 610 / 1151`; stop-line/crosswalk `0.4483 / 0.5988`.
+- broader val512 result: lane F1 `0.5548`, TP/FP/FN `4644 / 2621 / 4833`; stop-line/crosswalk `0.4083 / 0.6187`.
+- 판단: centerline mean gating fixes part of the val128 FP problem versus ungated area rescue, but broader val512 still stays below the current broader lane best `0.5577`. This is weak partial/negative evidence, not a default or a threshold-sweep path.
+
 Latest stop-line recovery-budget audit:
 
 - branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.

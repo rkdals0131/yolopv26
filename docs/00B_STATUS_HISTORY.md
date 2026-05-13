@@ -8643,3 +8643,45 @@ Exact val128 result:
 - Raw-edge recentering is worse than normal-support recentering: it loses TP and adds many FP versus baseline.
 - The exact val128 result is far below both baseline and the existing selector-center angle-mask reference, so it should not be broadened to val512.
 - Do not repeat this as a raw-edge contrast, length-weight, radius, step, or offset-penalty sweep without a new midpoint source.
+
+## 170. 2026-05-13 Lane area-rescue center-score gate: exact FP control is not enough on val512
+
+맥락:
+
+- Section 166 closed plain guarded area rescue because it recovered `+43` TP on val128 but added `+166` FP.
+- The only justified follow-up was to add a materially different FP-control signal before broadening the branch.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-rescue-center-score-gate`.
+- Code commit: `4482443`.
+- Added track-level centerline evidence fields to `row_scan_tangent` vectorizer predictions: `lane_centerline_track_mean`, `lane_centerline_track_q10`, and `lane_track_pixels`.
+- Extended opt-in area rescue so rescued candidates must also meet `lane_segfirst_area_rescue_min_centerline_mean`.
+- Added evaluator/probe CLI override plumbing for `--lane-segfirst-area-rescue-min-centerline-mean`.
+- Added regression coverage in `test/test_pv26_postprocess.py` and `test/test_evaluate_pv26_lane60_checkpoint.py`.
+- Contract: default disabled. This branch tests whether centerline evidence can control area-rescue FP without changing training or production defaults.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_lane_area_gate python3 -m py_compile model/engine/lane_segfirst_vectorizer.py model/engine/postprocess.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_evaluate_pv26_lane60_checkpoint.py test/test_pv26_postprocess.py`
+- `PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_lane_area_gate python3 -m pytest -q -p no:cacheprovider test/test_pv26_postprocess.py test/test_evaluate_pv26_lane60_checkpoint.py`
+- result: `13 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_score_gate_20260513/analysis_exports/smoke_val4_epoch2_center075/summary.json`.
+- Exact val128 artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_score_gate_20260513/analysis_exports/val128_epoch2_center075/summary.json`.
+- Broader val512 artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_score_gate_20260513/analysis_exports/val512_epoch2_center075/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-area-rescue-center-score-gate-artifacts-20260513/` instead of being deleted.
+
+Result:
+
+| Split | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| smoke val4 | `0.5972` | `43 / 15 / 43` | `0.0000` | `0.5455` |
+| exact val128 | `0.5846` | `1239 / 610 / 1151` | `0.4483` | `0.5988` |
+| broader val512 | `0.5548` | `4644 / 2621 / 4833` | `0.4083` | `0.6187` |
+
+판단:
+
+- Centerline mean gating improves exact val128 versus ungated area rescue (`0.5716 -> 0.5846`) mainly by reducing FP (`726 -> 610`) while keeping most of the rescued TP.
+- The gain does not transfer enough to broader val512: lane F1 `0.5548` remains below the current broader best `0.5577`, and stop-line remains far below target at `0.4083`.
+- This is weak partial/negative evidence. Do not broaden/default it, and do not repeat it as a `min_centerline`, min-area, or max-per-sample sweep without a new FP-control signal beyond track mean.
