@@ -9941,3 +9941,49 @@ Val128 heldout result:
 - Full-polyline regression is stronger than one-vector translation on close-count and tail distance, but the movement is still small relative to the `322` oracle-selected rows.
 - This does not justify live decoder integration by itself because candidate selection is still oracle-derived and no actual TP/FP/FN replay was run.
 - Do not repeat this as ridge alpha, output-point-count, or residual-vs-absolute tuning unless a materially new no-GT selection/alignment signal is added.
+
+## 197. 2026-05-14 Lane repairability-selected polyline premise: selection makes geometry repair weaker
+
+맥락:
+
+- Section 196 still used the `322` oracle-selected repair candidates, so it did not test whether a no-GT scorer can select rows whose geometry can actually be repaired.
+- The broader-val512 repairability rows preserved under `deletion_candidates` do not include point JSON, so the selection-aware geometry check used the current val128 point-export rows and the previously exported broad repairability scorer.
+- The fixed top-K budget is `116`, scaled from the earlier broader top-500 over `2206` unmatched predictions to the current val128 `510` unmatched predictions.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-repairability-polyline-selection-premise`.
+- Code commit: `485f6c2`.
+- Added `tools/analyze_pv26_lane_repairability_polyline_selection_premise.py`.
+- Added `test/test_lane_repairability_polyline_selection_premise.py`.
+- Input rows: `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/val128_epoch2/lane_unmatched_prediction_repair_rows.csv`.
+- Scorer artifact: `deletion_candidates/home_artifact_prune_20260514_001058/yolopv26/runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_parameters.json`.
+- The tool filters rows with point JSON, scores them with the no-GT broad repairability model, keeps top-116, then runs the same two-fold held-out center-delta, point-residual, and absolute-polyline geometry premise.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_repairability_polyline_selection_premise.py test/test_lane_repairability_polyline_selection_premise.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_repairability_polyline_selection_premise.py test/test_lane_point_repair_polyline_premise.py`.
+- result: `10 passed`.
+- `git diff --check`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_polyline_selection_premise_20260514/analysis_exports/val128_top116_polyline_l2_10/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_polyline_selection_premise_20260514/analysis_exports/val128_top116_polyline_l2_10/lane_repairability_polyline_selection_rows.csv`.
+
+Val128 selection-aware result:
+
+- total unmatched rows: `510`; rows with point JSON usable for this check: `482`.
+- selected rows: `116`.
+- selected broad-label positives: `96 / 116 = 0.8276`.
+- selected tight positives: `60`.
+- baseline close count at `40px`: `8`.
+- best `center_delta_ridge` close count: `20`; distance q50/q90 `77.60 / 183.02`.
+- `point_residual_ridge` close count: `20`; distance q50/q90 `81.91 / 183.73`.
+- `absolute_polyline_ridge` close count: `19`; distance q50/q90 `81.53 / 181.46`.
+- baseline distance q50/q90: `65.06 / 148.49`.
+
+판단:
+
+- The no-GT repairability scorer can select many GT-labeled repairable rows, but the selected geometry is harder than the oracle-selected subset used in Section 196.
+- The best geometry premise only adds `+12` close rows and worsens median/tail distance, so it does not justify live lane repair integration.
+- Do not repeat this as top-K, ridge alpha, or residual-vs-absolute tuning. A future lane repair path needs a new alignment signal, not just scorer-plus-regressor.
