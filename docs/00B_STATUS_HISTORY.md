@@ -10360,3 +10360,50 @@ Val128 geometry premise result:
 - kNN residual templates slightly beat the prior selected-polyline premise on close-count (`20 -> 21`), but the geometry distribution gets worse: q50/q90 both move far above baseline and worsened rows outnumber improved rows for the best close-count variant.
 - This is not enough to justify live repair integration, because the premise only proves a small offline close-count gain and does not report actual lane TP/FP/FN movement.
 - Do not repeat this as a `k`, top-K, feature-distance, weighting, or residual-template sweep. A future lane repair branch needs a new no-GT alignment signal that improves geometry spread and then proves TP/FP/FN movement.
+
+## 206. 2026-05-14 Stop-line temporal-context audit: sparse frame adjacency is not a usable FP gate
+
+맥락:
+
+- Stop-line still needs a no-GT candidate-generation or FP-control signal beyond local score/geometry features.
+- Predicted detector context, lane/crosswalk context, raw-image photometric selectors, and candidate-rank/logistic gates are already closed.
+- This read-only premise asks whether `sample_id` frame adjacency can suppress isolated stop-line FP without dropping too many true stop-line samples.
+
+구현:
+
+- Branch: `exp/lane-family-f1/stopline-temporal-context-audit`.
+- Code commit: `043d518`.
+- Tool: `tools/analyze_pv26_stopline_temporal_context_audit.py`.
+- Test: `test/test_stopline_temporal_context_audit.py`.
+- Input contract: use archived exact val128 detector-context candidate rows with `sample_id`, derive the numeric frame suffix, group by dataset/sequence prefix, and measure whether each sample has an adjacent validation sample within fixed frame-id gaps.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/stopline_temporal_context_audit_20260514/analysis_exports/val128_detector_context_candidates/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_temporal_context_audit.py test/test_stopline_temporal_context_audit.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_temporal_context_audit.py`.
+- result: `4 passed`.
+- `git diff --check`.
+
+Audit result:
+
+- samples: `87`.
+- sequence groups: `1`.
+- GT-positive / GT-negative samples: `50 / 37`.
+- oracle-positive samples: `36`.
+- GT-positive no-oracle samples: `14`.
+
+| frame gap | kept samples | positive recall | negative keep rate | no-oracle positive recall |
+| ---: | ---: | ---: | ---: | ---: |
+| `10` | `13` | `0.08` | `0.2432` | `0.1429` |
+| `100` | `26` | `0.32` | `0.2703` | `0.2857` |
+| `1000` | `42` | `0.52` | `0.4324` | `0.5000` |
+| `10000` | `63` | `0.74` | `0.7027` | `0.8571` |
+| `100000` | `84` | `0.94` | `1.0000` | `1.0000` |
+
+판단:
+
+- Narrow temporal gaps suppress negatives, but they also kill most positive samples. `gap=100` keeps only `32%` of positives and `28.57%` of no-oracle positives.
+- Broad gaps recover positives only by keeping most negatives too. `gap=10000` keeps `74%` of positives but also `70.27%` of negatives.
+- The retained candidate CSV is exact-val128 only, and this audit does not produce task-F1 replay evidence. Treat temporal adjacency as closed for this dataset snapshot unless a denser temporal dataset and live task replay are available.
+- Do not repeat this as a frame-gap, sequence-prefix, score, or temporal-smoothing sweep on the same sparse validation candidate rows.
