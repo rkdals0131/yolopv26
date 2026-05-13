@@ -193,6 +193,18 @@ Latest lane FN pair-geometry audit:
 - `center>=0.50 WITHOUT unmatched<=120px`: count `527`, nearest distance q50 `186.96px`, length ratio q50 `2.091`, center distance q50 `182.80px`, y-overlap q50 `0.332`.
 - 판단: the strongest nearby-track bucket is not primarily an angle or length-ratio failure. It is mostly a center/position offset around the match threshold. The centerline-only bucket is a different mechanism and likely needs new instance generation, not repair of the current nearest track.
 
+Latest lane lateral-duplicate budget audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-lateral-duplicate-budget-audit`.
+- code commit: `50038b9`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_lateral_duplicate_budget_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- changed axis: no decoder change; compute the FP budget a lateral-duplicate style recovery would have if it recovered GT-labeled nearby-track FN buckets.
+- baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
+- `unmatched<=80 and center>=0.50`: `563` recoverable FN; no-added-FP upper-bound F1 `0.6062`, but only `172` added FP can be tolerated.
+- `unmatched<=120 and center>=0.50`: `836` recoverable FN; no-added-FP upper-bound F1 `0.6285`, with `809` added FP tolerance.
+- `unmatched<=120 any center`: `1698` recoverable FN; no-added-FP upper-bound F1 `0.6946`, with `2821` added FP tolerance. If all current FP were duplicated and this whole bucket were recovered, the oracle-budget F1 is still `0.6184`.
+- 판단: this is not production success, but it says a one-axis lateral-duplicate smoke is not mathematically dead if it targets a large nearby-track bucket. The next implementation must prove TP recovery and added-FP cost together; do not turn this into an offset/radius sweep.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

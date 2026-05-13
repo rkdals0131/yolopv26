@@ -9003,3 +9003,49 @@ Diagnostic:
 - Same-axis support span recovers length but does not recover center reliably.
 - The best replay reduces FP only by losing more TP, so it remains below the projection-competition reference.
 - Do not repeat this as a top-k, min-score, member-count, angle-threshold, or normal-threshold sweep unless a new no-GT centering signal is added.
+
+## 178. 2026-05-13 Lane lateral-duplicate budget: nearby-track recovery has FP headroom only at large bucket scale
+
+맥락:
+
+- Section 152 showed the strongest lane FN nearby-track bucket is mostly a center/position offset around the `40px` match threshold.
+- Track-level centerline translation and centerline snap already failed smoke, so the next question was not another offset sweep.
+- Before implementing a duplicate-style decoder, this audit asks how many added FP each GT-labeled nearby-track recovery bucket can tolerate while still reaching lane F1 `0.60`.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-lateral-duplicate-budget-audit`.
+- Code commit: `50038b9`.
+- Added `tools/analyze_pv26_lane_lateral_duplicate_budget.py`.
+- Added `test/test_lane_lateral_duplicate_budget.py`.
+- Contract: read-only planning evidence. It does not alter predictions, and it uses GT-labeled FN audit rows, so it is not production success.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile tools/analyze_pv26_lane_lateral_duplicate_budget.py test/test_lane_lateral_duplicate_budget.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_lane_lateral_duplicate_budget.py`.
+- result: `2 passed`.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane_lateral_duplicate_budget_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+
+Broader-val512 budget result:
+
+| Bucket | Recoverable FN | No-added-FP lane F1 | Added FP tolerated for F1 `0.60` |
+| --- | ---: | ---: | ---: |
+| unmatched `<=80`, center `>=0.50` | `563` | `0.6062` | `172` |
+| unmatched `<=120`, center `>=0.50` | `836` | `0.6285` | `809` |
+| unmatched `<=80`, any center | `1007` | `0.6421` | `1208` |
+| unmatched `<=120`, any center | `1698` | `0.6946` | `2821` |
+| unmatched `<=120`, center `<0.50` | `862` | `0.6306` | `870` |
+
+Additional checks:
+
+- unique nearest unmatched predictions within `80px`: `854`.
+- unique nearest unmatched predictions within `120px`: `1272`.
+- If all current FP were duplicated and the full `unmatched<=120 any center` bucket were recovered, the oracle-budget lane F1 would still be `0.6184`.
+
+판단:
+
+- Lateral-duplicate style recovery is not mathematically dead, but only if it recovers a large nearby-track FN bucket.
+- The tight `unmatched<=80 and center>=0.50` bucket can tolerate only `172` added FP, so a narrow duplicate rule is fragile.
+- The next implementation may test one fixed duplicate-style smoke, but it must report TP recovery and added FP together. This budget must not be presented as production lane success or expanded into an offset/radius sweep.
