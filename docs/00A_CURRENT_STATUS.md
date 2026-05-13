@@ -24,8 +24,10 @@ Run:
 남긴 핵심 파일:
 
 - checkpoint: `phase_4/checkpoints/best.pt`
-- final exact eval: `analysis_exports/exact_checkpoint_eval_final_geometry_filters_maskaware_epoch2/summary.json`
-- visual check: `analysis_exports/geometry_visual_compare_gt_best_current_epoch2/gt_best_pregeom_current_geometry_grid.png`
+- current objective-best composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_current_best_flip_centerline_epoch2/metrics.csv`
+- latest closed stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
+
+Note: older exact-eval and visual-check exports were pruned from active `runs` during artifact cleanup. The numeric results below remain as historical evidence, but those old export directories are no longer current retained artifacts.
 
 Final exact epoch-2 result:
 
@@ -113,6 +115,18 @@ Current best broader task-balance replay:
 - stop-line TP/FP/FN: `126 / 91 / 145`.
 - lane-family mean/min F1: `0.5643 / 0.5164`.
 - 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0423` and stop-line needs `+0.0836`.
+
+Latest stop-line lane-crossing extent readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-lane-extent-readout`.
+- code commit: `938d00d`.
+- artifact smoke: `analysis_exports/stopline_lane_extent_readout_smoke_val4_epoch2/variants.csv`.
+- artifact exact: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`.
+- changed axis: keep the fixed candidate pool and lane-context ranking, then infer stop-line candidate extent from predicted lane crossings along the candidate axis. This tests no-GT midpoint/extent recovery, not another threshold sweep.
+- exact val128 baseline stop-line F1: `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- exact val128 lane-cross c2 reference: `0.3448`, TP/FP/FN `15 / 12 / 45`.
+- exact val128 lane-extent c2: `0.0690`, TP/FP/FN `3 / 24 / 57`.
+- 판단: predicted lane crossings do not preserve TP after geometry repair. The variant emits the same `27` stop-lines as lane-cross c2 but collapses TP from `15` to `3`, so do not repeat this as a lane-crossing distance, margin, or top-k sweep.
 
 Latest stop-line no-oracle axis-offset budget:
 

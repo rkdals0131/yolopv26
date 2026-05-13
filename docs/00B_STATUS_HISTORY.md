@@ -10550,3 +10550,51 @@ Smoke val4:
 - Unlike the x-translation smoke, the selected geometry actually moved.
 - The movement still did not change any lane match on the smoke slice: TP/FP/FN were exactly flat.
 - This is not worth broadening to val128. Do not repeat as a ranker/radius/local-snap sweep unless a new signal first shows actual TP/FP/FN movement.
+
+## 210. 2026-05-14 Stop-line lane-crossing extent readout collapses TP
+
+맥락:
+
+- Section 172 and follow-up stop-line probes narrowed the remaining stop-line gap to no-GT along-axis midpoint and extent/length recovery.
+- Raw-image stripes, score islands, same-axis support spans, and flip union/consensus were already closed.
+- This branch tests a different no-GT signal: predicted lane crossings near the stop-line candidate axis may provide the missing stop-line extent.
+
+구현:
+
+- Branch: `exp/lane-family-f1/stopline-lane-extent-readout`.
+- Code commit: `938d00d`.
+- Tool: `tools/probe_pv26_stopline_candidate_pool.py`.
+- Test: `test/test_pv26_threshold_probe.py`.
+- Added `--dataset-root` so `/tmp` worktrees can run against the canonical dataset without resolving a local `/tmp/.../seg_dataset`.
+- Added fixed variant `max_top20_lane_extent48_c2`: keep the same candidate pool and lane-context sort, require at least two predicted lane crossings, then rebuild the stop-line points from min/max lane-crossing projections plus a fixed margin.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_lane_extent_readout_smoke_val4_epoch2/variants.csv`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_stop_lane_extent python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_pv26_threshold_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_stop_lane_extent pytest -q test/test_pv26_threshold_probe.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- val4 smoke and exact val128 probe completed with explicit `--dataset-root /home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`.
+
+Smoke val4:
+
+- support was too small for judgment: baseline and all production-like variants had stop-line F1 `0.0000`.
+- The lane-extent variant emitted `1` stop-line, same as `max_top20_lane_cross48_c2`, and matched `0`.
+
+Exact val128:
+
+| variant | stop-line F1 | stop-line TP / FP / FN | pred stop-lines | lane-family mean F1 |
+| --- | ---: | ---: | ---: | ---: |
+| oracle max top10 positive | `0.7368` | `35 / 0 / 25` | `35` | `0.6285` |
+| max top10 score s080 | `0.5085` | `30 / 28 / 30` | `58` | `0.5524` |
+| baseline | `0.4483` | `26 / 30 / 34` | `56` | `0.5323` |
+| max top20 lane-cross48 c2 | `0.3448` | `15 / 12 / 45` | `27` | `0.4978` |
+| max top20 lane-extent48 c2 | `0.0690` | `3 / 24 / 57` | `27` | `0.4059` |
+
+판단:
+
+- Predicted lane crossings do not provide a TP-preserving no-GT extent signal under the current candidate pool.
+- The new variant emits the same number of stop-lines as lane-cross c2, but moves TP `15 -> 3` and doubles FP `12 -> 24`.
+- This is worse than flat and worse than baseline. Do not repeat it as a lane-crossing distance, margin, top-k, or component-count sweep unless a new selector first proves TP preservation before geometry repair.
