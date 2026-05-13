@@ -136,6 +136,16 @@ Latest stop-line axis-projected offset readout:
 - exact val128 axis-projected offset: stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`, mean point distance `13.51`.
 - 판단: current model center-offset already gives the same matched set after axis projection; the tiny point-distance improvement is not a stop-line F1 path. Do not broaden or repeat this as a `top_k`/threshold sweep.
 
+Latest stop-line fragment axis contract:
+
+- branch/worktree: `exp/lane-family-f1/stopline-fragment-axis-contract`.
+- model-side code commit: `6cc3f52`; low-disk metric-only helper commit: `ae1fbc2`.
+- changed axis: train the fragment-center offset as a stop-line-axis scalar instead of 2D xy offset, and decode fragment extent with the same axis projection.
+- exact val128 metric-only run completed without checkpoint/TensorBoard writes; run size was `2.5MB`, checkpoint paths were `null`, and skipped steps were `0`.
+- epoch1 lane/stop/cross F1: `0.5081 / 0.0625 / 0.6835`, objective `0.5351`.
+- epoch2 lane/stop/cross F1: `0.5225 / 0.1905 / 0.5714`, objective `0.5522`.
+- 판단: this closes the axis-scalar fragment contract as a performance negative. It fixed the disk-full observability problem, but the actual stop-line result is far below tangent-link exact `0.4483`, PCA val128 `0.5133`, angle-mask production `0.5085`, and projection-competition broader reference `0.5164`; do not broaden or repeat it as an aux-weight/top-k/min-score/epoch sweep.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

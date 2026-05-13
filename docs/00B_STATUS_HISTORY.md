@@ -8836,3 +8836,42 @@ Exact val128 result:
 - Axis projection of the existing center-offset slightly improves mean point distance but does not change matched TP/FP/FN or F1.
 - This closes the current center-offset map as a simple no-GT along-axis recovery source under the angle-mask extent readout.
 - Do not broaden this to val512 or repeat it as a `top_k`, proposal-threshold, mask-threshold, or fallback sweep. A future production branch needs a different no-GT center/extent signal, not a projection of the same offset head.
+
+## 174. 2026-05-13 Stop-line fragment axis contract: low-disk exact run closes it as negative
+
+맥락:
+
+- Section 172 showed the stop-line local-candidate bottleneck is mostly along-axis midpoint shift plus length/extent.
+- Section 173 closed simple projection of the existing center-offset map as flat.
+- The remaining model-side follow-up was to retrain the learned fragment-center/extent branch so the fragment-center offset is supervised only along the target stop-line axis, instead of penalizing the normal component as a 2D xy vector.
+- The first exact attempt was invalid because checkpoint save failed on a full root filesystem after validation metrics were summarized but before task F1 was persisted.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-fragment-axis-contract`.
+- Model-side code commit: `6cc3f52`.
+- Low-disk metric-only helper commit: `ae1fbc2`.
+- Added opt-in `stopline_fragment_extent_offset_loss_mode="axis"` and matching axis-projected fragment decode.
+- Added `--metric-only` and `--backbone-weights` probe options so exact diagnostic probes can preserve summaries/history without checkpoint, TensorBoard, or auto-download writes under low disk.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile model/engine/_trainer_fit.py model/engine/_trainer_reporting.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_trainer.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_pv26_trainer.py::PV26TrainerTests::test_format_epoch_completion_log_is_concise_and_includes_checkpoint_state test/test_pv26_trainer.py::PV26TrainerTests::test_run_fit_selection_metric_callback_populates_custom_best_metric_path test/test_pv26_trainer.py::PV26TrainerTests::test_run_fit_can_skip_checkpoint_writes_for_metric_only_probe test/test_run_pv26_train.py::RunPV26TrainScenarioTests::test_build_postprocess_config_uses_train_defaults_thresholds`.
+- result: `4 passed`.
+- Metric-only exact val128 probe completed with `checkpoint_every=-1`, checkpoint paths `null`, TensorBoard disabled, run size `2.5MB`, and skipped steps `0`.
+
+Exact val128 result:
+
+| Epoch | Objective | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Stop TP / FP / FN | Crosswalk F1 | Cross TP / FP / FN |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.5350765317` | `0.5081` | `957 / 475 / 1378` | `0.0625` | `2 / 7 / 53` | `0.6835` | `54 / 21 / 29` |
+| 2 | `0.5521667198` | `0.5225` | `1009 / 463 / 1381` | `0.1905` | `8 / 16 / 52` | `0.5714` | `48 / 39 / 33` |
+
+판단:
+
+- The axis-scalar fragment contract is runnable and the metric-only path solved the disk-full observability problem, but the performance result is negative.
+- Epoch2 stop-line F1 `0.1905` is far below tangent-link exact `0.4483`, PCA val128 `0.5133`, predicted angle-mask production `0.5085`, and projection-competition broader reference `0.5164`.
+- Lane and crosswalk also fail the current exact references, so this is not a hidden task-balance gain.
+- Do not broaden this branch or repeat it as `aux_weight`, `top_k`, `min_score`, offset-loss-mode, or longer-epoch sweep. A future stop-line branch still needs a different no-GT midpoint/extent signal with FP control.
