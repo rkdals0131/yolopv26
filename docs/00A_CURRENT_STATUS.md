@@ -146,6 +146,17 @@ Latest stop-line fragment axis contract:
 - epoch2 lane/stop/cross F1: `0.5225 / 0.1905 / 0.5714`, objective `0.5522`.
 - 판단: this closes the axis-scalar fragment contract as a performance negative. It fixed the disk-full observability problem, but the actual stop-line result is far below tangent-link exact `0.4483`, PCA val128 `0.5133`, angle-mask production `0.5085`, and projection-competition broader reference `0.5164`; do not broaden or repeat it as an aux-weight/top-k/min-score/epoch sweep.
 
+Latest stop-line axis-support span audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-support-span-audit`.
+- code commit: `3856bbe`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_support_span_audit_20260513/analysis_exports/val512_epoch2/summary.json`.
+- changed axis: keep the projection-competition reference fixed, then replace positive-no-oracle local candidates with a no-GT same-axis support span built from same-sample high-score candidates.
+- projection-competition reference: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- best support-span replay (`minmembers=8`): stop-line F1 `0.5085`, TP/FP/FN `119 / 78 / 152`.
+- support span length ratio q50 improves from `0.544` to `1.013`, but midpoint distance q50 only moves `68.59px -> 61.92px` and q90 worsens to `215.68px`.
+- 판단: same-axis support span reduces FP only by dropping too many TP; it is not the missing no-GT midpoint/extent signal. Do not repeat as a top-k/min-score/member-count/angle/normal-threshold sweep.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

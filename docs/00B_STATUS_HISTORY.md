@@ -8952,3 +8952,54 @@ Smoke val4 result:
 - The seed gate avoids the soft-ridge FP blow-up, but it still loses two TP and one FP relative to the same smoke reference.
 - This is negative evidence for low-threshold seeded generation under the current row-scan-tangent linker.
 - Do not broaden it to val128/val512 or repeat it as a low/high threshold, seed threshold, or hysteresis variant sweep unless a new instance-level signal explains how to preserve recall.
+
+## 177. 2026-05-13 Stop-line axis-support span audit: same-axis support fixes length but not center
+
+맥락:
+
+- Section 172 showed positive-no-oracle local candidates are mostly on the correct stop-line normal but shifted along the stop-line axis.
+- Axis-projection + GT-length oracle can reach stop-line F1 `0.6559`, but fixed min-length and existing center-offset projection are closed.
+- The narrow next question was whether same-sample, same-axis high-score candidate support can infer the missing no-GT span before adding another production readout.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-support-span-audit`.
+- Code commit: `3856bbe`.
+- Added `tools/analyze_pv26_stopline_axis_support_span_audit.py`.
+- Added `test/test_stopline_axis_support_span_audit.py`.
+- Contract: this is a read-only replay. It keeps the projection-competition reference fixed and replaces only positive-no-oracle local candidates with a support span built from same-sample candidates passing score, angle, top-k, and normal-distance gates.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile tools/analyze_pv26_stopline_axis_support_span_audit.py test/test_stopline_axis_support_span_audit.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_stopline_axis_support_span_audit.py test/test_stopline_no_oracle_axis_offset_budget.py`.
+- result: `3 passed`.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/stopline_axis_support_span_audit_20260513/analysis_exports/val512_epoch2/summary.json`.
+
+Val512 replay result:
+
+| Scenario | Stop-line F1 | TP / FP / FN | Local predictions emitted |
+| --- | ---: | ---: | ---: |
+| projection-competition reference | `0.5164` | `126 / 91 / 145` | `0` |
+| support span minmembers `1` | `0.5010` | `121 / 91 / 150` | `40` |
+| support span minmembers `2` | `0.5021` | `121 / 90 / 150` | `39` |
+| support span minmembers `3` | `0.5010` | `120 / 88 / 151` | `36` |
+| support span minmembers `5` | `0.5011` | `119 / 85 / 152` | `32` |
+| support span minmembers `8` | `0.5085` | `119 / 78 / 152` | `25` |
+| support span minmembers `13` | `0.5077` | `116 / 70 / 155` | `14` |
+
+Diagnostic:
+
+| Metric | Base candidate | Same-axis support span |
+| --- | ---: | ---: |
+| length ratio q50 | `0.544` | `1.013` |
+| midpoint distance q50 | `68.59px` | `61.92px` |
+| midpoint distance q90 | `137.65px` | `215.68px` |
+| support member count q50 | n/a | `7` |
+
+판단:
+
+- Same-axis support span recovers length but does not recover center reliably.
+- The best replay reduces FP only by losing more TP, so it remains below the projection-competition reference.
+- Do not repeat this as a top-k, min-score, member-count, angle-threshold, or normal-threshold sweep unless a new no-GT centering signal is added.
