@@ -115,6 +115,19 @@ Latest lane FN recovery audit:
 - no-new-FP upper-bound control: recovering the `center_mean >= 0.30 or unmatched <=120px` subset would imply lane F1 `0.7564`, but this is diagnostic only and uses GT to count recoverable FNs.
 - 판단: lane still has recall-side headroom that is not explained by another FP selector threshold. The next lane branch should convert this into a recall-preserving decoder/model-side instance recovery contract; do not claim this read-only upper-bound as production lane success.
 
+Latest lane FN joint-strata audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-fn-joint-strata-audit`.
+- code commit: `13bb290`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_fn_joint_strata_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- changed axis: read existing broader-val512 FN rows and split recovery headroom by GT centerline evidence and nearest unmatched predicted track distance.
+- lane F1 `0.60` at current FP requires `489` recovered FN.
+- `center_mean >= 0.50 AND unmatched <=80px`: `563` FN, no-new-FP upper-bound lane F1 `0.6062`.
+- `center_mean >= 0.50 AND unmatched <=120px`: `836` FN, no-new-FP upper-bound lane F1 `0.6285`.
+- `center_mean >= 0.50 WITHOUT unmatched <=120px`: `527` FN, no-new-FP upper-bound lane F1 `0.6032`.
+- `unmatched <=120px WITHOUT center_mean >=0.50`: `862` FN, no-new-FP upper-bound lane F1 `0.6306`.
+- 판단: the lane budget is not one bucket. Both nearby-track repair and centerline-only generation are individually large enough on GT-labeled upper bounds, but the centerline-snap smoke shows that simple local x-snapping is not the production contract.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

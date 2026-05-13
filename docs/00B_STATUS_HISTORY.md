@@ -8280,3 +8280,43 @@ Smoke result:
 - Centerline snap is less damaging than global soft-ridge peak generation, but it still loses `1` TP, adds `3` FP, and adds `1` FN relative to the prior row-scan-tangent smoke reference.
 - Do not broaden this to val512.
 - Do not repeat this as a snap-radius/window sweep unless a materially new non-GT signal explains how to avoid the observed FP increase.
+
+## 161. 2026-05-13 Lane FN joint-strata audit: several recovery buckets are individually large enough
+
+맥락:
+
+- Section 151 showed broad lane FN headroom, while Sections 152 and 160 showed that simple peak-generation and topology-preserving x-snap readouts both regress on val4 smoke.
+- The next read-only question was whether the broader-val512 FN headroom lives mainly in one repairable bucket or splits across different mechanisms.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-fn-joint-strata-audit`.
+- Code commit: `13bb290`.
+- Added `tools/analyze_pv26_lane_fn_joint_strata.py`.
+- Added `test/test_lane_fn_joint_strata_audit.py`.
+- Contract: read the existing `lane_fn_recovery_rows.csv` and `summary.json`, compute the exact number of recovered FN needed to reach lane F1 `0.60` at current FP, then score joint GT-labeled strata by centerline evidence and nearest unmatched-track distance. This is read-only planning evidence, not a production decoder.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_fn_joint_strata.py test/test_lane_fn_joint_strata_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_joint_strata_audit.py`
+- result: `2 passed`.
+- Audit artifact: `runs/pv26_exhaustive_od_lane_train/lane_fn_joint_strata_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- Generated Python caches were moved under branch-local `runs/removable/lane-fn-joint-strata-artifacts-20260513/` instead of being deleted.
+
+Broader result:
+
+| Scenario | Recovered FN | No-new-FP lane F1 upper bound |
+| --- | ---: | ---: |
+| needed for lane F1 `0.60` | `489` | - |
+| center `>=0.50` and unmatched `<=80px` | `563` | `0.6062` |
+| center `>=0.50` and unmatched `<=120px` | `836` | `0.6285` |
+| center `>=0.30` or unmatched `<=120px` | `2588` | `0.7564` |
+| center `>=0.50` without unmatched `<=120px` | `527` | `0.6032` |
+| unmatched `<=120px` without center `>=0.50` | `862` | `0.6306` |
+
+판단:
+
+- Lane recovery headroom is not confined to one mechanism: nearby-track repair alone and centerline-only generation are both large enough on a no-new-FP GT-labeled upper bound.
+- This does not rescue the simple centerline-snap readout. Section 160 already showed that preserving topology and snapping x locally still loses TP and adds FP.
+- The next useful lane work needs a stronger instance-level contract, not another scalar threshold, top-k cap, endpoint extension, soft-ridge peak, or snap-radius sweep.
