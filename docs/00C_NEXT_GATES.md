@@ -69,6 +69,7 @@
 - side/truncated/near-vertical geometry-risk local Tversky loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - lane negative-pixel probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - lane endpoint coverage loss만으로 lane 0.6 path를 다시 찾지 않는다.
+- support-conditioned lane endpoint extension을 endpoint support threshold/step/max-length sweep으로 반복하지 않는다. Val4에서 `8` lanes / `24` points를 실제로 움직였지만 lane TP/FP/FN은 `40 / 11 / 46`으로 base task-mask variant와 같았다.
 - residual-risk core/ring local separation loss weight만 키워 lane 0.6 path를 다시 찾지 않는다.
 - row-scan lane instance evidence AUC/AP 또는 post-hoc threshold replay를 lane task success로 표현하지 않는다.
 - logistic/tangent-alignment 같은 post-hoc row-scan evidence threshold를 production filter로 반복하지 않는다.
@@ -102,6 +103,7 @@
 - lane task-mask context gate is a fixed partial-positive, not a new sweep family. `flip_centerline_avg_lane_cross_comp050` improves broader val512 lane F1 `0.5577 -> 0.5628` while preserving stop-line/crosswalk, but lane still needs `+0.0372`; do not repeat it as source/strength/mask-threshold tuning.
 - flip-centerline average 위의 post-hoc row gate exact `0.6125`를 lane-family success로 표현하거나 같은 threshold replay를 반복하지 않는다.
 - lane dual-checkpoint centerline averaging을 checkpoint/weight/threshold sweep으로 반복하지 않는다.
+- lane support-conditioned endpoint extension is also closed at smoke. Branch `exp/lane-family-f1/lane-endpoint-support-extension-smoke` / commit `1cc9c5a` extended `8` lanes and added `24` endpoint points, improving lane mean point distance `13.3898 -> 12.5226`, but lane TP/FP/FN/F1 stayed exactly `40 / 11 / 46 / 0.5839` against the fixed task-mask reference. Do not broaden or repeat as endpoint support threshold, step, or max-length tuning without a new assignment-moving signal.
 - lane row-scan tangent soft-ridge readout을 `threshold/peak-distance` sweep으로 반복하지 않는다.
 - lane row-scan tangent centerline translation을 translation-radius/offset sweep으로 반복하지 않는다.
 - lane ranked local centerline snapping을 ranker/radius/local-snap sweep으로 반복하지 않는다.

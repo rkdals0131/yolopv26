@@ -138,6 +138,16 @@ Latest stop-line scale dense TTA smoke:
 - val4 `flip_centerline_avg_lane_cross_comp050_stop_scale_all_avg`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, stop-line TP/FP/FN `0 / 3 / 2`.
 - 판단: stop-line scale dense TTA did not move TP/FP/FN even on the smoke slice. Do not broaden to val128/val512 or repeat as a scale-factor/map-subset sweep without a new no-GT stop-line signal.
 
+Latest lane endpoint support-extension smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-endpoint-support-extension-smoke`.
+- code commit: `1cc9c5a`.
+- changed axis: keep the current flip-centerline + fixed crosswalk-mask lane gate and stop-line/crosswalk contract fixed, then extend decoded lane endpoints only when predicted lane centerline and support maps continue past the endpoint.
+- smoke val4 reference `flip_centerline_avg_lane_cross_comp050`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`, lane mean point distance `13.3898`.
+- smoke val4 support-extension: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`, lane mean point distance `12.5226`.
+- movement: `8` lanes extended, `24` endpoint points added.
+- 판단: support-conditioned endpoint extension moved geometry and improved mean point distance slightly, but did not change lane TP/FP/FN. Do not broaden or repeat as endpoint support threshold, step, or max-length tuning without a new signal that first changes assignment metrics.
+
 Latest stop-line lane-crossing extent readout:
 
 - branch/worktree: `exp/lane-family-f1/stopline-lane-extent-readout`.

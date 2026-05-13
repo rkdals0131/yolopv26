@@ -11299,3 +11299,45 @@ Smoke val4:
 - Scale-averaging stop-line dense score maps, geometry maps, or both produced exactly no stop-line TP/FP/FN movement on this smoke slice.
 - The support is small (`2` stop-line GTs), so this is not a broad negative theorem, but it is enough to avoid spending val128/val512 budget on this same runtime-only axis.
 - Do not repeat this as a scale-factor, score-map subset, geometry-map subset, or scale-count sweep unless paired with a materially new no-GT stop-line candidate-generation or FP-control signal.
+
+## 227. 2026-05-14 Lane endpoint support extension: geometry movement without assignment movement
+
+맥락:
+
+- Lane still has a smaller but real broader gap after the fixed crosswalk-mask lane gate: current broader lane F1 is `0.5628`, still `+0.0372` short of `0.60`.
+- Fixed-distance endpoint extension was already closed, but that left one allowed endpoint question: whether a no-GT continuation signal can decide when endpoint growth is safe.
+- This branch tested exactly that conditioning signal: extend decoded lane endpoints only while both predicted centerline and predicted support remain active beyond the endpoint.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-endpoint-support-extension-smoke`.
+- Code commit: `1cc9c5a`.
+- Tool/test: `tools/probe_pv26_lane_flip_tta.py`, `test/test_lane_flip_tta_probe.py`.
+- Added `flip_centerline_avg_lane_cross_comp050_endpoint_support_extend`.
+- The dense prediction contract is unchanged from `flip_centerline_avg_lane_cross_comp050`; the variant modifies only decoded lane `points_xy` after postprocess.
+- Fixed extension contract: step `2` map px, max `6` steps, minimum centerline/support score `0.55`, require at least `2` accepted points at an endpoint.
+- Stop-line and crosswalk predictions are preserved from the same base variant.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `11 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint with current stop-line/crosswalk postprocess overrides.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Lane mean point distance | Endpoint movement | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `13.7451` | `0 lanes / 0 pts` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050` reference | `0.5839` | `40 / 11 / 46` | `13.3898` | `0 lanes / 0 pts` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_endpoint_support_extend` | `0.5839` | `40 / 11 / 46` | `12.5226` | `8 lanes / 24 pts` | `0.0000` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `12.6951` | `0 lanes / 0 pts` | `0.0000` | `0.5455` |
+
+판단:
+
+- The support-conditioned extension is not a no-op: it extended `8` lanes and added `24` endpoint points.
+- The assignment metrics were still flat against the fixed task-mask reference: lane TP/FP/FN stayed `40 / 11 / 46`.
+- The only gain was geometric distance (`13.3898 -> 12.5226`), which is not enough to spend val128/val512 budget.
+- Do not repeat this as endpoint support threshold, step size, min-added-points, or max-length tuning unless a new signal first changes TP/FP/FN on smoke.
