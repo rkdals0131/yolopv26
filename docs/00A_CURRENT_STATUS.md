@@ -254,6 +254,15 @@ Latest lane area-rescue center-q10 gate:
 - comparison to center-mean smoke: lane F1 regressed from `0.5972` to `0.5816`, moving TP/FP/FN from `43 / 15 / 43` to `41 / 14 / 45`.
 - 판단: q10 gating removes only one FP while losing two TP on the first smoke gate. Do not broaden this branch to val128/val512 or repeat area rescue as a q10/quantile threshold sweep without a materially new recall-preserving signal.
 
+Latest lane row-scan hysteresis readout:
+
+- branch/worktree: `exp/lane-family-f1/lane-row-scan-hysteresis-readout`.
+- code commit: `ac4d498`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_row_scan_hysteresis_readout_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+- changed axis: generate row-scan-tangent candidates from a lower centerline threshold, but keep only low-threshold connected components that contain a high-confidence seed.
+- smoke val4 result: lane F1 `0.5652`, TP/FP/FN `39 / 13 / 47`; stop-line/crosswalk `0.0000 / 0.5455`.
+- 판단: hysteresis is less damaging than soft-ridge peak generation, but it still loses two TP versus the same row-scan-tangent smoke reference and stays below the centerline-snap/translation smoke. Do not broaden or repeat as a low/high threshold sweep without a new instance-level recall-preserving signal.
+
 Latest stop-line recovery-budget audit:
 
 - branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.

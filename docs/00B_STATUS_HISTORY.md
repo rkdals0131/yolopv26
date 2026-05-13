@@ -8914,3 +8914,41 @@ Smoke val4 result:
 - q10 gating removes one FP but loses two TP on the first smoke gate, so it worsens lane F1 before the exact/broader gate.
 - This is negative evidence for the area-rescue q10 axis. Do not broaden it to val128/val512.
 - Do not repeat area rescue as a q10/quantile, min-centerline, min-area, or max-per-sample sweep unless a new non-GT signal explains how it preserves the lost TP.
+
+## 176. 2026-05-13 Lane row-scan hysteresis readout: seeded low-threshold generation still loses TP
+
+맥락:
+
+- Section 157 showed `row_scan_tangent_soft_ridge` lost TP and added FP when it generated row-wise centerline peak candidates at a lower threshold.
+- The remaining narrower question was whether low-threshold continuity can help if unseeded low-confidence components are removed first.
+- This is a decoder-side readout probe, not training or deployment default.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-row-scan-hysteresis-readout`.
+- Code commit: `ac4d498`.
+- Added opt-in `row_scan_tangent_hysteresis` to `model/engine/lane_segfirst_vectorizer.py`.
+- Contract: build a low-threshold centerline mask from `lane_obj_threshold`, keep only connected components with at least one `>=0.50` centerline seed, then run the existing row-scan-tangent linker.
+- Added explicit `--backbone-weights` evaluator/probe options to avoid implicit YOLO26 weight downloads under the low-disk root filesystem.
+- Added regression coverage in `test/test_lane_segfirst_vectorizer.py`.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_segfirst_vectorizer.py test/test_evaluate_pv26_lane60_checkpoint.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_lane_segfirst_vectorizer.py test/test_evaluate_pv26_lane60_checkpoint.py`.
+- result: `13 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_row_scan_hysteresis_readout_20260513/analysis_exports/smoke_val4_epoch2_t030/summary.json`.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| row-scan-tangent smoke reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| hysteresis `t0.30` | `0.5652` | `39 / 13 / 47` | `0.0000` | `0.5455` |
+
+판단:
+
+- The seed gate avoids the soft-ridge FP blow-up, but it still loses two TP and one FP relative to the same smoke reference.
+- This is negative evidence for low-threshold seeded generation under the current row-scan-tangent linker.
+- Do not broaden it to val128/val512 or repeat it as a low/high threshold, seed threshold, or hysteresis variant sweep unless a new instance-level signal explains how to preserve recall.
