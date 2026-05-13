@@ -8711,6 +8711,7 @@ Artifacts:
 - `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/flip_reference_summary.json`.
 - `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/summary.json`.
 - `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/fragment_projection_competition_variants.csv`.
+- Retention note: these replay files are no longer present in active `runs` after artifact pruning; the result table below is the durable evidence.
 
 Result:
 
@@ -10331,6 +10332,7 @@ Candidate accounting:
 - Test: `test/test_lane_knn_residual_premise.py`.
 - Input contract: score archived val128 unmatched-lane repair rows with the exported broad no-GT repairability model, keep the fixed `top_k=116` selection budget, then transfer residual templates from `k=5` feature-space neighbors across two folds.
 - Artifact: `runs/pv26_exhaustive_od_lane_train/lane_knn_residual_premise_20260514/analysis_exports/val128_top116_k5/summary.json`.
+- Retention note: the raw artifact was pruned from active `runs` after cleanup; this section preserves the measured result.
 
 Verification:
 
@@ -10377,6 +10379,7 @@ Val128 geometry premise result:
 - Test: `test/test_stopline_temporal_context_audit.py`.
 - Input contract: use archived exact val128 detector-context candidate rows with `sample_id`, derive the numeric frame suffix, group by dataset/sequence prefix, and measure whether each sample has an adjacent validation sample within fixed frame-id gaps.
 - Artifact: `runs/pv26_exhaustive_od_lane_train/stopline_temporal_context_audit_20260514/analysis_exports/val128_detector_context_candidates/summary.json`.
+- Retention note: the raw artifact was pruned from active `runs` after cleanup; this section preserves the measured result.
 
 Verification:
 

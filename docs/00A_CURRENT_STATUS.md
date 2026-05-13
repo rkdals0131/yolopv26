@@ -107,7 +107,7 @@ Current best broader task-balance replay:
 
 - branch/worktree: `exp/lane-family-f1/stopline-projcomp-flip-composite`.
 - code commit: none; artifact-only replay using the existing projection-competition CSV tool and the current flip-centerline reference row.
-- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/summary.json`.
+- artifact retention: the original replay artifact was pruned from active `runs`; keep the metrics below as historical task-balance lower-bound evidence, not as a currently retained artifact pointer.
 - changed axis: keep current `flip_centerline_avg` lane and hull crosswalk metrics, then replay projection-competition stop-line predictions from the same checkpoint/candidate pool.
 - lane / stop-line / crosswalk F1: `0.5577 / 0.5164 / 0.6187`.
 - stop-line TP/FP/FN: `126 / 91 / 145`.
