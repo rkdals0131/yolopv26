@@ -128,6 +128,17 @@ Latest lane FN joint-strata audit:
 - `unmatched <=120px WITHOUT center_mean >=0.50`: `862` FN, no-new-FP upper-bound lane F1 `0.6306`.
 - 판단: the lane budget is not one bucket. Both nearby-track repair and centerline-only generation are individually large enough on GT-labeled upper bounds, but the centerline-snap smoke shows that simple local x-snapping is not the production contract.
 
+Latest lane FN pair-geometry audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-fn-pair-geometry-audit`.
+- code commit: `941ddd8`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_fn_pair_geometry_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- changed axis: replay the same current flip-centerline composite, but add nearest-prediction geometry features for each FN: length ratio, angle error, center offset, endpoint distance, sample distance, and overlap.
+- `center>=0.50 AND unmatched<=80px`: count `563`, nearest distance q50 `53.25px`, length ratio q50 `0.974`, angle error q50 `1.27deg`, center distance q50 `50.11px`, y-overlap q50 `0.905`.
+- `center>=0.50 AND unmatched<=120px`: count `836`, nearest distance q50 `64.31px`, length ratio q50 `0.881`, angle error q50 `1.53deg`, center distance q50 `59.98px`, y-overlap q50 `0.858`.
+- `center>=0.50 WITHOUT unmatched<=120px`: count `527`, nearest distance q50 `186.96px`, length ratio q50 `2.091`, center distance q50 `182.80px`, y-overlap q50 `0.332`.
+- 판단: the strongest nearby-track bucket is not primarily an angle or length-ratio failure. It is mostly a center/position offset around the match threshold. The centerline-only bucket is a different mechanism and likely needs new instance generation, not repair of the current nearest track.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

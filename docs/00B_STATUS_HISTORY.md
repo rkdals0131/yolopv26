@@ -8320,3 +8320,44 @@ Broader result:
 - Lane recovery headroom is not confined to one mechanism: nearby-track repair alone and centerline-only generation are both large enough on a no-new-FP GT-labeled upper bound.
 - This does not rescue the simple centerline-snap readout. Section 160 already showed that preserving topology and snapping x locally still loses TP and adds FP.
 - The next useful lane work needs a stronger instance-level contract, not another scalar threshold, top-k cap, endpoint extension, soft-ridge peak, or snap-radius sweep.
+
+## 162. 2026-05-13 Lane FN pair-geometry audit: nearby-track bucket is mostly center offset
+
+맥락:
+
+- Section 161 showed that both nearby-track repair and centerline-only generation buckets are large enough on GT-labeled no-new-FP upper bounds.
+- The missing split was geometry: whether nearby unmatched tracks are wrong because of angle, length, endpoints, or mostly center/position offset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-fn-pair-geometry-audit`.
+- Code commit: `941ddd8`.
+- Extended `tools/probe_pv26_lane_fn_recovery_audit.py` to write nearest-prediction geometry features for every FN lane.
+- Added regression coverage in `test/test_lane_fn_recovery_audit.py`.
+- Contract: keep the current flip-centerline broader composite and existing matching logic fixed; record diagnostic geometry for nearest any/unmatched predictions. This is read-only evidence, not a postprocess change.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_fn_recovery_audit.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py`
+- result: `5 passed`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane_fn_pair_geometry_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Broader artifact: `runs/pv26_exhaustive_od_lane_train/lane_fn_pair_geometry_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-fn-pair-geometry-artifacts-20260513/` instead of being deleted.
+
+Broader geometry result:
+
+| Group | Count | Distance q50 | Length ratio q50 | Angle q50 | Center q50 | Y-overlap q50 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| all with unmatched | `3459` | `122.24` | `0.981` | `8.39deg` | `114.23` | `0.672` |
+| unmatched `<=80px` | `1007` | `56.40` | `0.869` | `1.78deg` | `51.76` | `0.831` |
+| center `>=0.50` and unmatched `<=80px` | `563` | `53.25` | `0.974` | `1.27deg` | `50.11` | `0.905` |
+| center `>=0.50` and unmatched `<=120px` | `836` | `64.31` | `0.881` | `1.53deg` | `59.98` | `0.858` |
+| center `>=0.50` without unmatched `<=120px` | `527` | `186.96` | `2.091` | `7.45deg` | `182.80` | `0.332` |
+| unmatched `<=120px` without center `>=0.50` | `862` | `78.74` | `0.744` | `5.47deg` | `71.11` | `0.660` |
+
+판단:
+
+- The strongest nearby-track bucket already has good length and direction: length ratio q50 `0.974`, angle q50 `1.27deg`, and y-overlap q50 `0.905`.
+- Its median center offset is still about `50px`, just beyond the `40px` match threshold. This explains why naive local x-snap can hurt: the repair is an instance-level positioning problem, not just "choose a higher local peak".
+- The center-only bucket is qualitatively different: nearest unmatched tracks are far, long, and low-overlap. That bucket likely needs instance generation from centerline evidence rather than repair of current tracks.
