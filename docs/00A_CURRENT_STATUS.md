@@ -267,6 +267,16 @@ Latest lane residual-component candidates:
 - exact val128: lane F1 `0.5669`, TP/FP/FN `1195 / 631 / 1195`, versus baseline `0.5739`, `1175 / 530 / 1215`.
 - 판단: uncovered centerline residue can recover TP, but the FP cost is much larger at val128. Do not broaden to val512 or repeat as residual threshold/component-size/coverage-width/min-length/per-sample-cap tuning without a new no-GT FP-control signal.
 
+Latest lane residual proximity-gate audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-residual-shape-fp-control-audit`.
+- code commit: `914f59a`.
+- artifacts: `runs/pv26_exhaustive_od_lane_train/lane_residual_shape_fp_control_audit_20260513/analysis_exports/{smoke_val4_epoch2,val128_epoch2}/summary.json`.
+- changed axis: keep the residual-candidate generator fixed, add candidate-level feature labeling, and replay one fixed support/shape/proximity gate that keeps residual candidates only when they are lane-like and within `200px` mean-point distance of an existing baseline lane.
+- smoke val4: gated residual lane F1 `0.5755`, TP/FP/FN `40 / 13 / 46`, versus baseline `0.5588`, `38 / 12 / 48`; candidate gate kept `3 / 4` residual candidates, preserving both residual TPs and dropping one FP.
+- exact val128: gated residual lane F1 `0.5706`, TP/FP/FN `1190 / 591 / 1200`, versus baseline `0.5739`, `1175 / 530 / 1215`; candidate gate kept `76 / 121` residual candidates, including `15` matched residual TPs but also `61` FPs.
+- 판단: baseline-proximity/support gating is better than raw residual append but still below baseline at val128. Do not broaden to val512 or repeat residual append as proximity/length/support/component/per-sample threshold sweeps without a stronger new FP-control signal.
+
 Latest lane semantic vote mode audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-semantic-vote-mode-audit`.

@@ -9373,3 +9373,68 @@ Feature summary:
 - The raw stripe extractor often finds a contrast span, but that span is not aligned with the actual stop-line midpoint/extent under the current candidates.
 - This is worse than flat: it collapses stop-line precision and recall on exact val128.
 - Do not broaden to val512 or repeat as raw-stripe top-k, confidence, side-band, smoothing, contrast-span, or threshold sweeps unless a materially new non-photometric FP-control or midpoint source is added first.
+
+## 186. 2026-05-13 Lane residual proximity-gate audit: smoke-positive FP control does not survive val128
+
+맥락:
+
+- Section 184 showed residual centerline candidates recover real lane TP but add too many FP on val128.
+- The next allowed follow-up required a new no-GT FP-control signal, not another residual threshold/component-size/length/per-sample sweep.
+- The bounded premise here was whether residual candidates close to an existing baseline lane, with enough support/centerline evidence and sane shape, are the subset that preserves TP while suppressing isolated FP.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-residual-shape-fp-control-audit`.
+- Code commit: `914f59a`.
+- Extended `tools/probe_pv26_lane_residual_component_candidates.py` with candidate-level feature export and residual TP labeling.
+- Added a fixed `residual_shape_gate_append` replay variant.
+- Gate contract: keep the original residual candidate generator fixed; keep residual candidates only when they pass fixed length/support/turn checks and are within `200px` mean-point distance of an existing baseline lane.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_residual_component_candidates.py test/test_lane_residual_component_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_residual_component_candidates.py`.
+- result: `4 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_residual_shape_fp_control_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane_residual_shape_fp_control_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Candidate feature exports: `residual_candidate_features.csv` under both artifact directories.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.5588` | `38 / 12 / 48` |
+| residual append | `0.5714` | `40 / 14 / 46` |
+| residual shape/proximity gate | `0.5755` | `40 / 13 / 46` |
+
+Smoke candidate summary:
+
+- residual candidates: `4`.
+- matched residual TP rows: `2`.
+- gate kept rows: `3`.
+- gate kept matched TP rows: `2`.
+- gate kept FP rows: `1`.
+
+Exact val128 result:
+
+| Variant | Lane F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.5739` | `1175 / 530 / 1215` |
+| residual append | `0.5669` | `1195 / 631 / 1195` |
+| residual shape/proximity gate | `0.5706` | `1190 / 591 / 1200` |
+
+Exact candidate summary:
+
+- residual candidates: `121`.
+- matched residual TP rows: `25`.
+- gate kept rows: `76`.
+- gate kept matched TP rows: `15`.
+- gate rejected matched TP rows: `10`.
+- gate kept FP rows: `61`.
+
+판단:
+
+- The baseline-proximity gate is a real FP-control improvement over raw residual append: it cuts residual FP cost from `+101` to `+61`.
+- The signal is still too weak. It loses `10` matched residual TP rows and keeps `61` FP rows, so the val128 lane F1 stays below baseline (`0.5706` vs `0.5739`).
+- Do not broaden to val512 or repeat residual append as proximity, length, support, component, or per-sample threshold sweeps without a stronger new FP-control signal.
