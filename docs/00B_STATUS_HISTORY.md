@@ -8520,3 +8520,46 @@ Val128 result:
 - The rescue adds `43` lane TP but also adds `166` FP, so the F1 regression is real.
 - Do not broaden this branch to val512.
 - Do not repeat it as a `max_per_sample`, min-area, bbox-area, or aspect-filter sweep unless a new FP-control signal is added first.
+
+## 167. 2026-05-13 Stop-line row/x candidate consistency audit: projection agreement is weak on val512
+
+맥락:
+
+- Earlier dense-map audits showed stop-line row/x projections still carry signal, but direct row/x span proposals were negative.
+- The open bounded question was whether row/x projection agreement can act as a materially different no-GT FP-control signal for the existing candidate pool.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-rowx-candidate-consistency-audit`.
+- Code commit: `4c7c164`.
+- Added row/x projection consistency columns to `tools/probe_pv26_stopline_candidate_pool.py`.
+- Added those columns to the rich-validator feature list and CSV export.
+- Added regression coverage in `test/test_stopline_candidate_pool_rowx_features.py`.
+- Contract: read-only candidate-pool audit. It does not change production postprocess or train a new model.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_rowx_features.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_candidate_pool_rowx_features.py`
+- result: `2 passed`.
+- `git diff --check`.
+- Val128 artifact: `runs/pv26_exhaustive_od_lane_train/stopline_rowx_candidate_consistency_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Val512 artifact: `runs/pv26_exhaustive_od_lane_train/stopline_rowx_candidate_consistency_audit_20260513/analysis_exports/val512_epoch2/summary.json`.
+- Worktree-local `yolo26s.pt`, dataset symlink, and generated Python caches were moved under `runs/removable/stopline-rowx-candidate-consistency-artifacts-20260513/` instead of being deleted.
+
+Held-out replay result:
+
+| Split | Variant | Stop-line F1 | Stop-line TP / FP / FN |
+| --- | --- | ---: | ---: |
+| val128 held-out | baseline | `0.5161` | `16 / 15 / 15` |
+| val128 held-out | row/x rich logistic | `0.5667` | `17 / 12 / 14` |
+| val128 held-out | selector_r4 threshold | `0.5846` | `19 / 15 / 12` |
+| val512 held-out | baseline | `0.3877` | `44 / 55 / 84` |
+| val512 held-out | row/x rich logistic | `0.4087` | `47 / 55 / 81` |
+| val512 held-out | selector_r4 threshold | `0.4259` | `46 / 42 / 82` |
+
+판단:
+
+- Val128 was a false-positive-looking signal; it does not transfer to val512 strongly enough.
+- Row/x projection agreement is useful as audit context, but it is not a deployable selector path and does not beat PCA/projection references.
+- Do not repeat this as another row/x threshold/logistic candidate-selector sweep unless the next branch changes candidate generation or midpoint recovery first.
