@@ -11018,3 +11018,58 @@ Smoke val4:
 - Fixed x smoothing does reduce FP for the no-flip baseline (`14 -> 11`), but it loses four TP and adds four FN.
 - On the actual flip-centerline reference, smoothing loses eight TP (`41 -> 33`) without reducing FP, so it is strongly negative for the lane `>=0.60` goal.
 - Do not broaden this to val128/val512. Do not repeat row-scan x smoothing as a window-size, kernel, endpoint-preservation, or smoothing-weight sweep unless a new diagnostic first shows TP-preserving movement.
+
+## 221. 2026-05-14 Lane anchor-offset instance auxiliary val512: instance anchor signal regresses lane/stop-line
+
+맥락:
+
+- Section 220 closed a decoder-side geometry smoothing axis, so the next lane attempt moved back to a training-side instance-unit signal rather than another threshold, snap, or local smoothing sweep.
+- The premise was to teach each dense lane pixel its offset to the lane's bottom anchor x coordinate, hoping to stabilize instance alignment before vectorization.
+- The run kept the same source checkpoint, same `core` centerline target mode, same lane/stop/cross loss weights, same stop-line retention auxiliaries, and changed only the new anchor-offset auxiliary/head path.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-anchor-offset-instance-head`.
+- Code commit: `edbd0dc`.
+- Added opt-in `lane_segfirst_anchor_offset_weight`, default `0.0`.
+- Added dense targets `lane_seg_anchor_offset` and `lane_seg_anchor_offset_mask`.
+- Added a one-channel seg-first head output `lane_seg_anchor_offset`.
+- Added SmoothL1 auxiliary loss under lane source, anchor mask, and non-ignore pixels.
+- Added probe preset `core_centerline_refine_anchor_offset_instance`.
+
+Verification:
+
+- `python3 -m py_compile model/engine/lane_segfirst_vectorizer.py model/data/roadmark_v2_targets.py model/data/target_encoder.py model/net/lane_head_segfirst.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `pytest -q test/test_lane_segfirst_vectorizer.py test/test_roadmark_native_contract.py`.
+- result: `10 passed`.
+- `git diff --check`.
+- Smoke plumbing run completed with `train_batches=8`, `val_batches=4`, `phase_objective=0.6122325529`.
+- Broader probe completed with `epochs=2`, `train_batches=512`, `val_batches=512`, skipped steps `0`.
+- Temporary run checkpoints and auto-downloaded `yolo26s.pt` were pruned after extracting the numeric result.
+
+Broader val512 epoch2:
+
+| Metric | Value |
+| --- | ---: |
+| phase objective | `0.5921307966` |
+| lane F1 | `0.5097039796` |
+| lane TP / FP / FN | `3900 / 1926 / 5577` |
+| stop-line F1 | `0.4024640657` |
+| stop-line TP / FP / FN | `98 / 118 / 173` |
+| crosswalk F1 | `0.5741496599` |
+| crosswalk TP / FP / FN | `211 / 129 / 184` |
+| lane-family mean / min F1 | `0.4954392351 / 0.4024640657` |
+
+Task-best within the 2-epoch run:
+
+| Task | Best F1 | Epoch |
+| --- | ---: | ---: |
+| lane | `0.5097039796` | `2` |
+| stop-line | `0.4024640657` | `2` |
+| crosswalk | `0.6164574616` | `1` |
+
+판단:
+
+- This branch is a clean plumbing success but a metric failure.
+- It is below the current broader objective-best composite `0.6216194906`, below the current lane F1 `0.5577`, below stop-line `0.4235`, and does not retain the broader crosswalk pass at the selected epoch.
+- Do not continue this as `lane_segfirst_anchor_offset_weight`, LR, epoch-count, or freeze-policy sweep. A future lane instance branch needs a different instance contract that preserves current lane recall and stop-line/crosswalk retention.
