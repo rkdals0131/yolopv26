@@ -10066,3 +10066,62 @@ Val128 result:
 - Baseline-absent gating did not control FP. It made stop-line F1 worse than both baseline and the plain proposal-island replay.
 - This closes the simple "only use proposal-island when baseline is absent" FP-control premise.
 - Do not repeat this as fallback, baseline-present/absent, proposal-source, island-radius, relative-threshold, top-k, mask-threshold, or normal-band tuning without a materially new FP-control signal.
+
+## 200. 2026-05-14 Lane residual repairability gate: broad ranker still adds too many FP
+
+맥락:
+
+- Sections 196-197 showed that the broad no-GT repairability scorer can rank plausible lane repair targets, but scorer-plus-regressor geometry was still too weak for live repair.
+- Sections 198-199 were stop-line follow-ups; lane remained below `0.60`, and residual centerline candidates were already closed as raw append / shape-gate negative.
+- The narrow remaining residual question was whether the exported broad repairability ranker can act as a stronger fixed FP-control signal for residual centerline candidates without changing the residual generator.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-residual-repairability-gate`.
+- Code commit: `7a33bf6`.
+- Updated `tools/probe_pv26_lane_residual_component_candidates.py`.
+- Updated `test/test_lane_residual_component_candidates.py`.
+- Contract: keep residual centerline/support candidate generation unchanged, compute the same no-GT `pred_*` feature family used by the exported broad repairability model, then append only the fixed top-500-over-2206 budget ratio (`0.22665`) of scored residual candidates.
+- Artifact:
+  - `deletion_candidates/home_artifact_prune_20260514_010233/yolopv26_runs/pv26_exhaustive_od_lane_train/lane_residual_repairability_gate_20260514/analysis_exports/smoke_val4_epoch2/summary.json`.
+  - `deletion_candidates/home_artifact_prune_20260514_010233/yolopv26_runs/pv26_exhaustive_od_lane_train/lane_residual_repairability_gate_20260514/analysis_exports/val128_epoch2/summary.json`.
+  - `deletion_candidates/home_artifact_prune_20260514_010233/yolopv26_runs/pv26_exhaustive_od_lane_train/lane_residual_repairability_gate_20260514/analysis_exports/val128_epoch2/variants.csv`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_residual_component_candidates.py test/test_lane_residual_component_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_residual_component_candidates.py`.
+- result: `6 passed`.
+- Smoke val4 and exact val128 probes completed with `--repairability-params .../repairability_model_parameters.json`.
+- `git diff --check`.
+
+Smoke val4 result:
+
+| variant | lane F1 | TP / FP / FN | selected residuals |
+| --- | ---: | ---: | ---: |
+| baseline | `0.5588` | `38 / 12 / 48` | `0` |
+| residual repairability gate | `0.5693` | `39 / 12 / 47` | `1` |
+| residual shape gate | `0.5755` | `40 / 13 / 46` | `3` |
+| residual append | `0.5714` | `40 / 14 / 46` | `4` |
+
+Val128 result:
+
+| variant | lane F1 | TP / FP / FN | stop-line F1 | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5739` | `1175 / 530 / 1215` | `0.4364` | `0.5854` |
+| residual repairability gate | `0.5730` | `1181 / 551 / 1209` | `0.4364` | `0.5854` |
+| residual shape gate | `0.5706` | `1190 / 591 / 1200` | `0.4364` | `0.5854` |
+| residual append | `0.5669` | `1195 / 631 / 1195` | `0.4364` | `0.5854` |
+
+Candidate summary:
+
+- residual candidate rows: `121`.
+- fixed repairability budget selected: `27`.
+- selected matched TP rows: `6`.
+- selected FP rows: `21`.
+
+판단:
+
+- The scorer is better than raw residual append and the prior shape gate on FP control, but it still does not beat baseline at val128.
+- The actual val128 movement is `+6 TP / +21 FP / -6 FN`, so precision loss erases the recall gain.
+- This closes residual repairability gating as a production path. Do not repeat it as a repairability score threshold, top-K budget, or residual candidate threshold sweep without a materially new no-GT FP-control or alignment signal.
