@@ -102,6 +102,7 @@
 - lane row-scan tangent soft-ridge readout을 `threshold/peak-distance` sweep으로 반복하지 않는다.
 - lane row-scan tangent centerline translation을 translation-radius/offset sweep으로 반복하지 않는다.
 - lane ranked local centerline snapping을 ranker/radius/local-snap sweep으로 반복하지 않는다.
+- coherent/affine centerline-peak lane repair도 affine/local-snap/radius sweep으로 반복하지 않는다. Val4에서 geometry는 움직였지만 lane TP/FP/FN/F1이 `39 / 17 / 47 / 0.5493`으로 flat이었다.
 - exported repairability ranker 위의 simple centerline translation을 top-K/radius/local-offset sweep으로 반복하지 않는다.
 - lane residual repairability-ranker gate를 top-K/score-threshold/residual-threshold sweep으로 반복하지 않는다.
 - lane area-rescue repairability-ranker gate를 top-K/score-threshold/min-area/min-centerline/max-per-sample sweep으로 반복하지 않는다.

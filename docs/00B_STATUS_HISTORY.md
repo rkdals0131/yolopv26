@@ -10598,3 +10598,46 @@ Exact val128:
 - Predicted lane crossings do not provide a TP-preserving no-GT extent signal under the current candidate pool.
 - The new variant emits the same number of stop-lines as lane-cross c2, but moves TP `15 -> 3` and doubles FP `12 -> 24`.
 - This is worse than flat and worse than baseline. Do not repeat it as a lane-crossing distance, margin, top-k, or component-count sweep unless a new selector first proves TP preservation before geometry repair.
+
+## 211. 2026-05-14 Lane ranked affine-snap repair smoke: coherent geometry moves but metrics stay flat
+
+맥락:
+
+- Section 209 showed pointwise local centerline snapping finally moves selected lane geometry, but lane TP/FP/FN stayed flat.
+- This follow-up tests a stricter instance-alignment premise instead of another radius/ranker sweep: use the same snap targets, fit one coherent 2D affine transform per selected lane, and apply that transform to the whole lane instance.
+- The branch keeps the checkpoint, broad no-GT repairability ranker, val-size-scaled repair budget, flip-centerline lane runtime path, and stop-line/crosswalk postprocess contract fixed.
+
+구현:
+
+- Branch: `exp/lane-family-f1/lane-ranked-affine-centerline-repair-smoke`.
+- Code commit: `b895653`.
+- Tool: `tools/probe_pv26_lane_ranked_translate_repair.py`.
+- Test: `test/test_lane_ranked_translate_repair.py`.
+- Added `--repair-mode affine_2d_snap`.
+- Contract: for each selected repair candidate, find local centerline-snap targets, fit a least-squares 2D affine transform from the original points to those targets, apply the coherent transform to the original lane instance, then recompute full lane-family metrics.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_ranked_affine_snap_repair_smoke_val4_epoch2/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_lane_affine python3 -m py_compile tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_lane_affine pytest -q test/test_lane_ranked_translate_repair.py`.
+- result: `4 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint.
+
+Smoke val4:
+
+- repair budget: `repair_topk=4`, `candidate_count=56`, `selected_count=4`.
+- geometry movement: `selected_moved_count=4`, moved points `77`.
+- selected affine moves were smaller than the pointwise snap targets: mean move about `1.16-1.37` map px and max move about `2.86-3.79` map px.
+
+| variant | lane F1 | lane TP / FP / FN | stop-line F1 | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5493` | `39 / 17 / 47` | `0.0000` | `0.5455` |
+| ranked affine 2D snap repair | `0.5493` | `39 / 17 / 47` | `0.0000` | `0.5455` |
+
+판단:
+
+- Coherent affine movement is real but too small and too local to change lane assignment on this smoke slice.
+- TP/FP/FN/F1 were exactly flat after repair.
+- Do not broaden this to val128. Do not repeat centerline-peak geometry repair as affine/local-snap/radius variants unless a new signal first shows actual TP/FP/FN movement.

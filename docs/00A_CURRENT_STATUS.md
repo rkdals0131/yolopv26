@@ -356,6 +356,16 @@ Latest lane ranked local-snap repair smoke:
 - smoke val4 metrics: baseline and local-snap repaired lane/stop/cross F1 were identical: `0.5899 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `41 / 12 / 45`.
 - 판단: local 2D snapping finally moves selected geometry, but the movement does not cross any matching boundary on the smoke slice. Do not broaden to val128 or repeat as ranked local snap/radius tuning without a new signal that first shows actual TP/FP/FN movement.
 
+Latest lane ranked affine-snap repair smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-ranked-affine-centerline-repair-smoke`.
+- code commit: `b895653`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_ranked_affine_snap_repair_smoke_val4_epoch2/summary.json`.
+- changed axis: keep the same broad no-GT repairability ranker and repair budget, but fit one coherent 2D affine transform per selected lane from original points to local centerline-snap targets, then apply that transform to the whole lane instance.
+- smoke val4 movement: selected `4` rows, all moved; moved points `77`; selected affine mean move about `1.16-1.37` map px and max move about `2.86-3.79` map px.
+- smoke val4 metrics: baseline and affine-snap repaired lane/stop/cross F1 were identical: `0.5493 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `39 / 17 / 47`.
+- 판단: coherent affine movement is smaller than pointwise snapping and still does not cross any matching boundary on the smoke slice. Do not broaden to val128 or repeat centerline-peak geometry repair as affine/local-snap/radius variants without a new signal that first changes TP/FP/FN.
+
 Latest lane point-repair oracle replay:
 
 - branch/worktree: `exp/lane-family-f1/lane-point-repair-replay`.
