@@ -103,6 +103,7 @@
 - row-scan tangent upper-trunk unfreeze를 LR/schedule/capacity-only sweep으로 반복하지 않는다.
 - lane-head transplant checkpoint에서 bbox area/aspect만 강화하는 geometry-filter sweep을 lane 0.6 path로 반복하지 않는다.
 - lane raw-vectorizer drop audit을 blind bbox-area/aspect 완화 sweep으로 해석하지 않는다.
+- lane guarded area-rescue를 `max_per_sample`/min-area/bbox-filter sweep으로 반복하지 않는다.
 - lane centerline-branch dilated context를 dilation/depth/gate-init sweep으로 반복하지 않는다.
 - detached support-conditioned centerline refinement를 longer run/LR/gate sweep으로 반복하지 않는다.
 - stop-line center-stem wiring cleanup을 stop-line rescue path로 반복하지 않는다.
@@ -171,7 +172,7 @@
 - The first production-like readout attempt from that evidence, `row_scan_tangent_soft_ridge` at `lane_obj_threshold=0.30`, failed val4 smoke: lane F1 moved `0.5899 -> 0.5429`, TP/FP/FN `41 / 12 / 45 -> 38 / 16 / 48`. Do not broaden it to val512 or repeat it as a peak/threshold sweep.
 - The constrained topology-preserving follow-up, `row_scan_tangent_centerline_snap`, also failed val4 smoke: lane F1 moved `0.5899 -> 0.5674`, TP/FP/FN `41 / 12 / 45 -> 40 / 15 / 46`. Do not broaden it to val512 or repeat it as a snap-radius sweep unless a materially new non-GT FP-control signal is added.
 - The track-level uniform translation follow-up, `row_scan_tangent_centerline_translate`, failed the same val4 smoke gate: lane F1 `0.5674`, TP/FP/FN `40 / 15 / 46`. This closes simple center-offset repair as a radius/offset sweep; a future lane branch needs a different instance-generation or FP-control signal.
-- Raw-vectorizer drop audit shows a non-repeated lane follow-up exists: in broader val512, `854 / 4913` FNs already have raw row-scan-tangent candidates within `40px` before geometry filtering, and `497` of those fail bbox-area. For the center-only bucket, `207 / 512` are raw `<=40px` and `119` are area-filter drops. The next lane branch may test guarded area-filter rescue, but not a blind bbox-area/aspect sweep.
+- Raw-vectorizer drop audit showed a non-repeated lane follow-up existed: in broader val512, `854 / 4913` FNs already had raw row-scan-tangent candidates within `40px` before geometry filtering, and `497` of those failed bbox-area. The guarded area-rescue follow-up is now closed negative: val128 lane F1 moved `0.5797 -> 0.5716`, TP/FP/FN `1204 / 560 / 1186 -> 1247 / 726 / 1143`. The next lane branch should not relax bbox filters again unless it first adds a materially new FP-control signal.
 - crosswalk는 opt-in hull decode로 broader-val512 `0.6187`까지 올라 현재 gap은 닫혔다. 다음 stop-line/lane work에서는 이 crosswalk retention을 유지하는지 확인한다.
 
 실험 원칙:
@@ -452,6 +453,7 @@ Gate 상태:
 - `exp/lane-family-f1/lane-flip-tta-audit`은 current transplanted composite 위에서 flip-centerline averaging이 broader objective `0.6216`, lane/stop/cross F1 `0.5577 / 0.4235 / 0.6187`로 small lane gain을 만들지만 lane/stop-line 0.6 success는 아니라는 runtime/postprocess partial-positive evidence로 보관한다.
 - `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`은 current flip-centerline composite의 missed GT lanes가 existing centerline evidence 또는 nearby unmatched tracks로 recover 가능한지 나눈 read-only evidence다. Broader val512에서 `1363` FNs have GT-line center mean `>=0.50`, `1698` FNs have unmatched prediction `<=120px`, and the best diagnostic no-new-FP upper-bound is lane F1 `0.7564`; production success가 아니므로 다음에는 실제 decoder/model-side recovery contract로 검증해야 한다.
 - 같은 branch의 `row_scan_tangent_soft_ridge` smoke는 probability ridge peak picking이 기준선보다 나쁨을 보였다. Val4 lane F1은 `0.5899 -> 0.5429`, TP/FP/FN은 `41 / 12 / 45 -> 38 / 16 / 48`이므로 broader replay 없이 negative evidence로 보관한다.
+- `exp/lane-family-f1/lane-guarded-area-rescue-readout`은 raw vectorizer에서 area-filter drop이 실제로 존재하더라도 단순 guarded rescue는 FP를 너무 많이 늘린다는 negative evidence로 보관한다. Val128 lane F1은 `0.5797 -> 0.5716`, TP/FP/FN은 `1204 / 560 / 1186 -> 1247 / 726 / 1143`이다.
 - `exp/lane-family-f1/lane-flip-consistency-row-scan-tangent`는 train-time flip consistency regularizer가 stable하게 돌지만 exact val128 objective `0.5991`, lane/stop/cross `0.5542 / 0.3966 / 0.5548`로 tangent-link reference를 못 넘는다는 negative evidence로 보관한다.
 - `exp/lane-family-f1/lane-endpoint-extension-readout`은 fixed-distance lane endpoint extension이 exact val128에서 lane TP를 잃고 FP를 늘린다는 negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-candidate-instance-assignment`은 current center/selector top-k 후보 위의 direct candidate assignment loss가 exact val128 stop-line을 회복하지 못한다는 negative evidence로 보관한다.

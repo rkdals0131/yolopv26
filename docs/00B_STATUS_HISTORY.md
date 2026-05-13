@@ -8481,3 +8481,42 @@ Broader val512 result:
 - The centerline-only bucket is not only a missing-candidate problem. For `center>=0.50 without unmatched<=120px`, raw vectorizer already places `207 / 512` candidates inside the 40px match threshold.
 - Bbox-area filtering explains a real subset (`119 / 512` in that bucket; `497 / 4913` all FN), so the next lane branch can test guarded rescue of area-filtered raw candidates.
 - Do not treat this as permission for a blind bbox-area/aspect sweep. Many raw-near candidates pass filters but still lose assignment, and many FNs only have raw candidates at `80/120px`, so the follow-up needs explicit FP control and task-retention checks.
+
+## 166. 2026-05-13 Lane guarded area-rescue readout: TP gain is outweighed by FP
+
+맥락:
+
+- Section 165 showed that bbox-area filtering removes a real subset of raw row-scan-tangent lane candidates.
+- The only justified follow-up was a guarded, opt-in area rescue, not a broad bbox-filter relaxation.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-guarded-area-rescue-readout`.
+- Code commit: `a1efacd`.
+- Added opt-in `PV26PostprocessConfig` fields for `lane_segfirst_area_rescue_max_per_sample` and `lane_segfirst_area_rescue_min_bbox_area_px`.
+- Extended `_filter_lane_predictions` so area-rescue candidates are kept only when they fail bbox area, pass aspect, meet the rescue minimum area, and fit the per-sample cap.
+- Added CLI override plumbing to `tools/evaluate_pv26_lane60_checkpoint.py` and `tools/probe_pv26_lane_fn_recovery_audit.py`.
+- Added regression coverage in `test/test_pv26_postprocess.py` and `test/test_evaluate_pv26_lane60_checkpoint.py`.
+- Contract: default disabled. This branch tests whether a narrow area-filter rescue deserves broader replay.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/engine/postprocess.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_pv26_postprocess.py test/test_evaluate_pv26_lane60_checkpoint.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_postprocess.py test/test_evaluate_pv26_lane60_checkpoint.py test/test_lane_fn_recovery_audit.py`
+- result: `19 passed`.
+- `git diff --check`.
+- Val128 artifact: `runs/pv26_exhaustive_od_lane_train/lane_guarded_area_rescue_readout_20260513/analysis_exports/val128_epoch2_rescue1_area1024/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/lane-guarded-area-rescue-artifacts-20260513/` instead of being deleted.
+
+Val128 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| raw-vectorizer audit replay reference | `0.5797` | `1204 / 560 / 1186` | `0.4364` | `0.5988` |
+| guarded area rescue, max1, min-area 1024 | `0.5716` | `1247 / 726 / 1143` | `0.4364` | `0.5988` |
+
+판단:
+
+- The rescue adds `43` lane TP but also adds `166` FP, so the F1 regression is real.
+- Do not broaden this branch to val512.
+- Do not repeat it as a `max_per_sample`, min-area, bbox-area, or aspect-filter sweep unless a new FP-control signal is added first.

@@ -178,7 +178,17 @@ Latest lane raw-vectorizer drop audit:
 - broader val512 audit baseline in this replay: lane/stop/cross F1 `0.5534 / 0.4235 / 0.6187`, lane TP/FP/FN `4564 / 2453 / 4913`.
 - all FN: raw vectorizer already has a `<=40px` candidate for `854 / 4913`; `497` of those fail bbox-area and `37` fail aspect.
 - `center>=0.50 without unmatched<=120px`: count `512`, raw vectorizer `<=40px` count `207`, area-filter drops `119`, aspect drops `14`, pass-filter/assignment cases `82`.
-- 판단: center-only FN is not pure candidate-generation absence. A meaningful lane follow-up can test a guarded area-filter rescue, but a blind bbox-area/aspect sweep is still not justified because many misses are raw `80/120px` or pass-filter assignment cases.
+- 판단: center-only FN is not pure candidate-generation absence. This justified one guarded area-filter rescue probe, but not a blind bbox-area/aspect sweep because many misses are raw `80/120px` or pass-filter assignment cases.
+
+Latest lane guarded area-rescue readout:
+
+- branch/worktree: `exp/lane-family-f1/lane-guarded-area-rescue-readout`.
+- code commit: `a1efacd`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_guarded_area_rescue_readout_20260513/analysis_exports/val128_epoch2_rescue1_area1024/summary.json`.
+- changed axis: add an opt-in decoder override that can rescue at most one lane candidate per sample when it fails only bbox-area filtering, has bbox area at least `1024px`, and still passes aspect.
+- raw-audit replay reference on val128: lane F1 `0.5797`, TP/FP/FN `1204 / 560 / 1186`.
+- guarded area-rescue val128 result: lane F1 `0.5716`, TP/FP/FN `1247 / 726 / 1143`; stop-line/crosswalk retained at `0.4364 / 0.5988`.
+- 판단: area rescue recovers `43` lane TP but adds `166` FP, so it lowers F1 and should not be broadened to val512. Do not repeat this as a max-per-sample/min-area/bbox-filter sweep without a new FP-control signal.
 
 Latest stop-line recovery-budget audit:
 
