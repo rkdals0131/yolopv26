@@ -11073,3 +11073,43 @@ Task-best within the 2-epoch run:
 - This branch is a clean plumbing success but a metric failure.
 - It is below the current broader objective-best composite `0.6216194906`, below the current lane F1 `0.5577`, below stop-line `0.4235`, and does not retain the broader crosswalk pass at the selected epoch.
 - Do not continue this as `lane_segfirst_anchor_offset_weight`, LR, epoch-count, or freeze-policy sweep. A future lane instance branch needs a different instance contract that preserves current lane recall and stop-line/crosswalk retention.
+
+## 222. 2026-05-14 Lane legacy row-head union smoke: legacy fallback emits no lanes
+
+맥락:
+
+- The current seg-first row-scan tangent/flip-centerline path ignores the legacy row-anchor lane head whenever seg-first lane outputs are present.
+- This probe tested whether the legacy default row-head fallback could add recall as a new fixed candidate source, without changing thresholds, top-K, or lane geometry tuning.
+- The run kept the same checkpoint, stop-line/crosswalk postprocess overrides, and val4 smoke scope as the recent lane TTA probes.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-legacy-row-head-union-smoke-v2`.
+- Code commit: `a1e0771`.
+- Tool/test: `tools/probe_pv26_lane_flip_tta.py`, `test/test_lane_flip_tta_probe.py`.
+- Added fixed variants `legacy_only`, `baseline_legacy_union`, and `flip_centerline_avg_legacy_union`.
+- The merge path disables seg-first lane dense keys only for the legacy candidate pass, then appends legacy lanes only when type/class and mean-point distance are not duplicate.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- One fixed val4 smoke completed; temporary smoke output was kept only long enough to extract the numeric table.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_legacy_union` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0.5455` |
+| `baseline_legacy_union` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0.5455` |
+| `legacy_only` | `0.0000` | `0 / 0 / 86` | `0.0000` | `0.5455` |
+
+판단:
+
+- The legacy default fallback emitted no lane TP/FP under this checkpoint/default contract.
+- Union variants were exactly identical to their baseline and flip-centerline references, so legacy rows add no recall source here.
+- Do not broaden this to val128/val512. Do not repeat it as a legacy lane threshold, top-K, dedupe-distance, or union sweep unless a separate premise first proves non-zero legacy lane emission.
