@@ -9807,3 +9807,54 @@ Val128 result:
 - This is export plumbing only. It is not lane F1 progress by itself.
 - The next lane branch can now test actual geometry movement on selected unmatched predictions and recompute TP/FP/FN.
 - Do not claim repairability ranker deployability until a replay uses these point columns or live predictions to move geometry and improve real lane metrics.
+
+## 194. 2026-05-14 Lane point repair oracle replay: actual metric movement from moved polylines
+
+맥락:
+
+- Section 193 proved the point JSON export contract, but it still did not prove that moving lane polylines through the real evaluator changes TP/FP/FN as expected.
+- Prior aggregate and ranker replays could overstate headroom because they did not exercise Hungarian matching, duplicate target conflicts, or the actual lane prediction dictionaries passed to metrics.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-point-repair-replay`.
+- Code commit: `d5a0c4e`.
+- Added `tools/replay_pv26_lane_point_repair.py`.
+- Added `test/test_lane_point_repair_replay.py`.
+- The replay runs the normal checkpoint/val loader/postprocess path, matches baseline lane predictions to GT, selects currently unmatched predictions whose nearest currently missed GT lane is within `120px`, replaces selected `points_xy` with that GT lane's points, and recomputes lane/stop-line/crosswalk metrics with the same evaluator.
+- This is explicitly oracle-only because it copies GT lane points. It is a metric-mechanics and upper-bound check, not a no-GT decoder.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/replay_pv26_lane_point_repair.py test/test_lane_point_repair_replay.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_point_repair_replay.py test/test_lane_fn_recovery_audit.py test/test_lane_repairability_model_replay.py`.
+- result: `13 passed`.
+- `git diff --check`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/smoke_val4_oracle_le120/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/smoke_val4_oracle_le120/lane_point_repair_candidates.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/val128_oracle_le120/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/val128_oracle_le120/lane_point_repair_candidates.csv`.
+
+Smoke val4 result:
+
+- baseline lane TP/FP/FN/F1: `41 / 12 / 45 / 0.5899`.
+- repaired lane TP/FP/FN/F1: `48 / 5 / 38 / 0.6906`.
+- delta: `+7` TP, `-7` FP, `-7` FN, `+0.1007` F1.
+- selected candidates: `7 / 12`; duplicate target count: `0`.
+- stop-line/crosswalk stayed `0.0000 / 0.5455`.
+
+Val128 result:
+
+- baseline lane TP/FP/FN/F1: `1200 / 510 / 1190 / 0.5854`.
+- repaired lane TP/FP/FN/F1: `1503 / 207 / 887 / 0.7332`.
+- delta: `+303` TP, `-303` FP, `-303` FN, `+0.1478` F1.
+- selected candidates: `322 / 510`.
+- selected unique targets / duplicate targets: `304 / 18`.
+- stop-line/crosswalk stayed `0.4483 / 0.5988`.
+
+판단:
+
+- The point-repair replay machinery is valid: when target lane geometry is known and injected, the real evaluator records the expected lane TP recovery and FP/FN reduction.
+- This does not solve the goal. It uses GT geometry and leaves stop-line below `0.60`.
+- The next production lane branch must learn or infer the replacement geometry from no-GT signals. Repeating this as another oracle, distance threshold, or GT-point copy is not useful.

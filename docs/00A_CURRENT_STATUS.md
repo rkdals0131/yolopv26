@@ -310,6 +310,17 @@ Latest lane ranked-translate repair smoke:
 - lane TP/FP/FN stayed `41 / 12 / 45`; lane delta was `0` TP, `0` FP, `0` FN, `0.0` F1.
 - 판단: the broad ranker replay does not transfer to this simple geometry repair. The top-ranked rows were already on strong predicted centerline support and the fixed translate operation did not move them, so do not broaden this branch or repeat as a ranker top-K / translation-radius sweep.
 
+Latest lane point-repair oracle replay:
+
+- branch/worktree: `exp/lane-family-f1/lane-point-repair-replay`.
+- code commit: `d5a0c4e`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/smoke_val4_oracle_le120/summary.json`.
+- artifact val128: `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/val128_oracle_le120/summary.json`.
+- changed axis: run the real validation pipeline, replace selected unmatched lane prediction points with their nearest currently missed GT lane points, then recompute lane/stop-line/crosswalk metrics through the evaluator.
+- smoke val4 oracle result: lane F1 `0.5899 -> 0.6906`, TP/FP/FN `41 / 12 / 45 -> 48 / 5 / 38`.
+- val128 oracle result: lane F1 `0.5854 -> 0.7332`, TP/FP/FN `1200 / 510 / 1190 -> 1503 / 207 / 887`; selected `322` of `510` unmatched predictions, with `18` duplicate targets and actual `+303` TP.
+- 판단: this proves actual lane point movement can pass the lane F1 gate when the target geometry is known, and it validates the replay machinery. It is oracle-only and leaves stop-line at `0.4483`, so it is not production success or all-task 0.6 evidence. The next lane step must infer comparable target geometry from no-GT signals.
+
 Latest lane repair geometry export:
 
 - branch/worktree: `exp/lane-family-f1/lane-repair-geometry-export`.
