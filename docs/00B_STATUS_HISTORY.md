@@ -10716,3 +10716,45 @@ Smoke val64:
 - The centerline target-mode switch removes one stop-line TP, adds FP, and lowers stop-line F1 by `-0.0545`.
 - Lane also regresses by `-0.0267`, and phase objective regresses by `-0.0238`.
 - Do not broaden or repeat this as a target-mode, weight, or schedule sweep unless a new stop-line contract first changes the proposal/readout bottleneck.
+
+## 214. 2026-05-14 Lane ranked component-path repair smoke: connected-component projection is still flat
+
+맥락:
+
+- Sections 209 and 211 showed that pointwise local snapping and coherent affine snapping can move selected lane geometry, but neither changed lane TP/FP/FN.
+- This follow-up tests a stronger fixed instance-alignment premise: instead of snapping points inside a tiny local window, choose the nearest predicted centerline connected component and project selected lane points onto that component's corresponding rows.
+- The branch keeps the checkpoint, broad no-GT repairability ranker, val-size-scaled repair budget, flip-centerline lane runtime path, and stop-line/crosswalk postprocess contract fixed.
+
+구현:
+
+- Branch: `exp/lane-family-f1/lane-ranked-component-path-repair-smoke`.
+- Code commit: `4d65328`.
+- Tool: `tools/probe_pv26_lane_ranked_translate_repair.py`.
+- Test: `test/test_lane_ranked_translate_repair.py`.
+- Added `--repair-mode component_row_project`.
+- Contract: threshold predicted centerline-core at `0.5`, select the connected component nearest to the original lane track, project each selected point to the nearest pixel on the component at the closest row, then recompute full lane-family metrics.
+- Compact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_ranked_component_path_repair_smoke_val4_epoch2/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_component_path python3 -m py_compile tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_component_path pytest -q test/test_lane_ranked_translate_repair.py`.
+- result: `5 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint.
+
+Smoke val4:
+
+- repair budget: `repair_topk=4`, `candidate_count=53`, `selected_count=4`.
+- geometry movement: `selected_moved_count=4`, moved points `35`.
+
+| variant | lane F1 | lane TP / FP / FN | stop-line F1 | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| ranked component-row projection repair | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+
+판단:
+
+- Component-row projection does move selected geometry, but the move still does not cross any matching boundary on this smoke slice.
+- TP/FP/FN/F1 were exactly flat after repair.
+- Do not broaden this to val128. Do not repeat component-row/path projection as a connected-component or row-projection sweep unless a new alignment signal first changes TP/FP/FN.

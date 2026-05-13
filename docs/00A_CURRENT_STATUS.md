@@ -388,6 +388,16 @@ Latest lane ranked affine-snap repair smoke:
 - smoke val4 metrics: baseline and affine-snap repaired lane/stop/cross F1 were identical: `0.5493 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `39 / 17 / 47`.
 - 판단: coherent affine movement is smaller than pointwise snapping and still does not cross any matching boundary on the smoke slice. Do not broaden to val128 or repeat centerline-peak geometry repair as affine/local-snap/radius variants without a new signal that first changes TP/FP/FN.
 
+Latest lane ranked component-path repair smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-ranked-component-path-repair-smoke`.
+- code commit: `4d65328`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_ranked_component_path_repair_smoke_val4_epoch2/summary.json`.
+- changed axis: keep the same broad no-GT repairability ranker and repair budget, but replace selected lane points by projecting them onto the nearest predicted centerline connected-component rows.
+- smoke val4 movement: selected `4` rows, all moved; moved points `35`.
+- smoke val4 metrics: baseline and component-row repaired lane/stop/cross F1 were identical: `0.5899 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `41 / 12 / 45`.
+- 판단: component-path projection moves selected geometry but still does not change lane assignment. Do not broaden to val128 or repeat component-row/path projection without a new signal that first changes TP/FP/FN.
+
 Latest lane point-repair oracle replay:
 
 - branch/worktree: `exp/lane-family-f1/lane-point-repair-replay`.
