@@ -246,6 +246,15 @@ Latest lane semantic vote mode audit:
 - exact val128 result: all four modes had identical lane TP/FP/FN/F1 `1200 / 510 / 1190 / 0.5854`; stop-line/crosswalk stayed `0.4364 / 0.5988`. Only lane score / `phase_objective` jittered slightly (`0.62957..0.62975`).
 - 판단: lane class/type semantic voting is not the active F1 bottleneck for the current flip-centerline composite. Do not broaden this to val512 or repeat as semantic-vote weighting/class-type-vote sweeps unless a new diagnostic first shows class/type misvote is causing metric FN/FP.
 
+Latest lane dual-checkpoint centerline ensemble smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-dual-checkpoint-centerline-ensemble`.
+- code commit: `4834dcd`.
+- artifact smoke: `runs/pv26_exhaustive_od_lane_train/lane_dual_checkpoint_centerline_ensemble_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- changed axis: keep the current lane-head transplant as primary and the original tangent-link checkpoint as secondary, then average only lane centerline logits; stop-line/crosswalk outputs remain from the primary normal pass.
+- smoke val4: `flip_centerline_avg` reference lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`; `dual_checkpoint_flip_centerline_avg` lane F1 `0.5672`, `38 / 10 / 48`; `dual_checkpoint_centerline_avg` lane F1 `0.5263`, `35 / 12 / 51`.
+- 판단: the original tangent-link checkpoint does not add complementary lane centerline evidence under fixed averaging; it removes too many TP. Do not broaden to val128 or repeat as checkpoint/weight/threshold averaging sweeps without a new diagnostic showing complementary TP recovery.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

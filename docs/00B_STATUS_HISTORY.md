@@ -9174,3 +9174,42 @@ Exact val128 result:
 - Mask-profile asymmetry was not merely bad midpoint drift; forcing the proposal cell to midpoint removes too much valid geometry.
 - Do not broaden to val512 or repeat this as symmetric extent/top-k/proposal-threshold/normal-band sweep.
 - Next stop-line branch still needs a different no-GT center/extent signal.
+
+## 182. 2026-05-13 Lane dual-checkpoint centerline ensemble: original checkpoint evidence is not complementary
+
+맥락:
+
+- Section 110 showed `flip_centerline_avg` gives the current broader lane partial-positive.
+- Section 180 closed class/type semantic vote weighting as flat.
+- The remaining lane premise was stronger predicted centerline evidence or instance-level recovery, not another threshold sweep.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-dual-checkpoint-centerline-ensemble`.
+- Code commit: `4834dcd`.
+- Extended `tools/probe_pv26_lane_flip_tta.py` with `--lane-ensemble-checkpoint`.
+- Primary checkpoint: current lane-head transplant onto original stop/cross base.
+- Secondary checkpoint: original tangent-link base checkpoint.
+- Contract: average only lane centerline logits; keep stop-line and crosswalk predictions anchored to the primary checkpoint normal pass.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile tools/probe_pv26_lane_flip_tta.py`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_dual_checkpoint_centerline_ensemble_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Branch-local downloaded `yolo26s.pt` was deleted after use.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `dual_checkpoint_flip_centerline_avg` | `0.5672` | `38 / 10 / 48` | `0.0000` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0.5455` |
+| `dual_checkpoint_centerline_avg` | `0.5263` | `35 / 12 / 51` | `0.0000` | `0.5455` |
+
+판단:
+
+- The original tangent-link checkpoint removes lane TP when averaged with the current lane-head transplant.
+- Fixed dual-checkpoint averaging is not the missing recall-preserving centerline signal.
+- Do not broaden to val128 or repeat as checkpoint/weight/threshold averaging sweeps unless a new diagnostic first proves complementary TP recovery.
