@@ -9745,3 +9745,51 @@ Candidate-bearing val128 result:
 - Heldout delta is `-0.5000` F1 with `-16` TP, `+16` FP, and `+16` FN.
 - This is evidence against converting current exported/local/detector/context candidate features into a direct midpoint/length correction head without a new geometry signal.
 - Do not repeat this as a ridge-alpha, feature-subset, or score-threshold tuning exercise. A future stop-line path still needs a genuinely new no-GT midpoint/candidate-generation contract.
+
+## 193. 2026-05-13 Lane repair geometry export: point JSON contract for real geometry replay
+
+맥락:
+
+- Section 190 showed learned repairability ranking headroom, but Section 191 showed simple ranked centerline translation produced no real geometry movement.
+- The existing unmatched-prediction CSV preserved aggregate distance/features but not the actual predicted and nearest-FN GT polylines.
+- Without point columns, the next lane branch would again be limited to oracle counts or aggregate-distance reasoning rather than recomputing TP/FP/FN after moving predictions.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-repair-geometry-export`.
+- Code commit: `a522ef7`.
+- Extended `tools/probe_pv26_lane_fn_recovery_audit.py`.
+- Updated `test/test_lane_fn_recovery_audit.py`.
+- New unmatched-prediction CSV columns:
+  - `pred_points_json`.
+  - `nearest_fn_gt_points_json`.
+- New FN CSV columns:
+  - `gt_points_json`.
+  - `nearest_any_pred_points_json`.
+  - `nearest_unmatched_pred_points_json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_fn_recovery_audit.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py test/test_lane_repairable_unmatched_features.py test/test_lane_repairability_model_replay.py`.
+- result: `12 passed`.
+- `git diff --check`.
+- Smoke command completed with `--max-val-batches 4 --validation-epoch 2 --device auto`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/lane_unmatched_prediction_repair_rows.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/lane_fn_recovery_rows.csv`.
+
+Smoke val4 result:
+
+- baseline lane TP/FP/FN/F1: `41 / 12 / 45 / 0.5899`.
+- unmatched prediction rows: `12`.
+- repairable `<=80 and center>=0.50`: `2`.
+- repairable `<=120 any center`: `7`.
+- CSV check confirmed `pred_points_json` and `nearest_fn_gt_points_json` are populated for unmatched-prediction rows, and FN rows include GT plus nearest-prediction point JSON.
+
+판단:
+
+- This is export plumbing only. It is not lane F1 progress by itself.
+- The next lane branch can now test actual geometry movement on selected unmatched predictions and recompute TP/FP/FN.
+- Do not claim repairability ranker deployability until a replay uses these point columns or live predictions to move geometry and improve real lane metrics.

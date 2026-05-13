@@ -310,6 +310,15 @@ Latest lane ranked-translate repair smoke:
 - lane TP/FP/FN stayed `41 / 12 / 45`; lane delta was `0` TP, `0` FP, `0` FN, `0.0` F1.
 - 판단: the broad ranker replay does not transfer to this simple geometry repair. The top-ranked rows were already on strong predicted centerline support and the fixed translate operation did not move them, so do not broaden this branch or repeat as a ranker top-K / translation-radius sweep.
 
+Latest lane repair geometry export:
+
+- branch/worktree: `exp/lane-family-f1/lane-repair-geometry-export`.
+- code commit: `a522ef7`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- changed axis: export compact `pred_points_json`, `nearest_fn_gt_points_json`, and FN-side GT/nearest-pred point JSON columns from the existing lane FN/unmatched repair audit.
+- smoke val4 check: `lane_unmatched_prediction_repair_rows.csv` now has point JSON for `12` unmatched predictions; `7` are `repairable_le120_any_center`.
+- 판단: this is export plumbing only, not a decoder or F1 improvement. It exists so the next lane branch can replay actual moved lane geometry and recompute TP/FP/FN instead of relying on aggregate distance columns.
+
 Latest lane residual-component candidates:
 
 - branch/worktree: `exp/lane-family-f1/lane-residual-component-candidates`.
