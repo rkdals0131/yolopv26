@@ -11113,3 +11113,42 @@ Smoke val4:
 - The legacy default fallback emitted no lane TP/FP under this checkpoint/default contract.
 - Union variants were exactly identical to their baseline and flip-centerline references, so legacy rows add no recall source here.
 - Do not broaden this to val128/val512. Do not repeat it as a legacy lane threshold, top-K, dedupe-distance, or union sweep unless a separate premise first proves non-zero legacy lane emission.
+
+## 223. 2026-05-14 Stop-line axis-window recenter probe: along-axis support window loses to selector reference
+
+맥락:
+
+- The remaining stop-line gap is still no-GT along-axis midpoint/extent recovery, not another selector threshold.
+- Prior axis-profile, score-island, support-span, raw-stripe, and predicted-offset projections were already closed.
+- This branch tested one fixed production-style readout: slide the candidate center along the predicted stop-line axis, score each candidate center by mask/proposal line support, then reuse the existing mask-extent line decoder from that recentered point.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-window-recenter`.
+- Code commit: `e4b6dd2`.
+- Tool/test: `tools/probe_pv26_stopline_pred_angle_mask_extent.py`, `test/test_stopline_score_island_midpoint_readout.py`.
+- Added fixed variant `axiswin_extent_max_top3_s040_h16_r24_step4_fallback`.
+- Added `_axis_window_center()` with deterministic line-support scoring along the predicted angle.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_score_island_midpoint_readout.py`.
+- `pytest -q test/test_stopline_score_island_midpoint_readout.py`.
+- result: `4 passed`.
+- `git diff --check`.
+- val4 smoke completed but had only two stop-line GTs and all production-style stop-line variants tied at F1 `0.0`, so the real gate was exact val128.
+- exact val128 probe completed; temporary outputs were kept only long enough to extract the numeric result.
+
+Exact val128:
+
+| Variant | Stop-line F1 | Stop-line TP / FP / FN | Pred stop-lines | Phase objective proxy |
+| --- | ---: | ---: | ---: | ---: |
+| `pred_selector_top1_s060_mask050_band4` reference | `0.5085` | `30 / 28 / 30` | `58` | `0.5330` |
+| `baseline` | `0.4483` | `26 / 30 / 34` | `56` | `0.5149` |
+| `axiswin_extent_max_top3_s040_h16_r24_step4_fallback` | `0.4306` | `31 / 53 / 29` | `84` | `0.5096` |
+
+판단:
+
+- Axis-window recentering did move/decode candidate centers (`axis_window_center_ok=215`), but it added FP faster than useful TP recovery.
+- It is below both the baseline and the existing selector top1 reference on exact val128, so it is not a no-GT midpoint recovery path.
+- Do not broaden this to broader-val512. Do not repeat it as an axis-window radius, step, scoring-half-length, top-K, proposal-threshold, or fallback sweep without a materially new FP-control signal.

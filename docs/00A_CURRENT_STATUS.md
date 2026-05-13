@@ -196,6 +196,14 @@ Latest stop-line axis-profile readout:
 - exact val128 best: `axis_profile_cell_top1_s060_mask050_band4` and `axis_profile_offset_top1_s060_mask050_band4` both reached stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`; baseline was `0.4483`, TP/FP/FN `26 / 30 / 34`.
 - 판단: proposal-cell axis profile recovers the same matched set as the existing predicted angle/mask-extent and axis-projected-offset references, but does not beat the known exact stop-line references (`0.5085` / PCA `0.5133`) or the broader projection-competition reference `0.5164`. Do not broaden or repeat as a proposal-source/top-k/mask-threshold/normal-band sweep.
 
+Latest stop-line axis-window recenter readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-window-recenter`.
+- code commit: `e4b6dd2`.
+- changed axis: slide the candidate center along the predicted stop-line axis with a fixed mask/proposal line-support window, then reuse the existing mask-extent decoder.
+- exact val128: `axiswin_extent_max_top3_s040_h16_r24_step4_fallback` reached stop-line F1 `0.4306`, TP/FP/FN `31 / 53 / 29`, below baseline `0.4483` and selector reference `0.5085`.
+- 판단: axis-window center selection fired (`axis_window_center_ok=215`), but it added too many FP and lost to existing references. Do not broaden or repeat as a radius/step/scoring-length/top-K/proposal-threshold/fallback sweep.
+
 Latest stop-line symmetric axis-profile readout:
 
 - branch/worktree: `exp/lane-family-f1/stopline-symmetric-axis-profile-readout`.
