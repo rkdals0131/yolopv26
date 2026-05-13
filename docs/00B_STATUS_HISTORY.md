@@ -10265,3 +10265,52 @@ Task accounting:
 - Zero-gating made the architecture safer but did not recover stop-line: stop-line F1 stayed far below exact PCA/profile references and the broader projection-competition reference.
 - It is also below the direct P4-context stop-line result from Section 201 (`0.1980`), while lane remains below the current exact references.
 - Do not broaden or repeat this as a gate-init, LR, longer-run, P4/P5 projector, or delayed-unfreeze sweep. The next stop-line branch still needs a materially new no-GT midpoint/extent signal with FP control, not another coarse-context feature-routing variant.
+
+## 204. 2026-05-14 Lane residual replacement repair: replacing nearest track is flat at smoke
+
+맥락:
+
+- Sections 196-200 showed that residual centerline candidates can recover some lane TP, but append-style variants add enough FP to erase the gain.
+- The narrow remaining question was whether the same residual generator and exported broad repairability scorer can avoid FP growth by replacing the nearest existing baseline lane instead of appending a new lane.
+- This is a fixed replay of replacement mechanics, not another residual threshold/top-K sweep.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-residual-replacement-repair`.
+- Code commit: `286ecb0`.
+- Updated `tools/probe_pv26_lane_residual_component_candidates.py`.
+- Added `residual_repairability_gate_replace_nearest`: selected residual rows keep the fixed top-500-over-2206 repairability budget, then replace the nearest unreplaced baseline lane within the existing `200px` baseline-context gate.
+- Runtime artifacts were temporary and intentionally not retained as durable repo artifacts.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_residual_component_candidates.py test/test_lane_residual_component_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_residual_component_candidates.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- Smoke val4 replay completed on the residual-branch row-scan baseline.
+
+Smoke val4 result:
+
+| variant | lane F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.5588` | `38 / 12 / 48` |
+| residual append | `0.5714` | `40 / 14 / 46` |
+| residual shape-gate append | `0.5755` | `40 / 13 / 46` |
+| residual repairability-gate append | `0.5693` | `39 / 12 / 47` |
+| residual repairability-gate replace-nearest | `0.5588` | `38 / 12 / 48` |
+
+Candidate accounting:
+
+- residual candidate rows: `4`.
+- residual matched TP rows: `2`.
+- fixed repairability budget selected: `1`.
+- replacement rows: `1`.
+- replacement matched TP rows: `1`.
+- replacement mean nearest-baseline distance: `64.56px`.
+
+판단:
+
+- Replacement prevented FP growth but did not recover any TP: the lane TP/FP/FN tuple stayed exactly `38 / 12 / 48`.
+- Since the fixed replacement variant has no smoke movement, there is no basis to broaden this branch to val128.
+- Do not repeat residual replacement as a nearest-distance, repairability-threshold, top-K, or residual component sweep without a new no-GT alignment signal that actually changes matched TP/FP/FN.
