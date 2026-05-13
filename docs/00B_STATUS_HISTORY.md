@@ -9540,3 +9540,57 @@ Baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
 - The nearby-track bucket remains large even after deduplicating by current unmatched prediction id.
 - Repairing existing FP into TP is mathematically much stronger than appending duplicate candidates: the broad `unmatched<=120` repair oracle reaches lane F1 `0.7148`, and the tight `unmatched<=80 and center>=0.50` bucket still clears `0.60` at `0.6235`.
 - This is not production success. It says the next lane implementation should target no-GT FP-to-TP repair or model-side instance alignment, not duplicate append, translation-radius, residual append, or post-hoc threshold sweeps.
+
+## 189. 2026-05-13 Lane repairable-unmatched feature audit: repair targets are only moderately separable
+
+맥락:
+
+- Section 188 showed that existing unmatched predictions have strong GT-labeled repair headroom.
+- The missing premise was whether those repairable unmatched predictions are visible through no-GT features, rather than only through nearest-GT labels.
+- This branch measures separability only. It does not replay a production threshold.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-repairable-unmatched-feature-audit`.
+- Code commit: `b31f364`.
+- Extended `tools/probe_pv26_lane_fn_recovery_audit.py` to export `lane_unmatched_prediction_repair_rows.csv`.
+- Added `tools/analyze_pv26_lane_repairable_unmatched_features.py`.
+- Added `test/test_lane_repairable_unmatched_features.py`.
+- Contract: one row per unmatched prediction, no-GT feature columns from decoded track shape and predicted centerline/support maps, and GT-derived repair labels for analysis only.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_repairable_unmatched_features.py test/test_lane_repairable_unmatched_features.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_lane_fn_recovery_audit.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py test/test_lane_repairable_unmatched_features.py`.
+- result: `9 passed`.
+- `git diff --check`.
+- Re-generated broader-val512 rows with `tools/probe_pv26_lane_fn_recovery_audit.py --max-val-batches 512 --lane-flip-variant flip_centerline_avg`.
+- Artifacts:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/feature_auc_broader_val512_epoch2/summary.json`.
+
+Broader-val512 feature result:
+
+- unmatched prediction rows: `2206`.
+- repairable `<=80 and center>=0.50`: `526`.
+- repairable `<=120 any center`: `1393`.
+
+| Label | Best single feature | AUC | AP | Precision at positive-count cutoff |
+| --- | --- | ---: | ---: | ---: |
+| `repairable_le80_center050` | `pred_polyline_length` | `0.7205` | `0.4278` | `0.4563` |
+| `repairable_le120_any_center` | `pred_polyline_length` | `0.6614` | `0.7368` | `0.7301` |
+
+Supporting medians:
+
+| Group | Count | Length q50 | Center mean q50 | Support mean q50 | Nearest FN distance q50 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| all unmatched predictions | `2206` | `244.83` | `0.8631` | `0.9618` | `91.38` |
+| repairable `<=80 and center>=0.50` | `526` | `339.26` | `0.9293` | `0.9807` | `52.09` |
+| repairable `<=120 any center` | `1393` | `274.32` | `0.8868` | `0.9666` | `68.36` |
+| not repairable `<=120 any center` | `813` | `192.67` | `0.8142` | `0.9529` | `186.81` |
+
+판단:
+
+- Repairable unmatched predictions are not invisible: they are longer and have stronger predicted centerline/support evidence.
+- The signal is moderate, not decisive. Tight repair targets have best single-feature AUC `0.7205` but precision only `0.4563` at the positive-count cutoff.
+- Do not turn this into a single-feature threshold or post-hoc gate. A real follow-up needs a learned/contextual no-GT repair contract and must report actual TP/FP/FN movement.

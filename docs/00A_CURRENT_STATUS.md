@@ -260,6 +260,21 @@ Latest lane FP-repair oracle audit:
 - `unmatched<=80 and center>=0.50`: `563` FN rows map to `533` unique repairable unmatched predictions; oracle-repair lane F1 `0.6235`, TP/FP/FN `5051 / 1673 / 4426`.
 - 판단: existing unmatched predictions contain enough GT-labeled repair headroom even after deduplicating by prediction id, but this is oracle planning evidence only. It supports a no-GT FP-to-TP repair contract, not another duplicate append, translation radius, or post-hoc threshold sweep.
 
+Latest lane repairable-unmatched feature audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-repairable-unmatched-feature-audit`.
+- code commit: `b31f364`.
+- artifacts:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/feature_auc_broader_val512_epoch2/summary.json`.
+- changed axis: extend the read-only FN recovery probe to export one row per unmatched prediction with no-GT track/map features and GT-derived repair labels, then score single-feature separability by AUC/AP.
+- unmatched prediction rows: `2206`.
+- repairable labels: `526` rows for `repairable_le80_center050`; `1393` rows for `repairable_le120_any_center`.
+- tight label best single feature: `pred_polyline_length` AUC `0.7205`, AP `0.4278`; `pred_center_point_mean` AUC `0.7106`, AP `0.4205`.
+- broad label best single feature: `pred_polyline_length` AUC `0.6614`, AP `0.7368`; `pred_center_point_mean` AUC `0.6295`, AP `0.7374`.
+- feature summary: repairable `<=80/center>=0.50` rows are longer and stronger on centerline (`length q50 339.26`, `center_mean q50 0.9293`) than non-repairable `<=120` rows (`length q50 192.67`, `center_mean q50 0.8142`), but the single-feature precision at the positive-count cutoff is only `0.4563` for the tight label.
+- 판단: no-GT features contain a real but moderate repairability signal. This supports a learned/contextual repair contract, but it is not strong enough to justify a single-feature threshold gate or another post-hoc selector replay as production.
+
 Latest lane centerline-duplicate smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-centerline-duplicate-smoke`.
