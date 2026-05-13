@@ -10894,3 +10894,44 @@ Smoke val4:
 - The `1.125` flip+scale row has a slightly higher phase objective than the flip reference because FP drops `12 -> 10`, but it loses two TP and adds two FN.
 - The active target is lane F1 `>=0.60`, not objective jitter or precision-only movement, so this is negative for the actual goal.
 - Do not broaden this to val128/val512. Do not repeat as scale-factor, interpolation, or scale-plus-flip weighting sweeps unless a new diagnostic first shows scale-derived TP recovery without recall loss.
+
+## 218. 2026-05-14 Lane shift-centerline TTA smoke: input jitter loses lane recall
+
+맥락:
+
+- Section 217 closed single-scale centerline TTA because both scale directions lost lane TP against the existing flip-centerline reference.
+- This follow-up tested a distinct preprocessing/runtime axis: fixed spatial input shifts with inverse-shifted lane centerline logits.
+- The contract kept stop-line/crosswalk outputs, support/tangent maps, semantic maps, checkpoint composition, and postprocess thresholds fixed.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-shift-centerline-tta-smoke`.
+- Updated `tools/probe_pv26_lane_flip_tta.py`.
+- Updated `test/test_lane_flip_tta_probe.py`.
+- Added `shift_centerline_avg` and `flip_shift_centerline_avg` variants.
+- Added fixed `--lane-shift-pixels '8,0;-8,0'` input jitter, with inverse dense-grid shift before averaging only `lane_seg_centerline_logits`.
+- The temporary worktree and closed smoke artifacts were moved under deletion candidates during home artifact cleanup; keep this section as the durable evidence.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- One val4 epoch-2 smoke completed with shifts `+/-8px` in input image space.
+- Auto-downloaded `yolo26s.pt` in the temporary worktree was deleted because `/tmp` cleanup is allowed.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `flip_shift_centerline_avg` | `0.5652` | `39 / 13 / 47` | `0.0000` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0.5455` |
+| `shift_centerline_avg` | `0.5441` | `37 / 13 / 49` | `0.0000` | `0.5455` |
+
+판단:
+
+- Fixed input-shift averaging loses two TP and adds one FP versus the current flip-centerline reference.
+- This is not a hidden recall source for the lane gap; it is lower than both the flip reference and the scale `1.125` row from Section 217.
+- Do not broaden this to val128/val512. Do not repeat as shift-size, shift-direction, interpolation, or shift-weight sweeps unless a new diagnostic first shows TP recovery without recall loss.
