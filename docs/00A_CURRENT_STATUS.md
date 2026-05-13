@@ -315,8 +315,10 @@ Latest lane repair geometry export:
 - branch/worktree: `exp/lane-family-f1/lane-repair-geometry-export`.
 - code commit: `a522ef7`.
 - artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- artifact val128: `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/val128_epoch2/summary.json`.
 - changed axis: export compact `pred_points_json`, `nearest_fn_gt_points_json`, and FN-side GT/nearest-pred point JSON columns from the existing lane FN/unmatched repair audit.
 - smoke val4 check: `lane_unmatched_prediction_repair_rows.csv` now has point JSON for `12` unmatched predictions; `7` are `repairable_le120_any_center`.
+- val128 check: baseline lane TP/FP/FN/F1 is `1200 / 510 / 1190 / 0.5854`; `510` unmatched predictions were exported, with `128` tight repairable rows and `322` broad repairable rows. CSV inspection confirmed `pred_points_json`, `nearest_fn_gt_points_json`, `gt_points_json`, and nearest-pred point JSON columns are populated.
 - 판단: this is export plumbing only, not a decoder or F1 improvement. It exists so the next lane branch can replay actual moved lane geometry and recompute TP/FP/FN instead of relying on aggregate distance columns.
 
 Latest lane residual-component candidates:

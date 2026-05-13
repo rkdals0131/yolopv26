@@ -9779,6 +9779,9 @@ Verification:
   - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/lane_unmatched_prediction_repair_rows.csv`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/smoke_val4_epoch2/lane_fn_recovery_rows.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/val128_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/val128_epoch2/lane_unmatched_prediction_repair_rows.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_geometry_export_20260513/analysis_exports/val128_epoch2/lane_fn_recovery_rows.csv`.
 
 Smoke val4 result:
 
@@ -9787,6 +9790,17 @@ Smoke val4 result:
 - repairable `<=80 and center>=0.50`: `2`.
 - repairable `<=120 any center`: `7`.
 - CSV check confirmed `pred_points_json` and `nearest_fn_gt_points_json` are populated for unmatched-prediction rows, and FN rows include GT plus nearest-prediction point JSON.
+
+Val128 result:
+
+- baseline lane TP/FP/FN/F1: `1200 / 510 / 1190 / 0.5854`.
+- baseline stop-line/crosswalk F1: `0.4483 / 0.5988`.
+- samples / FN-lane rows / samples with FN: `512 / 1190 / 439`.
+- unmatched prediction rows: `510`.
+- repairable unmatched predictions `<=80 and center>=0.50`: `128`.
+- repairable unmatched predictions `<=120 any center`: `322`.
+- best diagnostic no-new-FP upper bound is still oracle/planning-only: `center>=0.30 or unmatched<=120px` would recover `631` FN rows and gives lane F1 `0.7740`.
+- CSV check confirmed the val128 unmatched and FN rows include populated `pred_points_json`, `nearest_fn_gt_points_json`, `gt_points_json`, `nearest_any_pred_points_json`, and `nearest_unmatched_pred_points_json` columns.
 
 판단:
 
