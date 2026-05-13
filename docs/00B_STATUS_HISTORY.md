@@ -9697,3 +9697,51 @@ Selected budget:
 - The fixed ranker selected rows that already had very high predicted centerline/support evidence; the local translate repair chose `dx=0` for all selected rows.
 - Therefore the replay headroom does not transfer to simple ranker-budgeted centerline translation. Do not broaden this branch or repeat it as a ranker top-K, translation-radius, or local x-offset sweep.
 - A future lane repair attempt needs a materially different no-GT instance-alignment or instance-generation contract, with actual moved geometry and TP/FP/FN movement, before it deserves val128/val512 expansion.
+
+## 192. 2026-05-13 Stop-line geometry-regression premise: no-GT feature correction overfits and fails heldout
+
+맥락:
+
+- Current stop-line docs narrowed the unresolved gap to along-axis midpoint and extent/length recovery.
+- Many selector/ranker/readout variants already failed, so this branch asks a different read-only question: can no-GT candidate features predict the geometry correction itself if the selected candidate set is fixed?
+- This is not a production decoder. Regression targets are GT-derived along-axis midpoint shift and length ratio.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-geometry-regression-premise`.
+- Code commit: `b88ae0e`.
+- Added `tools/analyze_pv26_stopline_geometry_regression_premise.py`.
+- Added `test/test_stopline_geometry_regression_premise.py`.
+- Input CSV: `runs/pv26_exhaustive_od_lane_train/stopline_detector_context_fp_audit_20260513/analysis_exports/val128_epoch2/candidate_features.csv`.
+- Fixed selection: `proposal_source=max`, `proposal_min_gap=4`, `top_k=10`, `min_score=0.80`, `max_components=1`.
+- Contract: keep selected rows fixed, fit ridge regressors on the earlier validation half, apply predicted midpoint/length correction to the later half, and evaluate stop-line TP/FP/FN on candidate-bearing samples.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_stopline_geometry_regression_premise.py test/test_stopline_geometry_regression_premise.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_geometry_regression_premise.py`.
+- result: `2 passed`.
+- `git diff --check`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 tools/analyze_pv26_stopline_geometry_regression_premise.py`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_geometry_regression_premise_20260513/analysis_exports/val128_from_detector_context_top1/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_geometry_regression_premise_20260513/analysis_exports/val128_from_detector_context_top1/metrics.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_geometry_regression_premise_20260513/analysis_exports/val128_from_detector_context_top1/corrections.csv`.
+
+Candidate-bearing val128 result:
+
+| Split | Variant | Stop-line F1 | TP / FP / FN |
+| --- | --- | ---: | ---: |
+| all | baseline | `0.5217` | `30 / 28 / 27` |
+| all | geometry regressed | `0.3478` | `20 / 38 / 37` |
+| train | baseline | `0.4314` | `11 / 13 / 16` |
+| train | geometry regressed | `0.6667` | `17 / 7 / 10` |
+| heldout | baseline | `0.5938` | `19 / 15 / 11` |
+| heldout | geometry regressed | `0.0938` | `3 / 31 / 27` |
+
+판단:
+
+- The regressor strongly overfits the train half and destroys heldout performance.
+- Heldout delta is `-0.5000` F1 with `-16` TP, `+16` FP, and `+16` FN.
+- This is evidence against converting current exported/local/detector/context candidate features into a direct midpoint/length correction head without a new geometry signal.
+- Do not repeat this as a ridge-alpha, feature-subset, or score-threshold tuning exercise. A future stop-line path still needs a genuinely new no-GT midpoint/candidate-generation contract.

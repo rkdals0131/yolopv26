@@ -533,6 +533,18 @@ Latest stop-line detector-context FP audit:
 - candidate feature check: top10/gap10 signal-near gating preserves only `25 / 156` oracle-positive rows (`0.160` positive recall), top20/gap10 preserves `26 / 168` (`0.155`), and gap4/top50 preserves `121 / 723` (`0.167`).
 - 판단: predicted traffic-light/sign proximity does suppress emissions, but it is not recall-preserving; it removes most valid stop-line candidates and falls far below baseline and selector-center references. Do not repeat this as detector signal proximity threshold/radius/score sweeps without a new TP-preserving signal.
 
+Latest stop-line geometry-regression premise:
+
+- branch/worktree: `exp/lane-family-f1/stopline-geometry-regression-premise`.
+- code commit: `b88ae0e`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_geometry_regression_premise_20260513/analysis_exports/val128_from_detector_context_top1/summary.json`.
+- changed axis: keep the fixed `max_top10_score_s080`, `max_components=1` selected candidates from the detector-context candidate CSV, then train ridge regressors on GT-derived along-axis midpoint and length corrections using no-GT candidate features only.
+- scope: candidate-bearing rows from the input CSV, not a full validation replay.
+- train split: baseline stop-line F1 `0.4314`, geometry-regressed F1 `0.6667`, TP/FP/FN `17 / 7 / 10`.
+- heldout split: baseline stop-line F1 `0.5938`, geometry-regressed F1 `0.0938`, TP/FP/FN `3 / 31 / 27`.
+- heldout delta: `-0.5000` F1, `-16` TP, `+16` FP, `+16` FN.
+- 판단: no-GT feature regression overfits the train half and destroys heldout geometry. Do not treat train-split correction as a model-side readout premise or repeat this as ridge-alpha/feature-subset/threshold tuning without a materially different geometry signal.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`
