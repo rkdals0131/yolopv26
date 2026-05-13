@@ -10977,3 +10977,44 @@ Smoke val4:
 - `flip_photometric_centerline_avg` improves phase objective slightly because FP drops `12 -> 10`, but it loses three TP and adds three FN versus the flip-centerline reference.
 - The active lane target is F1 `>=0.60`, so precision-only movement with TP loss is negative for this goal.
 - Do not broaden this to val128/val512. Do not repeat as photometric gain, brightness/contrast, or averaging-weight sweeps unless a new diagnostic first shows TP recovery without recall loss.
+
+## 220. 2026-05-14 Lane row-scan x-smoothing smoke: geometry smoothing destroys recall
+
+맥락:
+
+- Section 219 closed the remaining simple runtime TTA axis, leaving lane instance stability as the next allowed lane direction.
+- Existing ranked translation, local snap, affine snap, and component-row projection repair smokes already moved geometry but did not change TP/FP/FN.
+- This branch tested a narrower decoder-side geometry-stability premise: keep dense outputs, candidate count, stop-line/crosswalk contracts, and flip-centerline averaging fixed, but smooth only decoded row-scan tangent track x coordinates with one fixed window before metric replay.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-row-scan-smooth-x-smoke`.
+- Code commit: `5990b15`.
+- Added opt-in `row_scan_tangent_smooth_x` track mode in `model/engine/lane_segfirst_vectorizer.py`.
+- Updated `tools/probe_pv26_lane_flip_tta.py` with `baseline_smooth_x` and `flip_centerline_avg_smooth_x` variants that reuse the same dense logits as their base variants and only switch the lane vectorizer track mode.
+- Updated `test/test_lane_segfirst_vectorizer.py` and `test/test_lane_flip_tta_probe.py`.
+- The smoothing contract is fixed-window x-coordinate averaging only; it is not a threshold, ranker, translation-radius, or centerline-snap sweep.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/probe_pv26_lane_flip_tta.py test/test_lane_segfirst_vectorizer.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 pytest -q test/test_lane_segfirst_vectorizer.py test/test_lane_flip_tta_probe.py`.
+- result: `21 passed`.
+- `git diff --check`.
+- One val4 epoch-2 smoke completed on the fixed merged lane-head checkpoint with current stop-line/crosswalk postprocess overrides.
+- Auto-downloaded `yolo26s.pt` and temporary caches in the `/tmp` worktree were deleted because `/tmp` cleanup is allowed.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0.5455` |
+| `baseline_smooth_x` | `0.5191` | `34 / 11 / 52` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_smooth_x` | `0.5038` | `33 / 12 / 53` | `0.0000` | `0.5455` |
+
+판단:
+
+- Fixed x smoothing does reduce FP for the no-flip baseline (`14 -> 11`), but it loses four TP and adds four FN.
+- On the actual flip-centerline reference, smoothing loses eight TP (`41 -> 33`) without reducing FP, so it is strongly negative for the lane `>=0.60` goal.
+- Do not broaden this to val128/val512. Do not repeat row-scan x smoothing as a window-size, kernel, endpoint-preservation, or smoothing-weight sweep unless a new diagnostic first shows TP-preserving movement.
