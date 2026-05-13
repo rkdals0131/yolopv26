@@ -9264,3 +9264,56 @@ Broader val512 result:
 - Selector-profile weighting is a real exact split movement, not just formatting noise: it adds `+1 TP` and removes `1 FP` versus mask-profile top1 on val128.
 - The same signal does not generalize. On broader val512 it loses `21 TP` and adds `21 FP` versus the projection-competition reference.
 - Do not broaden further or repeat this as a center/selector/fused profile-source, top-k, threshold, or normal-band sweep.
+
+## 184. 2026-05-13 Lane residual-component candidates: TP recovery exists, but FP cost dominates
+
+맥락:
+
+- Sections 151, 161, and 162 showed lane FNs still have centerline evidence and nearby-track recovery headroom.
+- Section 179 closed simple duplicate/translation recovery because it added FP without enough TP.
+- The remaining narrow question was whether centerline pixels not already covered by the current row-scan output can emit extra lane candidates with a tolerable FP cost.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-residual-component-candidates`.
+- Code commit: `93addb6`.
+- Added `tools/probe_pv26_lane_residual_component_candidates.py`.
+- Added `test/test_lane_residual_component_candidates.py`.
+- Contract: keep the checkpoint and flip-centerline lane baseline fixed, then append only residual lane candidates generated from predicted centerline/support pixels not covered by existing decoded lane tracks.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_residual_component_candidates.py test/test_lane_residual_component_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_residual_component_candidates.py`.
+- result: `2 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_residual_component_candidates_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane_residual_component_candidates_20260513/analysis_exports/val128_epoch2/summary.json`.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.5588` | `38 / 12 / 48` |
+| residual append | `0.5714` | `40 / 14 / 46` |
+
+Exact val128 result:
+
+| Variant | Lane F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.5739` | `1175 / 530 / 1215` |
+| residual append | `0.5669` | `1195 / 631 / 1195` |
+
+Additional val128 readout:
+
+- processed samples: `512`.
+- samples with residual candidates: `100`.
+- residual lane candidates emitted: `121`.
+- accepted residual components: `580`.
+- residue pixels: `18350`.
+
+판단:
+
+- The premise is not empty: residual centerline candidates recover `+20 TP` and reduce FN by `20` on val128.
+- The FP cost is much larger: `+101 FP`, so lane F1 drops `0.5739 -> 0.5669`.
+- Do not broaden to val512 or repeat as residual centerline/support threshold, component-size, coverage-width, min-length, or per-sample cap sweeps.
+- A future lane branch needs a materially stronger no-GT FP-control or model-side instance contract before appending centerline-residue candidates again.

@@ -245,6 +245,17 @@ Latest lane centerline-duplicate smoke:
 - comparison: row-scan-tangent smoke reference was `0.5899`, TP/FP/FN `41 / 12 / 45`; replacement centerline translation was `0.5674`, TP/FP/FN `40 / 15 / 46`.
 - 판단: preserving the original track avoids replacing it, but the duplicate adds FP without recovering TP. Do not broaden this branch or repeat as a duplicate offset/radius sweep.
 
+Latest lane residual-component candidates:
+
+- branch/worktree: `exp/lane-family-f1/lane-residual-component-candidates`.
+- code commit: `93addb6`.
+- artifact smoke: `runs/pv26_exhaustive_od_lane_train/lane_residual_component_candidates_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane_residual_component_candidates_20260513/analysis_exports/val128_epoch2/summary.json`.
+- changed axis: keep the checkpoint and flip-centerline lane baseline fixed, then append only lane candidates generated from predicted centerline/support residue not already covered by decoded lane tracks.
+- smoke val4: lane F1 `0.5714`, TP/FP/FN `40 / 14 / 46`, versus baseline `0.5588`, `38 / 12 / 48`.
+- exact val128: lane F1 `0.5669`, TP/FP/FN `1195 / 631 / 1195`, versus baseline `0.5739`, `1175 / 530 / 1215`.
+- 판단: uncovered centerline residue can recover TP, but the FP cost is much larger at val128. Do not broaden to val512 or repeat as residual threshold/component-size/coverage-width/min-length/per-sample-cap tuning without a new no-GT FP-control signal.
+
 Latest lane semantic vote mode audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-semantic-vote-mode-audit`.
