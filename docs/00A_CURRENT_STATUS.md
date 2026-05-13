@@ -244,6 +244,16 @@ Latest lane area-rescue center-score gate:
 - broader val512 result: lane F1 `0.5548`, TP/FP/FN `4644 / 2621 / 4833`; stop-line/crosswalk `0.4083 / 0.6187`.
 - 판단: centerline mean gating fixes part of the val128 FP problem versus ungated area rescue, but broader val512 still stays below the current broader lane best `0.5577`. This is weak partial/negative evidence, not a default or a threshold-sweep path.
 
+Latest lane area-rescue center-q10 gate:
+
+- branch/worktree: `exp/lane-family-f1/lane-area-rescue-center-q10-gate`.
+- code commit: `2d16971`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_q10_gate_20260513/analysis_exports/smoke_val4_epoch2_center075_q10060/summary.json`.
+- changed axis: keep the previous area rescue and `lane_centerline_track_mean >= 0.75`, then also require `lane_centerline_track_q10 >= 0.60` as a stricter track-wide FP-control signal.
+- smoke val4 result: lane F1 `0.5816`, TP/FP/FN `41 / 14 / 45`; stop-line/crosswalk `0.0000 / 0.5455`.
+- comparison to center-mean smoke: lane F1 regressed from `0.5972` to `0.5816`, moving TP/FP/FN from `43 / 15 / 43` to `41 / 14 / 45`.
+- 판단: q10 gating removes only one FP while losing two TP on the first smoke gate. Do not broaden this branch to val128/val512 or repeat area rescue as a q10/quantile threshold sweep without a materially new recall-preserving signal.
+
 Latest stop-line recovery-budget audit:
 
 - branch/worktree: `exp/lane-family-f1/stopline-recovery-budget-audit`.

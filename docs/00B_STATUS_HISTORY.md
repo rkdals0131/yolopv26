@@ -8875,3 +8875,42 @@ Exact val128 result:
 - Epoch2 stop-line F1 `0.1905` is far below tangent-link exact `0.4483`, PCA val128 `0.5133`, predicted angle-mask production `0.5085`, and projection-competition broader reference `0.5164`.
 - Lane and crosswalk also fail the current exact references, so this is not a hidden task-balance gain.
 - Do not broaden this branch or repeat it as `aux_weight`, `top_k`, `min_score`, offset-loss-mode, or longer-epoch sweep. A future stop-line branch still needs a different no-GT midpoint/extent signal with FP control.
+
+## 175. 2026-05-13 Lane area-rescue center-q10 gate: stricter FP control loses recall at smoke
+
+맥락:
+
+- Section 170 closed center-score-gated area rescue as weak partial/negative evidence because exact val128 improved but broader val512 stayed below the current lane reference.
+- The only allowed follow-up was a materially different FP-control signal beyond track mean.
+- The vectorizer already exports `lane_centerline_track_q10`, which can test whether rescued low-area tracks keep centerline support across the track instead of only having a high mean.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-rescue-center-q10-gate`.
+- Code commit: `2d16971`.
+- Added opt-in `lane_segfirst_area_rescue_min_centerline_q10` to `PV26PostprocessConfig`.
+- Extended evaluator and lane FN recovery probe CLI plumbing with `--lane-segfirst-area-rescue-min-centerline-q10`.
+- Added explicit `--backbone-weights` evaluator/probe options to avoid implicit YOLO26 weight downloads under the low-disk root filesystem.
+- Added regression coverage in `test/test_pv26_postprocess.py` and `test/test_evaluate_pv26_lane60_checkpoint.py`.
+- Contract: default disabled. This branch changes only the area-rescue FP-control criterion and keeps the previous `lane_centerline_track_mean >= 0.75` gate.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile model/engine/lane_segfirst_vectorizer.py model/engine/postprocess.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_fn_recovery_audit.py test/test_evaluate_pv26_lane60_checkpoint.py test/test_pv26_postprocess.py`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m pytest -q -p no:cacheprovider test/test_pv26_postprocess.py test/test_evaluate_pv26_lane60_checkpoint.py`.
+- result: `14 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_rescue_center_q10_gate_20260513/analysis_exports/smoke_val4_epoch2_center075_q10060/summary.json`.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| center-mean smoke reference | `0.5972` | `43 / 15 / 43` | `0.0000` | `0.5455` |
+| center-mean + q10 `0.60` | `0.5816` | `41 / 14 / 45` | `0.0000` | `0.5455` |
+
+판단:
+
+- q10 gating removes one FP but loses two TP on the first smoke gate, so it worsens lane F1 before the exact/broader gate.
+- This is negative evidence for the area-rescue q10 axis. Do not broaden it to val128/val512.
+- Do not repeat area rescue as a q10/quantile, min-centerline, min-area, or max-per-sample sweep unless a new non-GT signal explains how it preserves the lost TP.
