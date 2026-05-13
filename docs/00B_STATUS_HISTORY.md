@@ -9987,3 +9987,43 @@ Val128 selection-aware result:
 - The no-GT repairability scorer can select many GT-labeled repairable rows, but the selected geometry is harder than the oracle-selected subset used in Section 196.
 - The best geometry premise only adds `+12` close rows and worsens median/tail distance, so it does not justify live lane repair integration.
 - Do not repeat this as top-K, ridge alpha, or residual-vs-absolute tuning. A future lane repair path needs a new alignment signal, not just scorer-plus-regressor.
+
+## 198. 2026-05-14 Stop-line proposal-island midpoint: recall gain is eaten by FP
+
+맥락:
+
+- Sections 158, 172, and later audits narrowed the stop-line gap to no-GT midpoint/extent recovery.
+- Raw stripe, score-island centroid/linefit, axis-profile, same-axis support span, and no-GT feature regression are already closed.
+- The remaining cheap distinct signal was whether connected islands in the proposal map itself, `max(center, selector)`, provide a better midpoint than the decoded offset or raw/mask-derived centroids.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-proposal-island-midpoint`.
+- Code commit: `27184eb`.
+- Added `tools/probe_pv26_stopline_proposal_island_midpoint.py`.
+- Added `test/test_stopline_proposal_island_midpoint.py`.
+- Contract: fixed read-only replay. Use top1 `max(center, selector)` proposal cell at score `>=0.60`, take the connected proposal island inside radius `6` at relative threshold `0.60`, use its weighted centroid as the stop-line center, then run the existing predicted-angle mask-extent decoder with mask `0.50` and normal band `4`. A fallback variant only falls back to baseline when no island line is emitted.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_proposal_island_midpoint.py test/test_stopline_proposal_island_midpoint.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_proposal_island_midpoint.py`.
+- result: `3 passed`.
+- `git diff --check`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_proposal_island_midpoint_20260514/analysis_exports/val128_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_proposal_island_midpoint_20260514/analysis_exports/val128_epoch2/variants.csv`.
+
+Val128 result:
+
+| variant | stop-line F1 | TP / FP / FN | pred count |
+| --- | ---: | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` | `56` |
+| proposal island | `0.4412` | `30 / 46 / 30` | `76` |
+| proposal island fallback | `0.4412` | `30 / 46 / 30` | `76` |
+
+판단:
+
+- The proposal island center does add recall (`+4` TP), but it adds too many FP (`+16`) and lowers stop-line F1 below baseline.
+- The lower matched point distance (`17.92 -> 12.70`) shows the matched subset is geometrically cleaner, but precision collapse dominates the evaluator.
+- Do not broaden this to val512 or repeat as proposal-source, island-radius, relative-threshold, top-k, or fallback tuning unless a new FP-control signal is added.
