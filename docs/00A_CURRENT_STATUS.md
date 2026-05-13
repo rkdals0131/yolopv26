@@ -465,6 +465,20 @@ Latest stop-line score-island linefit readout:
 - score-island linefit reaches only `0.4110`, TP/FP/FN `30 / 56 / 30`.
 - 판단: score-island linefit recovers no extra TP over selector-center and adds too many FP. Do not broaden to val512 or repeat as an island radius/relative-threshold/linefit sweep without a materially new FP-control signal.
 
+Latest stop-line detector-context FP audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-detector-context-fp-audit`.
+- code commit: `bf24a93`.
+- artifacts:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_detector_context_fp_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_detector_context_fp_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- changed axis: keep the current candidate pool fixed, then add predicted `traffic_light` / `sign` proximity features and fixed signal-context candidate variants; no GT context, no training, no production decoder change.
+- exact val128 baseline stop-line F1: `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- score-threshold reference remains stronger: `max_top10_score_s080` stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`.
+- detector signal-context variants fail: `max_top10_signal_context_c1` reaches only `0.1538`, TP/FP/FN `6 / 12 / 54`; `max_top20_signal_context_c1` reaches only `0.1190`, TP/FP/FN `5 / 19 / 55`; `gap4_max_top50_signal_context_c1` reaches only `0.1395`, TP/FP/FN `6 / 20 / 54`.
+- candidate feature check: top10/gap10 signal-near gating preserves only `25 / 156` oracle-positive rows (`0.160` positive recall), top20/gap10 preserves `26 / 168` (`0.155`), and gap4/top50 preserves `121 / 723` (`0.167`).
+- 판단: predicted traffic-light/sign proximity does suppress emissions, but it is not recall-preserving; it removes most valid stop-line candidates and falls far below baseline and selector-center references. Do not repeat this as detector signal proximity threshold/radius/score sweeps without a new TP-preserving signal.
+
 Current best exact lane-retention probe:
 
 - artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260511_230022/phase_4/history/epochs.jsonl`

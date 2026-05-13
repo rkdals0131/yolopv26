@@ -9438,3 +9438,60 @@ Exact candidate summary:
 - The baseline-proximity gate is a real FP-control improvement over raw residual append: it cuts residual FP cost from `+101` to `+61`.
 - The signal is still too weak. It loses `10` matched residual TP rows and keeps `61` FP rows, so the val128 lane F1 stays below baseline (`0.5706` vs `0.5739`).
 - Do not broaden to val512 or repeat residual append as proximity, length, support, component, or per-sample threshold sweeps without a stronger new FP-control signal.
+
+## 187. 2026-05-13 Stop-line detector-context FP audit: traffic-light/sign proximity kills recall
+
+맥락:
+
+- Section 185 closed raw-image stripe contrast as a midpoint source.
+- Section 186 closed lane residual proximity gating as too weak.
+- The remaining cheap stop-line premise was whether scene-level predicted signal objects (`traffic_light`, `sign`) could serve as a materially different no-GT FP-control signal for the fixed current stop-line candidate pool.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-detector-context-fp-audit`.
+- Code commit: `bf24a93`.
+- Extended `tools/probe_pv26_stopline_candidate_pool.py` with detector-context features:
+  - signal object counts from predicted detections;
+  - distance from each candidate segment to predicted `traffic_light` / `sign` box centers;
+  - fixed near-count and support-score columns.
+- Added fixed detector-context variants:
+  - `max_top10_signal_context_c1`;
+  - `max_top20_signal_context_c1`;
+  - `gap4_max_top50_signal_context_c1`.
+- Added unit coverage in `test/test_pv26_threshold_probe.py`.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_pv26_threshold_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_pv26_threshold_probe.py`.
+- result: `16 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_detector_context_fp_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_detector_context_fp_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Candidate export: `candidate_features.csv` under both artifact directories, now including `sample_id`, candidate/GT point JSON, and detector-context columns.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| `max_top10_score_s080` | `0.5085` | `30 / 28 / 30` |
+| `max_top10_signal_context_c1` | `0.1538` | `6 / 12 / 54` |
+| `max_top20_signal_context_c1` | `0.1190` | `5 / 19 / 55` |
+| `gap4_max_top50_signal_context_c1` | `0.1395` | `6 / 20 / 54` |
+
+Candidate signal check:
+
+- top10/gap10 rows: `405`; oracle-positive rows: `156`; signal-near rows: `49`; signal-near positive rows: `25`.
+- top10/gap10 signal-near positive recall: `0.160`; signal-near precision: `0.510`.
+- top20/gap10 rows: `555`; oracle-positive rows: `168`; signal-near rows: `72`; signal-near positive rows: `26`.
+- top20/gap10 signal-near positive recall: `0.155`; signal-near precision: `0.361`.
+- gap4/top50 rows: `2191`; oracle-positive rows: `723`; signal-near rows: `280`; signal-near positive rows: `121`.
+- gap4/top50 signal-near positive recall: `0.167`; signal-near precision: `0.432`.
+
+판단:
+
+- Detector context is a real emission suppressor, but it is not recall-preserving.
+- The gate removes many FPs, but it removes most valid stop-line candidates first: exact val128 TP falls from `30` under score-threshold reference to `5~6`.
+- Do not repeat predicted `traffic_light` / `sign` proximity as a detector-context radius, threshold, score, class-weight, or top-k sweep unless a new TP-preserving signal is added.
