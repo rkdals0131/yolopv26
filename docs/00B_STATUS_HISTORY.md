@@ -10165,3 +10165,58 @@ Results:
 - P4 context does create stop-line predictions where the same evaluator baseline emits none, so it is not a pure wiring failure.
 - It still lowers phase objective on both val64 and val128, hurts lane on val128, and remains far below the known stop-line references such as exact geometry filters, PCA/profile references, and projection-competition replay.
 - Do not promote or broaden this branch as-is. Repeating it as a longer run, LR sweep, or random-fusion warm-start does not address the remaining stop-line midpoint/extent contract.
+
+## 202. 2026-05-14 Lane area-rescue repairability gate: fixed ranker control is effectively flat
+
+맥락:
+
+- Guarded area-rescue and center-score-gated area-rescue were already weak or negative as bbox/min-centerline sweeps.
+- Section 200 also closed repairability-ranker gating on residual centerline candidates because the selected residuals still added too many FP.
+- The remaining distinct question was narrower: use the same exported broad no-GT repairability ranker as fixed FP-control over bbox-area-rescued raw vectorizer candidates, without changing the area-rescue candidate generator or sweeping thresholds.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-rescue-repairability-gate`.
+- Code commit: `9e7480b`.
+- Updated `tools/probe_pv26_lane_fn_recovery_audit.py`.
+- The audit now evaluates three variants in one pass: baseline with area-rescue disabled, raw `area_rescue_append`, and `area_rescue_repairability_gate_append`.
+- The repairability gate uses the exported broad ranker parameters with the fixed top-500-over-2206 budget ratio (`0.22665`) and exports `area_rescue_candidate_rows.csv` for inspection.
+- Runtime artifacts were temporary and intentionally not retained as durable repo artifacts.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_lane_fn_recovery_audit.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py`.
+- result: `7 passed`.
+- `git diff --check`.
+- Smoke val4 and exact val128 repairability-gated area-rescue probes completed.
+
+Smoke val4 results:
+
+| variant | lane F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.5899` | `41 / 12 / 45` |
+| area rescue append | `0.6069` | `44 / 15 / 42` |
+| area rescue repairability gate | `0.6000` | `42 / 12 / 44` |
+
+Exact val128 results:
+
+| variant | lane F1 | TP / FP / FN | stop-line F1 | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5854` | `1200 / 510 / 1190` | `0.4364` | `0.5988` |
+| area rescue append | `0.5806` | `1245 / 654 / 1145` | `0.4364` | `0.5988` |
+| area rescue repairability gate | `0.5860` | `1214 / 539 / 1176` | `0.4364` | `0.5988` |
+
+Val128 candidate accounting:
+
+- area-rescue candidates: `189`.
+- area-rescue matched TP candidates: `50`.
+- fixed repairability budget selected: `43`.
+- selected matched TP rows: `14`.
+- selected FP rows: `29`.
+
+판단:
+
+- The val4 smoke looked plausible, but val128 shows the gate is effectively flat: lane F1 only moves `0.5854 -> 0.5860`.
+- The actual val128 movement is `+14 TP / +29 FP / -14 FN`, so the added FP almost cancels the recall gain.
+- This closes area-rescue repairability gating as a production path. Do not repeat it as a repairability score threshold, top-K budget, min-area, min-centerline, or max-per-sample sweep without a materially new no-GT FP-control or alignment signal.
