@@ -9899,3 +9899,45 @@ Val128 heldout result:
 - The close-count gain is real but small, and the median/tail distance gets worse.
 - A single no-GT feature-to-translation regressor is not stable enough to justify live evaluator integration.
 - Do not repeat this as an `l2`, feature-subset, or close-threshold sweep unless a new geometry signal is introduced.
+
+## 196. 2026-05-14 Lane point repair polyline premise: full geometry regression is still weak
+
+맥락:
+
+- Section 195 closed the simplest one-vector translation premise.
+- The remaining cheap question was whether the target lane geometry is recoverable if the model predicts a full resampled polyline or per-point residual from no-GT prediction-side features and predicted track shape.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-point-repair-polyline-residual-premise`.
+- Code commit: `f4aed98`.
+- Added `tools/analyze_pv26_lane_point_repair_polyline_premise.py`.
+- Added `test/test_lane_point_repair_polyline_premise.py`.
+- Input artifact: `runs/pv26_exhaustive_od_lane_train/lane_point_repair_replay_20260514/analysis_exports/val128_oracle_le120/lane_point_repair_candidates.csv`.
+- The tool keeps only the `322` oracle-selected candidates, excludes GT-label columns from features, resamples predicted and nearest missed-GT lane polylines to 10 points, and evaluates two-fold held-out ridge variants for center-delta, point-residual, and absolute-polyline prediction. It is artifact-only and not a live TP/FP/FN replay.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_point_repair_polyline_premise.py test/test_lane_point_repair_polyline_premise.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_point_repair_polyline_premise.py`.
+- result: `6 passed`.
+- `git diff --check`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_polyline_premise_20260514/analysis_exports/val128_selected_polyline_l2_10/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_point_repair_polyline_premise_20260514/analysis_exports/val128_selected_polyline_l2_10/lane_point_repair_polyline_rows.csv`.
+
+Val128 heldout result:
+
+- rows: `322`.
+- baseline close count at `40px`: `23`.
+- `center_delta_ridge` close count: `49`; distance q50/q90 `66.62 / 106.45`.
+- `point_residual_ridge` close count: `54`; distance q50/q90 `66.12 / 105.18`.
+- best `absolute_polyline_ridge` close count: `56`; distance q50/q90 `65.25 / 105.88`.
+- baseline distance q50/q90: `65.95 / 107.25`.
+- best improved/worsened rows: `172 / 150`.
+
+판단:
+
+- Full-polyline regression is stronger than one-vector translation on close-count and tail distance, but the movement is still small relative to the `322` oracle-selected rows.
+- This does not justify live decoder integration by itself because candidate selection is still oracle-derived and no actual TP/FP/FN replay was run.
+- Do not repeat this as ridge alpha, output-point-count, or residual-vs-absolute tuning unless a materially new no-GT selection/alignment signal is added.
