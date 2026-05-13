@@ -10027,3 +10027,42 @@ Val128 result:
 - The proposal island center does add recall (`+4` TP), but it adds too many FP (`+16`) and lowers stop-line F1 below baseline.
 - The lower matched point distance (`17.92 -> 12.70`) shows the matched subset is geometrically cleaner, but precision collapse dominates the evaluator.
 - Do not broaden this to val512 or repeat as proposal-source, island-radius, relative-threshold, top-k, or fallback tuning unless a new FP-control signal is added.
+
+## 199. 2026-05-14 Stop-line proposal-island baseline-absent replay: fixed FP-control is worse
+
+맥락:
+
+- Section 198 showed that proposal-island midpoint recovery adds recall but loses more precision.
+- The narrow follow-up was a fixed FP-control premise: keep baseline stop-line outputs whenever the baseline already emits one, and only use the same proposal-island readout on baseline-absent samples.
+- This keeps the island source, score threshold, island radius, relative threshold, mask threshold, and normal band unchanged. It is not a source/radius/top-k sweep.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-proposal-island-baseline-absent`.
+- Code commit: `19343d1`.
+- Updated `tools/probe_pv26_stopline_proposal_island_midpoint.py`.
+- Added variant `proposal_island_top1_s060_rel060_r6_mask050_band4_baseline_absent`.
+- Artifact:
+  - `deletion_candidates/home_artifact_prune_20260514_010233/yolopv26_runs/pv26_exhaustive_od_lane_train/stopline_proposal_island_baseline_absent_20260514/analysis_exports/val128_epoch2/summary.json`.
+  - `deletion_candidates/home_artifact_prune_20260514_010233/yolopv26_runs/pv26_exhaustive_od_lane_train/stopline_proposal_island_baseline_absent_20260514/analysis_exports/val128_epoch2/variants.csv`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_proposal_island_midpoint.py test/test_stopline_proposal_island_midpoint.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_proposal_island_midpoint.py`.
+- result: `3 passed`.
+
+Val128 result:
+
+| variant | stop-line F1 | TP / FP / FN | pred count |
+| --- | ---: | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` | `56` |
+| proposal island | `0.4412` | `30 / 46 / 30` | `76` |
+| proposal island fallback | `0.4412` | `30 / 46 / 30` | `76` |
+| proposal island baseline-absent | `0.4265` | `29 / 47 / 31` | `76` |
+
+판단:
+
+- Baseline-absent gating did not control FP. It made stop-line F1 worse than both baseline and the plain proposal-island replay.
+- This closes the simple "only use proposal-island when baseline is absent" FP-control premise.
+- Do not repeat this as fallback, baseline-present/absent, proposal-source, island-radius, relative-threshold, top-k, mask-threshold, or normal-band tuning without a materially new FP-control signal.
