@@ -5,9 +5,9 @@
 
 ## 1. 한 줄 결론
 
-PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6296149306`, broader-val512 runtime/postprocess composite replay 기준 `0.6216194906`까지 확인됐다.
+PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite replay 기준 `0.6230558331`까지 확인됐다.
 
-이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Broader-val512 composite에서도 objective는 `0.6216`까지 올라갔지만 lane/stop-line/crosswalk F1은 `0.5577 / 0.4235 / 0.6187`이라 최종 성공으로 보지 않는다.
+이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Broader-val512 composite에서도 objective는 `0.6231`까지 올라갔지만 lane/stop-line/crosswalk F1은 `0.5628 / 0.4235 / 0.6187`이라 최종 성공으로 보지 않는다.
 
 Active goal:
 
@@ -24,7 +24,7 @@ Run:
 남긴 핵심 파일:
 
 - checkpoint: `phase_4/checkpoints/best.pt`
-- current objective-best composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_current_best_flip_centerline_epoch2/metrics.csv`
+- current objective-best composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/metrics.csv`
 - latest closed stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
 Note: older exact-eval and visual-check exports were pruned from active `runs` during artifact cleanup. The numeric results below remain as historical evidence, but those old export directories are no longer current retained artifacts.
@@ -41,7 +41,7 @@ Final exact epoch-2 result:
 
 Current broader-composite F1 기준 gap:
 
-- lane: `0.5577 -> 0.6000`, `+0.0423` 필요.
+- lane: `0.5628 -> 0.6000`, `+0.0372` 필요.
 - stop-line: `0.4235 -> 0.6000`, `+0.1765` 필요.
 - crosswalk: `0.6187`, broader-val512에서 `0.6000` 이상 통과.
 - 따라서 F1 0.6+ 목표의 병목은 stop-line, 그 다음 lane이다. crosswalk는 hull decode로 broader pass를 만들었지만, 이 자체는 opt-in postprocess partial-positive이고 lane/stop-line 실패를 가리지 않는다.
@@ -92,29 +92,39 @@ Current best broader lane replay:
 
 Current best broader runtime/postprocess composite by objective:
 
-- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_current_best_flip_centerline_epoch2/summary.json`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/summary.json`
 - experiment: `core_centerline_refine_row_scan_tangent_link`
 - checkpoint composition: original `best.pt` as base, lane head from segment-MIL lane-head-only `best_lane.pt`, stop-line and crosswalk heads from original `best.pt`.
-- runtime/postprocess: average only `lane_seg_centerline_logits` from the normal image and horizontal-flip image, then keep stop-line/crosswalk outputs from the normal pass.
+- runtime/postprocess: average only `lane_seg_centerline_logits` from the normal image and horizontal-flip image, then suppress lane centerline probability by `0.50 * crosswalk_mask_probability`; keep stop-line/crosswalk outputs from the normal pass.
 - evaluator-only overrides: stop-line `mask=0.80`, stop-line `min_instance_score=0.94`, stop-line `presence=0.0`, crosswalk `polygon_mode=hull`.
-- objective: `0.6216194905914751`
-- lane / stop-line / crosswalk F1: `0.5577 / 0.4235 / 0.6187`
-- TP/FP/FN lane: `4518 / 2206 / 4959`
+- objective: `0.6230558330631257`
+- lane / stop-line / crosswalk F1: `0.5628 / 0.4235 / 0.6187`
+- TP/FP/FN lane: `4532 / 2097 / 4945`
 - TP/FP/FN stop-line: `101 / 105 / 170`
 - TP/FP/FN crosswalk: `232 / 123 / 163`
 - support lane / stop / cross: `9477 / 271 / 395`
-- 판단: flip-centerline TTA recovers a real but small broader lane gain over the same transplanted composite (`0.5480 -> 0.5577`) while preserving stop-line `0.4235` and hull crosswalk `0.6187`. This is a new objective best but still not all-task success because lane and stop-line remain below `0.60`.
+- 판단: crosswalk-mask lane competition recovers a real but small broader lane gain over the previous flip-centerline composite (`0.5577 -> 0.5628`) while preserving stop-line `0.4235` and hull crosswalk `0.6187`. This is a new objective best but still not all-task success because lane and stop-line remain below `0.60`.
 
 Current best broader task-balance replay:
 
 - branch/worktree: `exp/lane-family-f1/stopline-projcomp-flip-composite`.
 - code commit: none; artifact-only replay using the existing projection-competition CSV tool and the current flip-centerline reference row.
 - artifact retention: the original replay artifact was pruned from active `runs`; keep the metrics below as historical task-balance lower-bound evidence, not as a currently retained artifact pointer.
-- changed axis: keep current `flip_centerline_avg` lane and hull crosswalk metrics, then replay projection-competition stop-line predictions from the same checkpoint/candidate pool.
-- lane / stop-line / crosswalk F1: `0.5577 / 0.5164 / 0.6187`.
+- changed axis: keep current crosswalk-mask lane competition and hull crosswalk metrics, then replay projection-competition stop-line predictions from the same checkpoint/candidate pool.
+- lane / stop-line / crosswalk F1: `0.5628 / 0.5164 / 0.6187`.
 - stop-line TP/FP/FN: `126 / 91 / 145`.
-- lane-family mean/min F1: `0.5643 / 0.5164`.
-- 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0423` and stop-line needs `+0.0836`.
+- lane-family mean/min F1: `0.5659 / 0.5164`.
+- 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`.
+
+Latest lane task-mask context gate:
+
+- branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.
+- code commit: `15e3fb0`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/summary.json`.
+- changed axis: keep the current flip-centerline lane runtime path and stop-line/crosswalk postprocess contract, then suppress only lane centerline logits where the predicted crosswalk mask is confident.
+- val512 reference `flip_centerline_avg`: objective `0.6216194906`, lane/stop/cross F1 `0.5577 / 0.4235 / 0.6187`, lane TP/FP/FN `4518 / 2206 / 4959`.
+- val512 best `flip_centerline_avg_lane_cross_comp050`: objective `0.6230558331`, lane/stop/cross F1 `0.5628 / 0.4235 / 0.6187`, lane TP/FP/FN `4532 / 2097 / 4945`.
+- 판단: this is a retained partial positive and the current objective-best broader runtime composite. It narrows the lane gap but does not close lane `0.60`, and it does nothing for the stop-line bottleneck.
 
 Latest stop-line lane-crossing extent readout:
 
@@ -575,7 +585,7 @@ Latest lane area-rescue center-score gate:
 - changed axis: keep area rescue opt-in, then require rescued lane candidates to have vectorizer track-level `lane_centerline_track_mean >= 0.75`.
 - exact val128 result: lane F1 `0.5846`, TP/FP/FN `1239 / 610 / 1151`; stop-line/crosswalk `0.4483 / 0.5988`.
 - broader val512 result: lane F1 `0.5548`, TP/FP/FN `4644 / 2621 / 4833`; stop-line/crosswalk `0.4083 / 0.6187`.
-- 판단: centerline mean gating fixes part of the val128 FP problem versus ungated area rescue, but broader val512 still stays below the current broader lane best `0.5577`. This is weak partial/negative evidence, not a default or a threshold-sweep path.
+- 판단: centerline mean gating fixes part of the val128 FP problem versus ungated area rescue, but broader val512 still stays below the current broader lane best `0.5628`. This is weak partial/negative evidence, not a default or a threshold-sweep path.
 
 Latest lane area-rescue center-q10 gate:
 
@@ -842,7 +852,7 @@ Latest task-head merge with segment-MIL lane + rank-stop head:
 - broader TP/FP/FN lane: `4457 / 2333 / 5020`
 - broader TP/FP/FN stop-line: `100 / 132 / 171`
 - broader TP/FP/FN crosswalk: `231 / 121 / 164`
-- 판단: exact subset에서는 stop-line head transplant가 좋아 보였지만, broader-val512에서는 stop-line FP가 늘어 current broader best objective `0.6216194906`와 stop-line `0.4235`보다 낮다. Task-head composition is exact partial-positive but broader negative; it is not an all-task success path.
+- 판단: exact subset에서는 stop-line head transplant가 좋아 보였지만, broader-val512에서는 stop-line FP가 늘어 current broader best objective `0.6230558331`와 stop-line `0.4235`보다 낮다. Task-head composition is exact partial-positive but broader negative; it is not an all-task success path.
 
 Latest lane-head transplant onto original stop/cross base:
 
@@ -1050,7 +1060,7 @@ Latest segment-MIL lane-head-only + flip-TTA replay:
 - changed axis: keep the `core_centerline_refine_row_scan_tangent_segment_mil_lane_head_only` checkpoint fixed, then apply only `flip_centerline_avg` lane TTA with stop-line `mask=0.80` and crosswalk hull decode.
 - exact val128 `flip_centerline_avg`: objective `0.6298`, lane/stop/cross F1 `0.5854 / 0.4364 / 0.6061`.
 - broader-val512 `flip_centerline_avg`: objective `0.6207`, lane/stop/cross F1 `0.5577 / 0.4184 / 0.6185`.
-- 판단: exact looks slightly stronger than the segment-MIL baseline, but broader does not beat the current broader best objective `0.6216`, and stop-line is lower than the current broader best `0.4235`. Do not promote this combination.
+- 판단: exact looks slightly stronger than the segment-MIL baseline, but broader does not beat the current broader best objective `0.6231`, and stop-line is lower than the current broader best `0.4235`. Do not promote this combination.
 
 Latest lane geometry-filter probe:
 

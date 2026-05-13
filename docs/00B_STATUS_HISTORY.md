@@ -11193,3 +11193,58 @@ Exact val128:
 - Dense global voting did generate candidate lines, but it lost TP and/or added FP compared with both baseline and the selector top1 reference.
 - The best Hough variant is not close enough to justify broader-val512.
 - Do not repeat this as angle-bin, rho-bin, normal-band, mask-threshold, proposal-threshold, or top-K tuning. A future stop-line branch still needs a materially new no-GT candidate-generation or FP-control signal.
+
+## 225. 2026-05-14 Lane task-mask context gate: small broader FP-control gain, still below task goal
+
+맥락:
+
+- Section 224 closed another stop-line readout, and the stop-line ledger still needs a materially new no-GT midpoint/extent signal.
+- Lane still had a smaller but real FP-control gap: the current flip-centerline broader composite was lane TP/FP/FN/F1 `4518 / 2206 / 4959 / 0.5577`.
+- This branch tested one fixed lane-side task-context premise: suppress lane centerline probability where another roadmark task mask is confident, while keeping the checkpoint, vectorizer, stop-line decode, and crosswalk hull decode fixed.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.
+- Code commit: `15e3fb0`.
+- Tool/test: `tools/probe_pv26_lane_flip_tta.py`, `test/test_lane_flip_tta_probe.py`.
+- Added opt-in variants such as `flip_centerline_avg_lane_cross_comp050` that first build the existing base variant, then multiply lane centerline probability by `1 - strength * competing_mask_probability`.
+- The implemented gate changes only `lane_seg_centerline_logits`; stop-line and crosswalk tensors are preserved from the base prediction.
+- Retained artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/summary.json`.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `9 passed`.
+- val4, val128, and val512 probes completed on the fixed merged lane-head checkpoint with the current stop-line/crosswalk postprocess overrides.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_stop_comp050` | `0.5942` | `41 / 11 / 45` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+
+Exact val128:
+
+| Variant | Objective | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.6296149306` | `0.5854` | `1200 / 510 / 1190` | `0.4364` | `0.5988` |
+| `flip_centerline_avg_lane_cross_comp050` | `0.6307743841` | `0.5888` | `1202 / 491 / 1188` | `0.4364` | `0.5988` |
+| `flip_centerline_avg_lane_stop_comp050` | `0.6296711344` | `0.5847` | `1199 / 512 / 1191` | `0.4364` | `0.5988` |
+
+Broader val512:
+
+| Variant | Objective | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `baseline` | `0.6176617987` | `0.5480` | `4457 / 2333 / 5020` | `0.4235` | `0.6187` |
+| `flip_centerline_avg` reference | `0.6216194906` | `0.5577` | `4518 / 2206 / 4959` | `0.4235` | `0.6187` |
+| `flip_centerline_avg_lane_cross_comp050` | `0.6230558331` | `0.5628` | `4532 / 2097 / 4945` | `0.4235` | `0.6187` |
+
+판단:
+
+- The val128 improvement was small but real enough to broaden: lane TP/FP/FN moved `1200 / 510 / 1190 -> 1202 / 491 / 1188`.
+- The broader val512 check preserved that direction and improved lane by `+14 TP`, `-109 FP`, `-14 FN` versus the flip-centerline reference.
+- This is the new broader objective-best runtime composite, but it is still a partial success: lane remains below `0.60` by `0.0372`, and stop-line remains the main blocker at `0.4235`.
+- Do not turn this into a task-mask source/strength/mask-threshold sweep. If this path is promoted, keep the fixed crosswalk-only `0.50` lane gate and spend the next search budget on a genuinely new lane instance-stability signal or on the stop-line midpoint/extent bottleneck.
