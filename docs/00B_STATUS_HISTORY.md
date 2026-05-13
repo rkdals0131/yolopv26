@@ -5281,8 +5281,8 @@ Tree rule:
 - branch: `exp/lane-family-f1/lane-flip-tta-audit`
 - tool: `tools/probe_pv26_lane_flip_tta.py`
 - tests: `test/test_lane_flip_tta_probe.py`
-- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/exact_val128_current_best_epoch2/summary.json`
-- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/broader_val512_current_best_epoch2/summary.json`
+- original artifact exact: not retained in active runs after artifact pruning; exact metrics below are historical.
+- retained broader reproduction: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_current_best_flip_centerline_epoch2/summary.json`
 - The probe runs the same checkpoint and same lane60 postprocess path twice per batch: normal image and horizontal-flipped image.
 - It unflips only lane dense maps back into the original network coordinate frame. For tangent-axis maps, it also negates the x-axis channel after unflip.
 - The winning variant averages only `lane_seg_centerline_logits`. Stop-line and crosswalk predictions remain from the normal pass, so this is not a hidden stop/cross change.

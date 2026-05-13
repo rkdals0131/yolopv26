@@ -90,7 +90,7 @@ Current best broader lane replay:
 
 Current best broader runtime/postprocess composite by objective:
 
-- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/broader_val512_current_best_epoch2/summary.json`
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_current_best_flip_centerline_epoch2/summary.json`
 - experiment: `core_centerline_refine_row_scan_tangent_link`
 - checkpoint composition: original `best.pt` as base, lane head from segment-MIL lane-head-only `best_lane.pt`, stop-line and crosswalk heads from original `best.pt`.
 - runtime/postprocess: average only `lane_seg_centerline_logits` from the normal image and horizontal-flip image, then keep stop-line/crosswalk outputs from the normal pass.
@@ -899,8 +899,8 @@ Latest center-rank proposal recall audit:
 
 Latest lane flip-TTA audit:
 
-- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/exact_val128_current_best_epoch2/summary.json`
-- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_lane_flip_tta_audit_20260512/analysis_exports/broader_val512_current_best_epoch2/summary.json`
+- artifact exact: not retained in active runs after artifact pruning; exact metrics below are historical.
+- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/broader_val512_current_best_flip_centerline_epoch2/summary.json`
 - branch: `exp/lane-family-f1/lane-flip-tta-audit`
 - changed axis: keep checkpoint, stop-line/crosswalk outputs, stop-line `mask=0.80`, and crosswalk hull decode fixed; run a horizontal-flip forward pass and merge only the lane centerline logits by averaging.
 - exact val128 objective: `0.6296149306`
