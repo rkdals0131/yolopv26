@@ -278,15 +278,15 @@ Latest lane repairable-unmatched feature audit:
 Latest lane repairability model replay:
 
 - branch/worktree: `exp/lane-family-f1/lane-repairability-model-replay`.
-- code commits: `0b8af52`, `4960e0f`.
+- code commits: `0b8af52`, `4960e0f`, `885948d`.
 - artifacts:
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_replay.csv`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_parameters.json`.
-- changed axis: read-only 2-fold out-of-fold logistic ranker over no-GT unmatched-track/context features, followed by actual FP-to-TP oracle replay (`TP+1`, `FP-1`, `FN-1`) for selected repairable unmatched predictions.
+- changed axis: read-only 2-fold out-of-fold logistic ranker over no-GT unmatched-track/context features, followed by actual FP-to-TP oracle replay (`TP+1`, `FP-1`, `FN-1`) for selected repairable unmatched predictions. Commit `885948d` removes GT-derived `sample_unmatched_pred_count` from the ranker feature set.
 - baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
-- tight `repairable_le80_center050`: OOF AUC/AP `0.7627 / 0.4750`; top-526 positive-budget replay selects `267` repairable rows and gives lane F1 `0.5907`; top-750 gives `330` repairs and F1 `0.5985`; top-1000 gives `395` repairs and F1 `0.6065`, but precision falls to `0.3950`.
-- broad `repairable_le120_any_center`: OOF AUC/AP `0.6810 / 0.7488`; top-500 selects `405 / 500` repairable rows and gives lane F1 `0.6077`; top-1000 selects `769` repairs and gives F1 `0.6527`; positive-budget top-1393 selects `1011` repairs and gives F1 `0.6826`.
+- tight `repairable_le80_center050`: OOF AUC/AP `0.7629 / 0.4742`; top-526 positive-budget replay selects `266` repairable rows and gives lane F1 `0.5906`; top-750 gives `330` repairs and F1 `0.5985`; top-1000 gives `396` repairs and F1 `0.6066`, but precision falls to `0.3960`.
+- broad `repairable_le120_any_center`: OOF AUC/AP `0.6821 / 0.7491`; top-500 selects `405 / 500` repairable rows and gives lane F1 `0.6077`; top-1000 selects `770` repairs and gives F1 `0.6528`; positive-budget top-1393 selects `1016` repairs and gives F1 `0.6832`.
 - 판단: multi-feature no-GT ranker has enough broad-bucket planning signal to justify a real model-side/decoder-side repair contract. This is still not production success because the replay assumes selected repairable unmatched predictions can actually be geometrically repaired into matched instances. Do not treat top-K replay as a threshold gate or success metric by itself.
 
 Latest lane centerline-duplicate smoke:

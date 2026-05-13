@@ -9606,11 +9606,12 @@ Supporting medians:
 구현:
 
 - Branch/worktree: `exp/lane-family-f1/lane-repairability-model-replay`.
-- Code commits: `0b8af52`, `4960e0f`.
+- Code commits: `0b8af52`, `4960e0f`, `885948d`.
 - Added `tools/analyze_pv26_lane_repairability_model_replay.py`.
 - Added `test/test_lane_repairability_model_replay.py`.
 - Contract: train a small 2-fold out-of-fold logistic ranker over no-GT unmatched-track/context features, then replay selected repairable unmatched predictions as existing FP repaired into TP (`TP+1`, `FP-1`, `FN-1`).
 - Parameter export: commit `4960e0f` writes a full-data `repairability_model_parameters.json` artifact for the next fixed-scorer repair smoke.
+- No-GT feature correction: commit `885948d` removes GT-derived `sample_unmatched_pred_count` from the ranker feature set before regenerating the replay and parameter artifact.
 - Input rows: `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/broader_val512_epoch2/lane_unmatched_prediction_repair_rows.csv`.
 
 Verification:
@@ -9629,17 +9630,17 @@ Verification:
 Broader-val512 replay result:
 
 - baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
-- tight `repairable_le80_center050`: OOF AUC/AP `0.7627 / 0.4750`.
-- broad `repairable_le120_any_center`: OOF AUC/AP `0.6810 / 0.7488`.
+- tight `repairable_le80_center050`: OOF AUC/AP `0.7629 / 0.4742`.
+- broad `repairable_le120_any_center`: OOF AUC/AP `0.6821 / 0.7491`.
 
 | Label | Budget | Selected repairable | Precision | Lane F1 | TP/FP/FN |
 | --- | ---: | ---: | ---: | ---: | --- |
-| tight | `526` | `267` | `0.5076` | `0.5907` | `4785 / 1939 / 4692` |
+| tight | `526` | `266` | `0.5057` | `0.5906` | `4784 / 1940 / 4693` |
 | tight | `750` | `330` | `0.4400` | `0.5985` | `4848 / 1876 / 4629` |
-| tight | `1000` | `395` | `0.3950` | `0.6065` | `4913 / 1811 / 4564` |
+| tight | `1000` | `396` | `0.3960` | `0.6066` | `4914 / 1810 / 4563` |
 | broad | `500` | `405` | `0.8100` | `0.6077` | `4923 / 1801 / 4554` |
-| broad | `1000` | `769` | `0.7690` | `0.6527` | `5287 / 1437 / 4190` |
-| broad | `1393` | `1011` | `0.7258` | `0.6826` | `5529 / 1195 / 3948` |
+| broad | `1000` | `770` | `0.7700` | `0.6528` | `5288 / 1436 / 4189` |
+| broad | `1393` | `1016` | `0.7294` | `0.6832` | `5534 / 1190 / 3943` |
 
 판단:
 
