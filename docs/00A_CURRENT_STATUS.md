@@ -187,6 +187,17 @@ Latest stop-line axis-support span audit:
 - support span length ratio q50 improves from `0.544` to `1.013`, but midpoint distance q50 only moves `68.59px -> 61.92px` and q90 worsens to `215.68px`.
 - 판단: same-axis support span reduces FP only by dropping too many TP; it is not the missing no-GT midpoint/extent signal. Do not repeat as a top-k/min-score/member-count/angle/normal-threshold sweep.
 
+Latest stop-line raw-stripe midpoint audit:
+
+- branch/worktree: `exp/lane-family-f1/stopline-raw-stripe-midpoint-audit`.
+- code commit: `5264e23`.
+- artifacts: `runs/pv26_exhaustive_od_lane_train/stopline_raw_stripe_midpoint_audit_20260513/analysis_exports/{smoke_val4_epoch2,val128_epoch2}/summary.json`.
+- changed axis: keep the current checkpoint, decoded candidates, and production postprocess fixed; sample raw-image center-stripe versus side-band contrast along each candidate axis, then replay one fixed top-k confidence raw-stripe replacement.
+- exact val128 baseline: stop-line F1 `0.4483`, TP/FP/FN `26 / 30 / 34`, mean point distance `17.92`.
+- exact val128 raw-stripe replay: stop-line F1 `0.0685`, TP/FP/FN `5 / 81 / 55`, mean point distance `24.77`.
+- feature summary: `382 / 405` candidate rows produced a raw-valid stripe, but raw-improved-to-positive rows were `0`; nearest-GT distance q50 worsened from `36.18px` to raw-repaired `156.92px`.
+- 판단: raw-image stripe contrast is not the missing no-GT along-axis midpoint/extent signal for current stop-line candidates. Do not broaden to val512 or repeat as raw-stripe top-k/confidence/band/smoothing/threshold sweeps without a materially new non-photometric FP-control or midpoint source.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

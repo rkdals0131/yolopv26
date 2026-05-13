@@ -9317,3 +9317,59 @@ Additional val128 readout:
 - The FP cost is much larger: `+101 FP`, so lane F1 drops `0.5739 -> 0.5669`.
 - Do not broaden to val512 or repeat as residual centerline/support threshold, component-size, coverage-width, min-length, or per-sample cap sweeps.
 - A future lane branch needs a materially stronger no-GT FP-control or model-side instance contract before appending centerline-residue candidates again.
+
+## 185. 2026-05-13 Stop-line raw-stripe midpoint audit: raw contrast is not the missing no-GT center signal
+
+맥락:
+
+- Section 172 showed positive-no-oracle stop-line candidates are mostly on the correct normal but shifted along the stop-line axis.
+- Section 183 closed predicted score-profile weighting as an exact-only positive that did not survive broader validation.
+- The remaining bounded premise was whether raw-image stripe contrast along the predicted stop-line axis could infer the missing midpoint and extent without using GT.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raw-stripe-midpoint-audit`.
+- Code commit: `5264e23`.
+- Added `tools/probe_pv26_stopline_raw_stripe_midpoint_audit.py`.
+- Added `test/test_stopline_raw_stripe_midpoint_audit.py`.
+- Contract: keep checkpoint, model outputs, and production postprocess fixed; decode current top-k stop-line candidates, sample a raw-image center stripe versus side bands along each candidate axis, and replay one fixed confidence-ranked raw-stripe replacement variant.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_raw_stripe_midpoint_audit.py test/test_stopline_raw_stripe_midpoint_audit.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_raw_stripe_midpoint_audit.py`.
+- result: `2 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_stripe_midpoint_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_stripe_midpoint_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+
+Smoke val4 result:
+
+| Variant | Stop-line F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` |
+| raw stripe top-k confidence | `0.0000` | `0 / 4 / 2` |
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP / FP / FN | Mean point distance |
+| --- | ---: | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` | `17.92` |
+| raw stripe top-k confidence | `0.0685` | `5 / 81 / 55` | `24.77` |
+
+Feature summary:
+
+- candidate rows: `405`.
+- raw-valid rows: `382`.
+- raw-improved-to-positive rows: `0`.
+- axis-dominant non-oracle rows: `56`.
+- axis-dominant raw-valid rows: `52`.
+- axis-dominant raw-improved-to-positive rows: `0`.
+- nearest-GT distance q50 worsened from `36.18px` to raw-repaired `156.92px`.
+- axis-dominant raw-repaired distance q50 was `231.86px`.
+
+판단:
+
+- The raw stripe extractor often finds a contrast span, but that span is not aligned with the actual stop-line midpoint/extent under the current candidates.
+- This is worse than flat: it collapses stop-line precision and recall on exact val128.
+- Do not broaden to val512 or repeat as raw-stripe top-k, confidence, side-band, smoothing, contrast-span, or threshold sweeps unless a materially new non-photometric FP-control or midpoint source is added first.
