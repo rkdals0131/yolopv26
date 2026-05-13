@@ -10508,3 +10508,45 @@ Exact val128:
 - `normal_flip_union_top2` recovers `+11 TP` versus baseline, but adds `+106 FP`; the F1 collapse makes it unusable as a production direction.
 - Candidate union is therefore not the missing no-GT stop-line candidate-generation signal.
 - Do not broaden to val512, and do not repeat this as flip-only/normal+flip top-k or component-count tuning unless a materially new FP-control signal is added.
+
+## 209. 2026-05-14 Lane ranked local-snap repair smoke: geometry moves but metrics do not
+
+맥락:
+
+- Section 191 showed the broad repairability ranker can select plausible lane repair candidates, but whole-track x translation chose `dx=0` for every selected smoke row.
+- The narrow follow-up here keeps the same ranker, same val-size-scaled repair budget, same checkpoint, and same `flip_centerline_avg` lane runtime path, but tests whether pointwise local 2D snapping to the predicted centerline ridge can create actual geometry movement and metric movement.
+
+구현:
+
+- Branch: `exp/lane-family-f1/lane-ranked-local-snap-repair-smoke`.
+- Code commit: `3c30b7a`.
+- Tool: `tools/probe_pv26_lane_ranked_translate_repair.py`.
+- Test: `test/test_lane_ranked_translate_repair.py`.
+- Added `--repair-mode local_2d_snap` beside the existing `translate_x` mode.
+- Contract: score decoded lane predictions with the fixed broad no-GT repairability ranker, select the val-size-scaled top-500/2048 repair budget, move each selected lane point to the strongest local 2D centerline value within the fixed radius, then recompute full lane-family metrics.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_ranked_local_snap_repair_smoke_val4_epoch2/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_lane_snap python3 -m py_compile tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_lane_snap pytest -q test/test_lane_ranked_translate_repair.py`.
+- result: `3 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint.
+
+Smoke val4:
+
+- repair budget: `repair_topk=4`, `candidate_count=53`, `selected_count=4`.
+- geometry movement: `selected_moved_count=4`, moved points `76`.
+- selected rows had mean move about `2.75-3.44` map px and max move `5.0-6.02` map px.
+
+| variant | lane F1 | lane TP / FP / FN | stop-line F1 | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| ranked local 2D snap repair | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+
+판단:
+
+- Unlike the x-translation smoke, the selected geometry actually moved.
+- The movement still did not change any lane match on the smoke slice: TP/FP/FN were exactly flat.
+- This is not worth broadening to val128. Do not repeat as a ranker/radius/local-snap sweep unless a new signal first shows actual TP/FP/FN movement.

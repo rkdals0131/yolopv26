@@ -332,6 +332,16 @@ Latest lane ranked-translate repair smoke:
 - lane TP/FP/FN stayed `41 / 12 / 45`; lane delta was `0` TP, `0` FP, `0` FN, `0.0` F1.
 - 판단: the broad ranker replay does not transfer to this simple geometry repair. The top-ranked rows were already on strong predicted centerline support and the fixed translate operation did not move them, so do not broaden this branch or repeat as a ranker top-K / translation-radius sweep.
 
+Latest lane ranked local-snap repair smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-ranked-local-snap-repair-smoke`.
+- code commit: `3c30b7a`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_ranked_local_snap_repair_smoke_val4_epoch2/summary.json`.
+- changed axis: keep the same broad no-GT repairability ranker and val-size-scaled top-500/2048 budget, but replace whole-track x translation with pointwise local 2D snapping to the predicted centerline ridge.
+- smoke val4 movement: selected `4` rows, all moved; moved points `76`, mean move about `2.75-3.44` map px.
+- smoke val4 metrics: baseline and local-snap repaired lane/stop/cross F1 were identical: `0.5899 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `41 / 12 / 45`.
+- 판단: local 2D snapping finally moves selected geometry, but the movement does not cross any matching boundary on the smoke slice. Do not broaden to val128 or repeat as ranked local snap/radius tuning without a new signal that first shows actual TP/FP/FN movement.
+
 Latest lane point-repair oracle replay:
 
 - branch/worktree: `exp/lane-family-f1/lane-point-repair-replay`.
