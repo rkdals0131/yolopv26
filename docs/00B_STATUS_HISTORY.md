@@ -8563,3 +8563,43 @@ Held-out replay result:
 - Val128 was a false-positive-looking signal; it does not transfer to val512 strongly enough.
 - Row/x projection agreement is useful as audit context, but it is not a deployable selector path and does not beat PCA/projection references.
 - Do not repeat this as another row/x threshold/logistic candidate-selector sweep unless the next branch changes candidate generation or midpoint recovery first.
+
+## 168. 2026-05-13 Stop-line normal-support recenter readout: normal scan adds FP
+
+맥락:
+
+- Section 158 showed that no-oracle local angle evidence becomes useful when the midpoint is correct.
+- Score-island weighted midpoint recentering was already negative, but the remaining bounded premise was whether the proposal center can slide along the predicted angle normal to the strongest local mask support before angle-mask extent decoding.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-normal-support-recenter-readout`.
+- Code commit: `6898a5f`.
+- Added opt-in `normal_support_scan` variants to `tools/probe_pv26_stopline_pred_angle_mask_extent.py`.
+- The probe keeps production postprocess unchanged and only replaces stop-line predictions in the read-only replay.
+- Added regression coverage in `test/test_stopline_normal_support_recenter_readout.py`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_normal_support_recenter_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_score_island_midpoint_readout.py test/test_stopline_normal_support_recenter_readout.py`
+- result: `4 passed`.
+- `git diff --check`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_normal_support_recenter_readout_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact val128 artifact: `runs/pv26_exhaustive_od_lane_train/stopline_normal_support_recenter_readout_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Worktree-local `yolo26s.pt` and generated Python caches were moved under `runs/removable/stopline-normal-support-recenter-artifacts-20260513/` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | Stop-line TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| selector-center angle-mask reference | `0.5085` | `30 / 28 / 30` |
+| normal scan r8 | `0.4354` | `32 / 55 / 28` |
+| normal scan r12 offset-penalty | `0.4354` | `32 / 55 / 28` |
+
+판단:
+
+- Normal-support recentering recovers `+6` TP versus baseline, but adds `+25` FP.
+- The exact val128 result is below both baseline and the existing selector-center angle-mask reference, so it should not be broadened to val512.
+- Do not repeat this as a normal radius, step, support-weight, or offset-penalty sweep unless a new midpoint signal changes the contract.
