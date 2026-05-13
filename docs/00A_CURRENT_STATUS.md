@@ -128,6 +128,17 @@ Latest stop-line lane-crossing extent readout:
 - exact val128 lane-extent c2: `0.0690`, TP/FP/FN `3 / 24 / 57`.
 - 판단: predicted lane crossings do not preserve TP after geometry repair. The variant emits the same `27` stop-lines as lane-cross c2 but collapses TP from `15` to `3`, so do not repeat this as a lane-crossing distance, margin, or top-k sweep.
 
+Latest stop-line local-x auxiliary smoke:
+
+- branch/worktree: `exp/lane-family-f1/stopline-local-x-aux-smoke`.
+- code commit: `12eb157`.
+- artifact: `analysis_exports/stopline_local_x_aux_smoke_val64_epoch1/summary.json`.
+- changed axis: keep the source stage-4 freeze policy, LR, and loss weights fixed, then add only `stopline_local_x_aux_weight=0.5`.
+- smoke setup: `1` epoch, `128` train batches, `64` validation batches, seed checkpoint evaluated on the same val64 slice.
+- same-val64 seed baseline lane/stop/cross F1: `0.5469 / 0.2000 / 0.6923`, phase objective `0.6050`.
+- local-x aux epoch1 lane/stop/cross F1: `0.5196 / 0.2222 / 0.6988`, phase objective `0.5901`.
+- 판단: local-x auxiliary gives only `+0.0222` stop-line F1 on a low-support smoke slice while losing `-0.0273` lane F1 and `-0.0148` objective. Do not broaden or repeat as a local-x aux weight-only/schedule sweep.
+
 Latest stop-line no-oracle axis-offset budget:
 
 - branch/worktree: `exp/lane-family-f1/stopline-axis-offset-budget`.

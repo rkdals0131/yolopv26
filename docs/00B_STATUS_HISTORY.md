@@ -10641,3 +10641,40 @@ Smoke val4:
 - Coherent affine movement is real but too small and too local to change lane assignment on this smoke slice.
 - TP/FP/FN/F1 were exactly flat after repair.
 - Do not broaden this to val128. Do not repeat centerline-peak geometry repair as affine/local-snap/radius variants unless a new signal first shows actual TP/FP/FN movement.
+
+## 212. 2026-05-14 Stop-line local-x auxiliary smoke: tiny stop-line gain costs lane/objective
+
+맥락:
+
+- The loss code still had an opt-in `stopline_local_x_aux_weight` path that was not closed as a single-axis result in the status docs.
+- Older probe entries bundled local-x with target-mode and task/lane loss rebalances, so they could not isolate the local-x premise.
+- This branch tests only whether adding local column support/distribution supervision helps stop-line proposal/readout without touching the rest of the stage-4 contract.
+
+구현:
+
+- Branch: `exp/lane-family-f1/stopline-local-x-aux-smoke`.
+- Code commit: `12eb157`.
+- Tool: `tools/run_pv26_lane60_probe.py`.
+- Added experiment entry `stopline_local_x_aux_only`.
+- Changed axis: source stage-4 freeze policy, LR, and loss weights are unchanged; only `stopline_local_x_aux_weight=0.5` is added.
+- Compact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_local_x_aux_smoke_val64_epoch1/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_local_x python3 -m py_compile tools/run_pv26_lane60_probe.py`.
+- 1-epoch smoke: `128` train batches, `64` validation batches, batch size `4`, device `cuda:0`.
+- Same-slice seed checkpoint baseline evaluation: `64` validation batches, validation epoch `1`.
+- skipped steps: `0`.
+
+Smoke val64:
+
+| variant | objective | lane F1 | lane TP / FP / FN | stop-line F1 | stop-line TP / FP / FN | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| seed baseline same val64 | `0.6050` | `0.5469` | `510 / 243 / 602` | `0.2000` | `5 / 19 / 21` | `0.6923` |
+| local-x aux epoch1 | `0.5901` | `0.5196` | `490 / 284 / 622` | `0.2222` | `6 / 22 / 20` | `0.6988` |
+
+판단:
+
+- The local-x auxiliary adds only one stop-line TP on this smoke slice, while also adding FP and dropping lane substantially.
+- Objective regresses by `-0.0148`, so this is not a broader-run candidate.
+- Do not repeat it as a local-x auxiliary weight, epoch, or schedule sweep unless a different stop-line contract first changes the proposal/readout bottleneck.

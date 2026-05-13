@@ -60,6 +60,7 @@
 - stop-line center-rank checkpoint의 proposal-recall top3 소폭 개선을 candidate-generation recovery로 표현하지 않는다.
 - denser gap4/top50 candidate-select loss와 presence/max-validator gate 조합을 stop-line production fix로 longer run 확장하지 않는다.
 - candidate-select checkpoint에서 presence threshold만 낮추거나 끄는 rescue replay를 stop-line production fix로 반복하지 않는다.
+- stopline local-x auxiliary-only를 weight/schedule sweep으로 반복하지 않는다. Same-val64 smoke에서 stop-line F1은 `0.2000 -> 0.2222`로 작게 올랐지만 lane F1 `0.5469 -> 0.5196`, objective `0.6050 -> 0.5901`로 내려갔다.
 - stop-line-head-only freeze schedule로 geometry-validator loss를 LR/epoch sweep하지 않는다.
 - side-band centerline BCE positive weighting만으로 lane 0.6 path를 다시 찾지 않는다.
 - side-band centerline probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
