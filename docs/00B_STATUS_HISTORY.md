@@ -9606,10 +9606,11 @@ Supporting medians:
 구현:
 
 - Branch/worktree: `exp/lane-family-f1/lane-repairability-model-replay`.
-- Code commit: `0b8af52`.
+- Code commits: `0b8af52`, `4960e0f`.
 - Added `tools/analyze_pv26_lane_repairability_model_replay.py`.
 - Added `test/test_lane_repairability_model_replay.py`.
 - Contract: train a small 2-fold out-of-fold logistic ranker over no-GT unmatched-track/context features, then replay selected repairable unmatched predictions as existing FP repaired into TP (`TP+1`, `FP-1`, `FN-1`).
+- Parameter export: commit `4960e0f` writes a full-data `repairability_model_parameters.json` artifact for the next fixed-scorer repair smoke.
 - Input rows: `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/broader_val512_epoch2/lane_unmatched_prediction_repair_rows.csv`.
 
 Verification:
@@ -9623,6 +9624,7 @@ Verification:
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_replay.csv`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_weights.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_parameters.json`.
 
 Broader-val512 replay result:
 

@@ -278,10 +278,11 @@ Latest lane repairable-unmatched feature audit:
 Latest lane repairability model replay:
 
 - branch/worktree: `exp/lane-family-f1/lane-repairability-model-replay`.
-- code commit: `0b8af52`.
+- code commits: `0b8af52`, `4960e0f`.
 - artifacts:
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
   - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_replay.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_parameters.json`.
 - changed axis: read-only 2-fold out-of-fold logistic ranker over no-GT unmatched-track/context features, followed by actual FP-to-TP oracle replay (`TP+1`, `FP-1`, `FN-1`) for selected repairable unmatched predictions.
 - baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
 - tight `repairable_le80_center050`: OOF AUC/AP `0.7627 / 0.4750`; top-526 positive-budget replay selects `267` repairable rows and gives lane F1 `0.5907`; top-750 gives `330` repairs and F1 `0.5985`; top-1000 gives `395` repairs and F1 `0.6065`, but precision falls to `0.3950`.
