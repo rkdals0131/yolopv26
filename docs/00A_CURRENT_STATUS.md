@@ -224,6 +224,17 @@ Latest lane centerline-duplicate smoke:
 - comparison: row-scan-tangent smoke reference was `0.5899`, TP/FP/FN `41 / 12 / 45`; replacement centerline translation was `0.5674`, TP/FP/FN `40 / 15 / 46`.
 - 판단: preserving the original track avoids replacing it, but the duplicate adds FP without recovering TP. Do not broaden this branch or repeat as a duplicate offset/radius sweep.
 
+Latest lane semantic vote mode audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-semantic-vote-mode-audit`.
+- code commit: `4954b98`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane_semantic_vote_mode_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- artifact exact val128: `runs/pv26_exhaustive_od_lane_train/lane_semantic_vote_mode_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- changed axis: keep the current `flip_centerline_avg` lane replay fixed and vary only the lane vectorizer semantic vote mode across `component`, `centerline`, `centerline_excess`, and `component_core`.
+- smoke val4 result: all four modes were identical, lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`.
+- exact val128 result: all four modes had identical lane TP/FP/FN/F1 `1200 / 510 / 1190 / 0.5854`; stop-line/crosswalk stayed `0.4364 / 0.5988`. Only lane score / `phase_objective` jittered slightly (`0.62957..0.62975`).
+- 판단: lane class/type semantic voting is not the active F1 bottleneck for the current flip-centerline composite. Do not broaden this to val512 or repeat as semantic-vote weighting/class-type-vote sweeps unless a new diagnostic first shows class/type misvote is causing metric FN/FP.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

@@ -96,6 +96,7 @@
 - lane logistic instance gate에 per-sample top-K safety fallback을 붙이는 K/threshold sweep을 반복하지 않는다.
 - lane instance-validator logits의 threshold/weight/logistic replay를 같은 checkpoint에서 반복하지 않는다.
 - lane instance-validator candidate score-gate를 같은 checkpoint에서 threshold/statistic sweep으로 반복하지 않는다.
+- lane vectorizer semantic vote mode를 class/type vote weighting sweep으로 반복하지 않는다. Current flip-centerline composite에서 `component`, `centerline`, `centerline_excess`, `component_core` 모두 exact val128 lane TP/FP/FN/F1 `1200 / 510 / 1190 / 0.5854`로 동일했다.
 - flip-centerline average 위의 post-hoc row gate exact `0.6125`를 lane-family success로 표현하거나 같은 threshold replay를 반복하지 않는다.
 - lane row-scan tangent soft-ridge readout을 `threshold/peak-distance` sweep으로 반복하지 않는다.
 - lane row-scan tangent centerline translation을 translation-radius/offset sweep으로 반복하지 않는다.

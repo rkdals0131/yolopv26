@@ -9087,3 +9087,52 @@ Smoke val4 result:
 - Preserving the original track does not recover extra TP on the smoke gate.
 - The duplicate adds FP beyond the replacement translation result, so the budget headroom does not transfer to this simple production-like readout.
 - Do not broaden this branch to val128/val512 or repeat it as a duplicate offset/radius sweep.
+
+## 180. 2026-05-13 Lane semantic vote mode audit: class/type vote weighting is flat
+
+맥락:
+
+- The current broader lane gap could, in principle, come from lane color/type semantic voting rather than geometry.
+- This branch kept the current `flip_centerline_avg` lane replay fixed and varied only the semantic vote weighting used when assigning decoded lane `class_name` and `lane_type`.
+- This is a postprocess audit, not a model-side lane recovery contract.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-semantic-vote-mode-audit`.
+- Code commit: `4954b98`.
+- Extended `tools/probe_pv26_lane_flip_tta.py` with `--lane-semantic-vote-modes`.
+- Compared `component`, `centerline`, `centerline_excess`, and `component_core`.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=/tmp/pv26_semvote_pycache python3 -m py_compile tools/probe_pv26_lane_flip_tta.py`.
+- `PYTHONPYCACHEPREFIX=/tmp/pv26_semvote_pycache python3 -m pytest -q -p no:cacheprovider test/test_lane_flip_tta_probe.py`.
+- result: `3 passed`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_semantic_vote_mode_audit_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane_semantic_vote_mode_audit_20260513/analysis_exports/val128_epoch2/summary.json`.
+- `/tmp/pv26_semvote_pycache` was deleted after verification.
+
+Smoke val4 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `component` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `centerline` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `centerline_excess` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| `component_core` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+
+Exact val128 result:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 | Phase objective |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `centerline_excess` | `0.5854` | `1200 / 510 / 1190` | `0.4364` | `0.5988` | `0.6297451651` |
+| `centerline` | `0.5854` | `1200 / 510 / 1190` | `0.4364` | `0.5988` | `0.6296583421` |
+| `component` | `0.5854` | `1200 / 510 / 1190` | `0.4364` | `0.5988` | `0.6296149306` |
+| `component_core` | `0.5854` | `1200 / 510 / 1190` | `0.4364` | `0.5988` | `0.6295715192` |
+
+판단:
+
+- Semantic vote mode changes only score/selection-weight jitter here; it does not change lane TP/FP/FN on smoke or exact val128.
+- This is not a lane F1 path and should not be broadened to val512.
+- Do not repeat this as class/type semantic-vote weighting unless a new diagnostic first shows that class/type misvote, rather than geometry/instance recovery, is causing lane metric failure.
