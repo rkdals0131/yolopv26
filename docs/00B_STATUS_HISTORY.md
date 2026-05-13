@@ -9594,3 +9594,53 @@ Supporting medians:
 - Repairable unmatched predictions are not invisible: they are longer and have stronger predicted centerline/support evidence.
 - The signal is moderate, not decisive. Tight repair targets have best single-feature AUC `0.7205` but precision only `0.4563` at the positive-count cutoff.
 - Do not turn this into a single-feature threshold or post-hoc gate. A real follow-up needs a learned/contextual no-GT repair contract and must report actual TP/FP/FN movement.
+
+## 190. 2026-05-13 Lane repairability model replay: broad learned repair ranking has planning headroom
+
+맥락:
+
+- Section 189 showed no-GT features are informative but too weak as a single-feature gate.
+- The next narrow question was whether a learned/contextual combination of no-GT unmatched-track features can rank repairable FP-to-TP targets well enough to justify a real decoder/model-side repair contract.
+- This is still read-only GT-labeled planning evidence. It does not implement geometry repair.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-repairability-model-replay`.
+- Code commit: `0b8af52`.
+- Added `tools/analyze_pv26_lane_repairability_model_replay.py`.
+- Added `test/test_lane_repairability_model_replay.py`.
+- Contract: train a small 2-fold out-of-fold logistic ranker over no-GT unmatched-track/context features, then replay selected repairable unmatched predictions as existing FP repaired into TP (`TP+1`, `FP-1`, `FN-1`).
+- Input rows: `runs/pv26_exhaustive_od_lane_train/lane_repairable_unmatched_feature_audit_20260513/analysis_exports/broader_val512_epoch2/lane_unmatched_prediction_repair_rows.csv`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_repairability_model_replay.py test/test_lane_repairability_model_replay.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_repairability_model_replay.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fn_recovery_audit.py test/test_lane_repairable_unmatched_features.py test/test_lane_repairability_model_replay.py`.
+- result: `11 passed`.
+- `git diff --check`.
+- Artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_replay.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_repairability_model_replay_20260513/analysis_exports/broader_val512_epoch2/repairability_model_weights.csv`.
+
+Broader-val512 replay result:
+
+- baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
+- tight `repairable_le80_center050`: OOF AUC/AP `0.7627 / 0.4750`.
+- broad `repairable_le120_any_center`: OOF AUC/AP `0.6810 / 0.7488`.
+
+| Label | Budget | Selected repairable | Precision | Lane F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- |
+| tight | `526` | `267` | `0.5076` | `0.5907` | `4785 / 1939 / 4692` |
+| tight | `750` | `330` | `0.4400` | `0.5985` | `4848 / 1876 / 4629` |
+| tight | `1000` | `395` | `0.3950` | `0.6065` | `4913 / 1811 / 4564` |
+| broad | `500` | `405` | `0.8100` | `0.6077` | `4923 / 1801 / 4554` |
+| broad | `1000` | `769` | `0.7690` | `0.6527` | `5287 / 1437 / 4190` |
+| broad | `1393` | `1011` | `0.7258` | `0.6826` | `5529 / 1195 / 3948` |
+
+판단:
+
+- The broad repair label is the stronger next premise: top-500 already clears lane `0.60` in oracle-repair replay with high selection precision.
+- This does not solve the production task. The replay assumes that selected repairable unmatched predictions can be moved/aligned into matched lanes without adding new FP or hurting stop-line/crosswalk.
+- The next lane branch should implement one budgeted no-GT geometry/instance-alignment repair path using this broad-ranker premise and report full TP/FP/FN plus stop-line/crosswalk retention. Do not rerun this as a threshold/top-K sweep or claim the replay as success.
