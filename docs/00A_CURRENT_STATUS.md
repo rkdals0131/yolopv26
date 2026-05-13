@@ -103,6 +103,17 @@ Current best broader runtime/postprocess composite by objective:
 - support lane / stop / cross: `9477 / 271 / 395`
 - 판단: flip-centerline TTA recovers a real but small broader lane gain over the same transplanted composite (`0.5480 -> 0.5577`) while preserving stop-line `0.4235` and hull crosswalk `0.6187`. This is a new objective best but still not all-task success because lane and stop-line remain below `0.60`.
 
+Current best broader task-balance replay:
+
+- branch/worktree: `exp/lane-family-f1/stopline-projcomp-flip-composite`.
+- code commit: none; artifact-only replay using the existing projection-competition CSV tool and the current flip-centerline reference row.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/summary.json`.
+- changed axis: keep current `flip_centerline_avg` lane and hull crosswalk metrics, then replay projection-competition stop-line predictions from the same checkpoint/candidate pool.
+- lane / stop-line / crosswalk F1: `0.5577 / 0.5164 / 0.6187`.
+- stop-line TP/FP/FN: `126 / 91 / 145`.
+- lane-family mean/min F1: `0.5643 / 0.5164`.
+- 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0423` and stop-line needs `+0.0836`.
+
 Latest lane FN recovery audit:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.

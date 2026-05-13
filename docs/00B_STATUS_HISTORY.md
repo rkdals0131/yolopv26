@@ -8685,3 +8685,43 @@ Result:
 - Centerline mean gating improves exact val128 versus ungated area rescue (`0.5716 -> 0.5846`) mainly by reducing FP (`726 -> 610`) while keeping most of the rescued TP.
 - The gain does not transfer enough to broader val512: lane F1 `0.5548` remains below the current broader best `0.5577`, and stop-line remains far below target at `0.4083`.
 - This is weak partial/negative evidence. Do not broaden/default it, and do not repeat it as a `min_centerline`, min-area, or max-per-sample sweep without a new FP-control signal beyond track mean.
+
+## 171. 2026-05-13 Stop-line projection competition + flip-centerline composite: balance improves but goal still fails
+
+맥락:
+
+- The current broader objective best is the flip-centerline runtime composite: lane/stop-line/crosswalk F1 `0.5577 / 0.4235 / 0.6187`.
+- The strongest local stop-line readout reference is projection competition: stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`, but it was recorded with the non-flip lane reference row.
+- This replay checks the combined task-balance lower bound without changing model weights or training.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-projcomp-flip-composite`.
+- Code commit: none; artifact-only composition replay using existing tools.
+- Built `flip_reference_summary.json` from the `flip_centerline_avg` row of `lane60_lane_flip_tta_audit_20260512`.
+- Re-ran `tools/probe_pv26_stopline_fragment_projection_competition_readout.py` against the existing current-composite `candidate_features.csv`, using the flip row as the reference summary.
+- Contract: this does not change predictions for lane/crosswalk. It tests whether known independent lane/crosswalk and stop-line partial positives already create a balanced all-task lower bound.
+
+Command:
+
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 tools/probe_pv26_stopline_fragment_projection_competition_readout.py --candidate-features runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_current_candidate_pool_manifest_val512_epoch2/candidate_features.csv --summary runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/flip_reference_summary.json --reference-variant flip_centerline_avg_reference --output-dir runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2`
+
+Artifacts:
+
+- `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/flip_reference_summary.json`.
+- `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/summary.json`.
+- `runs/pv26_exhaustive_od_lane_train/stopline_projcomp_flip_composite_20260513/analysis_exports/val512_epoch2/fragment_projection_competition_variants.csv`.
+
+Result:
+
+| Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop-line TP / FP / FN | Mean F1 | Min F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `proj_comp_length_s090_top2_second_frag5` | `0.5577` | `0.5164` | `0.6187` | `126 / 91 / 145` | `0.5643` | `0.5164` |
+| `proj_comp_length_s080_top2_second_frag5` | `0.5577` | `0.5163` | `0.6187` | `127 / 94 / 144` | `0.5642` | `0.5163` |
+| `proj_comp_length_s090_top1` | `0.5577` | `0.5114` | `0.6187` | `123 / 87 / 148` | `0.5626` | `0.5114` |
+
+판단:
+
+- This is a better task-balance lower bound than the objective-best flip composite because stop-line moves `0.4235 -> 0.5164` while lane/crosswalk stay `0.5577 / 0.6187`.
+- It is still not all-task success. Lane remains `+0.0423` short of `0.60`, and stop-line remains `+0.0836` short.
+- Existing known partial positives do not already solve the goal when combined. The next experiment must still change either stop-line midpoint/candidate generation or lane instance recovery, not just recombine known readouts.
