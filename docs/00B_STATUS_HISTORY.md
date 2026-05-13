@@ -8603,3 +8603,43 @@ Exact val128 result:
 - Normal-support recentering recovers `+6` TP versus baseline, but adds `+25` FP.
 - The exact val128 result is below both baseline and the existing selector-center angle-mask reference, so it should not be broadened to val512.
 - Do not repeat this as a normal radius, step, support-weight, or offset-penalty sweep unless a new midpoint signal changes the contract.
+
+## 169. 2026-05-13 Stop-line raw-edge recenter readout: contrast-driven geometry collapses
+
+맥락:
+
+- Section 168 closed normal-support recentering because support-maximized normal shifts recovered TP but added too many FP.
+- The remaining distinct bounded premise was whether raw-image edge/side-contrast could choose a better center along the same normal scan, instead of using mask support or a post-hoc photometric selector threshold.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raw-edge-recenter-readout`.
+- Code commit: `5abfb41`.
+- Added opt-in `raw_edge_normal_scan` variants to `tools/probe_pv26_stopline_pred_angle_mask_extent.py`.
+- Reused production-legal raw-image photometric feature extraction as a geometry score during normal-coordinate center search.
+- Added regression coverage in `test/test_stopline_raw_edge_recenter_readout.py`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_raw_edge_recenter_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_normal_support_recenter_readout.py test/test_stopline_raw_edge_recenter_readout.py`
+- result: `3 passed`.
+- `git diff --check`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_edge_recenter_readout_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact val128 artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_edge_recenter_readout_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Worktree-local `yolo26s.pt` and generated Python caches were moved under `runs/removable/stopline-raw-edge-recenter-artifacts-20260513/` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | Stop-line TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| selector-center angle-mask reference | `0.5085` | `30 / 28 / 30` |
+| raw-edge scan r8 | `0.2993` | `22 / 65 / 38` |
+| raw-edge scan r12 offset-penalty | `0.2585` | `19 / 68 / 41` |
+
+판단:
+
+- Raw-edge recentering is worse than normal-support recentering: it loses TP and adds many FP versus baseline.
+- The exact val128 result is far below both baseline and the existing selector-center angle-mask reference, so it should not be broadened to val512.
+- Do not repeat this as a raw-edge contrast, length-weight, radius, step, or offset-penalty sweep without a new midpoint source.
