@@ -139,6 +139,17 @@ Latest stop-line local-x auxiliary smoke:
 - local-x aux epoch1 lane/stop/cross F1: `0.5196 / 0.2222 / 0.6988`, phase objective `0.5901`.
 - 판단: local-x auxiliary gives only `+0.0222` stop-line F1 on a low-support smoke slice while losing `-0.0273` lane F1 and `-0.0148` objective. Do not broaden or repeat as a local-x aux weight-only/schedule sweep.
 
+Latest stop-line centerline center-target smoke:
+
+- branch/worktree: `exp/lane-family-f1/stopline-centerline-center-target-smoke`.
+- code commit: `55758ab`.
+- artifact: `analysis_exports/stopline_centerline_center_target_smoke_val64_epoch1/summary.json`.
+- changed axis: keep the same stage-4 freeze policy, LR, and loss weights, then set only `stopline_center_target_mode=centerline`.
+- smoke setup: `1` epoch, `128` train batches, `64` validation batches, seed checkpoint evaluated on the same val64 slice.
+- same-val64 seed baseline lane/stop/cross F1: `0.5469 / 0.2000 / 0.6923`, phase objective `0.6050`.
+- centerline target epoch1 lane/stop/cross F1: `0.5202 / 0.1455 / 0.6988`, phase objective `0.5812`.
+- 판단: centerline center-target supervision worsens the actual stop-line metric and also drops lane/objective. Do not broaden or repeat as a target-mode sweep.
+
 Latest stop-line no-oracle axis-offset budget:
 
 - branch/worktree: `exp/lane-family-f1/stopline-axis-offset-budget`.

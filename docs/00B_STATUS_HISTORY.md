@@ -10678,3 +10678,41 @@ Smoke val64:
 - The local-x auxiliary adds only one stop-line TP on this smoke slice, while also adding FP and dropping lane substantially.
 - Objective regresses by `-0.0148`, so this is not a broader-run candidate.
 - Do not repeat it as a local-x auxiliary weight, epoch, or schedule sweep unless a different stop-line contract first changes the proposal/readout bottleneck.
+
+## 213. 2026-05-14 Stop-line centerline center-target smoke: target-mode switch is worse
+
+맥락:
+
+- After the local-x auxiliary smoke, the remaining opt-in stop-line target-mode question was whether center supervision should use centerline targets directly.
+- This branch isolates only that target-mode switch. It keeps the stage-4 source checkpoint, freeze policy, LR, loss weights, task-positive sampling, and val64 slice fixed.
+- The intent was to test the target representation, not to open a target-mode/weight schedule sweep.
+
+구현:
+
+- Branch: `exp/lane-family-f1/stopline-centerline-center-target-smoke`.
+- Code commit: `55758ab`.
+- Tool: `tools/run_pv26_lane60_probe.py`.
+- Added experiment entry `stopline_centerline_center_target_only`.
+- Changed axis: only `stopline_center_target_mode=centerline`.
+- Compact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/stopline_centerline_center_target_smoke_val64_epoch1/summary.json`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_centerline_target python3 -m py_compile tools/run_pv26_lane60_probe.py`.
+- `git diff --check`.
+- 1-epoch smoke: `128` train batches, `64` validation batches, batch size `4`, device `cuda:0`.
+- Same-slice seed checkpoint baseline row reused from the local-x smoke artifact.
+- skipped steps: `0`.
+
+Smoke val64:
+
+| variant | objective | lane F1 | lane TP / FP / FN | stop-line F1 | stop-line TP / FP / FN | crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| seed baseline same val64 | `0.6050` | `0.5469` | `510 / 243 / 602` | `0.2000` | `5 / 19 / 21` | `0.6923` |
+| centerline target epoch1 | `0.5812` | `0.5202` | `490 / 282 / 622` | `0.1455` | `4 / 25 / 22` | `0.6988` |
+
+판단:
+
+- The centerline target-mode switch removes one stop-line TP, adds FP, and lowers stop-line F1 by `-0.0545`.
+- Lane also regresses by `-0.0267`, and phase objective regresses by `-0.0238`.
+- Do not broaden or repeat this as a target-mode, weight, or schedule sweep unless a new stop-line contract first changes the proposal/readout bottleneck.
