@@ -10813,3 +10813,40 @@ Task-mask competition val128:
 - Adding lane competition collapses recall, so lane/logit suppression is not a viable stop-line recovery path under this checkpoint.
 - Do not broaden this to val512. Do not repeat as task-mask competition strength, crosswalk/lane source, or mask-threshold sweeps unless a new candidate-generation/midpoint signal first moves more than one TP while preserving FP.
 - With no materially different stop-line premise available from this visual pass, the next work should pivot back to lane instance stability while preserving the current stop-line/crosswalk retention contract.
+
+## 216. 2026-05-14 Lane row-scan tangent global assignment smoke: synthetic fix, real TP loss
+
+맥락:
+
+- Section 215 pushed the next step back to lane instance stability.
+- Existing row-scan-tangent linking is greedy: a locally cheap cluster assignment can consume a row cluster and leave another track with a worse continuation.
+- This branch tested whether solving each row's track-to-cluster assignment globally can reduce that assignment-order failure without changing thresholds, costs, checkpoint, stop-line, or crosswalk contracts.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-row-scan-tangent-global-smoke`.
+- Code commit: `7d761ac`.
+- Added opt-in `row_scan_tangent_global` mode in `model/engine/lane_segfirst_vectorizer.py`.
+- Added `core_centerline_refine_row_scan_tangent_global_link` to `tools/run_pv26_lane60_probe.py`.
+- Added a regression test where greedy row assignment links the wrong pair, while global row assignment keeps the lower-cost pair set.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_global_smoke_val4_epoch2/metrics.csv`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/run_pv26_lane60_probe.py test/test_lane_segfirst_vectorizer.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_segfirst_vectorizer.py`.
+- result: `6 passed`.
+- val4 checkpoint replay completed with the same epoch-2 validation sampler contract.
+
+Smoke val4:
+
+| Readout | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: |
+| row-scan-tangent reference | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| row-scan-tangent global assignment | `0.5152` | `34 / 12 / 52` | `0.0000` | `0.4000` |
+
+판단:
+
+- The global assignment mode fixes the synthetic greedy-conflict test, but the real smoke slice loses seven lane TP and does not reduce FP.
+- This is worse than the existing row-scan-tangent reference and worse than recent failed repair/readout smokes.
+- Do not broaden this to val128/val512. Do not repeat as a global/Hungarian assignment variant unless a new recall-preserving signal first shows actual TP recovery.

@@ -485,6 +485,16 @@ Latest lane dual-checkpoint centerline ensemble smoke:
 - smoke val4: `flip_centerline_avg` reference lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`; `dual_checkpoint_flip_centerline_avg` lane F1 `0.5672`, `38 / 10 / 48`; `dual_checkpoint_centerline_avg` lane F1 `0.5263`, `35 / 12 / 51`.
 - 판단: the original tangent-link checkpoint does not add complementary lane centerline evidence under fixed averaging; it removes too many TP. Do not broaden to val128 or repeat as checkpoint/weight/threshold averaging sweeps without a new diagnostic showing complementary TP recovery.
 
+Latest lane row-scan tangent global-assignment smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-row-scan-tangent-global-smoke`.
+- code commit: `7d761ac`.
+- artifact smoke val4: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/analysis_exports/lane_row_scan_tangent_global_smoke_val4_epoch2/metrics.csv`.
+- changed axis: keep the existing row-scan-tangent cost/thresholds fixed, but replace greedy per-cluster assignment with per-row Hungarian track-to-cluster assignment.
+- verification: `py_compile`, `pytest -q test/test_lane_segfirst_vectorizer.py`, then val4 checkpoint replay.
+- smoke val4 result: row-scan-tangent reference lane F1 `0.5899`, TP/FP/FN `41 / 12 / 45`; global-assignment lane F1 `0.5152`, TP/FP/FN `34 / 12 / 52`; stop-line/crosswalk F1 `0.0000 / 0.4000`.
+- 판단: global assignment fixes a synthetic greedy-conflict unit case, but in real val4 it loses seven lane TP without reducing FP. Do not broaden to val128/val512 or repeat as a Hungarian/global row-assignment variant unless a new recall-preserving signal first shows TP recovery.
+
 Latest lane soft-ridge recovery readout smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-fn-nearby-fp-recovery-audit`.
