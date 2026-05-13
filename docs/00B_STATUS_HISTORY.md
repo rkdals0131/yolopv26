@@ -8400,3 +8400,44 @@ Smoke result:
 - Uniform track translation does not recover the nearby-track center-offset bucket. It still loses `1` TP, adds `3` FP, and adds `1` FN relative to the same row-scan-tangent smoke reference.
 - Do not broaden this to val512.
 - Do not repeat this as a translation-radius/offset sweep unless a materially new non-GT FP-control signal explains how to avoid the observed FP increase.
+
+## 164. 2026-05-13 Stop-line score-island linefit readout: local geometry adds FP
+
+맥락:
+
+- Section 158 showed that local stop-line angle evidence becomes useful only when the midpoint is correct.
+- Section 159 showed that score-island weighted midpoint centering alone adds too many FP.
+- The remaining narrow no-GT readout question was whether the local score island contains enough geometry to infer both center and axis before using the existing mask-extent line generation.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-score-island-linefit-readout`.
+- Code commit: `e89db20`.
+- Added opt-in `linefit_max_top3_s040_r8_rel070_mask050_band4_fallback` to `tools/probe_pv26_stopline_pred_angle_mask_extent.py`.
+- Added regression coverage in `test/test_stopline_score_island_linefit_readout.py`.
+- Contract: choose a local max(center, selector) proposal island, fit weighted center and PCA axis from predicted score-island cells plus predicted offsets, then reuse the existing mask-extent line readout. This uses no GT center or GT angle and is a readout probe, not a deployment default.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/probe_pv26_stopline_pred_angle_mask_extent.py test/test_stopline_score_island_linefit_readout.py`
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_stopline_score_island_linefit_readout.py`
+- result: `2 passed`.
+- `git diff --check`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_score_island_linefit_readout_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_score_island_linefit_readout_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Auto-downloaded `yolo26s.pt` and generated Python caches were moved under branch-local `runs/removable/stopline-score-island-linefit-artifacts-20260513/` instead of being deleted.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP/FP/FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| existing `pred_selector_top1_s060_mask050_band4` | `0.5085` | `30 / 28 / 30` |
+| score-island linefit | `0.4110` | `30 / 56 / 30` |
+| max-proposal angle-mask reference | `0.4354` | `32 / 55 / 28` |
+
+판단:
+
+- Score-island linefit does not solve no-oracle midpoint/geometry recovery. It matches selector-center TP but doubles FP relative to the existing selector-center reference.
+- Do not broaden this to val512.
+- Do not repeat this as an island radius, relative-threshold, or linefit-mode sweep without a materially new non-GT FP-control signal.
