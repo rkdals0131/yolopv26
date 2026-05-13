@@ -246,6 +246,20 @@ Latest lane lateral-duplicate budget audit:
 - `unmatched<=120 any center`: `1698` recoverable FN; no-added-FP upper-bound F1 `0.6946`, with `2821` added FP tolerance. If all current FP were duplicated and this whole bucket were recovered, the oracle-budget F1 is still `0.6184`.
 - 판단: this is not production success, but it says a one-axis lateral-duplicate smoke is not mathematically dead if it targets a large nearby-track bucket. The next implementation must prove TP recovery and added-FP cost together; do not turn this into an offset/radius sweep.
 
+Latest lane FP-repair oracle audit:
+
+- branch/worktree: `exp/lane-family-f1/lane-fp-repair-oracle-audit`.
+- code commit: `0a9aa01`.
+- artifacts:
+  - `runs/pv26_exhaustive_od_lane_train/lane_fp_repair_oracle_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_fp_repair_oracle_audit_20260513/analysis_exports/fp_repair_broader_val512_epoch2/summary.json`.
+- changed axis: no decoder change; re-generate broader-val512 FN rows, then count each nearest unmatched prediction once as an oracle repair of an existing FP into a TP (`TP+1`, `FP-1`, `FN-1`).
+- baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
+- `unmatched<=120 any center`: `1698` FN rows map to `1272` unique repairable unmatched predictions; oracle-repair lane F1 `0.7148`, TP/FP/FN `5790 / 934 / 3687`.
+- `unmatched<=80 any center`: `1007` FN rows map to `854` unique repairable unmatched predictions; oracle-repair lane F1 `0.6632`, TP/FP/FN `5372 / 1352 / 4105`.
+- `unmatched<=80 and center>=0.50`: `563` FN rows map to `533` unique repairable unmatched predictions; oracle-repair lane F1 `0.6235`, TP/FP/FN `5051 / 1673 / 4426`.
+- 판단: existing unmatched predictions contain enough GT-labeled repair headroom even after deduplicating by prediction id, but this is oracle planning evidence only. It supports a no-GT FP-to-TP repair contract, not another duplicate append, translation radius, or post-hoc threshold sweep.
+
 Latest lane centerline-duplicate smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-centerline-duplicate-smoke`.

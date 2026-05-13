@@ -9495,3 +9495,48 @@ Candidate signal check:
 - Detector context is a real emission suppressor, but it is not recall-preserving.
 - The gate removes many FPs, but it removes most valid stop-line candidates first: exact val128 TP falls from `30` under score-threshold reference to `5~6`.
 - Do not repeat predicted `traffic_light` / `sign` proximity as a detector-context radius, threshold, score, class-weight, or top-k sweep unless a new TP-preserving signal is added.
+
+## 188. 2026-05-13 Lane FP-repair oracle: existing unmatched tracks have repair headroom
+
+맥락:
+
+- Section 178 measured a duplicate-style budget and kept current FP constant or allowed added FP.
+- Section 179 showed the simple production-like duplicate smoke adds FP without recovering TP.
+- The next non-repeated read-only question was whether the same nearby-track FN bucket can be framed as repairing existing unmatched predictions, where each repaired unmatched prediction becomes one TP and removes one FP.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-fp-repair-oracle-audit`.
+- Code commit: `0a9aa01`.
+- Added `tools/analyze_pv26_lane_fp_repair_oracle.py`.
+- Added `test/test_lane_fp_repair_oracle.py`.
+- Contract: read-only oracle planning evidence. It uses GT-labeled FN rows and nearest unmatched prediction ids; it does not alter predictions or prove a no-GT decoder.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tools/analyze_pv26_lane_fp_repair_oracle.py test/test_lane_fp_repair_oracle.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q test/test_lane_fp_repair_oracle.py`.
+- result: `2 passed`.
+- `git diff --check`.
+- Re-generated broader-val512 FN rows with `tools/probe_pv26_lane_fn_recovery_audit.py --max-val-batches 512 --lane-flip-variant flip_centerline_avg`.
+- Artifacts:
+  - `runs/pv26_exhaustive_od_lane_train/lane_fp_repair_oracle_audit_20260513/analysis_exports/broader_val512_epoch2/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/lane_fp_repair_oracle_audit_20260513/analysis_exports/fp_repair_broader_val512_epoch2/summary.json`.
+
+Broader-val512 result:
+
+Baseline lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
+
+| Bucket | FN rows | Unique repairable unmatched preds | Oracle repair F1 | Oracle TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: |
+| unmatched `<=120`, any center | `1698` | `1272` | `0.7148` | `5790 / 934 / 3687` |
+| unmatched `<=80`, any center | `1007` | `854` | `0.6632` | `5372 / 1352 / 4105` |
+| unmatched `<=120`, center `>=0.50` | `836` | `761` | `0.6517` | `5279 / 1445 / 4198` |
+| unmatched `<=120`, center `<0.50` | `862` | `660` | `0.6392` | `5178 / 1546 / 4299` |
+| unmatched `<=80`, center `>=0.50` | `563` | `533` | `0.6235` | `5051 / 1673 / 4426` |
+
+판단:
+
+- The nearby-track bucket remains large even after deduplicating by current unmatched prediction id.
+- Repairing existing FP into TP is mathematically much stronger than appending duplicate candidates: the broad `unmatched<=120` repair oracle reaches lane F1 `0.7148`, and the tight `unmatched<=80 and center>=0.50` bucket still clears `0.60` at `0.6235`.
+- This is not production success. It says the next lane implementation should target no-GT FP-to-TP repair or model-side instance alignment, not duplicate append, translation-radius, residual append, or post-hoc threshold sweeps.
