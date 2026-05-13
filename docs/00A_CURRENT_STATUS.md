@@ -145,6 +145,17 @@ Latest stop-line axis-profile readout:
 - exact val128 best: `axis_profile_cell_top1_s060_mask050_band4` and `axis_profile_offset_top1_s060_mask050_band4` both reached stop-line F1 `0.5085`, TP/FP/FN `30 / 28 / 30`; baseline was `0.4483`, TP/FP/FN `26 / 30 / 34`.
 - 판단: proposal-cell axis profile recovers the same matched set as the existing predicted angle/mask-extent and axis-projected-offset references, but does not beat the known exact stop-line references (`0.5085` / PCA `0.5133`) or the broader projection-competition reference `0.5164`. Do not broaden or repeat as a proposal-source/top-k/mask-threshold/normal-band sweep.
 
+Latest stop-line symmetric axis-profile readout:
+
+- branch/worktree: `exp/lane-family-f1/stopline-symmetric-axis-profile-readout`.
+- code commit: `f8bf316`.
+- artifact smoke: `runs/pv26_exhaustive_od_lane_train/stopline_symmetric_axis_profile_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/stopline_symmetric_axis_profile_20260513/analysis_exports/val128_epoch2/summary.json`.
+- changed axis: keep the proposal-cell anchor as the stop-line midpoint, then use the mask profile only to choose a symmetric half-extent along the predicted axis.
+- smoke val4: all profile/symmetric variants stayed at stop-line F1 `0.0000`, TP/FP/FN `0 / 3 / 2` or fallback `0 / 4 / 2`, so exact val128 was needed.
+- exact val128: existing profile top1 stayed `0.5085`, TP/FP/FN `30 / 28 / 30`; symmetric top1 dropped to `0.2203`, TP/FP/FN `13 / 45 / 47`; symmetric top3 was `0.2185`, TP/FP/FN `13 / 46 / 47`.
+- 판단: the mask-profile asymmetry was not just harmful midpoint drift; forcing the proposal cell to be midpoint loses too many true positives and adds false positives. Do not broaden or repeat as a symmetric extent/top-k/proposal-threshold/normal-band sweep.
+
 Latest stop-line fragment axis contract:
 
 - branch/worktree: `exp/lane-family-f1/stopline-fragment-axis-contract`.

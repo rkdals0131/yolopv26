@@ -9136,3 +9136,41 @@ Exact val128 result:
 - Semantic vote mode changes only score/selection-weight jitter here; it does not change lane TP/FP/FN on smoke or exact val128.
 - This is not a lane F1 path and should not be broadened to val512.
 - Do not repeat this as class/type semantic-vote weighting unless a new diagnostic first shows that class/type misvote, rather than geometry/instance recovery, is causing lane metric failure.
+
+## 181. 2026-05-13 Stop-line symmetric axis-profile readout: forcing proposal midpoint collapses TP
+
+맥락:
+
+- Section 172 showed the no-oracle midpoint/extent budget.
+- Section 173 closed predicted center-offset projection as flat.
+- Section 175 showed proposal-cell axis profile ties existing exact references. The remaining narrow question was whether mask-profile asymmetry was hurting midpoint placement.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-symmetric-axis-profile-readout`.
+- Code commit: `f8bf316`.
+- Added `extent_mode="symmetric"` variants to `tools/probe_pv26_stopline_axis_profile_readout.py`.
+- Contract: readout-only; keep proposal cell as midpoint and use mask profile only for symmetric half-extent. No training/checkpoint writes.
+
+Verification:
+
+- `git diff --check`.
+- `PYTHONPYCACHEPREFIX=<scratch-pycache> python3 -m py_compile tools/probe_pv26_stopline_axis_profile_readout.py`.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_symmetric_axis_profile_20260513/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_symmetric_axis_profile_20260513/analysis_exports/val128_epoch2/summary.json`.
+- Scratch pycache and branch-local downloaded `yolo26s.pt` were deleted after use.
+
+Exact val128 result:
+
+| Variant | Stop-line F1 | TP / FP / FN |
+| --- | ---: | ---: |
+| baseline | `0.4483` | `26 / 30 / 34` |
+| existing axis profile top1 | `0.5085` | `30 / 28 / 30` |
+| symmetric axis profile top1 | `0.2203` | `13 / 45 / 47` |
+| symmetric axis profile top3 | `0.2185` | `13 / 46 / 47` |
+
+판단:
+
+- Mask-profile asymmetry was not merely bad midpoint drift; forcing the proposal cell to midpoint removes too much valid geometry.
+- Do not broaden to val512 or repeat this as symmetric extent/top-k/proposal-threshold/normal-band sweep.
+- Next stop-line branch still needs a different no-GT center/extent signal.
