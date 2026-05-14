@@ -11479,3 +11479,31 @@ Standard exact-val128 replay:
 - This is a clear negative under the standard exact-val128 comparison.
 - The small batch1 slice showed stop-line movement on one slice, but the standard gate rejects it: stop-line loses `6` TP, lane loses `118` TP and gains `130` FP, and crosswalk loses `13` TP.
 - Do not broaden this to val512. Do not repeat same-checkpoint stop-line-only teacher-cache self-distill as a weight, epoch, batch-size, or EMA-normalization sweep unless a new teacher target or stop-line decode/assignment contract changes the premise.
+
+## 232. 2026-05-14 Stop-line projection readout tooling restore: make the current task-balance reference reproducible
+
+맥락:
+
+- The current best stop-line task-balance reference depends on the fragment-union / projection-split / projection-competition replay family.
+- The numeric evidence is preserved in docs, but the active `develop` surface no longer had the corresponding probe scripts and tests after worktree cleanup.
+- This blocked safe follow-up work that needs to compare against the projection-competition reference without reviving old home worktrees.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/restore-stopline-projection-tools`.
+- Restored `tools/probe_pv26_stopline_fragment_union_readout.py`.
+- Restored `tools/probe_pv26_stopline_fragment_projection_split_readout.py`.
+- Restored `tools/probe_pv26_stopline_fragment_projection_competition_readout.py`.
+- Restored their focused unit tests.
+
+Verification:
+
+- `python3 -m py_compile` on the restored tools/tests.
+- `pytest -q test/test_stopline_fragment_union_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_projection_competition_readout.py`.
+- result: `10 passed`.
+- `git diff --cached --check`.
+
+판단:
+
+- This is reproducibility/tooling restoration, not a new metric success.
+- It does not reopen fragment-union, projection-gap, projection-competition length/rank, selector, or photometric sweeps. Those remain closed unless a new midpoint/candidate-generation or FP-control premise is added.

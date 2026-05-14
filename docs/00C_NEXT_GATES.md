@@ -179,6 +179,7 @@
 - geometry-labeled candidate-validator map replay를 stop-line production readout fix로 반복하지 않는다.
 - live teacher-cache distill plumbing pass를 stop-line F1 개선이나 all-task gate progress로 표현하지 않는다. It only proves the opt-in runtime path can load a frozen teacher and attach cache during a real train step.
 - same-checkpoint stop-line-only teacher-cache self-distill을 weight/epoch/batch-size/EMA sweep으로 반복하지 않는다. Standard exact-val128 replay regressed lane/stop-line/crosswalk against the source merged checkpoint.
+- restored fragment-union/projection-split/projection-competition tooling을 축 재개 신호로 해석하지 않는다. It is only a reproducibility surface for the already-closed/readout-reference family.
 
 ## 2. Top-level goal: lane-family F1 0.6+
 
@@ -536,6 +537,7 @@ Gate 상태:
 - `exp/lane-family-f1/stopline-normal-support-recenter-readout`은 local mask support로 center normal-coordinate를 재조정해도 exact val128에서 FP가 커져 baseline보다 낮아진다는 read-only negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-raw-edge-recenter-readout`은 raw-image edge/contrast로 center normal-coordinate를 재조정하면 exact val128에서 TP가 줄고 FP가 커져 baseline보다 크게 낮아진다는 read-only negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-projcomp-flip-composite`는 known best lane/cross partial-positive와 projection-competition stop-line readout을 합쳐도 broader task F1이 `0.5628 / 0.5164 / 0.6187`에 그친다는 artifact-only task-balance evidence로 보관한다.
+- `exp/lane-family-f1/restore-stopline-projection-tools` restores the fragment-union / projection-split / projection-competition probe scripts and tests onto current develop so the task-balance reference can be reproduced without old worktrees. This is tooling only; it does not reopen projection-competition sweeps.
 - `exp/lane-family-f1/stopline-angle-mask-extent-diagnostic`은 GT center upper-bound에서 angle-anchored mask extent가 half-length scalar보다 낫지만 broader-val512 목표에는 아직 모자란다는 read-only evidence로 보관한다.
 - `exp/lane-family-f1/stopline-centerline-endpoint-offset`은 endpoint-delta target/readout negative evidence로 보관한다.
 - `exp/lane-family-f1/stopline-heatmap-geometry-support`는 heatmap-support geometry target-fill negative evidence로 보관한다.
