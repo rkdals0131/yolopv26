@@ -11860,3 +11860,42 @@ Smoke result:
 - Immediate-frame lane prediction import is not a TP-preserving recovery signal under this fixed support/dedupe contract.
 - It adds FP without recovering any lane FN on the smoke slice, so do not broaden to val128/val512.
 - Do not repeat this as a neighbor-gap, center-threshold, dedupe-distance, or add-cap sweep without a materially new alignment/FP-control signal.
+
+## 243. 2026-05-14 Lane attribute-agnostic duplicate suppression: cross-schema dedupe is a no-op on smoke
+
+맥락:
+
+- Lane metric matching is geometry-only, while the production duplicate suppression path previously required matching `class_name` and `lane_type`.
+- Same-schema `d24` duplicate suppression had already closed the broader oracle gap as a near no-op, but it left one narrow question open: whether cross-attribute near-duplicates were leaking FP because the metric ignores lane attributes.
+- This branch tests that one fixed replay. It is not a distance sweep.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-attr-agnostic-duplicate-suppression-smoke`.
+- Tool: `tools/probe_pv26_lane_attr_agnostic_duplicate_suppression.py`.
+- Test: `test/test_lane_attr_agnostic_duplicate_suppression.py`.
+- The replay keeps the retained lane-head transplant checkpoint, source run, `flip_centerline_avg` lane path, stop-line settings, and hull crosswalk fixed.
+- It applies only one fixed `24px` lane duplicate suppression pass with `require_same_schema=False`, keeping the higher-score lane and using GT only after selection for audit labels and final metrics.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile tools/probe_pv26_lane_attr_agnostic_duplicate_suppression.py test/test_lane_attr_agnostic_duplicate_suppression.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_attr_agnostic_duplicate_suppression.py -q`.
+- Result: `3 passed`.
+- Real CUDA smoke completed on `4` validation batches from the retained lane-head transplant checkpoint.
+
+Smoke result:
+
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane_attr_agnostic_duplicate_suppression_20260514/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Suppressed lanes: `0`.
+- Cross-schema suppressed lanes: `0`.
+- Suppressed lanes that would match GT: `0`.
+- Baseline lane/stop/cross F1: `0.5899 / 0.0000 / 0.5455`.
+- Attribute-agnostic replay lane/stop/cross F1: `0.5899 / 0.0000 / 0.5455`.
+- Lane TP/FP/FN stayed `41 / 12 / 45`.
+
+판단:
+
+- Cross-attribute lane duplicates are not the missing lane FP/FN mechanism on this smoke slice.
+- This is not worth broadening to val128/val512.
+- Do not repeat this as attribute-agnostic duplicate-distance, schema-match, score tie-break, or dedupe-order tuning without a materially new diagnostic showing cross-schema duplicate rows actually exist.
