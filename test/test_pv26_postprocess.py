@@ -20,6 +20,7 @@ STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
 STOP_LINE_VECTOR_DIM = int(SPEC["heads"]["stop_line"]["shape"].split(" x ")[-1])
 CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
 CROSSWALK_VECTOR_DIM = int(SPEC["heads"]["crosswalk"]["shape"].split(" x ")[-1])
+CROSSWALK_POINT_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["sequence_points"])
 LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
@@ -182,6 +183,34 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertEqual(sample["lanes"], [])
         self.assertEqual(sample["stop_lines"], [])
         self.assertEqual(sample["crosswalks"], [])
+
+    def test_crosswalk_hull_polygon_mode_decodes_mask_component(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        crosswalk_mask = torch.full((1, 1, 20, 20), -8.0, dtype=torch.float32)
+        crosswalk_mask[0, 0, 5:12, 6:15] = 8.0
+        predictions["crosswalk_mask_logits"] = crosswalk_mask
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                lane_obj_threshold=0.999,
+                stop_line_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.90,
+                crosswalk_polygon_mode="hull",
+                crosswalk_min_component_pixels=4,
+                crosswalk_min_bbox_aspect=0.0,
+                crosswalk_min_polygon_area_px=0.0,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["crosswalks"]), 1)
+        self.assertEqual(len(decoded[0]["crosswalks"][0]["points_xy"]), CROSSWALK_POINT_COUNT)
 
     def test_postprocess_raises_when_torchvision_batched_nms_fails_by_default(self) -> None:
         predictions = _make_prediction_batch()

@@ -409,6 +409,89 @@ def _component_to_polylines(
     return [track for track in downsampled if len(track) >= 2]
 
 
+def _tangent_at(tangent_axis: np.ndarray, *, row: int, col: float) -> np.ndarray | None:
+    if tangent_axis.ndim != 3 or tangent_axis.shape[0] != 2:
+        return None
+    h, w = int(tangent_axis.shape[1]), int(tangent_axis.shape[2])
+    row_index = min(max(int(row), 0), h - 1)
+    col_index = min(max(int(round(float(col))), 0), w - 1)
+    tangent = np.asarray(tangent_axis[:, row_index, col_index], dtype=np.float32)
+    if not bool(np.isfinite(tangent).all()):
+        return None
+    norm = float(np.linalg.norm(tangent))
+    if norm <= 1.0e-6:
+        return None
+    tangent = tangent / norm
+    # Row-scan links from bottom to top, so orient the local tangent upward.
+    if float(tangent[1]) > 0.0:
+        tangent = -tangent
+    return tangent.astype(np.float32)
+
+
+def _component_to_polylines_tangent(
+    component_mask: np.ndarray,
+    tangent_axis: np.ndarray,
+    *,
+    row_stride: int,
+    max_row_gap: int,
+    max_link_dx: float,
+) -> list[list[list[float]]]:
+    ys, _ = np.nonzero(component_mask)
+    if ys.size == 0:
+        return []
+    tracks: list[list[list[float]]] = []
+    last_y_by_track: list[int] = []
+    last_x_by_track: list[float] = []
+    last_tangent_by_track: list[np.ndarray | None] = []
+
+    for y in sorted(np.unique(ys).tolist(), reverse=True):
+        clusters = _row_clusters(component_mask[int(y)])
+        if not clusters:
+            continue
+        assigned_tracks: set[int] = set()
+        for x in sorted(clusters):
+            best_track: int | None = None
+            best_cost = float("inf")
+            for track_index, (last_y, last_x) in enumerate(zip(last_y_by_track, last_x_by_track)):
+                if track_index in assigned_tracks:
+                    continue
+                y_gap = abs(int(last_y) - int(y))
+                if y_gap > int(max_row_gap):
+                    continue
+                dx = abs(float(x) - float(last_x))
+                if dx > float(max_link_dx):
+                    continue
+                expected_x = float(last_x)
+                tangent = last_tangent_by_track[track_index]
+                if tangent is not None and abs(float(tangent[1])) >= 0.05:
+                    dy = float(y) - float(last_y)
+                    expected_dx = float(tangent[0]) / float(tangent[1]) * dy
+                    expected_dx = float(np.clip(expected_dx, -float(max_link_dx), float(max_link_dx)))
+                    expected_x = float(last_x) + expected_dx
+                tangent_cost = abs(float(x) - expected_x)
+                cost = 0.85 * tangent_cost + 0.15 * dx + 0.1 * float(y_gap)
+                if cost < best_cost:
+                    best_track = track_index
+                    best_cost = cost
+            current_tangent = _tangent_at(tangent_axis, row=int(y), col=float(x))
+            if best_track is None:
+                tracks.append([[float(x), float(y)]])
+                last_y_by_track.append(int(y))
+                last_x_by_track.append(float(x))
+                last_tangent_by_track.append(current_tangent)
+                assigned_tracks.add(len(tracks) - 1)
+            else:
+                tracks[best_track].append([float(x), float(y)])
+                last_y_by_track[best_track] = int(y)
+                last_x_by_track[best_track] = float(x)
+                if current_tangent is not None:
+                    last_tangent_by_track[best_track] = current_tangent
+                assigned_tracks.add(best_track)
+    stride = max(1, int(row_stride))
+    downsampled = [track[::stride] if len(track) > stride else track for track in tracks]
+    return [track for track in downsampled if len(track) >= 2]
+
+
 def _track_to_mask(points_xy: list[list[float]], *, output_hw: tuple[int, int], width: int = 3) -> np.ndarray:
     if len(points_xy) < 2:
         return np.zeros(output_hw, dtype=bool)
@@ -499,17 +582,28 @@ def vectorize_lane_segfirst_maps(
     labels, component_count = ndimage.label(binary, structure=np.ones((3, 3), dtype=np.int8))
     color_map = _as_numpy_chw(maps.get("color_map", np.zeros((len(LANE_CLASSES), *binary.shape), dtype=np.float32)), channels=len(LANE_CLASSES))
     type_map = _as_numpy_chw(maps.get("lane_type_map", np.zeros((len(LANE_TYPES), *binary.shape), dtype=np.float32)), channels=len(LANE_TYPES))
+    tangent_axis = _as_numpy_chw(maps.get("tangent_axis", np.zeros((2, *binary.shape), dtype=np.float32)), channels=2)
     transform = transform_from_meta(meta) if meta is not None else None
 
     predictions: list[dict[str, Any]] = []
     track_mode = str(cfg.track_mode).strip().lower()
-    if track_mode in {"row_scan", "rowscan", "row"}:
-        map_polylines = _component_to_polylines(
-            binary,
-            row_stride=max(1, int(cfg.row_stride)),
-            max_row_gap=max(1, int(cfg.max_row_gap)),
-            max_link_dx=float(cfg.max_link_dx),
-        )
+    row_tangent_modes = {"row_scan_tangent", "rowscan_tangent", "row_tangent", "tangent_row_scan"}
+    if track_mode in {"row_scan", "rowscan", "row", *row_tangent_modes}:
+        if track_mode in row_tangent_modes:
+            map_polylines = _component_to_polylines_tangent(
+                binary,
+                tangent_axis,
+                row_stride=max(1, int(cfg.row_stride)),
+                max_row_gap=max(1, int(cfg.max_row_gap)),
+                max_link_dx=float(cfg.max_link_dx),
+            )
+        else:
+            map_polylines = _component_to_polylines(
+                binary,
+                row_stride=max(1, int(cfg.row_stride)),
+                max_row_gap=max(1, int(cfg.max_row_gap)),
+                max_link_dx=float(cfg.max_link_dx),
+            )
         for map_points in map_polylines:
             if cfg.max_predictions is not None and len(predictions) >= int(cfg.max_predictions):
                 break
@@ -562,7 +656,7 @@ def vectorize_lane_segfirst_maps(
         predictions.sort(key=lambda item: (max(point[1] for point in item["points_xy"]), -np.mean([point[0] for point in item["points_xy"]])), reverse=True)
         return predictions
     if track_mode != "component":
-        raise ValueError("track_mode must be one of: component, row_scan")
+        raise ValueError("track_mode must be one of: component, row_scan, row_scan_tangent")
 
     component_ids: list[int] = []
     component_sizes = ndimage.sum(

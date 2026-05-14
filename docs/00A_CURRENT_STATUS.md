@@ -105,6 +105,12 @@ Current best broader runtime/postprocess composite by objective:
 - support lane / stop / cross: `9477 / 271 / 395`
 - 판단: crosswalk-mask lane competition recovers a real but small broader lane gain over the previous flip-centerline composite (`0.5577 -> 0.5628`) while preserving stop-line `0.4235` and hull crosswalk `0.6187`. This is a new objective best but still not all-task success because lane and stop-line remain below `0.60`.
 
+Latest lane composite replay tooling status:
+
+- Active `develop` restores the minimal replay path for this composite: `row_scan_tangent` lane vectorization, evaluator-only postprocess overrides, and `tools/probe_pv26_lane_flip_tta.py`.
+- The restored flip probe intentionally exposes only `baseline`, `flip_centerline_avg`, and fixed `flip_centerline_avg_lane_cross_comp050`; it is not a new sweep surface for closed TTA/task-mask/vectorizer variants.
+- Focused tests pass, and a one-batch CUDA smoke on the retained merged checkpoint writes `metrics.csv` / `summary.json`. This is reproducibility status only, not F1 progress.
+
 Current best broader task-balance replay:
 
 - branch/worktree: `exp/lane-family-f1/stopline-projcomp-flip-composite`.

@@ -11542,3 +11542,34 @@ Verification:
 - The smoke result has no metric meaning because the slice produced zero candidate rows.
 - The exact-val128 replay proves the manifest can be regenerated and consumed from current active code, but it is still exact-slice tooling evidence, not broader-val512 success.
 - It does not reopen projection-competition or candidate-row feature sweeps. It only makes the current task-balance reference regenerable before the next materially new stop-line candidate-generation or FP-control branch.
+
+## 234. 2026-05-14 Lane composite replay tooling restore: make the current objective-best composite reproducible
+
+맥락:
+
+- The current broader objective-best composite depends on branch-local replay code: row-scan/tangent-link lane vectorization, evaluator-only postprocess overrides, horizontal-flip lane centerline averaging, fixed crosswalk-mask lane competition, and hull crosswalk decode.
+- The numeric evidence is retained in `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2`, but active `develop` no longer had the minimal runtime surface needed to regenerate it after artifact/worktree cleanup.
+- This blocked safe next branches because future lane or stop-line work needs a reproducible current composite baseline before changing a new axis.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/restore-lane-composite-replay`.
+- Restored `row_scan_tangent` lane vectorizer support using the predicted tangent-axis map.
+- Restored evaluator-only postprocess overrides for `dataset_root`, lane row-scan/tangent-link knobs, stop-line mask/score/presence knobs, and crosswalk hull decode.
+- Restored a narrow `tools/probe_pv26_lane_flip_tta.py` surface with only `baseline`, `flip_centerline_avg`, and the fixed `flip_centerline_avg_lane_cross_comp050` variant.
+- Kept the restored stop-line component gate CLI limited to the currently supported `center`, `selector`, and `max` modes.
+- Added focused tests for tangent-axis vectorization, flip dense-output unflip/merge behavior, and crosswalk hull decode.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile model/engine/lane_segfirst_vectorizer.py model/engine/postprocess.py tools/evaluate_pv26_lane60_checkpoint.py tools/probe_pv26_lane_flip_tta.py test/test_lane_segfirst_vectorizer.py test/test_pv26_postprocess.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_segfirst_vectorizer.py test/test_pv26_postprocess.py test/test_lane_flip_tta_probe.py`.
+- result: `15 passed`.
+- Real one-batch CUDA smoke on the retained merged lane-head checkpoint and retained prepared dataset completed with `core_centerline_refine_row_scan_tangent_link`, stop-line `mask=0.80`, `min_instance_score=0.94`, `presence=0.0`, and crosswalk `polygon_mode=hull`.
+- Smoke output wrote `metrics.csv` and `summary.json` under scratch output. On that one-batch slice, `baseline` lane F1 was `0.5000` and both restored flip variants reached lane F1 `0.5405`; stop-line/crosswalk support was `0`, so the smoke has no task-goal metric meaning.
+
+판단:
+
+- This is reproducibility/tooling restoration, not new F1 progress.
+- It does not reopen flip max/union, task-mask source/strength, smoothing, scale, shift, photometric, thinning, polyfit, or other closed lane TTA/vectorizer sweeps.
+- Use the restored probe as a baseline reproduction gate before new lane/stop-line branches; do not treat its smoke slice as evidence that the broader all-task goal moved.

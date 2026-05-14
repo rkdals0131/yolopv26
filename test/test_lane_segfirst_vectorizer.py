@@ -36,6 +36,22 @@ def _maps_with_zigzag_track() -> dict[str, torch.Tensor]:
     }
 
 
+def _maps_with_tangent_track() -> dict[str, torch.Tensor]:
+    centerline = torch.zeros((1, 12, 12), dtype=torch.float32)
+    centerline[0, 11, 2] = 0.9
+    centerline[0, 10, 4] = 0.9
+    centerline[0, 9, 6] = 0.9
+    tangent_axis = torch.zeros((2, 12, 12), dtype=torch.float32)
+    tangent_axis[0, :, :] = 0.7
+    tangent_axis[1, :, :] = -0.7
+    return {
+        "centerline_core": centerline,
+        "tangent_axis": tangent_axis,
+        "color_map": torch.zeros((len(LANE_CLASSES), 12, 12), dtype=torch.float32),
+        "lane_type_map": torch.zeros((len(LANE_TYPES), 12, 12), dtype=torch.float32),
+    }
+
+
 class LaneSegFirstVectorizerTests(unittest.TestCase):
     def test_row_scan_track_mode_can_bridge_vertical_gaps(self) -> None:
         maps = _maps_with_vertical_gap()
@@ -91,6 +107,21 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
 
         self.assertEqual(len(unguarded), 1)
         self.assertEqual(len(guarded), 0)
+
+    def test_row_scan_tangent_track_mode_uses_tangent_map(self) -> None:
+        predictions = vectorize_lane_segfirst_maps(
+            _maps_with_tangent_track(),
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan_tangent",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=2,
+                max_link_dx=4.0,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 1)
+        self.assertEqual(len(predictions[0]["points_xy"]), 3)
 
     def test_rejects_unknown_track_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "track_mode"):

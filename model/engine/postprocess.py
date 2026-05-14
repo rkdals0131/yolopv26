@@ -75,6 +75,7 @@ class PV26PostprocessConfig:
     stop_line_min_bbox_area_px: float = 0.0
     stop_line_min_bbox_aspect: float = 6.0
     stop_line_min_instance_score: float = 0.94
+    stop_line_presence_threshold: float = 0.0
     stop_line_component_gate_source: str = "center"
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
@@ -82,6 +83,7 @@ class PV26PostprocessConfig:
     crosswalk_max_components: int = 0
     crosswalk_min_polygon_area_px: float = 640.0
     crosswalk_min_bbox_aspect: float = 3.0
+    crosswalk_polygon_mode: str = "rect"
     lane_visibility_threshold: float = 0.50
     allow_python_nms_fallback: bool = False
 
@@ -447,6 +449,7 @@ def _crosswalk_mask_to_polygon(
     max_components: int = 0,
     min_polygon_area_px: float = 0.0,
     min_bbox_aspect: float = 0.0,
+    polygon_mode: str = "rect",
 ) -> list[dict[str, Any]]:
     if not _tensor_all_finite(mask_logits):
         return []
@@ -481,14 +484,20 @@ def _crosswalk_mask_to_polygon(
             continue
 
         points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
-        rect = _minimum_area_rect(points)
-        if rect is None:
+        normalized_polygon_mode = str(polygon_mode).strip().lower()
+        if normalized_polygon_mode == "hull":
+            polygon = _convex_hull_points(points)
+        elif normalized_polygon_mode == "rect":
+            polygon = _minimum_area_rect(points)
+        else:
+            raise ValueError("crosswalk_polygon_mode must be one of: rect, hull")
+        if polygon is None or int(polygon.shape[0]) < 3:
             continue
 
-        rect[:, 0] = (rect[:, 0] + 0.5) * (float(meta["network_hw"][1]) / float(output_w))
-        rect[:, 1] = (rect[:, 1] + 0.5) * (float(meta["network_hw"][0]) / float(output_h))
+        polygon[:, 0] = (polygon[:, 0] + 0.5) * (float(meta["network_hw"][1]) / float(output_w))
+        polygon[:, 1] = (polygon[:, 1] + 0.5) * (float(meta["network_hw"][0]) / float(output_h))
         network_points = canonicalize_crosswalk_points(
-            sample_crosswalk_contour(rect, target_count=CROSSWALK_POINT_COUNT)
+            sample_crosswalk_contour(polygon, target_count=CROSSWALK_POINT_COUNT)
         ).tolist()
         if unique_point_count(network_points) < 3:
             continue
@@ -1014,8 +1023,16 @@ def _stopline_mask_to_polyline(
     min_bbox_area_px: float = 0.0,
     min_bbox_aspect: float = 0.0,
     min_instance_score: float = 0.0,
+    presence_logits: torch.Tensor | None = None,
+    presence_threshold: float = 0.0,
     component_gate_source: str = "center",
 ) -> list[dict[str, Any]]:
+    if float(presence_threshold) > 0.0 and isinstance(presence_logits, torch.Tensor):
+        if not _tensor_all_finite(presence_logits):
+            return []
+        presence_score = float(presence_logits.reshape(-1)[0].sigmoid().detach().cpu().item())
+        if presence_score < float(presence_threshold):
+            return []
     if not _tensor_all_finite(mask_logits):
         return []
     mask_probs = mask_logits.sigmoid().squeeze(0).detach().cpu().numpy()
@@ -1596,8 +1613,16 @@ def _decode_stop_line_rows(
     x_logits: torch.Tensor | None = None,
     angle: torch.Tensor | None = None,
     half_length: torch.Tensor | None = None,
+    presence_logits: torch.Tensor | None = None,
+    presence_threshold: float = 0.0,
     component_gate_source: str = "center",
 ) -> list[dict[str, Any]]:
+    if float(presence_threshold) > 0.0 and isinstance(presence_logits, torch.Tensor):
+        if not _tensor_all_finite(presence_logits):
+            return []
+        presence_score = float(presence_logits.reshape(-1)[0].sigmoid().detach().cpu().item())
+        if presence_score < float(presence_threshold):
+            return []
     if isinstance(mask_logits, torch.Tensor):
         decoded = _stopline_mask_to_polyline(
             mask_logits,
@@ -1616,6 +1641,8 @@ def _decode_stop_line_rows(
             min_bbox_area_px=min_bbox_area_px,
             min_bbox_aspect=min_bbox_aspect,
             min_instance_score=min_instance_score,
+            presence_logits=presence_logits,
+            presence_threshold=presence_threshold,
             component_gate_source=component_gate_source,
         )
         if decoded:
@@ -1661,6 +1688,7 @@ def _decode_crosswalk_rows(
     max_components: int = 0,
     min_polygon_area_px: float = 0.0,
     min_bbox_aspect: float = 0.0,
+    polygon_mode: str = "rect",
     mask_logits: torch.Tensor | None = None,
     center_logits: torch.Tensor | None = None,
 ) -> list[dict[str, Any]]:
@@ -1676,6 +1704,7 @@ def _decode_crosswalk_rows(
             max_components=max_components,
             min_polygon_area_px=min_polygon_area_px,
             min_bbox_aspect=min_bbox_aspect,
+            polygon_mode=polygon_mode,
         )
         if decoded:
             return decoded
@@ -1729,6 +1758,7 @@ def postprocess_pv26_batch(
     stop_line_row_logits = predictions.get("stop_line_row_logits")
     stop_line_x_logits = predictions.get("stop_line_x_logits")
     stop_line_selector_map_logits = predictions.get("stop_line_selector_map_logits")
+    stop_line_presence_logits = predictions.get("stop_line_presence_logits")
     stop_line_center_logits = predictions.get("stop_line_center_logits")
     stop_line_center_offset = predictions.get("stop_line_center_offset")
     stop_line_angle = predictions.get("stop_line_angle")
@@ -1785,6 +1815,12 @@ def postprocess_pv26_batch(
                     min_bbox_area_px=config.stop_line_min_bbox_area_px,
                     min_bbox_aspect=config.stop_line_min_bbox_aspect,
                     min_instance_score=config.stop_line_min_instance_score,
+                    presence_logits=(
+                        stop_line_presence_logits[batch_index]
+                        if isinstance(stop_line_presence_logits, torch.Tensor)
+                        else None
+                    ),
+                    presence_threshold=config.stop_line_presence_threshold,
                     component_gate_source=config.stop_line_component_gate_source,
                     mask_logits=(
                         stop_line_mask_logits[batch_index]
@@ -1836,6 +1872,7 @@ def postprocess_pv26_batch(
                     max_components=config.crosswalk_max_components,
                     min_polygon_area_px=config.crosswalk_min_polygon_area_px,
                     min_bbox_aspect=config.crosswalk_min_bbox_aspect,
+                    polygon_mode=config.crosswalk_polygon_mode,
                     mask_logits=(
                         crosswalk_mask_logits[batch_index]
                         if isinstance(crosswalk_mask_logits, torch.Tensor)

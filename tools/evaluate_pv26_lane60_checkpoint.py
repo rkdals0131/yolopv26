@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace as dataclasses_replace
 import json
 from pathlib import Path
 import site
@@ -44,6 +44,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-batches", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--backbone-weights",
+        default="",
+        help="Optional explicit YOLO26 backbone weights path to avoid implicit downloads during evaluation.",
+    )
+    parser.add_argument(
+        "--dataset-root",
+        default="",
+        help="Optional canonical dataset root. If omitted, use the scenario dataset root when it exists.",
+    )
+    parser.add_argument("--lane-obj-threshold", type=float, default=None)
+    parser.add_argument("--lane-segfirst-track-mode", default=None)
+    parser.add_argument("--lane-segfirst-max-row-gap", type=int, default=None)
+    parser.add_argument("--lane-segfirst-max-link-dx", type=float, default=None)
+    parser.add_argument("--lane-segfirst-max-turn-degrees", type=float, default=None)
+    parser.add_argument("--stop-line-mask-binary-threshold", type=float, default=None)
+    parser.add_argument("--stop-line-min-instance-score", type=float, default=None)
+    parser.add_argument("--stop-line-presence-threshold", type=float, default=None)
+    parser.add_argument(
+        "--stop-line-component-gate-source",
+        choices=("center", "selector", "max"),
+        default=None,
+    )
+    parser.add_argument("--crosswalk-obj-threshold", type=float, default=None)
+    parser.add_argument("--crosswalk-mask-binary-threshold", type=float, default=None)
+    parser.add_argument("--crosswalk-min-component-pixels", type=int, default=None)
+    parser.add_argument("--crosswalk-max-components", type=int, default=None)
+    parser.add_argument("--crosswalk-min-polygon-area-px", type=float, default=None)
+    parser.add_argument("--crosswalk-min-bbox-aspect", type=float, default=None)
+    parser.add_argument("--crosswalk-polygon-mode", choices=("rect", "hull"), default=None)
     parser.add_argument("--output-dir", default="")
     return parser.parse_args()
 
@@ -115,6 +145,60 @@ def _advance_validation_sampler(val_loader: Any, *, validation_epoch: int) -> No
             pass
 
 
+def _resolve_dataset_root(args: argparse.Namespace, source_run: Path, scenario_root: Path) -> Path:
+    explicit = Path(str(args.dataset_root)).expanduser().resolve() if str(args.dataset_root).strip() else None
+    if explicit is not None:
+        return explicit
+    if Path(scenario_root).is_dir():
+        return Path(scenario_root).resolve()
+    for parent in (source_run, *source_run.parents):
+        candidate = parent / "seg_dataset" / "pv26_exhaustive_od_lane_dataset"
+        if candidate.is_dir():
+            return candidate.resolve()
+    return Path(scenario_root).resolve()
+
+
+def _postprocess_override_config(args: argparse.Namespace, trainer: Any) -> Any | None:
+    replacements: dict[str, Any] = {}
+    if getattr(args, "lane_obj_threshold", None) is not None:
+        replacements["lane_obj_threshold"] = float(args.lane_obj_threshold)
+    if getattr(args, "lane_segfirst_track_mode", None) is not None:
+        replacements["lane_segfirst_track_mode"] = str(args.lane_segfirst_track_mode)
+    if getattr(args, "lane_segfirst_max_row_gap", None) is not None:
+        replacements["lane_segfirst_max_row_gap"] = int(args.lane_segfirst_max_row_gap)
+    if getattr(args, "lane_segfirst_max_link_dx", None) is not None:
+        replacements["lane_segfirst_max_link_dx"] = float(args.lane_segfirst_max_link_dx)
+    if getattr(args, "lane_segfirst_max_turn_degrees", None) is not None:
+        replacements["lane_segfirst_max_turn_degrees"] = float(args.lane_segfirst_max_turn_degrees)
+    if getattr(args, "stop_line_mask_binary_threshold", None) is not None:
+        replacements["stop_line_mask_binary_threshold"] = float(args.stop_line_mask_binary_threshold)
+    if getattr(args, "stop_line_min_instance_score", None) is not None:
+        replacements["stop_line_min_instance_score"] = float(args.stop_line_min_instance_score)
+    if getattr(args, "stop_line_presence_threshold", None) is not None:
+        replacements["stop_line_presence_threshold"] = float(args.stop_line_presence_threshold)
+    if getattr(args, "stop_line_component_gate_source", None) is not None:
+        replacements["stop_line_component_gate_source"] = str(args.stop_line_component_gate_source)
+    if getattr(args, "crosswalk_obj_threshold", None) is not None:
+        replacements["crosswalk_obj_threshold"] = float(args.crosswalk_obj_threshold)
+    if getattr(args, "crosswalk_mask_binary_threshold", None) is not None:
+        replacements["crosswalk_mask_binary_threshold"] = float(args.crosswalk_mask_binary_threshold)
+    if getattr(args, "crosswalk_min_component_pixels", None) is not None:
+        replacements["crosswalk_min_component_pixels"] = int(args.crosswalk_min_component_pixels)
+    if getattr(args, "crosswalk_max_components", None) is not None:
+        replacements["crosswalk_max_components"] = int(args.crosswalk_max_components)
+    if getattr(args, "crosswalk_min_polygon_area_px", None) is not None:
+        replacements["crosswalk_min_polygon_area_px"] = float(args.crosswalk_min_polygon_area_px)
+    if getattr(args, "crosswalk_min_bbox_aspect", None) is not None:
+        replacements["crosswalk_min_bbox_aspect"] = float(args.crosswalk_min_bbox_aspect)
+    if getattr(args, "crosswalk_polygon_mode", None) is not None:
+        replacements["crosswalk_polygon_mode"] = str(args.crosswalk_polygon_mode)
+    if not replacements:
+        return None
+    postprocess_config = dataclasses_replace(getattr(trainer, "postprocess_config"), **replacements)
+    setattr(trainer, "postprocess_config", postprocess_config)
+    return postprocess_config
+
+
 def main() -> int:
     args = parse_args()
     checkpoint = Path(args.checkpoint).expanduser().resolve()
@@ -142,6 +226,23 @@ def main() -> int:
         source_run=source_run,
         seed_checkpoint=checkpoint,
     )
+    backbone_weights = str(args.backbone_weights).strip()
+    if backbone_weights:
+        scenario = dataclasses_replace(
+            scenario,
+            train_defaults=dataclasses_replace(
+                scenario.train_defaults,
+                backbone_weights=str(Path(backbone_weights).expanduser().resolve()),
+            ),
+        )
+    dataset_root = _resolve_dataset_root(args, source_run, scenario.dataset.root)
+    scenario = dataclasses_replace(
+        scenario,
+        dataset=train_config_api.DatasetConfig(
+            root=dataset_root,
+            additional_roots=tuple(scenario.dataset.additional_roots),
+        ),
+    )
     phase_index = int(tuple(options["selected_phase_indices"])[0])
     phase = scenario.phases[phase_index - 1]
     train_config = train_config_api.scenario_phase_defaults(scenario.train_defaults, phase.overrides)
@@ -160,6 +261,13 @@ def main() -> int:
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     load_report = trainer.load_model_weights(checkpoint, map_location=train_config.device)
+    postprocess_config = _postprocess_override_config(args, trainer)
+    evaluator = None
+    if postprocess_config is not None:
+        evaluator = train_cli._wrap_evaluator_postprocess_config(
+            trainer.build_evaluator(),
+            postprocess_config=postprocess_config,
+        )
     val_summary = trainer.validate_epoch(
         val_loader,
         epoch=int(args.validation_epoch),
@@ -167,6 +275,7 @@ def main() -> int:
         phase_index=phase_index,
         phase_count=len(scenario.phases),
         phase_name=phase.name,
+        evaluator=evaluator,
         max_batches=train_config_api.resolve_val_batch_limit(train_config.val_batches),
         log_every_n_steps=20,
         profile_window=train_config.profile_window,
