@@ -11793,6 +11793,7 @@ Smoke result:
 구현:
 
 - Branch/worktree: `exp/lane-family-f1/lane-task-conflict-negative-loss-smoke`.
+- Code commit: `975d619`.
 - Added `lane_segfirst_task_conflict_negative_mode`, `lane_segfirst_task_conflict_negative_weight`, and `lane_segfirst_task_conflict_negative_margin`.
 - Wired the new defaults through `TrainDefaultsConfig`, scenario coercion, phase trainer construction, `PV26MultiTaskLoss.export_config`, checkpoint-resume criterion reconstruction, and `tools/run_pv26_lane60_probe.py`.
 - Added the probe experiment `core_centerline_cross_conflict_negative`.

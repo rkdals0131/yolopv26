@@ -153,6 +153,7 @@ Latest lane task-mask context gate:
 Latest lane task-conflict negative-loss smoke:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-conflict-negative-loss-smoke`.
+- code commit: `975d619`.
 - changed axis: keep the training schedule, source checkpoint, heads-only phase-4 probe, and core centerline/crosswalk-retain contract fixed, then add only an opt-in lane seg-first auxiliary that penalizes lane centerline probability on GT crosswalk ignore pixels. The main lane loss still ignores stop-line/crosswalk masks.
 - implementation: added `lane_segfirst_task_conflict_negative_mode`, `lane_segfirst_task_conflict_negative_weight`, and `lane_segfirst_task_conflict_negative_margin` to train config and `PV26MultiTaskLoss`; default is disabled.
 - verification: py_compile passed for the touched train/loss/probe/test files; focused pytest passed with `68` tests; real CUDA train/val smoke completed from the retained phase-4 checkpoint.
