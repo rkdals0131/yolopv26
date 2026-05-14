@@ -526,6 +526,15 @@ Latest lane repair geometry export:
 - val128 check: baseline lane TP/FP/FN/F1 is `1200 / 510 / 1190 / 0.5854`; `510` unmatched predictions were exported, with `128` tight repairable rows and `322` broad repairable rows. CSV inspection confirmed `pred_points_json`, `nearest_fn_gt_points_json`, `gt_points_json`, and nearest-pred point JSON columns are populated.
 - 판단: this is export plumbing only, not a decoder or F1 improvement. It exists so the next lane branch can replay actual moved lane geometry and recompute TP/FP/FN instead of relying on aggregate distance columns.
 
+Latest lane repair replay tooling status:
+
+- branch/worktree: `exp/lane-family-f1/restore-lane-repair-replay`.
+- restored active tools: `tools/probe_pv26_lane_instance_evidence.py`, `tools/probe_pv26_lane_fn_recovery_audit.py`, and `tools/replay_pv26_lane_point_repair.py`.
+- restored focused tests: `test/test_lane_instance_evidence_probe.py`, `test/test_lane_fn_recovery_audit.py`, and `test/test_lane_point_repair_replay.py`.
+- detached-worktree safety: lane FN/replay defaults are repo-relative again, and retained-run smoke execution passes explicit checkpoint, source-run, and dataset-root paths.
+- one-batch CUDA smoke on the retained merged checkpoint completed with oracle-only point repair: baseline lane TP/FP/FN/F1 `10 / 6 / 11 / 0.5405`, repaired `16 / 0 / 5 / 0.8649`, selected `6` rows with `0` duplicate targets.
+- 판단: this restores the lane repair replay machinery after artifact/worktree cleanup. The smoke is oracle-only and one batch, so it is not production success or all-task `0.60` evidence.
+
 Latest lane residual-component candidates:
 
 - branch/worktree: `exp/lane-family-f1/lane-residual-component-candidates`.

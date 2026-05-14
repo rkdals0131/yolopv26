@@ -11642,3 +11642,36 @@ Result:
 - This is not a new metric success: the best stop-line row is the same `0.5164`, still `+0.0836` short of `0.60`.
 - The run does not regenerate the all-task task-balance composite by itself. Its lane/crosswalk fields are the retained checkpoint's non-composite row, not the flip-centerline/crosswalk-mask/hull row used for the historical task-balance lower bound.
 - Do not reopen projection-competition min-score/top-k/length/rank sweeps. The next stop-line branch still needs materially new candidate-generation, midpoint/extent recovery, or stronger FP-control signal.
+
+## 237. 2026-05-14 Lane repair replay tooling restore: recover the point-repair surface after artifact cleanup
+
+맥락:
+
+- The current docs preserve lane repair planning evidence, but active `develop` no longer had the branch-local lane instance evidence, FN recovery export, or point-repair replay tools.
+- Lane is still below `0.60`, and the next lane branch needs a working replay path that moves actual predicted lane points and recomputes TP/FP/FN rather than relying on aggregate distance columns.
+- This is tooling restoration only. It does not make the oracle repair replay a production decoder.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/restore-lane-repair-replay`.
+- Restored `tools/probe_pv26_lane_instance_evidence.py`.
+- Restored `tools/probe_pv26_lane_fn_recovery_audit.py`.
+- Restored `tools/replay_pv26_lane_point_repair.py`.
+- Restored focused tests for instance evidence, FN recovery export, and point-repair replay.
+- Removed the stale machine-local repo default from the lane FN/replay tools. Detached worktree runs now use repo-relative defaults and can pass explicit retained checkpoint/source-run/dataset-root paths.
+
+Verification:
+
+- `python3 -m py_compile` on the restored tools/tests.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_instance_evidence_probe.py test/test_lane_fn_recovery_audit.py test/test_lane_point_repair_replay.py`.
+- result: `16 passed`.
+- Real one-batch CUDA smoke on the retained merged checkpoint and retained prepared dataset completed through `tools/replay_pv26_lane_point_repair.py`.
+- Smoke baseline lane TP/FP/FN/F1: `10 / 6 / 11 / 0.5405`.
+- Smoke oracle-repaired lane TP/FP/FN/F1: `16 / 0 / 5 / 0.8649`.
+- Smoke selected rows: `6`; duplicate target rows: `0`.
+
+판단:
+
+- The lane point-repair replay machinery is active again and can recompute lane-family metrics after actual point movement.
+- The smoke is oracle-only and one-batch, so it is not a production improvement and not all-task `0.60` evidence.
+- Next lane work may use this surface to test a no-GT geometry/instance-alignment repair, but it must report actual TP/FP/FN movement and added-FP cost.
