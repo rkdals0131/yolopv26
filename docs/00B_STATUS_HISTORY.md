@@ -11675,3 +11675,34 @@ Verification:
 - The lane point-repair replay machinery is active again and can recompute lane-family metrics after actual point movement.
 - The smoke is oracle-only and one-batch, so it is not a production improvement and not all-task `0.60` evidence.
 - Next lane work may use this surface to test a no-GT geometry/instance-alignment repair, but it must report actual TP/FP/FN movement and added-FP cost.
+
+## 238. 2026-05-14 Lane FN recovery export regeneration: val128 repair rows are current-code reproducible
+
+맥락:
+
+- Section 237 restored the lane FN recovery and point-repair replay tools to active `develop`.
+- The next lane branch needs the exact-val128 unmatched-prediction repair rows to be reproducible from current code, not only from pruned artifacts.
+- This run is a reproduction gate. It does not apply a no-GT repair and does not improve F1.
+
+Read-only audit:
+
+- Current `develop`, retained merged checkpoint, exact val128, validation epoch `2`.
+- Runtime lane path: `core_centerline_refine_row_scan_tangent_link` with `flip_centerline_avg`.
+- Stop-line/crosswalk overrides were kept at the current retained contract.
+
+Result:
+
+- Baseline lane TP/FP/FN/F1: `1200 / 510 / 1190 / 0.5854`.
+- Baseline stop-line F1: `0.4364`.
+- Baseline crosswalk F1: `0.5988`.
+- FN lane count: `1190`.
+- Unmatched prediction rows: `510`.
+- Tight repairable unmatched rows (`<=80px and center>=0.50`): `128`.
+- Broad repairable unmatched rows (`<=120px any center`): `322`.
+- Best no-new-FP upper-bound rule: `recover_center_ge_0.30_or_unmatched_le_120`, recovered FN `631`, upper-bound lane F1 `0.7740`.
+
+판단:
+
+- Active `develop` can regenerate the lane repair export used by the archived oracle and no-GT repair premises.
+- The reproduced counts match the retained planning evidence for exact val128: `510` unmatched predictions, `128` tight repairable, and `322` broad repairable.
+- This is not a lane improvement. The next lane branch still needs a real no-GT geometry/instance-alignment signal and must be judged by actual TP/FP/FN movement.
