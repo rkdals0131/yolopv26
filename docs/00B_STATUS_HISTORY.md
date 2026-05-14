@@ -11742,3 +11742,42 @@ Reproduced premise:
 - Active code can regenerate the no-GT repairability ranker and parameter export used by the lane repair planning evidence.
 - This remains oracle-labeled selection evidence. It does not move geometry and does not prove a production repair.
 - The next lane branch must pair this scorer with a materially new no-GT geometry/alignment signal and then run actual TP/FP/FN replay.
+
+## 240. 2026-05-14 Lane ranked row-profile repair smoke: soft row projection moves points but not assignments
+
+맥락:
+
+- Section 239 restored the no-GT repairability ranker export path.
+- Prior fixed-ranker geometry smokes already closed whole-track translation, local 2D snapping, affine snapping, and component-row projection because they either did not move geometry or moved geometry without changing lane TP/FP/FN.
+- This follow-up keeps the same scorer, same val-size-scaled repair budget, same checkpoint/runtime lane variant, and same stop-line/crosswalk settings. The only new axis is row-wise softargmax projection over the predicted centerline profile.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-ranked-row-profile-repair-smoke`.
+- Tool: `tools/probe_pv26_lane_ranked_translate_repair.py`.
+- Test: `test/test_lane_ranked_translate_repair.py`.
+- Added `--repair-mode row_profile_softargmax`.
+- Removed stale machine-local defaults from the restored ranked-repair tool; detached worktrees now use repo-relative source/checkpoint defaults, explicit dataset paths when needed, and required `--ranker-parameters`.
+- The projection takes each selected lane point's row, computes a clipped soft weighted center from the local centerline profile in a fixed radius window, rewrites x to that soft center, and preserves the row y.
+
+Verification:
+
+- `python3 -m py_compile tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_ranked_translate_repair.py`.
+- result: `6 passed`.
+- Real CUDA smoke completed on `4` validation batches with `repair_mode=row_profile_softargmax`, `translation_radius=16`, and `ranker_label=repairable_le120_any_center`.
+
+Smoke result:
+
+- Repair budget: `repair_topk=4`, `candidate_count=53`, `selected_count=4`.
+- Movement: `selected_moved_count=4`, `selected_moved_points=81`.
+- Baseline lane/stop/cross F1: `0.5899 / 0.0000 / 0.5455`.
+- Repaired lane/stop/cross F1: `0.5899 / 0.0000 / 0.5455`.
+- Lane TP/FP/FN stayed `41 / 12 / 45`.
+- Lane delta: `0` TP, `0` FP, `0` FN, `0.0` F1.
+
+판단:
+
+- The row-profile projection produces real point movement, but it still does not cross the lane matching boundary on the smoke slice.
+- Do not broaden this branch to val128.
+- Do not repeat it as a radius/window/softmax tuning sweep without a new signal that first changes TP/FP/FN.

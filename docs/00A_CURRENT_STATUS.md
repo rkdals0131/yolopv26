@@ -495,6 +495,17 @@ Latest lane ranked component-path repair smoke:
 - smoke val4 metrics: baseline and component-row repaired lane/stop/cross F1 were identical: `0.5899 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `41 / 12 / 45`.
 - 판단: component-path projection moves selected geometry but still does not change lane assignment. Do not broaden to val128 or repeat component-row/path projection without a new signal that first changes TP/FP/FN.
 
+Latest lane ranked row-profile repair smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-ranked-row-profile-repair-smoke`.
+- changed axis: keep the same broad no-GT repairability ranker, val-size-scaled top-500/2048 budget, fixed `flip_centerline_avg` runtime lane path, and fixed stop-line/crosswalk settings, but replace connected-component projection with row-wise softargmax projection over the predicted centerline profile at radius `16`.
+- artifact retention: no durable run artifact retained; this was a compact smoke and the summary metrics are recorded here after cleanup.
+- smoke val4 budget: `repair_topk=4`, `candidate_count=53`, `selected_count=4`.
+- smoke val4 movement: all selected rows moved; moved points `81`.
+- baseline and repaired lane/stop/cross F1 were identical: `0.5899 / 0.0000 / 0.5455`.
+- lane TP/FP/FN stayed `41 / 12 / 45`; lane delta was `0` TP, `0` FP, `0` FN, `0.0` F1.
+- 판단: row-wise soft centerline-profile projection moves more selected points than component-row projection, but it still does not change assignment. Do not broaden to val128 or repeat this as a row-profile radius/window/softmax sweep without a new signal that first changes TP/FP/FN.
+
 Latest lane point-repair oracle replay:
 
 - branch/worktree: `exp/lane-family-f1/lane-point-repair-replay`.
