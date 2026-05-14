@@ -161,6 +161,17 @@ Latest lane task-conflict negative-loss smoke:
 - same-slice crosswalk-conflict negative result: phase objective `0.6250358501`; lane/stop/cross F1 `0.5156 / 0.0000 / 0.7273`; lane TP/FP/FN `33 / 16 / 46`; stop-line TP/FP/FN `0 / 1 / 2`; crosswalk TP/FP/FN `4 / 2 / 1`.
 - 판단: the opt-in loss path is runtime-safe, but the first controlled smoke is assignment-flat and slightly lower on phase objective. Do not broaden this branch or repeat it as a source/weight/margin sweep without a new assignment-moving signal.
 
+Latest lane temporal-neighbor union smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-temporal-neighbor-union-smoke`.
+- changed axis: keep the checkpoint and `flip_centerline_avg` lane path fixed, decode immediate `sample_id` neighbor frames, and add only neighbor lane candidates that are supported by the current frame centerline map and are not near-duplicates of current lanes.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_temporal_neighbor_union_smoke_20260514/analysis_exports/smoke_val4_epoch2/summary.json`.
+- smoke val4 support: all `16` sampled validation frames had at least one immediate temporal neighbor; `105` neighbor candidates were audited and `6` were selected by the fixed no-GT support/dedupe rule.
+- baseline lane/stop/cross F1: `0.5899 / 0.0000 / 0.5455`, lane TP/FP/FN `41 / 12 / 45`.
+- temporal-neighbor result: lane/stop/cross F1 `0.5655 / 0.0000 / 0.5455`, lane TP/FP/FN `41 / 18 / 45`.
+- selected candidates that would match a baseline FN: `0 / 6`.
+- 판단: immediate-frame lane union adds FP without recovering TP on the smoke slice. Do not broaden to val128/val512 or repeat as neighbor gap, center-threshold, dedupe-distance, or add-cap tuning without a new alignment/FP-control signal.
+
 Latest stop-line scale dense TTA smoke:
 
 - branch/worktree: `exp/lane-family-f1/stopline-scale-dense-tta-smoke`.
