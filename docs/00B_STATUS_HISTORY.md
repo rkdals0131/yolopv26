@@ -11420,3 +11420,34 @@ Smoke val4:
 - Component polyfit is not a useful recall-recovery vectorizer under the current dense evidence.
 - The lower mean point distance is misleading because the variant loses eight TP; assignment metrics get much worse.
 - Do not broaden this to val128/val512. Do not repeat it as polynomial degree, row-stride, component-size, or component-fit smoothing tuning without a new diagnostic first showing TP-preserving assignment movement.
+
+## 230. 2026-05-14 Stop-line live distill cache smoke: teacher-cache plumbing is now executable
+
+맥락:
+
+- Stop-line remains the active bottleneck after the current broader task-balance lower bound: lane/stop/cross `0.5628 / 0.5164 / 0.6187`.
+- Prior stop-line work closed many selector/readout/loss-only axes. One remaining training-side question was whether a frozen checkpoint teacher can provide dense task-cache targets during real training, instead of relying on offline replay or stale manifests.
+- This branch did not test F1 improvement. It only made the live teacher-cache distillation route runnable and fail-fast enough for a future stop-line-only training axis.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-live-distill-smoke`.
+- Added an opt-in `PV26DistillTeacher` wrapper that loads a frozen backbone/head checkpoint, forwards the teacher under `no_grad`, and attaches selected dense logits/features into `encoded["teacher_cache"]`.
+- Added `train_defaults` config fields for `distill_enabled`, `distill_teacher_checkpoint`, `distill_teacher_mode`, task weights, and EMA normalization knobs.
+- Wired the trainer step so teacher cache is attached only when the criterion has distillation enabled.
+- Hardened distill losses so missing task-specific prediction/cache keys zero that task's distill loss instead of crashing. This matters for seg-first teachers that do not emit legacy lane row logits while only stop-line distill is weighted.
+
+Verification:
+
+- `python3 -m py_compile model/engine/loss.py model/engine/trainer.py model/engine/_trainer_step.py tools/pv26_train/config.py tools/pv26_train/cli.py test/test_pv26_loss_runtime.py test/test_pv26_trainer.py test/test_run_pv26_train.py`.
+- `pytest -q test/test_pv26_loss_runtime.py test/test_pv26_trainer.py test/test_run_pv26_train.py`.
+- result: `101 passed`.
+- `git diff --check`.
+- Teacher checkpoint load + cache forward produced stop-line cache tensors with no missing stop-line keys.
+- Real CUDA one-batch smoke on the canonical dataset completed with `status ok`, `successful_batches 1`, and `loss_total_mean 17.4609`.
+
+판단:
+
+- This is a runtime/plumbing pass, not a task-F1 pass.
+- The next valid use is a single-axis stop-line distill short run with `lane=0`, `stop_line>0`, `crosswalk=0` distill weights, followed by exact val128 before any broader expansion.
+- Do not describe this as all-task progress until a real validation metric moves.

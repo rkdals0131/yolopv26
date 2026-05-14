@@ -133,6 +133,14 @@ class TrainDefaultsConfig:
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
     stop_line_component_gate_source: str = "center"
+    distill_enabled: bool = False
+    distill_teacher_checkpoint: str | None = None
+    distill_teacher_mode: str = "cache"
+    distill_loss_weights: dict[str, float] = field(default_factory=dict)
+    distill_normalize_mode: str = "none"
+    distill_ema_decay: float = 0.95
+    distill_ema_warmup_steps: int = 4
+    distill_ema_eps: float = 1.0e-6
     multitask_conflict: dict[str, Any] = field(default_factory=lambda: {
         "enabled": False,
         "mode": "none",
@@ -405,6 +413,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         data.get("lane_segfirst_color_class_weights", defaults.lane_segfirst_color_class_weights),
         field_name="train_defaults.lane_segfirst_color_class_weights",
     )
+    distill_loss_weights_payload = _coerce_mapping(
+        data.get("distill_loss_weights", defaults.distill_loss_weights),
+        field_name="train_defaults.distill_loss_weights",
+    )
     multitask_conflict_tasks = multitask_conflict_payload.get(
         "tasks",
         defaults.multitask_conflict.get("tasks", list(MULTITASK_CONFLICT_TASK_NAMES)),
@@ -665,6 +677,41 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stop_line_component_gate_source", defaults.stop_line_component_gate_source),
             field_name="train_defaults.stop_line_component_gate_source",
         ),
+        distill_enabled=_coerce_bool(
+            data.get("distill_enabled", defaults.distill_enabled),
+            field_name="train_defaults.distill_enabled",
+        ),
+        distill_teacher_checkpoint=_coerce_optional_str(
+            data.get("distill_teacher_checkpoint", defaults.distill_teacher_checkpoint),
+            field_name="train_defaults.distill_teacher_checkpoint",
+        ),
+        distill_teacher_mode=_coerce_str(
+            data.get("distill_teacher_mode", defaults.distill_teacher_mode),
+            field_name="train_defaults.distill_teacher_mode",
+        ),
+        distill_loss_weights={
+            _coerce_str(name, field_name="train_defaults.distill_loss_weights.key"): _coerce_float(
+                value,
+                field_name=f"train_defaults.distill_loss_weights.{name}",
+            )
+            for name, value in distill_loss_weights_payload.items()
+        },
+        distill_normalize_mode=_coerce_str(
+            data.get("distill_normalize_mode", defaults.distill_normalize_mode),
+            field_name="train_defaults.distill_normalize_mode",
+        ),
+        distill_ema_decay=_coerce_float(
+            data.get("distill_ema_decay", defaults.distill_ema_decay),
+            field_name="train_defaults.distill_ema_decay",
+        ),
+        distill_ema_warmup_steps=_coerce_int(
+            data.get("distill_ema_warmup_steps", defaults.distill_ema_warmup_steps),
+            field_name="train_defaults.distill_ema_warmup_steps",
+        ),
+        distill_ema_eps=_coerce_float(
+            data.get("distill_ema_eps", defaults.distill_ema_eps),
+            field_name="train_defaults.distill_ema_eps",
+        ),
         multitask_conflict=multitask_conflict,
     )
 
@@ -850,6 +897,20 @@ def validate_meta_train_scenario(
             raise ValueError(
                 f"phase {index} multitask_conflict uses unsupported task names: {unknown_conflict_tasks}"
             )
+        if phase_train.distill_teacher_mode != "cache":
+            raise ValueError(f"phase {index} distill_teacher_mode must be 'cache'")
+        if phase_train.distill_normalize_mode not in {"none", "ema"}:
+            raise ValueError(f"phase {index} distill_normalize_mode must be one of: none, ema")
+        if phase_train.distill_enabled and not phase_train.distill_teacher_checkpoint:
+            raise ValueError(f"phase {index} distill_enabled requires distill_teacher_checkpoint")
+        unknown_distill_tasks = sorted(set(phase_train.distill_loss_weights) - {"lane", "stop_line", "crosswalk"})
+        if unknown_distill_tasks:
+            raise ValueError(
+                f"phase {index} distill_loss_weights uses unsupported task names: {unknown_distill_tasks}"
+            )
+        for task_name, value in phase_train.distill_loss_weights.items():
+            if float(value) < 0.0:
+                raise ValueError(f"phase {index} distill_loss_weights {task_name!r} must be >= 0")
         selection_requires_val = (
             phase_selection.metric_path.startswith("val.")
             or phase_selection.metric_path.startswith("selection_metrics.")

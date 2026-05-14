@@ -216,6 +216,53 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["lane"].grad)
 
+    def test_stopline_distill_tolerates_missing_segfirst_lane_row_logits(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "lane_seg_centerline_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_support_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "lane_seg_color_logits": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), requires_grad=True),
+                "lane_seg_type_logits": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), requires_grad=True),
+                "stop_line_mask_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_offset": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_angle": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_half_length": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_feature": torch.zeros((batch_size, 4, h, w), requires_grad=True),
+                "crosswalk_mask_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "crosswalk_boundary_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "crosswalk_center_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "crosswalk_feature": torch.zeros((batch_size, 4, h, w), requires_grad=True),
+            }
+        )
+        encoded["teacher_cache"] = {
+            key: value.detach().clone()
+            for key, value in predictions.items()
+            if key.startswith("stop_line_")
+        }
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_mode="roadmark_joint",
+            distill_enabled=True,
+            distill_loss_weights={"lane": 0.0, "stop_line": 0.1, "crosswalk": 0.0},
+        )
+        losses = criterion(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertEqual(float(criterion.last_distill_breakdown["lane"]["loss"]), 0.0)
+        self.assertIsNotNone(criterion.last_distill_breakdown["stop_line"]["loss"])
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["stop_line_mask_logits"].grad)
+
     def test_stage4_promotes_half_precision_lane_predictions_to_float32_for_loss(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

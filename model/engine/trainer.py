@@ -35,6 +35,22 @@ RUN_MANIFEST_VERSION = "pv26-train-run-v1"
 OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
 TIMING_KEYS = _reporting.TIMING_KEYS
 TENSORBOARD_LOSS_KEYS = _reporting.TENSORBOARD_LOSS_KEYS
+DISTILL_TEACHER_CACHE_KEYS = (
+    "lane_row_logits",
+    "lane_exist_logits",
+    "lane_row_col_expectation",
+    "lane_feature",
+    "stop_line_mask_logits",
+    "stop_line_center_logits",
+    "stop_line_center_offset",
+    "stop_line_angle",
+    "stop_line_half_length",
+    "stop_line_feature",
+    "crosswalk_mask_logits",
+    "crosswalk_boundary_logits",
+    "crosswalk_center_logits",
+    "crosswalk_feature",
+)
 
 
 def _canonical_stage(stage: str) -> str:
@@ -43,6 +59,39 @@ def _canonical_stage(stage: str) -> str:
 
 def _count_parameters(parameters: list[torch.nn.Parameter]) -> int:
     return sum(parameter.numel() for parameter in parameters)
+
+
+class PV26DistillTeacher:
+    def __init__(self, adapter: Any, heads: torch.nn.Module) -> None:
+        self.adapter = adapter
+        self.heads = heads
+        self.eval()
+        for parameter in self.adapter.raw_model.parameters():
+            parameter.requires_grad = False
+        for parameter in self.heads.parameters():
+            parameter.requires_grad = False
+
+    def to(self, device: str | torch.device) -> "PV26DistillTeacher":
+        resolved_device = torch.device(device)
+        self.adapter.raw_model.to(resolved_device)
+        self.heads.to(resolved_device)
+        return self
+
+    def eval(self) -> "PV26DistillTeacher":
+        self.adapter.raw_model.eval()
+        self.heads.eval()
+        return self
+
+    @torch.no_grad()
+    def build_cache(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
+        self.eval()
+        features = forward_pyramid_features(self.adapter, encoded["image"])
+        outputs = self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
+        return {
+            key: value.detach()
+            for key, value in outputs.items()
+            if key in DISTILL_TEACHER_CACHE_KEYS and isinstance(value, torch.Tensor)
+        }
 
 
 def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
@@ -295,6 +344,7 @@ class PV26Trainer:
         skip_non_finite_loss: bool = False,
         oom_guard: bool = False,
         multitask_conflict: dict[str, Any] | None = None,
+        distill_teacher: Any | None = None,
     ) -> None:
         if accumulate_steps <= 0:
             raise ValueError("accumulate_steps must be > 0")
@@ -303,6 +353,7 @@ class PV26Trainer:
         self.adapter = adapter
         self.heads = heads
         self.device = torch.device(device)
+        self.distill_teacher = distill_teacher
         self.stage = _canonical_stage(stage)
         self.freeze_policy = freeze_policy
         self.stage_summary = configure_pv26_train_stage(
@@ -313,6 +364,9 @@ class PV26Trainer:
         )
         self.adapter.raw_model.to(self.device)
         self.heads.to(self.device)
+        teacher_to_device = getattr(self.distill_teacher, "to", None)
+        if callable(teacher_to_device):
+            teacher_to_device(self.device)
         self.criterion = (criterion or PV26MultiTaskLoss(stage=self.stage, loss_weights=loss_weights)).to(self.device)
         self.optimizer = optimizer or build_pv26_optimizer(
             adapter,
@@ -372,6 +426,20 @@ class PV26Trainer:
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         features = forward_pyramid_features(self.adapter, encoded["image"])
         return self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
+
+    def attach_teacher_cache(self, encoded: dict[str, Any], *, phase: str) -> dict[str, Any]:
+        teacher = self.distill_teacher
+        if teacher is None:
+            return encoded
+        build_cache = getattr(teacher, "build_cache", None)
+        if not callable(build_cache):
+            raise TypeError("distill_teacher must provide build_cache(encoded)")
+        cache = build_cache(encoded)
+        if not isinstance(cache, dict):
+            raise TypeError("distill_teacher.build_cache(encoded) must return a dict")
+        encoded["teacher_cache"] = cache
+        encoded["_distill_phase"] = str(phase)
+        return encoded
 
     def _autocast_context(self):
         if not self.amp_enabled:

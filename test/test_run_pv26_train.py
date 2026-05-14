@@ -150,6 +150,17 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             },
                             "stopline_selector_target_mode": "rowx_band",
                             "stop_line_component_gate_source": "selector",
+                            "distill_enabled": True,
+                            "distill_teacher_checkpoint": "runs/teacher.pt",
+                            "distill_loss_weights": {
+                                "lane": 0.0,
+                                "stop_line": 0.5,
+                                "crosswalk": 0.0,
+                            },
+                            "distill_normalize_mode": "ema",
+                            "distill_ema_decay": 0.9,
+                            "distill_ema_warmup_steps": 2,
+                            "distill_ema_eps": 1.0e-5,
                         },
                         "preview": {
                             "dataset_keys": ["custom_preview_dataset"],
@@ -251,6 +262,15 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)
         self.assertEqual(scenario.train_defaults.stopline_selector_target_mode, "rowx_band")
         self.assertEqual(scenario.train_defaults.stop_line_component_gate_source, "selector")
+        self.assertTrue(scenario.train_defaults.distill_enabled)
+        self.assertEqual(scenario.train_defaults.distill_teacher_checkpoint, "runs/teacher.pt")
+        self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["lane"], 0.0)
+        self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["stop_line"], 0.5)
+        self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["crosswalk"], 0.0)
+        self.assertEqual(scenario.train_defaults.distill_normalize_mode, "ema")
+        self.assertAlmostEqual(scenario.train_defaults.distill_ema_decay, 0.9)
+        self.assertEqual(scenario.train_defaults.distill_ema_warmup_steps, 2)
+        self.assertAlmostEqual(scenario.train_defaults.distill_ema_eps, 1.0e-5)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)
@@ -278,6 +298,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.lane_segfirst_track_mode, "component")
         self.assertEqual(scenario.train_defaults.lane_segfirst_max_row_gap, 12)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_max_link_dx, 8.0)
+        self.assertFalse(scenario.train_defaults.distill_enabled)
+        self.assertIsNone(scenario.train_defaults.distill_teacher_checkpoint)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_obj_threshold, 0.50)
         self.assertAlmostEqual(scenario.train_defaults.crosswalk_obj_threshold, 0.50)
         self.assertEqual(tuple(phase.stage for phase in scenario.phases), (

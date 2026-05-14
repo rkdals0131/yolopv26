@@ -157,6 +157,8 @@ def run_train_step(
     trainer.heads.train()
     load_started_at = time.perf_counter()
     encoded = trainer.prepare_batch(batch)
+    if bool(getattr(trainer.criterion, "distill_enabled", False)):
+        encoded = trainer.attach_teacher_cache(encoded, phase="train")
     sync_timing_device(trainer.device, profile_device_sync)
     load_ended_at = time.perf_counter()
     if trainer.micro_step == 0:

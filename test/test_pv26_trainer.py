@@ -220,6 +220,39 @@ class _FiniteCriterion(nn.Module):
         }
 
 
+class _TeacherCacheCriterion(_FiniteCriterion):
+    distill_enabled = True
+
+    def __init__(self) -> None:
+        super().__init__(total=1.0)
+        self.seen_cache: dict | None = None
+        self.seen_phase: str | None = None
+
+    def forward(self, predictions, encoded):  # type: ignore[override]
+        self.seen_cache = encoded.get("teacher_cache")
+        self.seen_phase = encoded.get("_distill_phase")
+        return super().forward(predictions, encoded)
+
+
+class _FakeDistillTeacher:
+    def __init__(self) -> None:
+        self.device: torch.device | None = None
+        self.cache_calls = 0
+
+    def to(self, device: str | torch.device) -> "_FakeDistillTeacher":
+        self.device = torch.device(device)
+        return self
+
+    def build_cache(self, encoded: dict) -> dict:
+        self.cache_calls += 1
+        return {
+            "stop_line_mask_logits": torch.ones(
+                (int(encoded["image"].shape[0]), 1, 2, 2),
+                device=encoded["image"].device,
+            )
+        }
+
+
 def _dummy_optimizer() -> torch.optim.Optimizer:
     return torch.optim.SGD([nn.Parameter(torch.tensor(0.0, requires_grad=True))], lr=1e-3)
 
@@ -1018,6 +1051,31 @@ class PV26TrainerTests(unittest.TestCase):
 
         self.assertFalse(trainer.skip_non_finite_loss)
         self.assertFalse(trainer.oom_guard)
+
+    def test_train_step_attaches_distill_teacher_cache_when_enabled(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        criterion = _TeacherCacheCriterion()
+        teacher = _FakeDistillTeacher()
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            nn.Identity(),
+            criterion=criterion,
+            optimizer=_dummy_optimizer(),
+            distill_teacher=teacher,
+        )
+        trainer.forward_encoded_batch = lambda encoded: {  # type: ignore[method-assign]
+            "det": torch.ones((int(encoded["image"].shape[0]), 1), requires_grad=True)
+        }
+
+        summary = trainer.train_step(_make_encoded_batch(batch_size=1, q_det=2))
+
+        self.assertTrue(summary["successful"])
+        self.assertEqual(teacher.cache_calls, 1)
+        self.assertEqual(teacher.device, torch.device("cpu"))
+        self.assertEqual(criterion.seen_phase, "train")
+        self.assertIsInstance(criterion.seen_cache, dict)
+        self.assertIn("stop_line_mask_logits", criterion.seen_cache)
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:

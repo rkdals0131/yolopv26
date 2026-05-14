@@ -36,7 +36,7 @@ from model.data import (
     build_pv26_train_dataloader,
     collate_pv26_samples,
 )
-from model.engine.trainer import PV26Trainer, build_pv26_scheduler
+from model.engine.trainer import PV26DistillTeacher, PV26Trainer, build_pv26_scheduler
 from model.engine.loss import PV26MultiTaskLoss
 from model.engine.train_summary import resolve_summary_path
 from model.net import PV26Heads
@@ -50,6 +50,10 @@ try:
     from model.net import infer_pyramid_channels
 except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
     infer_pyramid_channels = None
+try:
+    from model.net import load_matching_state_dict
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    load_matching_state_dict = None
 try:
     from model.net import resolve_yolo26_weights
 except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
@@ -122,6 +126,42 @@ def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
             weights=weights,
         )
     return build_yolo26n_trunk(weights=weights)
+
+
+def _resolve_distill_teacher_checkpoint(train_config: TrainDefaultsConfig) -> Path:
+    checkpoint = train_config.distill_teacher_checkpoint
+    if checkpoint is None:
+        raise ValueError("distill_enabled requires train_defaults.distill_teacher_checkpoint")
+    checkpoint_path = Path(checkpoint).expanduser()
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = (REPO_ROOT / checkpoint_path).resolve()
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"distill teacher checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
+
+
+def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeacher | None:
+    if not train_config.distill_enabled:
+        return None
+    if str(train_config.distill_teacher_mode) != "cache":
+        raise ValueError("only distill_teacher_mode='cache' is supported")
+    if load_matching_state_dict is None:
+        raise RuntimeError("load_matching_state_dict is required for distill teacher loading")
+    import torch
+
+    checkpoint_path = _resolve_distill_teacher_checkpoint(train_config)
+    adapter = _build_backbone_adapter(train_config)
+    heads = PV26Heads(in_channels=_resolve_head_channels(adapter, train_config))
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"distill teacher checkpoint must be a dict: {checkpoint_path}")
+    adapter_state = checkpoint.get("adapter_state_dict")
+    heads_state = checkpoint.get("heads_state_dict")
+    if not isinstance(adapter_state, dict) or not isinstance(heads_state, dict):
+        raise KeyError("distill teacher checkpoint requires adapter_state_dict and heads_state_dict")
+    load_matching_state_dict(adapter.raw_model, adapter_state)
+    load_matching_state_dict(heads, heads_state)
+    return PV26DistillTeacher(adapter, heads)
 
 
 def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, ...]:
@@ -529,6 +569,13 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_geometry_aux_weight=train_config.stopline_geometry_aux_weight,
         stopline_center_target_mode=train_config.stopline_center_target_mode,
         stopline_centerline_target_weight=train_config.stopline_centerline_target_weight,
+        distill_enabled=train_config.distill_enabled,
+        distill_teacher_mode=train_config.distill_teacher_mode,
+        distill_loss_weights=train_config.distill_loss_weights,
+        distill_normalize_mode=train_config.distill_normalize_mode,
+        distill_ema_decay=train_config.distill_ema_decay,
+        distill_ema_warmup_steps=train_config.distill_ema_warmup_steps,
+        distill_ema_eps=train_config.distill_ema_eps,
     )
     trainer = PV26Trainer(
         adapter,
@@ -548,6 +595,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         skip_non_finite_loss=train_config.skip_non_finite_loss,
         oom_guard=train_config.oom_guard,
         multitask_conflict=train_config.multitask_conflict,
+        distill_teacher=_build_distill_teacher(train_config),
     )
     trainer.scheduler = build_pv26_scheduler(
         trainer.optimizer,

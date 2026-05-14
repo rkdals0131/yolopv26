@@ -1724,8 +1724,12 @@ class PV26MultiTaskLoss(nn.Module):
     ) -> tuple[torch.Tensor, dict[str, float | None]]:
         teacher_cache = self._teacher_cache(encoded)
         required = ("lane_row_logits", "lane_exist_logits", "lane_row_col_expectation", "lane_feature")
-        if not self.distill_enabled or any(key not in teacher_cache for key in required):
-            return _zero_graph(predictions["lane_row_logits"]), {"logit_kl": None, "feature_cosine": None}
+        if (
+            not self.distill_enabled
+            or any(key not in teacher_cache for key in required)
+            or any(key not in predictions for key in required)
+        ):
+            return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
         row_kl = _logit_kl_divergence(predictions["lane_row_logits"], teacher_cache["lane_row_logits"])
         exist_bce = _binary_logit_distill(predictions["lane_exist_logits"], teacher_cache["lane_exist_logits"])
         row_expectation = F.smooth_l1_loss(
@@ -1756,8 +1760,12 @@ class PV26MultiTaskLoss(nn.Module):
             "stop_line_half_length",
             "stop_line_feature",
         )
-        if not self.distill_enabled or any(key not in teacher_cache for key in required):
-            return _zero_graph(predictions["stop_line_mask_logits"]), {"logit_kl": None, "feature_cosine": None}
+        if (
+            not self.distill_enabled
+            or any(key not in teacher_cache for key in required)
+            or any(key not in predictions for key in required)
+        ):
+            return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
         mask_bce = _binary_logit_distill(predictions["stop_line_mask_logits"], teacher_cache["stop_line_mask_logits"])
         mask_dice = _soft_dice_distill(predictions["stop_line_mask_logits"], teacher_cache["stop_line_mask_logits"])
         center_bce = _binary_logit_distill(predictions["stop_line_center_logits"], teacher_cache["stop_line_center_logits"])
@@ -1793,8 +1801,12 @@ class PV26MultiTaskLoss(nn.Module):
             "crosswalk_center_logits",
             "crosswalk_feature",
         )
-        if not self.distill_enabled or any(key not in teacher_cache for key in required):
-            return _zero_graph(predictions["crosswalk_mask_logits"]), {"logit_kl": None, "feature_cosine": None}
+        if (
+            not self.distill_enabled
+            or any(key not in teacher_cache for key in required)
+            or any(key not in predictions for key in required)
+        ):
+            return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
         mask_bce = _binary_logit_distill(predictions["crosswalk_mask_logits"], teacher_cache["crosswalk_mask_logits"])
         mask_dice = _soft_dice_distill(predictions["crosswalk_mask_logits"], teacher_cache["crosswalk_mask_logits"])
         boundary_bce = _binary_logit_distill(
