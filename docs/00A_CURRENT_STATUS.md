@@ -172,6 +172,15 @@ Latest lane temporal-neighbor union smoke:
 - selected candidates that would match a baseline FN: `0 / 6`.
 - 판단: immediate-frame lane union adds FP without recovering TP on the smoke slice. Do not broaden to val128/val512 or repeat as neighbor gap, center-threshold, dedupe-distance, or add-cap tuning without a new alignment/FP-control signal.
 
+Latest lane attribute-agnostic duplicate suppression smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-attr-agnostic-duplicate-suppression-smoke`.
+- changed axis: keep the same retained checkpoint, source run, `flip_centerline_avg` lane path, stop-line settings, and hull crosswalk fixed, then replay one fixed `24px` lane duplicate suppression pass that ignores `class_name` and `lane_type`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_attr_agnostic_duplicate_suppression_20260514/analysis_exports/smoke_val4_epoch2/summary.json`.
+- smoke val4 result: `suppressed_count=0`, `suppressed_cross_schema_count=0`, `suppressed_would_match_gt_count=0`.
+- baseline lane/stop/cross F1 stayed `0.5899 / 0.0000 / 0.5455`; lane TP/FP/FN stayed `41 / 12 / 45`.
+- 판단: cross-attribute near-duplicates are not present on the smoke slice, so this is a no-op. Do not broaden to val128/val512 or repeat as attribute-agnostic duplicate-distance/schema/tie-break tuning.
+
 Latest stop-line scale dense TTA smoke:
 
 - branch/worktree: `exp/lane-family-f1/stopline-scale-dense-tta-smoke`.
