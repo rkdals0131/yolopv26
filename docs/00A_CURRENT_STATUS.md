@@ -116,6 +116,13 @@ Current best broader task-balance replay:
 - lane-family mean/min F1: `0.5659 / 0.5164`.
 - 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`.
 
+Latest stop-line live distill result:
+
+- live teacher-cache distill plumbing is implemented and passed a real one-batch CUDA smoke, but the first metric run is negative.
+- single-axis follow-up `stop_line` self-distill from the same frozen merged checkpoint used phase 4 only, `2` epochs, `128` train batches, and `distill_loss_weights={lane:0, stop_line:0.25, crosswalk:0}`.
+- standard exact-val128 replay rejects the resulting best checkpoint: source lane/stop/cross F1 `0.5445 / 0.4483 / 0.5854`, distill best `0.4835 / 0.3774 / 0.5036`.
+- 판단: do not broaden this to val512, and do not repeat same-checkpoint stop-line-only teacher-cache self-distill as a weight/epoch/batch-size/EMA sweep. Future distill use would need a different teacher target or a changed stop-line decode/assignment contract.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.
