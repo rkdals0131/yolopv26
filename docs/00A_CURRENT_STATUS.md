@@ -116,6 +116,13 @@ Current best broader task-balance replay:
 - lane-family mean/min F1: `0.5659 / 0.5164`.
 - 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`.
 
+Latest projection/candidate tooling status:
+
+- Projection readout scripts/tests are restored in active `develop`.
+- Candidate-pool manifest regeneration is restored: `tools/probe_pv26_stopline_candidate_pool.py` now supports `--dataset-root` for detached worktrees, `--proposal-min-gap 4`, and emits the `sample_id` / GT geometry JSON / candidate geometry JSON fields required by the projection replay tools.
+- A 1-batch CLI smoke on the retained merged checkpoint produced zero candidates but still wrote the required `candidate_features.csv` header, and projection-competition replay consumed that generated CSV/summary.
+- 판단: this is reproducibility/tooling status only, not a metric improvement and not a reason to repeat projection readout sweeps.
+
 Latest stop-line live distill result:
 
 - live teacher-cache distill plumbing is implemented and passed a real one-batch CUDA smoke, but the first metric run is negative.

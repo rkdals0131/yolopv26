@@ -113,6 +113,53 @@ RICH_VALIDATOR_EXTRA_FEATURES = (
 )
 RICH_VALIDATOR_FEATURES = BASE_VALIDATOR_FEATURES + RICH_VALIDATOR_EXTRA_FEATURES
 RAW_BATCH_KEYS = ("det_targets", "tl_attr_targets", "lane_targets", "source_mask", "valid_mask", "meta")
+CANDIDATE_FEATURE_FIELDNAMES = (
+    "batch_index",
+    "sample_index",
+    "sample_id",
+    "dataset_key",
+    "image_path",
+    "gt_stop_line_count",
+    "gt_stop_line_points_json",
+    "proposal_source",
+    "proposal_min_gap",
+    "proposal_rank",
+    "proposal_row",
+    "proposal_col",
+    "decoded_center_row",
+    "decoded_center_col",
+    "candidate_points_json",
+    "score",
+    "length",
+    "component_svd_length",
+    "center_prob",
+    "selector_prob",
+    "fused_center_selector_prob",
+    "mask_prob",
+    "decoded_center_mask_prob",
+    "center_r1_max",
+    "center_r1_mean",
+    "center_r2_max",
+    "center_r2_mean",
+    "center_r4_max",
+    "center_r4_mean",
+    "selector_r1_max",
+    "selector_r1_mean",
+    "selector_r2_max",
+    "selector_r2_mean",
+    "selector_r4_max",
+    "selector_r4_mean",
+    "mask_r1_max",
+    "mask_r1_mean",
+    "mask_r2_max",
+    "mask_r2_mean",
+    "mask_r4_max",
+    "mask_r4_mean",
+    "nearest_gt_distance",
+    "nearest_gt_angle_error",
+    "nearest_gt_index",
+    "is_oracle_positive",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,6 +175,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-val-batches", type=int, default=128)
     parser.add_argument("--validation-epoch", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--dataset-root", default="", help="Override dataset root for detached worktrees.")
+    parser.add_argument("--proposal-min-gap", type=float, default=4.0)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--rich-validator-replay", action="store_true")
     parser.add_argument("--rich-validator-train-fraction", type=float, default=0.5)
@@ -194,6 +243,7 @@ def _decode_candidates(
     gt_stop_lines: list[dict[str, Any]],
     source: str,
     top_k: int,
+    min_gap: float,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     mask_probs = _as_2d_array(_sample_tensor(outputs, "stop_line_mask_logits", sample_index), sigmoid=True)
     angle_map = _sample_tensor(outputs, "stop_line_angle", sample_index)
@@ -215,7 +265,7 @@ def _decode_candidates(
     )
     stats: dict[str, int] = {}
     candidates: list[dict[str, Any]] = []
-    top_cells = _top_cells(proposal_map, top_k=int(top_k), threshold=0.0, min_gap=10.0)
+    top_cells = _top_cells(proposal_map, top_k=int(top_k), threshold=0.0, min_gap=float(min_gap))
     for proposal_rank, (row, col, score) in enumerate(top_cells, start=1):
         pred_offset = offset_map[:, row, col].numpy().astype(np.float32)
         center_xy = np.asarray([float(col) + pred_offset[0], float(row) + pred_offset[1]], dtype=np.float32)
@@ -236,6 +286,7 @@ def _decode_candidates(
         candidate = dict(candidate)
         candidate["proposal_rank"] = int(proposal_rank)
         candidate["proposal_source"] = str(source)
+        candidate["proposal_min_gap"] = float(min_gap)
         candidate["proposal_row"] = int(row)
         candidate["proposal_col"] = int(col)
         center_row = int(round(float(center_xy[1])))
@@ -728,21 +779,50 @@ def _run_rich_validator_replay(
     }
 
 
-def _candidate_feature_rows(candidates: list[dict[str, Any]], *, batch_index: int, sample_index: int) -> list[dict[str, Any]]:
+def _points_json(points: Any) -> str:
+    try:
+        array = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    except (TypeError, ValueError):
+        array = np.zeros((0, 2), dtype=np.float32)
+    return json.dumps([[float(x), float(y)] for x, y in array.tolist()], separators=(",", ":"))
+
+
+def _candidate_feature_rows(
+    candidates: list[dict[str, Any]],
+    *,
+    batch_index: int,
+    sample_index: int,
+    meta: dict[str, Any] | None = None,
+    gt_stop_lines: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    meta = meta or {}
+    gt_stop_lines = gt_stop_lines or []
+    gt_points_json = json.dumps(
+        [json.loads(_points_json(gt.get("points_xy", []))) for gt in gt_stop_lines],
+        separators=(",", ":"),
+    )
     for candidate in candidates:
         rows.append(
             {
                 "batch_index": int(batch_index),
                 "sample_index": int(sample_index),
+                "sample_id": str(meta.get("sample_id", "")),
+                "dataset_key": str(meta.get("dataset_key", "")),
+                "image_path": str(meta.get("image_path", "")),
+                "gt_stop_line_count": int(len(gt_stop_lines)),
+                "gt_stop_line_points_json": gt_points_json,
                 "proposal_source": str(candidate.get("proposal_source", "")),
+                "proposal_min_gap": float(candidate.get("proposal_min_gap", 4.0)),
                 "proposal_rank": int(candidate.get("proposal_rank", 0)),
                 "proposal_row": int(candidate.get("proposal_row", -1)),
                 "proposal_col": int(candidate.get("proposal_col", -1)),
                 "decoded_center_row": int(candidate.get("decoded_center_row", -1)),
                 "decoded_center_col": int(candidate.get("decoded_center_col", -1)),
+                "candidate_points_json": _points_json(candidate.get("points_xy", [])),
                 "score": float(candidate.get("score", 0.0)),
                 "length": float(candidate.get("length", 0.0)),
+                "component_svd_length": float(candidate.get("component_svd_length", candidate.get("length", 0.0))),
                 "center_prob": float(candidate.get("center_prob", 0.0)),
                 "selector_prob": float(candidate.get("selector_prob", 0.0)),
                 "fused_center_selector_prob": float(candidate.get("fused_center_selector_prob", 0.0)),
@@ -775,6 +855,29 @@ def _candidate_feature_rows(candidates: list[dict[str, Any]], *, batch_index: in
     return rows
 
 
+def _scenario_with_dataset_root(
+    scenario: train_config_api.MetaTrainScenario,
+    dataset_root: str,
+) -> train_config_api.MetaTrainScenario:
+    value = str(dataset_root or "").strip()
+    if not value:
+        return scenario
+    dataset = train_config_api.DatasetConfig(root=Path(value).expanduser().resolve())
+    return replace(scenario, dataset=dataset)
+
+
+def _write_candidate_features_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    fieldnames = list(CANDIDATE_FEATURE_FIELDNAMES)
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main() -> int:
     args = parse_args()
     checkpoint = Path(args.checkpoint).expanduser().resolve()
@@ -782,6 +885,7 @@ def main() -> int:
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
 
     scenario = train_cli.load_meta_train_scenario(args.preset)
+    scenario = _scenario_with_dataset_root(scenario, str(args.dataset_root))
     phase = scenario.phases[int(args.phase_index) - 1]
     train_config = train_config_api.scenario_phase_defaults(scenario.train_defaults, phase.overrides)
     train_config = replace(
@@ -852,8 +956,17 @@ def main() -> int:
                     gt_stop_lines=list(gt_sample.get("stop_lines", [])),
                     source="max",
                     top_k=max_top_k,
+                    min_gap=float(args.proposal_min_gap),
                 )
-                feature_rows.extend(_candidate_feature_rows(candidates, batch_index=batch_index, sample_index=sample_index))
+                feature_rows.extend(
+                    _candidate_feature_rows(
+                        candidates,
+                        batch_index=batch_index,
+                        sample_index=sample_index,
+                        meta=meta,
+                        gt_stop_lines=list(gt_sample.get("stop_lines", [])),
+                    )
+                )
                 sample_records.append(
                     {
                         "batch_index": int(batch_index),
@@ -901,7 +1014,7 @@ def main() -> int:
         reverse=True,
     )
     _write_csv(output_dir / "variants.csv", rows)
-    _write_csv(output_dir / "candidate_features.csv", feature_rows)
+    _write_candidate_features_csv(output_dir / "candidate_features.csv", feature_rows)
     positives = sum(1 for row in feature_rows if bool(row.get("is_oracle_positive")))
     summary = {
         "checkpoint": str(checkpoint),

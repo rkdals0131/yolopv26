@@ -11507,3 +11507,35 @@ Verification:
 
 - This is reproducibility/tooling restoration, not a new metric success.
 - It does not reopen fragment-union, projection-gap, projection-competition length/rank, selector, or photometric sweeps. Those remain closed unless a new midpoint/candidate-generation or FP-control premise is added.
+
+## 233. 2026-05-14 Stop-line candidate-pool manifest contract restore: projection replay input can be regenerated
+
+맥락:
+
+- Section 232 restored the projection replay scripts, but the active candidate-pool probe no longer emitted the manifest columns those scripts consume.
+- The missing contract was not a new metric axis. It was the ability to regenerate `candidate_features.csv` with sample identity, GT/candidate geometry JSON, and proposal min-gap metadata from the retained merged checkpoint.
+- Detached `/tmp` worktrees also need an explicit dataset-root override because the canonical dataset now lives only in the main repo's retained prepared dataset path.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/restore-candidate-manifest-contract`.
+- Added `--dataset-root` to `tools/probe_pv26_stopline_candidate_pool.py`.
+- Added `--proposal-min-gap`; default is `4.0` so regenerated manifests line up with the restored fragment-union / projection-split / projection-competition replay defaults.
+- Extended `candidate_features.csv` rows with `sample_id`, `dataset_key`, `image_path`, `gt_stop_line_count`, `gt_stop_line_points_json`, `proposal_min_gap`, `candidate_points_json`, and `component_svd_length`.
+- Added a stable candidate-feature CSV writer so even a zero-candidate smoke slice writes the manifest header instead of an empty file.
+- Added focused tests in `test/test_stopline_candidate_pool_manifest.py`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_candidate_manifest python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_manifest.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_candidate_manifest_pytest python3 -m pytest -q test/test_stopline_candidate_pool_manifest.py test/test_stopline_fragment_projection_competition_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_union_readout.py`.
+- result: `14 passed`.
+- Real CLI smoke on the retained merged lane-head checkpoint and retained prepared dataset completed with `--max-val-batches 1`, `--dataset-root /home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`, and `--proposal-min-gap 4`.
+- The smoke slice had `candidate_count=0`, but `candidate_features.csv` still had the required manifest header: `sample_id`, `gt_stop_line_points_json`, `candidate_points_json`, and `proposal_min_gap`.
+- `tools/probe_pv26_stopline_fragment_projection_competition_readout.py` consumed that generated CSV/summary and wrote `/tmp/yolopv26_projection_comp_smoke`.
+
+판단:
+
+- This is reproducibility/tooling restoration, not F1 progress.
+- The smoke result has no metric meaning because the slice produced zero candidate rows.
+- It does not reopen projection-competition or candidate-row feature sweeps. It only makes the current task-balance reference regenerable before the next materially new stop-line candidate-generation or FP-control branch.
