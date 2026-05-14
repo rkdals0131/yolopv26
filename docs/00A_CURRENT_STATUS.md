@@ -536,6 +536,14 @@ Latest lane repair replay tooling status:
 - Current `develop` also regenerated the exact-val128 lane FN/repair export from the retained merged checkpoint: baseline lane TP/FP/FN/F1 `1200 / 510 / 1190 / 0.5854`, unmatched predictions `510`, tight repairable rows `128`, broad repairable rows `322`.
 - 판단: this restores the lane repair replay machinery after artifact/worktree cleanup. The smoke is oracle-only and one batch, so it is not production success or all-task `0.60` evidence.
 
+Latest lane repairability ranker tooling status:
+
+- branch/worktree: `exp/lane-family-f1/restore-lane-repairability-ranker`.
+- restored active tool: `tools/analyze_pv26_lane_repairability_model_replay.py`.
+- restored focused test: `test/test_lane_repairability_model_replay.py`.
+- archived broader-val512 unmatched-row replay regenerated the known ranker premise: broad label OOF AUC/AP `0.6821 / 0.7491`, broad top500 oracle-repair lane F1 `0.6077`, and parameter export.
+- 판단: this restores the no-GT repairability selection scorer surface only. It still assumes selected repairable unmatched predictions can be repaired, so it is not a geometry repair and not production F1 success.
+
 Latest lane residual-component candidates:
 
 - branch/worktree: `exp/lane-family-f1/lane-residual-component-candidates`.

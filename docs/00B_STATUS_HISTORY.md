@@ -11706,3 +11706,39 @@ Result:
 - Active `develop` can regenerate the lane repair export used by the archived oracle and no-GT repair premises.
 - The reproduced counts match the retained planning evidence for exact val128: `510` unmatched predictions, `128` tight repairable, and `322` broad repairable.
 - This is not a lane improvement. The next lane branch still needs a real no-GT geometry/instance-alignment signal and must be judged by actual TP/FP/FN movement.
+
+## 239. 2026-05-14 Lane repairability ranker tooling restore: selection scorer is reproducible again
+
+맥락:
+
+- Section 238 restored and verified the lane FN/unmatched export path.
+- The next no-GT lane repair branch also needs the archived broad repairability ranker premise to be regenerable from active code.
+- This is still only a selection scorer. It does not infer replacement geometry.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/restore-lane-repairability-ranker`.
+- Restored `tools/analyze_pv26_lane_repairability_model_replay.py`.
+- Restored `test/test_lane_repairability_model_replay.py`.
+- The restored feature list excludes the GT-derived `sample_unmatched_pred_count`; it keeps only no-GT prediction/sample features.
+
+Verification:
+
+- `python3 -m py_compile tools/analyze_pv26_lane_repairability_model_replay.py test/test_lane_repairability_model_replay.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_repairability_model_replay.py`.
+- result: `2 passed`.
+- Replay on the archived broader-val512 unmatched-row CSV completed and wrote `summary.json`, `repairability_model_replay.csv`, `repairability_model_weights.csv`, and `repairability_model_parameters.json`.
+
+Reproduced premise:
+
+- Baseline broader lane TP/FP/FN/F1: `4518 / 2206 / 4959 / 0.5577`.
+- Tight label (`repairable_le80_center050`) OOF AUC/AP: `0.7629 / 0.4742`.
+- Broad label (`repairable_le120_any_center`) OOF AUC/AP: `0.6821 / 0.7491`.
+- Broad top500 oracle-repair replay: lane F1 `0.6077`, TP/FP/FN `4923 / 1801 / 4554`, selected repairable `405 / 500`.
+- Broad full positive-count budget replay: lane F1 `0.6832`, TP/FP/FN `5534 / 1190 / 3943`, selected repairable `1016 / 1393`.
+
+판단:
+
+- Active code can regenerate the no-GT repairability ranker and parameter export used by the lane repair planning evidence.
+- This remains oracle-labeled selection evidence. It does not move geometry and does not prove a production repair.
+- The next lane branch must pair this scorer with a materially new no-GT geometry/alignment signal and then run actual TP/FP/FN replay.
