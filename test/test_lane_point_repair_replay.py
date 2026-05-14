@@ -1,9 +1,11 @@
 import unittest
+from unittest.mock import patch
 
 from tools.replay_pv26_lane_point_repair import (
     _candidate_is_selected,
     _replace_lane_points,
     _summarize_selected_targets,
+    parse_args,
 )
 
 
@@ -54,6 +56,21 @@ class LanePointRepairReplayTest(unittest.TestCase):
         self.assertEqual(summary["selected_unique_target_count"], 2)
         self.assertEqual(summary["selected_duplicate_target_count"], 1)
         self.assertEqual(summary["samples_with_selected"], 2)
+
+    def test_task_mask_lane_variant_is_accepted(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "replay_pv26_lane_point_repair.py",
+                "--output-dir",
+                "/tmp/out",
+                "--lane-flip-variant",
+                "flip_centerline_avg_lane_cross_comp050",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.lane_flip_variant, "flip_centerline_avg_lane_cross_comp050")
 
 
 if __name__ == "__main__":

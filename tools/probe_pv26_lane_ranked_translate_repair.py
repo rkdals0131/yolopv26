@@ -84,7 +84,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional canonical dataset root. If omitted, infer from source-run/scenario paths.",
     )
-    parser.add_argument("--lane-flip-variant", choices=("baseline", "flip_centerline_avg"), default="flip_centerline_avg")
+    parser.add_argument(
+        "--lane-flip-variant",
+        choices=("baseline", "flip_centerline_avg", "flip_centerline_avg_lane_cross_comp050"),
+        default="flip_centerline_avg",
+    )
     parser.add_argument("--repair-topk", type=int, default=0, help="Global repair budget. 0 uses val-size-scaled top500/2048.")
     parser.add_argument(
         "--repair-mode",

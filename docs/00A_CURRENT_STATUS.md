@@ -575,8 +575,9 @@ Latest lane repair replay tooling status:
 - restored focused tests: `test/test_lane_instance_evidence_probe.py`, `test/test_lane_fn_recovery_audit.py`, and `test/test_lane_point_repair_replay.py`.
 - detached-worktree safety: lane FN/replay defaults are repo-relative again, and retained-run smoke execution passes explicit checkpoint, source-run, and dataset-root paths.
 - one-batch CUDA smoke on the retained merged checkpoint completed with oracle-only point repair: baseline lane TP/FP/FN/F1 `10 / 6 / 11 / 0.5405`, repaired `16 / 0 / 5 / 0.8649`, selected `6` rows with `0` duplicate targets.
+- current-best lane variant plumbing: the point-repair replay now also accepts the fixed `flip_centerline_avg_lane_cross_comp050` lane path. A one-batch oracle-only smoke with that variant produced the same baseline/repaired lane movement `10 / 6 / 11 / 0.5405 -> 16 / 0 / 5 / 0.8649`, selected `6` rows, and `0` duplicate targets.
 - Current `develop` also regenerated the exact-val128 lane FN/repair export from the retained merged checkpoint: baseline lane TP/FP/FN/F1 `1200 / 510 / 1190 / 0.5854`, unmatched predictions `510`, tight repairable rows `128`, broad repairable rows `322`.
-- 판단: this restores the lane repair replay machinery after artifact/worktree cleanup. The smoke is oracle-only and one batch, so it is not production success or all-task `0.60` evidence.
+- 판단: this restores the lane repair replay machinery after artifact/worktree cleanup and aligns it with the fixed current-best lane runtime variant. The smoke is oracle-only and one batch, so it is not production success or all-task `0.60` evidence.
 
 Latest lane repairability ranker tooling status:
 

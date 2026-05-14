@@ -67,7 +67,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional canonical dataset root. If omitted, infer from source-run/scenario paths.",
     )
-    parser.add_argument("--lane-flip-variant", choices=("baseline", "flip_centerline_avg"), default="flip_centerline_avg")
+    parser.add_argument(
+        "--lane-flip-variant",
+        choices=("baseline", "flip_centerline_avg", "flip_centerline_avg_lane_cross_comp050"),
+        default="flip_centerline_avg",
+    )
     parser.add_argument(
         "--selection-mode",
         choices=("oracle_le120_any_center", "oracle_le80_center050", "all_unmatched_with_fn"),
