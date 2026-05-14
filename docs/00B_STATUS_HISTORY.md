@@ -11820,3 +11820,43 @@ Same-slice result:
 - The metric smoke is assignment-flat against the same-slice reference and slightly lower on phase objective.
 - Do not broaden this branch to val128/val512.
 - Do not repeat it as a conflict-source, weight, or margin sweep unless a new premise first shows TP/FP/FN movement.
+
+## 242. 2026-05-14 Lane temporal-neighbor union smoke: immediate frame context adds FP, not TP
+
+맥락:
+
+- Lane FN audits showed recall headroom from centerline evidence and nearby partial tracks, but same-frame repair attempts have repeatedly failed to move TP/FP/FN.
+- Stop-line temporal adjacency had already been closed on sparse stop-line candidate rows, but lane-specific immediate-frame candidate import had not been tested.
+- This branch asks one narrow no-GT question: can adjacent `sample_id` frame lane predictions, filtered by the current frame centerline map and current-lane dedupe, recover missed lane instances?
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-temporal-neighbor-union-smoke`.
+- Tool: `tools/probe_pv26_lane_temporal_neighbor_union.py`.
+- Test: `test/test_lane_temporal_neighbor_union.py`.
+- The tool keeps the checkpoint, `flip_centerline_avg` lane path, stop-line settings, and hull crosswalk fixed.
+- It decodes immediate neighbor offsets `-1,+1`, scores neighbor lane points on the current frame centerline map, rejects current-lane duplicates at `40px`, and adds at most `2` candidates per sample.
+- GT is used only after selection for audit labels and final metrics.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile tools/probe_pv26_lane_temporal_neighbor_union.py test/test_lane_temporal_neighbor_union.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_temporal_neighbor_union.py -q`.
+- Result: `5 passed`.
+- Real CUDA smoke completed on `4` validation batches from the retained lane-head transplant checkpoint.
+
+Smoke result:
+
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane_temporal_neighbor_union_smoke_20260514/analysis_exports/smoke_val4_epoch2/summary.json`.
+- Sample support: `16 / 16` validation samples had at least one immediate temporal neighbor.
+- Candidate budget: `105` neighbor candidates audited, `6` selected by the fixed no-GT support/dedupe rule.
+- Selected candidates that would match a baseline FN: `0 / 6`.
+- Baseline lane/stop/cross F1: `0.5899 / 0.0000 / 0.5455`.
+- Temporal-neighbor lane/stop/cross F1: `0.5655 / 0.0000 / 0.5455`.
+- Lane TP/FP/FN moved `41 / 12 / 45 -> 41 / 18 / 45`.
+
+판단:
+
+- Immediate-frame lane prediction import is not a TP-preserving recovery signal under this fixed support/dedupe contract.
+- It adds FP without recovering any lane FN on the smoke slice, so do not broaden to val128/val512.
+- Do not repeat this as a neighbor-gap, center-threshold, dedupe-distance, or add-cap sweep without a materially new alignment/FP-control signal.
