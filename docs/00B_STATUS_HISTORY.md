@@ -11611,3 +11611,34 @@ Verification:
 - This is tooling integration and premise confirmation, not F1 progress.
 - The exact audit confirms the stop-line blocker is still candidate-generation/midpoint recovery, not a simple ranker issue: only `3` GT-positive candidate-bearing samples are pure misrank under this exact slice, while `15` candidate-bearing positives have no oracle-positive candidate and `10` GT-positive samples have no candidate rows at all.
 - Do not treat `--projection-competition-replay` as permission to rerun projection-competition feature/threshold/min-gap/top-k sweeps. Use it only to regenerate the fixed reference before a materially new stop-line branch.
+
+## 236. 2026-05-14 Stop-line inline projection replay broader check: val512 reference is regenerable
+
+맥락:
+
+- Section 235 proved the integrated `--projection-competition-replay` path on exact val128 plus a one-batch smoke.
+- The broader task-balance lower bound still depends on the stop-line projection-competition reference `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- Before choosing another stop-line branch, the broader stop-line reference needed one current-code regeneration so old pruned worktrees/artifacts were not the only evidence.
+
+Read-only audit:
+
+- Current `develop`, retained merged checkpoint, broader val512, validation epoch `2`, `proposal_min_gap=4`.
+- Candidate rows: `5065`.
+- Oracle-positive candidate rows: `1660`.
+- Fixed inline projection-competition variants written in the same candidate-pool run.
+
+Result:
+
+| Variant | Stop-line F1 | TP / FP / FN |
+| --- | ---: | --- |
+| `proj_comp_length_s090_top2_second_frag5` | `0.5164` | `126 / 91 / 145` |
+| `proj_comp_component_length_s090_top2_second_frag5` | `0.5164` | `126 / 91 / 145` |
+| `proj_comp_length_s080_top2_second_frag5` | `0.5163` | `127 / 94 / 144` |
+| `proj_comp_length_s090_top1` | `0.5114` | `123 / 87 / 148` |
+
+판단:
+
+- The inline projection replay now regenerates the known broader stop-line reference from current code.
+- This is not a new metric success: the best stop-line row is the same `0.5164`, still `+0.0836` short of `0.60`.
+- The run does not regenerate the all-task task-balance composite by itself. Its lane/crosswalk fields are the retained checkpoint's non-composite row, not the flip-centerline/crosswalk-mask/hull row used for the historical task-balance lower bound.
+- Do not reopen projection-competition min-score/top-k/length/rank sweeps. The next stop-line branch still needs materially new candidate-generation, midpoint/extent recovery, or stronger FP-control signal.

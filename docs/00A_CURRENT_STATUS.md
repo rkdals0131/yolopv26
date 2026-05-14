@@ -129,6 +129,8 @@ Latest projection/candidate tooling status:
 - A 1-batch CLI smoke on the retained merged checkpoint produced zero candidates but still wrote the required `candidate_features.csv` header, and projection-competition replay consumed that generated CSV/summary.
 - Current `develop` also regenerated a non-empty exact-val128 manifest: `1170` candidate rows, `442` oracle-positive rows, baseline stop-line F1 `0.4483` with TP/FP/FN `26 / 30 / 34`. Projection-competition replay consumed the regenerated manifest and reached exact-val128 stop-line F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
 - Candidate-pool generation now also supports `--projection-competition-replay`, which writes the fixed projection-competition variants and sample rows in the same run. This is a convenience/reproducibility path for the current stop-line reference, not a new stop-line improvement.
+- A broader-val512 inline replay from current `develop` reproduced the fixed stop-line projection-competition reference: `5065` candidate rows, `1660` oracle-positive rows, best row `proj_comp_length_s090_top2_second_frag5`, stop-line F1 `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- The broader inline replay only re-verifies the stop-line reference. Its lane/crosswalk fields come from the retained checkpoint's non-composite row, so it is not a regenerated all-task task-balance composite.
 - 판단: this is reproducibility/tooling status only, not a metric improvement and not a reason to repeat projection readout sweeps.
 
 Latest stop-line live distill result:
