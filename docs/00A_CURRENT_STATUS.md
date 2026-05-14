@@ -128,6 +128,7 @@ Latest projection/candidate tooling status:
 - Candidate-pool manifest regeneration is restored: `tools/probe_pv26_stopline_candidate_pool.py` now supports `--dataset-root` for detached worktrees, `--proposal-min-gap 4`, and emits the `sample_id` / GT geometry JSON / candidate geometry JSON fields required by the projection replay tools.
 - A 1-batch CLI smoke on the retained merged checkpoint produced zero candidates but still wrote the required `candidate_features.csv` header, and projection-competition replay consumed that generated CSV/summary.
 - Current `develop` also regenerated a non-empty exact-val128 manifest: `1170` candidate rows, `442` oracle-positive rows, baseline stop-line F1 `0.4483` with TP/FP/FN `26 / 30 / 34`. Projection-competition replay consumed the regenerated manifest and reached exact-val128 stop-line F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
+- Candidate-pool generation now also supports `--projection-competition-replay`, which writes the fixed projection-competition variants and sample rows in the same run. This is a convenience/reproducibility path for the current stop-line reference, not a new stop-line improvement.
 - 판단: this is reproducibility/tooling status only, not a metric improvement and not a reason to repeat projection readout sweeps.
 
 Latest stop-line live distill result:

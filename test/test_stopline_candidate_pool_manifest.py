@@ -1,11 +1,13 @@
 import json
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
 from tools.probe_pv26_stopline_candidate_pool import (
     _candidate_feature_rows,
     _points_json,
+    _projection_competition_variant_fields,
     _scenario_with_dataset_root,
     _write_candidate_features_csv,
 )
@@ -103,6 +105,30 @@ class StopLineCandidatePoolManifestTest(unittest.TestCase):
         self.assertIn("gt_stop_line_points_json", header)
         self.assertIn("candidate_points_json", header)
         self.assertIn("proposal_min_gap", header)
+
+    def test_projection_competition_fields_are_exported_with_stable_names(self) -> None:
+        fields = _projection_competition_variant_fields(
+            SimpleNamespace(
+                min_gap=4.0,
+                top_k=50,
+                union_min_score=0.8,
+                single_min_score=0.9,
+                angle_threshold_deg=16.0,
+                offset_threshold_px=48.0,
+                min_cluster_count=2,
+                projection_gap_px=320.0,
+                rank_feature="length",
+                max_predictions=2,
+                second_min_score=0.0,
+                second_min_fragment_count=5,
+                second_min_length_ratio=0.0,
+            )
+        )
+
+        self.assertEqual(fields["fragment_projection_comp_min_gap"], 4.0)
+        self.assertEqual(fields["fragment_projection_comp_top_k"], 50)
+        self.assertEqual(fields["fragment_projection_comp_rank_feature"], "length")
+        self.assertEqual(fields["fragment_projection_comp_second_min_fragment_count"], 5)
 
 
 if __name__ == "__main__":

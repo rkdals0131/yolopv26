@@ -11573,3 +11573,41 @@ Verification:
 - This is reproducibility/tooling restoration, not new F1 progress.
 - It does not reopen flip max/union, task-mask source/strength, smoothing, scale, shift, photometric, thinning, polyfit, or other closed lane TTA/vectorizer sweeps.
 - Use the restored probe as a baseline reproduction gate before new lane/stop-line branches; do not treat its smoke slice as evidence that the broader all-task goal moved.
+
+## 235. 2026-05-14 Stop-line candidate-pool projection replay integration: fixed reference can be regenerated in one run
+
+맥락:
+
+- Section 233 restored candidate manifest regeneration, and the separate projection-competition replay could consume the CSV.
+- The next stop-line branches still need the same fixed projection-competition reference, but repeating a two-step CSV handoff is brittle and makes it easier to confuse tooling regeneration with a new metric axis.
+- Before selecting a new stop-line candidate-generation branch, the retained merged checkpoint was re-audited on exact val128 to confirm the current failure split.
+
+Read-only audit:
+
+- Retained merged checkpoint, exact val128, `proposal_min_gap=4`.
+- Candidate rows: `1170`.
+- Oracle-positive candidate rows: `442`.
+- Candidate-bearing samples: `87`; GT-positive candidate-bearing samples: `50`; GT-negative candidate-bearing samples: `37`.
+- GT-positive candidate-bearing split: top-oracle `32`, misrank `3`, no-oracle `15`.
+- No-oracle nearest-distance bins: `40-80px=7`, `80-120px=4`, `>=120px=4`.
+- Fixed projection-competition replay: stop-line F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-next-candidate-audit`.
+- Added `--projection-competition-replay` to `tools/probe_pv26_stopline_candidate_pool.py`.
+- The candidate-pool run now keeps per-sample manifest rows in memory and can write `fragment_projection_competition_variants.csv` plus `fragment_projection_competition_samples.csv` without requiring a second command.
+- Added a focused test for stable projection-competition field export.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_manifest.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_stopline_candidate_pool_manifest.py test/test_stopline_fragment_projection_competition_readout.py`.
+- result: `8 passed`.
+- Real one-batch CUDA smoke on the retained merged checkpoint and retained prepared dataset completed with `--projection-competition-replay` and wrote `candidate_features.csv`, `variants.csv`, `fragment_projection_competition_variants.csv`, `fragment_projection_competition_samples.csv`, and `summary.json`.
+
+판단:
+
+- This is tooling integration and premise confirmation, not F1 progress.
+- The exact audit confirms the stop-line blocker is still candidate-generation/midpoint recovery, not a simple ranker issue: only `3` GT-positive candidate-bearing samples are pure misrank under this exact slice, while `15` candidate-bearing positives have no oracle-positive candidate and `10` GT-positive samples have no candidate rows at all.
+- Do not treat `--projection-competition-replay` as permission to rerun projection-competition feature/threshold/min-gap/top-k sweeps. Use it only to regenerate the fixed reference before a materially new stop-line branch.

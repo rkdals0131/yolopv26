@@ -184,6 +184,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rich-validator-lr", type=float, default=0.05)
     parser.add_argument("--rich-validator-top-k", type=int, default=20)
     parser.add_argument("--rich-validator-threshold-grid", type=int, default=101)
+    parser.add_argument(
+        "--projection-competition-replay",
+        action="store_true",
+        help="Also replay the fixed projection-competition readout from the generated candidate rows.",
+    )
     return parser.parse_args()
 
 
@@ -529,6 +534,83 @@ def _records_metrics_row(
         }
     )
     return row
+
+
+def _projection_competition_variant_fields(variant: Any) -> dict[str, Any]:
+    return {
+        "fragment_projection_comp_min_gap": float(variant.min_gap),
+        "fragment_projection_comp_top_k": int(variant.top_k),
+        "fragment_projection_comp_union_min_score": float(variant.union_min_score),
+        "fragment_projection_comp_single_min_score": float(variant.single_min_score),
+        "fragment_projection_comp_angle_threshold_deg": float(variant.angle_threshold_deg),
+        "fragment_projection_comp_offset_threshold_px": float(variant.offset_threshold_px),
+        "fragment_projection_comp_min_cluster_count": int(variant.min_cluster_count),
+        "fragment_projection_comp_projection_gap_px": float(variant.projection_gap_px),
+        "fragment_projection_comp_rank_feature": str(variant.rank_feature),
+        "fragment_projection_comp_max_predictions": int(variant.max_predictions),
+        "fragment_projection_comp_second_min_score": float(variant.second_min_score),
+        "fragment_projection_comp_second_min_fragment_count": int(variant.second_min_fragment_count),
+        "fragment_projection_comp_second_min_length_ratio": float(variant.second_min_length_ratio),
+    }
+
+
+def _run_projection_competition_replay(
+    sample_records: list[dict[str, Any]],
+    merged_raw: dict[str, Any],
+) -> dict[str, Any]:
+    from tools.probe_pv26_stopline_fragment_projection_competition_readout import (
+        DEFAULT_VARIANTS as PROJECTION_COMPETITION_VARIANTS,
+        _projection_competition_predictions,
+    )
+
+    rows: list[dict[str, Any]] = []
+    sample_rows: list[dict[str, Any]] = []
+    for variant in PROJECTION_COMPETITION_VARIANTS:
+        predictions: list[dict[str, Any]] = []
+        stats_total: dict[str, int] = {}
+        prediction_count = 0
+        for record in sample_records:
+            stop_lines, stats = _projection_competition_predictions(
+                list(record.get("candidate_feature_rows", [])),
+                variant,
+            )
+            for key, value in stats.items():
+                if isinstance(value, bool):
+                    stats_total[key] = stats_total.get(key, 0) + int(value)
+                elif isinstance(value, int):
+                    stats_total[key] = stats_total.get(key, 0) + int(value)
+            prediction_count += int(len(stop_lines))
+            predictions.append({**record["baseline_prediction"], "stop_lines": stop_lines})
+            sample_rows.append(
+                {
+                    "variant": variant.name,
+                    "sample_id": str(record.get("sample_id", "")),
+                    **stats,
+                    "gt_stop_line_count": int(record.get("gt_stop_line_count", 0)),
+                    "pred_stop_line_count": int(len(stop_lines)),
+                }
+            )
+        metrics = augment_lane_family_metrics(summarize_pv26_metrics(predictions, merged_raw))
+        row = _row_from_metrics(
+            variant.name,
+            metrics,
+            prediction_count=prediction_count,
+            stats=stats_total,
+        )
+        row.update(_projection_competition_variant_fields(variant))
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            float(row.get("stop_line_f1", 0.0)),
+            float(row.get("stop_line_precision", 0.0)),
+            -float(row.get("stop_line_fp", 0.0)),
+        ),
+        reverse=True,
+    )
+    return {
+        "rows": rows,
+        "sample_rows": sample_rows,
+    }
 
 
 def _stop_line_fast_summary(
@@ -958,23 +1040,25 @@ def main() -> int:
                     top_k=max_top_k,
                     min_gap=float(args.proposal_min_gap),
                 )
-                feature_rows.extend(
-                    _candidate_feature_rows(
-                        candidates,
-                        batch_index=batch_index,
-                        sample_index=sample_index,
-                        meta=meta,
-                        gt_stop_lines=list(gt_sample.get("stop_lines", [])),
-                    )
+                candidate_feature_rows = _candidate_feature_rows(
+                    candidates,
+                    batch_index=batch_index,
+                    sample_index=sample_index,
+                    meta=meta,
+                    gt_stop_lines=list(gt_sample.get("stop_lines", [])),
                 )
+                feature_rows.extend(candidate_feature_rows)
                 sample_records.append(
                     {
                         "batch_index": int(batch_index),
                         "sample_index": int(sample_index),
+                        "sample_id": str(meta.get("sample_id", "")),
                         "raw_batch": _slice_raw_batch_sample(raw_batch, sample_index),
                         "baseline_prediction": dict(baseline_prediction),
                         "gt_stop_lines": list(gt_sample.get("stop_lines", [])),
+                        "gt_stop_line_count": int(len(list(gt_sample.get("stop_lines", [])))),
                         "candidates": candidates,
+                        "candidate_feature_rows": candidate_feature_rows,
                     }
                 )
                 for variant in VARIANTS:
@@ -1045,6 +1129,17 @@ def main() -> int:
         )
         _write_csv(output_dir / "rich_validator_variants.csv", list(rich_validator["rows"]))
         summary["rich_validator_replay"] = rich_validator
+    if bool(args.projection_competition_replay):
+        projection_competition = _run_projection_competition_replay(sample_records, merged_raw)
+        _write_csv(
+            output_dir / "fragment_projection_competition_variants.csv",
+            list(projection_competition["rows"]),
+        )
+        _write_csv(
+            output_dir / "fragment_projection_competition_samples.csv",
+            list(projection_competition["sample_rows"]),
+        )
+        summary["projection_competition_replay"] = projection_competition
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(rows, ensure_ascii=False, indent=2), flush=True)
     print(f"[stopline_candidate_pool] wrote {output_dir}", flush=True)
