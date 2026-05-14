@@ -157,6 +157,15 @@ Latest lane centerline thinning smoke:
 - smoke val4 thinning `flip_centerline_avg_lane_cross_comp050_thin035`: lane/stop/cross F1 `0.5185 / 0.0000 / 0.5455`, lane TP/FP/FN `35 / 14 / 51`, lane mean point distance `15.3421`.
 - 판단: centerline skeletonization is negative on the smoke slice: it removes TP, adds FP, worsens FN, and degrades geometry distance. Do not broaden or repeat as thinning threshold, morphology, or skeletonization-kernel tuning without a new assignment-moving signal.
 
+Latest lane component-polyfit vectorizer smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-component-polyfit-smoke`.
+- code commit: `b8f8ec8`.
+- changed axis: keep the current flip-centerline + fixed crosswalk-mask lane gate and stop-line/crosswalk contract fixed, then replace row-scan tangent lane vectorization with one fixed quadratic polyfit readout per connected centerline component.
+- smoke val4 reference `flip_centerline_avg_lane_cross_comp050`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`, lane mean point distance `13.3898`.
+- smoke val4 component-polyfit: lane/stop/cross F1 `0.4923 / 0.0000 / 0.5455`, lane TP/FP/FN `32 / 12 / 54`, lane mean point distance `11.6325`.
+- 판단: component polyfit improves matched-point distance for the remaining matched lanes but destroys assignment recall. Do not broaden or repeat as polynomial degree, row-stride, or component-size tuning without a new TP-preserving assignment signal.
+
 Latest stop-line lane-crossing extent readout:
 
 - branch/worktree: `exp/lane-family-f1/stopline-lane-extent-readout`.

@@ -11381,3 +11381,42 @@ Smoke val4:
 - The movement is negative: TP drops `40 -> 35`, FP rises `11 -> 14`, FN rises `46 -> 51`, and lane mean point distance worsens `13.3898 -> 15.3421`.
 - Crosswalk and stop-line are unchanged, so this is a lane-only regression under the fixed contract.
 - Do not broaden this to val128/val512. Do not repeat it as a thinning threshold, morphology, skeletonization-kernel, or pre-vectorization ridge-width sweep unless a new diagnostic first shows TP-preserving assignment movement.
+
+## 229. 2026-05-14 Lane component-polyfit vectorizer smoke: geometry distance improves while recall collapses
+
+맥락:
+
+- Section 228 closed pre-vectorization centerline thinning as a lane recall regression.
+- The next bounded lane question was not another threshold or morphology pass, but whether a different fixed vectorizer could recover assignments from the same dense centerline evidence.
+- This branch tested one decoder-side readout: fit one quadratic centerline per connected component, while keeping the checkpoint, flip-centerline merge, crosswalk-mask lane competition, stop-line decode, and crosswalk hull decode fixed.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-component-polyfit-smoke`.
+- Code commit: `b8f8ec8`.
+- Tool/test: `model/engine/lane_segfirst_vectorizer.py`, `tools/probe_pv26_lane_flip_tta.py`, `test/test_lane_segfirst_vectorizer.py`, `test/test_lane_flip_tta_probe.py`.
+- Added opt-in `component_polyfit` lane vectorizer mode.
+- Added `flip_centerline_avg_lane_cross_comp050_component_polyfit`, which reuses the fixed task-mask dense variant and changes only lane vectorizer track mode.
+- Stop-line and crosswalk predictions are preserved from the same base variant.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile model/engine/lane_segfirst_vectorizer.py tools/probe_pv26_lane_flip_tta.py test/test_lane_segfirst_vectorizer.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_segfirst_vectorizer.py test/test_lane_flip_tta_probe.py`.
+- result: `24 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint with current stop-line/crosswalk postprocess overrides.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Lane mean point distance | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `13.7451` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050` reference | `0.5839` | `40 / 11 / 46` | `13.3898` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_component_polyfit` | `0.4923` | `32 / 12 / 54` | `11.6325` | `0.0000` | `0.5455` |
+
+판단:
+
+- Component polyfit is not a useful recall-recovery vectorizer under the current dense evidence.
+- The lower mean point distance is misleading because the variant loses eight TP; assignment metrics get much worse.
+- Do not broaden this to val128/val512. Do not repeat it as polynomial degree, row-stride, component-size, or component-fit smoothing tuning without a new diagnostic first showing TP-preserving assignment movement.
