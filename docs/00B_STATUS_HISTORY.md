@@ -11527,15 +11527,18 @@ Verification:
 
 Verification:
 
-- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_candidate_manifest python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_manifest.py`.
-- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/yolopv26_pycache_candidate_manifest_pytest python3 -m pytest -q test/test_stopline_candidate_pool_manifest.py test/test_stopline_fragment_projection_competition_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_union_readout.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_manifest.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m pytest -q test/test_stopline_candidate_pool_manifest.py test/test_stopline_fragment_projection_competition_readout.py test/test_stopline_fragment_projection_split_readout.py test/test_stopline_fragment_union_readout.py`.
 - result: `14 passed`.
-- Real CLI smoke on the retained merged lane-head checkpoint and retained prepared dataset completed with `--max-val-batches 1`, `--dataset-root /home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`, and `--proposal-min-gap 4`.
+- Real CLI smoke on the retained merged lane-head checkpoint and retained prepared dataset completed with `--max-val-batches 1`, `--dataset-root` pointing at the retained prepared dataset, and `--proposal-min-gap 4`.
 - The smoke slice had `candidate_count=0`, but `candidate_features.csv` still had the required manifest header: `sample_id`, `gt_stop_line_points_json`, `candidate_points_json`, and `proposal_min_gap`.
-- `tools/probe_pv26_stopline_fragment_projection_competition_readout.py` consumed that generated CSV/summary and wrote `/tmp/yolopv26_projection_comp_smoke`.
+- `tools/probe_pv26_stopline_fragment_projection_competition_readout.py` consumed that generated CSV/summary and completed.
+- Follow-up exact-val128 regeneration under current `develop` produced `1170` candidate rows and `442` oracle-positive rows. The regenerated baseline matched the known exact stop-line reference: F1 `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- The same regenerated manifest fed projection-competition replay successfully. Best exact-val128 projection-competition row was `proj_comp_length_s090_top2_second_frag5`, stop-line F1 `0.5167`, TP/FP/FN `31 / 29 / 29`, `missing_gt=3`.
 
 판단:
 
 - This is reproducibility/tooling restoration, not F1 progress.
 - The smoke result has no metric meaning because the slice produced zero candidate rows.
+- The exact-val128 replay proves the manifest can be regenerated and consumed from current active code, but it is still exact-slice tooling evidence, not broader-val512 success.
 - It does not reopen projection-competition or candidate-row feature sweeps. It only makes the current task-balance reference regenerable before the next materially new stop-line candidate-generation or FP-control branch.
