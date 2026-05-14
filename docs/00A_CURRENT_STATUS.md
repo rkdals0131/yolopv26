@@ -150,6 +150,16 @@ Latest lane task-mask context gate:
 - val512 best `flip_centerline_avg_lane_cross_comp050`: objective `0.6230558331`, lane/stop/cross F1 `0.5628 / 0.4235 / 0.6187`, lane TP/FP/FN `4532 / 2097 / 4945`.
 - 판단: this is a retained partial positive and the current objective-best broader runtime composite. It narrows the lane gap but does not close lane `0.60`, and it does nothing for the stop-line bottleneck.
 
+Latest lane task-conflict negative-loss smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-task-conflict-negative-loss-smoke`.
+- changed axis: keep the training schedule, source checkpoint, heads-only phase-4 probe, and core centerline/crosswalk-retain contract fixed, then add only an opt-in lane seg-first auxiliary that penalizes lane centerline probability on GT crosswalk ignore pixels. The main lane loss still ignores stop-line/crosswalk masks.
+- implementation: added `lane_segfirst_task_conflict_negative_mode`, `lane_segfirst_task_conflict_negative_weight`, and `lane_segfirst_task_conflict_negative_margin` to train config and `PV26MultiTaskLoss`; default is disabled.
+- verification: py_compile passed for the touched train/loss/probe/test files; focused pytest passed with `68` tests; real CUDA train/val smoke completed from the retained phase-4 checkpoint.
+- same-slice val4 reference (`core_centerline_refine_cross_retain`, 1 epoch, 32 train batches, 4 val batches): phase objective `0.6250663426`; lane/stop/cross F1 `0.5156 / 0.0000 / 0.7273`; lane TP/FP/FN `33 / 16 / 46`; stop-line TP/FP/FN `0 / 1 / 2`; crosswalk TP/FP/FN `4 / 2 / 1`.
+- same-slice crosswalk-conflict negative result: phase objective `0.6250358501`; lane/stop/cross F1 `0.5156 / 0.0000 / 0.7273`; lane TP/FP/FN `33 / 16 / 46`; stop-line TP/FP/FN `0 / 1 / 2`; crosswalk TP/FP/FN `4 / 2 / 1`.
+- 판단: the opt-in loss path is runtime-safe, but the first controlled smoke is assignment-flat and slightly lower on phase objective. Do not broaden this branch or repeat it as a source/weight/margin sweep without a new assignment-moving signal.
+
 Latest stop-line scale dense TTA smoke:
 
 - branch/worktree: `exp/lane-family-f1/stopline-scale-dense-tta-smoke`.

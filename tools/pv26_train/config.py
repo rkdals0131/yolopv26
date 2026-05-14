@@ -121,6 +121,9 @@ class TrainDefaultsConfig:
     lane_segfirst_residual_risk_core_weight: float = 0.0
     lane_segfirst_residual_risk_ring_weight: float = 0.0
     lane_segfirst_residual_risk_ring_margin: float = 0.20
+    lane_segfirst_task_conflict_negative_mode: str = "none"
+    lane_segfirst_task_conflict_negative_weight: float = 0.0
+    lane_segfirst_task_conflict_negative_margin: float = 0.15
     lane_segfirst_track_mode: str = "component"
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
@@ -622,6 +625,27 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
                 defaults.lane_segfirst_residual_risk_ring_margin,
             ),
             field_name="train_defaults.lane_segfirst_residual_risk_ring_margin",
+        ),
+        lane_segfirst_task_conflict_negative_mode=_coerce_str(
+            data.get(
+                "lane_segfirst_task_conflict_negative_mode",
+                defaults.lane_segfirst_task_conflict_negative_mode,
+            ),
+            field_name="train_defaults.lane_segfirst_task_conflict_negative_mode",
+        ),
+        lane_segfirst_task_conflict_negative_weight=_coerce_float(
+            data.get(
+                "lane_segfirst_task_conflict_negative_weight",
+                defaults.lane_segfirst_task_conflict_negative_weight,
+            ),
+            field_name="train_defaults.lane_segfirst_task_conflict_negative_weight",
+        ),
+        lane_segfirst_task_conflict_negative_margin=_coerce_float(
+            data.get(
+                "lane_segfirst_task_conflict_negative_margin",
+                defaults.lane_segfirst_task_conflict_negative_margin,
+            ),
+            field_name="train_defaults.lane_segfirst_task_conflict_negative_margin",
         ),
         lane_segfirst_track_mode=_coerce_str(
             data.get("lane_segfirst_track_mode", defaults.lane_segfirst_track_mode),

@@ -11781,3 +11781,41 @@ Smoke result:
 - The row-profile projection produces real point movement, but it still does not cross the lane matching boundary on the smoke slice.
 - Do not broaden this branch to val128.
 - Do not repeat it as a radius/window/softmax tuning sweep without a new signal that first changes TP/FP/FN.
+
+## 241. 2026-05-14 Lane task-conflict negative loss: opt-in path works, same-slice smoke is flat
+
+맥락:
+
+- Runtime crosswalk-mask lane competition is a retained partial positive, but it is a postprocess/runtime gate and not an all-task success.
+- The seg-first lane target renderer already marks stop-line/crosswalk pixels as lane-ignore rather than lane hard negatives.
+- This branch tested a training-side version of that conflict idea without changing the main lane loss contract: keep ignored task pixels out of the main lane loss, but add a separate opt-in auxiliary that pushes lane centerline probability down on GT crosswalk-ignore pixels.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-task-conflict-negative-loss-smoke`.
+- Added `lane_segfirst_task_conflict_negative_mode`, `lane_segfirst_task_conflict_negative_weight`, and `lane_segfirst_task_conflict_negative_margin`.
+- Wired the new defaults through `TrainDefaultsConfig`, scenario coercion, phase trainer construction, `PV26MultiTaskLoss.export_config`, checkpoint-resume criterion reconstruction, and `tools/run_pv26_lane60_probe.py`.
+- Added the probe experiment `core_centerline_cross_conflict_negative`.
+- Default behavior is unchanged because mode is `none` and weight is `0.0`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_run_pv26_train.py test/test_pv26_loss_runtime.py -q`.
+- Result: `68 passed`.
+- Real CUDA smoke from the retained phase-4 checkpoint completed with `core_centerline_cross_conflict_negative`, first as a runtime path smoke and then as a same-slice val4 metric smoke.
+- A same-budget reference run used `core_centerline_refine_cross_retain` with the same source checkpoint, 1 epoch, 32 train batches, 4 val batches, batch size 4, and the same validation slice.
+
+Same-slice result:
+
+| Variant | Phase objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| reference `core_centerline_refine_cross_retain` | `0.6250663426` | `0.5156` | `0.0000` | `0.7273` | `33 / 16 / 46` | `0 / 1 / 2` | `4 / 2 / 1` |
+| `core_centerline_cross_conflict_negative` | `0.6250358501` | `0.5156` | `0.0000` | `0.7273` | `33 / 16 / 46` | `0 / 1 / 2` | `4 / 2 / 1` |
+
+판단:
+
+- The opt-in loss path is runtime-safe and preserves default behavior.
+- The metric smoke is assignment-flat against the same-slice reference and slightly lower on phase objective.
+- Do not broaden this branch to val128/val512.
+- Do not repeat it as a conflict-source, weight, or margin sweep unless a new premise first shows TP/FP/FN movement.

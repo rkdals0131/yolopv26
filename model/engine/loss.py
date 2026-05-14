@@ -450,6 +450,9 @@ def _lane_segfirst_loss(
     residual_risk_core_weight: float = 0.0,
     residual_risk_ring_weight: float = 0.0,
     residual_risk_ring_margin: float = 0.20,
+    task_conflict_negative_mode: str = "none",
+    task_conflict_negative_weight: float = 0.0,
+    task_conflict_negative_margin: float = 0.15,
     color_class_weights: dict[str, float] | None = None,
     breakdown: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
@@ -535,6 +538,7 @@ def _lane_segfirst_loss(
 
     residual_risk_core_loss = _zero_graph(centerline_logits)
     residual_risk_ring_loss = _zero_graph(centerline_logits)
+    task_conflict_negative_loss = _zero_graph(centerline_logits)
     if float(residual_risk_core_weight) > 0.0:
         risk_core = aux.get("lane_seg_residual_risk_core")
         if isinstance(risk_core, torch.Tensor):
@@ -556,6 +560,31 @@ def _lane_segfirst_loss(
                 residual_risk_ring_loss = (
                     F.relu(risk_prob[risk_ring_mask] - float(residual_risk_ring_margin)) ** 2.0
                 ).mean()
+    if float(task_conflict_negative_weight) > 0.0:
+        mode = str(task_conflict_negative_mode).strip().lower().replace("-", "_")
+        include_stop = mode in {"stop_line", "stopline", "stop_line_crosswalk", "stopline_crosswalk", "both", "all", "task_masks"}
+        include_cross = mode in {"crosswalk", "stop_line_crosswalk", "stopline_crosswalk", "both", "all", "task_masks"}
+        if not include_stop and not include_cross:
+            raise ValueError(f"unsupported lane_segfirst_task_conflict_negative_mode: {task_conflict_negative_mode}")
+        conflict_mask = torch.zeros_like(ignore, dtype=torch.bool, device=centerline_logits.device)
+        if include_stop:
+            stop_mask = aux.get("lane_seg_stop_line_ignore")
+            if isinstance(stop_mask, torch.Tensor):
+                conflict_mask = conflict_mask | stop_mask.to(device=centerline_logits.device, dtype=torch.bool)
+        if include_cross:
+            cross_mask = aux.get("lane_seg_crosswalk_ignore")
+            if isinstance(cross_mask, torch.Tensor):
+                conflict_mask = conflict_mask | cross_mask.to(device=centerline_logits.device, dtype=torch.bool)
+        conflict_mask = (
+            source[:, None, None, None].expand_as(centerline_logits)
+            & conflict_mask.expand_as(centerline_logits)
+            & (centerline_core <= 0.5)
+        )
+        if bool(conflict_mask.any()):
+            conflict_prob = centerline_logits.sigmoid()
+            task_conflict_negative_loss = (
+                F.relu(conflict_prob[conflict_mask] - float(task_conflict_negative_margin)) ** 2.0
+            ).mean()
 
     total = (
         weights["centerline_bce"] * centerline_bce
@@ -566,6 +595,7 @@ def _lane_segfirst_loss(
         + weights["type"] * type_loss
         + float(residual_risk_core_weight) * residual_risk_core_loss
         + float(residual_risk_ring_weight) * residual_risk_ring_loss
+        + float(task_conflict_negative_weight) * task_conflict_negative_loss
     )
     if breakdown is not None:
         breakdown.update(
@@ -578,6 +608,7 @@ def _lane_segfirst_loss(
                 "seg_type": type_loss,
                 "seg_residual_risk_core": residual_risk_core_loss,
                 "seg_residual_risk_ring": residual_risk_ring_loss,
+                "seg_task_conflict_negative": task_conflict_negative_loss,
             }
         )
     return total
@@ -1525,6 +1556,9 @@ class PV26MultiTaskLoss(nn.Module):
         lane_segfirst_residual_risk_core_weight: float = 0.0,
         lane_segfirst_residual_risk_ring_weight: float = 0.0,
         lane_segfirst_residual_risk_ring_margin: float = 0.20,
+        lane_segfirst_task_conflict_negative_mode: str = "none",
+        lane_segfirst_task_conflict_negative_weight: float = 0.0,
+        lane_segfirst_task_conflict_negative_margin: float = 0.15,
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
         stopline_selector_aux_weight: float = 1.0,
@@ -1567,6 +1601,9 @@ class PV26MultiTaskLoss(nn.Module):
         self.lane_segfirst_residual_risk_core_weight = float(lane_segfirst_residual_risk_core_weight)
         self.lane_segfirst_residual_risk_ring_weight = float(lane_segfirst_residual_risk_ring_weight)
         self.lane_segfirst_residual_risk_ring_margin = float(lane_segfirst_residual_risk_ring_margin)
+        self.lane_segfirst_task_conflict_negative_mode = str(lane_segfirst_task_conflict_negative_mode)
+        self.lane_segfirst_task_conflict_negative_weight = float(lane_segfirst_task_conflict_negative_weight)
+        self.lane_segfirst_task_conflict_negative_margin = float(lane_segfirst_task_conflict_negative_margin)
         self.lane_segfirst_color_class_weights = (
             {str(name): float(value) for name, value in lane_segfirst_color_class_weights.items()}
             if lane_segfirst_color_class_weights
@@ -1656,6 +1693,9 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_segfirst_residual_risk_core_weight": float(self.lane_segfirst_residual_risk_core_weight),
             "lane_segfirst_residual_risk_ring_weight": float(self.lane_segfirst_residual_risk_ring_weight),
             "lane_segfirst_residual_risk_ring_margin": float(self.lane_segfirst_residual_risk_ring_margin),
+            "lane_segfirst_task_conflict_negative_mode": self.lane_segfirst_task_conflict_negative_mode,
+            "lane_segfirst_task_conflict_negative_weight": float(self.lane_segfirst_task_conflict_negative_weight),
+            "lane_segfirst_task_conflict_negative_margin": float(self.lane_segfirst_task_conflict_negative_margin),
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
             "stopline_selector_aux_weight": float(self.stopline_selector_aux_weight),
@@ -2256,6 +2296,9 @@ class PV26MultiTaskLoss(nn.Module):
                 residual_risk_core_weight=self.lane_segfirst_residual_risk_core_weight,
                 residual_risk_ring_weight=self.lane_segfirst_residual_risk_ring_weight,
                 residual_risk_ring_margin=self.lane_segfirst_residual_risk_ring_margin,
+                task_conflict_negative_mode=self.lane_segfirst_task_conflict_negative_mode,
+                task_conflict_negative_weight=self.lane_segfirst_task_conflict_negative_weight,
+                task_conflict_negative_margin=self.lane_segfirst_task_conflict_negative_margin,
                 color_class_weights=self.lane_segfirst_color_class_weights,
                 breakdown=lane_breakdown,
             )

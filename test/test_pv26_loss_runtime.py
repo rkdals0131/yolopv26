@@ -263,6 +263,48 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["stop_line_mask_logits"].grad)
 
+    def test_lane_segfirst_task_conflict_negative_penalizes_ignored_crosswalk_pixels(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        encoded["roadmark_v2"]["lane_seg_ignore"][:, :, 0, 0] = 1.0
+        encoded["roadmark_v2"]["lane_seg_crosswalk_ignore"][:, :, 0, 0] = 1.0
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "lane_seg_centerline_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_support_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "lane_seg_color_logits": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), requires_grad=True),
+                "lane_seg_type_logits": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), requires_grad=True),
+            }
+        )
+
+        disabled = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"stop_line": 0.0, "crosswalk": 0.0},
+        )
+        disabled_loss = disabled(predictions, encoded)["lane"].detach()
+        enabled = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"stop_line": 0.0, "crosswalk": 0.0},
+            lane_segfirst_task_conflict_negative_mode="crosswalk",
+            lane_segfirst_task_conflict_negative_weight=1.0,
+            lane_segfirst_task_conflict_negative_margin=0.25,
+        )
+        enabled_losses = enabled(predictions, encoded)
+
+        self.assertGreater(
+            float(enabled.last_lane_loss_breakdown["seg_task_conflict_negative"]),
+            0.0,
+        )
+        self.assertGreater(float(enabled_losses["lane"].detach()), float(disabled_loss))
+        enabled_losses["total"].backward()
+        self.assertIsNotNone(predictions["lane_seg_centerline_logits"].grad)
+
     def test_stage4_promotes_half_precision_lane_predictions_to_float32_for_loss(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 
