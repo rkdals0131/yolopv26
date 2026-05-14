@@ -11451,3 +11451,31 @@ Verification:
 - This is a runtime/plumbing pass, not a task-F1 pass.
 - The next valid use is a single-axis stop-line distill short run with `lane=0`, `stop_line>0`, `crosswalk=0` distill weights, followed by exact val128 before any broader expansion.
 - Do not describe this as all-task progress until a real validation metric moves.
+
+## 231. 2026-05-14 Stop-line live distill short run: self-teacher distill regresses the standard exact gate
+
+맥락:
+
+- Section 230 only proved that live teacher-cache distill can execute. It did not prove a metric gain.
+- This branch tested the next single-axis use: start from the current merged lane-head checkpoint, keep phase 4 otherwise fixed, and add stop-line-only distill from the same frozen checkpoint teacher.
+- To keep artifacts bounded, the training run used `/tmp` output only and disabled preview/grid-heavy outputs.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-distill-short`.
+- Training axis: `distill_loss_weights = {lane: 0.0, stop_line: 0.25, crosswalk: 0.0}` with `distill_normalize_mode=ema`.
+- Schedule/resource bound: phase 4 only, source checkpoint handoff, `2` epochs, `128` train batches per epoch, train `batch_size=1`, validation `128` batches.
+- The apparent training-run best was epoch 2 with phase objective `0.6002`, but that validation used `batch_size=1`, so it is not the standard exact-val128 gate used by earlier docs.
+
+Standard exact-val128 replay:
+
+| Checkpoint | Phase objective | Lane F1 | Lane TP / FP / FN | Stop-line F1 | Stop-line TP / FP / FN | Crosswalk F1 | Crosswalk TP / FP / FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| source merged checkpoint | `0.6144` | `0.5445` | `1080 / 497 / 1310` | `0.4483` | `26 / 30 / 34` | `0.5854` | `48 / 35 / 33` |
+| stop-line live distill best | `0.5490` | `0.4835` | `962 / 627 / 1428` | `0.3774` | `20 / 26 / 40` | `0.5036` | `35 / 23 / 46` |
+
+판단:
+
+- This is a clear negative under the standard exact-val128 comparison.
+- The small batch1 slice showed stop-line movement on one slice, but the standard gate rejects it: stop-line loses `6` TP, lane loses `118` TP and gains `130` FP, and crosswalk loses `13` TP.
+- Do not broaden this to val512. Do not repeat same-checkpoint stop-line-only teacher-cache self-distill as a weight, epoch, batch-size, or EMA-normalization sweep unless a new teacher target or stop-line decode/assignment contract changes the premise.
