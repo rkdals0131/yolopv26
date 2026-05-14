@@ -148,6 +148,15 @@ Latest lane endpoint support-extension smoke:
 - movement: `8` lanes extended, `24` endpoint points added.
 - 판단: support-conditioned endpoint extension moved geometry and improved mean point distance slightly, but did not change lane TP/FP/FN. Do not broaden or repeat as endpoint support threshold, step, or max-length tuning without a new signal that first changes assignment metrics.
 
+Latest lane centerline thinning smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-centerline-thinning-smoke`.
+- code commit: `6c3767b`.
+- changed axis: keep the current flip-centerline + fixed crosswalk-mask lane gate and stop-line/crosswalk contract fixed, then apply Zhang-Suen thinning to the merged lane centerline probability before vectorization.
+- smoke val4 reference `flip_centerline_avg_lane_cross_comp050`: lane/stop/cross F1 `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`, lane mean point distance `13.3898`.
+- smoke val4 thinning `flip_centerline_avg_lane_cross_comp050_thin035`: lane/stop/cross F1 `0.5185 / 0.0000 / 0.5455`, lane TP/FP/FN `35 / 14 / 51`, lane mean point distance `15.3421`.
+- 판단: centerline skeletonization is negative on the smoke slice: it removes TP, adds FP, worsens FN, and degrades geometry distance. Do not broaden or repeat as thinning threshold, morphology, or skeletonization-kernel tuning without a new assignment-moving signal.
+
 Latest stop-line lane-crossing extent readout:
 
 - branch/worktree: `exp/lane-family-f1/stopline-lane-extent-readout`.

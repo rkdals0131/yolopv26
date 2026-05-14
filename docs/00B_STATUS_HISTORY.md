@@ -11341,3 +11341,43 @@ Smoke val4:
 - The assignment metrics were still flat against the fixed task-mask reference: lane TP/FP/FN stayed `40 / 11 / 46`.
 - The only gain was geometric distance (`13.3898 -> 12.5226`), which is not enough to spend val128/val512 budget.
 - Do not repeat this as endpoint support threshold, step size, min-added-points, or max-length tuning unless a new signal first changes TP/FP/FN on smoke.
+
+## 228. 2026-05-14 Lane centerline thinning smoke: skeletonization removes too much lane evidence
+
+맥락:
+
+- Section 227 showed that endpoint geometry movement alone does not change lane assignment metrics.
+- The remaining lane gap after the fixed crosswalk-mask lane gate is still `+0.0372` to reach broader F1 `0.60`.
+- This branch tested a different decoder-side premise: reduce dense lane centerline ridges to a one-pixel skeleton before row-scan tangent vectorization, while keeping the checkpoint, flip-centerline merge, crosswalk-mask lane competition, stop-line decode, and crosswalk hull decode fixed.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-centerline-thinning-smoke`.
+- Code commit: `6c3767b`.
+- Tool/test: `tools/probe_pv26_lane_flip_tta.py`, `test/test_lane_flip_tta_probe.py`.
+- Added `flip_centerline_avg_lane_cross_comp050_thin035`.
+- The variant first builds `flip_centerline_avg_lane_cross_comp050`, then applies fixed-threshold Zhang-Suen thinning to `lane_seg_centerline_logits` only.
+- Stop-line and crosswalk predictions are preserved from the same base variant.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_flip_tta_probe.py`.
+- result: `13 passed`.
+- `git diff --check`.
+- val4 smoke completed on the fixed merged lane-head checkpoint with current stop-line/crosswalk postprocess overrides.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP / FP / FN | Lane mean point distance | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flip_centerline_avg` reference | `0.5899` | `41 / 12 / 45` | `13.7451` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050` reference | `0.5839` | `40 / 11 / 46` | `13.3898` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_thin035` | `0.5185` | `35 / 14 / 51` | `15.3421` | `0.0000` | `0.5455` |
+
+판단:
+
+- Thinning is not a no-op: it changes the centerline evidence enough to alter assignment metrics.
+- The movement is negative: TP drops `40 -> 35`, FP rises `11 -> 14`, FN rises `46 -> 51`, and lane mean point distance worsens `13.3898 -> 15.3421`.
+- Crosswalk and stop-line are unchanged, so this is a lane-only regression under the fixed contract.
+- Do not broaden this to val128/val512. Do not repeat it as a thinning threshold, morphology, skeletonization-kernel, or pre-vectorization ridge-width sweep unless a new diagnostic first shows TP-preserving assignment movement.
