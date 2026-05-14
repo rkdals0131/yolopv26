@@ -11899,3 +11899,39 @@ Smoke result:
 - Cross-attribute lane duplicates are not the missing lane FP/FN mechanism on this smoke slice.
 - This is not worth broadening to val128/val512.
 - Do not repeat this as attribute-agnostic duplicate-distance, schema-match, score tie-break, or dedupe-order tuning without a materially new diagnostic showing cross-schema duplicate rows actually exist.
+
+## 244. 2026-05-14 Lane repair replay task-mask variant plumbing: current-best lane path is accepted
+
+맥락:
+
+- The current broader objective-best lane runtime path includes the fixed `flip_centerline_avg_lane_cross_comp050` lane variant.
+- The restored lane repair and ranked-repair tools still accepted only `baseline` and `flip_centerline_avg`, so future repair experiments could accidentally validate on a weaker lane path.
+- This is tooling/plumbing only. It does not test a new no-GT geometry signal.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/restore-lane-repair-task-mask-variant`.
+- Updated `tools/replay_pv26_lane_point_repair.py`.
+- Updated `tools/probe_pv26_lane_ranked_translate_repair.py`.
+- Added focused parser tests so both tools accept `flip_centerline_avg_lane_cross_comp050`.
+- Default behavior remains `flip_centerline_avg`; the fixed task-mask variant is opt-in.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> python3 -m py_compile tools/replay_pv26_lane_point_repair.py tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_point_repair_replay.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=<scratch> pytest -q test/test_lane_point_repair_replay.py test/test_lane_ranked_translate_repair.py -q`.
+- Result: `11 passed`.
+- Real one-batch CUDA oracle-only point-repair smoke completed with `lane_flip_variant=flip_centerline_avg_lane_cross_comp050`.
+
+Smoke result:
+
+- Baseline lane/stop/cross F1: `0.5405 / 0.0000 / 0.0000`.
+- Oracle-repaired lane/stop/cross F1: `0.8649 / 0.0000 / 0.0000`.
+- Lane TP/FP/FN moved `10 / 6 / 11 -> 16 / 0 / 5`.
+- Selected rows: `6`; duplicate targets: `0`.
+
+판단:
+
+- The repair replay surface can now run on the fixed current-best lane runtime variant.
+- This is still oracle-only replay machinery, not a production improvement and not all-task `0.60` evidence.
+- The next real lane branch still needs a no-GT geometry/alignment signal that changes TP/FP/FN without copying GT points.

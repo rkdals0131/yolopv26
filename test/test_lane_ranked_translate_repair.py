@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -10,6 +11,7 @@ from tools.probe_pv26_lane_ranked_translate_repair import (
     _project_points_to_row_profile,
     _project_points_to_component_rows,
     _snap_map_points_to_local_centerline,
+    parse_args,
     score_repairability,
 )
 
@@ -81,6 +83,21 @@ class LaneRankedTranslateRepairTests(unittest.TestCase):
         self.assertAlmostEqual(repaired[0, 1], 2.0)
         self.assertEqual(stats["moved_points"], 1.0)
         self.assertGreater(stats["mean_profile_mass"], 0.0)
+
+    def test_task_mask_lane_variant_is_accepted(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "probe_pv26_lane_ranked_translate_repair.py",
+                "--ranker-parameters",
+                "/tmp/ranker.json",
+                "--lane-flip-variant",
+                "flip_centerline_avg_lane_cross_comp050",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.lane_flip_variant, "flip_centerline_avg_lane_cross_comp050")
 
 
 if __name__ == "__main__":
