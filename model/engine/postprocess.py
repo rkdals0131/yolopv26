@@ -68,6 +68,7 @@ class PV26PostprocessConfig:
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
     lane_segfirst_max_turn_degrees: float = 0.0
+    lane_conditional_row_enabled: bool = False
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
     stop_line_min_component_pixels: int = 24
@@ -1787,6 +1788,13 @@ def _decode_segfirst_lane_rows(
     )
     if not all(isinstance(predictions.get(key), torch.Tensor) for key in required):
         raise KeyError("seg-first lane postprocess requires all dense lane prediction maps")
+    conditional_rows = predictions.get("lane_conditional_rows")
+    if bool(config.lane_conditional_row_enabled) and isinstance(conditional_rows, torch.Tensor):
+        return _decode_lane_rows(
+            conditional_rows[batch_index],
+            meta=meta,
+            config=config,
+        )
     from .lane_segfirst_vectorizer import (
         LaneSegFirstVectorizerConfig,
         lane_segfirst_prediction_maps,

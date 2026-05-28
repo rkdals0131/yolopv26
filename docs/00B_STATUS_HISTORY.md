@@ -12133,3 +12133,72 @@ Verification:
 - The broader-val512 row `0.5418 / 0.3932 / 0.6148` remains below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line and far below the projection-competition stop-line reference `0.5164`, `126 / 91 / 145`.
 - Do not continue this exact branch as verifier-score-weight, segment threshold, max-segment, aux-weight, head-LR, or longer-run sweep.
 - Reopen verifier-style work only if the verifier target changes from matched-query objectness to a stronger no-GT segment quality target or if the candidate generator first shows no-oracle positive recovery.
+
+## 248. 2026-05-29 Lane conditional row instance decoder: trainable but lane instance decode collapses
+
+맥락:
+
+- GPT Pro's architecture-level lane proposal was not another row-scan threshold or TTA replay. It was to add a model-side, instance-native lane row decoder so the model can emit lane instances directly instead of relying only on dense centerline maps plus row-scan/tangent linking.
+- This branch tested that premise with a real smoke, a larger 5-epoch training run, exact-val128 evaluation, and broader-val512 evaluation.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-conditional-row-instance-decoder`.
+- Added opt-in `lane_conditional_seed_logits` and `lane_conditional_rows` outputs to `LaneSegFirstHead`.
+- The decoder selects top-K dense seed positions, gathers seed features plus normalized seed coordinates, and uses a small MLP to emit row-vector lane instances.
+- Added `lane_conditional_row_aux_weight` and a Hungarian-style row/objectness auxiliary loss using the existing lane row-vector target contract.
+- Added train/eval config plumbing for `lane_conditional_row_enabled`.
+- Added runtime decode support so `lane_conditional_row_enabled=true` replaces the row-scan/tangent vectorizer with the conditional row output; the default remains disabled.
+- Added the `lane_conditional_row_instance_decoder` lane60 probe experiment while keeping stop-line settings and `crosswalk_polygon_mode=hull`.
+- Dataset handling reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created.
+- Storage handling deleted the smoke run and pruned redundant task-best checkpoints, TensorBoard event files, and temporary YOLO downloads. The main run was reduced from `756M` to `138M`, retaining `best.pt`, history, summaries, and eval exports.
+
+Training artifacts:
+
+- Smoke train run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_instance_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_022022`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_instance_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_022231`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Main run scale: `5` epochs, `1024` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed with no non-finite/skipped steps.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.3579176040` | `0.0101` | `0.2353` | `0.7117` | `38 / 5152 / 2297` | `12 / 35 / 43` | `58 / 22 / 25` |
+| 2 | `0.3755640456` | `0.0099` | `0.4074` | `0.5976` | `32 / 4067 / 2358` | `22 / 26 / 38` | `49 / 34 / 32` |
+| 3 | `0.3765574459` | `0.0076` | `0.3846` | `0.6224` | `27 / 4772 / 2256` | `20 / 31 / 33` | `61 / 29 / 45` |
+| 4 | `0.3854294254` | `0.0109` | `0.4043` | `0.6603` | `39 / 4806 / 2296` | `19 / 21 / 35` | `69 / 30 / 41` |
+| 5 | `0.3934628120` | `0.0102` | `0.4715` | `0.6818` | `37 / 4841 / 2346` | `29 / 21 / 44` | `60 / 25 / 31` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, conditional row enabled | `0.0111` | `0.4865` | `0.6135` | `40 / 4794 / 2350` | `27 / 24 / 33` | `50 / 32 / 31` |
+| exact val128, conditional row disabled | `0.5575` | `0.4865` | `0.6135` | `1096 / 446 / 1294` | `27 / 24 / 33` | `50 / 32 / 31` |
+| broader val512, conditional row enabled | `0.0112` | `0.4069` | `0.6319` | `161 / 19210 / 9316` | `94 / 97 / 177` | `236 / 116 / 159` |
+| broader val512, conditional row disabled | `0.5336` | `0.4069` | `0.6319` | `4165 / 1970 / 5312` | `94 / 97 / 177` | `236 / 116 / 159` |
+
+Verification:
+
+- `python -m py_compile model/net/lane_head_segfirst.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/evaluate_pv26_lane60_checkpoint.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- Real CUDA smoke train: `1` epoch, `4` train batches, `4` val batches.
+- Real CUDA main train: `5` epochs, `1024` train batches, `128` val batches.
+- Exact-val128 eval with conditional row enabled.
+- Exact-val128 eval with conditional row disabled.
+- Broader-val512 eval with conditional row enabled.
+- Broader-val512 eval with conditional row disabled.
+
+판단:
+
+- The conditional row head/loss/decode path is runnable and train-stable.
+- The actual conditional row output is not usable: broader-val512 lane FP explodes to `19210`, and lane F1 collapses to `0.0112`.
+- Disabling the conditional row decode recovers the older dense row-scan path, proving the dense maps are not fully destroyed, but the broader disabled row `0.5336 / 0.4069 / 0.6319` is still below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line.
+- Do not continue this exact branch as seed top-K, objectness threshold, row-objectness weighting, aux-weight, head-LR, freeze-policy, or longer-run sweep.
+- Reopen lane instance-native decoding only if the contract changes materially, for example denoised GT-seeded training, stronger metric-aware quality targets, explicit FP hard negatives from crosswalk/road-edge/stop-line boundaries, or a decoder that first proves recall recovery without massive lane FP.

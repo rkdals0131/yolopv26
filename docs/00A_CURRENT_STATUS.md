@@ -177,6 +177,20 @@ Latest stop-line segment-aligned verifier train/eval result:
 - broader-val512 checkpoint eval, best exact variant with segment-set disabled: lane/stop/cross F1 `0.5418 / 0.3932 / 0.6148`, stop-line TP/FP/FN `93 / 109 / 178`.
 - 판단: segment-aligned verifier plumbing is trainable, but this simple verifier does not add no-GT stop-line recovery. The base segment branch emits no net metric gain, and making verifier score primary increases exact FP. Do not continue this as verifier-score-weight, segment threshold, max-segment, or longer-run sweep without a materially different candidate generator or verifier target.
 
+Latest lane conditional row instance decoder train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/lane-conditional-row-instance-decoder`.
+- changed axis: add an opt-in lane conditional row instance decoder on top of `LaneSegFirstHead`; dense centerline/support/tangent maps remain, but `lane_conditional_row_enabled=true` decodes top-K learned seed rows instead of the row-scan/tangent vectorizer. Stop-line and crosswalk contracts were retained, with `crosswalk_polygon_mode=hull`.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. The smoke run was deleted, redundant task-best checkpoints and TensorBoard event files were pruned, and the main run was reduced to `138M`, retaining only `phase_4/checkpoints/best.pt`, history, summaries, and eval exports.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_instance_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_022231`.
+- main scale: `5` epochs, `1024` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- best training epoch `5`: lane/stop/cross F1 `0.0102 / 0.4715 / 0.6818`, with lane TP/FP/FN `37 / 4841 / 2346`.
+- exact-val128 checkpoint eval, conditional row enabled: lane/stop/cross F1 `0.0111 / 0.4865 / 0.6135`, lane TP/FP/FN `40 / 4794 / 2350`.
+- exact-val128 checkpoint eval, conditional row disabled: lane/stop/cross F1 `0.5575 / 0.4865 / 0.6135`, lane TP/FP/FN `1096 / 446 / 1294`.
+- broader-val512 checkpoint eval, conditional row enabled: lane/stop/cross F1 `0.0112 / 0.4069 / 0.6319`, lane TP/FP/FN `161 / 19210 / 9316`.
+- broader-val512 checkpoint eval, conditional row disabled: lane/stop/cross F1 `0.5336 / 0.4069 / 0.6319`, lane TP/FP/FN `4165 / 1970 / 5312`.
+- 판단: the conditional row head/loss/decode path is train-stable, but the simple top-K seed + one-shot MLP row decoder collapses into massive lane FP and is not a production lane instance contract. Disabling the decoder recovers the older dense row-scan path, but the trained checkpoint still regresses below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line. Do not continue this exact branch as seed top-K, objectness threshold, aux-weight, head-LR, or longer-run tuning.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

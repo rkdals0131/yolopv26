@@ -124,6 +124,8 @@ class TrainDefaultsConfig:
     lane_segfirst_task_conflict_negative_mode: str = "none"
     lane_segfirst_task_conflict_negative_weight: float = 0.0
     lane_segfirst_task_conflict_negative_margin: float = 0.15
+    lane_conditional_row_aux_weight: float = 0.0
+    lane_conditional_row_enabled: bool = False
     lane_segfirst_track_mode: str = "component"
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
@@ -660,6 +662,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
                 defaults.lane_segfirst_task_conflict_negative_margin,
             ),
             field_name="train_defaults.lane_segfirst_task_conflict_negative_margin",
+        ),
+        lane_conditional_row_aux_weight=_coerce_float(
+            data.get("lane_conditional_row_aux_weight", defaults.lane_conditional_row_aux_weight),
+            field_name="train_defaults.lane_conditional_row_aux_weight",
+        ),
+        lane_conditional_row_enabled=_coerce_bool(
+            data.get("lane_conditional_row_enabled", defaults.lane_conditional_row_enabled),
+            field_name="train_defaults.lane_conditional_row_enabled",
         ),
         lane_segfirst_track_mode=_coerce_str(
             data.get("lane_segfirst_track_mode", defaults.lane_segfirst_track_mode),

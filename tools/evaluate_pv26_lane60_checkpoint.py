@@ -59,6 +59,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lane-segfirst-max-row-gap", type=int, default=None)
     parser.add_argument("--lane-segfirst-max-link-dx", type=float, default=None)
     parser.add_argument("--lane-segfirst-max-turn-degrees", type=float, default=None)
+    parser.add_argument("--lane-conditional-row-enabled", action="store_true", default=None)
+    parser.add_argument("--lane-conditional-row-disabled", action="store_false", dest="lane_conditional_row_enabled")
     parser.add_argument("--stop-line-mask-binary-threshold", type=float, default=None)
     parser.add_argument("--stop-line-min-instance-score", type=float, default=None)
     parser.add_argument("--stop-line-presence-threshold", type=float, default=None)
@@ -182,6 +184,8 @@ def _postprocess_override_config(args: argparse.Namespace, trainer: Any) -> Any 
         replacements["lane_segfirst_max_link_dx"] = float(args.lane_segfirst_max_link_dx)
     if getattr(args, "lane_segfirst_max_turn_degrees", None) is not None:
         replacements["lane_segfirst_max_turn_degrees"] = float(args.lane_segfirst_max_turn_degrees)
+    if getattr(args, "lane_conditional_row_enabled", None) is not None:
+        replacements["lane_conditional_row_enabled"] = bool(args.lane_conditional_row_enabled)
     if getattr(args, "stop_line_mask_binary_threshold", None) is not None:
         replacements["stop_line_mask_binary_threshold"] = float(args.stop_line_mask_binary_threshold)
     if getattr(args, "stop_line_min_instance_score", None) is not None:
