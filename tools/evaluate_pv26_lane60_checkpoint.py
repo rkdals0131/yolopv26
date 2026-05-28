@@ -62,6 +62,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-line-mask-binary-threshold", type=float, default=None)
     parser.add_argument("--stop-line-min-instance-score", type=float, default=None)
     parser.add_argument("--stop-line-presence-threshold", type=float, default=None)
+    parser.add_argument("--stop-line-haf-enabled", action="store_true", default=None)
+    parser.add_argument("--stop-line-haf-disabled", action="store_false", dest="stop_line_haf_enabled")
+    parser.add_argument("--stop-line-haf-valid-threshold", type=float, default=None)
+    parser.add_argument("--stop-line-haf-min-votes", type=int, default=None)
+    parser.add_argument("--stop-line-haf-cluster-endpoint-tolerance", type=float, default=None)
+    parser.add_argument("--stop-line-haf-max-endpoint-covariance", type=float, default=None)
+    parser.add_argument("--stop-line-haf-max-segments", type=int, default=None)
     parser.add_argument(
         "--stop-line-component-gate-source",
         choices=("center", "selector", "max"),
@@ -176,6 +183,18 @@ def _postprocess_override_config(args: argparse.Namespace, trainer: Any) -> Any 
         replacements["stop_line_min_instance_score"] = float(args.stop_line_min_instance_score)
     if getattr(args, "stop_line_presence_threshold", None) is not None:
         replacements["stop_line_presence_threshold"] = float(args.stop_line_presence_threshold)
+    if getattr(args, "stop_line_haf_enabled", None) is not None:
+        replacements["stop_line_haf_enabled"] = bool(args.stop_line_haf_enabled)
+    if getattr(args, "stop_line_haf_valid_threshold", None) is not None:
+        replacements["stop_line_haf_valid_threshold"] = float(args.stop_line_haf_valid_threshold)
+    if getattr(args, "stop_line_haf_min_votes", None) is not None:
+        replacements["stop_line_haf_min_votes"] = int(args.stop_line_haf_min_votes)
+    if getattr(args, "stop_line_haf_cluster_endpoint_tolerance", None) is not None:
+        replacements["stop_line_haf_cluster_endpoint_tolerance"] = float(args.stop_line_haf_cluster_endpoint_tolerance)
+    if getattr(args, "stop_line_haf_max_endpoint_covariance", None) is not None:
+        replacements["stop_line_haf_max_endpoint_covariance"] = float(args.stop_line_haf_max_endpoint_covariance)
+    if getattr(args, "stop_line_haf_max_segments", None) is not None:
+        replacements["stop_line_haf_max_segments"] = int(args.stop_line_haf_max_segments)
     if getattr(args, "stop_line_component_gate_source", None) is not None:
         replacements["stop_line_component_gate_source"] = str(args.stop_line_component_gate_source)
     if getattr(args, "crosswalk_obj_threshold", None) is not None:
@@ -298,6 +317,15 @@ def main() -> int:
         "lane_f1": _metric(metrics, "lane", "f1"),
         "stop_line_f1": _metric(metrics, "stop_line", "f1"),
         "crosswalk_f1": _metric(metrics, "crosswalk", "f1"),
+        "lane_tp": int(_metric(metrics, "lane", "tp")),
+        "lane_fp": int(_metric(metrics, "lane", "fp")),
+        "lane_fn": int(_metric(metrics, "lane", "fn")),
+        "stop_line_tp": int(_metric(metrics, "stop_line", "tp")),
+        "stop_line_fp": int(_metric(metrics, "stop_line", "fp")),
+        "stop_line_fn": int(_metric(metrics, "stop_line", "fn")),
+        "crosswalk_tp": int(_metric(metrics, "crosswalk", "tp")),
+        "crosswalk_fp": int(_metric(metrics, "crosswalk", "fp")),
+        "crosswalk_fn": int(_metric(metrics, "crosswalk", "fn")),
         "lane_score": _component(selection, "lane", "score"),
         "stop_line_score": _component(selection, "stop_line", "score"),
         "crosswalk_score": _component(selection, "crosswalk", "score"),

@@ -63,6 +63,7 @@
 - stopline local-x auxiliary-only를 weight/schedule sweep으로 반복하지 않는다. Same-val64 smoke에서 stop-line F1은 `0.2000 -> 0.2222`로 작게 올랐지만 lane F1 `0.5469 -> 0.5196`, objective `0.6050 -> 0.5901`로 내려갔다.
 - stop-line center target을 `centerline` mode로 바꾸는 target-mode-only 축을 반복하지 않는다. Same-val64 smoke에서 stop-line F1 `0.2000 -> 0.1455`, lane F1 `0.5469 -> 0.5202`, objective `0.6050 -> 0.5812`로 내려갔다.
 - stop-line-head-only freeze schedule로 geometry-validator loss를 LR/epoch sweep하지 않는다.
+- stop-line HAF/attraction-field endpoint voting + simple consensus decoder를 같은 HAF aux-weight, head-LR, valid-threshold, min-vote, endpoint-tolerance, covariance sweep으로 반복하지 않는다. 2026-05-28 real 3-epoch train was stable, but exact val128 HAF-enabled `valid>=0.95` gave stop-line TP/FP/FN/F1 `18 / 134 / 42 / 0.1698`, and broader val512 HAF-disabled checkpoint fallback gave lane/stop/cross `0.5383 / 0.3237 / 0.6220`, below the retained runtime composite.
 - side-band centerline BCE positive weighting만으로 lane 0.6 path를 다시 찾지 않는다.
 - side-band centerline probability margin loss만으로 lane 0.6 path를 다시 찾지 않는다.
 - side/truncated/near-vertical geometry-risk recall-only loss만으로 lane 0.6 path를 다시 찾지 않는다.

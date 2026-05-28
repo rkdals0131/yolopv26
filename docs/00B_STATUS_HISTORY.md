@@ -11935,3 +11935,64 @@ Smoke result:
 - The repair replay surface can now run on the fixed current-best lane runtime variant.
 - This is still oracle-only replay machinery, not a production improvement and not all-task `0.60` evidence.
 - The next real lane branch still needs a no-GT geometry/alignment signal that changes TP/FP/FN without copying GT points.
+
+## 245. 2026-05-28 Stop-line HAF consensus segment: train-stable, FP-control negative
+
+맥락:
+
+- GPT Pro architecture review suggested a HAF/attraction-field style stop-line segment-voting contract as the first architecture-level stop-line breakthrough candidate.
+- The target failure was no-GT along-axis midpoint/extent recovery with explicit FP control, not another projection-competition selector replay.
+- This branch tested that premise with actual training/evaluation, not target-rendering only.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-haf-consensus-segment`.
+- Base commit: `0b8585e` added opt-in stop-line HAF target/head/loss/postprocess/probe plumbing.
+- Follow-up code added the concrete `stopline_haf_consensus_segment` lane60 probe experiment and evaluator overrides for HAF enable/disable, threshold, min-votes, endpoint tolerance, covariance, and max-segment controls.
+- The experiment kept lane on row-scan/tangent with the retained lane loss weights and kept crosswalk on `crosswalk_polygon_mode=hull`.
+- Dataset handling reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created.
+- Storage handling pruned redundant task-best checkpoint copies after training. The smoke run was reduced from about `744M` to `107M`; the 3-epoch run was reduced from about `748M` to `111M`, retaining only `phase_4/checkpoints/best.pt` plus history/eval summaries.
+
+Training artifacts:
+
+- Smoke train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_haf_consensus_segment_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_201930`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_haf_consensus_segment_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_202306`.
+- Main checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_haf_consensus_segment_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_202306/phase_4/checkpoints/best.pt`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed with no non-finite/skipped steps.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5759835072` | `0.5397` | `0.0787` | `0.6871` | `1060 / 533 / 1275` | `10 / 189 / 45` | `56 / 24 / 27` |
+| 2 | `0.5711960373` | `0.5572` | `0.1667` | `0.5904` | `1103 / 466 / 1287` | `22 / 182 / 38` | `49 / 36 / 32` |
+| 3 | `0.5839476969` | `0.5490` | `0.1453` | `0.6500` | `1026 / 429 / 1257` | `21 / 215 / 32` | `65 / 29 / 41` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, HAF disabled | `0.5580` | `0.3036` | `0.5868` | `1099 / 450 / 1291` | `17 / 35 / 43` | `49 / 37 / 32` |
+| exact val128, HAF enabled `valid>=0.95` | `0.5580` | `0.1698` | `0.5868` | `1099 / 450 / 1291` | `18 / 134 / 42` | `49 / 37 / 32` |
+| broader val512, HAF disabled | `0.5383` | `0.3237` | `0.6220` | `4194 / 1910 / 5283` | `78 / 133 / 193` | `237 / 130 / 158` |
+
+Verification:
+
+- `python -m py_compile tools/run_pv26_lane60_probe.py tools/evaluate_pv26_lane60_checkpoint.py tools/pv26_train/config.py tools/pv26_train/cli.py`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train: `1` epoch, `64` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 eval with HAF disabled.
+- Exact-val128 eval with HAF enabled at valid threshold `0.95`.
+- Broader-val512 eval with HAF disabled.
+
+판단:
+
+- The HAF target/head/loss path is runnable and train-stable.
+- The simple learned HAF valid/endpoint consensus decoder is FP-heavy: exact-val128 threshold `0.95` still gives stop-line `18 / 134 / 42`, F1 `0.1698`.
+- The HAF-disabled fallback checkpoint also regresses below the retained runtime stop-line reference and below projection-competition replay.
+- The broader-val512 HAF-disabled row `0.5383 / 0.3237 / 0.6220` is below the current broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line, though crosswalk remains pass-level.
+- Do not continue this as longer same-axis HAF aux-weight, head-LR, valid-threshold, min-vote, or covariance sweeps.
+- Reopen HAF only if the branch changes the FP-control contract itself, for example calibrated valid-quality hard negatives, a segment-aligned verifier, or a materially different candidate generator.

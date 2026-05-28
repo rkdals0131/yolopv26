@@ -143,6 +143,7 @@ class TrainDefaultsConfig:
     stop_line_haf_max_endpoint_covariance: float = 9.0
     stop_line_haf_max_segments: int = 3
     stop_line_component_gate_source: str = "center"
+    crosswalk_polygon_mode: str = "rect"
     distill_enabled: bool = False
     distill_teacher_checkpoint: str | None = None
     distill_teacher_mode: str = "cache"
@@ -738,6 +739,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stop_line_component_gate_source=_coerce_str(
             data.get("stop_line_component_gate_source", defaults.stop_line_component_gate_source),
             field_name="train_defaults.stop_line_component_gate_source",
+        ),
+        crosswalk_polygon_mode=_coerce_str(
+            data.get("crosswalk_polygon_mode", defaults.crosswalk_polygon_mode),
+            field_name="train_defaults.crosswalk_polygon_mode",
         ),
         distill_enabled=_coerce_bool(
             data.get("distill_enabled", defaults.distill_enabled),

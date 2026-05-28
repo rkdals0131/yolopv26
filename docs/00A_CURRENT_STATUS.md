@@ -140,6 +140,17 @@ Latest stop-line live distill result:
 - standard exact-val128 replay rejects the resulting best checkpoint: source lane/stop/cross F1 `0.5445 / 0.4483 / 0.5854`, distill best `0.4835 / 0.3774 / 0.5036`.
 - 판단: do not broaden this to val512, and do not repeat same-checkpoint stop-line-only teacher-cache self-distill as a weight/epoch/batch-size/EMA sweep. Future distill use would need a different teacher target or a changed stop-line decode/assignment contract.
 
+Latest stop-line HAF consensus train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-haf-consensus-segment`.
+- changed axis: add a learned stop-line HAF endpoint/valid field and opt-in consensus decoder; keep lane row-scan/tangent and `crosswalk_polygon_mode=hull` retained.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. Redundant task-best checkpoint copies were pruned from the HAF runs, leaving the retained `best.pt` checkpoint and eval summaries.
+- 3-epoch train with `512` train batches and `128` val batches completed without non-finite/skipped steps, but the best checkpoint is negative.
+- exact-val128 epoch-2 eval with HAF disabled: lane/stop/cross F1 `0.5580 / 0.3036 / 0.5868`, stop-line TP/FP/FN `17 / 35 / 43`.
+- exact-val128 epoch-2 eval with HAF enabled at valid threshold `0.95`: lane/stop/cross F1 `0.5580 / 0.1698 / 0.5868`, stop-line TP/FP/FN `18 / 134 / 42`.
+- broader-val512 epoch-2 eval with HAF disabled: lane/stop/cross F1 `0.5383 / 0.3237 / 0.6220`, stop-line TP/FP/FN `78 / 133 / 193`.
+- 판단: the learned HAF target/head/loss path is train-stable, but the simple HAF valid/consensus decoder fails FP control and the checkpoint regresses against the retained broader runtime composite. Do not run longer same-axis HAF aux/head-LR/threshold/min-vote sweeps without a materially different valid-quality/verifier contract.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

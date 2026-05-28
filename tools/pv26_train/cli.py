@@ -199,6 +199,7 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         stop_line_haf_max_segments=int(train_config.stop_line_haf_max_segments),
         stop_line_component_gate_source=str(train_config.stop_line_component_gate_source),
         crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
+        crosswalk_polygon_mode=str(train_config.crosswalk_polygon_mode),
         allow_python_nms_fallback=bool(train_config.allow_python_nms_fallback),
     )
 
