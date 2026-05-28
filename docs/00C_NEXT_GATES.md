@@ -123,6 +123,7 @@
 - row-scan tangent segment-MIL + row-distribution 조합을 같은 lane-head-only retention schedule에서 weight-only로 반복하지 않는다.
 - lane bottom-anchor offset auxiliary-only를 weight/LR/epoch/freeze-policy sweep으로 반복하지 않는다.
 - row-scan tangent upper-trunk unfreeze를 LR/schedule/capacity-only sweep으로 반복하지 않는다.
+- upper-trunk PCGrad rebalance를 같은 row-scan/tangent lane contract and current stop-line readout 위에서 trunk-LR, PCGrad task-list, epoch-count, or loss-weight sweep으로 반복하지 않는다. 2026-05-29 real 3-epoch train exposed real conflict (`1536` PCGrad-enabled steps, mean lane-vs-stop conflict `0.5183`) but broader val512 regressed to lane/stop/cross `0.5412 / 0.3992 / 0.6168`, below the retained runtime composite on lane and stop-line. Reopen training-exposure work only with a materially different adapter/head-level balancing or emit contract.
 - lane-head transplant checkpoint에서 bbox area/aspect만 강화하는 geometry-filter sweep을 lane 0.6 path로 반복하지 않는다.
 - lane raw-vectorizer drop audit을 blind bbox-area/aspect 완화 sweep으로 해석하지 않는다.
 - lane guarded area-rescue와 center-score-gated area-rescue를 `max_per_sample`/min-area/min-centerline/bbox-filter sweep으로 반복하지 않는다.

@@ -12202,3 +12202,81 @@ Verification:
 - Disabling the conditional row decode recovers the older dense row-scan path, proving the dense maps are not fully destroyed, but the broader disabled row `0.5336 / 0.4069 / 0.6319` is still below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line.
 - Do not continue this exact branch as seed top-K, objectness threshold, row-objectness weighting, aux-weight, head-LR, freeze-policy, or longer-run sweep.
 - Reopen lane instance-native decoding only if the contract changes materially, for example denoised GT-seeded training, stronger metric-aware quality targets, explicit FP hard negatives from crosswalk/road-edge/stop-line boundaries, or a decoder that first proves recall recovery without massive lane FP.
+
+## 249. 2026-05-29 Upper-trunk PCGrad rebalance: real conflict, no broader task gain
+
+맥락:
+
+- GPT Pro's architecture-level review noted that stage-4 heads-only training leaves trunk/neck representation mostly fixed, and that the existing PCGrad-style path only matters when trainable shared parameters exist.
+- This branch tested a training-exposure variant instead of another postprocess sweep: open the lane-family upper trunk and enable the existing PCGrad-style multitask conflict projection for lane / stop-line / crosswalk.
+- The goal was not to prove `phase_objective` alone, but to check exact-val128 and broader-val512 task F1 with TP/FP/FN.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/upper-trunk-pcgrad-rebalance`.
+- Added lane60 probe experiment `core_centerline_upper_trunk_pcgrad`.
+- Freeze policy: `lane_family_plus_upper_trunk`.
+- Optimizer exposure: `trunk_lr=2.0e-6`, `head_lr=1.0e-4`.
+- Loss weights: lane `2.25`, stop-line `2.25`, crosswalk `1.75`, detector and traffic-light attribute losses disabled for this phase.
+- Multitask conflict override: `multitask_conflict.enabled=true`, `mode=pcgrad_style`, tasks `lane`, `stop_line`, `crosswalk`.
+- Lane decode remained `row_scan_tangent`; crosswalk remained `crosswalk_polygon_mode=hull`.
+- Dataset handling reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created.
+- Storage handling deleted the smoke run, pruned redundant task-best checkpoints and TensorBoard files, and removed the temporary YOLO weight download. The main run was reduced from `802M` to `129M`, retaining `best.pt`, history, summaries, and eval exports.
+
+Training artifacts:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_upper_trunk_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_033011`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_upper_trunk_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_033232`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+PCGrad diagnostics:
+
+- Smoke run confirmed the path was active: `8` PCGrad-enabled steps, lane-vs-stop conflict rate `0.625`.
+- Main run wrote `18` diagnostic windows covering `1536` PCGrad-enabled steps.
+- Mean conflict rates:
+  - lane vs stop-line: `0.5183`.
+  - lane vs crosswalk: `0.5022`.
+  - stop-line vs crosswalk: `0.4839`.
+- Mean pairwise dot:
+  - lane vs stop-line: `-0.0629`.
+  - lane vs crosswalk: `-0.0031`.
+  - stop-line vs crosswalk: `0.0219`.
+- Mean projection rates:
+  - lane: `1.0206`.
+  - stop-line: `1.0022`.
+  - crosswalk: `0.9839`.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5952182130` | `0.5377` | `0.2020` | `0.6871` | `1051 / 523 / 1284` | `10 / 34 / 45` | `56 / 24 / 27` |
+| 2 | `0.6200485428` | `0.5607` | `0.4174` | `0.5939` | `1117 / 477 / 1273` | `24 / 31 / 36` | `49 / 35 / 32` |
+| 3 | `0.6270080383` | `0.5468` | `0.4717` | `0.6462` | `1026 / 444 / 1257` | `25 / 28 / 28` | `63 / 26 / 43` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt` | `0.5619` | `0.4505` | `0.5732` | `1110 / 451 / 1280` | `25 / 26 / 35` | `47 / 36 / 34` |
+| broader val512, `best.pt` | `0.5412` | `0.3992` | `0.6168` | `4224 / 1910 / 5253` | `95 / 110 / 176` | `231 / 123 / 164` |
+
+Verification:
+
+- Real CUDA smoke train: `1` epoch, `8` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 epoch-2 checkpoint eval for `best.pt`.
+- Broader-val512 epoch-2 checkpoint eval for `best.pt`.
+
+판단:
+
+- This was a real training-exposure test, not just a threshold/postprocess replay.
+- The diagnostic premise is true: once the upper trunk is trainable, lane / stop-line / crosswalk gradients conflict frequently enough for PCGrad to act.
+- The metric premise is negative: broader-val512 `0.5412 / 0.3992 / 0.6168` is below the retained runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line.
+- Stop-line remains below both the raw retained runtime row `0.4235` and the projection-competition reference `0.5164`.
+- Crosswalk is retained above `0.60`, but that does not compensate for lane and stop-line regression.
+- Do not continue this exact branch as trunk-LR, PCGrad task-list, epoch-count, or loss-weight tuning.
+- Reopen training-exposure work only if the contract changes materially, for example task-specific zero-gated adapters, head/adapter-level gradient balancing, or a different stop-line/lane emit contract that first changes TP/FP/FN.

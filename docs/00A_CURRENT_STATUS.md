@@ -191,6 +191,19 @@ Latest lane conditional row instance decoder train/eval result:
 - broader-val512 checkpoint eval, conditional row disabled: lane/stop/cross F1 `0.5336 / 0.4069 / 0.6319`, lane TP/FP/FN `4165 / 1970 / 5312`.
 - 판단: the conditional row head/loss/decode path is train-stable, but the simple top-K seed + one-shot MLP row decoder collapses into massive lane FP and is not a production lane instance contract. Disabling the decoder recovers the older dense row-scan path, but the trained checkpoint still regresses below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line. Do not continue this exact branch as seed top-K, objectness threshold, aux-weight, head-LR, or longer-run tuning.
 
+Latest upper-trunk PCGrad rebalance train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/upper-trunk-pcgrad-rebalance`.
+- changed axis: keep the retained row-scan/tangent lane contract and hull crosswalk decode, but open `lane_family_plus_upper_trunk` and enable the existing PCGrad-style multitask conflict path on lane/stop-line/crosswalk gradients.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created. The smoke run was deleted, redundant task-best checkpoints and TensorBoard files were pruned, and the main run was reduced to `129M`, retaining `phase_4/checkpoints/best.pt`, history, summaries, and eval exports.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_upper_trunk_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_033232`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- PCGrad diagnostics: `18` windows / `1536` enabled steps, mean conflict rates lane-vs-stop `0.5183`, lane-vs-crosswalk `0.5022`, stop-vs-crosswalk `0.4839`. This confirms real gradient conflict in the opened upper trunk, but it did not translate into broader task F1 gains.
+- best training epoch `3`: lane/stop/cross F1 `0.5468 / 0.4717 / 0.6462`, TP/FP/FN lane `1026 / 444 / 1257`, stop-line `25 / 28 / 28`, crosswalk `63 / 26 / 43`.
+- exact-val128 checkpoint eval: lane/stop/cross F1 `0.5619 / 0.4505 / 0.5732`, TP/FP/FN lane `1110 / 451 / 1280`, stop-line `25 / 26 / 35`, crosswalk `47 / 36 / 34`.
+- broader-val512 checkpoint eval: lane/stop/cross F1 `0.5412 / 0.3992 / 0.6168`, TP/FP/FN lane `4224 / 1910 / 5253`, stop-line `95 / 110 / 176`, crosswalk `231 / 123 / 164`.
+- 판단: upper-trunk PCGrad exposes and projects conflicting task gradients, but the current retained runtime composite is still better on broad lane/stop-line (`0.5628 / 0.4235 / 0.6187`). Do not continue this exact branch as trunk-LR, PCGrad task-list, epoch-count, or loss-weight tuning. If training exposure is reopened, it needs a materially different adapter/head-level balancing contract, not only upper-trunk PCGrad on the same row-scan/tangent and stop-line readout.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.
