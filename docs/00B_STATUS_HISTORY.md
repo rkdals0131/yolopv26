@@ -12637,3 +12637,114 @@ Verification:
 - Do not broaden this checkpoint to val512.
 - Do not continue this exact branch as quality-tau, verifier-score-weight, segment-score threshold, max-segment, head-LR, or epoch-count tuning.
 - Reopen verifier-style work only with a runtime candidate generator that first recovers no-oracle positives, or with a verifier contract that changes emitted candidate coverage instead of only scoring the same top-K segment proposals.
+
+## 254. 2026-05-29 Lane feature-ROI learned repair replay: smoke-negative
+
+맥락:
+
+- Lane still has repairability evidence from unmatched predictions near GT, but earlier simple translation, snap, affine, row-profile, and kNN residual repair families were closed because they moved geometry without moving TP/FP/FN.
+- This probe tested a more model-aware version of the repair idea: sample dense lane features and logits along decoded candidate polylines, train no-GT out-of-fold repairability and residual models, then apply replace-only repairs.
+- The goal was to see whether feature-sampled ROI repair could convert current unmatched predictions into matched lanes without FP growth before spending broader training time.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.
+- New probe: `tools/probe_pv26_lane_feature_roi_repair.py`.
+- Inputs per candidate: sampled lane feature, centerline/support logits, tangent fields, and candidate local coordinates.
+- Selection model: out-of-fold logistic repairability.
+- Geometry model: out-of-fold ridge residual prediction.
+- Runtime contract: no GT at inference, replace-only, current stop-line/crosswalk outputs retained, crosswalk hull retained.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+
+Smoke artifact:
+
+- Output: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_replay_20260529/smoke_val4_epoch2`.
+- Scale: validation epoch `2`, `4` val batches, `512` training batches for replay feature collection, batch size `4`, CUDA.
+
+Smoke result:
+
+| Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| baseline | `0.5839` | `0.0000` | `0.5455` | `40 / 11 / 46` |
+| repaired | `0.5547` | `0.0000` | `0.5455` | `38 / 13 / 48` |
+
+Verification:
+
+- `python -m py_compile tools/probe_pv26_lane_feature_roi_repair.py`.
+- Real CUDA smoke replay with `--max-val-batches 4`, `--validation-epoch 2`, `--train-batches 512`, `--batch-size 4`, and `--crosswalk-polygon-mode hull`.
+
+판단:
+
+- The feature-ROI repair path is implemented and no-GT at runtime, but it immediately worsens lane assignment: TP falls `40 -> 38`, FP rises `11 -> 13`, and FN rises `46 -> 48`.
+- This does not justify exact-val128 or broader-val512 evaluation.
+- Do not continue this exact branch as top-K, logistic/ridge regularization, sampled-feature set, or repair-budget tuning.
+- Reopen lane repair only if a new confidence/quality signal first preserves already matched lanes and shows positive TP/FP/FN movement on val4.
+
+## 255. 2026-05-29 Task-specific lane-family adapter routing: trainable but broader-negative
+
+맥락:
+
+- Upper-trunk PCGrad exposed real gradient conflict but regressed broad metrics.
+- Head-level PCGrad was effectively a no-op because current heads-only stage-4 task parameters are disjoint.
+- Shared P2/P3/P4 adapter PCGrad created a real shared training surface but still regressed broader lane and stop-line.
+- This branch tested the next materially different training-exposure premise: separate zero-init task adapters/routing for lane, stop-line, and crosswalk, without PCGrad, while keeping the current row-scan/tangent lane and hull crosswalk contracts fixed.
+- The user explicitly asked for actual training, post-training evaluation, and larger-scope dataset usage while avoiding dataset copies.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.
+- Added `_LaneFamilyTaskFeatureAdapters`, using separate zero-init residual P2/P3/P4 adapters for lane, stop-line, and crosswalk features.
+- Added `lane_family_task_adapter_enabled` through config, CLI, `PV26Heads`, `RoadMarkV2Heads`, `PV26RoadMarkV2LaneFamilyHeads`, and `PV26RoadMarkV3JointHeads`.
+- Routed task-specific adapted features into each lane-family head when enabled; P5 remains unchanged.
+- Added lane60 probe experiment `core_centerline_task_adapter_routing`.
+- Freeze policy: `lane_family_heads_only`, trunk frozen, head LR `1.0e-4`, trunk LR `0.0`.
+- Multitask conflict/PCGrad explicitly disabled for this experiment.
+- Lane decode remained `row_scan_tangent`; crosswalk remained `crosswalk_polygon_mode=hull`.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Storage handling deleted the smoke run, pruned redundant task-best/last checkpoints, removed TensorBoard files and temporary YOLO weights, and retained only the main best checkpoint, history, summaries, and exact/broader eval exports. The retained main run is `128M`.
+
+Training artifacts:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_task_adapter_routing_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_062142`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_task_adapter_routing_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_062400`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Exact-val128 eval export: `analysis_exports/exact_val128_epoch2/metrics.csv` and `summary.json`.
+- Broader-val512 eval export: `analysis_exports/broader_val512_epoch2/metrics.csv` and `summary.json`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5957700639` | `0.5437` | `0.1980` | `0.6914` | `1061 / 507 / 1274` | `10 / 36 / 45` | `56 / 23 / 27` |
+| 2 | `0.6242006918` | `0.5636` | `0.4602` | `0.5952` | `1125 / 477 / 1265` | `26 / 27 / 34` | `50 / 37 / 31` |
+| 3 | `0.6243652225` | `0.5517` | `0.4381` | `0.6300` | `1037 / 439 / 1246` | `23 / 29 / 30` | `63 / 31 / 43` |
+
+Checkpoint eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt` | `0.6204810631` | `0.5627` | `0.4505` | `0.5854` | `1113 / 453 / 1277` | `25 / 26 / 35` | `48 / 35 / 33` |
+| broader val512, `best.pt` | `0.6109086167` | `0.5414` | `0.4142` | `0.6119` | `4236 / 1936 / 5241` | `99 / 108 / 172` | `231 / 129 / 164` |
+
+Verification:
+
+- `python -m py_compile model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py tools/probe_pv26_lane_feature_roi_repair.py test/test_pv26_heads.py test/test_pv26_trainer.py`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_lane_family_task_adapters_use_dedicated_optimizer_group`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train: `1` epoch, `32` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 epoch-2 checkpoint eval for `best.pt`.
+- Broader-val512 epoch-2 checkpoint eval for `best.pt`.
+
+판단:
+
+- The task-specific adapter path is trainable and tests the architecture/training-exposure concern more directly than postprocess tuning.
+- It still does not solve the target: broader-val512 `0.5414 / 0.4142 / 0.6119` is below the retained runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line.
+- Exact stop-line `0.4505`, `25 / 26 / 35` is below projection-competition exact `0.5167`, `31 / 29 / 29`.
+- Crosswalk remains above `0.60` on broader eval but regresses below retained `0.6187`, so this branch is not a useful retention checkpoint.
+- Do not continue this exact branch as task-adapter LR, gate-init, adapter depth, loss-weight, or epoch-count tuning.
+- Reopen training-exposure work only with a changed emit contract or routing mechanism that first moves TP/FP/FN on lane or stop-line without sacrificing the retained hull crosswalk path.

@@ -154,6 +154,7 @@ def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeac
     heads = PV26Heads(
         in_channels=_resolve_head_channels(adapter, train_config),
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
+        lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
     )
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(checkpoint, dict):
@@ -565,6 +566,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
     heads = PV26Heads(
         in_channels=head_channels,
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
+        lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
     )
     criterion = PV26MultiTaskLoss(
         stage=phase.stage,

@@ -266,6 +266,27 @@ Latest shared-adapter PCGrad train/eval result:
 - broader-val512 checkpoint eval: lane/stop/cross F1 `0.5433 / 0.4033 / 0.6061`, TP/FP/FN lane `4286 / 2014 / 5191`, stop-line `97 / 113 / 174`, crosswalk `227 / 127 / 168`.
 - 판단: the shared adapter surface is a real training-exposure intervention, not a no-op, but it still regresses against the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on all three tasks. Do not continue this exact branch as adapter LR/gate-init/depth/PCGrad-task-list/epoch-count tuning. Reopen only if the shared surface is paired with a stronger stop-line/lane emit contract or per-task adapter routing that first moves TP/FP/FN.
 
+Latest task-specific adapter routing train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.
+- changed axis: add opt-in zero-init task-specific P2/P3/P4 lane-family feature adapters, with separate routed features for lane, stop-line, and crosswalk. This deliberately disables PCGrad and tests whether task-specific adapter exposure itself improves the current row-scan/tangent lane plus hull crosswalk contract.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created. The smoke run was deleted, duplicate task-best/last checkpoints, TensorBoard files, and temporary YOLO weights were pruned, and the retained main run is `128M`.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_task_adapter_routing_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_062400`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- best training epoch `3`: objective `0.6243652225`, lane/stop/cross F1 `0.5517 / 0.4381 / 0.6300`, TP/FP/FN lane `1037 / 439 / 1246`, stop-line `23 / 29 / 30`, crosswalk `63 / 31 / 43`.
+- exact-val128 checkpoint eval: objective `0.6204810631`, lane/stop/cross F1 `0.5627 / 0.4505 / 0.5854`, TP/FP/FN lane `1113 / 453 / 1277`, stop-line `25 / 26 / 35`, crosswalk `48 / 35 / 33`.
+- broader-val512 checkpoint eval: objective `0.6109086167`, lane/stop/cross F1 `0.5414 / 0.4142 / 0.6119`, TP/FP/FN lane `4236 / 1936 / 5241`, stop-line `99 / 108 / 172`, crosswalk `231 / 129 / 164`.
+- 판단: per-task routing is trainable and storage-clean, but it regresses below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line, and exact stop-line remains below projection-comp exact `0.5167`. Do not continue this exact branch as task-adapter LR, gate-init, depth, loss-weight, or epoch-count tuning. Reopen only with a changed lane/stop-line emit contract that first moves TP/FP/FN.
+
+Latest lane feature-ROI repair replay result:
+
+- branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_replay_20260529/smoke_val4_epoch2/summary.json`.
+- changed axis: no-GT out-of-fold lane repair replay that samples dense lane feature, centerline/support logits, and tangent fields along unmatched predicted polylines, then applies replace-only learned logistic/ridge repair candidates.
+- val4 baseline lane/stop/cross F1: `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`.
+- val4 repaired lane/stop/cross F1: `0.5547 / 0.0000 / 0.5455`, lane TP/FP/FN `38 / 13 / 48`; selected repair count `4`.
+- 판단: learned feature-ROI repair moved geometry but worsened the assignment metric immediately. Do not broaden or repeat this exact replay as top-K, ridge/logistic, sampled-feature, or repair-budget tuning without a new TP-preserving confidence signal.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

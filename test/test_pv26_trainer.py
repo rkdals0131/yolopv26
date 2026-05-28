@@ -1416,6 +1416,36 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(adapter_params)
         self.assertTrue(all(parameter.requires_grad for parameter in adapter_params))
 
+    def test_lane_family_task_adapters_use_dedicated_optimizer_group(self) -> None:
+        from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
+        from model.net import PV26Heads
+
+        adapter = _DummyAdapter()
+        heads = PV26Heads(
+            in_channels=PV26_TEST_CHANNELS,
+            lane_family_task_adapter_enabled=True,
+        )
+
+        configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_heads_only",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=0.0, head_lr=1.0e-4)
+        group_names = {str(group.get("group_name")) for group in optimizer.param_groups}
+        adapter_params = [
+            parameter
+            for group in optimizer.param_groups
+            if str(group.get("group_name")) == "lane_family_adapters"
+            for parameter in group["params"]
+        ]
+
+        self.assertIn("heads", group_names)
+        self.assertIn("lane_family_adapters", group_names)
+        self.assertTrue(adapter_params)
+        self.assertTrue(all(parameter.requires_grad for parameter in adapter_params))
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_fit_auto_resume_continues_from_last_checkpoint(self) -> None:
         from model.net import PV26Heads

@@ -48,12 +48,14 @@ class PV26Heads(nn.Module):
         *,
         lane_head_mode: str = "seg_first",
         lane_family_shared_adapter_enabled: bool = False,
+        lane_family_task_adapter_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = str(lane_head_mode).strip().lower()
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
+        self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
         if len(self.in_channels) != 4:
             raise ValueError("PV26Heads expects exactly 4 pyramid levels (P2/P3/P4/P5).")
         if len(self.feature_strides) != 4:
@@ -74,6 +76,7 @@ class PV26Heads(nn.Module):
             self.feature_strides,
             lane_head_mode=self.lane_head_mode,
             lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
+            lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
         )
         self.lane_head_mode = self.roadmark_heads.lane_head_mode
         self.lane_head = self.roadmark_heads.lane_head
