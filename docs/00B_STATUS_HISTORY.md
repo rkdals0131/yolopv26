@@ -12064,3 +12064,72 @@ Verification:
 - The broader-val512 task-best row `0.5419 / 0.4033 / 0.6122` is below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line, and far below the projection-competition stop-line reference `0.5164`, `126 / 91 / 145`.
 - Do not continue this exact branch as seed top-k, score threshold, max-segment, endpoint-loss-weight, head-LR, or longer-run sweep.
 - Reopen the segment-set idea only if the contract changes materially: for example dense seed denoising, segment-aligned verifier/objectness, candidate coverage reporting that recovers no-oracle positives, or a stronger field-to-set generator rather than one-shot top-K seed MLP endpoints.
+
+## 247. 2026-05-29 Stop-line segment-aligned verifier: trainable but no recovery over fallback
+
+맥락:
+
+- Section 246 closed the simple dense top-K seed + one-shot endpoint MLP segment-set path unless the contract changed materially.
+- GPT Pro's next suggested variant was a segment-aligned verifier/objectness signal: sample dense features along a proposed stop-line segment and use a learned verifier to control FP.
+- This branch tested that variant with real training, exact-val128 evaluation, and broader-val512 evaluation.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-segment-aligned-verifier`.
+- Added `stop_line_segment_verifier_logits` to `StopLineDenseLocalHead`.
+- The verifier samples dense stop-line features along each predicted segment with `torch.nn.functional.grid_sample`, pools mean/max features, concatenates seed features, normalized endpoints, and segment length, then predicts per-query verifier logits.
+- Added `stopline_segment_verifier_aux_weight` to the loss/config/CLI path and trained the verifier against the same Hungarian objectness target used by the segment-set auxiliary.
+- Added `stop_line_segment_verifier_score_weight` to runtime/evaluator postprocess so segment-set score can use base logits, verifier logits, or a blend.
+- Added the `stopline_segment_aligned_verifier` lane60 probe experiment while keeping lane row-scan/tangent settings and `crosswalk_polygon_mode=hull`.
+- Dataset handling reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created.
+- Storage handling pruned redundant task-best checkpoints, TensorBoard event files, and temporary YOLO downloads after training/eval. The main run was reduced from `781M` to `137M`, retaining `best.pt`, history, summaries, and eval exports.
+
+Training artifacts:
+
+- Smoke train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_aligned_verifier_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_013526`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_aligned_verifier_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_013725`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed with no non-finite/skipped steps.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.584758` | `0.5372` | `0.1980` | `0.6875` | `1051 / 527 / 1284` | `10 / 36 / 45` | `55 / 22 / 28` |
+| 2 | `0.605328` | `0.5588` | `0.3680` | `0.5783` | `1107 / 465 / 1283` | `23 / 42 / 37` | `48 / 37 / 33` |
+| 3 | `0.601521` | `0.5473` | `0.2979` | `0.6294` | `1026 / 440 / 1257` | `21 / 67 / 32` | `62 / 29 / 44` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, verifier score primary | `0.5588` | `0.3680` | `0.5783` | `1107 / 465 / 1283` | `23 / 42 / 37` | `48 / 37 / 33` |
+| exact val128, segment-set disabled | `0.5588` | `0.4182` | `0.5783` | `1107 / 465 / 1283` | `23 / 27 / 37` | `48 / 37 / 33` |
+| exact val128, segment-set enabled, verifier score weight `0.0` | `0.5588` | `0.4182` | `0.5783` | `1107 / 465 / 1283` | `23 / 27 / 37` | `48 / 37 / 33` |
+| broader val512, segment-set disabled | `0.5418` | `0.3932` | `0.6148` | `4247 / 1952 / 5230` | `93 / 109 / 178` | `225 / 112 / 170` |
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/evaluate_pv26_lane60_checkpoint.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `python -m unittest discover -s test -p 'test_docs_sync.py'`.
+- Real CUDA smoke train: `1` epoch, `4` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 eval with verifier score primary.
+- Exact-val128 eval with segment-set disabled.
+- Exact-val128 eval with segment-set enabled and verifier score weight `0.0`.
+- Broader-val512 eval with the best exact variant, segment-set disabled.
+
+판단:
+
+- The segment-aligned verifier head/loss/decode path is runnable and trainable.
+- It does not beat the fixed projection-competition exact reference `0.5167`, `31 / 29 / 29`.
+- The verifier-primary exact row increases FP relative to disabling segment-set (`42` FP vs `27` FP) while keeping the same TP `23`.
+- The base segment-set score row is identical to disabling segment-set, so the learned segment proposals still do not add net metric value after fallback/dedupe.
+- The broader-val512 row `0.5418 / 0.3932 / 0.6148` remains below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line and far below the projection-competition stop-line reference `0.5164`, `126 / 91 / 145`.
+- Do not continue this exact branch as verifier-score-weight, segment threshold, max-segment, aux-weight, head-LR, or longer-run sweep.
+- Reopen verifier-style work only if the verifier target changes from matched-query objectness to a stronger no-GT segment quality target or if the candidate generator first shows no-oracle positive recovery.

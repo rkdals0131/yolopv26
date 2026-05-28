@@ -81,6 +81,11 @@ class StopLineDenseLocalHead(nn.Module):
             nn.SiLU(inplace=True),
             nn.Linear(self.hidden_dim, 5),
         )
+        self.segment_verifier_mlp = nn.Sequential(
+            nn.Linear(self.hidden_dim * 3 + 5, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, 1),
+        )
 
     def forward(
         self,
@@ -128,7 +133,10 @@ class StopLineDenseLocalHead(nn.Module):
         half_length = F.softplus(self.half_length(dense_feat))
         batch_size = int(mask_logits.shape[0])
         segment_seed_logits = self.segment_seed_logits(selector_feat)
-        segment_logits, segment_points = self._decode_seeded_segment_set(selector_feat, segment_seed_logits)
+        segment_logits, segment_points, segment_verifier_logits = self._decode_seeded_segment_set(
+            selector_feat,
+            segment_seed_logits,
+        )
 
         stop_line_vectors = torch.zeros(
             (batch_size, self.output_queries, STOP_LINE_VECTOR_DIM),
@@ -152,6 +160,7 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_segment_seed_logits": segment_seed_logits,
             "stop_line_segment_logits": segment_logits,
             "stop_line_segment_points": segment_points,
+            "stop_line_segment_verifier_logits": segment_verifier_logits,
             "stop_line_feature": line_feat,
         }
 
@@ -159,7 +168,7 @@ class StopLineDenseLocalHead(nn.Module):
         self,
         feature_map: torch.Tensor,
         seed_logits: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, channels, height, width = feature_map.shape
         flat_seed_logits = seed_logits.flatten(2).squeeze(1)
         query_count = min(int(self.output_queries), int(flat_seed_logits.shape[1]))
@@ -181,13 +190,56 @@ class StopLineDenseLocalHead(nn.Module):
         query_raw = self.segment_query_mlp(torch.cat([seed_features, seed_xy], dim=-1))
         segment_logits = query_raw[..., 0] + top_scores
         segment_points = torch.sigmoid(query_raw[..., 1:5]).view(batch_size, query_count, 2, 2)
+        segment_verifier_logits = self._verify_segments(feature_map, seed_features, segment_points)
         if query_count == int(self.output_queries):
-            return segment_logits, segment_points
+            return segment_logits, segment_points, segment_verifier_logits
         padded_logits = segment_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_verifier_logits = segment_verifier_logits.new_full((batch_size, int(self.output_queries)), -10.0)
         padded_points = segment_points.new_zeros((batch_size, int(self.output_queries), 2, 2))
         padded_logits[:, :query_count] = segment_logits
+        padded_verifier_logits[:, :query_count] = segment_verifier_logits
         padded_points[:, :query_count] = segment_points
-        return padded_logits, padded_points
+        return padded_logits, padded_points, padded_verifier_logits
+
+    def _verify_segments(
+        self,
+        feature_map: torch.Tensor,
+        seed_features: torch.Tensor,
+        segment_points: torch.Tensor,
+        *,
+        sample_count: int = 8,
+    ) -> torch.Tensor:
+        batch_size, channels, _height, _width = feature_map.shape
+        query_count = int(segment_points.shape[1])
+        steps = torch.linspace(
+            0.0,
+            1.0,
+            steps=int(sample_count),
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        ).view(1, 1, int(sample_count), 1)
+        start = segment_points[:, :, 0:1, :]
+        end = segment_points[:, :, 1:2, :]
+        sample_xy = start * (1.0 - steps) + end * steps
+        grid = sample_xy.mul(2.0).sub(1.0).view(batch_size, query_count * int(sample_count), 1, 2)
+        sampled = F.grid_sample(
+            feature_map,
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        sampled = sampled.view(batch_size, channels, query_count, int(sample_count)).permute(0, 2, 3, 1)
+        aligned_mean = sampled.mean(dim=2)
+        aligned_max = sampled.amax(dim=2)
+        flattened_points = segment_points.flatten(start_dim=2)
+        segment_delta = segment_points[:, :, 1, :] - segment_points[:, :, 0, :]
+        segment_length = torch.linalg.norm(segment_delta, dim=-1, keepdim=True)
+        verifier_input = torch.cat(
+            [seed_features, aligned_mean, aligned_max, flattened_points, segment_length],
+            dim=-1,
+        )
+        return self.segment_verifier_mlp(verifier_input).squeeze(-1)
 
 
 __all__ = ["StopLineDenseLocalHead"]

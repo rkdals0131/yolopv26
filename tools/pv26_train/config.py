@@ -137,6 +137,7 @@ class TrainDefaultsConfig:
     stopline_centerline_target_weight: float = 1.0
     stopline_haf_aux_weight: float = 0.0
     stopline_segment_set_aux_weight: float = 0.0
+    stopline_segment_verifier_aux_weight: float = 0.0
     stop_line_haf_enabled: bool = False
     stop_line_haf_valid_threshold: float = 0.50
     stop_line_haf_min_votes: int = 4
@@ -146,6 +147,7 @@ class TrainDefaultsConfig:
     stop_line_segment_set_enabled: bool = False
     stop_line_segment_set_score_threshold: float = 0.50
     stop_line_segment_set_max_segments: int = 3
+    stop_line_segment_verifier_score_weight: float = 0.0
     stop_line_component_gate_source: str = "center"
     crosswalk_polygon_mode: str = "rect"
     distill_enabled: bool = False
@@ -717,6 +719,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_segment_set_aux_weight", defaults.stopline_segment_set_aux_weight),
             field_name="train_defaults.stopline_segment_set_aux_weight",
         ),
+        stopline_segment_verifier_aux_weight=_coerce_float(
+            data.get("stopline_segment_verifier_aux_weight", defaults.stopline_segment_verifier_aux_weight),
+            field_name="train_defaults.stopline_segment_verifier_aux_weight",
+        ),
         stop_line_haf_enabled=_coerce_bool(
             data.get("stop_line_haf_enabled", defaults.stop_line_haf_enabled),
             field_name="train_defaults.stop_line_haf_enabled",
@@ -755,6 +761,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stop_line_segment_set_max_segments=_coerce_int(
             data.get("stop_line_segment_set_max_segments", defaults.stop_line_segment_set_max_segments),
             field_name="train_defaults.stop_line_segment_set_max_segments",
+        ),
+        stop_line_segment_verifier_score_weight=_coerce_float(
+            data.get(
+                "stop_line_segment_verifier_score_weight",
+                defaults.stop_line_segment_verifier_score_weight,
+            ),
+            field_name="train_defaults.stop_line_segment_verifier_score_weight",
         ),
         stop_line_component_gate_source=_coerce_str(
             data.get("stop_line_component_gate_source", defaults.stop_line_component_gate_source),

@@ -163,6 +163,20 @@ Latest stop-line seeded segment-set train/eval result:
 - broader-val512 task-best eval: lane/stop/cross F1 `0.5419 / 0.4033 / 0.6122`, stop-line TP/FP/FN `97 / 113 / 174`.
 - 판단: the simple dense top-K seed + one-shot endpoint MLP segment-set is trainable, but it does not beat exact projection-competition `0.5167` and broader stop-line regresses below both the retained runtime composite `0.4235` and projection-competition reference `0.5164`. Do not run longer same-axis seeded segment-set sweeps without a materially stronger seed/verifier/objectness contract and no-oracle recovery evidence.
 
+Latest stop-line segment-aligned verifier train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-segment-aligned-verifier`.
+- changed axis: keep the seeded segment-set branch, then add a segment-aligned verifier that samples dense stop-line features along each predicted segment with `grid_sample` and can replace the segment score; keep lane row-scan/tangent and `crosswalk_polygon_mode=hull`.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. The main run was pruned from `781M` to `137M`, retaining `phase_4/checkpoints/best.pt`, history, summaries, and eval exports only.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_aligned_verifier_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_013725`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- best training epoch `2`: lane/stop/cross F1 `0.5588 / 0.3680 / 0.5783`, stop-line TP/FP/FN `23 / 42 / 37`.
+- exact-val128 checkpoint eval, verifier score primary: lane/stop/cross F1 `0.5588 / 0.3680 / 0.5783`, stop-line TP/FP/FN `23 / 42 / 37`.
+- exact-val128 checkpoint eval, segment-set disabled: lane/stop/cross F1 `0.5588 / 0.4182 / 0.5783`, stop-line TP/FP/FN `23 / 27 / 37`.
+- exact-val128 checkpoint eval, segment-set enabled but verifier score weight `0.0`: same as disabled, lane/stop/cross F1 `0.5588 / 0.4182 / 0.5783`, stop-line TP/FP/FN `23 / 27 / 37`.
+- broader-val512 checkpoint eval, best exact variant with segment-set disabled: lane/stop/cross F1 `0.5418 / 0.3932 / 0.6148`, stop-line TP/FP/FN `93 / 109 / 178`.
+- 판단: segment-aligned verifier plumbing is trainable, but this simple verifier does not add no-GT stop-line recovery. The base segment branch emits no net metric gain, and making verifier score primary increases exact FP. Do not continue this as verifier-score-weight, segment threshold, max-segment, or longer-run sweep without a materially different candidate generator or verifier target.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

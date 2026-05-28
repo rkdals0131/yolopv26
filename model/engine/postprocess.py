@@ -86,6 +86,7 @@ class PV26PostprocessConfig:
     stop_line_segment_set_enabled: bool = False
     stop_line_segment_set_score_threshold: float = 0.50
     stop_line_segment_set_max_segments: int = 3
+    stop_line_segment_verifier_score_weight: float = 0.0
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -794,23 +795,37 @@ def _decode_stopline_segment_set(
     *,
     segment_logits: torch.Tensor | None,
     segment_points: torch.Tensor | None,
+    segment_verifier_logits: torch.Tensor | None,
     meta: dict[str, Any],
     score_threshold: float,
     max_segments: int,
+    verifier_score_weight: float = 0.0,
 ) -> list[dict[str, Any]]:
     if not isinstance(segment_logits, torch.Tensor) or not isinstance(segment_points, torch.Tensor):
         return []
     if not _tensor_all_finite(segment_logits) or not _tensor_all_finite(segment_points):
         return []
     logits = segment_logits.detach().cpu()
+    verifier_logits = segment_verifier_logits.detach().cpu() if isinstance(segment_verifier_logits, torch.Tensor) else None
     points = segment_points.detach().cpu()
     if logits.ndim == 2:
         logits = logits.squeeze(0)
+    if isinstance(verifier_logits, torch.Tensor) and verifier_logits.ndim == 2:
+        verifier_logits = verifier_logits.squeeze(0)
     if points.ndim == 4:
         points = points.squeeze(0)
     if logits.ndim != 1 or points.ndim != 3 or points.shape[1:] != (2, 2):
         return []
-    scores = logits.sigmoid().numpy().astype(np.float32)
+    score_logits = logits
+    weight = min(max(float(verifier_score_weight), 0.0), 1.0)
+    if weight > 0.0 and isinstance(verifier_logits, torch.Tensor) and verifier_logits.shape == logits.shape:
+        score_logits = logits * (1.0 - weight) + verifier_logits * weight
+    scores = score_logits.sigmoid().numpy().astype(np.float32)
+    verifier_scores = (
+        verifier_logits.sigmoid().numpy().astype(np.float32)
+        if isinstance(verifier_logits, torch.Tensor) and verifier_logits.shape == logits.shape
+        else None
+    )
     points_np = points.numpy().astype(np.float32)
     transform = transform_from_meta(meta)
     network_w = float(meta["network_hw"][1])
@@ -848,6 +863,10 @@ def _decode_stopline_segment_set(
                 "length": length,
                 "thickness": 1.0,
                 "segment_set_query_index": int(query_index),
+                "segment_set_base_score": float(logits[query_index].sigmoid().item()),
+                "segment_set_verifier_score": (
+                    float(verifier_scores[query_index]) if verifier_scores is not None else float(score)
+                ),
                 "points_xy": [[float(x), float(y)] for x, y in raw_points],
             }
         )
@@ -1847,9 +1866,11 @@ def _decode_stop_line_rows(
     haf_valid_logits: torch.Tensor | None = None,
     segment_logits: torch.Tensor | None = None,
     segment_points: torch.Tensor | None = None,
+    segment_verifier_logits: torch.Tensor | None = None,
     segment_set_enabled: bool = False,
     segment_set_score_threshold: float = 0.50,
     segment_set_max_segments: int = 3,
+    segment_verifier_score_weight: float = 0.0,
     haf_enabled: bool = False,
     haf_valid_threshold: float = 0.50,
     haf_min_votes: int = 4,
@@ -1871,9 +1892,11 @@ def _decode_stop_line_rows(
         segment_set_decoded = _decode_stopline_segment_set(
             segment_logits=segment_logits,
             segment_points=segment_points,
+            segment_verifier_logits=segment_verifier_logits,
             meta=meta,
             score_threshold=float(segment_set_score_threshold),
             max_segments=int(segment_set_max_segments),
+            verifier_score_weight=float(segment_verifier_score_weight),
         )
     if bool(haf_enabled):
         decoded = _decode_stopline_haf_consensus_segments(
@@ -2042,6 +2065,7 @@ def postprocess_pv26_batch(
     stop_line_haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
     stop_line_segment_logits = predictions.get("stop_line_segment_logits")
     stop_line_segment_points = predictions.get("stop_line_segment_points")
+    stop_line_segment_verifier_logits = predictions.get("stop_line_segment_verifier_logits")
     crosswalk_mask_logits = predictions.get("crosswalk_mask_logits")
     crosswalk_center_logits = predictions.get("crosswalk_center_logits")
     feature_shapes = predictions.get("det_feature_shapes")
@@ -2161,9 +2185,15 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_segment_points, torch.Tensor)
                         else None
                     ),
+                    segment_verifier_logits=(
+                        stop_line_segment_verifier_logits[batch_index]
+                        if isinstance(stop_line_segment_verifier_logits, torch.Tensor)
+                        else None
+                    ),
                     segment_set_enabled=config.stop_line_segment_set_enabled,
                     segment_set_score_threshold=config.stop_line_segment_set_score_threshold,
                     segment_set_max_segments=config.stop_line_segment_set_max_segments,
+                    segment_verifier_score_weight=config.stop_line_segment_verifier_score_weight,
                     haf_enabled=config.stop_line_haf_enabled,
                     haf_valid_threshold=config.stop_line_haf_valid_threshold,
                     haf_min_votes=config.stop_line_haf_min_votes,

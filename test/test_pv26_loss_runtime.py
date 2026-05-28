@@ -321,6 +321,10 @@ class PV26LossRuntimeTests(unittest.TestCase):
                 "stop_line_half_length": torch.zeros((batch_size, 1, h, w), requires_grad=True),
                 "stop_line_segment_seed_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
                 "stop_line_segment_logits": torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), requires_grad=True),
+                "stop_line_segment_verifier_logits": torch.zeros(
+                    (batch_size, STOP_LINE_QUERY_COUNT),
+                    requires_grad=True,
+                ),
                 "stop_line_segment_points": torch.full(
                     (batch_size, STOP_LINE_QUERY_COUNT, 2, 2),
                     0.5,
@@ -334,12 +338,14 @@ class PV26LossRuntimeTests(unittest.TestCase):
             task_mode="roadmark_joint",
             loss_weights={"lane": 0.0, "crosswalk": 0.0},
             stopline_segment_set_aux_weight=1.0,
+            stopline_segment_verifier_aux_weight=1.0,
         )
         losses = criterion(predictions, encoded)
 
         self.assertTrue(torch.isfinite(losses["total"]))
         losses["total"].backward()
         self.assertIsNotNone(predictions["stop_line_segment_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_segment_verifier_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_points"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_seed_logits"].grad)
 
