@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..data.transform import NETWORK_HW
 from .roadmark_blocks import ConvNormAct, MultiScaleFusion
 from .roadmark_current_family import STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM
 
@@ -91,9 +94,8 @@ class StopLineDenseLocalHead(nn.Module):
         self,
         features: tuple[torch.Tensor, torch.Tensor],
         *,
-        encoded: dict[str, torch.Tensor] | None = None,
+        encoded: dict[str, Any] | None = None,
     ) -> dict[str, torch.Tensor]:
-        del encoded
         line_feat = self.fusion(features)
         dense_feat = self.mask_stem(line_feat)
         row_source = line_feat
@@ -137,6 +139,10 @@ class StopLineDenseLocalHead(nn.Module):
             selector_feat,
             segment_seed_logits,
         )
+        denoise_logits, denoise_points, denoise_targets, denoise_valid = self._decode_denoised_segment_set(
+            selector_feat,
+            encoded=encoded,
+        )
 
         stop_line_vectors = torch.zeros(
             (batch_size, self.output_queries, STOP_LINE_VECTOR_DIM),
@@ -161,6 +167,10 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_segment_logits": segment_logits,
             "stop_line_segment_points": segment_points,
             "stop_line_segment_verifier_logits": segment_verifier_logits,
+            "stop_line_segment_denoise_logits": denoise_logits,
+            "stop_line_segment_denoise_points": denoise_points,
+            "stop_line_segment_denoise_targets": denoise_targets,
+            "stop_line_segment_denoise_valid": denoise_valid,
             "stop_line_feature": line_feat,
         }
 
@@ -240,6 +250,79 @@ class StopLineDenseLocalHead(nn.Module):
             dim=-1,
         )
         return self.segment_verifier_mlp(verifier_input).squeeze(-1)
+
+    def _decode_denoised_segment_set(
+        self,
+        feature_map: torch.Tensor,
+        *,
+        encoded: dict[str, Any] | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, channels, _height, _width = feature_map.shape
+        query_count = int(self.output_queries)
+        logits = feature_map.new_full((batch_size, query_count), -10.0)
+        points = feature_map.new_zeros((batch_size, query_count, 2, 2))
+        targets = feature_map.new_zeros((batch_size, query_count, 2, 2))
+        valid = torch.zeros((batch_size, query_count), device=feature_map.device, dtype=torch.bool)
+        if not self.training or not isinstance(encoded, dict):
+            return logits, points, targets, valid
+        stop_target = encoded.get("stop_line")
+        mask_dict = encoded.get("mask")
+        if not isinstance(stop_target, torch.Tensor) or not isinstance(mask_dict, dict):
+            return logits, points, targets, valid
+        stop_valid = mask_dict.get("stop_line_valid")
+        stop_source = mask_dict.get("stop_line_source")
+        if not isinstance(stop_valid, torch.Tensor) or not isinstance(stop_source, torch.Tensor):
+            return logits, points, targets, valid
+        stop_target = stop_target.to(device=feature_map.device, dtype=feature_map.dtype)
+        stop_valid = stop_valid.to(device=feature_map.device, dtype=torch.bool)
+        stop_source = stop_source.to(device=feature_map.device, dtype=torch.bool)
+        denom = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 2)
+        for batch_index in range(batch_size):
+            if not bool(stop_source[batch_index]):
+                continue
+            valid_indices = torch.nonzero(stop_valid[batch_index], as_tuple=False).flatten()
+            if int(valid_indices.numel()) == 0:
+                continue
+            seed_xy_rows: list[torch.Tensor] = []
+            target_rows: list[torch.Tensor] = []
+            for target_index in valid_indices.tolist():
+                target_points = stop_target[batch_index, int(target_index), 1:].view(-1, 2)
+                target_segment = torch.stack([target_points[0], target_points[-1]], dim=0)
+                target_segment = (target_segment / denom.squeeze(0)).clamp(0.0, 1.0)
+                midpoint = target_segment.mean(dim=0)
+                axis = target_segment[1] - target_segment[0]
+                axis = axis / torch.linalg.norm(axis).clamp(min=1.0e-6)
+                jittered_midpoints = [
+                    midpoint,
+                    (midpoint + 0.04 * axis).clamp(0.0, 1.0),
+                    (midpoint - 0.04 * axis).clamp(0.0, 1.0),
+                ]
+                for seed_xy in jittered_midpoints:
+                    if len(seed_xy_rows) >= query_count:
+                        break
+                    seed_xy_rows.append(seed_xy)
+                    target_rows.append(target_segment)
+                if len(seed_xy_rows) >= query_count:
+                    break
+            if not seed_xy_rows:
+                continue
+            seed_xy = torch.stack(seed_xy_rows, dim=0)
+            grid = seed_xy.mul(2.0).sub(1.0).view(1, int(seed_xy.shape[0]), 1, 2)
+            sampled = F.grid_sample(
+                feature_map[batch_index : batch_index + 1],
+                grid,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=True,
+            )
+            seed_features = sampled.view(1, channels, int(seed_xy.shape[0])).transpose(1, 2).squeeze(0)
+            query_raw = self.segment_query_mlp(torch.cat([seed_features, seed_xy], dim=-1))
+            current_count = int(seed_xy.shape[0])
+            logits[batch_index, :current_count] = query_raw[..., 0]
+            points[batch_index, :current_count] = torch.sigmoid(query_raw[..., 1:5]).view(current_count, 2, 2)
+            targets[batch_index, :current_count] = torch.stack(target_rows, dim=0)
+            valid[batch_index, :current_count] = True
+        return logits, points, targets, valid
 
 
 __all__ = ["StopLineDenseLocalHead"]

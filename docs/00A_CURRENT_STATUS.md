@@ -190,6 +190,17 @@ Latest stop-line segment-aligned verifier train/eval result:
 - broader-val512 checkpoint eval, best exact variant with segment-set disabled: lane/stop/cross F1 `0.5418 / 0.3932 / 0.6148`, stop-line TP/FP/FN `93 / 109 / 178`.
 - 판단: segment-aligned verifier plumbing is trainable, but this simple verifier does not add no-GT stop-line recovery. The base segment branch emits no net metric gain, and making verifier score primary increases exact FP. Do not continue this as verifier-score-weight, segment threshold, max-segment, or longer-run sweep without a materially different candidate generator or verifier target.
 
+Latest stop-line GT-denoised segment-set train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-segment-denoise-seeds`.
+- changed axis: keep the dense-seeded segment-set branch, then add training-only GT midpoint/jitter denoise queries through the same segment MLP plus `stopline_segment_denoise_aux_weight`; keep lane row-scan/tangent and `crosswalk_polygon_mode=hull`.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. The smoke run, redundant task-best/last checkpoints, TensorBoard files, and temporary YOLO weight downloads were pruned; retained main run is `117M`.
+- retained main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_denoise_seeded_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_051816`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- best training epoch `3`: lane/stop/cross F1 `0.5467 / 0.4510 / 0.6327`, stop-line TP/FP/FN `23 / 26 / 30`.
+- exact-val128 epoch-2 eval for `best.pt`: lane/stop/cross F1 `0.5593 / 0.4074 / 0.5976`, stop-line TP/FP/FN `22 / 26 / 38`.
+- 판단: GT-denoise supervision is train-stable, but this contract does not transfer into no-GT runtime recovery. It is below projection-competition exact `0.5167` (`31 / 29 / 29`) and below the simple seeded segment-set task-best `0.4737`. Do not continue this as denoise aux weight, jitter amount, verifier-score-weight, segment threshold, head-LR, or longer-run tuning without a new runtime seed/objectness/candidate-coverage contract.
+
 Latest lane conditional row instance decoder train/eval result:
 
 - branch/worktree: `exp/lane-family-f1/lane-conditional-row-instance-decoder`.

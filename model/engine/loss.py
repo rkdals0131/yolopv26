@@ -169,6 +169,9 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "stop_line_segment_logits",
         "stop_line_segment_points",
         "stop_line_segment_verifier_logits",
+        "stop_line_segment_denoise_logits",
+        "stop_line_segment_denoise_points",
+        "stop_line_segment_denoise_targets",
         "crosswalk_mask_logits",
         "crosswalk_boundary_logits",
         "crosswalk_center_logits",
@@ -1260,6 +1263,51 @@ def _stop_line_segment_set_loss(
     return set_loss + 0.25 * seed_loss
 
 
+def _stop_line_segment_denoise_loss(
+    *,
+    denoise_logits: torch.Tensor | None,
+    denoise_points: torch.Tensor | None,
+    denoise_targets: torch.Tensor | None,
+    denoise_valid: torch.Tensor | None,
+    fallback_tensor: torch.Tensor,
+) -> torch.Tensor:
+    if (
+        not isinstance(denoise_logits, torch.Tensor)
+        or not isinstance(denoise_points, torch.Tensor)
+        or not isinstance(denoise_targets, torch.Tensor)
+        or not isinstance(denoise_valid, torch.Tensor)
+    ):
+        return _zero_graph(fallback_tensor)
+    if (
+        denoise_logits.ndim != 2
+        or denoise_points.ndim != 4
+        or denoise_targets.shape != denoise_points.shape
+        or denoise_points.shape[2:] != (2, 2)
+        or denoise_valid.shape != denoise_logits.shape
+    ):
+        return _zero_graph(denoise_logits, denoise_points)
+    valid = denoise_valid.to(device=denoise_logits.device, dtype=torch.bool)
+    if not bool(valid.any()):
+        return _zero_graph(denoise_logits, denoise_points)
+    pred = denoise_points.clamp(0.0, 1.0)[valid]
+    target = denoise_targets.to(device=pred.device, dtype=pred.dtype).clamp(0.0, 1.0)[valid]
+    direct_distance = (pred.detach() - target).abs().mean(dim=(-1, -2))
+    flipped_target = target[:, [1, 0], :]
+    flipped_distance = (pred.detach() - flipped_target).abs().mean(dim=(-1, -2))
+    matched_target = torch.where(
+        (flipped_distance < direct_distance).view(-1, 1, 1),
+        flipped_target,
+        target,
+    )
+    point_loss = F.smooth_l1_loss(pred, matched_target, reduction="mean")
+    objectness_loss = F.binary_cross_entropy_with_logits(
+        denoise_logits[valid],
+        torch.ones_like(denoise_logits[valid]),
+        reduction="mean",
+    )
+    return objectness_loss + 4.0 * point_loss
+
+
 def _stop_line_mask_loss_with_selector_weight(
     predictions: dict[str, torch.Tensor],
     encoded: dict[str, Any],
@@ -1273,6 +1321,7 @@ def _stop_line_mask_loss_with_selector_weight(
     haf_aux_weight: float = 0.0,
     segment_set_aux_weight: float = 0.0,
     segment_verifier_aux_weight: float = 0.0,
+    segment_denoise_aux_weight: float = 0.0,
 ) -> torch.Tensor:
     mask_logits = predictions.get("stop_line_mask_logits")
     center_logits = predictions.get("stop_line_center_logits")
@@ -1285,6 +1334,10 @@ def _stop_line_mask_loss_with_selector_weight(
     segment_logits = predictions.get("stop_line_segment_logits")
     segment_points = predictions.get("stop_line_segment_points")
     segment_verifier_logits = predictions.get("stop_line_segment_verifier_logits")
+    segment_denoise_logits = predictions.get("stop_line_segment_denoise_logits")
+    segment_denoise_points = predictions.get("stop_line_segment_denoise_points")
+    segment_denoise_targets = predictions.get("stop_line_segment_denoise_targets")
+    segment_denoise_valid = predictions.get("stop_line_segment_denoise_valid")
     if not isinstance(mask_logits, torch.Tensor):
         return _zero_graph(predictions["stop_line"])
     aux = encoded.get("roadmark_v2")
@@ -1433,6 +1486,15 @@ def _stop_line_mask_loss_with_selector_weight(
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(segment_verifier_aux_weight),
         )
+    segment_denoise_loss = _zero_graph(mask_logits)
+    if float(segment_denoise_aux_weight) > 0.0:
+        segment_denoise_loss = _stop_line_segment_denoise_loss(
+            denoise_logits=segment_denoise_logits,
+            denoise_points=segment_denoise_points,
+            denoise_targets=segment_denoise_targets,
+            denoise_valid=segment_denoise_valid,
+            fallback_tensor=mask_logits,
+        )
     return (
         0.5 * mask_ce
         + 0.5 * mask_dice
@@ -1453,6 +1515,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + float(geometry_aux_weight) * length_loss
         + float(haf_aux_weight) * haf_loss
         + float(segment_set_aux_weight) * segment_set_loss
+        + float(segment_denoise_aux_weight) * segment_denoise_loss
     )
 
 
@@ -1809,6 +1872,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_haf_aux_weight: float = 0.0,
         stopline_segment_set_aux_weight: float = 0.0,
         stopline_segment_verifier_aux_weight: float = 0.0,
+        stopline_segment_denoise_aux_weight: float = 0.0,
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
         distill_loss_weights: dict[str, float] | None = None,
@@ -1862,6 +1926,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_haf_aux_weight = float(stopline_haf_aux_weight)
         self.stopline_segment_set_aux_weight = float(stopline_segment_set_aux_weight)
         self.stopline_segment_verifier_aux_weight = float(stopline_segment_verifier_aux_weight)
+        self.stopline_segment_denoise_aux_weight = float(stopline_segment_denoise_aux_weight)
         self.distill_enabled = bool(distill_enabled)
         self.distill_teacher_mode = str(distill_teacher_mode)
         self.distill_normalize_mode = str(distill_normalize_mode)
@@ -1954,6 +2019,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_haf_aux_weight": float(self.stopline_haf_aux_weight),
             "stopline_segment_set_aux_weight": float(self.stopline_segment_set_aux_weight),
             "stopline_segment_verifier_aux_weight": float(self.stopline_segment_verifier_aux_weight),
+            "stopline_segment_denoise_aux_weight": float(self.stopline_segment_denoise_aux_weight),
             "loss_weights": dict(self.loss_weights),
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
@@ -2659,6 +2725,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and float(self.stopline_haf_aux_weight) == 0.0
                 and float(self.stopline_segment_set_aux_weight) == 0.0
                 and float(self.stopline_segment_verifier_aux_weight) == 0.0
+                and float(self.stopline_segment_denoise_aux_weight) == 0.0
             ):
                 return _stop_line_mask_loss(prediction_dict, encoded)
             return _stop_line_mask_loss_with_selector_weight(
@@ -2673,6 +2740,7 @@ class PV26MultiTaskLoss(nn.Module):
                 haf_aux_weight=float(self.stopline_haf_aux_weight),
                 segment_set_aux_weight=float(self.stopline_segment_set_aux_weight),
                 segment_verifier_aux_weight=float(self.stopline_segment_verifier_aux_weight),
+                segment_denoise_aux_weight=float(self.stopline_segment_denoise_aux_weight),
             )
         stop_pred = prediction_dict["stop_line"]
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)

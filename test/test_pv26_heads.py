@@ -120,6 +120,38 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
         self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
 
+    def test_stopline_head_builds_denoise_queries_from_encoded_segments(self) -> None:
+        from model.net.stopline_head_line import StopLineDenseLocalHead
+
+        head = StopLineDenseLocalHead((16, 16), hidden_dim=16, output_queries=4)
+        head.train()
+        encoded_stop_line = torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+        encoded_stop_line[0, 0, 0] = 1.0
+        encoded_stop_line[0, 0, 1:] = torch.tensor(
+            [100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0],
+            dtype=torch.float32,
+        )
+        encoded = {
+            "stop_line": encoded_stop_line,
+            "mask": {
+                "stop_line_source": torch.ones(1, dtype=torch.bool),
+                "stop_line_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+            },
+        }
+        encoded["mask"]["stop_line_valid"][0, 0] = True
+        outputs = head(
+            (
+                torch.randn(1, 16, 16, 20),
+                torch.randn(1, 16, 8, 10),
+            ),
+            encoded=encoded,
+        )
+
+        self.assertEqual(tuple(outputs["stop_line_segment_denoise_logits"].shape), (1, 4))
+        self.assertEqual(tuple(outputs["stop_line_segment_denoise_points"].shape), (1, 4, 2, 2))
+        self.assertGreater(int(outputs["stop_line_segment_denoise_valid"].sum().item()), 0)
+        self.assertTrue(torch.isfinite(outputs["stop_line_segment_denoise_points"]).all())
+
 
 if __name__ == "__main__":
     unittest.main()

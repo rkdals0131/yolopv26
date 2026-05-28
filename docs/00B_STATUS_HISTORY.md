@@ -12485,3 +12485,82 @@ Verification:
 - Crosswalk stays above `0.60` on broader eval, but that does not compensate for lane and stop-line regression.
 - Do not continue this exact branch as adapter LR, gate-init, adapter depth, PCGrad task-list, loss-weight, or epoch-count tuning.
 - Reopen training-exposure work only if the shared surface is paired with a stronger stop-line/lane emit contract, or if per-task adapter routing first shows TP/FP/FN movement without sacrificing the retained crosswalk hull behavior.
+
+## 252. 2026-05-29 Stop-line GT-denoised segment-set: trainable but no runtime recovery
+
+맥락:
+
+- GPT Pro's architecture-level stop-line segment-set direction was still open only if it changed the simple top-K seed MLP contract materially.
+- The closed segment-set branch already showed that top-K dense seed logits plus one-shot endpoint emission were trainable but below the projection-competition reference.
+- This branch tested a different training contract: during training, feed GT midpoint and small along-axis jitter seeds through the same segment MLP so the runtime segment MLP sees direct full-segment endpoint supervision from reliable support locations.
+- The user explicitly asked for real training/evaluation and larger-scope dataset usage, while avoiding dataset copies.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-segment-denoise-seeds`.
+- Added `StopLineDenseLocalHead._decode_denoised_segment_set`, which builds training-only denoise queries from encoded stop-line GT endpoints.
+- Added output tensors:
+  - `stop_line_segment_denoise_logits`
+  - `stop_line_segment_denoise_points`
+  - `stop_line_segment_denoise_targets`
+  - `stop_line_segment_denoise_valid`
+- Added `_stop_line_segment_denoise_loss` and `stopline_segment_denoise_aux_weight` through loss/config/CLI export.
+- Added lane60 probe experiment `stopline_segment_denoise_seeded`.
+- Kept lane decode `row_scan_tangent` and crosswalk `crosswalk_polygon_mode=hull`.
+- Runtime still uses the no-GT dense-seeded segment-set outputs; the denoise targets are training-only.
+
+Training artifacts:
+
+- Smoke run was deleted after the main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_denoise_seeded_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_051246`.
+- Retained main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_denoise_seeded_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_051816`.
+- Retained checkpoint: `phase_4/checkpoints/best.pt`.
+- Retained exact eval export: `analysis_exports/exact_val128_epoch2/metrics.csv` and `summary.json`.
+- Storage: duplicate task-best/last checkpoints, TensorBoard files, the smoke run, and temporary `yolo26n.pt` / `yolo26s.pt` downloads were removed. The retained main run is `117M`.
+- Dataset handling: reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created.
+- Main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+Smoke result:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| val4 after 32 train batches | `0.5426` | `0.0000` | `0.7273` | `35 / 15 / 44` | `0 / 1 / 2` | `4 / 2 / 1` |
+| exact val128 epoch-2, smoke `best.pt` | `0.5480` | `0.4602` | `0.5765` | `1088 / 493 / 1302` | `26 / 27 / 34` | `49 / 40 / 32` |
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5999530265` | `0.5380` | `0.2574` | `0.6750` | `1050 / 518 / 1285` | `13 / 33 / 42` | `54 / 23 / 29` |
+| 2 | `0.6195626617` | `0.5565` | `0.4248` | `0.5783` | `1101 / 466 / 1289` | `24 / 29 / 36` | `48 / 37 / 33` |
+| 3 | `0.6204` | `0.5467` | `0.4510` | `0.6327` | `1024 / 439 / 1259` | `23 / 26 / 30` | `62 / 28 / 44` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch-2, main `best.pt` | `0.5593` | `0.4074` | `0.5976` | `1104 / 454 / 1286` | `22 / 26 / 38` | `49 / 34 / 32` |
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train: `1` epoch, `32` train batches, `4` val batches.
+- Smoke `best.pt` exact-val128 epoch-2 checkpoint eval.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Main `best.pt` exact-val128 epoch-2 checkpoint eval.
+
+판단:
+
+- The implementation is valid infrastructure: denoise queries are built from encoded GT only during training, gradients flow through the shared segment MLP, and runtime remains no-GT.
+- The metric premise is negative. Exact val128 epoch-2 stop-line falls to `0.4074`, TP/FP/FN `22 / 26 / 38`, below:
+  - projection-competition exact `0.5167`, `31 / 29 / 29`;
+  - simple seeded segment-set task-best exact `0.4737`, `27 / 27 / 33`;
+  - baseline exact `0.4483`, `26 / 30 / 34`.
+- The main training objective crossing `0.6204` is not meaningful for the all-task target because stop-line remains below both the projection reference and the retained runtime/broader target.
+- Do not broaden this checkpoint to val512.
+- Do not continue this exact branch as denoise aux-weight, jitter amount, verifier-score-weight, segment-score threshold, max-segment, head-LR, or epoch-count tuning.
+- Reopen segment-set only if runtime candidate coverage changes materially first, for example a seed/objectness contract that recovers no-oracle positives before verifier/ranking, or a non-one-shot field-to-set generator with explicit FP-control evidence.

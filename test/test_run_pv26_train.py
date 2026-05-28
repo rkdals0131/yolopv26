@@ -154,6 +154,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                                 "yellow_lane": 1.75,
                             },
                             "stopline_selector_target_mode": "rowx_band",
+                            "stopline_segment_denoise_aux_weight": 0.8,
                             "stop_line_component_gate_source": "selector",
                             "distill_enabled": True,
                             "distill_teacher_checkpoint": "runs/teacher.pt",
@@ -271,6 +272,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_dice"], 1.5)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)
         self.assertEqual(scenario.train_defaults.stopline_selector_target_mode, "rowx_band")
+        self.assertAlmostEqual(scenario.train_defaults.stopline_segment_denoise_aux_weight, 0.8)
         self.assertEqual(scenario.train_defaults.stop_line_component_gate_source, "selector")
         self.assertTrue(scenario.train_defaults.distill_enabled)
         self.assertEqual(scenario.train_defaults.distill_teacher_checkpoint, "runs/teacher.pt")

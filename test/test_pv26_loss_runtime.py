@@ -330,8 +330,28 @@ class PV26LossRuntimeTests(unittest.TestCase):
                     0.5,
                     requires_grad=True,
                 ),
+                "stop_line_segment_denoise_logits": torch.zeros(
+                    (batch_size, STOP_LINE_QUERY_COUNT),
+                    requires_grad=True,
+                ),
+                "stop_line_segment_denoise_points": torch.full(
+                    (batch_size, STOP_LINE_QUERY_COUNT, 2, 2),
+                    0.5,
+                    requires_grad=True,
+                ),
+                "stop_line_segment_denoise_targets": torch.zeros(
+                    (batch_size, STOP_LINE_QUERY_COUNT, 2, 2),
+                ),
+                "stop_line_segment_denoise_valid": torch.zeros(
+                    (batch_size, STOP_LINE_QUERY_COUNT),
+                    dtype=torch.bool,
+                ),
             }
         )
+        predictions["stop_line_segment_denoise_targets"][0, 0] = torch.tensor(
+            [[100.0 / 800.0, 500.0 / 608.0], [340.0 / 800.0, 500.0 / 608.0]]
+        )
+        predictions["stop_line_segment_denoise_valid"][0, 0] = True
 
         criterion = PV26MultiTaskLoss(
             stage="stage_4_lane_family_finetune",
@@ -339,6 +359,7 @@ class PV26LossRuntimeTests(unittest.TestCase):
             loss_weights={"lane": 0.0, "crosswalk": 0.0},
             stopline_segment_set_aux_weight=1.0,
             stopline_segment_verifier_aux_weight=1.0,
+            stopline_segment_denoise_aux_weight=1.0,
         )
         losses = criterion(predictions, encoded)
 
@@ -348,6 +369,8 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["stop_line_segment_verifier_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_points"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_seed_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_segment_denoise_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_segment_denoise_points"].grad)
 
     def test_lane_segfirst_task_conflict_negative_penalizes_ignored_crosswalk_pixels(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
