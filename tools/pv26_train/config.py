@@ -135,6 +135,13 @@ class TrainDefaultsConfig:
     stopline_geometry_aux_weight: float = 1.0
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
+    stopline_haf_aux_weight: float = 0.0
+    stop_line_haf_enabled: bool = False
+    stop_line_haf_valid_threshold: float = 0.50
+    stop_line_haf_min_votes: int = 4
+    stop_line_haf_cluster_endpoint_tolerance: float = 3.0
+    stop_line_haf_max_endpoint_covariance: float = 9.0
+    stop_line_haf_max_segments: int = 3
     stop_line_component_gate_source: str = "center"
     distill_enabled: bool = False
     distill_teacher_checkpoint: str | None = None
@@ -696,6 +703,37 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stopline_centerline_target_weight=_coerce_float(
             data.get("stopline_centerline_target_weight", defaults.stopline_centerline_target_weight),
             field_name="train_defaults.stopline_centerline_target_weight",
+        ),
+        stopline_haf_aux_weight=_coerce_float(
+            data.get("stopline_haf_aux_weight", defaults.stopline_haf_aux_weight),
+            field_name="train_defaults.stopline_haf_aux_weight",
+        ),
+        stop_line_haf_enabled=_coerce_bool(
+            data.get("stop_line_haf_enabled", defaults.stop_line_haf_enabled),
+            field_name="train_defaults.stop_line_haf_enabled",
+        ),
+        stop_line_haf_valid_threshold=_coerce_float(
+            data.get("stop_line_haf_valid_threshold", defaults.stop_line_haf_valid_threshold),
+            field_name="train_defaults.stop_line_haf_valid_threshold",
+        ),
+        stop_line_haf_min_votes=_coerce_int(
+            data.get("stop_line_haf_min_votes", defaults.stop_line_haf_min_votes),
+            field_name="train_defaults.stop_line_haf_min_votes",
+        ),
+        stop_line_haf_cluster_endpoint_tolerance=_coerce_float(
+            data.get(
+                "stop_line_haf_cluster_endpoint_tolerance",
+                defaults.stop_line_haf_cluster_endpoint_tolerance,
+            ),
+            field_name="train_defaults.stop_line_haf_cluster_endpoint_tolerance",
+        ),
+        stop_line_haf_max_endpoint_covariance=_coerce_float(
+            data.get("stop_line_haf_max_endpoint_covariance", defaults.stop_line_haf_max_endpoint_covariance),
+            field_name="train_defaults.stop_line_haf_max_endpoint_covariance",
+        ),
+        stop_line_haf_max_segments=_coerce_int(
+            data.get("stop_line_haf_max_segments", defaults.stop_line_haf_max_segments),
+            field_name="train_defaults.stop_line_haf_max_segments",
         ),
         stop_line_component_gate_source=_coerce_str(
             data.get("stop_line_component_gate_source", defaults.stop_line_component_gate_source),

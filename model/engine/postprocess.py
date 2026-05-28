@@ -77,6 +77,12 @@ class PV26PostprocessConfig:
     stop_line_min_instance_score: float = 0.94
     stop_line_presence_threshold: float = 0.0
     stop_line_component_gate_source: str = "center"
+    stop_line_haf_enabled: bool = False
+    stop_line_haf_valid_threshold: float = 0.50
+    stop_line_haf_min_votes: int = 4
+    stop_line_haf_cluster_endpoint_tolerance: float = 3.0
+    stop_line_haf_max_endpoint_covariance: float = 9.0
+    stop_line_haf_max_segments: int = 3
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -626,6 +632,159 @@ def _fit_stopline_segment(
     start = endpoint_anchor[0] + axis * start_proj
     end = endpoint_anchor[0] + axis * end_proj
     return start.astype(np.float32), end.astype(np.float32), length, thickness
+
+
+def _canonical_segment_endpoints(start: np.ndarray, end: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if (float(start[0]), float(start[1])) <= (float(end[0]), float(end[1])):
+        return start.astype(np.float32), end.astype(np.float32)
+    return end.astype(np.float32), start.astype(np.float32)
+
+
+def _decode_stopline_haf_consensus_segments(
+    *,
+    haf_endpoint: torch.Tensor | None,
+    haf_valid_logits: torch.Tensor | None,
+    meta: dict[str, Any],
+    valid_threshold: float,
+    min_votes: int,
+    cluster_endpoint_tolerance: float,
+    max_endpoint_covariance: float,
+    max_segments: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(haf_endpoint, torch.Tensor) or not isinstance(haf_valid_logits, torch.Tensor):
+        return []
+    if not _tensor_all_finite(haf_endpoint) or not _tensor_all_finite(haf_valid_logits):
+        return []
+
+    endpoint_map = haf_endpoint.detach().cpu()
+    valid_map = haf_valid_logits.sigmoid().detach().cpu()
+    if endpoint_map.ndim == 4:
+        endpoint_map = endpoint_map.squeeze(0)
+    if valid_map.ndim == 4:
+        valid_map = valid_map.squeeze(0)
+    if valid_map.ndim == 3:
+        valid_map = valid_map.squeeze(0)
+    if endpoint_map.ndim != 3 or int(endpoint_map.shape[0]) != 4 or valid_map.ndim != 2:
+        return []
+    output_h, output_w = int(valid_map.shape[0]), int(valid_map.shape[1])
+    if endpoint_map.shape[1:] != valid_map.shape:
+        return []
+
+    support_rows, support_cols = np.nonzero(valid_map.numpy() >= float(valid_threshold))
+    if support_rows.size == 0:
+        return []
+
+    votes: list[dict[str, Any]] = []
+    endpoint_np = endpoint_map.numpy().astype(np.float32)
+    valid_np = valid_map.numpy().astype(np.float32)
+    for row_index, col_index in zip(support_rows.tolist(), support_cols.tolist()):
+        point = np.array([float(col_index), float(row_index)], dtype=np.float32)
+        start = point + endpoint_np[0:2, row_index, col_index]
+        end = point + endpoint_np[2:4, row_index, col_index]
+        if not np.isfinite(start).all() or not np.isfinite(end).all():
+            continue
+        start, end = _canonical_segment_endpoints(start, end)
+        length = float(np.linalg.norm(end - start))
+        if length < STOPLINE_MIN_COMPONENT_LENGTH:
+            continue
+        votes.append(
+            {
+                "start": start,
+                "end": end,
+                "weight": max(float(valid_np[row_index, col_index]), 1.0e-6),
+            }
+        )
+    if not votes:
+        return []
+
+    votes.sort(key=lambda item: float(item["weight"]), reverse=True)
+    clusters: list[dict[str, Any]] = []
+    tolerance = max(float(cluster_endpoint_tolerance), 1.0e-6)
+    for vote in votes:
+        assigned = False
+        for cluster in clusters:
+            start_mean = np.asarray(cluster["start_sum"], dtype=np.float32) / max(float(cluster["weight_sum"]), 1.0e-6)
+            end_mean = np.asarray(cluster["end_sum"], dtype=np.float32) / max(float(cluster["weight_sum"]), 1.0e-6)
+            endpoint_error = max(
+                float(np.linalg.norm(vote["start"] - start_mean)),
+                float(np.linalg.norm(vote["end"] - end_mean)),
+            )
+            if endpoint_error > tolerance:
+                continue
+            weight = float(vote["weight"])
+            cluster["start_sum"] = np.asarray(cluster["start_sum"], dtype=np.float32) + vote["start"] * weight
+            cluster["end_sum"] = np.asarray(cluster["end_sum"], dtype=np.float32) + vote["end"] * weight
+            cluster["weight_sum"] = float(cluster["weight_sum"]) + weight
+            cluster["votes"].append(vote)
+            assigned = True
+            break
+        if not assigned:
+            weight = float(vote["weight"])
+            clusters.append(
+                {
+                    "start_sum": vote["start"] * weight,
+                    "end_sum": vote["end"] * weight,
+                    "weight_sum": weight,
+                    "votes": [vote],
+                }
+            )
+
+    transform = transform_from_meta(meta)
+    decoded: list[dict[str, Any]] = []
+    for cluster in clusters:
+        cluster_votes = list(cluster["votes"])
+        vote_count = len(cluster_votes)
+        if vote_count < int(min_votes):
+            continue
+        weight_sum = max(float(cluster["weight_sum"]), 1.0e-6)
+        start = np.asarray(cluster["start_sum"], dtype=np.float32) / weight_sum
+        end = np.asarray(cluster["end_sum"], dtype=np.float32) / weight_sum
+        start, end = _canonical_segment_endpoints(start, end)
+        endpoint_errors = [
+            max(float(np.linalg.norm(vote["start"] - start)), float(np.linalg.norm(vote["end"] - end)))
+            for vote in cluster_votes
+        ]
+        endpoint_covariance = float(np.mean(np.square(endpoint_errors))) if endpoint_errors else float("inf")
+        if endpoint_covariance > float(max_endpoint_covariance):
+            continue
+        grid_segment = np.stack([start, end], axis=0).astype(np.float32)
+        network_segment = grid_segment.copy()
+        network_segment[:, 0] = network_segment[:, 0] * (float(meta["network_hw"][1]) / float(output_w))
+        network_segment[:, 1] = network_segment[:, 1] * (float(meta["network_hw"][0]) / float(output_h))
+        network_points = sample_stop_line_centerline(
+            clip_points(network_segment.tolist(), transform.network_hw),
+            target_count=STOP_LINE_POINT_COUNT,
+        ).tolist()
+        if unique_point_count(network_points) < 2:
+            continue
+        raw_points = sample_stop_line_centerline(
+            inverse_transform_points(network_points, transform),
+            target_count=STOP_LINE_POINT_COUNT,
+        ).tolist()
+        if unique_point_count(raw_points) < 2:
+            continue
+        mean_vote_score = weight_sum / float(vote_count)
+        vote_score = min(1.0, float(vote_count) / 16.0)
+        covariance_score = 1.0 / (1.0 + max(endpoint_covariance, 0.0))
+        score = 0.55 * mean_vote_score + 0.25 * vote_score + 0.20 * covariance_score
+        decoded.append(
+            {
+                "allowed": True,
+                "score": float(score),
+                "center_score": float(mean_vote_score),
+                "orientation_score": float(_stopline_orientation_score(raw_points)),
+                "length": float(np.linalg.norm(end - start)),
+                "thickness": 1.0,
+                "haf_vote_count": int(vote_count),
+                "haf_endpoint_covariance": float(endpoint_covariance),
+                "points_xy": [[float(x), float(y)] for x, y in raw_points],
+            }
+        )
+
+    decoded.sort(key=_stopline_prediction_sort_key, reverse=True)
+    if int(max_segments) > 0:
+        decoded = decoded[: int(max_segments)]
+    return _dedupe_stop_line_predictions(decoded)
 
 
 def _decode_stopline_direct_selector_segment(
@@ -1613,6 +1772,14 @@ def _decode_stop_line_rows(
     x_logits: torch.Tensor | None = None,
     angle: torch.Tensor | None = None,
     half_length: torch.Tensor | None = None,
+    haf_endpoint: torch.Tensor | None = None,
+    haf_valid_logits: torch.Tensor | None = None,
+    haf_enabled: bool = False,
+    haf_valid_threshold: float = 0.50,
+    haf_min_votes: int = 4,
+    haf_cluster_endpoint_tolerance: float = 3.0,
+    haf_max_endpoint_covariance: float = 9.0,
+    haf_max_segments: int = 3,
     presence_logits: torch.Tensor | None = None,
     presence_threshold: float = 0.0,
     component_gate_source: str = "center",
@@ -1623,6 +1790,19 @@ def _decode_stop_line_rows(
         presence_score = float(presence_logits.reshape(-1)[0].sigmoid().detach().cpu().item())
         if presence_score < float(presence_threshold):
             return []
+    if bool(haf_enabled):
+        decoded = _decode_stopline_haf_consensus_segments(
+            haf_endpoint=haf_endpoint,
+            haf_valid_logits=haf_valid_logits,
+            meta=meta,
+            valid_threshold=float(haf_valid_threshold),
+            min_votes=int(haf_min_votes),
+            cluster_endpoint_tolerance=float(haf_cluster_endpoint_tolerance),
+            max_endpoint_covariance=float(haf_max_endpoint_covariance),
+            max_segments=int(haf_max_segments),
+        )
+        if decoded:
+            return decoded
     if isinstance(mask_logits, torch.Tensor):
         decoded = _stopline_mask_to_polyline(
             mask_logits,
@@ -1763,6 +1943,8 @@ def postprocess_pv26_batch(
     stop_line_center_offset = predictions.get("stop_line_center_offset")
     stop_line_angle = predictions.get("stop_line_angle")
     stop_line_half_length = predictions.get("stop_line_half_length")
+    stop_line_haf_endpoint = predictions.get("stop_line_haf_endpoint")
+    stop_line_haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
     crosswalk_mask_logits = predictions.get("crosswalk_mask_logits")
     crosswalk_center_logits = predictions.get("crosswalk_center_logits")
     feature_shapes = predictions.get("det_feature_shapes")
@@ -1862,6 +2044,22 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_half_length, torch.Tensor)
                         else None
                     ),
+                    haf_endpoint=(
+                        stop_line_haf_endpoint[batch_index]
+                        if isinstance(stop_line_haf_endpoint, torch.Tensor)
+                        else None
+                    ),
+                    haf_valid_logits=(
+                        stop_line_haf_valid_logits[batch_index]
+                        if isinstance(stop_line_haf_valid_logits, torch.Tensor)
+                        else None
+                    ),
+                    haf_enabled=config.stop_line_haf_enabled,
+                    haf_valid_threshold=config.stop_line_haf_valid_threshold,
+                    haf_min_votes=config.stop_line_haf_min_votes,
+                    haf_cluster_endpoint_tolerance=config.stop_line_haf_cluster_endpoint_tolerance,
+                    haf_max_endpoint_covariance=config.stop_line_haf_max_endpoint_covariance,
+                    haf_max_segments=config.stop_line_haf_max_segments,
                 ),
                 "crosswalks": _decode_crosswalk_rows(
                     crosswalk_pred[batch_index],

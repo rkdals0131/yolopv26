@@ -160,6 +160,8 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "stop_line_center_offset",
         "stop_line_angle",
         "stop_line_half_length",
+        "stop_line_haf_endpoint",
+        "stop_line_haf_valid_logits",
         "crosswalk_mask_logits",
         "crosswalk_boundary_logits",
         "crosswalk_center_logits",
@@ -1083,12 +1085,15 @@ def _stop_line_mask_loss_with_selector_weight(
     geometry_aux_weight: float = 1.0,
     center_target_mode: str = "union",
     centerline_target_weight: float = 1.0,
+    haf_aux_weight: float = 0.0,
 ) -> torch.Tensor:
     mask_logits = predictions.get("stop_line_mask_logits")
     center_logits = predictions.get("stop_line_center_logits")
     center_offset = predictions.get("stop_line_center_offset")
     angle = predictions.get("stop_line_angle")
     half_length = predictions.get("stop_line_half_length")
+    haf_endpoint = predictions.get("stop_line_haf_endpoint")
+    haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
     if not isinstance(mask_logits, torch.Tensor):
         return _zero_graph(predictions["stop_line"])
     aux = encoded.get("roadmark_v2")
@@ -1196,6 +1201,35 @@ def _stop_line_mask_loss_with_selector_weight(
         offset_loss = _zero_graph(mask_logits)
         angle_loss = _zero_graph(mask_logits)
         length_loss = _zero_graph(mask_logits)
+    haf_loss = _zero_graph(mask_logits)
+    if (
+        float(haf_aux_weight) > 0.0
+        and isinstance(haf_endpoint, torch.Tensor)
+        and isinstance(haf_valid_logits, torch.Tensor)
+        and "stop_line_haf_endpoint" in aux
+        and "stop_line_haf_valid" in aux
+    ):
+        haf_endpoint_target = aux["stop_line_haf_endpoint"].to(device=mask_logits.device, dtype=mask_logits.dtype)
+        haf_valid_target = aux["stop_line_haf_valid"].to(device=mask_logits.device, dtype=mask_logits.dtype)
+        haf_ignore_target = aux.get("stop_line_haf_ignore")
+        if isinstance(haf_ignore_target, torch.Tensor):
+            haf_ignore = haf_ignore_target.to(device=mask_logits.device, dtype=torch.bool)
+        else:
+            haf_ignore = torch.zeros_like(haf_valid_target, dtype=torch.bool, device=mask_logits.device)
+        haf_sample_mask = source[:, None, None, None].expand_as(haf_valid_logits) & (~haf_ignore)
+        haf_valid_loss = _masked_binary_ce_balanced(
+            haf_valid_logits,
+            haf_valid_target,
+            haf_sample_mask,
+            max_positive_weight=32.0,
+        )
+        haf_positive_mask = (haf_valid_target > 0.5) & haf_sample_mask
+        haf_endpoint_loss = _masked_smooth_l1(
+            haf_endpoint,
+            haf_endpoint_target,
+            haf_positive_mask.expand_as(haf_endpoint),
+        )
+        haf_loss = 0.5 * haf_valid_loss + haf_endpoint_loss
     return (
         0.5 * mask_ce
         + 0.5 * mask_dice
@@ -1214,6 +1248,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + 0.5 * offset_loss
         + float(geometry_aux_weight) * angle_loss
         + float(geometry_aux_weight) * length_loss
+        + float(haf_aux_weight) * haf_loss
     )
 
 
@@ -1566,6 +1601,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_geometry_aux_weight: float = 1.0,
         stopline_center_target_mode: str = "union",
         stopline_centerline_target_weight: float = 1.0,
+        stopline_haf_aux_weight: float = 0.0,
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
         distill_loss_weights: dict[str, float] | None = None,
@@ -1615,6 +1651,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_geometry_aux_weight = float(stopline_geometry_aux_weight)
         self.stopline_center_target_mode = str(stopline_center_target_mode)
         self.stopline_centerline_target_weight = float(stopline_centerline_target_weight)
+        self.stopline_haf_aux_weight = float(stopline_haf_aux_weight)
         self.distill_enabled = bool(distill_enabled)
         self.distill_teacher_mode = str(distill_teacher_mode)
         self.distill_normalize_mode = str(distill_normalize_mode)
@@ -1703,6 +1740,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_geometry_aux_weight": float(self.stopline_geometry_aux_weight),
             "stopline_center_target_mode": self.stopline_center_target_mode,
             "stopline_centerline_target_weight": float(self.stopline_centerline_target_weight),
+            "stopline_haf_aux_weight": float(self.stopline_haf_aux_weight),
             "loss_weights": dict(self.loss_weights),
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
@@ -2404,6 +2442,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and str(self.stopline_selector_target_mode).strip().lower() == "centerline"
                 and str(self.stopline_center_target_mode).strip().lower() == "union"
                 and float(self.stopline_centerline_target_weight) == 1.0
+                and float(self.stopline_haf_aux_weight) == 0.0
             ):
                 return _stop_line_mask_loss(prediction_dict, encoded)
             return _stop_line_mask_loss_with_selector_weight(
@@ -2415,6 +2454,7 @@ class PV26MultiTaskLoss(nn.Module):
                 geometry_aux_weight=float(self.stopline_geometry_aux_weight),
                 center_target_mode=self.stopline_center_target_mode,
                 centerline_target_weight=float(self.stopline_centerline_target_weight),
+                haf_aux_weight=float(self.stopline_haf_aux_weight),
             )
         stop_pred = prediction_dict["stop_line"]
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)

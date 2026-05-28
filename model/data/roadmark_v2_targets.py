@@ -24,6 +24,26 @@ def _scale_points_to_output(points: torch.Tensor, *, output_hw: tuple[int, int])
     return scaled
 
 
+def _point_segment_distance_sq(x: float, y: float, start: torch.Tensor, end: torch.Tensor) -> float:
+    sx = float(start[0].item())
+    sy = float(start[1].item())
+    ex = float(end[0].item())
+    ey = float(end[1].item())
+    vx = ex - sx
+    vy = ey - sy
+    denom = vx * vx + vy * vy
+    if denom <= 1.0e-12:
+        dx = x - sx
+        dy = y - sy
+        return dx * dx + dy * dy
+    t = max(0.0, min(1.0, ((x - sx) * vx + (y - sy) * vy) / denom))
+    px = sx + t * vx
+    py = sy + t * vy
+    dx = x - px
+    dy = y - py
+    return dx * dx + dy * dy
+
+
 def build_lane_dense_row_targets(
     rows: list[dict[str, Any]],
     valid_mask: torch.BoolTensor | list[bool] | tuple[bool, ...],
@@ -228,6 +248,7 @@ def build_stopline_dense_targets(
     output_hw: tuple[int, int] = ROADMARK_DENSE_OUTPUT_HW,
     center_radius: int = 2,
     center_span: int = 6,
+    haf_band_radius: float = 2.0,
 ) -> dict[str, torch.Tensor]:
     from .target_encoder import _encode_stop_line_rows, _sample_stop_line_points
 
@@ -238,9 +259,18 @@ def build_stopline_dense_targets(
     center_offset = torch.zeros((2, output_h, output_w), dtype=torch.float32)
     angle = torch.zeros((2, output_h, output_w), dtype=torch.float32)
     half_length = torch.zeros((1, output_h, output_w), dtype=torch.float32)
+    haf_endpoint = torch.zeros((4, output_h, output_w), dtype=torch.float32)
+    haf_valid = torch.zeros((1, output_h, output_w), dtype=torch.float32)
+    haf_ignore = torch.zeros((1, output_h, output_w), dtype=torch.float32)
+    haf_best_distance_sq = torch.full((output_h, output_w), float("inf"), dtype=torch.float32)
 
     if source_enabled:
-        for row in rows:
+        band_radius = max(0.0, float(haf_band_radius))
+        band_radius_sq = band_radius * band_radius
+        tie_epsilon = 0.25
+        for row_index_source, row in enumerate(rows):
+            if row_index_source < int(valid_tensor.numel()) and not bool(valid_tensor[row_index_source]):
+                continue
             points = _sample_stop_line_points(row.get("points_xy", []))
             if points.shape[0] < 2:
                 continue
@@ -268,6 +298,29 @@ def build_stopline_dense_targets(
             angle[0, row_index, col] = float(delta[0] / norm)
             angle[1, row_index, col] = float(delta[1] / norm)
             half_length[0, row_index, col] = float(norm * 0.5 * float(output_w) / float(NETWORK_HW[1]))
+            scaled_points = _scale_points_to_output(torch.stack([start, end], dim=0), output_hw=output_hw)
+            scaled_start = scaled_points[0]
+            scaled_end = scaled_points[1]
+            min_col = max(0, int(torch.floor(torch.minimum(scaled_start[0], scaled_end[0]) - band_radius).item()))
+            max_col = min(output_w - 1, int(torch.ceil(torch.maximum(scaled_start[0], scaled_end[0]) + band_radius).item()))
+            min_row = max(0, int(torch.floor(torch.minimum(scaled_start[1], scaled_end[1]) - band_radius).item()))
+            max_row = min(output_h - 1, int(torch.ceil(torch.maximum(scaled_start[1], scaled_end[1]) + band_radius).item()))
+            for target_row in range(min_row, max_row + 1):
+                for target_col in range(min_col, max_col + 1):
+                    dist_sq = _point_segment_distance_sq(float(target_col), float(target_row), scaled_start, scaled_end)
+                    if dist_sq > band_radius_sq:
+                        continue
+                    previous = float(haf_best_distance_sq[target_row, target_col].item())
+                    if dist_sq + 1.0e-6 < previous - tie_epsilon:
+                        point = torch.tensor([float(target_col), float(target_row)], dtype=torch.float32)
+                        haf_endpoint[0:2, target_row, target_col] = scaled_start - point
+                        haf_endpoint[2:4, target_row, target_col] = scaled_end - point
+                        haf_valid[0, target_row, target_col] = 1.0
+                        haf_ignore[0, target_row, target_col] = 0.0
+                        haf_best_distance_sq[target_row, target_col] = float(dist_sq)
+                    elif abs(dist_sq - previous) <= tie_epsilon and previous < float("inf"):
+                        haf_valid[0, target_row, target_col] = 0.0
+                        haf_ignore[0, target_row, target_col] = 1.0
 
     return {
         "stop_line_vector_targets": encoded,
@@ -276,6 +329,9 @@ def build_stopline_dense_targets(
         "stop_line_center_offset": center_offset,
         "stop_line_angle": angle,
         "stop_line_half_length": half_length,
+        "stop_line_haf_endpoint": haf_endpoint,
+        "stop_line_haf_valid": haf_valid,
+        "stop_line_haf_ignore": haf_ignore,
     }
 
 

@@ -212,6 +212,50 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertEqual(len(decoded[0]["crosswalks"]), 1)
         self.assertEqual(len(decoded[0]["crosswalks"][0]["points_xy"]), CROSSWALK_POINT_COUNT)
 
+    def test_stopline_haf_consensus_decodes_support_voted_segment(self) -> None:
+        from model.data.roadmark_v2_targets import build_stopline_dense_targets
+
+        targets = build_stopline_dense_targets(
+            [{"points_xy": [[100.0, 500.0], [340.0, 500.0]]}],
+            [True],
+        )
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        h, w = targets["stop_line_haf_valid"].shape[-2:]
+        haf_valid_logits = torch.full((1, 1, h, w), -8.0, dtype=torch.float32)
+        haf_valid_logits[0] = torch.where(
+            targets["stop_line_haf_valid"] > 0.5,
+            torch.full_like(targets["stop_line_haf_valid"], 8.0),
+            haf_valid_logits[0],
+        )
+        predictions["stop_line_haf_endpoint"] = targets["stop_line_haf_endpoint"].unsqueeze(0)
+        predictions["stop_line_haf_valid_logits"] = haf_valid_logits
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                lane_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.999,
+                stop_line_haf_enabled=True,
+                stop_line_haf_valid_threshold=0.90,
+                stop_line_haf_min_votes=2,
+                stop_line_haf_cluster_endpoint_tolerance=0.25,
+                stop_line_haf_max_endpoint_covariance=0.01,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["stop_lines"]), 1)
+        points = decoded[0]["stop_lines"][0]["points_xy"]
+        self.assertAlmostEqual(points[0][0], 100.0, places=1)
+        self.assertAlmostEqual(points[0][1], 500.0, places=1)
+        self.assertAlmostEqual(points[-1][0], 340.0, places=1)
+        self.assertAlmostEqual(points[-1][1], 500.0, places=1)
+
     def test_postprocess_raises_when_torchvision_batched_nms_fails_by_default(self) -> None:
         predictions = _make_prediction_batch()
         torchvision_module = ModuleType("torchvision")

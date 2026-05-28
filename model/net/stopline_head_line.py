@@ -73,6 +73,8 @@ class StopLineDenseLocalHead(nn.Module):
         self.center_offset = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.angle = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.half_length = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.haf_endpoint = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
+        self.haf_valid_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
 
     def forward(
         self,
@@ -137,6 +139,8 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_center_offset": center_offset,
             "stop_line_angle": angle,
             "stop_line_half_length": half_length,
+            "stop_line_haf_endpoint": self.haf_endpoint(dense_feat),
+            "stop_line_haf_valid_logits": self.haf_valid_logits(dense_feat),
             "stop_line_feature": line_feat,
         }
 

@@ -177,6 +177,39 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertTrue(torch.all(encoded["stop_line"][lane_index, 1:, :] == 0.0))
             self.assertTrue(torch.all(encoded["crosswalk"][lane_index, 1:, :] == 0.0))
 
+    def test_stopline_haf_targets_vote_full_segment_from_support_pixels(self) -> None:
+        from model.data.roadmark_v2_targets import NETWORK_HW, ROADMARK_DENSE_OUTPUT_HW, build_stopline_dense_targets
+
+        targets = build_stopline_dense_targets(
+            [{"points_xy": [[100.0, 500.0], [340.0, 500.0]]}],
+            [True],
+        )
+
+        valid = targets["stop_line_haf_valid"][0]
+        endpoint = targets["stop_line_haf_endpoint"]
+        self.assertGreater(int(valid.sum().item()), 0)
+        rows, cols = torch.nonzero(valid > 0.5, as_tuple=True)
+        points = torch.stack([cols.to(dtype=torch.float32), rows.to(dtype=torch.float32)], dim=0)
+        recovered_start = points + endpoint[0:2, rows, cols]
+        recovered_end = points + endpoint[2:4, rows, cols]
+        output_h, output_w = ROADMARK_DENSE_OUTPUT_HW
+        expected_start = torch.tensor(
+            [
+                100.0 * float(output_w) / float(NETWORK_HW[1]),
+                500.0 * float(output_h) / float(NETWORK_HW[0]),
+            ],
+            dtype=torch.float32,
+        ).view(2, 1)
+        expected_end = torch.tensor(
+            [
+                340.0 * float(output_w) / float(NETWORK_HW[1]),
+                500.0 * float(output_h) / float(NETWORK_HW[0]),
+            ],
+            dtype=torch.float32,
+        ).view(2, 1)
+        self.assertLess(float((recovered_start - expected_start).abs().max().item()), 1.0e-5)
+        self.assertLess(float((recovered_end - expected_end).abs().max().item()), 1.0e-5)
+
     def test_encoded_collate_matches_manual_encode(self) -> None:
         from model.data import encode_pv26_batch
 

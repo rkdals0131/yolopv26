@@ -359,6 +359,9 @@ def encode_pv26_batch(
     stop_line_center_offset = torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_angle = torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_half_length = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_haf_endpoint = torch.zeros((batch_size, 4, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_haf_valid = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_haf_ignore = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_mask = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_centerline = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     crosswalk_mask = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
@@ -516,6 +519,9 @@ def encode_pv26_batch(
             stop_line_center_offset[batch_index] = stop_line_v2["stop_line_center_offset"]
             stop_line_angle[batch_index] = stop_line_v2["stop_line_angle"]
             stop_line_half_length[batch_index] = stop_line_v2["stop_line_half_length"]
+            stop_line_haf_endpoint[batch_index] = stop_line_v2["stop_line_haf_endpoint"]
+            stop_line_haf_valid[batch_index] = stop_line_v2["stop_line_haf_valid"]
+            stop_line_haf_ignore[batch_index] = stop_line_v2["stop_line_haf_ignore"]
             stop_line_mask_targets = build_stopline_mask_targets(
                 sample_lane["stop_lines"],
                 sample_valid["stop_line"],
@@ -551,6 +557,9 @@ def encode_pv26_batch(
         "stop_line_center_offset": stop_line_center_offset,
         "stop_line_angle": stop_line_angle,
         "stop_line_half_length": stop_line_half_length,
+        "stop_line_haf_endpoint": stop_line_haf_endpoint,
+        "stop_line_haf_valid": stop_line_haf_valid,
+        "stop_line_haf_ignore": stop_line_haf_ignore,
         "stop_line_mask": stop_line_mask,
         "stop_line_centerline": stop_line_centerline,
         "crosswalk_mask": crosswalk_mask,
