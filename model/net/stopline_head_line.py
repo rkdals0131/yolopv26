@@ -89,6 +89,22 @@ class StopLineDenseLocalHead(nn.Module):
             nn.SiLU(inplace=True),
             nn.Linear(self.hidden_dim, 1),
         )
+        self.axis_profile_sample_count = 33
+        self.axis_profile_radius_px = 240.0
+        self.axis_profile_normal_radius_px = 48.0
+        self.axis_profile_encoder = nn.Sequential(
+            nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm1d(self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(self.hidden_dim),
+            nn.SiLU(inplace=True),
+        )
+        self.axis_segment_query_mlp = nn.Sequential(
+            nn.Linear(self.hidden_dim * 3 + 5, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, 4),
+        )
 
     def forward(
         self,
@@ -139,6 +155,11 @@ class StopLineDenseLocalHead(nn.Module):
             selector_feat,
             segment_seed_logits,
         )
+        axis_segment_logits, axis_segment_points, axis_segment_verifier_logits = self._decode_axis_profile_segment_set(
+            selector_feat,
+            segment_seed_logits,
+            angle,
+        )
         denoise_logits, denoise_points, denoise_targets, denoise_valid = self._decode_denoised_segment_set(
             selector_feat,
             encoded=encoded,
@@ -167,6 +188,10 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_segment_logits": segment_logits,
             "stop_line_segment_points": segment_points,
             "stop_line_segment_verifier_logits": segment_verifier_logits,
+            "stop_line_axis_segment_seed_logits": segment_seed_logits,
+            "stop_line_axis_segment_logits": axis_segment_logits,
+            "stop_line_axis_segment_points": axis_segment_points,
+            "stop_line_axis_segment_verifier_logits": axis_segment_verifier_logits,
             "stop_line_segment_denoise_logits": denoise_logits,
             "stop_line_segment_denoise_points": denoise_points,
             "stop_line_segment_denoise_targets": denoise_targets,
@@ -200,6 +225,107 @@ class StopLineDenseLocalHead(nn.Module):
         query_raw = self.segment_query_mlp(torch.cat([seed_features, seed_xy], dim=-1))
         segment_logits = query_raw[..., 0] + top_scores
         segment_points = torch.sigmoid(query_raw[..., 1:5]).view(batch_size, query_count, 2, 2)
+        segment_verifier_logits = self._verify_segments(feature_map, seed_features, segment_points)
+        if query_count == int(self.output_queries):
+            return segment_logits, segment_points, segment_verifier_logits
+        padded_logits = segment_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_verifier_logits = segment_verifier_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_points = segment_points.new_zeros((batch_size, int(self.output_queries), 2, 2))
+        padded_logits[:, :query_count] = segment_logits
+        padded_verifier_logits[:, :query_count] = segment_verifier_logits
+        padded_points[:, :query_count] = segment_points
+        return padded_logits, padded_points, padded_verifier_logits
+
+    def _top_seed_features(
+        self,
+        feature_map: torch.Tensor,
+        seed_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, channels, height, width = feature_map.shape
+        flat_seed_logits = seed_logits.flatten(2).squeeze(1)
+        query_count = min(int(self.output_queries), int(flat_seed_logits.shape[1]))
+        top_scores, top_indices = torch.topk(flat_seed_logits, k=query_count, dim=1)
+        flat_features = feature_map.flatten(2).transpose(1, 2)
+        gather_index = top_indices.unsqueeze(-1).expand(-1, -1, channels)
+        seed_features = torch.gather(flat_features, dim=1, index=gather_index)
+        seed_rows = torch.div(top_indices, width, rounding_mode="floor")
+        seed_cols = top_indices.remainder(width)
+        denom_x = max(float(width - 1), 1.0)
+        denom_y = max(float(height - 1), 1.0)
+        seed_xy = torch.stack(
+            [
+                seed_cols.to(dtype=feature_map.dtype) / denom_x,
+                seed_rows.to(dtype=feature_map.dtype) / denom_y,
+            ],
+            dim=-1,
+        )
+        return top_scores, top_indices, seed_features, seed_xy
+
+    def _decode_axis_profile_segment_set(
+        self,
+        feature_map: torch.Tensor,
+        seed_logits: torch.Tensor,
+        angle: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, channels, _height, _width = feature_map.shape
+        top_scores, top_indices, seed_features, seed_xy = self._top_seed_features(feature_map, seed_logits)
+        query_count = int(seed_xy.shape[1])
+        if query_count == 0:
+            logits = feature_map.new_full((batch_size, int(self.output_queries)), -10.0)
+            points = feature_map.new_zeros((batch_size, int(self.output_queries), 2, 2))
+            verifier = feature_map.new_full((batch_size, int(self.output_queries)), -10.0)
+            return logits, points, verifier
+        flat_angle = angle.flatten(2).transpose(1, 2)
+        angle_gather_index = top_indices.unsqueeze(-1).expand(-1, -1, 2)
+        seed_axis = torch.gather(flat_angle, dim=1, index=angle_gather_index)
+        seed_axis = F.normalize(seed_axis, dim=-1, eps=1.0e-6)
+        offsets = torch.linspace(
+            -float(self.axis_profile_radius_px),
+            float(self.axis_profile_radius_px),
+            steps=int(self.axis_profile_sample_count),
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        ).view(1, 1, int(self.axis_profile_sample_count), 1)
+        network_scale = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 1, 2)
+        profile_xy = seed_xy.unsqueeze(2) + seed_axis.unsqueeze(2) * offsets / network_scale
+        profile_grid = profile_xy.clamp(0.0, 1.0).mul(2.0).sub(1.0).view(
+            batch_size,
+            query_count * int(self.axis_profile_sample_count),
+            1,
+            2,
+        )
+        sampled = F.grid_sample(
+            feature_map,
+            profile_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        sampled = sampled.view(batch_size, channels, query_count, int(self.axis_profile_sample_count))
+        profile = sampled.permute(0, 2, 1, 3).reshape(
+            batch_size * query_count,
+            channels,
+            int(self.axis_profile_sample_count),
+        )
+        encoded_profile = self.axis_profile_encoder(profile)
+        encoded_profile = encoded_profile.view(batch_size, query_count, channels, int(self.axis_profile_sample_count))
+        profile_mean = encoded_profile.mean(dim=-1)
+        profile_max = encoded_profile.amax(dim=-1)
+        query_input = torch.cat(
+            [seed_features, profile_mean, profile_max, seed_xy, seed_axis, top_scores.unsqueeze(-1)],
+            dim=-1,
+        )
+        query_raw = self.axis_segment_query_mlp(query_input)
+        segment_logits = query_raw[..., 0] + top_scores
+        along_delta_px = torch.tanh(query_raw[..., 1:2]) * float(self.axis_profile_radius_px)
+        normal_delta_px = torch.tanh(query_raw[..., 2:3]) * float(self.axis_profile_normal_radius_px)
+        half_length_px = F.softplus(query_raw[..., 3:4]) * 160.0 + 8.0
+        normal_axis = torch.stack([-seed_axis[..., 1], seed_axis[..., 0]], dim=-1)
+        network_xy = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 2)
+        center_xy = seed_xy + (seed_axis * along_delta_px + normal_axis * normal_delta_px) / network_xy
+        start_xy = center_xy - seed_axis * half_length_px / network_xy
+        end_xy = center_xy + seed_axis * half_length_px / network_xy
+        segment_points = torch.stack([start_xy, end_xy], dim=2).clamp(0.0, 1.0)
         segment_verifier_logits = self._verify_segments(feature_map, seed_features, segment_points)
         if query_count == int(self.output_queries):
             return segment_logits, segment_points, segment_verifier_logits

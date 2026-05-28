@@ -88,6 +88,10 @@ class PV26PostprocessConfig:
     stop_line_segment_set_score_threshold: float = 0.50
     stop_line_segment_set_max_segments: int = 3
     stop_line_segment_verifier_score_weight: float = 0.0
+    stop_line_axis_segment_set_enabled: bool = False
+    stop_line_axis_segment_set_score_threshold: float = 0.50
+    stop_line_axis_segment_set_max_segments: int = 3
+    stop_line_axis_segment_verifier_score_weight: float = 0.0
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -1875,10 +1879,17 @@ def _decode_stop_line_rows(
     segment_logits: torch.Tensor | None = None,
     segment_points: torch.Tensor | None = None,
     segment_verifier_logits: torch.Tensor | None = None,
+    axis_segment_logits: torch.Tensor | None = None,
+    axis_segment_points: torch.Tensor | None = None,
+    axis_segment_verifier_logits: torch.Tensor | None = None,
     segment_set_enabled: bool = False,
     segment_set_score_threshold: float = 0.50,
     segment_set_max_segments: int = 3,
     segment_verifier_score_weight: float = 0.0,
+    axis_segment_set_enabled: bool = False,
+    axis_segment_set_score_threshold: float = 0.50,
+    axis_segment_set_max_segments: int = 3,
+    axis_segment_verifier_score_weight: float = 0.0,
     haf_enabled: bool = False,
     haf_valid_threshold: float = 0.50,
     haf_min_votes: int = 4,
@@ -1905,6 +1916,18 @@ def _decode_stop_line_rows(
             score_threshold=float(segment_set_score_threshold),
             max_segments=int(segment_set_max_segments),
             verifier_score_weight=float(segment_verifier_score_weight),
+        )
+    if bool(axis_segment_set_enabled):
+        segment_set_decoded.extend(
+            _decode_stopline_segment_set(
+                segment_logits=axis_segment_logits,
+                segment_points=axis_segment_points,
+                segment_verifier_logits=axis_segment_verifier_logits,
+                meta=meta,
+                score_threshold=float(axis_segment_set_score_threshold),
+                max_segments=int(axis_segment_set_max_segments),
+                verifier_score_weight=float(axis_segment_verifier_score_weight),
+            )
         )
     if bool(haf_enabled):
         decoded = _decode_stopline_haf_consensus_segments(
@@ -1945,7 +1968,9 @@ def _decode_stop_line_rows(
             if segment_set_decoded:
                 merged = _dedupe_stop_line_predictions(decoded + segment_set_decoded)
                 merged.sort(key=_stopline_prediction_sort_key, reverse=True)
-                return merged[: max(1, int(max_components), int(segment_set_max_segments))]
+                return merged[
+                    : max(1, int(max_components), int(segment_set_max_segments), int(axis_segment_set_max_segments))
+                ]
             return decoded
     transform = transform_from_meta(meta)
     predictions: list[dict[str, Any]] = []
@@ -1981,7 +2006,7 @@ def _decode_stop_line_rows(
     if not segment_set_decoded:
         return predictions
     predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
-    return predictions[: max(1, int(max_components), int(segment_set_max_segments))]
+    return predictions[: max(1, int(max_components), int(segment_set_max_segments), int(axis_segment_set_max_segments))]
 
 
 def _decode_crosswalk_rows(
@@ -2074,6 +2099,9 @@ def postprocess_pv26_batch(
     stop_line_segment_logits = predictions.get("stop_line_segment_logits")
     stop_line_segment_points = predictions.get("stop_line_segment_points")
     stop_line_segment_verifier_logits = predictions.get("stop_line_segment_verifier_logits")
+    stop_line_axis_segment_logits = predictions.get("stop_line_axis_segment_logits")
+    stop_line_axis_segment_points = predictions.get("stop_line_axis_segment_points")
+    stop_line_axis_segment_verifier_logits = predictions.get("stop_line_axis_segment_verifier_logits")
     crosswalk_mask_logits = predictions.get("crosswalk_mask_logits")
     crosswalk_center_logits = predictions.get("crosswalk_center_logits")
     feature_shapes = predictions.get("det_feature_shapes")
@@ -2198,10 +2226,29 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_segment_verifier_logits, torch.Tensor)
                         else None
                     ),
+                    axis_segment_logits=(
+                        stop_line_axis_segment_logits[batch_index]
+                        if isinstance(stop_line_axis_segment_logits, torch.Tensor)
+                        else None
+                    ),
+                    axis_segment_points=(
+                        stop_line_axis_segment_points[batch_index]
+                        if isinstance(stop_line_axis_segment_points, torch.Tensor)
+                        else None
+                    ),
+                    axis_segment_verifier_logits=(
+                        stop_line_axis_segment_verifier_logits[batch_index]
+                        if isinstance(stop_line_axis_segment_verifier_logits, torch.Tensor)
+                        else None
+                    ),
                     segment_set_enabled=config.stop_line_segment_set_enabled,
                     segment_set_score_threshold=config.stop_line_segment_set_score_threshold,
                     segment_set_max_segments=config.stop_line_segment_set_max_segments,
                     segment_verifier_score_weight=config.stop_line_segment_verifier_score_weight,
+                    axis_segment_set_enabled=config.stop_line_axis_segment_set_enabled,
+                    axis_segment_set_score_threshold=config.stop_line_axis_segment_set_score_threshold,
+                    axis_segment_set_max_segments=config.stop_line_axis_segment_set_max_segments,
+                    axis_segment_verifier_score_weight=config.stop_line_axis_segment_verifier_score_weight,
                     haf_enabled=config.stop_line_haf_enabled,
                     haf_valid_threshold=config.stop_line_haf_valid_threshold,
                     haf_min_votes=config.stop_line_haf_min_votes,

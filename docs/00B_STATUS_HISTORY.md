@@ -12748,3 +12748,87 @@ Verification:
 - Crosswalk remains above `0.60` on broader eval but regresses below retained `0.6187`, so this branch is not a useful retention checkpoint.
 - Do not continue this exact branch as task-adapter LR, gate-init, adapter depth, loss-weight, or epoch-count tuning.
 - Reopen training-exposure work only with a changed emit contract or routing mechanism that first moves TP/FP/FN on lane or stop-line without sacrificing the retained hull crosswalk path.
+
+## 256. 2026-05-29 Stop-line axis-profile segment head: trainable but exact-negative
+
+맥락:
+
+- Stop-line remains bottlenecked by no-GT along-axis midpoint/extent recovery.
+- The older axis-profile family was read-only/runtime replay and either tied exact references or regressed broader validation.
+- The dense-seeded segment-set family was trainable but still one-shot endpoint emission from top-K seeds, and metric-quality verifier supervision reduced FP without enough TP recovery.
+- This branch tested a materially different model-side contract: sample a feature profile along the predicted stop-line axis at each seed, then let the head infer center shift and half-length from profile context.
+- The user explicitly asked for actual training, post-training evaluation, broader/larger dataset use where justified, and smart storage handling without dataset copies.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-profile-segment-head`.
+- Added opt-in axis-profile segment outputs to `StopLineDenseLocalHead`:
+  - `stop_line_axis_segment_seed_logits`;
+  - `stop_line_axis_segment_logits`;
+  - `stop_line_axis_segment_points`;
+  - `stop_line_axis_segment_verifier_logits`.
+- The decoder samples `33` feature points over a `240px` axis radius around each selected seed, gathers predicted local angle, and predicts along-axis center delta, normal delta, and half-length.
+- Added axis segment-set and verifier losses through `PV26MultiTaskLoss`:
+  - `stopline_axis_segment_set_aux_weight`;
+  - `stopline_axis_segment_verifier_aux_weight`.
+- Added runtime config for axis segment-set decoding:
+  - `stop_line_axis_segment_set_enabled`;
+  - `stop_line_axis_segment_set_score_threshold`;
+  - `stop_line_axis_segment_set_max_segments`;
+  - `stop_line_axis_segment_verifier_score_weight`.
+- Added lane60 probe experiment `stopline_axis_profile_segment_head`.
+- Kept lane decode `row_scan_tangent` and crosswalk `crosswalk_polygon_mode=hull`.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Storage handling deleted the smoke run, pruned duplicate task-best/last checkpoints and TensorBoard files, removed temporary YOLO weights, and retained only the main best checkpoint, history, summaries, and exact eval export. The retained main run is `119M`.
+
+Training artifacts:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_profile_segment_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_070123`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_profile_segment_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_070336`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Exact-val128 eval export: `analysis_exports/exact_val128_epoch2/metrics.csv` and `summary.json`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+Smoke result:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | ---: | ---: |
+| val4 after 32 train batches | `0.5344` | `0.0000` | `0.7273` |
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6014781439` | `0.5419` | `0.2376` | `0.6826` | `1061 / 520 / 1274` | `12 / 34 / 43` | `57 / 27 / 26` |
+| 2 | `0.6149052236` | `0.5581` | `0.4144` | `0.5731` | `1121 / 506 / 1269` | `23 / 28 / 37` | `49 / 41 / 32` |
+| 3 | `0.6311550114` | `0.5514` | `0.4571` | `0.6566` | `1033 / 431 / 1250` | `24 / 28 / 29` | `65 / 27 / 41` |
+
+Checkpoint eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt` | `0.6185894834` | `0.5568` | `0.4425` | `0.5890` | `1095 / 448 / 1295` | `25 / 28 / 35` | `48 / 34 / 33` |
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_run_pv26_train.py`.
+- `git diff --check`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- Real CUDA smoke train: `1` epoch, `32` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 epoch-2 checkpoint eval for `best.pt`.
+
+판단:
+
+- The axis-profile segment head is a real trainable architecture/postprocess contract, not another threshold-only replay.
+- It directly targets along-axis center/extent using sampled feature context, but exact-val128 stop-line `0.4425`, TP/FP/FN `25 / 28 / 35`, remains below:
+  - projection-competition exact `0.5167`, `31 / 29 / 29`;
+  - simple seeded segment-set task-best exact `0.4737`, `27 / 27 / 33`;
+  - metric-quality verifier exact `0.4660`, `24 / 26 / 29`.
+- Broader-val512 was intentionally skipped to save compute and storage because the exact gate failed.
+- Do not continue this exact branch as axis-profile radius, sample-count, aux/verifier loss weight, score threshold, max-segment, head-LR, or longer-run tuning.
+- Reopen axis-profile-segment work only if candidate coverage or midpoint/extent signal changes enough to move TP/FP/FN on smoke/exact before broader validation.

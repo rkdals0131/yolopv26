@@ -278,6 +278,17 @@ Latest task-specific adapter routing train/eval result:
 - broader-val512 checkpoint eval: objective `0.6109086167`, lane/stop/cross F1 `0.5414 / 0.4142 / 0.6119`, TP/FP/FN lane `4236 / 1936 / 5241`, stop-line `99 / 108 / 172`, crosswalk `231 / 129 / 164`.
 - 판단: per-task routing is trainable and storage-clean, but it regresses below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line, and exact stop-line remains below projection-comp exact `0.5167`. Do not continue this exact branch as task-adapter LR, gate-init, depth, loss-weight, or epoch-count tuning. Reopen only with a changed lane/stop-line emit contract that first moves TP/FP/FN.
 
+Latest stop-line axis-profile segment head train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-axis-profile-segment-head`.
+- changed axis: keep the retained row-scan/tangent lane contract and hull crosswalk decode, but add a model-side stop-line axis-profile segment branch. The branch samples feature profiles along each predicted stop-line seed axis and predicts no-GT center shift, normal shift, half-length, segment confidence, and verifier score. This is not the older read-only axis-profile postprocess replay; it is a trainable emit contract.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created. The smoke run was deleted, duplicate task-best/last checkpoints and TensorBoard files were pruned, temporary YOLO weights were removed, and the retained main run is `119M`.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_profile_segment_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_070336`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- best training epoch `3`: objective `0.6311550114`, lane/stop/cross F1 `0.5514 / 0.4571 / 0.6566`, TP/FP/FN lane `1033 / 431 / 1250`, stop-line `24 / 28 / 29`, crosswalk `65 / 27 / 41`.
+- exact-val128 checkpoint eval: objective `0.6185894834`, lane/stop/cross F1 `0.5568 / 0.4425 / 0.5890`, TP/FP/FN lane `1095 / 448 / 1295`, stop-line `25 / 28 / 35`, crosswalk `48 / 34 / 33`.
+- 판단: the axis-profile segment head is trainable and directly targets the along-axis midpoint/extent failure, but exact stop-line remains below projection-comp exact `0.5167`, simple seeded segment-set task-best `0.4737`, and metric-quality verifier exact `0.4660`. Broader val512 was intentionally skipped because the exact gate failed. Do not continue this exact branch as radius/sample-count, aux/verifier weight, segment threshold, max-segment, head-LR, or epoch-count tuning. Reopen only with changed candidate coverage or a different no-GT midpoint/extent signal that first moves exact TP/FP/FN.
+
 Latest lane feature-ROI repair replay result:
 
 - branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.

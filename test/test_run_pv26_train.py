@@ -155,8 +155,14 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             },
                             "stopline_selector_target_mode": "rowx_band",
                             "stopline_segment_denoise_aux_weight": 0.8,
+                            "stopline_axis_segment_set_aux_weight": 0.6,
+                            "stopline_axis_segment_verifier_aux_weight": 0.4,
                             "stopline_segment_verifier_target_mode": "metric_quality",
                             "stopline_segment_verifier_quality_tau_px": 18.0,
+                            "stop_line_axis_segment_set_enabled": True,
+                            "stop_line_axis_segment_set_score_threshold": 0.57,
+                            "stop_line_axis_segment_set_max_segments": 5,
+                            "stop_line_axis_segment_verifier_score_weight": 0.75,
                             "stop_line_component_gate_source": "selector",
                             "distill_enabled": True,
                             "distill_teacher_checkpoint": "runs/teacher.pt",
@@ -275,8 +281,14 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)
         self.assertEqual(scenario.train_defaults.stopline_selector_target_mode, "rowx_band")
         self.assertAlmostEqual(scenario.train_defaults.stopline_segment_denoise_aux_weight, 0.8)
+        self.assertAlmostEqual(scenario.train_defaults.stopline_axis_segment_set_aux_weight, 0.6)
+        self.assertAlmostEqual(scenario.train_defaults.stopline_axis_segment_verifier_aux_weight, 0.4)
         self.assertEqual(scenario.train_defaults.stopline_segment_verifier_target_mode, "metric_quality")
         self.assertAlmostEqual(scenario.train_defaults.stopline_segment_verifier_quality_tau_px, 18.0)
+        self.assertTrue(scenario.train_defaults.stop_line_axis_segment_set_enabled)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_axis_segment_set_score_threshold, 0.57)
+        self.assertEqual(scenario.train_defaults.stop_line_axis_segment_set_max_segments, 5)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_axis_segment_verifier_score_weight, 0.75)
         self.assertEqual(scenario.train_defaults.stop_line_component_gate_source, "selector")
         self.assertTrue(scenario.train_defaults.distill_enabled)
         self.assertEqual(scenario.train_defaults.distill_teacher_checkpoint, "runs/teacher.pt")
