@@ -12564,3 +12564,76 @@ Verification:
 - Do not broaden this checkpoint to val512.
 - Do not continue this exact branch as denoise aux-weight, jitter amount, verifier-score-weight, segment-score threshold, max-segment, head-LR, or epoch-count tuning.
 - Reopen segment-set only if runtime candidate coverage changes materially first, for example a seed/objectness contract that recovers no-oracle positives before verifier/ranking, or a non-one-shot field-to-set generator with explicit FP-control evidence.
+
+## 253. 2026-05-29 Stop-line metric-quality segment verifier: lower FP, still below projection
+
+맥락:
+
+- The previous segment-aligned verifier trained its verifier score against matched-query objectness, which can mark a geometrically poor Hungarian assignment as positive.
+- This branch tested a stronger verifier target without changing the runtime candidate generator: each segment verifier target is a soft endpoint-distance quality value relative to the nearest GT segment.
+- The goal was to see whether metric-aware verifier supervision could control FP enough to make the dense-seeded segment-set contract useful.
+- The user explicitly asked for actual training/evaluation, larger-scope data usage, and smart disk handling without copying datasets.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-segment-metric-quality-verifier`.
+- Added opt-in loss/config fields:
+  - `stopline_segment_verifier_target_mode`, default `matched_objectness`.
+  - `stopline_segment_verifier_quality_tau_px`, default `24.0`.
+- Added `_stop_line_segment_set_loss(... verifier_target_mode="metric_quality")`, where verifier labels become `exp(-(endpoint_distance_px / tau)^2)`.
+- Wired the fields through `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `PV26MultiTaskLoss.export_config()`.
+- Added lane60 probe experiment `stopline_segment_metric_quality_verifier`.
+- Kept lane decode `row_scan_tangent` and crosswalk `crosswalk_polygon_mode=hull`.
+- Runtime still uses no-GT dense-seeded segment-set outputs; the change is verifier supervision only.
+
+Training artifacts:
+
+- Smoke run deleted after main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_quality_verifier_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_054553`.
+- Retained main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_quality_verifier_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_054808`.
+- Retained checkpoint: `phase_4/checkpoints/best.pt`.
+- Retained exact eval export: `analysis_exports/exact_val128_epoch3_best/metrics.csv` and `summary.json`.
+- Storage: duplicate task-best/last checkpoints, TensorBoard files, the smoke run, and temporary `yolo26n.pt` / `yolo26s.pt` downloads were removed. The retained main run is `117M`.
+- Dataset handling: reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created.
+- Main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `3`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+Smoke result:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| val4 after 32 train batches | `0.5385` | `0.0000` | `0.7273` | `0 / 1 / 2` |
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5872129165` | `0.5363` | `0.2157` | `0.6750` | `1049 / 528 / 1286` | `11 / 36 / 44` | `54 / 23 / 29` |
+| 2 | `0.6205305851` | `0.5581` | `0.4425` | `0.5749` | `1104 / 462 / 1286` | `25 / 28 / 35` | `48 / 38 / 33` |
+| 3 | `0.6241388781` | `0.5502` | `0.4660` | `0.6294` | `1033 / 439 / 1250` | `24 / 26 / 29` | `62 / 29 / 44` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch-3, main `best.pt` | `0.5502` | `0.4660` | `0.6294` | `1033 / 439 / 1250` | `24 / 26 / 29` | `62 / 29 / 44` |
+
+Verification:
+
+- `python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train: `1` epoch, `32` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Main `best.pt` exact-val128 epoch-3 checkpoint eval with `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- The implementation is valid infrastructure: the verifier target is now tied to endpoint distance instead of merely being the assigned Hungarian query.
+- It improves exact FP versus the matched-query verifier (`42 -> 26`) but does not recover enough TP (`23 -> 24`), so it remains below:
+  - projection-competition exact `0.5167`, `31 / 29 / 29`;
+  - simple seeded segment-set task-best exact `0.4737`, `27 / 27 / 33`.
+- The main training objective crossing `0.6241` is not meaningful for the all-task target because stop-line remains below the projection reference and lane also regresses versus the retained current composite.
+- Do not broaden this checkpoint to val512.
+- Do not continue this exact branch as quality-tau, verifier-score-weight, segment-score threshold, max-segment, head-LR, or epoch-count tuning.
+- Reopen verifier-style work only with a runtime candidate generator that first recovers no-oracle positives, or with a verifier contract that changes emitted candidate coverage instead of only scoring the same top-K segment proposals.

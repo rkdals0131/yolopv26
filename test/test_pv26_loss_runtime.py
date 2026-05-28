@@ -360,10 +360,14 @@ class PV26LossRuntimeTests(unittest.TestCase):
             stopline_segment_set_aux_weight=1.0,
             stopline_segment_verifier_aux_weight=1.0,
             stopline_segment_denoise_aux_weight=1.0,
+            stopline_segment_verifier_target_mode="metric_quality",
+            stopline_segment_verifier_quality_tau_px=18.0,
         )
         losses = criterion(predictions, encoded)
 
         self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertEqual(criterion.export_config()["stopline_segment_verifier_target_mode"], "metric_quality")
+        self.assertAlmostEqual(criterion.export_config()["stopline_segment_verifier_quality_tau_px"], 18.0)
         losses["total"].backward()
         self.assertIsNotNone(predictions["stop_line_segment_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_verifier_logits"].grad)

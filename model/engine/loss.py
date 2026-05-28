@@ -1186,6 +1186,8 @@ def _stop_line_segment_set_loss(
     encoded: dict[str, Any],
     fallback_tensor: torch.Tensor,
     verifier_aux_weight: float = 0.0,
+    verifier_target_mode: str = "matched_objectness",
+    verifier_quality_tau_px: float = 24.0,
 ) -> torch.Tensor:
     if not isinstance(segment_logits, torch.Tensor) or not isinstance(segment_points, torch.Tensor):
         return _zero_graph(fallback_tensor)
@@ -1193,6 +1195,10 @@ def _stop_line_segment_set_loss(
         return _zero_graph(segment_logits, segment_points)
     device = segment_logits.device
     dtype = segment_logits.dtype
+    verifier_target_mode = str(verifier_target_mode).strip().lower()
+    if verifier_target_mode not in {"matched_objectness", "metric_quality"}:
+        raise ValueError(f"unsupported stop-line segment verifier target mode: {verifier_target_mode}")
+    verifier_quality_tau_px = max(float(verifier_quality_tau_px), 1.0e-6)
     stop_target = encoded["stop_line"].to(device=device, dtype=dtype)
     stop_valid = encoded["mask"]["stop_line_valid"].to(device=device, dtype=torch.bool)
     stop_source = encoded["mask"]["stop_line_source"].to(device=device, dtype=torch.bool)
@@ -1208,6 +1214,7 @@ def _stop_line_segment_set_loss(
         valid_count = int(valid_b.sum().item())
         point_loss = _zero_graph(points_b)
         verifier_loss = _zero_graph(points_b)
+        verifier_target = objectness_target
         if valid_count > 0:
             target_points = stop_target[batch_index, valid_b, 1:].view(valid_count, STOP_LINE_POINT_COUNT, 2)
             target_segments = torch.stack([target_points[:, 0], target_points[:, -1]], dim=1)
@@ -1233,6 +1240,23 @@ def _stop_line_segment_set_loss(
                     matched_flipped,
                     matched_direct,
                 )
+                if verifier_target_mode == "metric_quality":
+                    pred_pixels = pred_detached[:, None, :, :] * denom.view(1, 1, 1, 2)
+                    target_pixels = target_segments[None, :, :, :] * denom.view(1, 1, 1, 2)
+                    flipped_pixels = flipped_targets[None, :, :, :] * denom.view(1, 1, 1, 2)
+                    direct_endpoint_distance = torch.linalg.vector_norm(
+                        pred_pixels - target_pixels,
+                        dim=-1,
+                    ).mean(dim=-1)
+                    flipped_endpoint_distance = torch.linalg.vector_norm(
+                        pred_pixels - flipped_pixels,
+                        dim=-1,
+                    ).mean(dim=-1)
+                    min_endpoint_distance = torch.minimum(
+                        direct_endpoint_distance,
+                        flipped_endpoint_distance,
+                    ).amin(dim=1)
+                    verifier_target = torch.exp(-torch.square(min_endpoint_distance / verifier_quality_tau_px))
                 point_loss = F.smooth_l1_loss(matched_pred, matched_target, reduction="mean")
         objectness_loss = F.binary_cross_entropy_with_logits(logits_b, objectness_target, reduction="mean")
         if (
@@ -1242,7 +1266,7 @@ def _stop_line_segment_set_loss(
         ):
             verifier_loss = F.binary_cross_entropy_with_logits(
                 segment_verifier_logits[batch_index],
-                objectness_target,
+                verifier_target,
                 reduction="mean",
             )
         batch_losses.append(objectness_loss + float(verifier_aux_weight) * verifier_loss + 4.0 * point_loss)
@@ -1322,6 +1346,8 @@ def _stop_line_mask_loss_with_selector_weight(
     segment_set_aux_weight: float = 0.0,
     segment_verifier_aux_weight: float = 0.0,
     segment_denoise_aux_weight: float = 0.0,
+    segment_verifier_target_mode: str = "matched_objectness",
+    segment_verifier_quality_tau_px: float = 24.0,
 ) -> torch.Tensor:
     mask_logits = predictions.get("stop_line_mask_logits")
     center_logits = predictions.get("stop_line_center_logits")
@@ -1485,6 +1511,8 @@ def _stop_line_mask_loss_with_selector_weight(
             encoded=encoded,
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(segment_verifier_aux_weight),
+            verifier_target_mode=segment_verifier_target_mode,
+            verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
         )
     segment_denoise_loss = _zero_graph(mask_logits)
     if float(segment_denoise_aux_weight) > 0.0:
@@ -1873,6 +1901,8 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_segment_set_aux_weight: float = 0.0,
         stopline_segment_verifier_aux_weight: float = 0.0,
         stopline_segment_denoise_aux_weight: float = 0.0,
+        stopline_segment_verifier_target_mode: str = "matched_objectness",
+        stopline_segment_verifier_quality_tau_px: float = 24.0,
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
         distill_loss_weights: dict[str, float] | None = None,
@@ -1927,6 +1957,12 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_segment_set_aux_weight = float(stopline_segment_set_aux_weight)
         self.stopline_segment_verifier_aux_weight = float(stopline_segment_verifier_aux_weight)
         self.stopline_segment_denoise_aux_weight = float(stopline_segment_denoise_aux_weight)
+        self.stopline_segment_verifier_target_mode = str(stopline_segment_verifier_target_mode).strip().lower()
+        if self.stopline_segment_verifier_target_mode not in {"matched_objectness", "metric_quality"}:
+            raise ValueError(
+                f"unsupported stop-line segment verifier target mode: {self.stopline_segment_verifier_target_mode}"
+            )
+        self.stopline_segment_verifier_quality_tau_px = float(stopline_segment_verifier_quality_tau_px)
         self.distill_enabled = bool(distill_enabled)
         self.distill_teacher_mode = str(distill_teacher_mode)
         self.distill_normalize_mode = str(distill_normalize_mode)
@@ -2020,6 +2056,8 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_segment_set_aux_weight": float(self.stopline_segment_set_aux_weight),
             "stopline_segment_verifier_aux_weight": float(self.stopline_segment_verifier_aux_weight),
             "stopline_segment_denoise_aux_weight": float(self.stopline_segment_denoise_aux_weight),
+            "stopline_segment_verifier_target_mode": self.stopline_segment_verifier_target_mode,
+            "stopline_segment_verifier_quality_tau_px": float(self.stopline_segment_verifier_quality_tau_px),
             "loss_weights": dict(self.loss_weights),
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
@@ -2741,6 +2779,8 @@ class PV26MultiTaskLoss(nn.Module):
                 segment_set_aux_weight=float(self.stopline_segment_set_aux_weight),
                 segment_verifier_aux_weight=float(self.stopline_segment_verifier_aux_weight),
                 segment_denoise_aux_weight=float(self.stopline_segment_denoise_aux_weight),
+                segment_verifier_target_mode=self.stopline_segment_verifier_target_mode,
+                segment_verifier_quality_tau_px=float(self.stopline_segment_verifier_quality_tau_px),
             )
         stop_pred = prediction_dict["stop_line"]
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)

@@ -142,6 +142,8 @@ class TrainDefaultsConfig:
     stopline_segment_set_aux_weight: float = 0.0
     stopline_segment_verifier_aux_weight: float = 0.0
     stopline_segment_denoise_aux_weight: float = 0.0
+    stopline_segment_verifier_target_mode: str = "matched_objectness"
+    stopline_segment_verifier_quality_tau_px: float = 24.0
     stop_line_haf_enabled: bool = False
     stop_line_haf_valid_threshold: float = 0.50
     stop_line_haf_min_votes: int = 4
@@ -753,6 +755,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stopline_segment_denoise_aux_weight=_coerce_float(
             data.get("stopline_segment_denoise_aux_weight", defaults.stopline_segment_denoise_aux_weight),
             field_name="train_defaults.stopline_segment_denoise_aux_weight",
+        ),
+        stopline_segment_verifier_target_mode=_coerce_str(
+            data.get("stopline_segment_verifier_target_mode", defaults.stopline_segment_verifier_target_mode),
+            field_name="train_defaults.stopline_segment_verifier_target_mode",
+        ),
+        stopline_segment_verifier_quality_tau_px=_coerce_float(
+            data.get("stopline_segment_verifier_quality_tau_px", defaults.stopline_segment_verifier_quality_tau_px),
+            field_name="train_defaults.stopline_segment_verifier_quality_tau_px",
         ),
         stop_line_haf_enabled=_coerce_bool(
             data.get("stop_line_haf_enabled", defaults.stop_line_haf_enabled),

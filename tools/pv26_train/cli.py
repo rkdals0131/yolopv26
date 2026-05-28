@@ -595,6 +595,8 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_segment_set_aux_weight=train_config.stopline_segment_set_aux_weight,
         stopline_segment_verifier_aux_weight=train_config.stopline_segment_verifier_aux_weight,
         stopline_segment_denoise_aux_weight=train_config.stopline_segment_denoise_aux_weight,
+        stopline_segment_verifier_target_mode=train_config.stopline_segment_verifier_target_mode,
+        stopline_segment_verifier_quality_tau_px=train_config.stopline_segment_verifier_quality_tau_px,
         distill_enabled=train_config.distill_enabled,
         distill_teacher_mode=train_config.distill_teacher_mode,
         distill_loss_weights=train_config.distill_loss_weights,

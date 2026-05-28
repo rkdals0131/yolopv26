@@ -201,6 +201,20 @@ Latest stop-line GT-denoised segment-set train/eval result:
 - exact-val128 epoch-2 eval for `best.pt`: lane/stop/cross F1 `0.5593 / 0.4074 / 0.5976`, stop-line TP/FP/FN `22 / 26 / 38`.
 - 판단: GT-denoise supervision is train-stable, but this contract does not transfer into no-GT runtime recovery. It is below projection-competition exact `0.5167` (`31 / 29 / 29`) and below the simple seeded segment-set task-best `0.4737`. Do not continue this as denoise aux weight, jitter amount, verifier-score-weight, segment threshold, head-LR, or longer-run tuning without a new runtime seed/objectness/candidate-coverage contract.
 
+Latest stop-line metric-quality segment verifier train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-segment-metric-quality-verifier`.
+- changed axis: keep the dense-seeded segment-set branch, but train the segment-aligned verifier against endpoint-distance metric quality instead of matched-query objectness; keep lane row-scan/tangent and `crosswalk_polygon_mode=hull`.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. The smoke run, redundant task-best/last checkpoints, TensorBoard files, and temporary YOLO weight downloads were pruned; retained main run is `117M`.
+- retained main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_quality_verifier_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_054808`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `3`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- best exact-val128 epoch-3 eval: lane/stop/cross F1 `0.5502 / 0.4660 / 0.6294`, stop-line TP/FP/FN `24 / 26 / 29`.
+- training history:
+  - epoch1 lane/stop/cross F1 `0.5363 / 0.2157 / 0.6750`, stop-line TP/FP/FN `11 / 36 / 44`.
+  - epoch2 lane/stop/cross F1 `0.5581 / 0.4425 / 0.5749`, stop-line TP/FP/FN `25 / 28 / 35`.
+  - epoch3 lane/stop/cross F1 `0.5502 / 0.4660 / 0.6294`, stop-line TP/FP/FN `24 / 26 / 29`.
+- 판단: metric-quality verifier target reduces FP relative to the matched-query verifier, but it still does not recover enough TP and remains below projection-competition exact `0.5167` (`31 / 29 / 29`) and simple seeded segment-set task-best `0.4737` (`27 / 27 / 33`). Do not continue this as quality-tau, verifier-score-weight, segment-threshold, max-segment, head-LR, or longer-run tuning without a runtime candidate generator that first recovers no-oracle positives.
+
 Latest lane conditional row instance decoder train/eval result:
 
 - branch/worktree: `exp/lane-family-f1/lane-conditional-row-instance-decoder`.
