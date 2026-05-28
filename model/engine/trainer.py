@@ -135,6 +135,25 @@ def _lane_family_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
     ]
 
 
+def _lane_family_adapter_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
+    adapter_getter = getattr(heads, "lane_family_adapter_modules", None)
+    if callable(adapter_getter):
+        return [module for module in adapter_getter() if isinstance(module, torch.nn.Module)]
+    roadmark_heads = getattr(heads, "roadmark_heads", None)
+    adapter_getter = getattr(roadmark_heads, "lane_family_adapter_modules", None)
+    if callable(adapter_getter):
+        return [module for module in adapter_getter() if isinstance(module, torch.nn.Module)]
+    return []
+
+
+def _parameter_ids_from_modules(modules: list[torch.nn.Module]) -> set[int]:
+    parameter_ids: set[int] = set()
+    for module in modules:
+        for parameter in module.parameters():
+            parameter_ids.add(id(parameter))
+    return parameter_ids
+
+
 def _require_lane_family_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
     modules = _lane_family_modules(heads)
     if not modules:
@@ -296,7 +315,17 @@ def build_pv26_optimizer(
 ) -> torch.optim.Optimizer:
     param_groups: list[dict[str, Any]] = []
     trunk_params = _trainable_parameters(adapter.trunk)
-    head_params = _trainable_parameters(heads)
+    adapter_param_ids = _parameter_ids_from_modules(_lane_family_adapter_modules(heads))
+    adapter_params = [
+        parameter
+        for parameter in heads.parameters()
+        if parameter.requires_grad and id(parameter) in adapter_param_ids
+    ]
+    head_params = [
+        parameter
+        for parameter in heads.parameters()
+        if parameter.requires_grad and id(parameter) not in adapter_param_ids
+    ]
 
     if trunk_params:
         param_groups.append(
@@ -314,6 +343,15 @@ def build_pv26_optimizer(
                 "lr": head_lr,
                 "weight_decay": weight_decay,
                 "group_name": "heads",
+            }
+        )
+    if adapter_params:
+        param_groups.append(
+            {
+                "params": adapter_params,
+                "lr": head_lr,
+                "weight_decay": weight_decay,
+                "group_name": "lane_family_adapters",
             }
         )
     if not param_groups:

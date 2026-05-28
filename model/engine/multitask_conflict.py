@@ -6,7 +6,7 @@ import torch
 
 
 CONFLICT_TASKS = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
-CONFLICT_PARAM_GROUPS = ("trunk", "heads")
+CONFLICT_PARAM_GROUPS = ("trunk", "heads", "lane_family_adapters")
 
 
 def normalize_multitask_conflict(raw: dict[str, Any] | None) -> dict[str, Any]:

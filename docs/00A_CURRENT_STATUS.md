@@ -215,6 +215,19 @@ Latest head-level PCGrad smoke result:
 - PCGrad diagnostics: `8` enabled steps, `param_groups=["heads"]`, mean target parameter count `162`, but all pairwise dots were exactly `0.0`, and conflict/projection rates were empty.
 - 판단: current heads-only lane-family training has task-specific head parameters with no shared head/adapter surface for PCGrad to balance. This branch proves the plumbing can target head groups, but it is not a candidate for broader training by itself. Do not repeat as a PCGrad task-list or `param_groups=["heads"]` sweep; training-exposure work needs actual shared zero-gated adapters/routing or a different emit contract.
 
+Latest shared-adapter PCGrad train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/shared-adapter-pcgrad-rebalance`.
+- changed axis: add opt-in zero-init shared P2/P3/P4 lane-family feature adapters, split them into a dedicated optimizer group `lane_family_adapters`, and apply PCGrad only to that shared adapter group.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created. The smoke run was deleted, redundant task-best/last checkpoints and TensorBoard files were pruned, and the main run was reduced to `125M`, retaining `phase_4/checkpoints/best.pt`, history, summaries, and exact/broader eval exports.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_shared_adapter_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_042113`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- PCGrad diagnostics: `1536` enabled steps over `lane_family_adapters`, mean target parameter count `24`. Unlike heads-only PCGrad, adapter conflict/projection was real; per-window lane-vs-stop conflict was generally around `0.42` to `0.62`, and projection rates were non-empty for all tasks.
+- best training epoch `2`: lane/stop/cross F1 `0.5644 / 0.4561 / 0.5952`, TP/FP/FN lane `1126 / 474 / 1264`, stop-line `26 / 28 / 34`, crosswalk `50 / 37 / 31`.
+- exact-val128 checkpoint eval: lane/stop/cross F1 `0.5644 / 0.4561 / 0.5952`, TP/FP/FN lane `1126 / 474 / 1264`, stop-line `26 / 28 / 34`, crosswalk `50 / 37 / 31`.
+- broader-val512 checkpoint eval: lane/stop/cross F1 `0.5433 / 0.4033 / 0.6061`, TP/FP/FN lane `4286 / 2014 / 5191`, stop-line `97 / 113 / 174`, crosswalk `227 / 127 / 168`.
+- 판단: the shared adapter surface is a real training-exposure intervention, not a no-op, but it still regresses against the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on all three tasks. Do not continue this exact branch as adapter LR/gate-init/depth/PCGrad-task-list/epoch-count tuning. Reopen only if the shared surface is paired with a stronger stop-line/lane emit contract or per-task adapter routing that first moves TP/FP/FN.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

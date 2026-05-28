@@ -44,6 +44,40 @@ class _StoplineFeatureNeck(nn.Module):
         return feature + gate.view(1, 1, 1, 1) * self.adapter(feature)
 
 
+class _ZeroInitResidualAdapter(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.channels = int(channels)
+        hidden_channels = max(16, self.channels // 4)
+        self.gate_logit = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))
+        self.adapter = nn.Sequential(
+            ConvNormAct(self.channels, hidden_channels, kernel_size=1),
+            ConvNormAct(hidden_channels, hidden_channels),
+            nn.Conv2d(hidden_channels, self.channels, kernel_size=1, bias=False),
+        )
+        nn.init.zeros_(self.adapter[-1].weight)
+
+    def forward(self, feature: torch.Tensor) -> torch.Tensor:
+        gate = torch.sigmoid(self.gate_logit).to(device=feature.device, dtype=feature.dtype)
+        return feature + gate.view(1, 1, 1, 1) * self.adapter(feature)
+
+
+class _LaneFamilySharedFeatureAdapters(nn.Module):
+    def __init__(self, channels: tuple[int, int, int]) -> None:
+        super().__init__()
+        self.adapters = nn.ModuleList(_ZeroInitResidualAdapter(channel) for channel in channels)
+
+    def forward(
+        self,
+        features: list[torch.Tensor] | tuple[torch.Tensor, ...],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if len(features) != 4:
+            raise ValueError("Lane-family shared adapters expect 4 feature maps.")
+        p2, p3, p4, p5 = features
+        adapted = [adapter(feature) for adapter, feature in zip(self.adapters, (p2, p3, p4))]
+        return adapted[0], adapted[1], adapted[2], p5
+
+
 class RoadMarkV2Heads(nn.Module):
     def __init__(
         self,
@@ -51,11 +85,13 @@ class RoadMarkV2Heads(nn.Module):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_family_shared_adapter_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
+        self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         if len(self.in_channels) != 4:
             raise ValueError("RoadMarkV2Heads expects exactly 4 pyramid levels (P2/P3/P4/P5).")
         if len(self.feature_strides) != 4:
@@ -68,6 +104,11 @@ class RoadMarkV2Heads(nn.Module):
             self.lane_head = LaneDenseRowSeedHead((p2, p3, p4))
         self.stop_line_head = StopLineDenseLocalHead((p2, p3))
         self.crosswalk_head = CrosswalkMaskFirstHead((p2, p3, p4))
+        self.shared_feature_adapters = (
+            _LaneFamilySharedFeatureAdapters((p2, p3, p4))
+            if self.lane_family_shared_adapter_enabled
+            else None
+        )
 
     def describe(self) -> dict[str, object]:
         return {
@@ -80,6 +121,9 @@ class RoadMarkV2Heads(nn.Module):
             "lane_head_mode": self.lane_head_mode,
             "stop_line_head": "mask_first_line_decode",
             "crosswalk_head": "mask_first",
+            "lane_family_shared_adapter": "zero_init_residual_p2_p3_p4"
+            if self.lane_family_shared_adapter_enabled
+            else "disabled",
         }
 
     def forward(
@@ -90,6 +134,8 @@ class RoadMarkV2Heads(nn.Module):
     ) -> dict[str, torch.Tensor]:
         if len(features) != 4:
             raise ValueError("RoadMarkV2Heads expects 4 feature maps from the trunk pyramid.")
+        if self.shared_feature_adapters is not None:
+            features = self.shared_feature_adapters(features)
         p2, p3, p4, p5 = features
         _ = p5  # reserved for future coarse context branches
         outputs: dict[str, torch.Tensor] = {}
@@ -106,11 +152,13 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_family_shared_adapter_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
+        self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         if len(self.in_channels) != 4:
             raise ValueError("PV26RoadMarkV2LaneFamilyHeads expects exactly 4 pyramid levels.")
         if len(self.feature_strides) != 4:
@@ -119,16 +167,24 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             self.in_channels,
             self.feature_strides,
             lane_head_mode=self.lane_head_mode,
+            lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
         )
         self.lane_head = self.roadmark_heads.lane_head
         self.stop_line_head = self.roadmark_heads.stop_line_head
         self.crosswalk_head = self.roadmark_heads.crosswalk_head
+        self.shared_feature_adapters = self.roadmark_heads.shared_feature_adapters
+
+    def lane_family_adapter_modules(self) -> tuple[nn.Module, ...]:
+        if self.shared_feature_adapters is None:
+            return ()
+        return (self.shared_feature_adapters,)
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
         return (
             self.lane_head,
             self.stop_line_head,
             self.crosswalk_head,
+            *self.lane_family_adapter_modules(),
         )
 
     def describe(self) -> dict[str, object]:
@@ -161,8 +217,14 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_family_shared_adapter_enabled: bool = False,
     ) -> None:
-        super().__init__(in_channels, feature_strides=feature_strides, lane_head_mode=lane_head_mode)
+        super().__init__(
+            in_channels,
+            feature_strides=feature_strides,
+            lane_head_mode=lane_head_mode,
+            lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
+        )
         p2, p3, _, _ = self.in_channels
         self.stopline_p2_isolator = _StoplineFeatureNeck(p2)
         self.stopline_p3_isolator = _StoplineFeatureNeck(p3)
@@ -174,6 +236,7 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             self.crosswalk_head,
             self.stopline_p2_isolator,
             self.stopline_p3_isolator,
+            *self.lane_family_adapter_modules(),
         )
 
     def describe(self) -> dict[str, object]:
@@ -194,6 +257,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         batch_size = int(features[0].shape[0])
         device = features[0].device
         dtype = features[0].dtype
+        if self.shared_feature_adapters is not None:
+            features = self.shared_feature_adapters(features)
         p2, p3, p4, p5 = features
         _ = p5
         lane_outputs = self.lane_head((p2, p3, p4), encoded=encoded)

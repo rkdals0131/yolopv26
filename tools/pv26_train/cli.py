@@ -151,7 +151,10 @@ def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeac
 
     checkpoint_path = _resolve_distill_teacher_checkpoint(train_config)
     adapter = _build_backbone_adapter(train_config)
-    heads = PV26Heads(in_channels=_resolve_head_channels(adapter, train_config))
+    heads = PV26Heads(
+        in_channels=_resolve_head_channels(adapter, train_config),
+        lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
+    )
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(checkpoint, dict):
         raise TypeError(f"distill teacher checkpoint must be a dict: {checkpoint_path}")
@@ -559,7 +562,10 @@ def _build_phase_train_loaders(
 def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) -> PV26Trainer:
     adapter = _build_backbone_adapter(train_config)
     head_channels = _resolve_head_channels(adapter, train_config)
-    heads = PV26Heads(in_channels=head_channels)
+    heads = PV26Heads(
+        in_channels=head_channels,
+        lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
+    )
     criterion = PV26MultiTaskLoss(
         stage=phase.stage,
         loss_weights=phase.loss_weights or None,

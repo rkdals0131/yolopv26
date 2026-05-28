@@ -126,6 +126,7 @@ class TrainDefaultsConfig:
     lane_segfirst_task_conflict_negative_margin: float = 0.15
     lane_conditional_row_aux_weight: float = 0.0
     lane_conditional_row_enabled: bool = False
+    lane_family_shared_adapter_enabled: bool = False
     lane_segfirst_track_mode: str = "component"
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
@@ -682,6 +683,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("lane_conditional_row_enabled", defaults.lane_conditional_row_enabled),
             field_name="train_defaults.lane_conditional_row_enabled",
         ),
+        lane_family_shared_adapter_enabled=_coerce_bool(
+            data.get("lane_family_shared_adapter_enabled", defaults.lane_family_shared_adapter_enabled),
+            field_name="train_defaults.lane_family_shared_adapter_enabled",
+        ),
         lane_segfirst_track_mode=_coerce_str(
             data.get("lane_segfirst_track_mode", defaults.lane_segfirst_track_mode),
             field_name="train_defaults.lane_segfirst_track_mode",
@@ -1021,7 +1026,9 @@ def validate_meta_train_scenario(
         conflict_param_groups = multitask_conflict.get("param_groups", ("trunk",))
         if not isinstance(conflict_param_groups, (list, tuple)):
             raise TypeError(f"phase {index} multitask_conflict.param_groups must be a list")
-        unknown_conflict_param_groups = sorted(set(str(group) for group in conflict_param_groups) - {"trunk", "heads"})
+        unknown_conflict_param_groups = sorted(
+            set(str(group) for group in conflict_param_groups) - {"trunk", "heads", "lane_family_adapters"}
+        )
         if unknown_conflict_param_groups:
             raise ValueError(
                 f"phase {index} multitask_conflict uses unsupported param groups: {unknown_conflict_param_groups}"

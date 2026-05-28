@@ -54,6 +54,30 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(summary["stop_line_queries"], STOP_LINE_QUERY_COUNT)
         self.assertEqual(summary["crosswalk_queries"], CROSSWALK_QUERY_COUNT)
         self.assertEqual(summary["roadmark"]["lane_head_mode"], "seg_first")
+        self.assertEqual(summary["roadmark"]["lane_family_shared_adapter"], "disabled")
+
+    def test_heads_can_enable_lane_family_shared_adapter(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            lane_family_shared_adapter_enabled=True,
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        adapter_modules = heads.roadmark_heads.lane_family_adapter_modules()
+
+        self.assertEqual(heads.describe()["roadmark"]["lane_family_shared_adapter"], "zero_init_residual_p2_p3_p4")
+        self.assertEqual(len(adapter_modules), 1)
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
 
     def test_heads_reject_wrong_feature_count(self) -> None:
         from model.net import PV26Heads

@@ -17,8 +17,14 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = "seg_first",
+        lane_family_shared_adapter_enabled: bool = False,
     ) -> None:
-        super().__init__(in_channels, feature_strides=feature_strides, lane_head_mode=lane_head_mode)
+        super().__init__(
+            in_channels,
+            feature_strides=feature_strides,
+            lane_head_mode=lane_head_mode,
+            lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
+        )
 
     def describe(self) -> dict[str, object]:
         payload = self.roadmark_heads.describe()

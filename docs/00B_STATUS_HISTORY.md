@@ -12349,3 +12349,81 @@ Verification:
 - A larger same-axis run would mostly reproduce ordinary heads-only training, not a true gradient-balancing intervention.
 - Do not continue this exact branch as a PCGrad task-list, `param_groups=["heads"]`, loss-weight, head-LR, or epoch-count sweep.
 - Reopen this training-exposure family only after adding a real shared surface, such as zero-gated task adapters/shared lane-family routing, or after changing the lane/stop-line emit contract so TP/FP/FN movement appears before broadening.
+
+## 251. 2026-05-29 Shared-adapter PCGrad rebalance: real shared surface, still broader-negative
+
+맥락:
+
+- The head-level PCGrad smoke proved that current `lane_family_heads_only` parameters are task-disjoint: `param_groups=["heads"]` selected parameters but produced all-zero pairwise dots and no conflict/projection.
+- This branch added the missing shared training surface that GPT Pro's architecture-level review asked for, while keeping the experiment to one axis: shared lane-family feature adapters plus PCGrad on those adapters only.
+- The user explicitly asked for real training and larger-scope evaluation, not another smoke-only wiring check. This run therefore used the existing prepared dataset root directly, trained at the same `512` train-batch / `128` val-batch stage-4 scale, then evaluated both exact val128 and broader val512.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/shared-adapter-pcgrad-rebalance`.
+- Added opt-in zero-init shared residual adapters over lane-family P2/P3/P4 features.
+- Added `lane_family_shared_adapter_enabled` through config, CLI, `PV26Heads`, `RoadMarkV2Heads`, `PV26RoadMarkV2LaneFamilyHeads`, and `PV26RoadMarkV3JointHeads`.
+- Split adapter parameters into a dedicated optimizer group, `lane_family_adapters`, so they are not mixed into ordinary task-head parameters.
+- Extended multitask conflict group validation and PCGrad collection to allow `param_groups=["lane_family_adapters"]`.
+- Added lane60 probe experiment `core_centerline_shared_adapter_pcgrad`.
+- Freeze policy: `lane_family_heads_only`, with trunk frozen and the new shared adapters/head parameters trainable.
+- Optimizer exposure: `trunk_lr=0.0`, `head_lr=1.0e-4`.
+- Loss weights: lane `2.25`, stop-line `2.25`, crosswalk `1.75`, detector and traffic-light attribute losses disabled for this phase.
+- Lane decode remained `row_scan_tangent`; crosswalk remained `crosswalk_polygon_mode=hull`.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Storage handling deleted the smoke run, pruned redundant task-best/last checkpoints, removed TensorBoard files and duplicate eval exports, and retained only the main best checkpoint, history, summaries, and named exact/broader eval exports. The retained main run is `125M`.
+
+Training artifacts:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_shared_adapter_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_041900`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_shared_adapter_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_042113`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Exact-val128 eval export: `analysis_exports/shared_adapter_exact_val128_epoch2/metrics.csv` and `summary.json`.
+- Broader-val512 eval export: `analysis_exports/shared_adapter_broader_val512_epoch2/metrics.csv` and `summary.json`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+PCGrad diagnostics:
+
+- Smoke run confirmed the adapter path was active: `8` PCGrad-enabled steps, `param_groups=["lane_family_adapters"]`, mean target parameter count `24`, and non-empty conflict/projection rates.
+- Main run wrote diagnostics over `1536` PCGrad-enabled steps.
+- Main `param_groups`: `["lane_family_adapters"]`.
+- Mean target parameter count: `24`.
+- Per-window lane-vs-stop conflict was generally around `0.42` to `0.62`.
+- Projection rates were non-empty for lane, stop-line, and crosswalk, unlike the heads-only smoke.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5971920953` | `0.5393` | `0.2178` | `0.6871` | `1054 / 520 / 1281` | `11 / 35 / 44` | `56 / 24 / 27` |
+| 2 | `0.6242955768` | `0.5644` | `0.4561` | `0.5952` | `1126 / 474 / 1264` | `26 / 28 / 34` | `50 / 37 / 31` |
+| 3 | `0.6239579994` | `0.5507` | `0.4381` | `0.6300` | `1035 / 441 / 1248` | `23 / 29 / 30` | `63 / 31 / 43` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt` | `0.5644` | `0.4561` | `0.5952` | `1126 / 474 / 1264` | `26 / 28 / 34` | `50 / 37 / 31` |
+| broader val512, `best.pt` | `0.5433` | `0.4033` | `0.6061` | `4286 / 2014 / 5191` | `97 / 113 / 174` | `227 / 127 / 168` |
+
+Verification:
+
+- `python -m py_compile model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py model/engine/trainer.py model/engine/multitask_conflict.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_multitask_conflict.py test/test_pv26_trainer.py`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_multitask_conflict.py'`.
+- `PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_lane_family_shared_adapter_uses_dedicated_optimizer_group`.
+- Real CUDA smoke train: `1` epoch, `8` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 epoch-2 checkpoint eval for `best.pt`.
+- Broader-val512 epoch-2 checkpoint eval for `best.pt`.
+
+판단:
+
+- This branch fixes the no-op premise from heads-only PCGrad: the adapter surface is shared, trainable, and actually receives conflicting lane / stop-line / crosswalk gradients.
+- The metric premise is still negative: broader-val512 `0.5433 / 0.4033 / 0.6061` is below the retained runtime composite `0.5628 / 0.4235 / 0.6187` on all three tasks.
+- It is also below the stop-line projection-competition reference `0.5164`, so it does not solve the current stop-line bottleneck.
+- Crosswalk stays above `0.60` on broader eval, but that does not compensate for lane and stop-line regression.
+- Do not continue this exact branch as adapter LR, gate-init, adapter depth, PCGrad task-list, loss-weight, or epoch-count tuning.
+- Reopen training-exposure work only if the shared surface is paired with a stronger stop-line/lane emit contract, or if per-task adapter routing first shows TP/FP/FN movement without sacrificing the retained crosswalk hull behavior.
