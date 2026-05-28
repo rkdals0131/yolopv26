@@ -83,6 +83,9 @@ class PV26PostprocessConfig:
     stop_line_haf_cluster_endpoint_tolerance: float = 3.0
     stop_line_haf_max_endpoint_covariance: float = 9.0
     stop_line_haf_max_segments: int = 3
+    stop_line_segment_set_enabled: bool = False
+    stop_line_segment_set_score_threshold: float = 0.50
+    stop_line_segment_set_max_segments: int = 3
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -785,6 +788,74 @@ def _decode_stopline_haf_consensus_segments(
     if int(max_segments) > 0:
         decoded = decoded[: int(max_segments)]
     return _dedupe_stop_line_predictions(decoded)
+
+
+def _decode_stopline_segment_set(
+    *,
+    segment_logits: torch.Tensor | None,
+    segment_points: torch.Tensor | None,
+    meta: dict[str, Any],
+    score_threshold: float,
+    max_segments: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(segment_logits, torch.Tensor) or not isinstance(segment_points, torch.Tensor):
+        return []
+    if not _tensor_all_finite(segment_logits) or not _tensor_all_finite(segment_points):
+        return []
+    logits = segment_logits.detach().cpu()
+    points = segment_points.detach().cpu()
+    if logits.ndim == 2:
+        logits = logits.squeeze(0)
+    if points.ndim == 4:
+        points = points.squeeze(0)
+    if logits.ndim != 1 or points.ndim != 3 or points.shape[1:] != (2, 2):
+        return []
+    scores = logits.sigmoid().numpy().astype(np.float32)
+    points_np = points.numpy().astype(np.float32)
+    transform = transform_from_meta(meta)
+    network_w = float(meta["network_hw"][1])
+    network_h = float(meta["network_hw"][0])
+    decoded: list[dict[str, Any]] = []
+    for query_index, score in enumerate(scores.tolist()):
+        if float(score) < float(score_threshold):
+            continue
+        normalized_segment = np.clip(points_np[query_index], 0.0, 1.0)
+        network_segment = normalized_segment.copy()
+        network_segment[:, 0] *= network_w
+        network_segment[:, 1] *= network_h
+        start, end = _canonical_segment_endpoints(network_segment[0], network_segment[1])
+        network_points = sample_stop_line_centerline(
+            clip_points(np.stack([start, end], axis=0).tolist(), transform.network_hw),
+            target_count=STOP_LINE_POINT_COUNT,
+        ).tolist()
+        if unique_point_count(network_points) < 2:
+            continue
+        raw_points = sample_stop_line_centerline(
+            inverse_transform_points(network_points, transform),
+            target_count=STOP_LINE_POINT_COUNT,
+        ).tolist()
+        if unique_point_count(raw_points) < 2:
+            continue
+        length = float(np.linalg.norm(end - start))
+        if length < STOPLINE_MIN_COMPONENT_LENGTH:
+            continue
+        decoded.append(
+            {
+                "allowed": True,
+                "score": float(score),
+                "center_score": float(score),
+                "orientation_score": float(_stopline_orientation_score(raw_points)),
+                "length": length,
+                "thickness": 1.0,
+                "segment_set_query_index": int(query_index),
+                "points_xy": [[float(x), float(y)] for x, y in raw_points],
+            }
+        )
+    decoded.sort(key=_stopline_prediction_sort_key, reverse=True)
+    decoded = _dedupe_stop_line_predictions(decoded)
+    if int(max_segments) > 0:
+        decoded = decoded[: int(max_segments)]
+    return decoded
 
 
 def _decode_stopline_direct_selector_segment(
@@ -1774,6 +1845,11 @@ def _decode_stop_line_rows(
     half_length: torch.Tensor | None = None,
     haf_endpoint: torch.Tensor | None = None,
     haf_valid_logits: torch.Tensor | None = None,
+    segment_logits: torch.Tensor | None = None,
+    segment_points: torch.Tensor | None = None,
+    segment_set_enabled: bool = False,
+    segment_set_score_threshold: float = 0.50,
+    segment_set_max_segments: int = 3,
     haf_enabled: bool = False,
     haf_valid_threshold: float = 0.50,
     haf_min_votes: int = 4,
@@ -1790,6 +1866,15 @@ def _decode_stop_line_rows(
         presence_score = float(presence_logits.reshape(-1)[0].sigmoid().detach().cpu().item())
         if presence_score < float(presence_threshold):
             return []
+    segment_set_decoded: list[dict[str, Any]] = []
+    if bool(segment_set_enabled):
+        segment_set_decoded = _decode_stopline_segment_set(
+            segment_logits=segment_logits,
+            segment_points=segment_points,
+            meta=meta,
+            score_threshold=float(segment_set_score_threshold),
+            max_segments=int(segment_set_max_segments),
+        )
     if bool(haf_enabled):
         decoded = _decode_stopline_haf_consensus_segments(
             haf_endpoint=haf_endpoint,
@@ -1826,6 +1911,10 @@ def _decode_stop_line_rows(
             component_gate_source=component_gate_source,
         )
         if decoded:
+            if segment_set_decoded:
+                merged = _dedupe_stop_line_predictions(decoded + segment_set_decoded)
+                merged.sort(key=_stopline_prediction_sort_key, reverse=True)
+                return merged[: max(1, int(max_components), int(segment_set_max_segments))]
             return decoded
     transform = transform_from_meta(meta)
     predictions: list[dict[str, Any]] = []
@@ -1855,7 +1944,13 @@ def _decode_stop_line_rows(
             }
         )
     predictions.sort(key=lambda item: item["score"], reverse=True)
-    return _dedupe_stop_line_predictions(predictions)
+    if segment_set_decoded:
+        predictions = predictions + segment_set_decoded
+    predictions = _dedupe_stop_line_predictions(predictions)
+    if not segment_set_decoded:
+        return predictions
+    predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
+    return predictions[: max(1, int(max_components), int(segment_set_max_segments))]
 
 
 def _decode_crosswalk_rows(
@@ -1945,6 +2040,8 @@ def postprocess_pv26_batch(
     stop_line_half_length = predictions.get("stop_line_half_length")
     stop_line_haf_endpoint = predictions.get("stop_line_haf_endpoint")
     stop_line_haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
+    stop_line_segment_logits = predictions.get("stop_line_segment_logits")
+    stop_line_segment_points = predictions.get("stop_line_segment_points")
     crosswalk_mask_logits = predictions.get("crosswalk_mask_logits")
     crosswalk_center_logits = predictions.get("crosswalk_center_logits")
     feature_shapes = predictions.get("det_feature_shapes")
@@ -2054,6 +2151,19 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_haf_valid_logits, torch.Tensor)
                         else None
                     ),
+                    segment_logits=(
+                        stop_line_segment_logits[batch_index]
+                        if isinstance(stop_line_segment_logits, torch.Tensor)
+                        else None
+                    ),
+                    segment_points=(
+                        stop_line_segment_points[batch_index]
+                        if isinstance(stop_line_segment_points, torch.Tensor)
+                        else None
+                    ),
+                    segment_set_enabled=config.stop_line_segment_set_enabled,
+                    segment_set_score_threshold=config.stop_line_segment_set_score_threshold,
+                    segment_set_max_segments=config.stop_line_segment_set_max_segments,
                     haf_enabled=config.stop_line_haf_enabled,
                     haf_valid_threshold=config.stop_line_haf_valid_threshold,
                     haf_min_votes=config.stop_line_haf_min_votes,

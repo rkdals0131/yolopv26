@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - depends on external environment.
 
 from .det_geometry import decode_anchor_relative_boxes, make_anchor_grid
 from .spec import build_loss_spec, render_loss_spec_markdown
+from ..data.transform import NETWORK_HW
 from common.pv26_schema import LANE_CLASSES
 from common.task_mode import (
     CROSSWALK_ONLY_TASK_MODE,
@@ -1075,6 +1076,80 @@ def _stop_line_mask_loss(predictions: dict[str, torch.Tensor], encoded: dict[str
     )
 
 
+def _stop_line_segment_set_loss(
+    *,
+    segment_logits: torch.Tensor | None,
+    segment_points: torch.Tensor | None,
+    segment_seed_logits: torch.Tensor | None,
+    aux: dict[str, Any],
+    encoded: dict[str, Any],
+    fallback_tensor: torch.Tensor,
+) -> torch.Tensor:
+    if not isinstance(segment_logits, torch.Tensor) or not isinstance(segment_points, torch.Tensor):
+        return _zero_graph(fallback_tensor)
+    if segment_logits.ndim != 2 or segment_points.ndim != 4 or segment_points.shape[2:] != (2, 2):
+        return _zero_graph(segment_logits, segment_points)
+    device = segment_logits.device
+    dtype = segment_logits.dtype
+    stop_target = encoded["stop_line"].to(device=device, dtype=dtype)
+    stop_valid = encoded["mask"]["stop_line_valid"].to(device=device, dtype=torch.bool)
+    stop_source = encoded["mask"]["stop_line_source"].to(device=device, dtype=torch.bool)
+    denom = segment_points.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 2)
+    batch_losses: list[torch.Tensor] = []
+    for batch_index in range(int(segment_logits.shape[0])):
+        if not bool(stop_source[batch_index]):
+            continue
+        logits_b = segment_logits[batch_index]
+        points_b = segment_points[batch_index].clamp(0.0, 1.0)
+        valid_b = stop_valid[batch_index]
+        objectness_target = torch.zeros_like(logits_b)
+        valid_count = int(valid_b.sum().item())
+        point_loss = _zero_graph(points_b)
+        if valid_count > 0:
+            target_points = stop_target[batch_index, valid_b, 1:].view(valid_count, STOP_LINE_POINT_COUNT, 2)
+            target_segments = torch.stack([target_points[:, 0], target_points[:, -1]], dim=1)
+            target_segments = (target_segments / denom).clamp(0.0, 1.0)
+            with torch.no_grad():
+                pred_detached = points_b.detach()
+                direct_cost = (pred_detached[:, None, :, :] - target_segments[None, :, :, :]).abs().mean(dim=(-1, -2))
+                flipped_targets = target_segments[:, [1, 0], :]
+                flipped_cost = (pred_detached[:, None, :, :] - flipped_targets[None, :, :, :]).abs().mean(dim=(-1, -2))
+                cost = torch.minimum(direct_cost, flipped_cost).detach().cpu().numpy()
+                query_indices_np, target_indices_np = linear_sum_assignment(cost)
+            if len(query_indices_np) > 0:
+                query_indices = torch.as_tensor(query_indices_np, device=device, dtype=torch.long)
+                target_indices = torch.as_tensor(target_indices_np, device=device, dtype=torch.long)
+                objectness_target[query_indices] = 1.0
+                matched_pred = points_b[query_indices]
+                matched_direct = target_segments[target_indices]
+                matched_flipped = matched_direct[:, [1, 0], :]
+                direct_distance = (matched_pred.detach() - matched_direct).abs().mean(dim=(-1, -2))
+                flipped_distance = (matched_pred.detach() - matched_flipped).abs().mean(dim=(-1, -2))
+                matched_target = torch.where(
+                    (flipped_distance < direct_distance).view(-1, 1, 1),
+                    matched_flipped,
+                    matched_direct,
+                )
+                point_loss = F.smooth_l1_loss(matched_pred, matched_target, reduction="mean")
+        objectness_loss = F.binary_cross_entropy_with_logits(logits_b, objectness_target, reduction="mean")
+        batch_losses.append(objectness_loss + 4.0 * point_loss)
+    if not batch_losses:
+        return _zero_graph(segment_logits, segment_points)
+    set_loss = torch.stack(batch_losses).mean()
+    seed_loss = _zero_graph(segment_logits)
+    seed_target = aux.get("stop_line_center_heatmap")
+    if isinstance(segment_seed_logits, torch.Tensor) and isinstance(seed_target, torch.Tensor):
+        seed_target = seed_target.to(device=segment_seed_logits.device, dtype=segment_seed_logits.dtype)
+        seed_source = stop_source[:, None, None, None].to(device=segment_seed_logits.device).expand_as(segment_seed_logits)
+        seed_loss = _masked_binary_ce_balanced(
+            segment_seed_logits,
+            seed_target,
+            seed_source,
+            max_positive_weight=64.0,
+        )
+    return set_loss + 0.25 * seed_loss
+
+
 def _stop_line_mask_loss_with_selector_weight(
     predictions: dict[str, torch.Tensor],
     encoded: dict[str, Any],
@@ -1086,6 +1161,7 @@ def _stop_line_mask_loss_with_selector_weight(
     center_target_mode: str = "union",
     centerline_target_weight: float = 1.0,
     haf_aux_weight: float = 0.0,
+    segment_set_aux_weight: float = 0.0,
 ) -> torch.Tensor:
     mask_logits = predictions.get("stop_line_mask_logits")
     center_logits = predictions.get("stop_line_center_logits")
@@ -1094,6 +1170,9 @@ def _stop_line_mask_loss_with_selector_weight(
     half_length = predictions.get("stop_line_half_length")
     haf_endpoint = predictions.get("stop_line_haf_endpoint")
     haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
+    segment_seed_logits = predictions.get("stop_line_segment_seed_logits")
+    segment_logits = predictions.get("stop_line_segment_logits")
+    segment_points = predictions.get("stop_line_segment_points")
     if not isinstance(mask_logits, torch.Tensor):
         return _zero_graph(predictions["stop_line"])
     aux = encoded.get("roadmark_v2")
@@ -1230,6 +1309,16 @@ def _stop_line_mask_loss_with_selector_weight(
             haf_positive_mask.expand_as(haf_endpoint),
         )
         haf_loss = 0.5 * haf_valid_loss + haf_endpoint_loss
+    segment_set_loss = _zero_graph(mask_logits)
+    if float(segment_set_aux_weight) > 0.0:
+        segment_set_loss = _stop_line_segment_set_loss(
+            segment_logits=segment_logits,
+            segment_points=segment_points,
+            segment_seed_logits=segment_seed_logits,
+            aux=aux,
+            encoded=encoded,
+            fallback_tensor=mask_logits,
+        )
     return (
         0.5 * mask_ce
         + 0.5 * mask_dice
@@ -1249,6 +1338,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + float(geometry_aux_weight) * angle_loss
         + float(geometry_aux_weight) * length_loss
         + float(haf_aux_weight) * haf_loss
+        + float(segment_set_aux_weight) * segment_set_loss
     )
 
 
@@ -1602,6 +1692,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_center_target_mode: str = "union",
         stopline_centerline_target_weight: float = 1.0,
         stopline_haf_aux_weight: float = 0.0,
+        stopline_segment_set_aux_weight: float = 0.0,
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
         distill_loss_weights: dict[str, float] | None = None,
@@ -1652,6 +1743,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_center_target_mode = str(stopline_center_target_mode)
         self.stopline_centerline_target_weight = float(stopline_centerline_target_weight)
         self.stopline_haf_aux_weight = float(stopline_haf_aux_weight)
+        self.stopline_segment_set_aux_weight = float(stopline_segment_set_aux_weight)
         self.distill_enabled = bool(distill_enabled)
         self.distill_teacher_mode = str(distill_teacher_mode)
         self.distill_normalize_mode = str(distill_normalize_mode)
@@ -1741,6 +1833,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_center_target_mode": self.stopline_center_target_mode,
             "stopline_centerline_target_weight": float(self.stopline_centerline_target_weight),
             "stopline_haf_aux_weight": float(self.stopline_haf_aux_weight),
+            "stopline_segment_set_aux_weight": float(self.stopline_segment_set_aux_weight),
             "loss_weights": dict(self.loss_weights),
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
@@ -2443,6 +2536,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and str(self.stopline_center_target_mode).strip().lower() == "union"
                 and float(self.stopline_centerline_target_weight) == 1.0
                 and float(self.stopline_haf_aux_weight) == 0.0
+                and float(self.stopline_segment_set_aux_weight) == 0.0
             ):
                 return _stop_line_mask_loss(prediction_dict, encoded)
             return _stop_line_mask_loss_with_selector_weight(
@@ -2455,6 +2549,7 @@ class PV26MultiTaskLoss(nn.Module):
                 center_target_mode=self.stopline_center_target_mode,
                 centerline_target_weight=float(self.stopline_centerline_target_weight),
                 haf_aux_weight=float(self.stopline_haf_aux_weight),
+                segment_set_aux_weight=float(self.stopline_segment_set_aux_weight),
             )
         stop_pred = prediction_dict["stop_line"]
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)

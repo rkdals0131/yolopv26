@@ -256,6 +256,37 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertAlmostEqual(points[-1][0], 340.0, places=1)
         self.assertAlmostEqual(points[-1][1], 500.0, places=1)
 
+    def test_stopline_segment_set_decodes_normalized_segment(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        predictions["stop_line_segment_logits"] = torch.full((1, STOP_LINE_QUERY_COUNT), -8.0, dtype=torch.float32)
+        predictions["stop_line_segment_logits"][0, 0] = 8.0
+        predictions["stop_line_segment_points"] = torch.zeros((1, STOP_LINE_QUERY_COUNT, 2, 2), dtype=torch.float32)
+        predictions["stop_line_segment_points"][0, 0, 0] = torch.tensor([100.0 / 800.0, 500.0 / 608.0])
+        predictions["stop_line_segment_points"][0, 0, 1] = torch.tensor([340.0 / 800.0, 500.0 / 608.0])
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                lane_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.999,
+                stop_line_segment_set_enabled=True,
+                stop_line_segment_set_score_threshold=0.90,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["stop_lines"]), 1)
+        points = decoded[0]["stop_lines"][0]["points_xy"]
+        self.assertAlmostEqual(points[0][0], 100.0, places=1)
+        self.assertAlmostEqual(points[0][1], 500.0, places=1)
+        self.assertAlmostEqual(points[-1][0], 340.0, places=1)
+        self.assertAlmostEqual(points[-1][1], 500.0, places=1)
+
     def test_postprocess_raises_when_torchvision_batched_nms_fails_by_default(self) -> None:
         predictions = _make_prediction_batch()
         torchvision_module = ModuleType("torchvision")

@@ -75,6 +75,12 @@ class StopLineDenseLocalHead(nn.Module):
         self.half_length = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.haf_endpoint = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
         self.haf_valid_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.segment_seed_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.segment_query_mlp = nn.Sequential(
+            nn.Linear(self.hidden_dim + 2, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, 5),
+        )
 
     def forward(
         self,
@@ -121,6 +127,8 @@ class StopLineDenseLocalHead(nn.Module):
         angle = F.normalize(angle, dim=1, eps=1.0e-6)
         half_length = F.softplus(self.half_length(dense_feat))
         batch_size = int(mask_logits.shape[0])
+        segment_seed_logits = self.segment_seed_logits(selector_feat)
+        segment_logits, segment_points = self._decode_seeded_segment_set(selector_feat, segment_seed_logits)
 
         stop_line_vectors = torch.zeros(
             (batch_size, self.output_queries, STOP_LINE_VECTOR_DIM),
@@ -141,8 +149,45 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_half_length": half_length,
             "stop_line_haf_endpoint": self.haf_endpoint(dense_feat),
             "stop_line_haf_valid_logits": self.haf_valid_logits(dense_feat),
+            "stop_line_segment_seed_logits": segment_seed_logits,
+            "stop_line_segment_logits": segment_logits,
+            "stop_line_segment_points": segment_points,
             "stop_line_feature": line_feat,
         }
+
+    def _decode_seeded_segment_set(
+        self,
+        feature_map: torch.Tensor,
+        seed_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size, channels, height, width = feature_map.shape
+        flat_seed_logits = seed_logits.flatten(2).squeeze(1)
+        query_count = min(int(self.output_queries), int(flat_seed_logits.shape[1]))
+        top_scores, top_indices = torch.topk(flat_seed_logits, k=query_count, dim=1)
+        flat_features = feature_map.flatten(2).transpose(1, 2)
+        gather_index = top_indices.unsqueeze(-1).expand(-1, -1, channels)
+        seed_features = torch.gather(flat_features, dim=1, index=gather_index)
+        seed_rows = torch.div(top_indices, width, rounding_mode="floor")
+        seed_cols = top_indices.remainder(width)
+        denom_x = max(float(width - 1), 1.0)
+        denom_y = max(float(height - 1), 1.0)
+        seed_xy = torch.stack(
+            [
+                seed_cols.to(dtype=feature_map.dtype) / denom_x,
+                seed_rows.to(dtype=feature_map.dtype) / denom_y,
+            ],
+            dim=-1,
+        )
+        query_raw = self.segment_query_mlp(torch.cat([seed_features, seed_xy], dim=-1))
+        segment_logits = query_raw[..., 0] + top_scores
+        segment_points = torch.sigmoid(query_raw[..., 1:5]).view(batch_size, query_count, 2, 2)
+        if query_count == int(self.output_queries):
+            return segment_logits, segment_points
+        padded_logits = segment_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_points = segment_points.new_zeros((batch_size, int(self.output_queries), 2, 2))
+        padded_logits[:, :query_count] = segment_logits
+        padded_points[:, :query_count] = segment_points
+        return padded_logits, padded_points
 
 
 __all__ = ["StopLineDenseLocalHead"]

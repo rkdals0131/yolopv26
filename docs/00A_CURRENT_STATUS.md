@@ -151,6 +151,18 @@ Latest stop-line HAF consensus train/eval result:
 - broader-val512 epoch-2 eval with HAF disabled: lane/stop/cross F1 `0.5383 / 0.3237 / 0.6220`, stop-line TP/FP/FN `78 / 133 / 193`.
 - 판단: the learned HAF target/head/loss path is train-stable, but the simple HAF valid/consensus decoder fails FP control and the checkpoint regresses against the retained broader runtime composite. Do not run longer same-axis HAF aux/head-LR/threshold/min-vote sweeps without a materially different valid-quality/verifier contract.
 
+Latest stop-line seeded segment-set train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-seeded-segment-set`.
+- changed axis: add an opt-in dense-seeded stop-line segment-set branch, Hungarian endpoint loss, and runtime decode/fallback union; keep lane row-scan/tangent and `crosswalk_polygon_mode=hull` retained.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. The main run checkpoint folder was pruned from `745M` to `213M`, retaining only `best.pt` and `best_stop_line.pt`.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_seeded_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_223739`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- task-best exact-val128 epoch-2 eval: lane/stop/cross F1 `0.5550 / 0.4737 / 0.5783`, stop-line TP/FP/FN `27 / 27 / 33`.
+- phase-objective-best exact-val128 segment-set union eval: lane/stop/cross F1 `0.5586 / 0.4522 / 0.5988`, stop-line TP/FP/FN `26 / 29 / 34`. Segment-set disabled gave the same row, so the learned segment decode did not add net TP under the final dedupe/fallback contract.
+- broader-val512 task-best eval: lane/stop/cross F1 `0.5419 / 0.4033 / 0.6122`, stop-line TP/FP/FN `97 / 113 / 174`.
+- 판단: the simple dense top-K seed + one-shot endpoint MLP segment-set is trainable, but it does not beat exact projection-competition `0.5167` and broader stop-line regresses below both the retained runtime composite `0.4235` and projection-competition reference `0.5164`. Do not run longer same-axis seeded segment-set sweeps without a materially stronger seed/verifier/objectness contract and no-oracle recovery evidence.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

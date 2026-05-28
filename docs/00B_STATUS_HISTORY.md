@@ -11996,3 +11996,71 @@ Verification:
 - The broader-val512 HAF-disabled row `0.5383 / 0.3237 / 0.6220` is below the current broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line, though crosswalk remains pass-level.
 - Do not continue this as longer same-axis HAF aux-weight, head-LR, valid-threshold, min-vote, or covariance sweeps.
 - Reopen HAF only if the branch changes the FP-control contract itself, for example calibrated valid-quality hard negatives, a segment-aligned verifier, or a materially different candidate generator.
+
+## 246. 2026-05-28 Stop-line seeded segment-set: trainable but below projection reference
+
+맥락:
+
+- GPT Pro architecture review also suggested a stop-line dense-seeded segment-set decoder with Hungarian matching as an architecture-level alternative to selector/readout replay.
+- The premise was to stop relying on component midpoint/extent postprocess and instead emit a small set of oriented stop-line segments from dense support seeds.
+- This branch tested the premise with actual smoke training, a larger 3-epoch training run, exact-val128 evaluation, and broader-val512 evaluation.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-seeded-segment-set`.
+- Added opt-in seeded segment-set outputs to `StopLineDenseLocalHead`: seed logits, query logits, and normalized endpoint coordinates.
+- Added `stopline_segment_set_aux_weight` and a Hungarian-style endpoint/objectness auxiliary loss.
+- Added evaluator/train config plumbing for `stop_line_segment_set_enabled`, score threshold, and max segments.
+- Added runtime decode with fallback-preserving union so the segment-set branch cannot erase the baseline row decode by default.
+- Added the `stopline_seeded_segment_set` lane60 probe experiment while keeping lane row-scan/tangent settings and `crosswalk_polygon_mode=hull`.
+- Dataset handling reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created.
+- Storage handling pruned redundant task-best checkpoint copies after training. The main run checkpoint folder was reduced from `745M` to `213M`, retaining `best.pt` and `best_stop_line.pt`; ignored temporary `yolo26n.pt` / `yolo26s.pt` downloads were removed.
+
+Training artifacts:
+
+- Smoke train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_seeded_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_222517`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_seeded_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_223739`.
+- Main checkpoints retained:
+  - `phase_4/checkpoints/best.pt`
+  - `phase_4/checkpoints/best_stop_line.pt`
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5807226069` | `0.5350` | `0.1616` | `0.6875` | `1046 / 529 / 1289` | `8 / 36 / 47` | `55 / 22 / 28` |
+| 2 | `0.6240890954` | `0.5550` | `0.4737` | `0.5783` | `1098 / 469 / 1292` | `27 / 27 / 33` | `48 / 37 / 33` |
+| 3 | `0.6264283668` | `0.5499` | `0.4660` | `0.6327` | `1030 / 433 / 1253` | `24 / 26 / 29` | `62 / 28 / 44` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt`, segment-set union | `0.5586` | `0.4522` | `0.5988` | `1104 / 459 / 1286` | `26 / 29 / 34` | `50 / 36 / 31` |
+| exact val128, `best.pt`, segment-set disabled | `0.5586` | `0.4522` | `0.5988` | `1104 / 459 / 1286` | `26 / 29 / 34` | `50 / 36 / 31` |
+| exact val128, `best_stop_line.pt` | `0.5550` | `0.4737` | `0.5783` | `1098 / 469 / 1292` | `27 / 27 / 33` | `48 / 37 / 33` |
+| broader val512, `best_stop_line.pt` | `0.5419` | `0.4033` | `0.6122` | `4244 / 1942 / 5233` | `97 / 113 / 174` | `225 / 115 / 170` |
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py tools/evaluate_pv26_lane60_checkpoint.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train: `1` epoch, `64` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 eval for `best.pt` with segment-set union.
+- Exact-val128 eval for `best.pt` with segment-set disabled.
+- Exact-val128 eval for `best_stop_line.pt`.
+- Broader-val512 eval for `best_stop_line.pt`.
+
+판단:
+
+- The seeded segment-set head/loss/decode path is runnable and trainable.
+- The final `best.pt` segment-set union row is identical to the disabled row on exact val128, so the learned segment decode does not add net metric value after fallback/dedupe.
+- The task-best exact stop-line row `0.4737`, TP/FP/FN `27 / 27 / 33`, does not beat the fixed projection-competition exact reference `0.5167`, `31 / 29 / 29`.
+- The broader-val512 task-best row `0.5419 / 0.4033 / 0.6122` is below the retained broader runtime composite `0.5628 / 0.4235 / 0.6187` on lane and stop-line, and far below the projection-competition stop-line reference `0.5164`, `126 / 91 / 145`.
+- Do not continue this exact branch as seed top-k, score threshold, max-segment, endpoint-loss-weight, head-LR, or longer-run sweep.
+- Reopen the segment-set idea only if the contract changes materially: for example dense seed denoising, segment-aligned verifier/objectness, candidate coverage reporting that recovers no-oracle positives, or a stronger field-to-set generator rather than one-shot top-K seed MLP endpoints.
