@@ -167,6 +167,9 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "stop_line_haf_valid_logits",
         "stop_line_endpoint_logits",
         "stop_line_endpoint_offset",
+        "stop_line_endpoint_pair_logits",
+        "stop_line_endpoint_pair_points",
+        "stop_line_endpoint_pair_verifier_logits",
         "stop_line_segment_seed_logits",
         "stop_line_segment_logits",
         "stop_line_segment_points",
@@ -1389,6 +1392,8 @@ def _stop_line_mask_loss_with_selector_weight(
     centerline_target_weight: float = 1.0,
     haf_aux_weight: float = 0.0,
     endpoint_pair_aux_weight: float = 0.0,
+    endpoint_pair_segment_aux_weight: float = 0.0,
+    endpoint_pair_verifier_aux_weight: float = 0.0,
     segment_set_aux_weight: float = 0.0,
     segment_verifier_aux_weight: float = 0.0,
     segment_denoise_aux_weight: float = 0.0,
@@ -1406,6 +1411,9 @@ def _stop_line_mask_loss_with_selector_weight(
     haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
     endpoint_logits = predictions.get("stop_line_endpoint_logits")
     endpoint_offset = predictions.get("stop_line_endpoint_offset")
+    endpoint_pair_logits = predictions.get("stop_line_endpoint_pair_logits")
+    endpoint_pair_points = predictions.get("stop_line_endpoint_pair_points")
+    endpoint_pair_verifier_logits = predictions.get("stop_line_endpoint_pair_verifier_logits")
     segment_seed_logits = predictions.get("stop_line_segment_seed_logits")
     segment_logits = predictions.get("stop_line_segment_logits")
     segment_points = predictions.get("stop_line_segment_points")
@@ -1563,6 +1571,20 @@ def _stop_line_mask_loss_with_selector_weight(
             stop_source=source,
             fallback_tensor=mask_logits,
         )
+    endpoint_pair_segment_loss = _zero_graph(mask_logits)
+    if float(endpoint_pair_segment_aux_weight) > 0.0:
+        endpoint_pair_segment_loss = _stop_line_segment_set_loss(
+            segment_logits=endpoint_pair_logits,
+            segment_points=endpoint_pair_points,
+            segment_verifier_logits=endpoint_pair_verifier_logits,
+            segment_seed_logits=None,
+            aux=aux,
+            encoded=encoded,
+            fallback_tensor=mask_logits,
+            verifier_aux_weight=float(endpoint_pair_verifier_aux_weight),
+            verifier_target_mode=segment_verifier_target_mode,
+            verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
+        )
     segment_set_loss = _zero_graph(mask_logits)
     if float(segment_set_aux_weight) > 0.0:
         segment_set_loss = _stop_line_segment_set_loss(
@@ -1620,6 +1642,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + float(geometry_aux_weight) * length_loss
         + float(haf_aux_weight) * haf_loss
         + float(endpoint_pair_aux_weight) * endpoint_pair_loss
+        + float(endpoint_pair_segment_aux_weight) * endpoint_pair_segment_loss
         + float(segment_set_aux_weight) * segment_set_loss
         + float(axis_segment_set_aux_weight) * axis_segment_set_loss
         + float(segment_denoise_aux_weight) * segment_denoise_loss
@@ -1978,6 +2001,8 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_centerline_target_weight: float = 1.0,
         stopline_haf_aux_weight: float = 0.0,
         stopline_endpoint_pair_aux_weight: float = 0.0,
+        stopline_endpoint_pair_segment_aux_weight: float = 0.0,
+        stopline_endpoint_pair_verifier_aux_weight: float = 0.0,
         stopline_segment_set_aux_weight: float = 0.0,
         stopline_segment_verifier_aux_weight: float = 0.0,
         stopline_segment_denoise_aux_weight: float = 0.0,
@@ -2037,6 +2062,8 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_centerline_target_weight = float(stopline_centerline_target_weight)
         self.stopline_haf_aux_weight = float(stopline_haf_aux_weight)
         self.stopline_endpoint_pair_aux_weight = float(stopline_endpoint_pair_aux_weight)
+        self.stopline_endpoint_pair_segment_aux_weight = float(stopline_endpoint_pair_segment_aux_weight)
+        self.stopline_endpoint_pair_verifier_aux_weight = float(stopline_endpoint_pair_verifier_aux_weight)
         self.stopline_segment_set_aux_weight = float(stopline_segment_set_aux_weight)
         self.stopline_segment_verifier_aux_weight = float(stopline_segment_verifier_aux_weight)
         self.stopline_segment_denoise_aux_weight = float(stopline_segment_denoise_aux_weight)
@@ -2139,6 +2166,8 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_centerline_target_weight": float(self.stopline_centerline_target_weight),
             "stopline_haf_aux_weight": float(self.stopline_haf_aux_weight),
             "stopline_endpoint_pair_aux_weight": float(self.stopline_endpoint_pair_aux_weight),
+            "stopline_endpoint_pair_segment_aux_weight": float(self.stopline_endpoint_pair_segment_aux_weight),
+            "stopline_endpoint_pair_verifier_aux_weight": float(self.stopline_endpoint_pair_verifier_aux_weight),
             "stopline_segment_set_aux_weight": float(self.stopline_segment_set_aux_weight),
             "stopline_segment_verifier_aux_weight": float(self.stopline_segment_verifier_aux_weight),
             "stopline_segment_denoise_aux_weight": float(self.stopline_segment_denoise_aux_weight),
@@ -2850,6 +2879,8 @@ class PV26MultiTaskLoss(nn.Module):
                 and float(self.stopline_centerline_target_weight) == 1.0
                 and float(self.stopline_haf_aux_weight) == 0.0
                 and float(self.stopline_endpoint_pair_aux_weight) == 0.0
+                and float(self.stopline_endpoint_pair_segment_aux_weight) == 0.0
+                and float(self.stopline_endpoint_pair_verifier_aux_weight) == 0.0
                 and float(self.stopline_segment_set_aux_weight) == 0.0
                 and float(self.stopline_segment_verifier_aux_weight) == 0.0
                 and float(self.stopline_segment_denoise_aux_weight) == 0.0
@@ -2868,6 +2899,8 @@ class PV26MultiTaskLoss(nn.Module):
                 centerline_target_weight=float(self.stopline_centerline_target_weight),
                 haf_aux_weight=float(self.stopline_haf_aux_weight),
                 endpoint_pair_aux_weight=float(self.stopline_endpoint_pair_aux_weight),
+                endpoint_pair_segment_aux_weight=float(self.stopline_endpoint_pair_segment_aux_weight),
+                endpoint_pair_verifier_aux_weight=float(self.stopline_endpoint_pair_verifier_aux_weight),
                 segment_set_aux_weight=float(self.stopline_segment_set_aux_weight),
                 segment_verifier_aux_weight=float(self.stopline_segment_verifier_aux_weight),
                 segment_denoise_aux_weight=float(self.stopline_segment_denoise_aux_weight),

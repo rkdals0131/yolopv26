@@ -12917,3 +12917,88 @@ Verification:
 - Broader-val512 was intentionally skipped to save compute and storage because the exact gate failed.
 - Do not continue this exact branch as endpoint radius, endpoint aux weight, pair score threshold, top-K, max-segment, head-LR, or longer-run tuning.
 - Reopen endpoint-pair work only if a materially different endpoint quality/verifier/consensus contract first suppresses FP on exact val128 while preserving or increasing TP.
+
+## 258. 2026-05-29 Stop-line endpoint-pair metric verifier: FP reduced, TP lost
+
+맥락:
+
+- The raw dual-endpoint pair head was trainable but exact-negative because it tied baseline TP while exploding FP.
+- This branch tested whether endpoint-pair work could be reopened with a materially different quality contract: generate a small endpoint-pair segment set inside the head, sample segment-aligned dense features, and train a metric-quality verifier.
+- The goal was not another endpoint threshold/top-K sweep. Raw endpoint-pair decode stayed disabled; only the verifier-scored segment-set output was used at runtime.
+- The user explicitly required actual training/evaluation, larger dataset use where justified, and no dataset copy/storage blow-up.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-endpoint-pair-metric-verifier`.
+- Reused `StopLineDenseLocalHead` endpoint logits/offset outputs, then added endpoint-pair segment-set outputs:
+  - `stop_line_endpoint_pair_logits`;
+  - `stop_line_endpoint_pair_points`;
+  - `stop_line_endpoint_pair_verifier_logits`.
+- Endpoint-pair segment generation:
+  - select top `4` left endpoint cells and top `4` right endpoint cells;
+  - combine all pairs and keep a small query set by pair logit;
+  - apply endpoint offsets to produce normalized segment endpoints;
+  - sample segment-aligned stop-line features and score with the existing verifier MLP.
+- Added endpoint-pair segment/verifier losses through `PV26MultiTaskLoss`:
+  - `stopline_endpoint_pair_segment_aux_weight`;
+  - `stopline_endpoint_pair_verifier_aux_weight`;
+  - verifier target mode `metric_quality`.
+- Added runtime config and evaluator overrides:
+  - `stop_line_endpoint_pair_segment_enabled`;
+  - `stop_line_endpoint_pair_segment_score_threshold`;
+  - `stop_line_endpoint_pair_segment_max_segments`;
+  - `stop_line_endpoint_pair_verifier_score_weight`.
+- Added lane60 probe experiment `stopline_endpoint_pair_metric_verifier`.
+- Kept lane decode `row_scan_tangent` and crosswalk `crosswalk_polygon_mode=hull`.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Storage handling deleted the smoke run, pruned duplicate task-best/last checkpoints and TensorBoard files, removed temporary YOLO weights, and retained only the main best checkpoint, history, summaries, and exact eval export. The retained main run is `118M`.
+
+Training artifacts:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_endpoint_pair_metric_verifier_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_081259`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_endpoint_pair_metric_verifier_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_081525`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Exact-val128 eval export: `analysis_exports/exact_val128_epoch2/metrics.csv` and `summary.json`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`; both training and exact evaluation scanned `429350` canonical records from the existing dataset root.
+- Training completed without non-finite/skipped-step failure.
+
+Smoke result:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| val4 after 32 train batches | `0.5344` | `0.0000` | `0.7273` | `0 / 1 / 2` |
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6000069488` | `0.5398` | `0.2581` | `0.6871` | `1054 / 516 / 1281` | `12 / 26 / 43` | `56 / 24 / 27` |
+| 2 | `0.6143041319` | `0.5643` | `0.3784` | `0.5988` | `1125 / 472 / 1265` | `21 / 30 / 39` | `50 / 36 / 31` |
+| 3 | `0.6189972068` | `0.5501` | `0.4248` | `0.6300` | `1034 / 442 / 1249` | `24 / 36 / 29` | `63 / 31 / 43` |
+
+Checkpoint eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt` | `0.6095422894` | `0.5616` | `0.3387` | `0.5818` | `1112 / 458 / 1278` | `21 / 43 / 39` | `48 / 36 / 33` |
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/evaluate_pv26_lane60_checkpoint.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_pv26_postprocess.py test/test_run_pv26_train.py`.
+- `git diff --check`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train: `1` epoch, `32` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 epoch-2 checkpoint eval for `best.pt`.
+
+판단:
+
+- The endpoint-pair metric verifier is a real trainable architecture/runtime contract, not a postprocess-only threshold replay.
+- It reduces exact FP relative to the raw endpoint-pair decode (`142 -> 43`) but loses too much TP (`26 -> 21`), so stop-line F1 drops to `0.3387`.
+- It is below baseline exact `0.4483`, `26 / 30 / 34`, below simple seeded segment-set task-best `0.4737`, `27 / 27 / 33`, below metric-quality verifier exact `0.4660`, `24 / 26 / 29`, and far below projection-competition exact `0.5167`, `31 / 29 / 29`.
+- Broader-val512 was intentionally skipped to save compute and storage because the exact gate failed.
+- Do not continue this exact branch as endpoint side top-K, verifier-score weight, metric-quality tau, segment score threshold, max-segment, head-LR, or longer-run tuning.
+- Reopen endpoint-pair only with a materially different candidate-coverage or consensus signal that improves exact TP/FP/FN first.

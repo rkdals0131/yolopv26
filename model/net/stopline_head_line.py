@@ -80,6 +80,7 @@ class StopLineDenseLocalHead(nn.Module):
         self.haf_valid_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.endpoint_logits = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.endpoint_offset = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
+        self.endpoint_pair_side_topk = 4
         self.segment_seed_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.segment_query_mlp = nn.Sequential(
             nn.Linear(self.hidden_dim + 2, self.hidden_dim),
@@ -157,6 +158,15 @@ class StopLineDenseLocalHead(nn.Module):
             selector_feat,
             segment_seed_logits,
         )
+        endpoint_logits = self.endpoint_logits(dense_feat)
+        endpoint_offset = self.endpoint_offset(dense_feat)
+        endpoint_pair_logits, endpoint_pair_points, endpoint_pair_verifier_logits = (
+            self._decode_endpoint_pair_segment_set(
+                selector_feat,
+                endpoint_logits,
+                endpoint_offset,
+            )
+        )
         axis_segment_logits, axis_segment_points, axis_segment_verifier_logits = self._decode_axis_profile_segment_set(
             selector_feat,
             segment_seed_logits,
@@ -186,8 +196,11 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_half_length": half_length,
             "stop_line_haf_endpoint": self.haf_endpoint(dense_feat),
             "stop_line_haf_valid_logits": self.haf_valid_logits(dense_feat),
-            "stop_line_endpoint_logits": self.endpoint_logits(dense_feat),
-            "stop_line_endpoint_offset": self.endpoint_offset(dense_feat),
+            "stop_line_endpoint_logits": endpoint_logits,
+            "stop_line_endpoint_offset": endpoint_offset,
+            "stop_line_endpoint_pair_logits": endpoint_pair_logits,
+            "stop_line_endpoint_pair_points": endpoint_pair_points,
+            "stop_line_endpoint_pair_verifier_logits": endpoint_pair_verifier_logits,
             "stop_line_segment_seed_logits": segment_seed_logits,
             "stop_line_segment_logits": segment_logits,
             "stop_line_segment_points": segment_points,
@@ -239,6 +252,72 @@ class StopLineDenseLocalHead(nn.Module):
         padded_verifier_logits[:, :query_count] = segment_verifier_logits
         padded_points[:, :query_count] = segment_points
         return padded_logits, padded_points, padded_verifier_logits
+
+    def _decode_endpoint_pair_segment_set(
+        self,
+        feature_map: torch.Tensor,
+        endpoint_logits: torch.Tensor,
+        endpoint_offset: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, channels, height, width = feature_map.shape
+        query_count = int(self.output_queries)
+        output_logits = feature_map.new_full((batch_size, query_count), -10.0)
+        output_points = feature_map.new_zeros((batch_size, query_count, 2, 2))
+        output_verifier = feature_map.new_full((batch_size, query_count), -10.0)
+        if endpoint_logits.shape[1] != 2 or endpoint_offset.shape[1] != 4:
+            return output_logits, output_points, output_verifier
+        flat_features = feature_map.flatten(2).transpose(1, 2)
+        flat_offsets = endpoint_offset.flatten(2).transpose(1, 2)
+        flat_left_logits = endpoint_logits[:, 0].flatten(1)
+        flat_right_logits = endpoint_logits[:, 1].flatten(1)
+        flat_count = int(flat_left_logits.shape[1])
+        if flat_count <= 0:
+            return output_logits, output_points, output_verifier
+        side_topk = min(max(1, int(self.endpoint_pair_side_topk)), flat_count)
+        left_scores, left_indices = torch.topk(flat_left_logits, k=side_topk, dim=1)
+        right_scores, right_indices = torch.topk(flat_right_logits, k=side_topk, dim=1)
+        denom = feature_map.new_tensor([float(width), float(height)]).view(1, 2)
+        for batch_index in range(batch_size):
+            left_rows = torch.div(left_indices[batch_index], width, rounding_mode="floor")
+            left_cols = left_indices[batch_index].remainder(width)
+            right_rows = torch.div(right_indices[batch_index], width, rounding_mode="floor")
+            right_cols = right_indices[batch_index].remainder(width)
+            left_offsets = flat_offsets[batch_index, left_indices[batch_index], 0:2]
+            right_offsets = flat_offsets[batch_index, right_indices[batch_index], 2:4]
+            left_grid = torch.stack(
+                [left_cols.to(dtype=feature_map.dtype), left_rows.to(dtype=feature_map.dtype)],
+                dim=-1,
+            )
+            right_grid = torch.stack(
+                [right_cols.to(dtype=feature_map.dtype), right_rows.to(dtype=feature_map.dtype)],
+                dim=-1,
+            )
+            left_points = ((left_grid + left_offsets) / denom).clamp(0.0, 1.0)
+            right_points = ((right_grid + right_offsets) / denom).clamp(0.0, 1.0)
+            left_features = flat_features[batch_index, left_indices[batch_index]]
+            right_features = flat_features[batch_index, right_indices[batch_index]]
+
+            pair_logits = 0.5 * (left_scores[batch_index, :, None] + right_scores[batch_index, None, :])
+            pair_logits_flat = pair_logits.flatten()
+            pair_count = min(query_count, int(pair_logits_flat.shape[0]))
+            selected_scores, selected_pair_indices = torch.topk(pair_logits_flat, k=pair_count, dim=0)
+            left_pair_indices = torch.div(selected_pair_indices, side_topk, rounding_mode="floor")
+            right_pair_indices = selected_pair_indices.remainder(side_topk)
+            selected_left = left_points[left_pair_indices]
+            selected_right = right_points[right_pair_indices]
+            selected_points = torch.stack([selected_left, selected_right], dim=1)
+            selected_features = 0.5 * (
+                left_features[left_pair_indices] + right_features[right_pair_indices]
+            )
+            output_logits[batch_index, :pair_count] = selected_scores
+            output_points[batch_index, :pair_count] = selected_points
+            verifier = self._verify_segments(
+                feature_map[batch_index : batch_index + 1],
+                selected_features.unsqueeze(0),
+                selected_points.unsqueeze(0),
+            )
+            output_verifier[batch_index, :pair_count] = verifier.squeeze(0)
+        return output_logits, output_points, output_verifier
 
     def _top_seed_features(
         self,

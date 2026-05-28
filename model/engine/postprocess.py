@@ -88,6 +88,10 @@ class PV26PostprocessConfig:
     stop_line_endpoint_pair_score_threshold: float = 0.55
     stop_line_endpoint_pair_topk: int = 8
     stop_line_endpoint_pair_max_segments: int = 3
+    stop_line_endpoint_pair_segment_enabled: bool = False
+    stop_line_endpoint_pair_segment_score_threshold: float = 0.50
+    stop_line_endpoint_pair_segment_max_segments: int = 3
+    stop_line_endpoint_pair_verifier_score_weight: float = 0.0
     stop_line_segment_set_enabled: bool = False
     stop_line_segment_set_score_threshold: float = 0.50
     stop_line_segment_set_max_segments: int = 3
@@ -2011,6 +2015,9 @@ def _decode_stop_line_rows(
     haf_valid_logits: torch.Tensor | None = None,
     endpoint_logits: torch.Tensor | None = None,
     endpoint_offset: torch.Tensor | None = None,
+    endpoint_pair_logits: torch.Tensor | None = None,
+    endpoint_pair_points: torch.Tensor | None = None,
+    endpoint_pair_verifier_logits: torch.Tensor | None = None,
     segment_logits: torch.Tensor | None = None,
     segment_points: torch.Tensor | None = None,
     segment_verifier_logits: torch.Tensor | None = None,
@@ -2035,6 +2042,10 @@ def _decode_stop_line_rows(
     endpoint_pair_score_threshold: float = 0.55,
     endpoint_pair_topk: int = 8,
     endpoint_pair_max_segments: int = 3,
+    endpoint_pair_segment_enabled: bool = False,
+    endpoint_pair_segment_score_threshold: float = 0.50,
+    endpoint_pair_segment_max_segments: int = 3,
+    endpoint_pair_verifier_score_weight: float = 0.0,
     presence_logits: torch.Tensor | None = None,
     presence_threshold: float = 0.0,
     component_gate_source: str = "center",
@@ -2079,6 +2090,18 @@ def _decode_stop_line_rows(
                 score_threshold=float(endpoint_pair_score_threshold),
                 topk=int(endpoint_pair_topk),
                 max_segments=int(endpoint_pair_max_segments),
+            )
+        )
+    if bool(endpoint_pair_segment_enabled):
+        segment_set_decoded.extend(
+            _decode_stopline_segment_set(
+                segment_logits=endpoint_pair_logits,
+                segment_points=endpoint_pair_points,
+                segment_verifier_logits=endpoint_pair_verifier_logits,
+                meta=meta,
+                score_threshold=float(endpoint_pair_segment_score_threshold),
+                max_segments=int(endpoint_pair_segment_max_segments),
+                verifier_score_weight=float(endpoint_pair_verifier_score_weight),
             )
         )
     if bool(haf_enabled):
@@ -2127,6 +2150,7 @@ def _decode_stop_line_rows(
                         int(segment_set_max_segments),
                         int(axis_segment_set_max_segments),
                         int(endpoint_pair_max_segments),
+                        int(endpoint_pair_segment_max_segments),
                     )
                 ]
             return decoded
@@ -2171,6 +2195,7 @@ def _decode_stop_line_rows(
             int(segment_set_max_segments),
             int(axis_segment_set_max_segments),
             int(endpoint_pair_max_segments),
+            int(endpoint_pair_segment_max_segments),
         )
     ]
 
@@ -2264,6 +2289,9 @@ def postprocess_pv26_batch(
     stop_line_haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
     stop_line_endpoint_logits = predictions.get("stop_line_endpoint_logits")
     stop_line_endpoint_offset = predictions.get("stop_line_endpoint_offset")
+    stop_line_endpoint_pair_logits = predictions.get("stop_line_endpoint_pair_logits")
+    stop_line_endpoint_pair_points = predictions.get("stop_line_endpoint_pair_points")
+    stop_line_endpoint_pair_verifier_logits = predictions.get("stop_line_endpoint_pair_verifier_logits")
     stop_line_segment_logits = predictions.get("stop_line_segment_logits")
     stop_line_segment_points = predictions.get("stop_line_segment_points")
     stop_line_segment_verifier_logits = predictions.get("stop_line_segment_verifier_logits")
@@ -2389,6 +2417,21 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_endpoint_offset, torch.Tensor)
                         else None
                     ),
+                    endpoint_pair_logits=(
+                        stop_line_endpoint_pair_logits[batch_index]
+                        if isinstance(stop_line_endpoint_pair_logits, torch.Tensor)
+                        else None
+                    ),
+                    endpoint_pair_points=(
+                        stop_line_endpoint_pair_points[batch_index]
+                        if isinstance(stop_line_endpoint_pair_points, torch.Tensor)
+                        else None
+                    ),
+                    endpoint_pair_verifier_logits=(
+                        stop_line_endpoint_pair_verifier_logits[batch_index]
+                        if isinstance(stop_line_endpoint_pair_verifier_logits, torch.Tensor)
+                        else None
+                    ),
                     segment_logits=(
                         stop_line_segment_logits[batch_index]
                         if isinstance(stop_line_segment_logits, torch.Tensor)
@@ -2437,6 +2480,10 @@ def postprocess_pv26_batch(
                     endpoint_pair_score_threshold=config.stop_line_endpoint_pair_score_threshold,
                     endpoint_pair_topk=config.stop_line_endpoint_pair_topk,
                     endpoint_pair_max_segments=config.stop_line_endpoint_pair_max_segments,
+                    endpoint_pair_segment_enabled=config.stop_line_endpoint_pair_segment_enabled,
+                    endpoint_pair_segment_score_threshold=config.stop_line_endpoint_pair_segment_score_threshold,
+                    endpoint_pair_segment_max_segments=config.stop_line_endpoint_pair_segment_max_segments,
+                    endpoint_pair_verifier_score_weight=config.stop_line_endpoint_pair_verifier_score_weight,
                 ),
                 "crosswalks": _decode_crosswalk_rows(
                     crosswalk_pred[batch_index],

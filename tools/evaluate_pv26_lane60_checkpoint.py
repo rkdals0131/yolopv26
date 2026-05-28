@@ -76,6 +76,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-line-segment-set-score-threshold", type=float, default=None)
     parser.add_argument("--stop-line-segment-set-max-segments", type=int, default=None)
     parser.add_argument("--stop-line-segment-verifier-score-weight", type=float, default=None)
+    parser.add_argument("--stop-line-endpoint-pair-segment-enabled", action="store_true", default=None)
+    parser.add_argument(
+        "--stop-line-endpoint-pair-segment-disabled",
+        action="store_false",
+        dest="stop_line_endpoint_pair_segment_enabled",
+    )
+    parser.add_argument("--stop-line-endpoint-pair-segment-score-threshold", type=float, default=None)
+    parser.add_argument("--stop-line-endpoint-pair-segment-max-segments", type=int, default=None)
+    parser.add_argument("--stop-line-endpoint-pair-verifier-score-weight", type=float, default=None)
     parser.add_argument(
         "--stop-line-component-gate-source",
         choices=("center", "selector", "max"),
@@ -212,6 +221,20 @@ def _postprocess_override_config(args: argparse.Namespace, trainer: Any) -> Any 
         replacements["stop_line_segment_set_max_segments"] = int(args.stop_line_segment_set_max_segments)
     if getattr(args, "stop_line_segment_verifier_score_weight", None) is not None:
         replacements["stop_line_segment_verifier_score_weight"] = float(args.stop_line_segment_verifier_score_weight)
+    if getattr(args, "stop_line_endpoint_pair_segment_enabled", None) is not None:
+        replacements["stop_line_endpoint_pair_segment_enabled"] = bool(args.stop_line_endpoint_pair_segment_enabled)
+    if getattr(args, "stop_line_endpoint_pair_segment_score_threshold", None) is not None:
+        replacements["stop_line_endpoint_pair_segment_score_threshold"] = float(
+            args.stop_line_endpoint_pair_segment_score_threshold
+        )
+    if getattr(args, "stop_line_endpoint_pair_segment_max_segments", None) is not None:
+        replacements["stop_line_endpoint_pair_segment_max_segments"] = int(
+            args.stop_line_endpoint_pair_segment_max_segments
+        )
+    if getattr(args, "stop_line_endpoint_pair_verifier_score_weight", None) is not None:
+        replacements["stop_line_endpoint_pair_verifier_score_weight"] = float(
+            args.stop_line_endpoint_pair_verifier_score_weight
+        )
     if getattr(args, "stop_line_component_gate_source", None) is not None:
         replacements["stop_line_component_gate_source"] = str(args.stop_line_component_gate_source)
     if getattr(args, "crosswalk_obj_threshold", None) is not None:

@@ -300,6 +300,17 @@ Latest stop-line dual-endpoint pair head train/eval result:
 - exact-val128 checkpoint eval: objective `0.5857434590`, lane/stop/cross F1 `0.5619 / 0.2281 / 0.5854`, TP/FP/FN lane `1112 / 456 / 1278`, stop-line `26 / 142 / 34`, crosswalk `48 / 35 / 33`.
 - 판단: the dual-endpoint target/head learns enough to produce stop-line TP, but the pair decoder has severe FP-control failure. Exact stop-line TP equals baseline exact TP `26`, while FP increases from baseline `30` to `142`; it is far below projection-comp exact `0.5167`, `31 / 29 / 29`. Broader val512 was intentionally skipped because the exact gate failed. Do not continue this exact branch as endpoint radius, pair score threshold, top-K, max-segment, aux weight, head-LR, or epoch-count tuning. Reopen only with a materially different endpoint verifier/quality contract that first suppresses FP on exact val128.
 
+Latest stop-line endpoint-pair metric-verifier train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-endpoint-pair-metric-verifier`.
+- changed axis: keep the left/right endpoint heatmap and endpoint-offset head, but disable the raw FP-heavy endpoint-pair runtime decoder. Instead, the head builds a small endpoint-pair segment set from top left/right endpoint cells, samples segment-aligned dense features, and trains a metric-quality verifier for those candidate segments. This is a changed emit/verification contract, not a pair-threshold-only replay.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created. The smoke run was deleted, duplicate task-best/last checkpoints, TensorBoard files, and temporary YOLO weights were pruned, and the retained main run is `118M`.
+- main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_endpoint_pair_metric_verifier_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_081525`.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA. Dataset split reported by the run: train `326709`, val `82641`, test `20000`; the evaluator scanned `429350` canonical records from the same dataset root.
+- best training epoch `3`: objective `0.6189972068`, lane/stop/cross F1 `0.5501 / 0.4248 / 0.6300`, TP/FP/FN lane `1034 / 442 / 1249`, stop-line `24 / 36 / 29`, crosswalk `63 / 31 / 43`.
+- exact-val128 checkpoint eval: objective `0.6095422894`, lane/stop/cross F1 `0.5616 / 0.3387 / 0.5818`, TP/FP/FN lane `1112 / 458 / 1278`, stop-line `21 / 43 / 39`, crosswalk `48 / 36 / 33`.
+- 판단: the endpoint-pair metric verifier fixes the raw endpoint-pair FP explosion directionally (`142` exact FP down to `43`), but it loses too much TP (`26 -> 21`) and remains below baseline exact `0.4483`, simple seeded segment-set task-best `0.4737`, metric-quality verifier `0.4660`, and projection-comp exact `0.5167`. Broader val512 was intentionally skipped because the exact gate failed. Do not continue this exact branch as endpoint side top-K, verifier-score weight, metric-quality tau, segment threshold, max-segment, head-LR, or epoch-count tuning. Reopen endpoint-pair only with a materially different candidate-coverage or consensus signal that improves exact TP/FP/FN first.
+
 Latest lane feature-ROI repair replay result:
 
 - branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.

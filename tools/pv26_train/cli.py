@@ -206,6 +206,12 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         stop_line_endpoint_pair_score_threshold=float(train_config.stop_line_endpoint_pair_score_threshold),
         stop_line_endpoint_pair_topk=int(train_config.stop_line_endpoint_pair_topk),
         stop_line_endpoint_pair_max_segments=int(train_config.stop_line_endpoint_pair_max_segments),
+        stop_line_endpoint_pair_segment_enabled=bool(train_config.stop_line_endpoint_pair_segment_enabled),
+        stop_line_endpoint_pair_segment_score_threshold=float(
+            train_config.stop_line_endpoint_pair_segment_score_threshold
+        ),
+        stop_line_endpoint_pair_segment_max_segments=int(train_config.stop_line_endpoint_pair_segment_max_segments),
+        stop_line_endpoint_pair_verifier_score_weight=float(train_config.stop_line_endpoint_pair_verifier_score_weight),
         stop_line_segment_set_enabled=bool(train_config.stop_line_segment_set_enabled),
         stop_line_segment_set_score_threshold=float(train_config.stop_line_segment_set_score_threshold),
         stop_line_segment_set_max_segments=int(train_config.stop_line_segment_set_max_segments),
@@ -603,6 +609,8 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_centerline_target_weight=train_config.stopline_centerline_target_weight,
         stopline_haf_aux_weight=train_config.stopline_haf_aux_weight,
         stopline_endpoint_pair_aux_weight=train_config.stopline_endpoint_pair_aux_weight,
+        stopline_endpoint_pair_segment_aux_weight=train_config.stopline_endpoint_pair_segment_aux_weight,
+        stopline_endpoint_pair_verifier_aux_weight=train_config.stopline_endpoint_pair_verifier_aux_weight,
         stopline_segment_set_aux_weight=train_config.stopline_segment_set_aux_weight,
         stopline_segment_verifier_aux_weight=train_config.stopline_segment_verifier_aux_weight,
         stopline_segment_denoise_aux_weight=train_config.stopline_segment_denoise_aux_weight,
