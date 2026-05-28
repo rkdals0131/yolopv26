@@ -11997,6 +11997,64 @@ Verification:
 - Do not continue this as longer same-axis HAF aux-weight, head-LR, valid-threshold, min-vote, or covariance sweeps.
 - Reopen HAF only if the branch changes the FP-control contract itself, for example calibrated valid-quality hard negatives, a segment-aligned verifier, or a materially different candidate generator.
 
+## 245A. 2026-05-29 Stop-line HAF quality-hardneg artifact: stronger quality supervision still collapses FP
+
+맥락:
+
+- Section 245 closed the simple HAF endpoint/valid consensus decoder because the HAF-enabled path was FP-heavy.
+- A retained local run artifact shows the next natural HAF FP-control premise was also tested: add HAF quality supervision and a hard-negative quality weight.
+- This result was not yet reflected in the canonical docs, so the main value here is preventing a duplicate HAF-quality rerun.
+
+구현 / artifact state:
+
+- Retained run artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_haf_quality_hardneg_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_005721`.
+- The run config recorded `stopline_haf_quality_aux_weight=0.5`, `stopline_haf_quality_hard_negative_weight=8.0`, `stop_line_haf_quality_threshold=0.7`, `stop_line_haf_enabled=true`, lane `row_scan_tangent`, and `crosswalk_polygon_mode=hull`.
+- Reproducibility caveat: this is a retained artifact from local run state, not a currently maintained code surface in `develop`; rerunning the exact branch would require restoring/reimplementing the quality-head code path.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Storage state: retained run size is `130M`, with `phase_4/checkpoints/best.pt` plus history and exact/broader eval exports.
+
+Training artifacts:
+
+- Main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_haf_quality_hardneg_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_005721`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Exact-val128 eval exports:
+  - `analysis_exports/val128_epoch2_haf_quality070/summary.json`.
+  - `analysis_exports/val128_epoch2_haf_disabled/summary.json`.
+- Broader-val512 eval export:
+  - `analysis_exports/broader_val512_epoch2_haf_quality070/summary.json`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5705118524` | `0.5397` | `0.0584` | `0.6951` | `1056 / 522 / 1279` | `9 / 244 / 46` | `57 / 24 / 26` |
+| 2 | `0.5669290289` | `0.5566` | `0.1233` | `0.5868` | `1101 / 465 / 1289` | `18 / 214 / 42` | `49 / 37 / 32` |
+| 3 | `0.5812505535` | `0.5472` | `0.1544` | `0.6566` | `1023 / 433 / 1260` | `23 / 222 / 30` | `65 / 27 / 41` |
+
+Checkpoint eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, HAF-quality threshold `0.70` | `0.5596` | `0.1277` | `0.5868` | `1101 / 444 / 1289` | `18 / 204 / 42` | `49 / 37 / 32` |
+| exact val128, HAF disabled | `0.5596` | `0.3091` | `0.5868` | `1101 / 444 / 1289` | `17 / 33 / 43` | `49 / 37 / 32` |
+| broader val512, HAF-quality threshold `0.70` | `0.5396` | `0.1360` | `0.6180` | `4198 / 1886 / 5279` | `83 / 867 / 188` | `237 / 135 / 158` |
+
+Verification:
+
+- Existing artifact inspection of `phase_4/history/epochs.jsonl`.
+- Existing exact-val128 summary inspection for HAF-quality threshold `0.70`.
+- Existing exact-val128 summary inspection with HAF disabled.
+- Existing broader-val512 summary inspection for HAF-quality threshold `0.70`.
+
+판단:
+
+- The HAF quality/hard-negative premise did not solve FP control. It made the HAF-enabled broader row much worse: stop-line FP `867`, F1 `0.1360`.
+- The HAF-disabled exact row also remains low (`0.3091`), so the checkpoint itself is not a useful stop-line base.
+- This is below the retained raw runtime stop-line `0.4235` and far below projection-competition `0.5164`.
+- Do not repeat HAF quality threshold, quality hard-negative weight, HAF aux weight, head-LR, or longer-run tuning.
+- Reopen HAF only with a genuinely different emit/verification contract that first proves FP control and no-oracle recovery on exact val128.
+
 ## 246. 2026-05-28 Stop-line seeded segment-set: trainable but below projection reference
 
 맥락:
