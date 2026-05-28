@@ -6,6 +6,7 @@ import torch
 
 
 CONFLICT_TASKS = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
+CONFLICT_PARAM_GROUPS = ("trunk", "heads")
 
 
 def normalize_multitask_conflict(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -16,14 +17,21 @@ def normalize_multitask_conflict(raw: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(tasks_raw, (list, tuple)):
         raise TypeError("multitask_conflict.tasks must be a list")
     tasks = tuple(str(task) for task in tasks_raw if str(task) in CONFLICT_TASKS)
+    param_groups_raw = payload.get("param_groups", ("trunk",))
+    if not isinstance(param_groups_raw, (list, tuple)):
+        raise TypeError("multitask_conflict.param_groups must be a list")
+    param_groups = tuple(str(group) for group in param_groups_raw if str(group) in CONFLICT_PARAM_GROUPS)
     if mode not in {"none", "pcgrad_style"}:
         raise ValueError("multitask_conflict.mode must be one of: none, pcgrad_style")
     if not tasks:
         tasks = CONFLICT_TASKS
+    if not param_groups:
+        param_groups = ("trunk",)
     return {
         "enabled": enabled,
         "mode": mode,
         "tasks": tasks,
+        "param_groups": param_groups,
     }
 
 
@@ -33,6 +41,7 @@ def init_multitask_conflict_state(config: dict[str, Any] | None) -> dict[str, An
         "enabled": bool(normalized.get("enabled", False)),
         "mode": str(normalized.get("mode", "none")),
         "tasks": tuple(str(task) for task in normalized.get("tasks", CONFLICT_TASKS)),
+        "param_groups": tuple(str(group) for group in normalized.get("param_groups", ("trunk",))),
         "accumulated_trunk_grads": [],
         "accumulated_micro_steps": 0,
     }
@@ -134,7 +143,7 @@ def compute_pcgrad_trunk_update(
     if not bool(config.get("enabled", False)) or str(config.get("mode")) != "pcgrad_style":
         return None, {"enabled": False, "mode": "none"}
     if not params:
-        return None, {"enabled": False, "mode": "pcgrad_style", "reason": "no_trunk_params"}
+        return None, {"enabled": False, "mode": "pcgrad_style", "reason": "no_target_params"}
 
     tasks = tuple(
         str(task)
@@ -190,6 +199,8 @@ def compute_pcgrad_trunk_update(
         "enabled": True,
         "mode": "pcgrad_style",
         "tasks": list(tasks),
+        "param_groups": [str(group) for group in config.get("param_groups", ("trunk",))],
+        "param_count": len(params),
         "conflict_pairs": [[left, right] for left, right in conflict_pairs],
         "pairwise_dots": pairwise_dots,
         "raw_grad_norms": {task: _grad_norm(raw_grads[task]) for task in tasks},

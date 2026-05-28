@@ -12280,3 +12280,72 @@ Verification:
 - Crosswalk is retained above `0.60`, but that does not compensate for lane and stop-line regression.
 - Do not continue this exact branch as trunk-LR, PCGrad task-list, epoch-count, or loss-weight tuning.
 - Reopen training-exposure work only if the contract changes materially, for example task-specific zero-gated adapters, head/adapter-level gradient balancing, or a different stop-line/lane emit contract that first changes TP/FP/FN.
+
+## 250. 2026-05-29 Head-level PCGrad rebalance: plumbing works, current heads-only contract is no-op
+
+맥락:
+
+- GPT Pro's architecture-level review correctly pointed out that the previous PCGrad path mattered only for trainable shared parameters.
+- The upper-trunk branch proved real shared-trunk conflicts exist, but broader F1 regressed.
+- This follow-up checked the other half of the premise: can PCGrad be targeted at stage-4 head parameters, and does current `lane_family_heads_only` training actually expose shared lane-family head gradients?
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/head-level-pcgrad-rebalance`.
+- Extended the multitask conflict config with `param_groups`, defaulting to `["trunk"]` for backward compatibility.
+- Added selected-optimizer-group parameter collection so PCGrad can target `trunk`, `heads`, or both with dedupe.
+- Added PCGrad diagnostic aggregation for `param_groups` and mean target parameter count.
+- Added lane60 probe experiment `core_centerline_head_pcgrad`.
+- Freeze policy: `lane_family_heads_only`.
+- Optimizer exposure: `trunk_lr=0.0`, `head_lr=1.0e-4`.
+- Loss weights: lane `2.25`, stop-line `2.25`, crosswalk `1.75`, detector and traffic-light attribute losses disabled for this phase.
+- Multitask conflict override: `multitask_conflict.enabled=true`, `mode=pcgrad_style`, tasks `lane`, `stop_line`, `crosswalk`, `param_groups=["heads"]`.
+- Lane decode remained `row_scan_tangent`; crosswalk remained `crosswalk_polygon_mode=hull`.
+- Dataset handling reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created.
+- Storage handling deleted the negative smoke run and temporary YOLO weight download after extracting metric/diagnostic evidence.
+
+Training artifact:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_head_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_040823`.
+- Smoke scale: `1` epoch, `8` train batches, `4` val batches, batch size `2`, CUDA.
+
+Smoke result:
+
+| Metric | Value |
+| --- | ---: |
+| objective | `0.6197765539` |
+| lane F1 | `0.4750` |
+| stop-line F1 | `0.0000` |
+| crosswalk F1 | `0.6667` |
+| lane TP/FP/FN | `19 / 13 / 29` |
+| stop-line TP/FP/FN | `0 / 1 / 1` |
+| crosswalk TP/FP/FN | `1 / 1 / 0` |
+
+PCGrad diagnostics:
+
+- `8` PCGrad-enabled steps.
+- `param_groups=["heads"]`.
+- mean target parameter count: `162`.
+- mean pairwise dot:
+  - lane vs stop-line: `0.0`.
+  - lane vs crosswalk: `0.0`.
+  - stop-line vs crosswalk: `0.0`.
+- conflict rates: empty.
+- projection rates: empty.
+- raw and projected grad norms were identical for each task.
+
+Verification:
+
+- `python -m py_compile model/engine/multitask_conflict.py model/engine/_trainer_step.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_multitask_conflict.py`.
+- `python -m unittest discover -s test -p 'test_multitask_conflict.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `PYTHONPATH=test python -m unittest test_pv26_runtime_sanity.PV26PreparedDatasetRuntimeSanityTests.test_trainer_applies_pcgrad_style_multitask_conflict_snapshot`.
+- Real CUDA smoke train: `1` epoch, `8` train batches, `4` val batches.
+
+판단:
+
+- The implementation is useful infrastructure: PCGrad can now target non-trunk optimizer groups and records which groups were active.
+- The experiment itself is negative before broader training. Current stage-4 heads-only parameters are effectively task-specific/disjoint, so lane / stop-line / crosswalk gradients do not collide on the selected head parameter set.
+- A larger same-axis run would mostly reproduce ordinary heads-only training, not a true gradient-balancing intervention.
+- Do not continue this exact branch as a PCGrad task-list, `param_groups=["heads"]`, loss-weight, head-LR, or epoch-count sweep.
+- Reopen this training-exposure family only after adding a real shared surface, such as zero-gated task adapters/shared lane-family routing, or after changing the lane/stop-line emit contract so TP/FP/FN movement appears before broadening.

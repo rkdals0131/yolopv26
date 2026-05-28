@@ -130,6 +130,19 @@ def _optimizer_group_params(trainer: Any, group_name: str) -> list[torch.nn.Para
     return params
 
 
+def _optimizer_named_group_params(trainer: Any, group_names: tuple[str, ...]) -> list[torch.nn.Parameter]:
+    params: list[torch.nn.Parameter] = []
+    seen: set[int] = set()
+    for group_name in group_names:
+        for param in _optimizer_group_params(trainer, group_name):
+            param_id = id(param)
+            if param_id in seen:
+                continue
+            seen.add(param_id)
+            params.append(param)
+    return params
+
+
 def _apply_projected_grads(
     params: list[torch.nn.Parameter],
     grads: list[torch.Tensor | None] | None,
@@ -204,19 +217,21 @@ def run_train_step(
             trainer.skipped_steps += 1
             trainer.multitask_conflict_state = reset_multitask_conflict_state(getattr(trainer, "multitask_conflict_state", {}))
         else:
-            trunk_params = _optimizer_group_params(trainer, "trunk")
+            conflict_config = getattr(trainer, "multitask_conflict", {})
+            conflict_param_groups = tuple(str(group) for group in conflict_config.get("param_groups", ("trunk",)))
+            pcgrad_params = _optimizer_named_group_params(trainer, conflict_param_groups)
             pcgrad_grads = None
-            if bool(getattr(trainer, "multitask_conflict", {}).get("enabled", False)):
+            if bool(conflict_config.get("enabled", False)):
                 task_loss_weights = getattr(trainer.criterion, "loss_weights", {})
                 weighted_task_losses = {
                     task_name: losses[task_name] * float(task_loss_weights.get(task_name, 1.0)) / float(trainer.accumulate_steps)
-                    for task_name in getattr(trainer, "multitask_conflict", {}).get("tasks", ())
+                    for task_name in conflict_config.get("tasks", ())
                     if task_name in losses
                 }
                 pcgrad_grads, multitask_conflict_snapshot = compute_pcgrad_trunk_update(
                     weighted_task_losses,
-                    params=trunk_params,
-                    config=getattr(trainer, "multitask_conflict", {}),
+                    params=pcgrad_params,
+                    config=conflict_config,
                 )
                 trainer.multitask_conflict_state = accumulate_pcgrad_trunk_update(
                     getattr(trainer, "multitask_conflict_state", {}),
@@ -240,7 +255,7 @@ def run_train_step(
                     trainer.scaler.unscale_(trainer.optimizer)
                 if pcgrad_grads is not None:
                     _apply_projected_grads(
-                        trunk_params,
+                        pcgrad_params,
                         current_pcgrad_trunk_update(getattr(trainer, "multitask_conflict_state", {})),
                     )
                 if trainer.grad_clip_norm is not None:

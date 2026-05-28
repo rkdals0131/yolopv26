@@ -21,11 +21,13 @@ class MultiTaskConflictTests(unittest.TestCase):
                 "enabled": True,
                 "mode": "pcgrad_style",
                 "tasks": ["det", "tl_attr", "lane", "stop_line", "crosswalk"],
+                "param_groups": ["heads"],
             }
         )
         self.assertTrue(config["enabled"])
         self.assertEqual(config["mode"], "pcgrad_style")
         self.assertEqual(config["tasks"], ("det", "tl_attr", "lane", "stop_line", "crosswalk"))
+        self.assertEqual(config["param_groups"], ("heads",))
 
     def test_compute_pcgrad_trunk_update_returns_snapshot(self) -> None:
         p1 = torch.nn.Parameter(torch.tensor([1.0, -1.0], requires_grad=True))

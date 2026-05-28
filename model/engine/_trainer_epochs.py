@@ -137,12 +137,20 @@ def _aggregate_pcgrad_window(*, epoch: int, window: list[dict[str, Any]]) -> dic
     task_conflict_counts: Counter[str] = Counter()
     pairwise_sums: Counter[str] = Counter()
     pairwise_counts: Counter[str] = Counter()
+    param_groups: set[str] = set()
+    param_count_sum = 0
+    param_count_seen = 0
     enabled_steps = 0
     for summary in window:
         pcgrad = summary.get("multitask_conflict")
         if not isinstance(pcgrad, dict) or not pcgrad.get("enabled"):
             continue
         enabled_steps += 1
+        for group in pcgrad.get("param_groups", []):
+            param_groups.add(str(group))
+        if isinstance(pcgrad.get("param_count"), int):
+            param_count_sum += int(pcgrad["param_count"])
+            param_count_seen += 1
         for pair in pcgrad.get("conflict_pairs", []):
             if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                 continue
@@ -166,6 +174,8 @@ def _aggregate_pcgrad_window(*, epoch: int, window: list[dict[str, Any]]) -> dic
         "window_ended_history_index": int(window[-1].get("history_index", 0)) if window else 0,
         "steps": len(window),
         "pcgrad_enabled_steps": int(enabled_steps),
+        "param_groups": sorted(param_groups),
+        "mean_param_count": float(param_count_sum) / float(param_count_seen) if param_count_seen else 0.0,
         "conflict_rate": {
             name: float(count) / float(denominator)
             for name, count in sorted(conflict_counts.items())

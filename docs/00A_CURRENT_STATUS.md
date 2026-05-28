@@ -204,6 +204,17 @@ Latest upper-trunk PCGrad rebalance train/eval result:
 - broader-val512 checkpoint eval: lane/stop/cross F1 `0.5412 / 0.3992 / 0.6168`, TP/FP/FN lane `4224 / 1910 / 5253`, stop-line `95 / 110 / 176`, crosswalk `231 / 123 / 164`.
 - 판단: upper-trunk PCGrad exposes and projects conflicting task gradients, but the current retained runtime composite is still better on broad lane/stop-line (`0.5628 / 0.4235 / 0.6187`). Do not continue this exact branch as trunk-LR, PCGrad task-list, epoch-count, or loss-weight tuning. If training exposure is reopened, it needs a materially different adapter/head-level balancing contract, not only upper-trunk PCGrad on the same row-scan/tangent and stop-line readout.
 
+Latest head-level PCGrad smoke result:
+
+- branch/worktree: `exp/lane-family-f1/head-level-pcgrad-rebalance`.
+- changed axis: extend the PCGrad plumbing so the selected optimizer parameter groups can be `trunk`, `heads`, or both, then test the stage-4 `lane_family_heads_only` premise with `param_groups=["heads"]`.
+- storage contract: the smoke training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly. No dataset copy was created. The negative smoke run and temporary YOLO download were deleted after metric/diagnostic extraction.
+- smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_head_pcgrad_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_040823`, now deleted.
+- smoke scale: `1` epoch, `8` train batches, `4` val batches, batch size `2`, CUDA.
+- smoke val4 metrics: objective `0.6197765539`, lane/stop/cross F1 `0.4750 / 0.0000 / 0.6667`, TP/FP/FN lane `19 / 13 / 29`, stop-line `0 / 1 / 1`, crosswalk `1 / 1 / 0`.
+- PCGrad diagnostics: `8` enabled steps, `param_groups=["heads"]`, mean target parameter count `162`, but all pairwise dots were exactly `0.0`, and conflict/projection rates were empty.
+- 판단: current heads-only lane-family training has task-specific head parameters with no shared head/adapter surface for PCGrad to balance. This branch proves the plumbing can target head groups, but it is not a candidate for broader training by itself. Do not repeat as a PCGrad task-list or `param_groups=["heads"]` sweep; training-exposure work needs actual shared zero-gated adapters/routing or a different emit contract.
+
 Latest lane task-mask context gate:
 
 - branch/worktree: `exp/lane-family-f1/lane-task-mask-context-gate`.

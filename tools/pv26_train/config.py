@@ -164,6 +164,7 @@ class TrainDefaultsConfig:
         "enabled": False,
         "mode": "none",
         "tasks": list(MULTITASK_CONFLICT_TASK_NAMES),
+        "param_groups": ["trunk"],
     })
 
 
@@ -442,6 +443,12 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
     )
     if not isinstance(multitask_conflict_tasks, (list, tuple)):
         raise TypeError("train_defaults.multitask_conflict.tasks must be a list")
+    multitask_conflict_param_groups = multitask_conflict_payload.get(
+        "param_groups",
+        defaults.multitask_conflict.get("param_groups", ["trunk"]),
+    )
+    if not isinstance(multitask_conflict_param_groups, (list, tuple)):
+        raise TypeError("train_defaults.multitask_conflict.param_groups must be a list")
     multitask_conflict = {
         "enabled": _coerce_bool(
             multitask_conflict_payload.get("enabled", False),
@@ -454,6 +461,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         "tasks": [
             _coerce_str(task, field_name="train_defaults.multitask_conflict.tasks[]")
             for task in multitask_conflict_tasks
+        ],
+        "param_groups": [
+            _coerce_str(group, field_name="train_defaults.multitask_conflict.param_groups[]")
+            for group in multitask_conflict_param_groups
         ],
     }
     return TrainDefaultsConfig(
@@ -1006,6 +1017,14 @@ def validate_meta_train_scenario(
         if unknown_conflict_tasks:
             raise ValueError(
                 f"phase {index} multitask_conflict uses unsupported task names: {unknown_conflict_tasks}"
+            )
+        conflict_param_groups = multitask_conflict.get("param_groups", ("trunk",))
+        if not isinstance(conflict_param_groups, (list, tuple)):
+            raise TypeError(f"phase {index} multitask_conflict.param_groups must be a list")
+        unknown_conflict_param_groups = sorted(set(str(group) for group in conflict_param_groups) - {"trunk", "heads"})
+        if unknown_conflict_param_groups:
+            raise ValueError(
+                f"phase {index} multitask_conflict uses unsupported param groups: {unknown_conflict_param_groups}"
             )
         if phase_train.distill_teacher_mode != "cache":
             raise ValueError(f"phase {index} distill_teacher_mode must be 'cache'")
