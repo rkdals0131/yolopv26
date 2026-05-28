@@ -78,6 +78,8 @@ class StopLineDenseLocalHead(nn.Module):
         self.half_length = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.haf_endpoint = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
         self.haf_valid_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.endpoint_logits = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
+        self.endpoint_offset = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
         self.segment_seed_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.segment_query_mlp = nn.Sequential(
             nn.Linear(self.hidden_dim + 2, self.hidden_dim),
@@ -184,6 +186,8 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_half_length": half_length,
             "stop_line_haf_endpoint": self.haf_endpoint(dense_feat),
             "stop_line_haf_valid_logits": self.haf_valid_logits(dense_feat),
+            "stop_line_endpoint_logits": self.endpoint_logits(dense_feat),
+            "stop_line_endpoint_offset": self.endpoint_offset(dense_feat),
             "stop_line_segment_seed_logits": segment_seed_logits,
             "stop_line_segment_logits": segment_logits,
             "stop_line_segment_points": segment_points,

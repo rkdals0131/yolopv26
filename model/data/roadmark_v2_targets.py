@@ -247,6 +247,7 @@ def build_stopline_dense_targets(
     source_enabled: bool = True,
     output_hw: tuple[int, int] = ROADMARK_DENSE_OUTPUT_HW,
     center_radius: int = 2,
+    endpoint_radius: int = 2,
     center_span: int = 6,
     haf_band_radius: float = 2.0,
 ) -> dict[str, torch.Tensor]:
@@ -263,6 +264,8 @@ def build_stopline_dense_targets(
     haf_valid = torch.zeros((1, output_h, output_w), dtype=torch.float32)
     haf_ignore = torch.zeros((1, output_h, output_w), dtype=torch.float32)
     haf_best_distance_sq = torch.full((output_h, output_w), float("inf"), dtype=torch.float32)
+    endpoint_heatmap = torch.zeros((2, output_h, output_w), dtype=torch.float32)
+    endpoint_offset = torch.zeros((4, output_h, output_w), dtype=torch.float32)
 
     if source_enabled:
         band_radius = max(0.0, float(haf_band_radius))
@@ -301,6 +304,29 @@ def build_stopline_dense_targets(
             scaled_points = _scale_points_to_output(torch.stack([start, end], dim=0), output_hw=output_hw)
             scaled_start = scaled_points[0]
             scaled_end = scaled_points[1]
+            if (float(scaled_start[0].item()), float(scaled_start[1].item())) > (
+                float(scaled_end[0].item()),
+                float(scaled_end[1].item()),
+            ):
+                scaled_start, scaled_end = scaled_end, scaled_start
+            endpoint_sigma = max(1.0, float(endpoint_radius))
+            endpoint_support_radius = max(1, int(round(endpoint_sigma * 3.0)))
+            for side_index, endpoint in enumerate((scaled_start, scaled_end)):
+                endpoint_col = max(0, min(output_w - 1, int(torch.floor(endpoint[0]).item())))
+                endpoint_row = max(0, min(output_h - 1, int(torch.floor(endpoint[1]).item())))
+                for d_row in range(-endpoint_support_radius, endpoint_support_radius + 1):
+                    for d_col in range(-endpoint_support_radius, endpoint_support_radius + 1):
+                        target_row = endpoint_row + d_row
+                        target_col = endpoint_col + d_col
+                        if not (0 <= target_row < output_h and 0 <= target_col < output_w):
+                            continue
+                        distance_sq = float(d_row * d_row + d_col * d_col)
+                        value = float(np.exp(-distance_sq / (2.0 * endpoint_sigma * endpoint_sigma)))
+                        if value <= float(endpoint_heatmap[side_index, target_row, target_col].item()):
+                            continue
+                        endpoint_heatmap[side_index, target_row, target_col] = value
+                        point = torch.tensor([float(target_col), float(target_row)], dtype=torch.float32)
+                        endpoint_offset[side_index * 2 : side_index * 2 + 2, target_row, target_col] = endpoint - point
             min_col = max(0, int(torch.floor(torch.minimum(scaled_start[0], scaled_end[0]) - band_radius).item()))
             max_col = min(output_w - 1, int(torch.ceil(torch.maximum(scaled_start[0], scaled_end[0]) + band_radius).item()))
             min_row = max(0, int(torch.floor(torch.minimum(scaled_start[1], scaled_end[1]) - band_radius).item()))
@@ -332,6 +358,8 @@ def build_stopline_dense_targets(
         "stop_line_haf_endpoint": haf_endpoint,
         "stop_line_haf_valid": haf_valid,
         "stop_line_haf_ignore": haf_ignore,
+        "stop_line_endpoint_heatmap": endpoint_heatmap,
+        "stop_line_endpoint_offset": endpoint_offset,
     }
 
 

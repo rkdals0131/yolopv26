@@ -172,10 +172,13 @@ class PV26HeadsTests(unittest.TestCase):
 
         self.assertEqual(tuple(outputs["stop_line_segment_denoise_logits"].shape), (1, 4))
         self.assertEqual(tuple(outputs["stop_line_segment_denoise_points"].shape), (1, 4, 2, 2))
+        self.assertEqual(tuple(outputs["stop_line_endpoint_logits"].shape), (1, 2, 16, 20))
+        self.assertEqual(tuple(outputs["stop_line_endpoint_offset"].shape), (1, 4, 16, 20))
         self.assertEqual(tuple(outputs["stop_line_axis_segment_logits"].shape), (1, 4))
         self.assertEqual(tuple(outputs["stop_line_axis_segment_points"].shape), (1, 4, 2, 2))
         self.assertGreater(int(outputs["stop_line_segment_denoise_valid"].sum().item()), 0)
         self.assertTrue(torch.isfinite(outputs["stop_line_segment_denoise_points"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line_endpoint_offset"]).all())
         self.assertTrue(torch.isfinite(outputs["stop_line_axis_segment_points"]).all())
 
 

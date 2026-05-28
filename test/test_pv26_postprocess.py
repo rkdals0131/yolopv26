@@ -256,6 +256,51 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertAlmostEqual(points[-1][0], 340.0, places=1)
         self.assertAlmostEqual(points[-1][1], 500.0, places=1)
 
+    def test_stopline_endpoint_pair_decodes_endpoint_heatmaps(self) -> None:
+        from model.data.roadmark_v2_targets import build_stopline_dense_targets
+
+        targets = build_stopline_dense_targets(
+            [{"points_xy": [[100.0, 500.0], [340.0, 500.0]]}],
+            [True],
+        )
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        h, w = targets["stop_line_endpoint_heatmap"].shape[-2:]
+        endpoint_logits = torch.full((1, 2, h, w), -8.0, dtype=torch.float32)
+        endpoint_logits[0] = torch.where(
+            targets["stop_line_endpoint_heatmap"] > 0.99,
+            torch.full_like(targets["stop_line_endpoint_heatmap"], 8.0),
+            endpoint_logits[0],
+        )
+        predictions["stop_line_endpoint_logits"] = endpoint_logits
+        predictions["stop_line_endpoint_offset"] = targets["stop_line_endpoint_offset"].unsqueeze(0)
+        predictions["stop_line_mask_logits"] = torch.full((1, 1, h, w), 8.0, dtype=torch.float32)
+        predictions["stop_line_selector_map_logits"] = torch.full((1, 1, h, w), 8.0, dtype=torch.float32)
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                lane_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.999,
+                stop_line_endpoint_pair_enabled=True,
+                stop_line_endpoint_pair_score_threshold=0.90,
+                stop_line_endpoint_pair_topk=2,
+                stop_line_endpoint_pair_max_segments=1,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["stop_lines"]), 1)
+        points = decoded[0]["stop_lines"][0]["points_xy"]
+        self.assertAlmostEqual(points[0][0], 100.0, places=1)
+        self.assertAlmostEqual(points[0][1], 500.0, places=1)
+        self.assertAlmostEqual(points[-1][0], 340.0, places=1)
+        self.assertAlmostEqual(points[-1][1], 500.0, places=1)
+
     def test_stopline_segment_set_decodes_normalized_segment(self) -> None:
         predictions = _make_prediction_batch()
         predictions["det"] = torch.zeros_like(predictions["det"])

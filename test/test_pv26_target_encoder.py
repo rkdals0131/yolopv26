@@ -210,6 +210,43 @@ class PV26TargetEncoderTests(unittest.TestCase):
         self.assertLess(float((recovered_start - expected_start).abs().max().item()), 1.0e-5)
         self.assertLess(float((recovered_end - expected_end).abs().max().item()), 1.0e-5)
 
+    def test_stopline_endpoint_targets_encode_left_and_right_endpoints(self) -> None:
+        from model.data.roadmark_v2_targets import NETWORK_HW, ROADMARK_DENSE_OUTPUT_HW, build_stopline_dense_targets
+
+        targets = build_stopline_dense_targets(
+            [{"points_xy": [[340.0, 500.0], [100.0, 500.0]]}],
+            [True],
+        )
+
+        heatmap = targets["stop_line_endpoint_heatmap"]
+        offset = targets["stop_line_endpoint_offset"]
+        self.assertEqual(tuple(heatmap.shape), (2, *ROADMARK_DENSE_OUTPUT_HW))
+        self.assertEqual(tuple(offset.shape), (4, *ROADMARK_DENSE_OUTPUT_HW))
+        output_h, output_w = ROADMARK_DENSE_OUTPUT_HW
+        expected = torch.tensor(
+            [
+                [
+                    100.0 * float(output_w) / float(NETWORK_HW[1]),
+                    500.0 * float(output_h) / float(NETWORK_HW[0]),
+                ],
+                [
+                    340.0 * float(output_w) / float(NETWORK_HW[1]),
+                    500.0 * float(output_h) / float(NETWORK_HW[0]),
+                ],
+            ],
+            dtype=torch.float32,
+        )
+        for side_index in range(2):
+            flat_index = int(torch.argmax(heatmap[side_index]).item())
+            row_index = flat_index // output_w
+            col_index = flat_index % output_w
+            recovered = torch.tensor([float(col_index), float(row_index)]) + offset[
+                side_index * 2 : side_index * 2 + 2,
+                row_index,
+                col_index,
+            ]
+            self.assertLess(float((recovered - expected[side_index]).abs().max().item()), 1.0e-5)
+
     def test_encoded_collate_matches_manual_encode(self) -> None:
         from model.data import encode_pv26_batch
 

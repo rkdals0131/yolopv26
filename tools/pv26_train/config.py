@@ -140,6 +140,7 @@ class TrainDefaultsConfig:
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
     stopline_haf_aux_weight: float = 0.0
+    stopline_endpoint_pair_aux_weight: float = 0.0
     stopline_segment_set_aux_weight: float = 0.0
     stopline_segment_verifier_aux_weight: float = 0.0
     stopline_segment_denoise_aux_weight: float = 0.0
@@ -153,6 +154,10 @@ class TrainDefaultsConfig:
     stop_line_haf_cluster_endpoint_tolerance: float = 3.0
     stop_line_haf_max_endpoint_covariance: float = 9.0
     stop_line_haf_max_segments: int = 3
+    stop_line_endpoint_pair_enabled: bool = False
+    stop_line_endpoint_pair_score_threshold: float = 0.55
+    stop_line_endpoint_pair_topk: int = 8
+    stop_line_endpoint_pair_max_segments: int = 3
     stop_line_segment_set_enabled: bool = False
     stop_line_segment_set_score_threshold: float = 0.50
     stop_line_segment_set_max_segments: int = 3
@@ -755,6 +760,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_haf_aux_weight", defaults.stopline_haf_aux_weight),
             field_name="train_defaults.stopline_haf_aux_weight",
         ),
+        stopline_endpoint_pair_aux_weight=_coerce_float(
+            data.get("stopline_endpoint_pair_aux_weight", defaults.stopline_endpoint_pair_aux_weight),
+            field_name="train_defaults.stopline_endpoint_pair_aux_weight",
+        ),
         stopline_segment_set_aux_weight=_coerce_float(
             data.get("stopline_segment_set_aux_weight", defaults.stopline_segment_set_aux_weight),
             field_name="train_defaults.stopline_segment_set_aux_weight",
@@ -812,6 +821,25 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stop_line_haf_max_segments=_coerce_int(
             data.get("stop_line_haf_max_segments", defaults.stop_line_haf_max_segments),
             field_name="train_defaults.stop_line_haf_max_segments",
+        ),
+        stop_line_endpoint_pair_enabled=_coerce_bool(
+            data.get("stop_line_endpoint_pair_enabled", defaults.stop_line_endpoint_pair_enabled),
+            field_name="train_defaults.stop_line_endpoint_pair_enabled",
+        ),
+        stop_line_endpoint_pair_score_threshold=_coerce_float(
+            data.get(
+                "stop_line_endpoint_pair_score_threshold",
+                defaults.stop_line_endpoint_pair_score_threshold,
+            ),
+            field_name="train_defaults.stop_line_endpoint_pair_score_threshold",
+        ),
+        stop_line_endpoint_pair_topk=_coerce_int(
+            data.get("stop_line_endpoint_pair_topk", defaults.stop_line_endpoint_pair_topk),
+            field_name="train_defaults.stop_line_endpoint_pair_topk",
+        ),
+        stop_line_endpoint_pair_max_segments=_coerce_int(
+            data.get("stop_line_endpoint_pair_max_segments", defaults.stop_line_endpoint_pair_max_segments),
+            field_name="train_defaults.stop_line_endpoint_pair_max_segments",
         ),
         stop_line_segment_set_enabled=_coerce_bool(
             data.get("stop_line_segment_set_enabled", defaults.stop_line_segment_set_enabled),

@@ -12832,3 +12832,88 @@ Verification:
 - Broader-val512 was intentionally skipped to save compute and storage because the exact gate failed.
 - Do not continue this exact branch as axis-profile radius, sample-count, aux/verifier loss weight, score threshold, max-segment, head-LR, or longer-run tuning.
 - Reopen axis-profile-segment work only if candidate coverage or midpoint/extent signal changes enough to move TP/FP/FN on smoke/exact before broader validation.
+
+## 257. 2026-05-29 Stop-line dual-endpoint pair head: trainable but FP-heavy
+
+맥락:
+
+- Stop-line remains bottlenecked by no-GT candidate generation and along-axis midpoint/extent recovery.
+- The axis-profile segment head was trainable but exact-negative; it did not improve candidate coverage enough.
+- This branch tested a different architecture-level contract: predict left/right endpoint heatmaps plus endpoint offsets, then pair endpoint candidates at runtime using dense support along the proposed segment.
+- The goal was not another threshold sweep. The changed premise was endpoint candidate generation from model outputs.
+- The user explicitly required actual training/evaluation, larger dataset use where justified, and no dataset copy/storage blow-up.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-dual-endpoint-pair-head`.
+- Added stop-line dense targets:
+  - `stop_line_endpoint_heatmap` with left/right endpoint channels;
+  - `stop_line_endpoint_offset` with endpoint offsets from heatmap support cells.
+- Added `StopLineDenseLocalHead` outputs:
+  - `stop_line_endpoint_logits`;
+  - `stop_line_endpoint_offset`.
+- Added endpoint-pair auxiliary loss through `PV26MultiTaskLoss`:
+  - balanced BCE for endpoint heatmaps;
+  - SmoothL1 endpoint offset loss on endpoint-support cells;
+  - opt-in weight `stopline_endpoint_pair_aux_weight`.
+- Added runtime endpoint-pair decode:
+  - `stop_line_endpoint_pair_enabled`;
+  - `stop_line_endpoint_pair_score_threshold`;
+  - `stop_line_endpoint_pair_topk`;
+  - `stop_line_endpoint_pair_max_segments`.
+- Added lane60 probe experiment `stopline_dual_endpoint_pair_head`.
+- Kept lane decode `row_scan_tangent` and crosswalk `crosswalk_polygon_mode=hull`.
+- Dataset handling reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Storage handling deleted the smoke run, pruned duplicate task-best/last checkpoints and TensorBoard files, removed temporary YOLO weights, and retained only the main best checkpoint, history, summaries, and exact eval export. The retained main run is `117M`.
+
+Training artifacts:
+
+- Smoke train run, deleted after verification: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_dual_endpoint_pair_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_073815`.
+- Main train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_dual_endpoint_pair_head_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260529_074205`.
+- Main checkpoint retained: `phase_4/checkpoints/best.pt`.
+- Exact-val128 eval export: `analysis_exports/exact_val128_epoch2/metrics.csv` and `summary.json`.
+- Main run scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA.
+- Dataset split reported by the run: train `326709`, val `82641`, test `20000`.
+- Training completed without non-finite/skipped-step failure.
+
+Smoke result:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| val4 after 32 train batches | `0.5344` | `0.0000` | `0.7273` | `0 / 1 / 2` |
+
+Main training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5736124290` | `0.5425` | `0.0673` | `0.6832` | `1059 / 510 / 1276` | `10 / 232 / 45` | `55 / 23 / 28` |
+| 2 | `0.5846005499` | `0.5646` | `0.1804` | `0.5952` | `1126 / 473 / 1264` | `23 / 172 / 37` | `50 / 37 / 31` |
+| 3 | `0.5891505804` | `0.5503` | `0.2066` | `0.6332` | `1033 / 438 / 1250` | `22 / 138 / 31` | `63 / 30 / 43` |
+
+Checkpoint eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128, `best.pt` | `0.5857434590` | `0.5619` | `0.2281` | `0.5854` | `1112 / 456 / 1278` | `26 / 142 / 34` | `48 / 35 / 33` |
+
+Verification:
+
+- `python -m py_compile model/data/roadmark_v2_targets.py model/data/target_encoder.py model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_target_encoder.py test/test_pv26_postprocess.py test/test_pv26_heads.py test/test_run_pv26_train.py`.
+- `git diff --check`.
+- `python -m unittest discover -s test -p 'test_pv26_target_encoder.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- Real CUDA smoke train: `1` epoch, `32` train batches, `4` val batches.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Exact-val128 epoch-2 checkpoint eval for `best.pt`.
+
+판단:
+
+- The dual-endpoint pair head is a real trainable candidate-generation contract, not a postprocess-only replay.
+- It produces stop-line TP, but the runtime pair decoder fails FP control: exact-val128 stop-line TP matches baseline exact `26`, while FP grows from baseline `30` to `142`.
+- It is far below projection-competition exact `0.5167`, `31 / 29 / 29`, and below the weaker baseline exact `0.4483`, `26 / 30 / 34`.
+- Broader-val512 was intentionally skipped to save compute and storage because the exact gate failed.
+- Do not continue this exact branch as endpoint radius, endpoint aux weight, pair score threshold, top-K, max-segment, head-LR, or longer-run tuning.
+- Reopen endpoint-pair work only if a materially different endpoint quality/verifier/consensus contract first suppresses FP on exact val128 while preserving or increasing TP.
