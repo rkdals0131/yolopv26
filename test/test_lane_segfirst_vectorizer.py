@@ -123,6 +123,31 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertEqual(len(predictions), 1)
         self.assertEqual(len(predictions[0]["points_xy"]), 3)
 
+    def test_center_offset_field_can_recenter_row_scan_output(self) -> None:
+        maps = _maps_with_vertical_gap()
+        center_offset = torch.zeros((2, 12, 12), dtype=torch.float32)
+        center_offset[0, :, :] = 2.0
+        maps["center_offset"] = center_offset
+        maps["support"] = torch.ones((1, 12, 12), dtype=torch.float32)
+
+        predictions = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                center_offset_enabled=True,
+                center_offset_max_shift_px=2.0,
+                center_offset_min_support_score=0.0,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 1)
+        x_values = [point[0] for point in predictions[0]["points_xy"]]
+        self.assertGreater(min(x_values), 6.5)
+
     def test_seed_trace_starts_from_seed_map_and_follows_centerline(self) -> None:
         maps = _maps_with_vertical_gap()
         seed_map = torch.zeros((1, 12, 12), dtype=torch.float32)
@@ -215,6 +240,8 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertGreater(float(risk_ring_negative.sum()), 0.0)
         self.assertEqual(risk_core.shape, torch.Size([1, 80, 80]))
         self.assertEqual(risk_ring_negative.shape, torch.Size([1, 80, 80]))
+        self.assertEqual(maps["center_offset"].shape, torch.Size([2, 80, 80]))
+        self.assertEqual(maps["center_offset_valid"].shape, torch.Size([1, 80, 80]))
         self.assertEqual(
             int(((risk_ring_negative > 0.0) & (maps["support"] > 0.0)).sum().item()),
             0,

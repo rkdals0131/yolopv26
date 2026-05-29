@@ -196,6 +196,11 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         lane_segfirst_max_link_dx=float(train_config.lane_segfirst_max_link_dx),
         lane_segfirst_seed_threshold=float(train_config.lane_segfirst_seed_threshold),
         lane_segfirst_seed_trace_max_seeds=int(train_config.lane_segfirst_seed_trace_max_seeds),
+        lane_segfirst_center_offset_enabled=bool(train_config.lane_segfirst_center_offset_enabled),
+        lane_segfirst_center_offset_max_shift_px=float(train_config.lane_segfirst_center_offset_max_shift_px),
+        lane_segfirst_center_offset_min_support_score=float(
+            train_config.lane_segfirst_center_offset_min_support_score
+        ),
         lane_conditional_row_enabled=bool(train_config.lane_conditional_row_enabled),
         stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
         stop_line_haf_enabled=bool(train_config.stop_line_haf_enabled),
@@ -626,6 +631,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_segfirst_residual_risk_core_weight=train_config.lane_segfirst_residual_risk_core_weight,
         lane_segfirst_residual_risk_ring_weight=train_config.lane_segfirst_residual_risk_ring_weight,
         lane_segfirst_residual_risk_ring_margin=train_config.lane_segfirst_residual_risk_ring_margin,
+        lane_segfirst_center_offset_aux_weight=train_config.lane_segfirst_center_offset_aux_weight,
         lane_segfirst_task_conflict_negative_mode=train_config.lane_segfirst_task_conflict_negative_mode,
         lane_segfirst_task_conflict_negative_weight=train_config.lane_segfirst_task_conflict_negative_weight,
         lane_segfirst_task_conflict_negative_margin=train_config.lane_segfirst_task_conflict_negative_margin,

@@ -121,6 +121,7 @@ class TrainDefaultsConfig:
     lane_segfirst_residual_risk_core_weight: float = 0.0
     lane_segfirst_residual_risk_ring_weight: float = 0.0
     lane_segfirst_residual_risk_ring_margin: float = 0.20
+    lane_segfirst_center_offset_aux_weight: float = 0.0
     lane_segfirst_task_conflict_negative_mode: str = "none"
     lane_segfirst_task_conflict_negative_weight: float = 0.0
     lane_segfirst_task_conflict_negative_margin: float = 0.15
@@ -137,6 +138,9 @@ class TrainDefaultsConfig:
     lane_segfirst_max_link_dx: float = 8.0
     lane_segfirst_seed_threshold: float = 0.50
     lane_segfirst_seed_trace_max_seeds: int = 24
+    lane_segfirst_center_offset_enabled: bool = False
+    lane_segfirst_center_offset_max_shift_px: float = 4.0
+    lane_segfirst_center_offset_min_support_score: float = 0.50
     lane_segfirst_loss_weights: dict[str, float] = field(default_factory=dict)
     lane_segfirst_color_class_weights: dict[str, float] = field(default_factory=dict)
     stopline_local_x_aux_weight: float = 0.0
@@ -723,6 +727,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             ),
             field_name="train_defaults.lane_segfirst_task_conflict_negative_margin",
         ),
+        lane_segfirst_center_offset_aux_weight=_coerce_float(
+            data.get(
+                "lane_segfirst_center_offset_aux_weight",
+                defaults.lane_segfirst_center_offset_aux_weight,
+            ),
+            field_name="train_defaults.lane_segfirst_center_offset_aux_weight",
+        ),
         lane_conditional_row_aux_weight=_coerce_float(
             data.get("lane_conditional_row_aux_weight", defaults.lane_conditional_row_aux_weight),
             field_name="train_defaults.lane_conditional_row_aux_weight",
@@ -777,6 +788,27 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_segfirst_seed_trace_max_seeds=_coerce_int(
             data.get("lane_segfirst_seed_trace_max_seeds", defaults.lane_segfirst_seed_trace_max_seeds),
             field_name="train_defaults.lane_segfirst_seed_trace_max_seeds",
+        ),
+        lane_segfirst_center_offset_enabled=_coerce_bool(
+            data.get(
+                "lane_segfirst_center_offset_enabled",
+                defaults.lane_segfirst_center_offset_enabled,
+            ),
+            field_name="train_defaults.lane_segfirst_center_offset_enabled",
+        ),
+        lane_segfirst_center_offset_max_shift_px=_coerce_float(
+            data.get(
+                "lane_segfirst_center_offset_max_shift_px",
+                defaults.lane_segfirst_center_offset_max_shift_px,
+            ),
+            field_name="train_defaults.lane_segfirst_center_offset_max_shift_px",
+        ),
+        lane_segfirst_center_offset_min_support_score=_coerce_float(
+            data.get(
+                "lane_segfirst_center_offset_min_support_score",
+                defaults.lane_segfirst_center_offset_min_support_score,
+            ),
+            field_name="train_defaults.lane_segfirst_center_offset_min_support_score",
         ),
         lane_segfirst_loss_weights={
             _coerce_str(name, field_name="train_defaults.lane_segfirst_loss_weights.key"): _coerce_float(

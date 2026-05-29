@@ -13694,3 +13694,78 @@ Verification:
 - Broader stop-line F1 is only `0.2629`, far below current runtime `0.4235` and retained projection-competition runtime `0.5164`.
 - Lane also regresses versus the retained lane-preserving task-balance composite (`0.5628 -> 0.5431`), so the branch cannot be rescued by crosswalk, even though crosswalk stays just above `0.60` broader.
 - Do not repeat this as axis-distance aux-weight, valid-threshold, min-vote, support-score, endpoint-covariance, max-segment, head-LR, epoch-count, or longer-run tuning. Reopen only with a materially different verifier/candidate-coverage contract that first moves exact TP/FP/FN.
+
+## 271. 2026-05-29 Lane center-offset field: learned recenter trains but hurts broader lane
+
+Context:
+
+- The user explicitly pushed against postprocess-only conservatism and asked for real learning/evaluation on a larger validation range while controlling disk usage and reusing the existing dataset root.
+- Lane still had evidence of centerline-supported missed/nearby tracks, but previous simple translation, snap, affine, row-profile, and kNN residual repair families were already closed because they moved geometry without moving task TP/FP/FN.
+- This branch tested a model-side dense recenter signal: each lane support-band pixel predicts a 2D offset toward the nearest lane centerline-core pixel, and the vectorizer can apply the predicted offset to decoded lane map points.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-center-offset-field`.
+- Final retained run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_center_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_151708`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Added `LaneSegFirstHead` output `lane_seg_center_offset`.
+- Added lane seg-first targets `lane_seg_center_offset` and `lane_seg_center_offset_valid` from support-band pixels to nearest centerline-core pixels.
+- Added `lane_segfirst_center_offset_aux_weight` loss plumbing and opt-in runtime knobs:
+  - `lane_segfirst_center_offset_enabled`.
+  - `lane_segfirst_center_offset_max_shift_px`.
+  - `lane_segfirst_center_offset_min_support_score`.
+- Added vectorizer support that applies center-offset correction to component, row-scan, row-scan+tangent, and seed-trace appended lane polylines before converting map coordinates.
+- Added probe preset `lane_center_offset_field`.
+- Default behavior remains off unless the explicit train/eval config enables the center-offset path.
+
+Training:
+
+- Smoke train: real CUDA `1` epoch, `32` train batches, `4` val batches, batch size `4`.
+- Main train: real CUDA `2` epochs, `512` train batches, `128` val batches, batch size `4`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+- Best phase-objective epoch was epoch `2`, objective `0.6439202032`.
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6208942363` | `0.5428` | `0.3299` | `0.6792` | `1058 / 505 / 1277` | `16 / 26 / 39` | `54 / 22 / 29` |
+| 2 | `0.6439202032` | `0.5543` | `0.5333` | `0.6061` | `1093 / 461 / 1297` | `32 / 28 / 28` | `50 / 34 / 31` |
+
+Fixed broader eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| broader val512 epoch2 | `0.6375986629` | `0.5390` | `0.5164` | `0.6166` | `4219 / 1959 / 5258` | `126 / 91 / 145` | `230 / 121 / 165` |
+
+Storage:
+
+- The smoke run was pruned after the main train/eval completed.
+- The main run was reduced to `phase_4/checkpoints/best.pt`, summaries/history, and the broader metric export.
+- Removed duplicate task-best checkpoints, `last.pt`, TensorBoard output, and temporary root `yolo26n.pt` / `yolo26s.pt` downloads.
+- Retained main run size is about `118M`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/lane_head_segfirst.py model/data/roadmark_v2_targets.py model/engine/lane_segfirst_vectorizer.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py tools/evaluate_pv26_lane60_checkpoint.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/target_encoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_lane_segfirst_vectorizer.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_roadmark_native_contract.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_docs_sync.py'`.
+- Real CUDA smoke train/eval.
+- Real CUDA main train: `2` epochs, `512` train batches, `128` val batches.
+- Fixed broader-val512 epoch-2 eval.
+
+판단:
+
+- The center-offset target/loss is trainable, but it does not create a production lane recovery signal under the current row-scan/tangent vectorizer.
+- Broader lane F1 regresses from the retained lane-preserving composite `0.5628` to `0.5390`, with TP `4532 -> 4219` and FN `4945 -> 5258`.
+- Stop-line `0.5164`, TP/FP/FN `126 / 91 / 145` only matches the projection-competition runtime reference; it is not a new stop-line gain.
+- Crosswalk remains broader-pass at `0.6166`, but this is lower than retained hull `0.6187` and cannot compensate for lane regression.
+- Do not repeat this as center-offset aux-weight, max-shift, min-support-score, head-LR, epoch-count, freeze-policy, or longer-run tuning. Reopen lane recentering only with a materially different instance-quality or assignment-moving contract that first improves exact/broader TP/FP/FN without breaking the retained row-scan lanes.

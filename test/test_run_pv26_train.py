@@ -138,6 +138,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_segfirst_residual_risk_core_weight": 0.5,
                             "lane_segfirst_residual_risk_ring_weight": 0.35,
                             "lane_segfirst_residual_risk_ring_margin": 0.2,
+                            "lane_segfirst_center_offset_aux_weight": 0.45,
                             "lane_segfirst_task_conflict_negative_mode": "crosswalk",
                             "lane_segfirst_task_conflict_negative_weight": 0.4,
                             "lane_segfirst_task_conflict_negative_margin": 0.1,
@@ -152,6 +153,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_segfirst_max_link_dx": 12.0,
                             "lane_segfirst_seed_threshold": 0.62,
                             "lane_segfirst_seed_trace_max_seeds": 12,
+                            "lane_segfirst_center_offset_enabled": True,
+                            "lane_segfirst_center_offset_max_shift_px": 3.5,
+                            "lane_segfirst_center_offset_min_support_score": 0.4,
                             "lane_segfirst_loss_weights": {
                                 "centerline_bce": 1.25,
                                 "centerline_dice": 1.5,
@@ -306,6 +310,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_core_weight, 0.5)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_ring_weight, 0.35)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_residual_risk_ring_margin, 0.2)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_center_offset_aux_weight, 0.45)
         self.assertEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_mode, "crosswalk")
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_weight, 0.4)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_margin, 0.1)
@@ -320,6 +325,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_max_link_dx, 12.0)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_seed_threshold, 0.62)
         self.assertEqual(scenario.train_defaults.lane_segfirst_seed_trace_max_seeds, 12)
+        self.assertTrue(scenario.train_defaults.lane_segfirst_center_offset_enabled)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_center_offset_max_shift_px, 3.5)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_center_offset_min_support_score, 0.4)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_bce"], 1.25)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_dice"], 1.5)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)

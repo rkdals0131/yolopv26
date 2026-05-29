@@ -44,6 +44,7 @@ class LaneSegFirstHead(nn.Module):
         )
         self.centerline_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.support_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.center_offset = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.tangent_axis = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.color_logits = nn.Conv2d(self.hidden_dim, len(LANE_CLASSES), kernel_size=1)
         self.type_logits = nn.Conv2d(self.hidden_dim, len(LANE_TYPES), kernel_size=1)
@@ -76,6 +77,7 @@ class LaneSegFirstHead(nn.Module):
             "lane": lane_placeholder,
             "lane_seg_centerline_logits": self.centerline_logits(centerline_feature),
             "lane_seg_support_logits": self.support_logits(lane_feature),
+            "lane_seg_center_offset": self.center_offset(lane_feature),
             "lane_seg_tangent_axis": self.tangent_axis(lane_feature),
             "lane_seg_color_logits": self.color_logits(lane_feature),
             "lane_seg_type_logits": self.type_logits(lane_feature),

@@ -70,6 +70,9 @@ class PV26PostprocessConfig:
     lane_segfirst_max_turn_degrees: float = 0.0
     lane_segfirst_seed_threshold: float = 0.50
     lane_segfirst_seed_trace_max_seeds: int = 24
+    lane_segfirst_center_offset_enabled: bool = False
+    lane_segfirst_center_offset_max_shift_px: float = 4.0
+    lane_segfirst_center_offset_min_support_score: float = 0.50
     lane_conditional_row_enabled: bool = False
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
@@ -2709,6 +2712,9 @@ def _decode_segfirst_lane_rows(
             max_turn_degrees=float(config.lane_segfirst_max_turn_degrees),
             seed_threshold=float(config.lane_segfirst_seed_threshold),
             seed_trace_max_seeds=int(config.lane_segfirst_seed_trace_max_seeds),
+            center_offset_enabled=bool(config.lane_segfirst_center_offset_enabled),
+            center_offset_max_shift_px=float(config.lane_segfirst_center_offset_max_shift_px),
+            center_offset_min_support_score=float(config.lane_segfirst_center_offset_min_support_score),
         ),
     )
 

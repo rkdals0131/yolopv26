@@ -46,6 +46,9 @@ class LaneSegFirstVectorizerConfig:
     seed_threshold: float = 0.50
     seed_trace_max_seeds: int | None = 24
     lane_match_threshold: float = 40.0
+    center_offset_enabled: bool = False
+    center_offset_max_shift_px: float = 4.0
+    center_offset_min_support_score: float = 0.50
 
 
 def _valid_mask_value(valid_mask: torch.BoolTensor | list[bool] | tuple[bool, ...], index: int) -> bool:
@@ -271,6 +274,16 @@ def render_lane_segfirst_targets(
     else:
         soft = np.zeros_like(core, dtype=np.float32)
 
+    center_offset = np.zeros((2, h, w), dtype=np.float32)
+    center_offset_valid = np.zeros((h, w), dtype=np.float32)
+    if bool(support.any()) and bool(core.any()):
+        _, nearest_indices = ndimage.distance_transform_edt(core <= 0.0, return_indices=True)
+        row_grid, col_grid = np.indices((h, w), dtype=np.float32)
+        valid = support > 0.0
+        center_offset[0, valid] = nearest_indices[1][valid].astype(np.float32) - col_grid[valid]
+        center_offset[1, valid] = nearest_indices[0][valid].astype(np.float32) - row_grid[valid]
+        center_offset_valid[valid] = 1.0
+
     tangent_axis, color_map, lane_type_map, tangent_count = _render_tangent_and_attrs(
         lane_rows,
         lane_valid_mask,
@@ -318,6 +331,8 @@ def render_lane_segfirst_targets(
         "centerline_core": torch.from_numpy(core).unsqueeze(0),
         "centerline_soft": torch.from_numpy(soft.astype(np.float32)).unsqueeze(0),
         "support": torch.from_numpy(support).unsqueeze(0),
+        "center_offset": torch.from_numpy(center_offset.astype(np.float32)),
+        "center_offset_valid": torch.from_numpy(center_offset_valid).unsqueeze(0),
         "residual_risk_core": torch.from_numpy(residual_risk_core.astype(np.float32)).unsqueeze(0),
         "residual_risk_ring_negative": torch.from_numpy(residual_risk_ring_negative).unsqueeze(0),
         "tangent_axis": torch.from_numpy(tangent_axis.astype(np.float32)),
@@ -571,6 +586,52 @@ def _passes_bottom_y_filter(
     return bottom_y >= float(target_hw[0]) * float(min_fraction)
 
 
+def _apply_center_offset_to_map_points(
+    points_xy: list[list[float]],
+    *,
+    center_offset: np.ndarray | None,
+    support: np.ndarray | None,
+    output_hw: tuple[int, int],
+    cfg: LaneSegFirstVectorizerConfig,
+) -> list[list[float]]:
+    if not bool(cfg.center_offset_enabled) or center_offset is None or len(points_xy) < 2:
+        return points_xy
+    if center_offset.ndim != 3 or int(center_offset.shape[0]) != 2:
+        return points_xy
+    height, width = int(output_hw[0]), int(output_hw[1])
+    max_shift = max(0.0, float(cfg.center_offset_max_shift_px))
+    min_support = float(cfg.center_offset_min_support_score)
+    shifted: list[list[float]] = []
+    for point in points_xy:
+        x = float(point[0])
+        y = float(point[1])
+        row = min(max(int(round(y)), 0), height - 1)
+        col = min(max(int(round(x)), 0), width - 1)
+        if support is not None and float(support[row, col]) < min_support:
+            shifted.append([x, y])
+            continue
+        dx = float(center_offset[0, row, col])
+        dy = float(center_offset[1, row, col])
+        if not np.isfinite([dx, dy]).all():
+            shifted.append([x, y])
+            continue
+        norm = float(np.hypot(dx, dy))
+        if max_shift <= 0.0 or norm <= 1.0e-6:
+            shifted.append([x, y])
+            continue
+        if norm > max_shift:
+            scale = max_shift / norm
+            dx *= scale
+            dy *= scale
+        shifted.append(
+            [
+                float(np.clip(x + dx, 0.0, float(width - 1))),
+                float(np.clip(y + dy, 0.0, float(height - 1))),
+            ]
+        )
+    return shifted
+
+
 def _seed_trace_polylines(
     centerline: np.ndarray,
     seed_map: np.ndarray,
@@ -649,12 +710,16 @@ def vectorize_lane_segfirst_maps(
 ) -> list[dict[str, Any]]:
     cfg = config or LaneSegFirstVectorizerConfig()
     centerline = _as_numpy_channel(maps["centerline_core"])
+    support = _as_numpy_channel(maps.get("support", np.ones_like(centerline, dtype=np.float32)))
     binary = np.asarray(centerline >= float(cfg.centerline_threshold), dtype=bool)
     map_hw = (int(binary.shape[0]), int(binary.shape[1]))
     labels, component_count = ndimage.label(binary, structure=np.ones((3, 3), dtype=np.int8))
     color_map = _as_numpy_chw(maps.get("color_map", np.zeros((len(LANE_CLASSES), *binary.shape), dtype=np.float32)), channels=len(LANE_CLASSES))
     type_map = _as_numpy_chw(maps.get("lane_type_map", np.zeros((len(LANE_TYPES), *binary.shape), dtype=np.float32)), channels=len(LANE_TYPES))
     tangent_axis = _as_numpy_chw(maps.get("tangent_axis", np.zeros((2, *binary.shape), dtype=np.float32)), channels=2)
+    center_offset = None
+    if "center_offset" in maps:
+        center_offset = _as_numpy_chw(maps["center_offset"], channels=2)
     seed_map = _as_numpy_channel(maps.get("seed_map", centerline))
     transform = transform_from_meta(meta) if meta is not None else None
 
@@ -672,14 +737,21 @@ def vectorize_lane_segfirst_maps(
             track_mask = _track_to_mask(map_points, output_hw=map_hw, width=3) & binary
             if int(track_mask.sum()) < int(cfg.min_component_pixels):
                 continue
+            output_map_points = _apply_center_offset_to_map_points(
+                map_points,
+                center_offset=center_offset,
+                support=support,
+                output_hw=map_hw,
+                cfg=cfg,
+            )
             if transform is not None:
                 network_points = _scale_points_list(
-                    map_points,
+                    output_map_points,
                     source_hw=map_hw,
                     target_hw=transform.network_hw,
                 )
             else:
-                network_points = map_points
+                network_points = output_map_points
             network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
             if unique_point_count(network_points) < 2:
                 continue
@@ -739,14 +811,21 @@ def vectorize_lane_segfirst_maps(
             track_mask = _track_to_mask(map_points, output_hw=map_hw, width=3) & binary
             if int(track_mask.sum()) < int(cfg.min_component_pixels):
                 continue
+            output_map_points = _apply_center_offset_to_map_points(
+                map_points,
+                center_offset=center_offset,
+                support=support,
+                output_hw=map_hw,
+                cfg=cfg,
+            )
             if transform is not None:
                 network_points = _scale_points_list(
-                    map_points,
+                    output_map_points,
                     source_hw=map_hw,
                     target_hw=transform.network_hw,
                 )
             else:
-                network_points = map_points
+                network_points = output_map_points
             network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
             if unique_point_count(network_points) < 2:
                 continue
@@ -789,14 +868,21 @@ def vectorize_lane_segfirst_maps(
                 track_mask = _track_to_mask(map_points, output_hw=map_hw, width=3) & binary
                 if int(track_mask.sum()) < int(cfg.min_component_pixels):
                     continue
+                output_map_points = _apply_center_offset_to_map_points(
+                    map_points,
+                    center_offset=center_offset,
+                    support=support,
+                    output_hw=map_hw,
+                    cfg=cfg,
+                )
                 if transform is not None:
                     network_points = _scale_points_list(
-                        map_points,
+                        output_map_points,
                         source_hw=map_hw,
                         target_hw=transform.network_hw,
                     )
                 else:
-                    network_points = map_points
+                    network_points = output_map_points
                 network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
                 if unique_point_count(network_points) < 2:
                     continue
@@ -877,14 +963,21 @@ def vectorize_lane_segfirst_maps(
                 break
             if len(map_points) < int(cfg.min_polyline_points):
                 continue
+            output_map_points = _apply_center_offset_to_map_points(
+                map_points,
+                center_offset=center_offset,
+                support=support,
+                output_hw=map_hw,
+                cfg=cfg,
+            )
             if transform is not None:
                 network_points = _scale_points_list(
-                    map_points,
+                    output_map_points,
                     source_hw=map_hw,
                     target_hw=transform.network_hw,
                 )
             else:
-                network_points = map_points
+                network_points = output_map_points
             network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
             if unique_point_count(network_points) < 2:
                 continue
@@ -932,6 +1025,7 @@ def lane_segfirst_prediction_maps(
     centerline_logits = predictions["lane_seg_centerline_logits"][batch_index].detach().cpu()
     support_logits = predictions["lane_seg_support_logits"][batch_index].detach().cpu()
     tangent_axis = predictions["lane_seg_tangent_axis"][batch_index].detach().cpu()
+    center_offset = predictions.get("lane_seg_center_offset")
     color_logits = predictions["lane_seg_color_logits"][batch_index].detach().cpu()
     type_logits = predictions["lane_seg_type_logits"][batch_index].detach().cpu()
     seed_logits = predictions.get("lane_conditional_seed_logits")
@@ -948,6 +1042,7 @@ def lane_segfirst_prediction_maps(
         "centerline_core": centerline_prob,
         "centerline_soft": centerline_prob,
         "support": support_prob,
+        "center_offset": center_offset[batch_index].detach().cpu() if isinstance(center_offset, torch.Tensor) else torch.zeros((2, h, w), dtype=torch.float32),
         "seed_map": seed_prob,
         "tangent_axis": tangent_axis,
         "color_map": color_logits.softmax(dim=0),
