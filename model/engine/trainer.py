@@ -300,6 +300,7 @@ def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, floa
     values = {
         "trunk_lr": 1e-4,
         "head_lr": 1e-3,
+        "criterion_lr": 1e-3,
         "weight_decay": 1e-4,
     }
     for index, group in enumerate(optimizer.param_groups):
@@ -310,6 +311,8 @@ def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, floa
         if group_name == "heads":
             values["head_lr"] = float(group.get("lr", values["head_lr"]))
             values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
+        if group_name == "criterion":
+            values["criterion_lr"] = float(group.get("lr", values["criterion_lr"]))
     return values
 
 
@@ -470,8 +473,10 @@ def build_pv26_optimizer(
     adapter: Any,
     heads: torch.nn.Module,
     *,
+    criterion: torch.nn.Module | None = None,
     trunk_lr: float = 1e-4,
     head_lr: float = 1e-3,
+    criterion_lr: float | None = None,
     weight_decay: float = 1e-4,
 ) -> torch.optim.Optimizer:
     param_groups: list[dict[str, Any]] = []
@@ -515,6 +520,16 @@ def build_pv26_optimizer(
                 "group_name": "lane_family_adapters",
             }
         )
+    criterion_params = _trainable_parameters(criterion) if criterion is not None else []
+    if criterion_params:
+        param_groups.append(
+            {
+                "params": criterion_params,
+                "lr": float(head_lr if criterion_lr is None else criterion_lr),
+                "weight_decay": 0.0,
+                "group_name": "criterion",
+            }
+        )
     if not param_groups:
         raise ValueError("no trainable parameters are available for optimizer construction")
     return torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
@@ -533,6 +548,7 @@ class PV26Trainer:
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         trunk_lr: float = 1e-4,
         head_lr: float = 1e-3,
+        criterion_lr: float | None = None,
         weight_decay: float = 1e-4,
         loss_weights: dict[str, float] | None = None,
         freeze_policy: str | None = None,
@@ -570,8 +586,10 @@ class PV26Trainer:
         self.optimizer = optimizer or build_pv26_optimizer(
             adapter,
             heads,
+            criterion=self.criterion,
             trunk_lr=trunk_lr,
             head_lr=head_lr,
+            criterion_lr=criterion_lr,
             weight_decay=weight_decay,
         )
         self.scheduler = scheduler

@@ -81,6 +81,7 @@ class TrainDefaultsConfig:
     val_batches: int = -1
     trunk_lr: float = 1e-4
     head_lr: float = 5e-3
+    criterion_lr: float | None = None
     weight_decay: float = 1e-4
     schedule: str = "cosine"
     amp: bool = False
@@ -261,6 +262,11 @@ class TrainDefaultsConfig:
     task_loss_ema_eps: float = 1.0e-6
     task_loss_scale_min: float = 0.25
     task_loss_scale_max: float = 4.0
+    task_uncertainty_weighting_enabled: bool = False
+    task_uncertainty_tasks: tuple[str, ...] = ("lane", "stop_line", "crosswalk")
+    task_uncertainty_init_log_vars: dict[str, float] = field(default_factory=dict)
+    task_uncertainty_log_var_min: float = -1.5
+    task_uncertainty_log_var_max: float = 1.5
     multitask_conflict: dict[str, Any] = field(default_factory=lambda: {
         "enabled": False,
         "mode": "none",
@@ -367,6 +373,7 @@ def phase_to_mapping(phase_config: PhaseConfig) -> dict[str, Any]:
 def scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
     train_defaults = asdict(scenario.train_defaults)
     train_defaults["task_loss_normalize_tasks"] = list(scenario.train_defaults.task_loss_normalize_tasks)
+    train_defaults["task_uncertainty_tasks"] = list(scenario.train_defaults.task_uncertainty_tasks)
     return {
         "dataset": {
             "root": str(scenario.dataset.root),
@@ -568,6 +575,16 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
     )
     if not isinstance(task_loss_normalize_tasks_payload, (list, tuple)):
         raise TypeError("train_defaults.task_loss_normalize_tasks must be a list")
+    task_uncertainty_tasks_payload = data.get(
+        "task_uncertainty_tasks",
+        defaults.task_uncertainty_tasks,
+    )
+    if not isinstance(task_uncertainty_tasks_payload, (list, tuple)):
+        raise TypeError("train_defaults.task_uncertainty_tasks must be a list")
+    task_uncertainty_init_log_vars_payload = _coerce_mapping(
+        data.get("task_uncertainty_init_log_vars", defaults.task_uncertainty_init_log_vars),
+        field_name="train_defaults.task_uncertainty_init_log_vars",
+    )
     multitask_conflict_tasks = multitask_conflict_payload.get(
         "tasks",
         defaults.multitask_conflict.get("tasks", list(MULTITASK_CONFLICT_TASK_NAMES)),
@@ -605,6 +622,11 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         val_batches=_coerce_int(data.get("val_batches", defaults.val_batches), field_name="train_defaults.val_batches"),
         trunk_lr=_coerce_float(data.get("trunk_lr", defaults.trunk_lr), field_name="train_defaults.trunk_lr"),
         head_lr=_coerce_float(data.get("head_lr", defaults.head_lr), field_name="train_defaults.head_lr"),
+        criterion_lr=(
+            None
+            if data.get("criterion_lr", defaults.criterion_lr) is None
+            else _coerce_float(data.get("criterion_lr", defaults.criterion_lr), field_name="train_defaults.criterion_lr")
+        ),
         weight_decay=_coerce_float(data.get("weight_decay", defaults.weight_decay), field_name="train_defaults.weight_decay"),
         schedule=_coerce_str(data.get("schedule", defaults.schedule), field_name="train_defaults.schedule"),
         amp=_coerce_bool(data.get("amp", defaults.amp), field_name="train_defaults.amp"),
@@ -1475,6 +1497,29 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("task_loss_scale_max", defaults.task_loss_scale_max),
             field_name="train_defaults.task_loss_scale_max",
         ),
+        task_uncertainty_weighting_enabled=_coerce_bool(
+            data.get("task_uncertainty_weighting_enabled", defaults.task_uncertainty_weighting_enabled),
+            field_name="train_defaults.task_uncertainty_weighting_enabled",
+        ),
+        task_uncertainty_tasks=tuple(
+            _coerce_str(task, field_name="train_defaults.task_uncertainty_tasks[]")
+            for task in task_uncertainty_tasks_payload
+        ),
+        task_uncertainty_init_log_vars={
+            _coerce_str(name, field_name="train_defaults.task_uncertainty_init_log_vars key"): _coerce_float(
+                value,
+                field_name=f"train_defaults.task_uncertainty_init_log_vars.{name}",
+            )
+            for name, value in task_uncertainty_init_log_vars_payload.items()
+        },
+        task_uncertainty_log_var_min=_coerce_float(
+            data.get("task_uncertainty_log_var_min", defaults.task_uncertainty_log_var_min),
+            field_name="train_defaults.task_uncertainty_log_var_min",
+        ),
+        task_uncertainty_log_var_max=_coerce_float(
+            data.get("task_uncertainty_log_var_max", defaults.task_uncertainty_log_var_max),
+            field_name="train_defaults.task_uncertainty_log_var_max",
+        ),
         multitask_conflict=multitask_conflict,
     )
 
@@ -1699,6 +1744,26 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} task_loss_scale_min must be > 0")
         if float(phase_train.task_loss_scale_max) < float(phase_train.task_loss_scale_min):
             raise ValueError(f"phase {index} task_loss_scale_max must be >= task_loss_scale_min")
+        unknown_task_uncertainty_tasks = sorted(
+            set(str(task) for task in phase_train.task_uncertainty_tasks)
+            - {"lane", "stop_line", "crosswalk"}
+        )
+        if unknown_task_uncertainty_tasks:
+            raise ValueError(
+                f"phase {index} task_uncertainty_tasks uses unsupported task names: "
+                f"{unknown_task_uncertainty_tasks}"
+            )
+        unknown_task_uncertainty_init = sorted(
+            set(str(task) for task in phase_train.task_uncertainty_init_log_vars)
+            - {"lane", "stop_line", "crosswalk"}
+        )
+        if unknown_task_uncertainty_init:
+            raise ValueError(
+                f"phase {index} task_uncertainty_init_log_vars uses unsupported task names: "
+                f"{unknown_task_uncertainty_init}"
+            )
+        if float(phase_train.task_uncertainty_log_var_max) < float(phase_train.task_uncertainty_log_var_min):
+            raise ValueError(f"phase {index} task_uncertainty_log_var_max must be >= task_uncertainty_log_var_min")
         if phase_train.distill_enabled and not phase_train.distill_teacher_checkpoint:
             raise ValueError(f"phase {index} distill_enabled requires distill_teacher_checkpoint")
         unknown_distill_teacher_tasks = sorted(

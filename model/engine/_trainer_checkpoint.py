@@ -55,6 +55,7 @@ def checkpoint_state(
         "adapter_state_dict": trainer.adapter.raw_model.state_dict(),
         "heads_state_dict": trainer.heads.state_dict(),
         "optimizer_state_dict": trainer.optimizer.state_dict(),
+        "criterion_state_dict": trainer.criterion.state_dict(),
         "criterion_stage": str(getattr(trainer.criterion, "stage", trainer.stage)),
         "completed_epochs": len(trainer.epoch_history),
         "last_epoch": int(trainer.epoch_history[-1]["epoch"]) if trainer.epoch_history else 0,
@@ -119,18 +120,24 @@ def load_checkpoint(
     else:
         criterion_config = None
 
-    if checkpoint_stage != trainer.stage:
+    stage_changed = checkpoint_stage != trainer.stage
+    if criterion_config is not None:
+        trainer.criterion = PV26MultiTaskLoss(**criterion_config).to(trainer.device)
+    if stage_changed:
         trainer.stage = checkpoint_stage
         trainer.stage_summary = configure_stage_fn(trainer.adapter, trainer.heads, trainer.stage)
+    if stage_changed or criterion_config is not None:
         trainer.optimizer = build_optimizer_fn(
             trainer.adapter,
             trainer.heads,
+            criterion=trainer.criterion,
             trunk_lr=optimizer_hparams["trunk_lr"],
             head_lr=optimizer_hparams["head_lr"],
+            criterion_lr=optimizer_hparams.get("criterion_lr"),
             weight_decay=optimizer_hparams["weight_decay"],
         )
-    if criterion_config is not None:
-        trainer.criterion = PV26MultiTaskLoss(**criterion_config).to(trainer.device)
+    if isinstance(checkpoint.get("criterion_state_dict"), dict):
+        trainer.criterion.load_state_dict(checkpoint["criterion_state_dict"])
     trainer.adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
     trainer.heads.load_state_dict(checkpoint["heads_state_dict"])
     trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

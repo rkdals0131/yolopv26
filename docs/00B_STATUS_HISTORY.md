@@ -16402,3 +16402,81 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
 - Do not repeat this as patch segment score threshold, verifier-score weight, max-segment cap, head-LR, epoch-count, or the same projection-comp-plus-patch merge sweep.
 - Reopen patch segment work only with a materially different candidate-coverage, quality, or geometry signal that first improves fixed smoke TP/FP/FN.
+
+## 310. 2026-05-30 Task-uncertainty loss balancer smoke: learned task-loss allocation trains, but does not recover stop-line TP
+
+맥락:
+
+- The user explicitly called out that the bottleneck may be training distribution, head/neck weight allocation, or layer/training methodology, not only postprocess.
+- The previous task-loss EMA balancer normalized task losses with moving averages, but that was still a hand-designed scale rule and was exact/broader negative.
+- This branch tested a distinct training-allocation contract: add trainable per-task log-variance parameters to the criterion, include them in the optimizer, and checkpoint them, so stage-4 can learn lane/stop-line/crosswalk loss allocation directly.
+- The experiment reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. It did not copy the dataset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/task-uncertainty-loss-balancer`.
+- Loss code: `model/engine/loss.py`.
+- Optimizer/checkpoint code: `model/engine/trainer.py`, `model/engine/_trainer_checkpoint.py`.
+- Config/CLI/probe: `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, `tools/run_pv26_lane60_probe.py`.
+- Tests:
+  - `test/test_pv26_loss_runtime.py`, `test_task_uncertainty_weighting_adds_trainable_task_log_vars`.
+  - `test/test_pv26_trainer.py`, `test_build_optimizer_adds_trainable_criterion_group`.
+  - `test/test_run_pv26_train.py`, nested config override coverage.
+- Changed axis:
+  - `task_uncertainty_weighting_enabled=True`;
+  - `task_uncertainty_tasks=["lane", "stop_line", "crosswalk"]`;
+  - criterion optimizer group with `criterion_lr=1.0e-4`;
+  - retained row-scan/tangent lane decode, projection-competition stop-line decode, and `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_task_uncertainty_loss_balancer_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_072355`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6457` at epoch 1, but this is not success evidence because fixed task metrics failed.
+- Best checkpoint criterion log-vars after training:
+  - lane: `0.0026`
+  - stop_line: `0.0027`
+  - crosswalk: `-0.0032`
+- Checkpoint optimizer groups included `heads` and `criterion`, confirming that the trainable loss-allocation parameters were actually optimized.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- The learned task-uncertainty balancer lost `4` lane TP and added `1` lane FP on the retained fixed variant, while recovering no stop-line TP.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_task_uncertainty_loss_balancer_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_072355/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_task_uncertainty_loss_balancer_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_072355/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `820K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py model/engine/trainer.py model/engine/_trainer_checkpoint.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_task_uncertainty_weighting_adds_trainable_task_log_vars test_pv26_loss_runtime.PV26LossRuntimeTests.test_task_loss_ema_normalizer_scales_ready_task_losses test_pv26_trainer.PV26TrainerTests.test_build_optimizer_adds_trainable_criterion_group test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "task_uncertainty_loss_balancer"`.
+- CUDA task-uncertainty loss-balancer smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The trainable criterion and optimizer/checkpoint plumbing are valid and covered, but the trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
+- Do not repeat this as log-var init, clamp range, criterion LR, head LR, epoch-count, or same projection-comp-runtime training sweep.
+- Reopen task-loss allocation only if coupled to a materially different shared representation, adapter/routing surface, or lane/stop-line emit contract that first improves fixed smoke TP/FP/FN.

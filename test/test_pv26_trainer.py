@@ -728,6 +728,39 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertFalse(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
         self.assertFalse(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
 
+    def test_build_optimizer_adds_trainable_criterion_group(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
+        from model.net import PV26Heads
+
+        adapter = _DummyAdapter()
+        heads = PV26Heads(in_channels=PV26_TEST_CHANNELS, lane_head_mode="seg_first")
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_uncertainty_weighting_enabled=True,
+        )
+        configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_heads_only",
+        )
+
+        optimizer = build_pv26_optimizer(
+            adapter,
+            heads,
+            criterion=criterion,
+            trunk_lr=0.0,
+            head_lr=1.0e-4,
+            criterion_lr=2.0e-4,
+        )
+        groups_by_name = {str(group.get("group_name")): group for group in optimizer.param_groups}
+
+        self.assertIn("criterion", groups_by_name)
+        self.assertAlmostEqual(groups_by_name["criterion"]["lr"], 2.0e-4)
+        self.assertAlmostEqual(groups_by_name["criterion"]["weight_decay"], 0.0)
+        self.assertEqual(len(groups_by_name["criterion"]["params"]), 3)
+
     def test_lane_conditional_seed_only_keeps_frozen_modules_in_eval_mode(self) -> None:
         from model.engine.trainer import PV26Trainer
         from model.net import PV26Heads

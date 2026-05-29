@@ -251,6 +251,14 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "task_loss_ema_eps": 1.0e-4,
                             "task_loss_scale_min": 0.5,
                             "task_loss_scale_max": 2.5,
+                            "task_uncertainty_weighting_enabled": True,
+                            "task_uncertainty_tasks": ["lane", "crosswalk"],
+                            "task_uncertainty_init_log_vars": {
+                                "lane": 0.1,
+                                "crosswalk": -0.2,
+                            },
+                            "task_uncertainty_log_var_min": -1.0,
+                            "task_uncertainty_log_var_max": 1.0,
                             "lane_family_cross_stitch_enabled": True,
                         },
                         "preview": {
@@ -453,6 +461,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.task_loss_ema_eps, 1.0e-4)
         self.assertAlmostEqual(scenario.train_defaults.task_loss_scale_min, 0.5)
         self.assertAlmostEqual(scenario.train_defaults.task_loss_scale_max, 2.5)
+        self.assertTrue(scenario.train_defaults.task_uncertainty_weighting_enabled)
+        self.assertEqual(scenario.train_defaults.task_uncertainty_tasks, ("lane", "crosswalk"))
+        self.assertAlmostEqual(scenario.train_defaults.task_uncertainty_init_log_vars["lane"], 0.1)
+        self.assertAlmostEqual(scenario.train_defaults.task_uncertainty_init_log_vars["crosswalk"], -0.2)
+        self.assertAlmostEqual(scenario.train_defaults.task_uncertainty_log_var_min, -1.0)
+        self.assertAlmostEqual(scenario.train_defaults.task_uncertainty_log_var_max, 1.0)
         self.assertTrue(scenario.train_defaults.lane_family_cross_stitch_enabled)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")

@@ -220,6 +220,36 @@ class PV26LossRuntimeTests(unittest.TestCase):
                 task_loss_scale_max=1.0,
             )
 
+    def test_task_uncertainty_weighting_adds_trainable_task_log_vars(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0},
+            task_uncertainty_weighting_enabled=True,
+            task_uncertainty_tasks=("lane", "stop_line"),
+            task_uncertainty_init_log_vars={"lane": 0.25, "stop_line": -0.25},
+        )
+        task_losses = {
+            "lane": torch.tensor(2.0, requires_grad=True),
+            "stop_line": torch.tensor(1.0, requires_grad=True),
+            "crosswalk": torch.tensor(3.0, requires_grad=True),
+        }
+
+        weighted = criterion._apply_task_uncertainty_losses(task_losses)
+        total = weighted["lane"] + weighted["stop_line"] + weighted["crosswalk"]
+        total.backward()
+
+        self.assertIn("lane", criterion.task_uncertainty_log_vars)
+        self.assertIn("stop_line", criterion.task_uncertainty_log_vars)
+        self.assertNotIn("crosswalk", criterion.task_uncertainty_log_vars)
+        self.assertIsNotNone(criterion.task_uncertainty_log_vars["lane"].grad)
+        self.assertIsNotNone(criterion.task_uncertainty_log_vars["stop_line"].grad)
+        self.assertAlmostEqual(
+            criterion.export_config()["task_uncertainty_init_log_vars"]["lane"],
+            0.25,
+        )
+
     def test_stage4_disables_detector_and_tl_attr_loss_paths(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

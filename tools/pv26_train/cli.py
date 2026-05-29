@@ -743,6 +743,11 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         task_loss_ema_eps=train_config.task_loss_ema_eps,
         task_loss_scale_min=train_config.task_loss_scale_min,
         task_loss_scale_max=train_config.task_loss_scale_max,
+        task_uncertainty_weighting_enabled=train_config.task_uncertainty_weighting_enabled,
+        task_uncertainty_tasks=train_config.task_uncertainty_tasks,
+        task_uncertainty_init_log_vars=train_config.task_uncertainty_init_log_vars,
+        task_uncertainty_log_var_min=train_config.task_uncertainty_log_var_min,
+        task_uncertainty_log_var_max=train_config.task_uncertainty_log_var_max,
     )
     trainer = PV26Trainer(
         adapter,
@@ -754,6 +759,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         freeze_policy=phase.freeze_policy,
         trunk_lr=train_config.trunk_lr,
         head_lr=train_config.head_lr,
+        criterion_lr=train_config.criterion_lr,
         weight_decay=train_config.weight_decay,
         amp=train_config.amp,
         amp_init_scale=train_config.amp_init_scale,

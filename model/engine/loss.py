@@ -2367,6 +2367,11 @@ class PV26MultiTaskLoss(nn.Module):
         task_loss_ema_eps: float = 1.0e-6,
         task_loss_scale_min: float = 0.25,
         task_loss_scale_max: float = 4.0,
+        task_uncertainty_weighting_enabled: bool = False,
+        task_uncertainty_tasks: tuple[str, ...] | list[str] | None = None,
+        task_uncertainty_init_log_vars: dict[str, float] | None = None,
+        task_uncertainty_log_var_min: float = -1.5,
+        task_uncertainty_log_var_max: float = 1.5,
     ) -> None:
         super().__init__()
         stage = _canonical_stage(stage)
@@ -2481,6 +2486,34 @@ class PV26MultiTaskLoss(nn.Module):
             raise ValueError("task_loss_scale_min must be > 0")
         if self.task_loss_scale_max < self.task_loss_scale_min:
             raise ValueError("task_loss_scale_max must be >= task_loss_scale_min")
+        self.task_uncertainty_weighting_enabled = bool(task_uncertainty_weighting_enabled)
+        uncertainty_tasks = (
+            ("lane", "stop_line", "crosswalk")
+            if task_uncertainty_tasks is None
+            else tuple(str(item) for item in task_uncertainty_tasks)
+        )
+        unsupported_uncertainty_tasks = sorted(set(uncertainty_tasks) - {"lane", "stop_line", "crosswalk"})
+        if unsupported_uncertainty_tasks:
+            raise ValueError(f"unsupported task_uncertainty_tasks: {unsupported_uncertainty_tasks}")
+        self.task_uncertainty_tasks = tuple(uncertainty_tasks)
+        self.task_uncertainty_log_var_min = float(task_uncertainty_log_var_min)
+        self.task_uncertainty_log_var_max = float(task_uncertainty_log_var_max)
+        if self.task_uncertainty_log_var_max < self.task_uncertainty_log_var_min:
+            raise ValueError("task_uncertainty_log_var_max must be >= task_uncertainty_log_var_min")
+        init_log_vars = (
+            {str(name): float(value) for name, value in task_uncertainty_init_log_vars.items()}
+            if task_uncertainty_init_log_vars
+            else {}
+        )
+        unsupported_init_log_vars = sorted(set(init_log_vars) - {"lane", "stop_line", "crosswalk"})
+        if unsupported_init_log_vars:
+            raise ValueError(f"unsupported task_uncertainty_init_log_vars: {unsupported_init_log_vars}")
+        self.task_uncertainty_log_vars = nn.ParameterDict()
+        if self.task_uncertainty_weighting_enabled:
+            for task_name in self.task_uncertainty_tasks:
+                self.task_uncertainty_log_vars[task_name] = nn.Parameter(
+                    torch.tensor(float(init_log_vars.get(task_name, 0.0)), dtype=torch.float32)
+                )
         self.distill_loss_weights = {
             "lane": 1.0,
             "stop_line": 1.0,
@@ -2545,6 +2578,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.last_teacher_agreement: dict[str, dict[str, float | None]] = {}
         self.last_distill_breakdown: dict[str, dict[str, float | None]] = {}
         self.last_task_loss_normalization: dict[str, dict[str, float | None]] = {}
+        self.last_task_uncertainty_weighting: dict[str, dict[str, float | None]] = {}
 
     def export_config(self) -> dict[str, Any]:
         return {
@@ -2615,6 +2649,14 @@ class PV26MultiTaskLoss(nn.Module):
             "task_loss_ema_eps": float(self.task_loss_ema_eps),
             "task_loss_scale_min": float(self.task_loss_scale_min),
             "task_loss_scale_max": float(self.task_loss_scale_max),
+            "task_uncertainty_weighting_enabled": bool(self.task_uncertainty_weighting_enabled),
+            "task_uncertainty_tasks": list(self.task_uncertainty_tasks),
+            "task_uncertainty_init_log_vars": {
+                task_name: float(parameter.detach().cpu())
+                for task_name, parameter in self.task_uncertainty_log_vars.items()
+            },
+            "task_uncertainty_log_var_min": float(self.task_uncertainty_log_var_min),
+            "task_uncertainty_log_var_max": float(self.task_uncertainty_log_var_max),
         }
 
     def _detector_losses_enabled(self) -> bool:
@@ -2721,6 +2763,39 @@ class PV26MultiTaskLoss(nn.Module):
             self.last_task_loss_normalization[task_name]["normalized_loss"] = float(normalized_loss.detach().cpu())
             normalized[task_name] = normalized_loss
         return normalized
+
+    def _apply_task_uncertainty_losses(self, task_losses: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        self.last_task_uncertainty_weighting = {
+            task_name: {
+                "input_loss": float(loss.detach().cpu()),
+                "weighted_loss": float(loss.detach().cpu()),
+                "log_var": None,
+                "precision": 1.0,
+            }
+            for task_name, loss in task_losses.items()
+        }
+        if not self.task_uncertainty_weighting_enabled:
+            return task_losses
+        weighted = dict(task_losses)
+        for task_name in self.task_uncertainty_tasks:
+            if task_name not in task_losses or not self._task_loss_enabled(task_name):
+                continue
+            if task_name not in self.task_uncertainty_log_vars:
+                continue
+            log_var = self.task_uncertainty_log_vars[task_name].clamp(
+                min=float(self.task_uncertainty_log_var_min),
+                max=float(self.task_uncertainty_log_var_max),
+            )
+            precision = torch.exp(-log_var)
+            weighted_loss = precision * task_losses[task_name] + log_var
+            self.last_task_uncertainty_weighting[task_name] = {
+                "input_loss": float(task_losses[task_name].detach().cpu()),
+                "weighted_loss": float(weighted_loss.detach().cpu()),
+                "log_var": float(log_var.detach().cpu()),
+                "precision": float(precision.detach().cpu()),
+            }
+            weighted[task_name] = weighted_loss
+        return weighted
 
     def _lane_distill_loss(
         self,
@@ -3081,6 +3156,7 @@ class PV26MultiTaskLoss(nn.Module):
             },
             encoded,
         )
+        task_losses = self._apply_task_uncertainty_losses(task_losses)
         lane = task_losses["lane"]
         stop_line = task_losses["stop_line"]
         crosswalk = task_losses["crosswalk"]
