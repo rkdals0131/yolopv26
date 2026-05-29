@@ -16032,3 +16032,70 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because the required smoke movement was absent.
 - Do not repeat this as repair-label threshold, sampled-feature set, MLP hidden size, point-loss weight, mean-move gate, max-repair budget, or train-batch scaling.
 - Reopen lane repair only with a materially new instance/confidence signal that first converts near-unmatched candidates into TP on fixed smoke without damaging already matched lanes.
+
+## 305. 2026-05-30 Stop-line learned source router: exact-negative despite oracle source headroom
+
+맥락:
+
+- The current best broader all-task runtime lower bound is a two-checkpoint router: retained primary lane/crosswalk plus the stop-line-priority specialist stop-line route.
+- Simple stop-line dual-source arbitration was broader-negative, but it left a narrower open premise: train a small no-GT source router on train split outputs, then choose per sample among primary, specialist, union, agreement, or empty FP suppression.
+- This is not a new stop-line segment generator. It tests whether the existing two source outputs contain learnable per-sample source-quality signal.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-learned-source-router`.
+- Tool: `tools/probe_pv26_stopline_source_router.py`.
+- Primary checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Stop-line specialist checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Runtime contract retained lane `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line decode, and `crosswalk_polygon_mode=hull`.
+- Router:
+  - input features are only predicted output statistics: source counts, scores, lengths, fragment counts, angles, centers, union stats, and primary-specialist agreement distances;
+  - labels choose the best source mode by exact stop-line sample metric, with `empty` allowed to suppress FP on no-GT samples;
+  - MLP hidden dim `32`, trained on existing dataset root with no dataset copy and no checkpoint artifact by default.
+
+Results:
+
+| Eval | Router train batches | Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| fixed val4 | `8` | primary/specialist | `0.5839` | `0.0000` | `0.5455` | `0 / 3 / 2` |
+| fixed val4 | `8` | learned_router | `0.5839` | `0.0000` | `0.5455` | `0 / 3 / 2` |
+| fixed val4 | `8` | oracle_router | `0.5839` | `0.0000` | `0.5455` | `0 / 0 / 2` |
+| exact val128 | `64` | primary | `0.5888` | `0.5333` | `0.5988` | `32 / 28 / 28` |
+| exact val128 | `64` | specialist | `0.5888` | `0.4918` | `0.5988` | `30 / 32 / 30` |
+| exact val128 | `64` | agreement | `0.5888` | `0.5042` | `0.5988` | `30 / 29 / 30` |
+| exact val128 | `64` | learned_router | `0.5888` | `0.5042` | `0.5988` | `30 / 29 / 30` |
+| exact val128 | `64` | oracle_router | `0.5888` | `0.7083` | `0.5988` | `34 / 2 / 26` |
+
+Diagnostics:
+
+- Exact train features: `256` samples, `45` features.
+- Train label counts: primary `0`, specialist `3`, union `2`, agreement `83`, empty `168`.
+- Exact val label counts: primary `2`, specialist `1`, union `1`, agreement `30`, empty `478`.
+- Exact learned router choices: specialist `5`, agreement `52`, empty `455`; it never chose primary on val.
+
+Artifacts:
+
+- Smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_smoke_val4_epoch2/metrics.csv`.
+- Exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_exact_val128_epoch2/metrics.csv`.
+- Exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_exact_val128_epoch2/summary.json`.
+
+Storage:
+
+- Existing `seg_dataset/pv26_exhaustive_od_lane_dataset` was reused in place; no dataset copy was created.
+- No router `.pt` was saved because `--save-router-model` was not used.
+- Retained source-router exports are CSV/summary-only: exact export is about `52K`, smoke export about `8K`.
+- Root `yolo26s.pt` was removed after evaluation.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py`.
+- CUDA summary smoke with `2` router train batches and `1` val batch.
+- CUDA fixed val4 source-router smoke with `8` router train batches.
+- CUDA exact-val128 source-router evaluation with `64` router train batches and `120` MLP epochs.
+
+판단:
+
+- The oracle router proves source selection headroom exists on exact val128, but the no-GT MLP feature contract does not learn it.
+- The learned router falls below the primary projection-competition exact reference (`0.5042` vs `0.5333`) and therefore broader-val512 was skipped.
+- Do not repeat this as source-mode set, MLP hidden size, router epoch, class weight, or output-stat feature sweep.
+- Reopen source routing only with a materially different runtime quality signal, not with the same predicted source statistics.
