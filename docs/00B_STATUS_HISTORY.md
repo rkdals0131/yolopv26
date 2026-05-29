@@ -15298,3 +15298,69 @@ Verification:
 - The seed-only branch itself is negative. It can reduce untrained seed-trace FP blow-up, but it does not beat row-scan and the fixed-BN rerun becomes heavily FP-positive.
 - Exact-val128 and broader-val512 were skipped because fixed smoke failed by a wide margin.
 - Do not repeat this as seed target, threshold, max-seeds, head-LR, epoch-count, or freeze-policy tuning without a new TP-preserving lane instance quality/existence signal.
+
+## 294. 2026-05-30 Stop-line priority static-trunk heads-only: frozen trunk eval mode still rejects
+
+Context:
+
+- The seed-branch-only diagnostic exposed that `requires_grad=False` does not protect frozen BatchNorm buffers when the full model is put in train mode.
+- The narrow follow-up was to test whether ordinary lane-family heads-only fine-tunes should keep the frozen detector/trunk in eval mode while still training lane/stop-line/crosswalk heads.
+- This is not a new stop-line candidate generator; it is a training/freeze contract audit on the existing stop-line-priority projection-comp runtime path.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/static-trunk-heads-retention`.
+- Added freeze policy `lane_family_heads_static_trunk`:
+  - same trainable modules as `lane_family_heads_only`
+  - frozen detector/trunk stays in eval mode during train steps
+  - lane/stop-line/crosswalk heads stay in train mode
+- Added `stopline_priority_static_trunk` to `tools/run_pv26_lane60_probe.py`:
+  - based on `stopline_projection_comp_runtime`
+  - freeze policy `lane_family_heads_static_trunk`
+  - trunk LR `0.0`
+  - head LR `1e-4`
+  - `task_positive_task="multi:stopline,lane,crosswalk"`
+  - `task_positive_fraction=1.0`
+  - projection-competition stop-line runtime and hull crosswalk retained.
+- Added trainer test coverage proving the frozen trunk is eval-mode while heads remain train-mode.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_022254`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4 task-best F1: lane `0.5263`, stop-line `0.0000`, crosswalk `0.6667`. This is not final evidence because it is the training validation slice, not fixed epoch-2 evaluation.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| static-trunk heads-only | `0.4962` | `33 / 14 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_022254/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because fixed smoke regressed lane by `-7 TP`, `+3 FP`, and recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `768M`, plus the auto-downloaded root `yolo26s.pt` was about `20M`.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `7.3M`.
+
+Verification:
+
+- `python -m py_compile model/engine/trainer.py model/engine/_trainer_step.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_trainer.py' -k static_trunk`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- `lane_family_heads_static_trunk` is a valid freeze-mode guard for future heads-only audits where frozen BatchNorm drift would be a confound.
+- It does not make the existing stop-line-priority positive-sampler path viable: fixed smoke still loses lane heavily and recovers no stop-line TP.
+- Do not repeat this as static-trunk freeze-policy, stop-line task-order, positive-fraction, head-LR, epoch-count, or same projection-comp runtime training sweep.
+- Reopen only with a materially different candidate/geometry, adapter/routing, or lane-retention signal that first improves fixed smoke TP/FP/FN.

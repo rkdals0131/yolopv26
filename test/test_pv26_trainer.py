@@ -758,6 +758,46 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertFalse(trainer.heads.training)
         self.assertTrue(all(parameter.requires_grad for parameter in heads.lane_head.conditional_seed_logits.parameters()))
 
+    def test_lane_family_heads_static_trunk_keeps_only_trunk_in_eval_mode(self) -> None:
+        from model.engine.trainer import PV26Trainer, build_pv26_optimizer, configure_pv26_train_stage
+
+        adapter = _DummyAdapter()
+        heads = _make_pv26_heads_for_trainer_tests()
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_heads_static_trunk",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=0.0, head_lr=1.0e-4)
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+
+        self.assertEqual(summary["freeze_policy"], "lane_family_heads_static_trunk")
+        self.assertEqual(summary["head_training_policy"], "lane_family_only")
+        self.assertEqual(summary["trainable_trunk_params"], 0)
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
+        self.assertTrue(all(id(parameter) in optimizer_params for parameter in heads.lane_head.parameters()))
+        self.assertFalse(any(id(parameter) in optimizer_params for parameter in heads.det_heads.parameters()))
+
+        trainer = PV26Trainer(
+            adapter,
+            heads,
+            stage="stage_4_lane_family_finetune",
+            freeze_policy="lane_family_heads_static_trunk",
+            trunk_lr=0.0,
+            head_lr=1.0e-4,
+        )
+        trainer.adapter.raw_model.train()
+        trainer.heads.train()
+        trainer.apply_freeze_policy_train_modes()
+
+        self.assertFalse(trainer.adapter.raw_model.training)
+        self.assertTrue(trainer.heads.training)
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_with_real_runtime_returns_finite_losses(self) -> None:
         from model.net import PV26Heads

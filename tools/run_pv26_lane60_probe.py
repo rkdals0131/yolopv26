@@ -1460,6 +1460,18 @@ EXPERIMENTS["stopline_priority_positive_sampler"] = {
     },
 }
 
+EXPERIMENTS["stopline_priority_static_trunk"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_heads_static_trunk",
+    "trunk_lr": 0.0,
+    "head_lr": 1.0e-4,
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,lane,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 EXPERIMENTS["stopline_priority_retention_distill_heads"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_heads_only",
