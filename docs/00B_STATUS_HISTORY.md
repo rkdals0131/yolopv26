@@ -14276,3 +14276,110 @@ Verification:
 - Using midpoint as the proposal source suppresses FP too aggressively and collapses recall: exact stop-line `6 / 3 / 54`, F1 `0.1739`.
 - This is worse than the retained exact projection-competition reference and should not be broadened.
 - Do not repeat this as midpoint aux weight, proposal source (`midpoint` vs `midpoint_max`), head LR, epoch count, or stopline-only sampler tuning. Reopen only with a materially different candidate/geometry contract that first improves fixed exact TP/FP/FN.
+
+## 279. 2026-05-29 Heterogeneous endpoint-pair specialist router audit
+
+Context:
+
+- The endpoint-pair metric-verifier checkpoint was trained under a different stop-line experiment contract from the retained projection-comp primary checkpoint.
+- The existing two-checkpoint router could swap stop-line tensors, but it still built the specialist with the primary experiment/postprocess contract.
+- This audit first fixed that contract mismatch, then tested whether the endpoint-pair specialist provides useful stop-line outputs when routed only for stop-line.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/heterogeneous-stopline-router`.
+- Updated `tools/probe_pv26_lane_flip_tta.py` with `--stop-line-lane60-experiment`.
+- Added a shared eval-contract builder so the primary checkpoint and the stop-line specialist can each resolve their own scenario, phase defaults, train config, and postprocess config.
+- Specialist stop-line postprocess now uses the specialist postprocess config instead of the primary variant postprocess config.
+- Summary JSON now records the stop-line specialist scenario path, lane60 experiment, phase name, train config, and postprocess config.
+
+Evaluation:
+
+- Fixed exact-val128 epoch `2`.
+- Primary checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Primary experiment: `stopline_projection_comp_runtime`.
+- Stop-line specialist checkpoint: endpoint-pair metric-verifier `best.pt`.
+- Stop-line specialist experiment: `stopline_endpoint_pair_metric_verifier`.
+- Runtime: `flip_centerline_avg_lane_cross_comp050`, `crosswalk_polygon_mode=hull`, source modes `primary`, `specialist`, `primary_absent_specialist`, `specialist_absent_primary`, `union_dedupe`, and `agreement`.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/heterogeneous_endpoint_pair_router_exact_val128_epoch2/summary.json`.
+
+| Mode | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| primary | `0.5888` | `0.5333` | `0.5988` | `32 / 28 / 28` |
+| specialist | `0.5888` | `0.3387` | `0.5988` | `21 / 43 / 39` |
+| primary_absent_specialist | `0.5888` | `0.5246` | `0.5988` | `32 / 30 / 28` |
+| specialist_absent_primary | `0.5888` | `0.4000` | `0.5988` | `27 / 48 / 33` |
+| union_dedupe | `0.5888` | `0.4892` | `0.5988` | `34 / 45 / 26` |
+| agreement | `0.5888` | `0.4272` | `0.5988` | `22 / 21 / 38` |
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_lane_flip_tta_probe.py'`.
+- CUDA fixed exact-val128 endpoint-pair heterogeneous router audit.
+
+판단:
+
+- Tooling is positive: heterogeneous stop-line specialists now run under their own experiment/postprocess contracts.
+- The endpoint-pair specialist path is negative: every mixed mode stayed below primary projection-comp exact stop-line `0.5333`.
+- Broader-val512 was skipped because the fixed exact gate failed.
+- Do not repeat this as source-mode order, primary-absent fallback, union/dedupe, agreement, or specialist-postprocess contract tuning. Reopen only with a materially new endpoint-quality or candidate-coverage signal.
+
+## 280. 2026-05-29 Stop-line-priority positive-sampler larger-range router audit
+
+Context:
+
+- The previous stop-line-priority positive-sampler checkpoint is the current best broader two-checkpoint router lower bound at lane/stop/cross `0.5628 / 0.5309 / 0.6187`.
+- The user explicitly required real training, evaluation after training, a larger data range, and no dataset copy.
+- This follow-up tested only the scale question: same sampler/training contract, more train batches and validation batches.
+
+Training:
+
+- Command axis: `stopline_priority_positive_sampler`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Real CUDA train: `3` epochs, `2048` train batches per epoch, `256` val batches, batch size `4`, device `cuda:0`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_194249`.
+- Data root: existing `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6285` | `0.5415` | `0.4105` | `0.6431` | `2118 / 979 / 2607` | `47 / 67 / 68` | `109 / 66 / 55` |
+| 2 | `0.6528` | `0.5398` | `0.5833` | `0.6386` | `2019 / 844 / 2599` | `63 / 46 / 44` | `129 / 59 / 87` |
+| 3 | `0.6395` | `0.5355` | `0.4962` | `0.6527` | `2114 / 926 / 2741` | `66 / 57 / 77` | `125 / 58 / 75` |
+
+- Best checkpoint by phase objective was epoch `2`.
+- The internal epoch-2 stop-line value is not final evidence because the maintained gate is fixed router exact-val128 epoch `2`.
+
+Fixed router exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7100` | `0.5029` | `0.5888` | `1202 / 491 / 1188` |
+| stop_line | `0.4688` | `0.5000` | `0.4839` | `30 / 34 / 30` |
+| crosswalk | `0.5814` | `0.6173` | `0.5988` | `50 / 36 / 31` |
+
+- Fixed exact phase objective: `0.6488806833`.
+- Primary projection-comp exact reference remains stronger: stop-line `32 / 28 / 28`, F1 `0.5333`.
+- The prior `512` train-batch stop-line-priority specialist exact was also stronger: stop-line `30 / 32 / 30`, F1 `0.4918`.
+- Broader-val512 was skipped because fixed exact regressed versus both references.
+
+Storage:
+
+- Removed root `yolo26s.pt`.
+- Pruned duplicate `last.pt` and task-best checkpoints from the new run; retained only `phase_4/checkpoints/best.pt`.
+- Removed the new run TensorBoard directory.
+- Retained run size after cleanup: about `113M`, with best checkpoint, summaries/history, and exact eval exports preserved.
+
+Verification:
+
+- CUDA `3` epoch / `2048` train-batch run.
+- CUDA fixed router exact-val128 epoch-2 eval.
+- Cleanup verified by retained checkpoint directory and run size.
+
+판단:
+
+- More stop-line-positive exposure can make the internal phase validation slice look strong, but it did not improve the fixed runtime router gate.
+- This larger-range train is negative for the real target and should not be broadened.
+- Do not repeat this as train-batch count, val-batch count, epoch-count, same sampler order, or same projection-comp runtime scaling. Reopen only with a new stop-line candidate/geometry or lane-retention signal.

@@ -111,6 +111,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--source-run", default=str(SOURCE_RUN))
     parser.add_argument("--lane60-experiment", required=True)
+    parser.add_argument(
+        "--stop-line-lane60-experiment",
+        default="",
+        help=(
+            "Optional lane60 experiment used to build the stop-line specialist "
+            "model/postprocess contract. Defaults to --lane60-experiment."
+        ),
+    )
     parser.add_argument("--preset", default="default")
     parser.add_argument("--max-val-batches", type=int, default=128)
     parser.add_argument("--validation-epoch", type=int, default=1)
@@ -522,6 +530,61 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _build_eval_contract(
+    args: argparse.Namespace,
+    *,
+    source_run: Path,
+    checkpoint: Path,
+    experiment: str,
+) -> tuple[Any, Path, dict[str, Any], Any, Any, Any]:
+    scenario_args = argparse.Namespace(
+        preset=str(args.preset),
+        source_run=str(source_run),
+        seed_checkpoint=str(checkpoint),
+        experiment=str(experiment),
+        epochs=1,
+        train_batches=int(args.train_batches),
+        val_batches=int(args.max_val_batches),
+        batch_size=int(args.batch_size),
+        device=str(args.device),
+        run_root="",
+        preview=False,
+    )
+    scenario, scenario_path, options = _lane60_scenario(
+        scenario_args,
+        source_run=source_run,
+        seed_checkpoint=checkpoint,
+    )
+    backbone_weights = str(args.backbone_weights).strip()
+    if backbone_weights:
+        scenario = dataclasses_replace(
+            scenario,
+            train_defaults=dataclasses_replace(
+                scenario.train_defaults,
+                backbone_weights=str(Path(backbone_weights).expanduser().resolve()),
+            ),
+        )
+    dataset_root = _resolve_dataset_root(args, source_run, scenario.dataset.root)
+    scenario = dataclasses_replace(
+        scenario,
+        dataset=train_config_api.DatasetConfig(
+            root=dataset_root,
+            additional_roots=tuple(scenario.dataset.additional_roots),
+        ),
+    )
+    phase_index = int(tuple(options["selected_phase_indices"])[0])
+    phase = scenario.phases[phase_index - 1]
+    train_config = train_config_api.scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+    phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
+    train_config = dataclasses_replace(
+        train_config,
+        device=_resolve_device(str(args.device), train_config.device),
+        val_batches=int(args.max_val_batches),
+        batch_size=int(args.batch_size),
+    )
+    return scenario, scenario_path, options, phase, phase_selection, train_config
+
+
 def main() -> int:
     args = parse_args()
     variants = _variant_names(args.variants)
@@ -573,51 +636,32 @@ def main() -> int:
     if not source_run.is_dir():
         raise FileNotFoundError(f"source run not found: {source_run}")
 
-    scenario_args = argparse.Namespace(
-        preset=str(args.preset),
-        source_run=str(source_run),
-        seed_checkpoint=str(checkpoint),
-        experiment=str(args.lane60_experiment),
-        epochs=1,
-        train_batches=int(args.train_batches),
-        val_batches=int(args.max_val_batches),
-        batch_size=int(args.batch_size),
-        device=str(args.device),
-        run_root="",
-        preview=False,
-    )
-    scenario, scenario_path, options = _lane60_scenario(
-        scenario_args,
+    scenario, scenario_path, options, phase, phase_selection, train_config = _build_eval_contract(
+        args,
         source_run=source_run,
-        seed_checkpoint=checkpoint,
-    )
-    backbone_weights = str(args.backbone_weights).strip()
-    if backbone_weights:
-        scenario = dataclasses_replace(
-            scenario,
-            train_defaults=dataclasses_replace(
-                scenario.train_defaults,
-                backbone_weights=str(Path(backbone_weights).expanduser().resolve()),
-            ),
-        )
-    dataset_root = _resolve_dataset_root(args, source_run, scenario.dataset.root)
-    scenario = dataclasses_replace(
-        scenario,
-        dataset=train_config_api.DatasetConfig(
-            root=dataset_root,
-            additional_roots=tuple(scenario.dataset.additional_roots),
-        ),
+        checkpoint=checkpoint,
+        experiment=str(args.lane60_experiment),
     )
     phase_index = int(tuple(options["selected_phase_indices"])[0])
-    phase = scenario.phases[phase_index - 1]
-    train_config = train_config_api.scenario_phase_defaults(scenario.train_defaults, phase.overrides)
-    phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
-    train_config = dataclasses_replace(
-        train_config,
-        device=_resolve_device(str(args.device), train_config.device),
-        val_batches=int(args.max_val_batches),
-        batch_size=int(args.batch_size),
-    )
+    stop_line_experiment = str(args.stop_line_lane60_experiment or args.lane60_experiment).strip()
+    stop_line_scenario = scenario
+    stop_line_scenario_path = scenario_path
+    stop_line_phase = phase
+    stop_line_train_config = train_config
+    if stop_line_checkpoint is not None and stop_line_experiment != str(args.lane60_experiment):
+        (
+            stop_line_scenario,
+            stop_line_scenario_path,
+            _stop_line_options,
+            stop_line_phase,
+            _stop_line_phase_selection,
+            stop_line_train_config,
+        ) = _build_eval_contract(
+            args,
+            source_run=source_run,
+            checkpoint=stop_line_checkpoint,
+            experiment=stop_line_experiment,
+        )
 
     train_cli._configure_torch_multiprocessing()
     dataset = train_cli.PV26CanonicalDataset(
@@ -646,15 +690,22 @@ def main() -> int:
     stop_line_load_report: dict[str, Any] | None = None
     stop_line_evaluator = None
     if stop_line_checkpoint is not None:
-        stop_line_trainer = train_cli._build_phase_trainer(phase, train_config)
+        stop_line_trainer = train_cli._build_phase_trainer(stop_line_phase, stop_line_train_config)
         stop_line_load_report = stop_line_trainer.load_model_weights(
             stop_line_checkpoint,
-            map_location=train_config.device,
+            map_location=stop_line_train_config.device,
         )
         stop_line_evaluator = stop_line_trainer.build_evaluator()
         stop_line_evaluator.adapter.raw_model.eval()
         stop_line_evaluator.heads.eval()
     postprocess_config = _postprocess_override_config(args, trainer) or train_cli._build_postprocess_config(train_config)
+    stop_line_postprocess_config = (
+        _postprocess_override_config(args, stop_line_trainer)
+        if stop_line_checkpoint is not None
+        else None
+    )
+    if stop_line_checkpoint is not None and stop_line_postprocess_config is None:
+        stop_line_postprocess_config = train_cli._build_postprocess_config(stop_line_train_config)
     evaluator = trainer.build_evaluator()
     evaluator.adapter.raw_model.eval()
     evaluator.heads.eval()
@@ -726,10 +777,16 @@ def main() -> int:
                 if stop_line_checkpoint is not None:
                     specialist_key = (variant, semantic_vote_mode, "specialist")
                     if specialist_key not in postprocessed_cache:
+                        if stop_line_postprocess_config is None:
+                            raise ValueError("stop-line specialist postprocess config was not built")
+                        specialist_postprocess_config = dataclasses_replace(
+                            stop_line_postprocess_config,
+                            lane_segfirst_semantic_vote_mode=str(semantic_vote_mode),
+                        )
                         postprocessed_cache[specialist_key] = postprocess_pv26_batch(
                             specialist_outputs_by_variant[variant],
                             meta_rows,
-                            config=variant_postprocess_config,
+                            config=specialist_postprocess_config,
                         )
                     specialist_predictions = postprocessed_cache[specialist_key]
                 predictions_by_variant[label].extend(
@@ -775,8 +832,11 @@ def main() -> int:
         "stop_line_checkpoint": None if stop_line_checkpoint is None else str(stop_line_checkpoint),
         "scenario_path": str(scenario_path),
         "lane60_experiment": str(args.lane60_experiment),
+        "stop_line_scenario_path": None if stop_line_checkpoint is None else str(stop_line_scenario_path),
+        "stop_line_lane60_experiment": None if stop_line_checkpoint is None else str(stop_line_experiment),
         "phase_index": phase_index,
         "phase_name": phase.name,
+        "stop_line_phase_name": None if stop_line_checkpoint is None else stop_line_phase.name,
         "validation_epoch": int(args.validation_epoch),
         "processed_batches": int(processed_batches),
         "variants": list(variants),
@@ -792,7 +852,11 @@ def main() -> int:
             for label, variant, semantic_vote_mode, stop_line_source_mode in variant_matrix
         ],
         "train_config": _json_ready(train_config),
+        "stop_line_train_config": None if stop_line_checkpoint is None else _json_ready(stop_line_train_config),
         "postprocess_config": _json_ready(postprocess_config),
+        "stop_line_postprocess_config": (
+            None if stop_line_postprocess_config is None else _json_ready(stop_line_postprocess_config)
+        ),
         "load_report": _json_ready(load_report),
         "lane_load_report": _json_ready(lane_load_report),
         "stop_line_load_report": _json_ready(stop_line_load_report),
