@@ -13377,3 +13377,48 @@ Verification:
 - Broader stop-line remains a small positive over projection-comp (`0.5164 -> 0.5278`) but below the stop-line-priority run (`0.5309`) and far below `0.60`.
 - Exact-val128 rejects the branch because stop-line is only `0.4655`, below projection-comp exact `0.5167`, and crosswalk is still under `0.60`.
 - Do not continue this as freeze-policy, stop/cross sampler order, epoch-count, head-LR, or loss-weight tuning. It confirms that retention scheduling alone is not enough; the next useful branch needs a new stop-line candidate/geometry signal or a stronger lane instance-retention contract.
+
+## 266. 2026-05-29 Stop/cross lane-frozen stop-head transplant: stop-line gain is not reusable
+
+Context:
+
+- Section 265 showed a broader stop-line gain from the stop/cross lane-frozen checkpoint, but lane and crosswalk behavior changed at the same time.
+- The diagnostic question was whether the trained stop-line head alone could be transplanted onto the retained lane/cross checkpoint and preserve both the retained lane/cross runtime composite and the new stop-line gain.
+- This was intentionally a low-cost composition check before spending another training run on the same premise.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-cross-head-transplant`.
+- Base/lane/crosswalk checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Stop-line source checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725/phase_4/checkpoints/best.pt`.
+- Merge command used `tools/merge_pv26_lane_family_task_heads.py` with `--allow-source-extra-keys`.
+- Replacements reported: lane `195`, stop-line `492`, crosswalk `156`.
+- The fixed eval kept `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line runtime decode, and `crosswalk_polygon_mode=hull`.
+
+Fixed full runtime task-balance eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6490488399` | `0.5888` | `0.4800` | `0.5988` | `1202 / 491 / 1188` | `30 / 35 / 30` | `50 / 36 / 31` |
+| broader val512 epoch2 | `0.6401687674` | `0.5628` | `0.4894` | `0.6187` | `4532 / 2097 / 4945` | `127 / 121 / 144` | `232 / 123 / 163` |
+
+Storage:
+
+- The temporary merged checkpoint was about `138M`.
+- Because the diagnostic was negative, pruned `merged_task_heads.pt` after exact/broader evaluation and retained only metric exports.
+- Retained artifact directory is about `808K`.
+- Removed the temporary `yolo26s.pt` download after evaluation.
+
+Verification:
+
+- Task-head merge completed and wrote the merged checkpoint before pruning.
+- Fixed full runtime task-balance exact-val128 epoch-2 eval.
+- Fixed full runtime task-balance broader-val512 epoch-2 eval.
+- Both evaluations reused the existing `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created.
+
+판단:
+
+- The transplant restores the retained lane/cross behavior, but it destroys the stop-line gain from section 265.
+- Broader stop-line falls from the lane-frozen full checkpoint `0.5278`, `128 / 86 / 143` to `0.4894`, `127 / 121 / 144`, which is also below the retained projection-competition reference `0.5164`, `126 / 91 / 145`.
+- Therefore the section-265 stop-line improvement is not a reusable stop-line-head-only improvement. It likely depends on the full stop/cross checkpoint interaction or validation-slice effect.
+- Do not continue this as task-head recombination, stop-head transplant, or cross-head preserve/replace variants. The next useful work needs a real stop-line candidate/geometry signal or lane instance recovery, not another recombination of these partial checkpoints.
