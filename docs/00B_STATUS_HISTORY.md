@@ -13909,3 +13909,81 @@ Verification:
 - Broader lane collapses from retained `0.5628` to `0.5336`, TP `4532 -> 4208`, FN `4945 -> 5269`.
 - Exact stop-line `0.4793` is also below both the regenerated candidate-pool projection-comp exact reference `0.5167` (`31 / 29 / 29`) and the pre-training full-runtime exact row `0.5333` (`32 / 28 / 28`).
 - Do not repeat this as distill weight, trunk LR, head LR, epoch-count, sampler-order, or same source-teacher tuning. Reopen only with a new lane-preserving shared-feature/candidate-geometry contract that first improves fixed exact TP/FP/FN.
+
+## 274. 2026-05-29 Two-checkpoint stop-line router and upper-trunk specialist train
+
+Context:
+
+- The user explicitly required real training, post-training exact/broader evaluation, larger data use where useful, and smart storage handling without copying the dataset.
+- The stop-line-priority positive-sampler checkpoint showed a broader stop-line gain, but its full checkpoint regressed lane. Stop-line-head transplant then lost the gain, which implied the useful stop-line behavior was not a reusable head-only artifact.
+- This branch tested a stricter runtime contract: keep lane/crosswalk on the retained checkpoint, and replace only stop-line outputs from a specialist checkpoint in the inference/evaluation path. Then it trained a stop-line-only upper-trunk specialist for that router.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/runtime-stopline-specialist-router`.
+- Added `--stop-line-checkpoint` to `tools/probe_pv26_lane_flip_tta.py`.
+- Added `_merge_stop_line_outputs()`, which replaces only `stop_line` and `stop_line_*` keys from the specialist forward pass and preserves lane/crosswalk outputs from the primary checkpoint.
+- Added probe preset `stopline_router_specialist_upper_trunk` in `tools/run_pv26_lane60_probe.py`:
+  - base runtime: `stopline_projection_comp_runtime`;
+  - freeze policy: `lane_family_plus_upper_trunk`;
+  - trunk LR `2e-6`, head LR `2e-4`;
+  - loss weights det/TL/lane/crosswalk `0`, stop-line `4.0`;
+  - task-positive sampler `stopline`;
+  - projection-competition stop-line runtime and hull crosswalk retained for eval.
+- Added a focused unit test proving stop-line router merge leaves lane/crosswalk keys untouched and replaces only stop-line keys.
+
+Existing stop-line-priority checkpoint router audit:
+
+- Primary checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Stop-line checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/router_stopline_priority_exact_val128_epoch2/summary.json`.
+- Broader artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/router_stopline_priority_broader_val512_epoch2/summary.json`.
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6525130665` | `0.5888` | `0.4918` | `0.5988` | `1202 / 491 / 1188` | `30 / 32 / 30` | `50 / 36 / 31` |
+| broader val512 epoch2 | `0.6467983828` | `0.5628` | `0.5309` | `0.6187` | `4532 / 2097 / 4945` | `133 / 97 / 138` | `232 / 123 / 163` |
+
+Specialist training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_router_specialist_upper_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_171508`.
+- Smoke train: real CUDA `1` epoch, `8` train batches, `4` val batches, batch size `4`.
+- Main train: real CUDA `3` epochs, `512` train batches, `128` val batches, batch size `4`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+- Best phase-objective epoch was epoch `3`, objective `0.6542531994`. This is not final evidence because final judgement uses fixed router eval with the retained primary checkpoint.
+
+Fixed router eval for the newly trained specialist:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6416305287` | `0.5888` | `0.4427` | `0.5988` | `1202 / 491 / 1188` | `29 / 42 / 31` | `50 / 36 / 31` |
+| broader val512 epoch2 | `0.6370917526` | `0.5628` | `0.4826` | `0.6187` | `4532 / 2097 / 4945` | `125 / 122 / 146` | `232 / 123 / 163` |
+
+Storage:
+
+- The smoke run was pruned after main train/eval completed.
+- The retained main run keeps `phase_4/checkpoints/best.pt`, summaries/history, and exact/broader router metric exports.
+- Removed duplicate task-best checkpoints, `last.pt`, TensorBoard output, and temporary root `yolo26s.pt` download.
+- Retained main run size is about `122M`.
+
+Verification:
+
+- `python -m compileall -q tools/probe_pv26_lane_flip_tta.py tools/run_pv26_lane60_probe.py test/test_lane_flip_tta_probe.py`.
+- `python -m unittest discover -s test -p 'test_lane_flip_tta_probe.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_distill_retention.py'`.
+- Real CUDA smoke train/eval.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Fixed exact-val128 epoch-2 router eval for the existing stop-line-priority checkpoint.
+- Fixed broader-val512 epoch-2 router eval for the existing stop-line-priority checkpoint.
+- Fixed exact-val128 epoch-2 router eval for the newly trained specialist.
+- Fixed broader-val512 epoch-2 router eval for the newly trained specialist.
+
+판단:
+
+- The two-checkpoint router is useful and stricter than CSV recombination: it preserves retained lane/crosswalk and improves broader stop-line from the retained projection-comp runtime `0.5164` to `0.5309`.
+- This is the current best broader all-task runtime lower bound: lane/stop/cross `0.5628 / 0.5309 / 0.6187`, TP/FP/FN lane `4532 / 2097 / 4945`, stop-line `133 / 97 / 138`, crosswalk `232 / 123 / 163`.
+- It still fails the real all-task target. Lane remains `+0.0372` short and stop-line remains `+0.0691` short, and the contract uses two checkpoints rather than one raw checkpoint default.
+- The newly trained stop-line-only upper-trunk specialist is negative. It preserves lane/crosswalk by construction, but stop-line regresses to broader `0.4826`, TP/FP/FN `125 / 122 / 146`, below both the existing router `0.5309` and the retained projection-comp runtime `0.5164`.
+- Do not repeat this as trunk LR, head LR, stop-line loss weight, epoch-count, or stopline-only sampler tuning. Reopen only with a new candidate-generation/geometry signal, or with a single-checkpoint training contract that first improves fixed exact TP/FP/FN while retaining lane/crosswalk.

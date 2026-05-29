@@ -52,6 +52,8 @@ DEFAULT_VARIANTS = (
     "flip_centerline_avg",
     "flip_centerline_avg_lane_cross_comp050",
 )
+STOP_LINE_OUTPUT_KEY = "stop_line"
+STOP_LINE_OUTPUT_PREFIX = "stop_line_"
 SEMANTIC_VOTE_MODES = (
     "component",
     "centerline",
@@ -72,6 +74,14 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
+    parser.add_argument(
+        "--stop-line-checkpoint",
+        default="",
+        help=(
+            "Optional second checkpoint used only for stop-line outputs. "
+            "Lane and crosswalk outputs stay on --checkpoint."
+        ),
+    )
     parser.add_argument("--source-run", default=str(SOURCE_RUN))
     parser.add_argument("--lane60-experiment", required=True)
     parser.add_argument("--preset", default="default")
@@ -216,6 +226,19 @@ def _apply_lane_task_mask_competition(
     keep_probability = (1.0 - float(strength) * competition).clamp(min=0.0, max=1.0)
     output = dict(predictions)
     output["lane_seg_centerline_logits"] = _logit_from_probability(centerline_logits.sigmoid() * keep_probability)
+    return output
+
+
+def _merge_stop_line_outputs(
+    base: dict[str, Any],
+    stop_line_outputs: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if stop_line_outputs is None:
+        return base
+    output = dict(base)
+    for key, value in stop_line_outputs.items():
+        if key == STOP_LINE_OUTPUT_KEY or str(key).startswith(STOP_LINE_OUTPUT_PREFIX):
+            output[key] = value
     return output
 
 
@@ -365,6 +388,13 @@ def main() -> int:
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
+    stop_line_checkpoint = (
+        Path(str(args.stop_line_checkpoint)).expanduser().resolve()
+        if str(args.stop_line_checkpoint).strip()
+        else None
+    )
+    if stop_line_checkpoint is not None and not stop_line_checkpoint.is_file():
+        raise FileNotFoundError(f"stop-line checkpoint not found: {stop_line_checkpoint}")
     source_run = Path(args.source_run).expanduser().resolve()
     if not source_run.is_dir():
         raise FileNotFoundError(f"source run not found: {source_run}")
@@ -428,6 +458,17 @@ def main() -> int:
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     load_report = trainer.load_model_weights(checkpoint, map_location=train_config.device)
+    stop_line_load_report: dict[str, Any] | None = None
+    stop_line_evaluator = None
+    if stop_line_checkpoint is not None:
+        stop_line_trainer = train_cli._build_phase_trainer(phase, train_config)
+        stop_line_load_report = stop_line_trainer.load_model_weights(
+            stop_line_checkpoint,
+            map_location=train_config.device,
+        )
+        stop_line_evaluator = stop_line_trainer.build_evaluator()
+        stop_line_evaluator.adapter.raw_model.eval()
+        stop_line_evaluator.heads.eval()
     postprocess_config = _postprocess_override_config(args, trainer) or train_cli._build_postprocess_config(train_config)
     evaluator = trainer.build_evaluator()
     evaluator.adapter.raw_model.eval()
@@ -452,14 +493,20 @@ def main() -> int:
             flipped_encoded["image"] = torch.flip(encoded["image"], dims=(-1,))
             flipped_outputs = _detach_to_cpu(evaluator.forward_encoded_batch(flipped_encoded))
             flipped_unflipped = _unflip_lane_dense_outputs(flipped_outputs)
+            stop_line_outputs = (
+                _detach_to_cpu(stop_line_evaluator.forward_encoded_batch(encoded))
+                if stop_line_evaluator is not None
+                else None
+            )
             meta_rows = _detach_to_cpu(encoded["meta"])
             outputs_by_variant: dict[str, dict[str, Any]] = {}
             for variant in variants:
-                outputs_by_variant[variant] = _merge_lane_dense_predictions(
+                lane_outputs = _merge_lane_dense_predictions(
                     base_outputs,
                     flipped_unflipped,
                     variant=variant,
                 )
+                outputs_by_variant[variant] = _merge_stop_line_outputs(lane_outputs, stop_line_outputs)
             for label, variant, semantic_vote_mode in variant_matrix:
                 variant_postprocess_config = dataclasses_replace(
                     postprocess_config,
@@ -501,6 +548,7 @@ def main() -> int:
     _write_csv(output_dir / "metrics.csv", rows)
     payload = {
         "checkpoint": str(checkpoint),
+        "stop_line_checkpoint": None if stop_line_checkpoint is None else str(stop_line_checkpoint),
         "scenario_path": str(scenario_path),
         "lane60_experiment": str(args.lane60_experiment),
         "phase_index": phase_index,
@@ -520,6 +568,7 @@ def main() -> int:
         "train_config": _json_ready(train_config),
         "postprocess_config": _json_ready(postprocess_config),
         "load_report": _json_ready(load_report),
+        "stop_line_load_report": _json_ready(stop_line_load_report),
         "rows": rows,
         "metrics_by_variant": _json_ready(metrics_by_variant),
         "selection_by_variant": _json_ready(selection_by_variant),
