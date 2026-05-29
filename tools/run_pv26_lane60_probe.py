@@ -1380,6 +1380,28 @@ EXPERIMENTS["stopline_v3_isolated_neck"] = {
     },
 }
 
+EXPERIMENTS["stopline_only_mask_first_specialist"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_stopline_only",
+    "trunk_lr": 0.0,
+    "head_lr": 2.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 0.0,
+        "stop_line": 4.0,
+        "crosswalk": 0.0,
+    },
+    "train_defaults_overrides": {
+        "roadmark_architecture": "stopline_only_mask_first",
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "stopline",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 EXPERIMENTS["stopline_midpoint_projection_comp"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stopline_only",

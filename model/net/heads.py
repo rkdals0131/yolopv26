@@ -6,7 +6,12 @@ import torch
 import torch.nn as nn
 
 from .roadmark_joint_native import ROADMARK_JOINT_NATIVE_NAME, PV26RoadMarkNativeJointHeads
-from .roadmark_v2_heads import ROADMARK_V2_FEATURE_STRIDES, ROADMARK_V3_JOINT_NAME, PV26RoadMarkV3JointHeads
+from .roadmark_v2_heads import (
+    ROADMARK_V2_FEATURE_STRIDES,
+    ROADMARK_V3_JOINT_NAME,
+    PV26RoadMarkV3JointHeads,
+    PV26StopLineOnlyHeads,
+)
 
 
 DET_DIM = 12
@@ -19,6 +24,7 @@ STOP_LINE_VECTOR_DIM = 9
 CROSSWALK_VECTOR_DIM = 33
 FEATURE_STRIDES = ROADMARK_V2_FEATURE_STRIDES
 DETECT_FEATURE_STRIDES = (8, 16, 32)
+STOPLINE_ONLY_MASK_FIRST_NAME = "stopline_only_mask_first"
 
 
 def _normalize_roadmark_architecture(value: str) -> str:
@@ -27,9 +33,12 @@ def _normalize_roadmark_architecture(value: str) -> str:
         return ROADMARK_JOINT_NATIVE_NAME
     if architecture in {"v3", "v3_stopline_isolated", ROADMARK_V3_JOINT_NAME}:
         return ROADMARK_V3_JOINT_NAME
+    if architecture in {"stopline_only", "stop_line_only", STOPLINE_ONLY_MASK_FIRST_NAME}:
+        return STOPLINE_ONLY_MASK_FIRST_NAME
     raise ValueError(
         "roadmark_architecture must be one of: "
-        f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, v3_stopline_isolated"
+        f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, "
+        f"v3_stopline_isolated, {STOPLINE_ONLY_MASK_FIRST_NAME}"
     )
 
 
@@ -85,22 +94,26 @@ class PV26Heads(nn.Module):
         self.tl_attr_heads = nn.ModuleList(
             [_ScalePredictionHead(channel, TL_ATTR_DIM) for channel in self.det_in_channels]
         )
-        roadmark_head_cls = (
-            PV26RoadMarkV3JointHeads
-            if self.roadmark_architecture == ROADMARK_V3_JOINT_NAME
-            else PV26RoadMarkNativeJointHeads
-        )
-        self.roadmark_heads = roadmark_head_cls(
-            self.in_channels,
-            self.feature_strides,
-            lane_head_mode=self.lane_head_mode,
-            lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
-            lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
-        )
-        self.lane_head_mode = self.roadmark_heads.lane_head_mode
-        self.lane_head = self.roadmark_heads.lane_head
-        self.stop_line_head = self.roadmark_heads.stop_line_head
-        self.crosswalk_head = self.roadmark_heads.crosswalk_head
+        if self.roadmark_architecture == ROADMARK_V3_JOINT_NAME:
+            roadmark_head_cls = PV26RoadMarkV3JointHeads
+        elif self.roadmark_architecture == STOPLINE_ONLY_MASK_FIRST_NAME:
+            roadmark_head_cls = PV26StopLineOnlyHeads
+        else:
+            roadmark_head_cls = PV26RoadMarkNativeJointHeads
+        if roadmark_head_cls is PV26StopLineOnlyHeads:
+            self.roadmark_heads = roadmark_head_cls(self.in_channels, self.feature_strides)
+        else:
+            self.roadmark_heads = roadmark_head_cls(
+                self.in_channels,
+                self.feature_strides,
+                lane_head_mode=self.lane_head_mode,
+                lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
+                lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
+            )
+        self.lane_head_mode = str(getattr(self.roadmark_heads, "lane_head_mode", self.lane_head_mode))
+        self.lane_head = getattr(self.roadmark_heads, "lane_head", None)
+        self.stop_line_head = getattr(self.roadmark_heads, "stop_line_head", None)
+        self.crosswalk_head = getattr(self.roadmark_heads, "crosswalk_head", None)
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
         return self.roadmark_heads.lane_family_modules()

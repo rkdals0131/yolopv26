@@ -127,6 +127,33 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
         self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
 
+    def test_heads_can_use_stopline_only_mask_first_architecture(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            roadmark_architecture="stopline_only_mask_first",
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()
+        stop_line_modules = heads.stop_line_modules()
+
+        self.assertEqual(summary["roadmark_architecture"], "stopline_only_mask_first")
+        self.assertEqual(summary["roadmark"]["roadmark_architecture"], "stopline_only_mask_first")
+        self.assertIsNone(heads.lane_head)
+        self.assertIsNone(heads.crosswalk_head)
+        self.assertEqual(len(stop_line_modules), 1)
+        self.assertTrue(torch.isfinite(outputs["stop_line_mask_logits"]).all())
+        self.assertTrue(torch.equal(outputs["lane"], torch.zeros_like(outputs["lane"])))
+        self.assertTrue(torch.equal(outputs["crosswalk"], torch.zeros_like(outputs["crosswalk"])))
+
     def test_heads_reject_wrong_feature_count(self) -> None:
         from model.net import PV26Heads
 

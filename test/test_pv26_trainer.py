@@ -1444,6 +1444,36 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(all(parameter.requires_grad for parameter in stop_line_params))
         self.assertTrue(all(id(parameter) in optimizer_params for parameter in stop_line_params))
 
+    def test_lane_family_stopline_only_trains_stopline_only_architecture(self) -> None:
+        from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
+        from model.net import PV26Heads
+
+        adapter = _DummyAdapter()
+        heads = PV26Heads(
+            in_channels=PV26_TEST_CHANNELS,
+            roadmark_architecture="stopline_only_mask_first",
+        )
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_stopline_only",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=0.0, head_lr=1.0e-4)
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+        stop_line_params = [parameter for module in heads.stop_line_modules() for parameter in module.parameters()]
+
+        self.assertEqual(summary["freeze_policy"], "lane_family_stopline_only")
+        self.assertEqual(summary["head_training_policy"], "stopline_only")
+        self.assertEqual(summary["trainable_trunk_params"], 0)
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertIsNone(heads.lane_head)
+        self.assertIsNone(heads.crosswalk_head)
+        self.assertTrue(stop_line_params)
+        self.assertTrue(all(parameter.requires_grad for parameter in stop_line_params))
+        self.assertTrue(all(id(parameter) in optimizer_params for parameter in stop_line_params))
+
     def test_lane_family_shared_adapter_uses_dedicated_optimizer_group(self) -> None:
         from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
         from model.net import PV26Heads

@@ -14383,3 +14383,72 @@ Verification:
 - More stop-line-positive exposure can make the internal phase validation slice look strong, but it did not improve the fixed runtime router gate.
 - This larger-range train is negative for the real target and should not be broadened.
 - Do not repeat this as train-batch count, val-batch count, epoch-count, same sampler order, or same projection-comp runtime scaling. Reopen only with a new stop-line candidate/geometry or lane-retention signal.
+
+## 281. 2026-05-29 Stop-line-only mask-first specialist train
+
+Context:
+
+- The V3 isolated-neck specialist and the upper-trunk stop-line router specialist both suggested that internal stop-line validation can look strong while the fixed router gate regresses.
+- This branch tested the more extreme architecture question: a stop-line specialist with no lane/crosswalk branches at all, using the existing mask-first stop-line-only head rather than another projection-comp threshold or sampler sweep.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-only-mask-first-specialist`.
+- `PV26StopLineOnlyHeads` is now selectable through `PV26Heads` as `roadmark_architecture=stopline_only_mask_first`.
+- Training config validation accepts `stopline_only_mask_first`.
+- `tools/run_pv26_lane60_probe.py` adds `stopline_only_mask_first_specialist`, which trains only stop-line loss under `lane_family_stopline_only` and keeps the projection-comp runtime decode for fixed router evaluation.
+- Tests cover both head construction and freeze-policy optimizer routing.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Real CUDA train: `3` epochs, `512` train batches per epoch, `128` val batches, batch size `4`, device `cuda:0`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_only_mask_first_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_205917`.
+- Data root: existing `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | `0.2794` | `0.0000` | `0.3303` | `0.0000` | `18 / 36 / 37` |
+| 2 | `0.3111` | `0.0000` | `0.4531` | `0.0000` | `29 / 39 / 31` |
+| 3 | `0.3251` | `0.0000` | `0.5862` | `0.0000` | `34 / 29 / 19` |
+
+- Best checkpoint by phase objective was epoch `3`.
+- Lane/crosswalk F1 are expected placeholders inside the specialist-only training validation, not final task evidence.
+
+Fixed router exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7100` | `0.5029` | `0.5888` | `1202 / 491 / 1188` |
+| stop_line | `0.4000` | `0.4667` | `0.4308` | `28 / 42 / 32` |
+| crosswalk | `0.5814` | `0.6173` | `0.5988` | `50 / 36 / 31` |
+
+- Fixed exact phase objective: `0.6408475741`.
+- Primary projection-comp exact reference remains stronger: stop-line `32 / 28 / 28`, F1 `0.5333`.
+- The prior stop-line-priority specialist exact also remains stronger: stop-line `30 / 32 / 30`, F1 `0.4918`.
+- Broader-val512 was skipped because fixed exact failed.
+
+Storage:
+
+- Removed root `yolo26s.pt`.
+- Removed the smoke run.
+- Pruned duplicate `last.pt` and task-best checkpoints from the main run; retained only `phase_4/checkpoints/best.pt`.
+- Removed the main run TensorBoard directory.
+- Retained run size after cleanup: about `90M`, with best checkpoint, summaries/history, and exact eval exports preserved.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/net/heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_pv26_trainer.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_stopline_only_mask_first_architecture test_pv26_trainer.PV26TrainerTests.test_lane_family_stopline_only_trains_stopline_only_architecture`.
+- CUDA smoke train.
+- CUDA main `3` epoch / `512` train-batch run.
+- CUDA fixed router exact-val128 epoch-2 eval.
+- Cleanup verified by retained checkpoint directory and run size.
+
+판단:
+
+- The architecture can train and the fixed routing contract executes, but stop-line-only mask-first specialization does not beat the retained projection-comp exact gate.
+- This is a negative architecture result for the real target.
+- Do not repeat this as roadmark architecture plumbing, stopline-only freeze policy, head-LR, epoch-count, or stopline-only sampler tuning. Reopen only with a materially new stop-line candidate/geometry signal that first improves fixed exact TP/FP/FN.
