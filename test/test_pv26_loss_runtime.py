@@ -182,6 +182,44 @@ class _FakeSingleMatchTaskAlignedAssigner(nn.Module):
 
 
 class PV26LossRuntimeTests(unittest.TestCase):
+    def test_task_loss_ema_normalizer_scales_ready_task_losses(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0},
+            task_loss_normalize_mode="ema",
+            task_loss_ema_decay=0.0,
+            task_loss_ema_warmup_steps=0,
+            task_loss_scale_min=0.5,
+            task_loss_scale_max=2.0,
+        )
+        task_losses = {
+            "lane": torch.tensor(4.0),
+            "stop_line": torch.tensor(1.0),
+            "crosswalk": torch.tensor(1.0),
+        }
+
+        normalized = criterion._normalize_task_losses(task_losses, {"_distill_phase": "train"})
+
+        self.assertAlmostEqual(float(normalized["lane"]), 2.0)
+        self.assertAlmostEqual(float(normalized["stop_line"]), 2.0)
+        self.assertAlmostEqual(float(normalized["crosswalk"]), 2.0)
+        self.assertAlmostEqual(criterion.last_task_loss_normalization["lane"]["scale"], 0.5)
+        self.assertAlmostEqual(criterion.last_task_loss_normalization["stop_line"]["scale"], 2.0)
+        self.assertAlmostEqual(criterion.last_task_loss_normalization["crosswalk"]["scale"], 2.0)
+
+    def test_task_loss_ema_normalizer_validates_scale_bounds(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        with self.assertRaisesRegex(ValueError, "task_loss_scale_max"):
+            PV26MultiTaskLoss(
+                stage="stage_4_lane_family_finetune",
+                task_loss_normalize_mode="ema",
+                task_loss_scale_min=2.0,
+                task_loss_scale_max=1.0,
+            )
+
     def test_stage4_disables_detector_and_tl_attr_loss_paths(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

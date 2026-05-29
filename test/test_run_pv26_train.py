@@ -234,6 +234,13 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "distill_ema_decay": 0.9,
                             "distill_ema_warmup_steps": 2,
                             "distill_ema_eps": 1.0e-5,
+                            "task_loss_normalize_mode": "ema",
+                            "task_loss_normalize_tasks": ["lane", "stop_line"],
+                            "task_loss_ema_decay": 0.85,
+                            "task_loss_ema_warmup_steps": 3,
+                            "task_loss_ema_eps": 1.0e-4,
+                            "task_loss_scale_min": 0.5,
+                            "task_loss_scale_max": 2.5,
                         },
                         "preview": {
                             "dataset_keys": ["custom_preview_dataset"],
@@ -418,6 +425,13 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.distill_ema_decay, 0.9)
         self.assertEqual(scenario.train_defaults.distill_ema_warmup_steps, 2)
         self.assertAlmostEqual(scenario.train_defaults.distill_ema_eps, 1.0e-5)
+        self.assertEqual(scenario.train_defaults.task_loss_normalize_mode, "ema")
+        self.assertEqual(scenario.train_defaults.task_loss_normalize_tasks, ("lane", "stop_line"))
+        self.assertAlmostEqual(scenario.train_defaults.task_loss_ema_decay, 0.85)
+        self.assertEqual(scenario.train_defaults.task_loss_ema_warmup_steps, 3)
+        self.assertAlmostEqual(scenario.train_defaults.task_loss_ema_eps, 1.0e-4)
+        self.assertAlmostEqual(scenario.train_defaults.task_loss_scale_min, 0.5)
+        self.assertAlmostEqual(scenario.train_defaults.task_loss_scale_max, 2.5)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)

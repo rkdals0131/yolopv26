@@ -330,6 +330,7 @@ def run_train_step(
             "det": assignment_det_mode,
             "lane": assignment_lane_modes,
         },
+        "task_loss_normalization": dict(getattr(trainer.criterion, "last_task_loss_normalization", {})),
         "multitask_conflict": multitask_conflict_snapshot,
         "timing": timing,
         "source_counts": _source_counts(encoded, od_classes=od_classes),

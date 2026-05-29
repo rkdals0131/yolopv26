@@ -2282,6 +2282,13 @@ class PV26MultiTaskLoss(nn.Module):
         distill_ema_decay: float = 0.95,
         distill_ema_warmup_steps: int = 4,
         distill_ema_eps: float = 1.0e-6,
+        task_loss_normalize_mode: str = "none",
+        task_loss_normalize_tasks: tuple[str, ...] | list[str] | None = None,
+        task_loss_ema_decay: float = 0.95,
+        task_loss_ema_warmup_steps: int = 8,
+        task_loss_ema_eps: float = 1.0e-6,
+        task_loss_scale_min: float = 0.25,
+        task_loss_scale_max: float = 4.0,
     ) -> None:
         super().__init__()
         stage = _canonical_stage(stage)
@@ -2364,6 +2371,33 @@ class PV26MultiTaskLoss(nn.Module):
         self.distill_ema_decay = float(distill_ema_decay)
         self.distill_ema_warmup_steps = int(distill_ema_warmup_steps)
         self.distill_ema_eps = float(distill_ema_eps)
+        self.task_loss_normalize_mode = str(task_loss_normalize_mode).strip().lower()
+        if self.task_loss_normalize_mode not in {"none", "ema"}:
+            raise ValueError(f"unsupported task_loss_normalize_mode: {self.task_loss_normalize_mode}")
+        normalize_tasks = (
+            ("lane", "stop_line", "crosswalk")
+            if task_loss_normalize_tasks is None
+            else tuple(str(item) for item in task_loss_normalize_tasks)
+        )
+        unsupported_normalize_tasks = sorted(set(normalize_tasks) - {"lane", "stop_line", "crosswalk"})
+        if unsupported_normalize_tasks:
+            raise ValueError(f"unsupported task_loss_normalize_tasks: {unsupported_normalize_tasks}")
+        self.task_loss_normalize_tasks = tuple(normalize_tasks)
+        self.task_loss_ema_decay = float(task_loss_ema_decay)
+        self.task_loss_ema_warmup_steps = int(task_loss_ema_warmup_steps)
+        self.task_loss_ema_eps = float(task_loss_ema_eps)
+        self.task_loss_scale_min = float(task_loss_scale_min)
+        self.task_loss_scale_max = float(task_loss_scale_max)
+        if self.task_loss_ema_decay < 0.0 or self.task_loss_ema_decay >= 1.0:
+            raise ValueError("task_loss_ema_decay must be in [0, 1)")
+        if self.task_loss_ema_warmup_steps < 0:
+            raise ValueError("task_loss_ema_warmup_steps must be >= 0")
+        if self.task_loss_ema_eps <= 0.0:
+            raise ValueError("task_loss_ema_eps must be > 0")
+        if self.task_loss_scale_min <= 0.0:
+            raise ValueError("task_loss_scale_min must be > 0")
+        if self.task_loss_scale_max < self.task_loss_scale_min:
+            raise ValueError("task_loss_scale_max must be >= task_loss_scale_min")
         self.distill_loss_weights = {
             "lane": 1.0,
             "stop_line": 1.0,
@@ -2377,6 +2411,16 @@ class PV26MultiTaskLoss(nn.Module):
             "crosswalk": None,
         }
         self._distill_ema_steps = {
+            "lane": 0,
+            "stop_line": 0,
+            "crosswalk": 0,
+        }
+        self._task_loss_ema_state = {
+            "lane": None,
+            "stop_line": None,
+            "crosswalk": None,
+        }
+        self._task_loss_ema_steps = {
             "lane": 0,
             "stop_line": 0,
             "crosswalk": 0,
@@ -2417,6 +2461,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.last_lane_loss_breakdown: dict[str, float] = {}
         self.last_teacher_agreement: dict[str, dict[str, float | None]] = {}
         self.last_distill_breakdown: dict[str, dict[str, float | None]] = {}
+        self.last_task_loss_normalization: dict[str, dict[str, float | None]] = {}
 
     def export_config(self) -> dict[str, Any]:
         return {
@@ -2475,6 +2520,13 @@ class PV26MultiTaskLoss(nn.Module):
             "distill_ema_warmup_steps": int(self.distill_ema_warmup_steps),
             "distill_ema_eps": float(self.distill_ema_eps),
             "distill_loss_weights": dict(self.distill_loss_weights),
+            "task_loss_normalize_mode": self.task_loss_normalize_mode,
+            "task_loss_normalize_tasks": list(self.task_loss_normalize_tasks),
+            "task_loss_ema_decay": float(self.task_loss_ema_decay),
+            "task_loss_ema_warmup_steps": int(self.task_loss_ema_warmup_steps),
+            "task_loss_ema_eps": float(self.task_loss_ema_eps),
+            "task_loss_scale_min": float(self.task_loss_scale_min),
+            "task_loss_scale_max": float(self.task_loss_scale_max),
         }
 
     def _detector_losses_enabled(self) -> bool:
@@ -2520,6 +2572,67 @@ class PV26MultiTaskLoss(nn.Module):
             "scale": float(scale),
             "ema_mean": None if ema_mean is None else float(ema_mean),
         }
+
+    def _normalize_task_losses(
+        self,
+        task_losses: dict[str, torch.Tensor],
+        encoded: dict[str, Any],
+    ) -> dict[str, torch.Tensor]:
+        self.last_task_loss_normalization = {
+            task_name: {
+                "raw_loss": float(loss.detach().cpu()),
+                "normalized_loss": float(loss.detach().cpu()),
+                "scale": 1.0,
+                "ema_mean": None,
+            }
+            for task_name, loss in task_losses.items()
+        }
+        if self.task_loss_normalize_mode == "none":
+            return task_losses
+        phase = str(encoded.get("_distill_phase", "train"))
+        active_tasks = [
+            task_name
+            for task_name in self.task_loss_normalize_tasks
+            if task_name in task_losses and self._task_loss_enabled(task_name)
+        ]
+        if not active_tasks:
+            return task_losses
+        for task_name in active_tasks:
+            raw_value = float(task_losses[task_name].detach().cpu())
+            if phase == "train":
+                previous = self._task_loss_ema_state.get(task_name)
+                updated = raw_value if previous is None else (
+                    float(self.task_loss_ema_decay) * float(previous)
+                    + (1.0 - float(self.task_loss_ema_decay)) * raw_value
+                )
+                self._task_loss_ema_state[task_name] = updated
+                self._task_loss_ema_steps[task_name] = int(self._task_loss_ema_steps.get(task_name, 0)) + 1
+            ema_mean = self._task_loss_ema_state.get(task_name)
+            self.last_task_loss_normalization[task_name]["ema_mean"] = (
+                None if ema_mean is None else float(ema_mean)
+            )
+        ready_tasks = [
+            task_name
+            for task_name in active_tasks
+            if self._task_loss_ema_state.get(task_name) is not None
+            and int(self._task_loss_ema_steps.get(task_name, 0)) > int(self.task_loss_ema_warmup_steps)
+        ]
+        if len(ready_tasks) <= 1:
+            return task_losses
+        ema_values = [
+            max(float(self._task_loss_ema_state[task_name]), float(self.task_loss_ema_eps))
+            for task_name in ready_tasks
+        ]
+        ema_mean = sum(ema_values) / float(len(ema_values))
+        normalized = dict(task_losses)
+        for task_name, ema_value in zip(ready_tasks, ema_values):
+            scale = ema_mean / ema_value
+            scale = max(float(self.task_loss_scale_min), min(float(self.task_loss_scale_max), float(scale)))
+            normalized_loss = task_losses[task_name] * float(scale)
+            self.last_task_loss_normalization[task_name]["scale"] = float(scale)
+            self.last_task_loss_normalization[task_name]["normalized_loss"] = float(normalized_loss.detach().cpu())
+            normalized[task_name] = normalized_loss
+        return normalized
 
     def _lane_distill_loss(
         self,
@@ -2872,6 +2985,17 @@ class PV26MultiTaskLoss(nn.Module):
                 },
             }
 
+        task_losses = self._normalize_task_losses(
+            {
+                "lane": lane,
+                "stop_line": stop_line,
+                "crosswalk": crosswalk,
+            },
+            encoded,
+        )
+        lane = task_losses["lane"]
+        stop_line = task_losses["stop_line"]
+        crosswalk = task_losses["crosswalk"]
         total = (
             self.loss_weights["det"] * det
             + self.loss_weights["tl_attr"] * tl_attr

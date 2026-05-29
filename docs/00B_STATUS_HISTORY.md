@@ -14665,3 +14665,90 @@ Verification:
 - Raw-image candidate-local patches are not a held-out FP-control breakthrough in this fixed candidate-pool form.
 - Do not repeat this as patch height/width/radius, MLP depth, epoch count, learning rate, threshold-grid, or top-k tuning.
 - Reopen raw-image evidence only with a materially different trainable candidate-generation or segment-verification contract that improves exact held-out TP/FP/FN before broader-val512.
+
+## 285. 2026-05-29 Task-loss EMA balancer training
+
+Context:
+
+- The user explicitly required real learning, post-training evaluation, broader validation, larger data exposure where useful, and smart storage management without copying the dataset.
+- GPT Pro's architecture review pointed at head/neck/loss allocation risk, not only postprocess. This branch tested a training-allocation axis: normalize lane / stop-line / crosswalk task losses by per-task EMA during stage-4 head training.
+- This is distinct from fixed loss-weight sweeps and trunk-only PCGrad: the task loss scale is updated from observed task loss EMAs for the actually trainable lane-family heads.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/task-loss-ema-balancer`.
+- Added opt-in `task_loss_normalize_mode="ema"` to `PV26MultiTaskLoss`.
+- Added config/CLI plumbing for `task_loss_normalize_tasks`, EMA decay/warmup/eps, and scale clamp.
+- Added `task_loss_ema_balancer` probe preset in `tools/run_pv26_lane60_probe.py`.
+- The preset kept retained lane/crosswalk runtime settings: `row_scan_tangent`, projection-competition stop-line runtime decode, and `crosswalk_polygon_mode=hull`.
+- Added regression coverage for config parsing, loss normalization scaling, and invalid scale bounds.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Smoke: real CUDA `1` epoch, `8` train batches, `4` val batches, batch size `4`.
+- Main: real CUDA `3` epochs, `512` train batches per epoch, `128` val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_task_loss_ema_balancer_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_231130`.
+
+Internal phase summary:
+
+| Signal | Value |
+| --- | ---: |
+| best phase objective | `0.6621474747` at epoch `3` |
+| task-best lane F1 | `0.5641` at epoch `2` |
+| task-best stop-line F1 | `0.6140` at epoch `3` |
+| task-best crosswalk F1 | `0.6871` at epoch `1` |
+
+- The internal stop-line task-best value is not final evidence because fixed exact/broader evaluation is the maintained gate.
+
+Fixed exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7036` | `0.4620` | `0.5577` | `1104 / 465 / 1286` |
+| stop_line | `0.4462` | `0.4833` | `0.4640` | `29 / 36 / 31` |
+| crosswalk | `0.5882` | `0.6173` | `0.6024` | `50 / 35 / 31` |
+
+- Fixed exact phase objective: `0.6396978840`.
+- Projection-competition exact reference remains stronger on stop-line: `32 / 28 / 28`, F1 `0.5333`.
+
+Fixed broader-val512 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.6844` | `0.4442` | `0.5388` | `4210 / 1941 / 5267` |
+| stop_line | `0.5301` | `0.4871` | `0.5077` | `132 / 117 / 139` |
+| crosswalk | `0.6500` | `0.5924` | `0.6199` | `234 / 126 / 161` |
+
+- Fixed broader phase objective: `0.6380659614`.
+- It is below the retained lane-preserving projection-comp runtime on lane and stop-line (`0.5628 / 0.5164 / 0.6187`).
+- It is also below the current two-checkpoint stop-line router lower bound on stop-line (`0.5309`).
+
+Storage:
+
+- Removed root `yolo26n.pt` and `yolo26s.pt` after tests/training/eval created them.
+- Removed the CUDA smoke run directory.
+- Pruned duplicate `last.pt`, `best_detector.pt`, `best_traffic_light.pt`, `best_lane.pt`, `best_stop_line.pt`, and `best_crosswalk.pt` from the main run.
+- Removed the main run TensorBoard directory.
+- Retained run size after cleanup: about `127M`, with `phase_4/checkpoints/best.pt`, summaries/history, and exact/broader eval exports preserved.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/engine/loss.py model/engine/_trainer_step.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_run_pv26_train.py test/test_pv26_loss_runtime.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `git diff --check`.
+- CUDA smoke train.
+- CUDA main `3` epoch / `512` train-batch run.
+- CUDA fixed exact-val128 epoch-2 eval.
+- CUDA fixed broader-val512 epoch-2 eval.
+
+판단:
+
+- EMA task-loss balancing is implemented, trainable, and evaluable, but it is not a breakthrough.
+- It preserved crosswalk broader pass but regressed lane from retained `0.5628` to `0.5388`.
+- Stop-line broader `0.5077` remains below projection-competition runtime `0.5164` and below the two-checkpoint router `0.5309`.
+- Do not repeat this as decay, warmup, scale clamp, fixed loss weight, head LR, or epoch-count tuning. Reopen only with a materially different shared-feature, adapter, routing, or emit contract that first improves fixed TP/FP/FN.

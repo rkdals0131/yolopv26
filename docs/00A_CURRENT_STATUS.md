@@ -15,6 +15,8 @@ Latest stop-line local 2D patch segment head trained a model-side segment-emissi
 
 Latest stop-line raw-patch verifier replay trained a small no-GT MLP verifier on existing candidate rows plus oriented raw-image patches from the existing dataset root. It is exact held-out negative: train split improved stop-line to `12 / 0 / 17`, F1 `0.5854`, but held-out collapsed from baseline `16 / 15 / 15`, F1 `0.5161`, to `4 / 3 / 27`, F1 `0.2105`; all-split train-threshold replay was `16 / 3 / 44`, F1 `0.4051`. Broader-val512 was skipped because the held-out exact gate failed. No dataset copy was created.
 
+Latest task-loss EMA balancer trained a real stage-4 heads-only checkpoint with per-task EMA loss normalization over lane/stop-line/crosswalk. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran CUDA smoke plus `3` epochs at `512` train batches and `128` val batches. It is negative: fixed exact-val128 epoch-2 reached lane/stop/cross `0.5577 / 0.4640 / 0.6024`, and broader-val512 reached `0.5388 / 0.5077 / 0.6199`. Crosswalk stays pass, but lane regresses below retained `0.5628` and stop-line stays below both projection-comp broader `0.5164` and the two-checkpoint router `0.5309`.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -51,6 +53,8 @@ Run:
 - latest task-routed multi-teacher distill student exact audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_task_routed_distill_student_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_212815/analysis_exports/single_checkpoint_exact_val128_epoch2/metrics.csv`
 - latest stop-line local 2D patch segment head exact audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_local_patch_segment_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_221343/analysis_exports/patch_segment_exact_val128_epoch2/metrics.csv`
 - latest stop-line raw-patch verifier exact audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_verifier_exact_val128_epoch2/raw_patch_verifier_variants.csv`
+- latest task-loss EMA balancer exact audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_task_loss_ema_balancer_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_231130/analysis_exports/exact_val128_epoch2/metrics.csv`
+- latest task-loss EMA balancer broader audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_task_loss_ema_balancer_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_231130/analysis_exports/broader_val512_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 

@@ -698,6 +698,13 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         distill_ema_decay=train_config.distill_ema_decay,
         distill_ema_warmup_steps=train_config.distill_ema_warmup_steps,
         distill_ema_eps=train_config.distill_ema_eps,
+        task_loss_normalize_mode=train_config.task_loss_normalize_mode,
+        task_loss_normalize_tasks=train_config.task_loss_normalize_tasks,
+        task_loss_ema_decay=train_config.task_loss_ema_decay,
+        task_loss_ema_warmup_steps=train_config.task_loss_ema_warmup_steps,
+        task_loss_ema_eps=train_config.task_loss_ema_eps,
+        task_loss_scale_min=train_config.task_loss_scale_min,
+        task_loss_scale_max=train_config.task_loss_scale_max,
     )
     trainer = PV26Trainer(
         adapter,

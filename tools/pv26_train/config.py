@@ -228,6 +228,13 @@ class TrainDefaultsConfig:
     distill_ema_decay: float = 0.95
     distill_ema_warmup_steps: int = 4
     distill_ema_eps: float = 1.0e-6
+    task_loss_normalize_mode: str = "none"
+    task_loss_normalize_tasks: tuple[str, ...] = ("lane", "stop_line", "crosswalk")
+    task_loss_ema_decay: float = 0.95
+    task_loss_ema_warmup_steps: int = 8
+    task_loss_ema_eps: float = 1.0e-6
+    task_loss_scale_min: float = 0.25
+    task_loss_scale_max: float = 4.0
     multitask_conflict: dict[str, Any] = field(default_factory=lambda: {
         "enabled": False,
         "mode": "none",
@@ -332,6 +339,8 @@ def phase_to_mapping(phase_config: PhaseConfig) -> dict[str, Any]:
 
 
 def scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
+    train_defaults = asdict(scenario.train_defaults)
+    train_defaults["task_loss_normalize_tasks"] = list(scenario.train_defaults.task_loss_normalize_tasks)
     return {
         "dataset": {
             "root": str(scenario.dataset.root),
@@ -342,7 +351,7 @@ def scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
             "run_name_prefix": scenario.run.run_name_prefix,
             "run_dir": str(scenario.run.run_dir) if scenario.run.run_dir is not None else None,
         },
-        "train_defaults": asdict(scenario.train_defaults),
+        "train_defaults": train_defaults,
         "selection": asdict(scenario.selection),
         "preview": {
             "enabled": scenario.preview.enabled,
@@ -518,6 +527,12 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         data.get("distill_task_teacher_checkpoints", defaults.distill_task_teacher_checkpoints),
         field_name="train_defaults.distill_task_teacher_checkpoints",
     )
+    task_loss_normalize_tasks_payload = data.get(
+        "task_loss_normalize_tasks",
+        defaults.task_loss_normalize_tasks,
+    )
+    if not isinstance(task_loss_normalize_tasks_payload, (list, tuple)):
+        raise TypeError("train_defaults.task_loss_normalize_tasks must be a list")
     multitask_conflict_tasks = multitask_conflict_payload.get(
         "tasks",
         defaults.multitask_conflict.get("tasks", list(MULTITASK_CONFLICT_TASK_NAMES)),
@@ -1281,6 +1296,34 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("distill_ema_eps", defaults.distill_ema_eps),
             field_name="train_defaults.distill_ema_eps",
         ),
+        task_loss_normalize_mode=_coerce_str(
+            data.get("task_loss_normalize_mode", defaults.task_loss_normalize_mode),
+            field_name="train_defaults.task_loss_normalize_mode",
+        ),
+        task_loss_normalize_tasks=tuple(
+            _coerce_str(task, field_name="train_defaults.task_loss_normalize_tasks[]")
+            for task in task_loss_normalize_tasks_payload
+        ),
+        task_loss_ema_decay=_coerce_float(
+            data.get("task_loss_ema_decay", defaults.task_loss_ema_decay),
+            field_name="train_defaults.task_loss_ema_decay",
+        ),
+        task_loss_ema_warmup_steps=_coerce_int(
+            data.get("task_loss_ema_warmup_steps", defaults.task_loss_ema_warmup_steps),
+            field_name="train_defaults.task_loss_ema_warmup_steps",
+        ),
+        task_loss_ema_eps=_coerce_float(
+            data.get("task_loss_ema_eps", defaults.task_loss_ema_eps),
+            field_name="train_defaults.task_loss_ema_eps",
+        ),
+        task_loss_scale_min=_coerce_float(
+            data.get("task_loss_scale_min", defaults.task_loss_scale_min),
+            field_name="train_defaults.task_loss_scale_min",
+        ),
+        task_loss_scale_max=_coerce_float(
+            data.get("task_loss_scale_max", defaults.task_loss_scale_max),
+            field_name="train_defaults.task_loss_scale_max",
+        ),
         multitask_conflict=multitask_conflict,
     )
 
@@ -1480,6 +1523,27 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} distill_teacher_mode must be 'cache'")
         if phase_train.distill_normalize_mode not in {"none", "ema"}:
             raise ValueError(f"phase {index} distill_normalize_mode must be one of: none, ema")
+        if phase_train.task_loss_normalize_mode not in {"none", "ema"}:
+            raise ValueError(f"phase {index} task_loss_normalize_mode must be one of: none, ema")
+        unknown_task_loss_normalize_tasks = sorted(
+            set(str(task) for task in phase_train.task_loss_normalize_tasks)
+            - {"lane", "stop_line", "crosswalk"}
+        )
+        if unknown_task_loss_normalize_tasks:
+            raise ValueError(
+                f"phase {index} task_loss_normalize_tasks uses unsupported task names: "
+                f"{unknown_task_loss_normalize_tasks}"
+            )
+        if float(phase_train.task_loss_ema_decay) < 0.0 or float(phase_train.task_loss_ema_decay) >= 1.0:
+            raise ValueError(f"phase {index} task_loss_ema_decay must be in [0, 1)")
+        if int(phase_train.task_loss_ema_warmup_steps) < 0:
+            raise ValueError(f"phase {index} task_loss_ema_warmup_steps must be >= 0")
+        if float(phase_train.task_loss_ema_eps) <= 0.0:
+            raise ValueError(f"phase {index} task_loss_ema_eps must be > 0")
+        if float(phase_train.task_loss_scale_min) <= 0.0:
+            raise ValueError(f"phase {index} task_loss_scale_min must be > 0")
+        if float(phase_train.task_loss_scale_max) < float(phase_train.task_loss_scale_min):
+            raise ValueError(f"phase {index} task_loss_scale_max must be >= task_loss_scale_min")
         if phase_train.distill_enabled and not phase_train.distill_teacher_checkpoint:
             raise ValueError(f"phase {index} distill_enabled requires distill_teacher_checkpoint")
         unknown_distill_teacher_tasks = sorted(
