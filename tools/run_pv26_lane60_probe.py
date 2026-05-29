@@ -1450,6 +1450,16 @@ EXPERIMENTS["stopline_priority_retention_distill_heads"] = {
     },
 }
 
+EXPERIMENTS["stopline_source_union_projection_comp"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "stopline_selector_target_mode": "rowx_band",
+        "stopline_selector_aux_weight": 0.75,
+        "stop_line_projection_comp_proposal_source": "center_selector_union",
+    },
+}
+
 EXPERIMENTS["stopline_cross_priority_lane_frozen"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stop_cross_heads_only",

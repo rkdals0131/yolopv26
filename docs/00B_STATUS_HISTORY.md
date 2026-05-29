@@ -15151,3 +15151,72 @@ Verification:
 - It also does not move stop-line on the fixed smoke gate.
 - Do not repeat this as distill-weight, head-LR, loss-weight, epoch-count, or same stop-line-priority sampler tuning.
 - Reopen only with a materially different stop-line candidate/geometry signal or lane-retention contract that first improves fixed smoke TP/FP/FN.
+
+## 292. 2026-05-30 Stop-line source-union projection-comp: fixed smoke rejects
+
+Context:
+
+- The stop-line failure audit says the retained projection-competition runtime is still candidate/geometry limited, not just selector limited.
+- The narrow hypothesis here was that collapsing center/selector maps into a single max map before top-k can discard source-local selector candidates that would otherwise seed projection competition.
+- This branch therefore preserved center and selector proposal peaks separately before projection competition, and trained the selector map toward a row-x band target so the selector source could carry candidate-support structure.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-source-union-proposals`.
+- Added `_stopline_union_source_cells()` and `stop_line_projection_comp_proposal_source` modes:
+  - `center_selector_union`
+  - `source_union`
+- Added regression coverage proving source-local selector candidates can survive when the global max top-1 cell is off-mask.
+- Added `stopline_source_union_projection_comp` to `tools/run_pv26_lane60_probe.py`.
+- The preset keeps retained lane/crosswalk runtime contracts:
+  - freeze policy `lane_family_heads_only`
+  - trunk LR `0.0`
+  - head LR `1e-4`
+  - retained `row_scan_tangent` lane decode
+  - projection-competition stop-line runtime decode
+  - `crosswalk_polygon_mode="hull"`.
+- Changed only the stop-line proposal/selector axis:
+  - `stop_line_projection_comp_proposal_source="center_selector_union"`
+  - `stopline_selector_target_mode="rowx_band"`
+  - `stopline_selector_aux_weight=0.75`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_source_union_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_014626`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| source-union projection-comp | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_source_union_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_014626/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because fixed smoke regressed lane by `-8 TP`, `+2 FP`, and recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `768M`.
+- The auto-downloaded root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `7.3M`.
+
+Verification:
+
+- `python -m py_compile model/engine/postprocess.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- Source-local center/selector proposal preservation is wired and trainable, but this fixed smoke is negative.
+- The selector row-x band signal did not recover any stop-line TP and damaged lane behavior.
+- Do not repeat this as proposal-source, top-k, min-gap, selector-target, selector-aux-weight, head-LR, epoch-count, or same projection-comp-runtime training sweep.
+- Reopen only with a materially different no-GT candidate-quality/geometry signal that first moves fixed smoke TP/FP/FN.

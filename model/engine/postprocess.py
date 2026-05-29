@@ -731,6 +731,32 @@ def _stopline_top_spaced_cells(
     return selected
 
 
+def _stopline_union_source_cells(
+    source_maps: list[np.ndarray | None],
+    *,
+    top_k: int,
+    threshold: float,
+    min_gap: float,
+) -> list[tuple[int, int, float]]:
+    """Keep source-local proposal peaks instead of collapsing sources before top-k."""
+
+    merged: dict[tuple[int, int], float] = {}
+    for source_map in source_maps:
+        if source_map is None:
+            continue
+        for row, col, score in _stopline_top_spaced_cells(
+            source_map,
+            top_k=int(top_k),
+            threshold=float(threshold),
+            min_gap=float(min_gap),
+        ):
+            key = (int(row), int(col))
+            merged[key] = max(float(score), float(merged.get(key, -float("inf"))))
+    cells = [(row, col, score) for (row, col), score in merged.items()]
+    cells.sort(key=lambda item: float(item[2]), reverse=True)
+    return cells
+
+
 def _stopline_nearest_component_label(
     labels: np.ndarray,
     *,
@@ -1131,6 +1157,7 @@ def _decode_stopline_projection_competition(
         "selector": selector_probs,
         "midpoint": midpoint_probs,
     }
+    top_cells: list[tuple[int, int, float]]
     if proposal_source == "max":
         available = [value for value in proposal_inputs.values() if value is not None]
         if not available:
@@ -1138,10 +1165,22 @@ def _decode_stopline_projection_competition(
         proposal_map = available[0]
         for value in available[1:]:
             proposal_map = np.maximum(proposal_map, value)
+        top_cells = _stopline_top_spaced_cells(
+            proposal_map,
+            top_k=int(top_k),
+            threshold=0.0,
+            min_gap=float(min_gap),
+        )
     elif proposal_source in proposal_inputs:
         proposal_map = proposal_inputs[proposal_source]
         if proposal_map is None:
             return []
+        top_cells = _stopline_top_spaced_cells(
+            proposal_map,
+            top_k=int(top_k),
+            threshold=0.0,
+            min_gap=float(min_gap),
+        )
     elif proposal_source == "midpoint_max":
         if midpoint_probs is None:
             return []
@@ -1149,17 +1188,31 @@ def _decode_stopline_projection_competition(
         for value in (center_probs, selector_probs):
             if value is not None:
                 proposal_map = np.maximum(proposal_map, value)
+        top_cells = _stopline_top_spaced_cells(
+            proposal_map,
+            top_k=int(top_k),
+            threshold=0.0,
+            min_gap=float(min_gap),
+        )
+    elif proposal_source == "center_selector_union":
+        top_cells = _stopline_union_source_cells(
+            [center_probs, selector_probs],
+            top_k=int(top_k),
+            threshold=0.0,
+            min_gap=float(min_gap),
+        )
+    elif proposal_source == "source_union":
+        top_cells = _stopline_union_source_cells(
+            [center_probs, selector_probs, midpoint_probs],
+            top_k=int(top_k),
+            threshold=0.0,
+            min_gap=float(min_gap),
+        )
     else:
         raise ValueError(f"unsupported stop_line_projection_comp_proposal_source: {proposal_source}")
     output_hw = (int(mask_probs.shape[0]), int(mask_probs.shape[1]))
 
     candidates: list[dict[str, Any]] = []
-    top_cells = _stopline_top_spaced_cells(
-        proposal_map,
-        top_k=int(top_k),
-        threshold=0.0,
-        min_gap=float(min_gap),
-    )
     offset_np = offset_map.numpy().astype(np.float32)
     angle_np = angle_map.numpy().astype(np.float32)
     for proposal_rank, (row, col, score) in enumerate(top_cells, start=1):

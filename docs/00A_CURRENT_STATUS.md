@@ -29,6 +29,8 @@ Latest lane bidirectional seed-trace added an opt-in interior-seed trace decoder
 
 Latest stop-line priority retention-distill heads-only smoke added lane/cross teacher-cache retention to the stop-line-priority sampler path, using the retained merged checkpoint as the lane/cross teacher and no stop-line distill. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran a real CUDA `64` train-batch smoke with skipped steps `0`. It is smoke-negative: fixed val4 epoch-2 was lane/stop/cross `0.5373 / 0.0000 / 0.5455`, with lane TP/FP/FN `36 / 12 / 50`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because lane still regressed versus the retained fixed val4 reference and stop-line did not move. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `7.3M`.
 
+Latest stop-line source-union projection-comp smoke added a runtime proposal source that preserves center/selector source-local candidates before projection competition, plus rowx-band selector supervision. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran a real CUDA `64` train-batch smoke with skipped steps `0`. It is smoke-negative: fixed val4 epoch-2 was lane/stop/cross `0.4885 / 0.0000 / 0.5455`, with lane TP/FP/FN `32 / 13 / 54`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because lane regressed sharply and stop-line recovered no TP. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `7.3M`.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -74,6 +76,7 @@ Run:
 - latest cross-stitch task routing smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_cross_stitch_task_routing_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_010213/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - latest lane bidirectional seed-trace smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - latest stop-line priority retention-distill heads-only smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_retention_distill_heads_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_013211/analysis_exports/fixed_val4_epoch2/metrics.csv`
+- latest stop-line source-union projection-comp smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_source_union_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_014626/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
@@ -346,6 +349,16 @@ Latest stop-line priority retention-distill heads-only smoke:
 - internal val4 task-best F1: lane `0.5522`, stop-line `0.0000`, crosswalk `0.8000`. This is not final evidence because it is the training validation slice, not the fixed epoch-2 eval.
 - fixed val4 epoch-2 eval: objective `0.6357164870`, lane/stop/cross `0.5373 / 0.0000 / 0.5455`, TP/FP/FN lane `36 / 12 / 50`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
 - 판단: lane/cross teacher retention did not protect lane enough and did not move stop-line on the fixed smoke gate. Exact-val128 and broader-val512 were skipped. Do not continue this as distill-weight, head-LR, loss-weight, epoch-count, or same stop-line-priority sampler tuning without a materially different stop-line candidate/geometry or lane-retention contract.
+
+Latest stop-line source-union projection-comp smoke:
+
+- branch/worktree: `exp/lane-family-f1/stopline-source-union-proposals`.
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_source_union_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_014626`.
+- changed axis: add `stop_line_projection_comp_proposal_source="center_selector_union"` so projection competition receives source-local center and selector proposal peaks before top-k collapse, and train the selector map with `stopline_selector_target_mode="rowx_band"` / `stopline_selector_aux_weight=0.75`. This tested whether selector-local proposal support can recover stop-line candidates that center/global-max proposals miss.
+- data/storage contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The run indexed `429350` records with split `326709 / 82641 / 20000`. Negative checkpoints, TensorBoard output, and temporary root `yolo26s.pt` were pruned; retained run size is about `7.3M`.
+- CUDA smoke train: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, skipped steps `0`.
+- fixed val4 epoch-2 eval: objective `0.6211438491`, lane/stop/cross `0.4885 / 0.0000 / 0.5455`, TP/FP/FN lane `32 / 13 / 54`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- 판단: source-local center/selector proposal union plus rowx-band selector supervision did not recover any stop-line TP and damaged lane. Exact-val128 and broader-val512 were skipped. Do not continue this as proposal-source, top-k, min-gap, selector-target, selector-aux-weight, head-LR, or epoch-count tuning unless a new candidate-quality/geometry signal first moves fixed smoke TP/FP/FN.
 
 Latest input-scale672 dense-target audit:
 
