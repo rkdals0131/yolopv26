@@ -15635,3 +15635,78 @@ Verification:
 - As a lane improvement method, it is negative: removing frozen-mode drift does not make current seg-first lane-head-only specialization protect the retained router lane output.
 - Do not repeat this as lane-only sampler, static freeze-mode, head-LR, epoch-count, or same row-scan/tangent lane-specialist training.
 - Reopen lane-specialist training only with a materially new instance/geometry/quality signal that first improves fixed smoke TP/FP/FN while preserving the retained stop-line route and crosswalk hull.
+
+## 299. 2026-05-30 Stop-line focus-crop conflict-negative: FP-control loss did not recover smoke TP
+
+Context:
+
+- The earlier stop-line focus-crop/zoom feeding run was closed because it recovered some raw stop-line TP on broader validation but nearly doubled FP and regressed crosswalk.
+- That left one permitted reopen condition: pair focus/scale feeding with a new FP-control or candidate-geometry signal, rather than sweeping crop probability/scale again.
+- This branch tested a narrow FP-control signal: penalize stop-line dense mask/center/selector probabilities on lane/crosswalk dense target regions, excluding true stop-line mask pixels.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-focus-conflict-negative`.
+- Added opt-in stop-line task-conflict negative loss parameters:
+  - `stopline_task_conflict_negative_mode`
+  - `stopline_task_conflict_negative_weight`
+  - `stopline_task_conflict_negative_margin`
+- The loss supports `lane`, `crosswalk`, and `lane_crosswalk` conflict masks, uses existing dense `lane_seg_support` and `crosswalk_mask` targets, and excludes the true stop-line mask neighborhood.
+- Added probe preset `stopline_focus_crop_conflict_negative`:
+  - based on `stopline_projection_comp_runtime`
+  - head LR `2e-4`
+  - train-time stop-line focus crop/zoom enabled with the same fixed crop contract as the closed focus-crop branch
+  - stop-line conflict mode `lane_crosswalk`, weight `0.35`, margin `0.20`
+  - projection-competition stop-line runtime and hull crosswalk retained.
+- Added focused loss/config tests for the new opt-in parameters.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_focus_crop_conflict_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_034652`.
+- CUDA smoke: `2` epochs, `64` train batches per epoch, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Best internal phase objective: epoch `1`, `0.6445881798710803`. This is not final evidence because fixed router task F1 gates decide expansion.
+
+Internal val4:
+
+| Epoch | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.4853` | `33 / 24 / 46` | `0.5000` | `1 / 1 / 1` | `0.7692` | `5 / 3 / 0` |
+| 2 | `0.5038` | `33 / 12 / 53` | `0.0000` | `0 / 4 / 2` | `0.4286` | `3 / 4 / 4` |
+
+Fixed router val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary stop-line route | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| focus-conflict specialist stop-line route | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 4 / 2` | `0.5455` | `3 / 1 / 4` |
+| primary-absent specialist fallback | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 4 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed router smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_focus_crop_conflict_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_034652/analysis_exports/router_val4_epoch2_best/metrics.csv`.
+- Exact-val128, broader-val512, and larger-range training were skipped because fixed smoke recovered no stop-line TP and added one specialist FP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `762M`, plus the auto-downloaded root `yolo26s.pt` was about `20M`.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `1.2M`.
+
+Verification:
+
+- `python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py' -k stopline_task_conflict_negative`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py' -k train_defaults`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "stopline_focus_crop_conflict_negative"`.
+- CUDA `2x64` train-batch smoke.
+- CUDA fixed router val4 epoch-2 evaluation.
+
+판단:
+
+- The stop-line task-conflict negative loss is wired and trainable, but it does not make the focus-crop feeding path viable.
+- The fixed router gate shows the specialist stop-line output recovered no TP and added FP versus the retained primary route.
+- Do not repeat this as conflict mode, conflict weight, margin, crop probability/scale/jitter, head-LR, epoch-count, or same projection-comp runtime sweep.
+- Reopen focus/feeding work only with a materially new candidate-geometry or verifier contract that first improves fixed smoke TP/FP/FN.

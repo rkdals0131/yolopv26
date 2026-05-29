@@ -183,6 +183,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stopline_patch_segment_verifier_aux_weight": 0.35,
                             "stopline_segment_verifier_target_mode": "metric_quality",
                             "stopline_segment_verifier_quality_tau_px": 18.0,
+                            "stopline_task_conflict_negative_mode": "lane_crosswalk",
+                            "stopline_task_conflict_negative_weight": 0.45,
+                            "stopline_task_conflict_negative_margin": 0.2,
                             "stop_line_endpoint_pair_enabled": True,
                             "stop_line_endpoint_pair_score_threshold": 0.58,
                             "stop_line_endpoint_pair_topk": 9,
@@ -377,6 +380,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.stopline_patch_segment_verifier_aux_weight, 0.35)
         self.assertEqual(scenario.train_defaults.stopline_segment_verifier_target_mode, "metric_quality")
         self.assertAlmostEqual(scenario.train_defaults.stopline_segment_verifier_quality_tau_px, 18.0)
+        self.assertEqual(scenario.train_defaults.stopline_task_conflict_negative_mode, "lane_crosswalk")
+        self.assertAlmostEqual(scenario.train_defaults.stopline_task_conflict_negative_weight, 0.45)
+        self.assertAlmostEqual(scenario.train_defaults.stopline_task_conflict_negative_margin, 0.2)
         self.assertTrue(scenario.train_defaults.stop_line_endpoint_pair_enabled)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_endpoint_pair_score_threshold, 0.58)
         self.assertEqual(scenario.train_defaults.stop_line_endpoint_pair_topk, 9)
@@ -464,6 +470,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_mode, "none")
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_weight, 0.0)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_margin, 0.15)
+        self.assertEqual(scenario.train_defaults.stopline_task_conflict_negative_mode, "none")
+        self.assertAlmostEqual(scenario.train_defaults.stopline_task_conflict_negative_weight, 0.0)
+        self.assertAlmostEqual(scenario.train_defaults.stopline_task_conflict_negative_margin, 0.15)
         self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_aux_weight, 0.0)
         self.assertFalse(scenario.train_defaults.lane_conditional_row_enabled)
         self.assertEqual(scenario.train_defaults.lane_segfirst_track_mode, "component")

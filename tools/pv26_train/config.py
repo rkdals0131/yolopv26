@@ -179,6 +179,9 @@ class TrainDefaultsConfig:
     stopline_patch_segment_verifier_aux_weight: float = 0.0
     stopline_segment_verifier_target_mode: str = "matched_objectness"
     stopline_segment_verifier_quality_tau_px: float = 24.0
+    stopline_task_conflict_negative_mode: str = "none"
+    stopline_task_conflict_negative_weight: float = 0.0
+    stopline_task_conflict_negative_margin: float = 0.15
     stop_line_haf_enabled: bool = False
     stop_line_haf_valid_threshold: float = 0.50
     stop_line_haf_min_votes: int = 4
@@ -1014,6 +1017,18 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stopline_segment_verifier_quality_tau_px=_coerce_float(
             data.get("stopline_segment_verifier_quality_tau_px", defaults.stopline_segment_verifier_quality_tau_px),
             field_name="train_defaults.stopline_segment_verifier_quality_tau_px",
+        ),
+        stopline_task_conflict_negative_mode=_coerce_str(
+            data.get("stopline_task_conflict_negative_mode", defaults.stopline_task_conflict_negative_mode),
+            field_name="train_defaults.stopline_task_conflict_negative_mode",
+        ),
+        stopline_task_conflict_negative_weight=_coerce_float(
+            data.get("stopline_task_conflict_negative_weight", defaults.stopline_task_conflict_negative_weight),
+            field_name="train_defaults.stopline_task_conflict_negative_weight",
+        ),
+        stopline_task_conflict_negative_margin=_coerce_float(
+            data.get("stopline_task_conflict_negative_margin", defaults.stopline_task_conflict_negative_margin),
+            field_name="train_defaults.stopline_task_conflict_negative_margin",
         ),
         stop_line_haf_enabled=_coerce_bool(
             data.get("stop_line_haf_enabled", defaults.stop_line_haf_enabled),

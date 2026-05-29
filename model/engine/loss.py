@@ -1584,6 +1584,9 @@ def _stop_line_mask_loss_with_selector_weight(
     patch_segment_verifier_aux_weight: float = 0.0,
     segment_verifier_target_mode: str = "matched_objectness",
     segment_verifier_quality_tau_px: float = 24.0,
+    task_conflict_negative_mode: str = "none",
+    task_conflict_negative_weight: float = 0.0,
+    task_conflict_negative_margin: float = 0.15,
 ) -> torch.Tensor:
     mask_logits = predictions.get("stop_line_mask_logits")
     center_logits = predictions.get("stop_line_center_logits")
@@ -1735,6 +1738,47 @@ def _stop_line_mask_loss_with_selector_weight(
         offset_loss = _zero_graph(mask_logits)
         angle_loss = _zero_graph(mask_logits)
         length_loss = _zero_graph(mask_logits)
+    task_conflict_negative_loss = _zero_graph(mask_logits)
+    if float(task_conflict_negative_weight) > 0.0:
+        mode = str(task_conflict_negative_mode).strip().lower().replace("-", "_")
+        include_lane = mode in {"lane", "lane_crosswalk", "crosswalk_lane", "both", "all", "task_masks"}
+        include_cross = mode in {"crosswalk", "lane_crosswalk", "crosswalk_lane", "both", "all", "task_masks"}
+        if not include_lane and not include_cross:
+            raise ValueError(f"unsupported stopline_task_conflict_negative_mode: {task_conflict_negative_mode}")
+        conflict_mask = torch.zeros_like(mask_target, dtype=torch.bool, device=mask_logits.device)
+        mask_sources = encoded.get("mask", {})
+        if include_lane:
+            lane_mask = aux.get("lane_seg_support")
+            lane_source = mask_sources.get("lane_source") if isinstance(mask_sources, dict) else None
+            if isinstance(lane_mask, torch.Tensor):
+                lane_mask = lane_mask.to(device=mask_logits.device, dtype=torch.bool)
+                if isinstance(lane_source, torch.Tensor):
+                    lane_mask = lane_mask & lane_source.to(device=mask_logits.device, dtype=torch.bool)[:, None, None, None]
+                conflict_mask = conflict_mask | lane_mask
+        if include_cross:
+            cross_mask = aux.get("crosswalk_mask")
+            cross_source = mask_sources.get("crosswalk_source") if isinstance(mask_sources, dict) else None
+            if isinstance(cross_mask, torch.Tensor):
+                cross_mask = cross_mask.to(device=mask_logits.device, dtype=torch.bool)
+                if isinstance(cross_source, torch.Tensor):
+                    cross_mask = cross_mask & cross_source.to(device=mask_logits.device, dtype=torch.bool)[:, None, None, None]
+                conflict_mask = conflict_mask | cross_mask
+        stop_exclusion = F.max_pool2d(mask_target, kernel_size=3, stride=1, padding=1) > 0.1
+        conflict_mask = (
+            source[:, None, None, None].expand_as(mask_logits)
+            & conflict_mask.expand_as(mask_logits)
+            & (~stop_exclusion.expand_as(mask_logits))
+        )
+        if bool(conflict_mask.any()):
+            conflict_terms = []
+            for conflict_logits in (mask_logits, center_logits, selector_map_logits):
+                if isinstance(conflict_logits, torch.Tensor) and conflict_logits.shape == mask_logits.shape:
+                    conflict_prob = conflict_logits.sigmoid()
+                    conflict_terms.append(
+                        (F.relu(conflict_prob[conflict_mask] - float(task_conflict_negative_margin)) ** 2.0).mean()
+                    )
+            if conflict_terms:
+                task_conflict_negative_loss = torch.stack(conflict_terms).mean()
     haf_loss = _zero_graph(mask_logits)
     if (
         float(haf_aux_weight) > 0.0
@@ -1894,6 +1938,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + 0.5 * offset_loss
         + float(geometry_aux_weight) * angle_loss
         + float(geometry_aux_weight) * length_loss
+        + float(task_conflict_negative_weight) * task_conflict_negative_loss
         + float(haf_aux_weight) * haf_loss
         + float(axis_distance_aux_weight) * axis_distance_loss
         + float(endpoint_pair_aux_weight) * endpoint_pair_loss
@@ -2275,6 +2320,9 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_patch_segment_verifier_aux_weight: float = 0.0,
         stopline_segment_verifier_target_mode: str = "matched_objectness",
         stopline_segment_verifier_quality_tau_px: float = 24.0,
+        stopline_task_conflict_negative_mode: str = "none",
+        stopline_task_conflict_negative_weight: float = 0.0,
+        stopline_task_conflict_negative_margin: float = 0.15,
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
         distill_loss_weights: dict[str, float] | None = None,
@@ -2365,6 +2413,9 @@ class PV26MultiTaskLoss(nn.Module):
                 f"unsupported stop-line segment verifier target mode: {self.stopline_segment_verifier_target_mode}"
             )
         self.stopline_segment_verifier_quality_tau_px = float(stopline_segment_verifier_quality_tau_px)
+        self.stopline_task_conflict_negative_mode = str(stopline_task_conflict_negative_mode)
+        self.stopline_task_conflict_negative_weight = float(stopline_task_conflict_negative_weight)
+        self.stopline_task_conflict_negative_margin = float(stopline_task_conflict_negative_margin)
         self.distill_enabled = bool(distill_enabled)
         self.distill_teacher_mode = str(distill_teacher_mode)
         self.distill_normalize_mode = str(distill_normalize_mode)
@@ -2512,6 +2563,9 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_patch_segment_verifier_aux_weight": float(self.stopline_patch_segment_verifier_aux_weight),
             "stopline_segment_verifier_target_mode": self.stopline_segment_verifier_target_mode,
             "stopline_segment_verifier_quality_tau_px": float(self.stopline_segment_verifier_quality_tau_px),
+            "stopline_task_conflict_negative_mode": self.stopline_task_conflict_negative_mode,
+            "stopline_task_conflict_negative_weight": float(self.stopline_task_conflict_negative_weight),
+            "stopline_task_conflict_negative_margin": float(self.stopline_task_conflict_negative_margin),
             "loss_weights": dict(self.loss_weights),
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
@@ -3375,6 +3429,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and float(self.stopline_axis_segment_verifier_aux_weight) == 0.0
                 and float(self.stopline_patch_segment_set_aux_weight) == 0.0
                 and float(self.stopline_patch_segment_verifier_aux_weight) == 0.0
+                and float(self.stopline_task_conflict_negative_weight) == 0.0
             ):
                 return _stop_line_mask_loss(prediction_dict, encoded)
             return _stop_line_mask_loss_with_selector_weight(
@@ -3401,6 +3456,9 @@ class PV26MultiTaskLoss(nn.Module):
                 patch_segment_verifier_aux_weight=float(self.stopline_patch_segment_verifier_aux_weight),
                 segment_verifier_target_mode=self.stopline_segment_verifier_target_mode,
                 segment_verifier_quality_tau_px=float(self.stopline_segment_verifier_quality_tau_px),
+                task_conflict_negative_mode=self.stopline_task_conflict_negative_mode,
+                task_conflict_negative_weight=float(self.stopline_task_conflict_negative_weight),
+                task_conflict_negative_margin=float(self.stopline_task_conflict_negative_margin),
             )
         stop_pred = prediction_dict["stop_line"]
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)

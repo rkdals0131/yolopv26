@@ -524,6 +524,51 @@ class PV26LossRuntimeTests(unittest.TestCase):
         enabled_losses["total"].backward()
         self.assertIsNotNone(predictions["lane_seg_centerline_logits"].grad)
 
+    def test_stopline_task_conflict_negative_penalizes_lane_crosswalk_pixels(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        encoded["roadmark_v2"]["crosswalk_mask"][:, :, 2, 3] = 1.0
+        encoded["roadmark_v2"]["lane_seg_support"][:, :, 4, 5] = 1.0
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "stop_line_mask_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_row_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_x_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_selector_map_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_offset": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_angle": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_half_length": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+            }
+        )
+
+        disabled = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_mode="roadmark_joint",
+            loss_weights={"lane": 0.0, "crosswalk": 0.0},
+        )
+        disabled_loss = disabled(predictions, encoded)["total"].detach()
+        enabled = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_mode="roadmark_joint",
+            loss_weights={"lane": 0.0, "crosswalk": 0.0},
+            stopline_task_conflict_negative_mode="lane_crosswalk",
+            stopline_task_conflict_negative_weight=1.0,
+            stopline_task_conflict_negative_margin=0.25,
+        )
+        enabled_losses = enabled(predictions, encoded)
+
+        self.assertGreater(float(enabled_losses["total"].detach()), float(disabled_loss))
+        self.assertEqual(enabled.export_config()["stopline_task_conflict_negative_mode"], "lane_crosswalk")
+        enabled_losses["total"].backward()
+        self.assertIsNotNone(predictions["stop_line_mask_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_center_logits"].grad)
+
     def test_lane_conditional_row_aux_loss_backprops_when_enabled(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
         from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW

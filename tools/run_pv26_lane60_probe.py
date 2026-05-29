@@ -1633,6 +1633,27 @@ EXPERIMENTS["stopline_focus_crop_feeding"] = {
     },
 }
 
+EXPERIMENTS["stopline_focus_crop_conflict_negative"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "head_lr": 2.0e-4,
+    "train_defaults_overrides": {
+        "train_augmentation": True,
+        "train_augmentation_seed": 260530,
+        "train_aug_stopline_focus_crop_prob": 0.75,
+        "train_aug_stopline_focus_crop_scale_min": 1.35,
+        "train_aug_stopline_focus_crop_scale_max": 1.80,
+        "train_aug_stopline_focus_crop_jitter": 0.08,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "stopline_task_conflict_negative_mode": "lane_crosswalk",
+        "stopline_task_conflict_negative_weight": 0.35,
+        "stopline_task_conflict_negative_margin": 0.20,
+        "lane_segfirst_center_offset_aux_weight": 0.0,
+        "lane_segfirst_center_offset_enabled": False,
+    },
+}
+
 EXPERIMENTS["stopline_retention_distill_upper_trunk"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_plus_upper_trunk",
