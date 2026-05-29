@@ -16334,3 +16334,71 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
 - Do not repeat this as task order, positive fraction, epoch-count, train-batch scaling, or the same projection-competition runtime training sweep.
 - Reopen data-feeding work only with a materially different candidate-generation, geometry, instance-retention, or task-routing signal that first improves fixed smoke TP/FP/FN.
+
+## 309. 2026-05-30 Stop-line patch projection-merge smoke: patch segment candidates can enter projection-comp runtime, but recover no stop-line TP
+
+맥락:
+
+- The prior local 2D patch segment head trained a model-side segment-emission contract, but its standalone exact result was below projection-competition.
+- Code inspection showed that `stop_line_projection_comp_enabled=True` returned before segment-set candidates were decoded, so trained patch candidates could not participate as an auxiliary candidate source when the retained projection-competition runtime was active.
+- This branch tested the materially different runtime contract: keep projection-competition as the primary stop-line route, but merge enabled patch segment candidates into the same dedupe/ranking cap.
+- The experiment reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. It did not copy the dataset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-patch-projection-merge`.
+- Runtime code: `model/engine/postprocess.py`.
+- Probe preset: `tools/run_pv26_lane60_probe.py`, `stopline_patch_projection_merge`.
+- Regression test: `test/test_pv26_postprocess.py`, `test_stopline_projection_comp_merges_segment_set_candidates`.
+- Changed axis:
+  - decode segment-set candidates before the projection-competition return;
+  - if projection-comp and patch segment candidates are both enabled, merge projection-comp + segment candidates through `_dedupe_stop_line_predictions()` and `_stopline_prediction_sort_key`;
+  - keep retained lane flip/cross-mask variant and `crosswalk_polygon_mode=hull` fixed.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_patch_projection_merge_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_070405`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6467` at epoch 1, but this is not success evidence because fixed task metrics regressed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5038` | `33 / 12 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- The patch projection-merge lost `4` lane TP and added `1` lane FP on the retained fixed variant, while recovering no stop-line TP.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_patch_projection_merge_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_070405/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_patch_projection_merge_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_070405/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `824K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/postprocess.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONPATH=test python -m unittest test_pv26_postprocess.PV26PostprocessTests.test_stopline_projection_comp_runtime_decodes_mask_extent_candidate test_pv26_postprocess.PV26PostprocessTests.test_stopline_projection_comp_merges_segment_set_candidates`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "stopline_patch_projection_merge"`.
+- CUDA stop-line patch projection-merge smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The runtime plumbing fix is valid and covered by a unit test, but the trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
+- Do not repeat this as patch segment score threshold, verifier-score weight, max-segment cap, head-LR, epoch-count, or the same projection-comp-plus-patch merge sweep.
+- Reopen patch segment work only with a materially different candidate-coverage, quality, or geometry signal that first improves fixed smoke TP/FP/FN.

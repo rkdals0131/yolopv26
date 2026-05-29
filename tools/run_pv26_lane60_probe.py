@@ -1718,6 +1718,21 @@ EXPERIMENTS["stopline_source_union_projection_comp"] = {
     },
 }
 
+EXPERIMENTS["stopline_patch_projection_merge"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "stopline_patch_segment_set_aux_weight": 1.0,
+        "stopline_patch_segment_verifier_aux_weight": 1.0,
+        "stopline_segment_verifier_target_mode": "metric_quality",
+        "stopline_segment_verifier_quality_tau_px": 24.0,
+        "stop_line_patch_segment_set_enabled": True,
+        "stop_line_patch_segment_set_score_threshold": 0.55,
+        "stop_line_patch_segment_set_max_segments": 4,
+        "stop_line_patch_segment_verifier_score_weight": 1.0,
+    },
+}
+
 EXPERIMENTS["stopline_cross_priority_lane_frozen"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stop_cross_heads_only",

@@ -3215,29 +3215,6 @@ def _decode_stop_line_rows(
         presence_score = float(presence_logits.reshape(-1)[0].sigmoid().detach().cpu().item())
         if presence_score < float(presence_threshold):
             return []
-    if bool(projection_comp_enabled):
-        return _decode_stopline_projection_competition(
-            mask_logits=mask_logits,
-            center_logits=center_logits,
-            midpoint_logits=midpoint_logits,
-            selector_map_logits=selector_map_logits,
-            center_offset=center_offset,
-            angle=angle,
-            meta=meta,
-            proposal_source=str(projection_comp_proposal_source),
-            min_gap=float(projection_comp_min_gap),
-            top_k=int(projection_comp_topk),
-            union_min_score=float(projection_comp_union_min_score),
-            single_min_score=float(projection_comp_single_min_score),
-            angle_threshold_deg=float(projection_comp_angle_threshold_deg),
-            offset_threshold_px=float(projection_comp_offset_threshold_px),
-            min_cluster_count=int(projection_comp_min_cluster_count),
-            projection_gap_px=float(projection_comp_projection_gap_px),
-            max_predictions=int(projection_comp_max_predictions),
-            second_min_score=float(projection_comp_second_min_score),
-            second_min_fragment_count=int(projection_comp_second_min_fragment_count),
-            second_min_length_ratio=float(projection_comp_second_min_length_ratio),
-        )
     segment_set_decoded: list[dict[str, Any]] = []
     if bool(segment_set_enabled):
         segment_set_decoded = _decode_stopline_segment_set(
@@ -3298,6 +3275,57 @@ def _decode_stop_line_rows(
                 max_segments=int(endpoint_pair_max_segments),
             )
         )
+    if bool(endpoint_pair_segment_enabled):
+        segment_set_decoded.extend(
+            _decode_stopline_segment_set(
+                segment_logits=endpoint_pair_logits,
+                segment_points=endpoint_pair_points,
+                segment_verifier_logits=endpoint_pair_verifier_logits,
+                meta=meta,
+                score_threshold=float(endpoint_pair_segment_score_threshold),
+                max_segments=int(endpoint_pair_segment_max_segments),
+                verifier_score_weight=float(endpoint_pair_verifier_score_weight),
+            )
+        )
+    segment_candidate_cap = max(
+        1,
+        int(max_components),
+        int(segment_set_max_segments),
+        int(context_segment_set_max_segments),
+        int(axis_segment_set_max_segments),
+        int(patch_segment_set_max_segments),
+        int(endpoint_pair_max_segments),
+        int(endpoint_haf_consensus_max_segments),
+        int(endpoint_pair_segment_max_segments),
+    )
+    if bool(projection_comp_enabled):
+        decoded = _decode_stopline_projection_competition(
+            mask_logits=mask_logits,
+            center_logits=center_logits,
+            midpoint_logits=midpoint_logits,
+            selector_map_logits=selector_map_logits,
+            center_offset=center_offset,
+            angle=angle,
+            meta=meta,
+            proposal_source=str(projection_comp_proposal_source),
+            min_gap=float(projection_comp_min_gap),
+            top_k=int(projection_comp_topk),
+            union_min_score=float(projection_comp_union_min_score),
+            single_min_score=float(projection_comp_single_min_score),
+            angle_threshold_deg=float(projection_comp_angle_threshold_deg),
+            offset_threshold_px=float(projection_comp_offset_threshold_px),
+            min_cluster_count=int(projection_comp_min_cluster_count),
+            projection_gap_px=float(projection_comp_projection_gap_px),
+            max_predictions=int(projection_comp_max_predictions),
+            second_min_score=float(projection_comp_second_min_score),
+            second_min_fragment_count=int(projection_comp_second_min_fragment_count),
+            second_min_length_ratio=float(projection_comp_second_min_length_ratio),
+        )
+        if segment_set_decoded:
+            merged = _dedupe_stop_line_predictions(decoded + segment_set_decoded)
+            merged.sort(key=_stopline_prediction_sort_key, reverse=True)
+            return merged[:segment_candidate_cap]
+        return decoded
     if bool(endpoint_haf_consensus_enabled):
         decoded = _decode_stopline_endpoint_haf_consensus_segments(
             endpoint_logits=endpoint_logits,
@@ -3317,18 +3345,6 @@ def _decode_stop_line_rows(
         )
         if decoded:
             return decoded
-    if bool(endpoint_pair_segment_enabled):
-        segment_set_decoded.extend(
-            _decode_stopline_segment_set(
-                segment_logits=endpoint_pair_logits,
-                segment_points=endpoint_pair_points,
-                segment_verifier_logits=endpoint_pair_verifier_logits,
-                meta=meta,
-                score_threshold=float(endpoint_pair_segment_score_threshold),
-                max_segments=int(endpoint_pair_segment_max_segments),
-                verifier_score_weight=float(endpoint_pair_verifier_score_weight),
-            )
-        )
     if bool(axis_distance_enabled):
         decoded = _decode_stopline_axis_distance_segments(
             axis_distance=axis_distance,
@@ -3386,19 +3402,7 @@ def _decode_stop_line_rows(
             if segment_set_decoded:
                 merged = _dedupe_stop_line_predictions(decoded + segment_set_decoded)
                 merged.sort(key=_stopline_prediction_sort_key, reverse=True)
-                return merged[
-                    : max(
-                        1,
-                        int(max_components),
-                        int(segment_set_max_segments),
-                        int(context_segment_set_max_segments),
-                        int(axis_segment_set_max_segments),
-                        int(patch_segment_set_max_segments),
-                        int(endpoint_pair_max_segments),
-                        int(endpoint_haf_consensus_max_segments),
-                        int(endpoint_pair_segment_max_segments),
-                    )
-                ]
+                return merged[:segment_candidate_cap]
             return decoded
     transform = transform_from_meta(meta)
     predictions: list[dict[str, Any]] = []
@@ -3434,18 +3438,7 @@ def _decode_stop_line_rows(
     if not segment_set_decoded:
         return predictions
     predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
-    return predictions[
-        : max(
-            1,
-            int(max_components),
-            int(segment_set_max_segments),
-            int(axis_segment_set_max_segments),
-            int(patch_segment_set_max_segments),
-            int(endpoint_pair_max_segments),
-            int(endpoint_haf_consensus_max_segments),
-            int(endpoint_pair_segment_max_segments),
-        )
-    ]
+    return predictions[:segment_candidate_cap]
 
 
 def _decode_crosswalk_rows(
