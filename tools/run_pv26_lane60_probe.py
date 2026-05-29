@@ -1615,6 +1615,11 @@ EXPERIMENTS["stopline_cross_priority_lane_frozen"] = {
     },
 }
 
+EXPERIMENTS["stopline_cross_priority_static_trunk"] = {
+    **EXPERIMENTS["stopline_cross_priority_lane_frozen"],
+    "freeze_policy": "lane_family_stop_cross_static_trunk",
+}
+
 EXPERIMENTS["stopline_focus_crop_feeding"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "head_lr": 2.0e-4,

@@ -401,7 +401,7 @@ def configure_pv26_train_stage(
         for module in _require_lane_family_modules(heads, policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "lane_family_only"
-    elif policy == "lane_family_stop_cross_heads_only":
+    elif policy in {"lane_family_stop_cross_heads_only", "lane_family_stop_cross_static_trunk"}:
         adapter.freeze_trunk()
         _set_module_requires_grad(heads, False)
         for module in _require_named_head_modules(heads, ("stop_line_head", "crosswalk_head"), policy=policy):
@@ -455,6 +455,7 @@ def configure_pv26_train_stage(
         "lane_family_heads_static_trunk",
         "lane_family_plus_upper_trunk",
         "lane_family_stop_cross_heads_only",
+        "lane_family_stop_cross_static_trunk",
         "lane_family_stopline_only",
         "lane_family_stopline_static_trunk",
         "lane_family_lane_only",
@@ -603,6 +604,11 @@ class PV26Trainer:
         policy = str(self.stage_summary.get("freeze_policy", self.freeze_policy or ""))
         if policy == "lane_family_heads_static_trunk":
             self.adapter.raw_model.eval()
+        if policy == "lane_family_stop_cross_static_trunk":
+            self.adapter.raw_model.eval()
+            self.heads.eval()
+            for module in _require_named_head_modules(self.heads, ("stop_line_head", "crosswalk_head"), policy=policy):
+                module.train()
         if policy == "lane_family_stopline_static_trunk":
             self.adapter.raw_model.eval()
             self.heads.eval()

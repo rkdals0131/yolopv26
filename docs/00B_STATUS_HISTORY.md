@@ -15710,3 +15710,73 @@ Verification:
 - The fixed router gate shows the specialist stop-line output recovered no TP and added FP versus the retained primary route.
 - Do not repeat this as conflict mode, conflict weight, margin, crop probability/scale/jitter, head-LR, epoch-count, or same projection-comp runtime sweep.
 - Reopen focus/feeding work only with a materially new candidate-geometry or verifier contract that first improves fixed smoke TP/FP/FN.
+
+## 300. 2026-05-30 Stop/cross static-trunk lane-frozen: BN drift fix preserved lane but did not improve stop-line
+
+Context:
+
+- The earlier stop/cross lane-frozen priority training partially improved broader stop-line, but lane still regressed and the result stayed below the all-task `0.60` target.
+- A later seed-only audit showed that `requires_grad=False` is not enough when frozen BatchNorm modules remain in train mode.
+- This experiment tested the narrow unresolved question: if the detector trunk and frozen lane head are forced into eval mode during stop-line/crosswalk-only training, does the stop-line gain survive without lane drift?
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stop-cross-static-trunk-retain`.
+- Added freeze policy `lane_family_stop_cross_static_trunk`.
+- The policy:
+  - freezes the detector trunk and all heads first;
+  - trains only `stop_line_head` and `crosswalk_head`;
+  - reapplies `adapter.raw_model.eval()` and `heads.eval()` during each train step;
+  - switches only stop-line/crosswalk modules back to train mode.
+- Added probe preset `stopline_cross_priority_static_trunk`, inheriting the retained projection-competition stop-line runtime and hull crosswalk contract from `stopline_cross_priority_lane_frozen`.
+- Added trainer coverage proving only stop-line/crosswalk params enter the optimizer and only those modules remain in train mode.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_040136`.
+- CUDA smoke: `2` epochs, `64` train batches per epoch, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Best internal phase objective: epoch `1`, `0.6447357101150397`. This is not final evidence because fixed router task F1 gates decide expansion.
+
+Fixed val4:
+
+| Route | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| trained checkpoint, fixed task-mask variant | `0.5882` | `40 / 10 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| retained primary route | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| static stop/cross specialist route | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed exact-val128:
+
+| Route | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary stop-line route | `0.5888` | `1202 / 491 / 1188` | `0.5000` | `30 / 30 / 30` | `0.5988` | `50 / 36 / 31` |
+| static stop/cross specialist route | `0.5888` | `1202 / 491 / 1188` | `0.4918` | `30 / 32 / 30` | `0.5988` | `50 / 36 / 31` |
+
+- Fixed val4 artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_040136/analysis_exports/router_val4_epoch2_best/metrics.csv`.
+- Fixed exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_040136/analysis_exports/router_exact_val128_epoch2_best/metrics.csv`.
+- Broader-val512 and larger-range training were skipped because exact stop-line regressed versus the retained primary route.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative exact evaluation.
+- Retained run size after cleanup: about `2.4M`.
+
+Verification:
+
+- `python -m py_compile model/engine/trainer.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_trainer.py' -k stop_cross_static`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "stopline_cross_priority_static_trunk"`.
+- CUDA `2x64` train-batch smoke.
+- CUDA fixed val4 and exact-val128 router evaluations.
+
+판단:
+
+- The new static stop/cross policy is a useful control: it removes frozen trunk/lane-head train-mode drift as the explanation for lane preservation.
+- It does not create a better stop-line specialist. On exact-val128, TP stayed fixed at `30` and FP increased from `30` to `32`.
+- Do not repeat this as static stop/cross freeze policy, stop/cross sampler order, head-LR, epoch-count, or larger-range scaling.
+- Reopen stop/cross retention training only with a materially new stop-line candidate/geometry or verifier signal that first improves fixed exact TP/FP/FN.
