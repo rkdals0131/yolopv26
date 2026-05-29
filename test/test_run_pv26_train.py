@@ -137,6 +137,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "train_aug_stopline_focus_crop_scale_min": 1.2,
                             "train_aug_stopline_focus_crop_scale_max": 1.6,
                             "train_aug_stopline_focus_crop_jitter": 0.05,
+                            "lane_head_mode": "row_native",
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
                             "lane_segfirst_centerline_target_mode": "core",
@@ -333,6 +334,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_scale_min, 1.2)
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_scale_max, 1.6)
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_jitter, 0.05)
+        self.assertEqual(scenario.train_defaults.lane_head_mode, "row_native")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.train_defaults.lane_segfirst_centerline_target_mode, "core")
@@ -450,6 +452,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.task_positive_task, "multi:lane,stopline,crosswalk")
         self.assertAlmostEqual(scenario.train_defaults.task_positive_fraction, 0.75)
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
+        self.assertEqual(scenario.train_defaults.lane_head_mode, "seg_first")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
         self.assertAlmostEqual(scenario.train_defaults.det_iou_threshold, 0.70)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.45)

@@ -26,6 +26,7 @@ ROADMARK_ARCHITECTURES = (
     "lane_only_row_classifier",
     "stopline_only_mask_first",
 )
+LANE_HEAD_MODES = ("seg_first", "row_native")
 LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
 MULTITASK_CONFLICT_TASK_NAMES = LOSS_WEIGHT_NAMES
 DEFAULT_SAMPLER_RATIOS = {
@@ -113,6 +114,7 @@ class TrainDefaultsConfig:
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     roadmark_architecture: str = "native"
+    lane_head_mode: str = "seg_first"
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
     task_positive_task: str | None = "multi:lane,stopline,crosswalk"
     task_positive_fraction: float | None = 0.75
@@ -501,6 +503,15 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             "train_defaults.roadmark_architecture must be one of "
             f"{ROADMARK_ARCHITECTURES}, got {roadmark_architecture!r}"
         )
+    lane_head_mode = _coerce_str(
+        data.get("lane_head_mode", defaults.lane_head_mode),
+        field_name="train_defaults.lane_head_mode",
+    )
+    if lane_head_mode not in LANE_HEAD_MODES:
+        raise ValueError(
+            "train_defaults.lane_head_mode must be one of "
+            f"{LANE_HEAD_MODES}, got {lane_head_mode!r}"
+        )
     sampler_ratios_payload = _coerce_mapping(
         data.get("sampler_ratios", defaults.sampler_ratios),
         field_name="train_defaults.sampler_ratios",
@@ -686,6 +697,7 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             field_name="train_defaults.backbone_weights",
         ),
         roadmark_architecture=roadmark_architecture,
+        lane_head_mode=lane_head_mode,
         sampler_ratios=sampler_ratios,
         task_positive_task=_coerce_optional_str(
             data.get("task_positive_task", defaults.task_positive_task),

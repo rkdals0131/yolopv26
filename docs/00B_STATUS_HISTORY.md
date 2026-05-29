@@ -14880,3 +14880,74 @@ Verification:
 - It should not be broadened from this checkpoint.
 - Do not repeat this as `cooccur:lane,stopline,crosswalk` fraction, task-order, epoch-count, train-batch count, or same loss-weight sweep.
 - Reopen co-occurrence/data-feeding work only if it is paired with a materially different instance/geometry/retention signal that first improves fixed smoke TP/FP/FN.
+
+## 288. 2026-05-30 Lane row-native primary architecture audit
+
+Context:
+
+- The user explicitly asked not to stay too conservative, and to test whether the bottleneck is architectural or training-allocation related rather than only postprocess.
+- The existing code already had a `LaneDenseRowSeedHead` / `row_native` lane head implementation, but the active training config/probe path always built `PV26Heads` with the default `seg_first` lane head.
+- This branch tested whether the row-classification lane head can act as the primary lane contract when it is actually trained, rather than only used as legacy fallback/union readout.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/cooccur-hard-positive-sampler` continued with an additional single-axis audit.
+- Added `train_defaults.lane_head_mode` with allowed values `seg_first` and `row_native`.
+- Passed `lane_head_mode` into `PV26Heads` for normal phase trainer construction and distill teacher construction.
+- Added `lane_row_native_primary` to `tools/run_pv26_lane60_probe.py`:
+  - freeze policy `lane_family_heads_only`
+  - trunk LR `0.0`
+  - head LR `2e-4`
+  - loss weights lane `3.0`, stop-line `2.25`, crosswalk `1.75`
+  - `train_defaults_overrides: {"lane_head_mode": "row_native"}`
+  - retained projection-competition stop-line runtime and `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Seed checkpoint for the first smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- First CUDA smoke:
+  - run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_primary_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_002041`
+  - `1` epoch, `64` train batches, `4` val batches, batch size `4`, device `cuda:0`
+  - skipped steps `0`
+  - internal val phase objective `0.2945410022`; lane task-best F1 `0.0`
+- Larger continuation:
+  - seed checkpoint: first smoke `phase_4/checkpoints/best.pt`
+  - run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_primary_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_002505`
+  - `2` epochs, `512` train batches per epoch, `4` val batches, batch size `4`, device `cuda:0`
+  - skipped steps `0`
+  - internal best phase objective `0.2976446683`; lane task-best F1 `0.0`
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| row-native 64-batch smoke | `0.0000` | `0 / 49 / 86` | `0.0000` | `0 / 3 / 2` | `0.3636` | `2 / 2 / 5` |
+| row-native 2x512-batch scale smoke | `0.0000` | `0 / 0 / 86` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- First smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_primary_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_002041/analysis_exports/row_native_primary_smoke_val4_epoch2/metrics.csv`.
+- Scale-smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_primary_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_002505/analysis_exports/row_native_primary_scale_smoke_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because the lane primary contract recovered `0` matched lanes even after the larger training slice.
+
+Storage:
+
+- Both runs reused the existing dataset root directly.
+- The auto-downloaded root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run sizes after cleanup: about `740K` for the 64-batch smoke and about `784K` for the 2x512-batch scale smoke.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- CUDA row-native first smoke train and fixed val4 evaluation.
+- CUDA row-native 2x512-batch larger train and fixed val4 evaluation.
+
+판단:
+
+- `lane_head_mode=row_native` is now a trainable/probeable architecture axis, but the existing row-classification lane head is not a viable primary lane contract from this checkpoint.
+- This is materially different from the prior legacy row-head fallback/union smoke because the row-native head was actually trained as the primary lane head and still produced `0` matched lanes.
+- Do not repeat this as row-native primary head LR, lane loss weight, epoch-count, train-batch count, seed from the same row-native smoke, or baseline-variant evaluation.
+- Reopen row-native-style work only if the head contract changes, for example with a new instance-quality/assignment signal or conditional instance decoder that first moves fixed smoke TP/FP/FN.

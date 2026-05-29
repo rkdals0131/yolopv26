@@ -1585,6 +1585,28 @@ EXPERIMENTS["lane_only_segfirst_specialist"] = {
     },
 }
 
+EXPERIMENTS["lane_row_native_primary"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_heads_only",
+    "trunk_lr": 0.0,
+    "head_lr": 2.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 3.0,
+        "stop_line": 2.25,
+        "crosswalk": 1.75,
+    },
+    "train_defaults_overrides": {
+        "lane_head_mode": "row_native",
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:lane,stopline,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {
