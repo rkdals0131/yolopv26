@@ -128,6 +128,7 @@
 - row-scan segment-continuity + lane-head-only retention을 LR/epoch/weight sweep만으로 반복하지 않는다.
 - row-scan tangent component-limited readout을 lane over-link fix로 반복하지 않는다.
 - row-scan tangent train-augmentation-off를 lane/stop-line/crosswalk retention fix로 반복하지 않는다.
+- shared affine train augmentation을 affine probability, degree, translation, scale, shear, seed, head LR, epoch-count, or 같은 projection-comp-runtime training sweep으로 반복하지 않는다. 2026-05-30 real CUDA `2x64` train-batch smoke applied one shared affine to image, detector boxes, lane points, stop-line points, and crosswalk polygons while reusing the existing dataset root without copying data, but fixed val4 with `flip_centerline_avg_lane_cross_comp050` stayed lane/stop/cross `0.5373 / 0.0000 / 0.5455`, TP/FP/FN lane `36 / 12 / 50`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because it recovered no stop-line TP and regressed fixed smoke lane versus the retained reference.
 - row-scan GT tangent-axis replacement나 tangent-link cost/oracle sweep을 lane 0.6 path로 반복하지 않는다.
 - row-scan tangent centerline snap을 snap-radius/window sweep으로 반복하지 않는다.
 - lane centerline instance-balanced positive loss를 weight sweep으로 반복하지 않는다.

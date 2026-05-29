@@ -251,6 +251,49 @@ class PV26TransformRoundtripTests(unittest.TestCase):
         self.assertIsNone(augmented[5]["stopline_focus_crop"])
         self.assertTrue(torch.equal(augmented[3][0]["points_xy"], stop_lines[0]["points_xy"]))
 
+    def test_shared_affine_translates_all_geometry_and_keeps_shape(self) -> None:
+        image = torch.zeros((3, 8, 10), dtype=torch.float32)
+        det_boxes = [[1.0, 1.0, 4.0, 5.0]]
+        lanes = [{"points_xy": torch.tensor([[1.0, 6.0], [3.0, 4.0]], dtype=torch.float32), "color": 0}]
+        stop_lines = [{"points_xy": torch.tensor([[1.0, 5.0], [5.0, 5.0]], dtype=torch.float32)}]
+        crosswalks = [
+            {"points_xy": torch.tensor([[2.0, 2.0], [4.0, 2.0], [4.0, 4.0], [2.0, 4.0]], dtype=torch.float32)}
+        ]
+        config = TrainAugmentationConfig(
+            horizontal_flip_prob=0.0,
+            brightness_delta=0.0,
+            contrast_range=(1.0, 1.0),
+            gamma_range=(1.0, 1.0),
+            affine_prob=1.0,
+            affine_degrees=0.0,
+            affine_translate_frac=0.10,
+            affine_scale_range=(1.0, 1.0),
+            affine_shear_degrees=0.0,
+        )
+
+        augmented = apply_train_augmentations(
+            image,
+            det_boxes=det_boxes,
+            lanes=lanes,
+            stop_lines=stop_lines,
+            crosswalks=crosswalks,
+            network_hw=(8, 10),
+            config=config,
+            rng=random.Random(5),
+        )
+
+        self.assertEqual(tuple(augmented[0].shape), (3, 8, 10))
+        affine_meta = augmented[5]["shared_affine"]
+        self.assertIsNotNone(affine_meta)
+        tx, ty = [float(value) for value in affine_meta["translate"]]
+        expected_lane = lanes[0]["points_xy"].clone()
+        expected_lane[:, 0] = (expected_lane[:, 0] + tx).clamp(0.0, 9.0)
+        expected_lane[:, 1] = (expected_lane[:, 1] + ty).clamp(0.0, 7.0)
+        self.assertTrue(torch.allclose(augmented[2][0]["points_xy"], expected_lane, atol=1.0e-5))
+        self.assertIsNotNone(augmented[1][0])
+        self.assertGreaterEqual(float(augmented[3][0]["points_xy"].min().item()), 0.0)
+        self.assertLessEqual(float(augmented[4][0]["points_xy"][..., 0].max().item()), 9.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 import os
 from pathlib import Path
 import random
@@ -59,6 +60,11 @@ class TrainAugmentationConfig:
     brightness_delta: float = 0.10
     contrast_range: tuple[float, float] = (0.90, 1.10)
     gamma_range: tuple[float, float] = (0.95, 1.05)
+    affine_prob: float = 0.0
+    affine_degrees: float = 0.0
+    affine_translate_frac: float = 0.0
+    affine_scale_range: tuple[float, float] = (1.0, 1.0)
+    affine_shear_degrees: float = 0.0
     stopline_focus_crop_prob: float = 0.0
     stopline_focus_crop_scale_range: tuple[float, float] = (1.25, 1.75)
     stopline_focus_crop_jitter: float = 0.10
@@ -264,6 +270,187 @@ def _crop_zoom_box_xyxy(
     return clip_box_xyxy(transformed, network_hw)
 
 
+def _affine_matrix(
+    *,
+    network_hw: tuple[int, int],
+    degrees: float,
+    translate_xy: tuple[float, float],
+    scale: float,
+    shear_degrees: float,
+) -> torch.Tensor:
+    net_h, net_w = network_hw
+    center_x = (float(net_w) - 1.0) * 0.5
+    center_y = (float(net_h) - 1.0) * 0.5
+    angle = math.radians(float(degrees))
+    shear = math.radians(float(shear_degrees))
+    cos_a = math.cos(angle) * float(scale)
+    sin_a = math.sin(angle) * float(scale)
+    shear_tan = math.tan(shear)
+    translate_x, translate_y = translate_xy
+
+    to_origin = torch.tensor(
+        [[1.0, 0.0, -center_x], [0.0, 1.0, -center_y], [0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+    rotate_scale = torch.tensor(
+        [[cos_a, -sin_a, 0.0], [sin_a, cos_a, 0.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+    shear_x = torch.tensor(
+        [[1.0, shear_tan, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+    from_origin = torch.tensor(
+        [[1.0, 0.0, center_x + float(translate_x)], [0.0, 1.0, center_y + float(translate_y)], [0.0, 0.0, 1.0]],
+        dtype=torch.float32,
+    )
+    return from_origin @ shear_x @ rotate_scale @ to_origin
+
+
+def _pixel_affine_to_grid_theta(matrix: torch.Tensor, *, network_hw: tuple[int, int]) -> torch.Tensor:
+    net_h, net_w = network_hw
+    inv_matrix = torch.linalg.inv(matrix.to(dtype=torch.float32))
+    pixel_to_norm = torch.tensor(
+        [
+            [2.0 / max(float(net_w - 1), 1.0), 0.0, -1.0],
+            [0.0, 2.0 / max(float(net_h - 1), 1.0), -1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    norm_to_pixel = torch.tensor(
+        [
+            [max(float(net_w - 1), 1.0) * 0.5, 0.0, max(float(net_w - 1), 1.0) * 0.5],
+            [0.0, max(float(net_h - 1), 1.0) * 0.5, max(float(net_h - 1), 1.0) * 0.5],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    return (pixel_to_norm @ inv_matrix @ norm_to_pixel)[:2]
+
+
+def _affine_points_tensor(
+    points: torch.Tensor,
+    *,
+    matrix: torch.Tensor,
+    network_hw: tuple[int, int],
+) -> torch.Tensor:
+    transformed = points.clone().to(dtype=torch.float32)
+    flat = transformed.reshape(-1, 2)
+    ones = torch.ones((flat.shape[0], 1), dtype=flat.dtype, device=flat.device)
+    matrix = matrix.to(device=flat.device, dtype=flat.dtype)
+    warped = torch.cat([flat, ones], dim=1) @ matrix.T
+    net_h, net_w = network_hw
+    warped_xy = warped[:, :2]
+    warped_xy[:, 0] = warped_xy[:, 0].clamp(0.0, float(net_w - 1))
+    warped_xy[:, 1] = warped_xy[:, 1].clamp(0.0, float(net_h - 1))
+    return warped_xy.reshape_as(transformed).to(dtype=points.dtype)
+
+
+def _affine_box_xyxy(
+    box: Iterable[float],
+    *,
+    matrix: torch.Tensor,
+    network_hw: tuple[int, int],
+) -> list[float] | None:
+    x1, y1, x2, y2 = [float(value) for value in box]
+    corners = torch.tensor(
+        [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+        dtype=torch.float32,
+    )
+    transformed = _affine_points_tensor(corners, matrix=matrix, network_hw=network_hw)
+    min_xy = transformed.min(dim=0).values
+    max_xy = transformed.max(dim=0).values
+    return clip_box_xyxy(
+        [float(min_xy[0].item()), float(min_xy[1].item()), float(max_xy[0].item()), float(max_xy[1].item())],
+        network_hw,
+    )
+
+
+def _apply_shared_affine(
+    image: torch.FloatTensor,
+    *,
+    det_boxes: list[list[float]],
+    lanes: list[dict[str, object]],
+    stop_lines: list[dict[str, object]],
+    crosswalks: list[dict[str, object]],
+    network_hw: tuple[int, int],
+    config: TrainAugmentationConfig,
+    rng: random.Random,
+) -> tuple[
+    torch.FloatTensor,
+    list[list[float]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[str, object] | None,
+]:
+    if rng.random() >= float(config.affine_prob):
+        return image, det_boxes, lanes, stop_lines, crosswalks, None
+    degrees = float(config.affine_degrees)
+    translate_frac = max(0.0, float(config.affine_translate_frac))
+    scale_min, scale_max = sorted(float(value) for value in config.affine_scale_range)
+    scale_min = max(scale_min, 1.0e-3)
+    scale_max = max(scale_min, scale_max)
+    shear_degrees = float(config.affine_shear_degrees)
+
+    net_h, net_w = network_hw
+    sampled_degrees = rng.uniform(-degrees, degrees) if degrees > 0.0 else 0.0
+    sampled_scale = rng.uniform(scale_min, scale_max)
+    sampled_shear = rng.uniform(-shear_degrees, shear_degrees) if shear_degrees > 0.0 else 0.0
+    sampled_tx = rng.uniform(-translate_frac, translate_frac) * float(net_w)
+    sampled_ty = rng.uniform(-translate_frac, translate_frac) * float(net_h)
+    matrix = _affine_matrix(
+        network_hw=network_hw,
+        degrees=sampled_degrees,
+        translate_xy=(sampled_tx, sampled_ty),
+        scale=sampled_scale,
+        shear_degrees=sampled_shear,
+    )
+    theta = _pixel_affine_to_grid_theta(matrix, network_hw=network_hw).to(device=image.device, dtype=image.dtype)
+    grid = F.affine_grid(
+        theta.unsqueeze(0),
+        size=(1, int(image.shape[0]), int(net_h), int(net_w)),
+        align_corners=True,
+    )
+    fill = float(PADDING_FILL_UINT8) / 255.0
+    warped = F.grid_sample(
+        (image.unsqueeze(0) - fill),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    ).squeeze(0) + fill
+    warped = warped.clamp(0.0, 1.0).contiguous()
+
+    transformed_det: list[list[float]] = []
+    for box in det_boxes:
+        transformed_box = _affine_box_xyxy(box, matrix=matrix, network_hw=network_hw)
+        if transformed_box is not None:
+            transformed_det.append(transformed_box)
+    for rows in (lanes, stop_lines, crosswalks):
+        for row in rows:
+            points = _row_points(row)
+            if points is None:
+                continue
+            row["points_xy"] = _affine_points_tensor(points, matrix=matrix, network_hw=network_hw)
+
+    return (
+        warped,
+        transformed_det,
+        lanes,
+        stop_lines,
+        crosswalks,
+        {
+            "applied": True,
+            "degrees": float(sampled_degrees),
+            "translate": [float(sampled_tx), float(sampled_ty)],
+            "scale": float(sampled_scale),
+            "shear_degrees": float(sampled_shear),
+        },
+    )
+
+
 def _row_points(row: dict[str, object]) -> torch.Tensor | None:
     points_xy = row.get("points_xy")
     if not isinstance(points_xy, torch.Tensor) or points_xy.numel() < 2:
@@ -449,6 +636,23 @@ def apply_train_augmentations(
         config=config,
         rng=rng,
     )
+    (
+        augmented_image,
+        augmented_det,
+        augmented_lanes,
+        augmented_stop_lines,
+        augmented_crosswalks,
+        affine_meta,
+    ) = _apply_shared_affine(
+        augmented_image,
+        det_boxes=augmented_det,
+        lanes=augmented_lanes,
+        stop_lines=augmented_stop_lines,
+        crosswalks=augmented_crosswalks,
+        network_hw=network_hw,
+        config=config,
+        rng=rng,
+    )
     applied_flip = rng.random() < float(config.horizontal_flip_prob)
 
     if applied_flip:
@@ -468,6 +672,7 @@ def apply_train_augmentations(
         augmented_crosswalks,
         {
             "horizontal_flip": bool(applied_flip),
+            "shared_affine": affine_meta,
             "stopline_focus_crop": focus_crop_meta,
             **photo_meta,
         },

@@ -137,6 +137,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "train_aug_stopline_focus_crop_scale_min": 1.2,
                             "train_aug_stopline_focus_crop_scale_max": 1.6,
                             "train_aug_stopline_focus_crop_jitter": 0.05,
+                            "train_aug_affine_prob": 0.6,
+                            "train_aug_affine_degrees": 2.5,
+                            "train_aug_affine_translate_frac": 0.03,
+                            "train_aug_affine_scale_min": 0.95,
+                            "train_aug_affine_scale_max": 1.08,
+                            "train_aug_affine_shear_degrees": 1.5,
                             "lane_head_mode": "row_native",
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
@@ -353,6 +359,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_scale_min, 1.2)
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_scale_max, 1.6)
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_jitter, 0.05)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_affine_prob, 0.6)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_affine_degrees, 2.5)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_affine_translate_frac, 0.03)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_affine_scale_min, 0.95)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_affine_scale_max, 1.08)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_affine_shear_degrees, 1.5)
         self.assertEqual(scenario.train_defaults.lane_head_mode, "row_native")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)

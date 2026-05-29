@@ -56,6 +56,14 @@ def train_augmentation_from_defaults(defaults: TrainDefaultsConfig) -> bool | Tr
     if not bool(defaults.train_augmentation):
         return False
     return TrainAugmentationConfig(
+        affine_prob=float(defaults.train_aug_affine_prob),
+        affine_degrees=float(defaults.train_aug_affine_degrees),
+        affine_translate_frac=float(defaults.train_aug_affine_translate_frac),
+        affine_scale_range=(
+            float(defaults.train_aug_affine_scale_min),
+            float(defaults.train_aug_affine_scale_max),
+        ),
+        affine_shear_degrees=float(defaults.train_aug_affine_shear_degrees),
         stopline_focus_crop_prob=float(defaults.train_aug_stopline_focus_crop_prob),
         stopline_focus_crop_scale_range=(
             float(defaults.train_aug_stopline_focus_crop_scale_min),

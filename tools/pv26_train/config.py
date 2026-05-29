@@ -112,6 +112,12 @@ class TrainDefaultsConfig:
     train_aug_stopline_focus_crop_scale_min: float = 1.25
     train_aug_stopline_focus_crop_scale_max: float = 1.75
     train_aug_stopline_focus_crop_jitter: float = 0.10
+    train_aug_affine_prob: float = 0.0
+    train_aug_affine_degrees: float = 0.0
+    train_aug_affine_translate_frac: float = 0.0
+    train_aug_affine_scale_min: float = 1.0
+    train_aug_affine_scale_max: float = 1.0
+    train_aug_affine_shear_degrees: float = 0.0
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     roadmark_architecture: str = "native"
@@ -732,6 +738,30 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         train_aug_stopline_focus_crop_jitter=_coerce_float(
             data.get("train_aug_stopline_focus_crop_jitter", defaults.train_aug_stopline_focus_crop_jitter),
             field_name="train_defaults.train_aug_stopline_focus_crop_jitter",
+        ),
+        train_aug_affine_prob=_coerce_float(
+            data.get("train_aug_affine_prob", defaults.train_aug_affine_prob),
+            field_name="train_defaults.train_aug_affine_prob",
+        ),
+        train_aug_affine_degrees=_coerce_float(
+            data.get("train_aug_affine_degrees", defaults.train_aug_affine_degrees),
+            field_name="train_defaults.train_aug_affine_degrees",
+        ),
+        train_aug_affine_translate_frac=_coerce_float(
+            data.get("train_aug_affine_translate_frac", defaults.train_aug_affine_translate_frac),
+            field_name="train_defaults.train_aug_affine_translate_frac",
+        ),
+        train_aug_affine_scale_min=_coerce_float(
+            data.get("train_aug_affine_scale_min", defaults.train_aug_affine_scale_min),
+            field_name="train_defaults.train_aug_affine_scale_min",
+        ),
+        train_aug_affine_scale_max=_coerce_float(
+            data.get("train_aug_affine_scale_max", defaults.train_aug_affine_scale_max),
+            field_name="train_defaults.train_aug_affine_scale_max",
+        ),
+        train_aug_affine_shear_degrees=_coerce_float(
+            data.get("train_aug_affine_shear_degrees", defaults.train_aug_affine_shear_degrees),
+            field_name="train_defaults.train_aug_affine_shear_degrees",
         ),
         backbone_variant=backbone_variant,
         backbone_weights=_coerce_optional_str(
@@ -1699,6 +1729,18 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} sampler_ratios must contain at least one positive value")
         if phase_train.task_positive_fraction is not None and not 0.0 <= float(phase_train.task_positive_fraction) <= 1.0:
             raise ValueError(f"phase {index} task_positive_fraction must be between 0 and 1")
+        if not 0.0 <= float(phase_train.train_aug_affine_prob) <= 1.0:
+            raise ValueError(f"phase {index} train_aug_affine_prob must be between 0 and 1")
+        if float(phase_train.train_aug_affine_degrees) < 0.0:
+            raise ValueError(f"phase {index} train_aug_affine_degrees must be >= 0")
+        if float(phase_train.train_aug_affine_translate_frac) < 0.0:
+            raise ValueError(f"phase {index} train_aug_affine_translate_frac must be >= 0")
+        if float(phase_train.train_aug_affine_scale_min) <= 0.0:
+            raise ValueError(f"phase {index} train_aug_affine_scale_min must be > 0")
+        if float(phase_train.train_aug_affine_scale_max) < float(phase_train.train_aug_affine_scale_min):
+            raise ValueError(f"phase {index} train_aug_affine_scale_max must be >= train_aug_affine_scale_min")
+        if float(phase_train.train_aug_affine_shear_degrees) < 0.0:
+            raise ValueError(f"phase {index} train_aug_affine_shear_degrees must be >= 0")
         if float(phase_train.amp_init_scale) <= 0.0:
             raise ValueError(f"phase {index} amp_init_scale must be > 0")
         multitask_conflict = dict(phase_train.multitask_conflict)

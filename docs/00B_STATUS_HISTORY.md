@@ -16558,3 +16558,81 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
 - Do not repeat this as embedding dimension, margin, aux-weight, head LR, epoch-count, or same row-scan/tangent runtime sweep.
 - Reopen lane instance-separation only if it changes the emit/assignment contract or adds a materially new TP-preserving instance-quality signal that first improves fixed smoke TP/FP/FN.
+
+## 312. 2026-05-30 Shared affine train augmentation smoke: consistent geometry warp trains, but does not recover stop-line or retained lane TP
+
+맥락:
+
+- The user explicitly pushed for real training/evaluation and broader data exposure, while avoiding dataset copies and uncontrolled artifact growth.
+- Several architecture and task-allocation branches had already failed fixed smoke or exact gates. This branch tested a data/feeding contract instead of another stop-line candidate decoder: apply the same mild affine transform to the image and all supervised geometries so lane, stop-line, crosswalk, and detector labels stay aligned.
+- This is distinct from `row_scan_tangent_no_aug`, stop-line focus crop, TTA, and postprocess sweeps. It changes train-time input distribution only and leaves the retained runtime decode contract unchanged.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. It did not copy the dataset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/shared-affine-augmentation`.
+- Train augmentation: `model/data/transform.py`.
+- Config/runtime plumbing: `tools/pv26_train/config.py`, `tools/pv26_train/runtime.py`, `tools/run_pv26_lane60_probe.py`.
+- Tests:
+  - `test/test_pv26_transform_roundtrip.py`, shared affine translation keeps image shape and moves detector/lane/stop-line/crosswalk geometries consistently.
+  - `test/test_run_pv26_train.py`, scenario config override coverage for affine fields.
+- Changed axis:
+  - `train_aug_affine_prob=0.65`;
+  - `train_aug_affine_degrees=2.0`;
+  - `train_aug_affine_translate_frac=0.025`;
+  - `train_aug_affine_scale_min=0.95`;
+  - `train_aug_affine_scale_max=1.08`;
+  - `train_aug_affine_shear_degrees=1.0`;
+  - retained row-scan/tangent lane decode;
+  - retained projection-competition stop-line runtime decode;
+  - retained `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_shared_affine_augmentation_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_075616`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6388080927` at epoch 1, but this is not success evidence because fixed task metrics failed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5152` | `34 / 12 / 52` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- Shared affine lost `4` lane TP and added `1` lane FP on the retained fixed variant, while recovering no stop-line TP.
+- The result matches the recent task-uncertainty and lane instance-embedding fixed variant on lane/stop/cross, so there is no smoke TP/FP/FN movement to justify exact-val128.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_shared_affine_augmentation_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_075616/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_shared_affine_augmentation_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_075616/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `820K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/transform.py tools/pv26_train/config.py tools/pv26_train/runtime.py tools/run_pv26_lane60_probe.py test/test_pv26_transform_roundtrip.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_transform_roundtrip.PV26TransformRoundtripTests.test_shared_affine_translates_all_geometry_and_keeps_shape test_pv26_transform_roundtrip.PV26TransformRoundtripTests.test_double_horizontal_flip_restores_boxes_geometry_and_image test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "shared_affine_augmentation|lane_instance_embedding_aux"`.
+- CUDA shared-affine augmentation smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The transform/config/runtime plumbing is valid and covered, and the training/evaluation used the existing larger canonical dataset root without copying data.
+- The trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
+- Do not repeat this as affine probability, degree, translation, scale, shear, seed, head LR, epoch-count, or same projection-comp-runtime training sweep.
+- Reopen train-time geometric feeding only with a materially different signal that first improves fixed smoke TP/FP/FN, such as candidate/instance quality or geometry recovery evidence rather than a parameter sweep.
