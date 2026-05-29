@@ -1419,6 +1419,37 @@ EXPERIMENTS["stopline_priority_positive_sampler"] = {
     },
 }
 
+EXPERIMENTS["stopline_priority_retention_distill_heads"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_heads_only",
+    "trunk_lr": 0.0,
+    "head_lr": 1.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 1.50,
+        "stop_line": 2.50,
+        "crosswalk": 1.50,
+    },
+    "train_defaults_overrides": {
+        "distill_enabled": True,
+        "distill_teacher_checkpoint": "__seed_checkpoint__",
+        "distill_loss_weights": {
+            "lane": 0.35,
+            "stop_line": 0.0,
+            "crosswalk": 0.35,
+        },
+        "distill_normalize_mode": "ema",
+        "distill_ema_decay": 0.95,
+        "distill_ema_warmup_steps": 4,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,lane,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 EXPERIMENTS["stopline_cross_priority_lane_frozen"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stop_cross_heads_only",

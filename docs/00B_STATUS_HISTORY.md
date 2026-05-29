@@ -15083,3 +15083,71 @@ Verification:
 - It damages retained lane/crosswalk behavior before exact-val128 and broader-val512.
 - Do not repeat this as seed-threshold, max-seeds, seed-aux-weight, head-LR, epoch-count, or same interior/bidirectional trace tuning.
 - Reopen only with a materially new TP-preserving seed quality / instance-existence signal, or with a lane instance contract that first protects fixed smoke TP/FP/FN.
+
+## 291. 2026-05-30 Stop-line priority sampler with lane/cross retention distill: fixed smoke rejects
+
+Context:
+
+- The stop-line-priority sampler branch was the best recent stop-line exposure signal, moving broader stop-line to `0.5309`, but it bought that by regressing broader lane to `0.5463`.
+- Upper-trunk retention distill had already failed at broader scale, but it changed the trainable trunk surface. This branch tested a narrower heads-only premise: keep the projection-competition runtime contract and stop-line-priority sampler, then add lane/cross teacher-cache retention from the retained merged checkpoint.
+- This is not a stop-line self-distill retry because stop-line distill weight is `0.0`; the question was whether lane/cross retention can protect the stop-line exposure path enough to justify larger exact/broader training.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-priority-retention-distill`.
+- Added `stopline_priority_retention_distill_heads` to `tools/run_pv26_lane60_probe.py`.
+- The preset keeps:
+  - freeze policy `lane_family_heads_only`
+  - trunk LR `0.0`
+  - head LR `1e-4`
+  - retained `row_scan_tangent` lane decode
+  - projection-competition stop-line runtime decode
+  - `crosswalk_polygon_mode="hull"`
+  - task-positive sampler `multi:stopline,lane,crosswalk`.
+- Added live distill config:
+  - teacher checkpoint `__seed_checkpoint__`
+  - lane distill weight `0.35`
+  - stop-line distill weight `0.0`
+  - crosswalk distill weight `0.35`
+  - EMA distill normalization.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_retention_distill_heads_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_013211`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4 task-best F1: lane `0.5522`, stop-line `0.0000`, crosswalk `0.8000`. This is not final evidence because it is the training validation slice, not fixed epoch-2 evaluation.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| stop-line priority + lane/cross retention distill | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_retention_distill_heads_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_013211/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because fixed smoke regressed lane by `-4 TP`, `+1 FP`, and recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `768M`.
+- The auto-downloaded root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `7.3M`.
+
+Verification:
+
+- `python -m py_compile tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- Lane/cross teacher retention on the heads-only stop-line-priority path is trainable, but it does not protect lane enough to justify exact-val128.
+- It also does not move stop-line on the fixed smoke gate.
+- Do not repeat this as distill-weight, head-LR, loss-weight, epoch-count, or same stop-line-priority sampler tuning.
+- Reopen only with a materially different stop-line candidate/geometry signal or lane-retention contract that first improves fixed smoke TP/FP/FN.
