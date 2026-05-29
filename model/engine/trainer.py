@@ -161,6 +161,20 @@ def _require_lane_family_modules(heads: torch.nn.Module, *, policy: str) -> list
     return modules
 
 
+def _require_named_head_modules(heads: torch.nn.Module, names: tuple[str, ...], *, policy: str) -> list[torch.nn.Module]:
+    modules: list[torch.nn.Module] = []
+    missing: list[str] = []
+    for name in names:
+        module = getattr(heads, name, None)
+        if isinstance(module, torch.nn.Module):
+            modules.append(module)
+        else:
+            missing.append(name)
+    if missing:
+        raise RuntimeError(f"{policy} requires {', '.join(missing)} modules")
+    return modules
+
+
 def _criterion_config_from_instance(criterion: torch.nn.Module, stage: str) -> dict[str, Any] | None:
     export_config = getattr(criterion, "export_config", None)
     if not callable(export_config):
@@ -275,6 +289,12 @@ def configure_pv26_train_stage(
         for module in _require_lane_family_modules(heads, policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "lane_family_only"
+    elif policy == "lane_family_stop_cross_heads_only":
+        adapter.freeze_trunk()
+        _set_module_requires_grad(heads, False)
+        for module in _require_named_head_modules(heads, ("stop_line_head", "crosswalk_head"), policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "stop_cross_only"
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:
@@ -300,7 +320,7 @@ def configure_pv26_train_stage(
     lane_family_trainable = _count_parameters(_trainable_parameters_from_modules(lane_family_modules_for_summary))
     if lane_family_trainable:
         stage_summary["trainable_lane_family_head_params"] = lane_family_trainable
-    if policy in {"lane_family_heads_only", "lane_family_plus_upper_trunk"}:
+    if policy in {"lane_family_heads_only", "lane_family_plus_upper_trunk", "lane_family_stop_cross_heads_only"}:
         stage_summary["head_training_policy"] = head_policy
     return stage_summary
 

@@ -1386,6 +1386,34 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
 
+    def test_lane_family_stop_cross_heads_only_freezes_lane_head(self) -> None:
+        from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
+
+        adapter = _DummyAdapter()
+        heads = _DummyRoadmarkHeads()
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_stop_cross_heads_only",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=0.0, head_lr=1.0e-4)
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+
+        self.assertEqual(summary["freeze_policy"], "lane_family_stop_cross_heads_only")
+        self.assertEqual(summary["head_training_policy"], "stop_cross_only")
+        self.assertEqual(summary["trainable_trunk_params"], 0)
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.det_heads.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.tl_attr_heads.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
+        self.assertFalse(any(id(parameter) in optimizer_params for parameter in heads.lane_head.parameters()))
+        self.assertTrue(all(id(parameter) in optimizer_params for parameter in heads.stop_line_head.parameters()))
+        self.assertTrue(all(id(parameter) in optimizer_params for parameter in heads.crosswalk_head.parameters()))
+
     def test_lane_family_shared_adapter_uses_dedicated_optimizer_group(self) -> None:
         from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
         from model.net import PV26Heads

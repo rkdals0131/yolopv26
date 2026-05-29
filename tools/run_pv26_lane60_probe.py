@@ -1148,6 +1148,23 @@ EXPERIMENTS["stopline_priority_positive_sampler"] = {
     },
 }
 
+EXPERIMENTS["stopline_cross_priority_lane_frozen"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_stop_cross_heads_only",
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 0.0,
+        "stop_line": 2.25,
+        "crosswalk": 1.75,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

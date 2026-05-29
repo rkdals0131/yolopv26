@@ -5,9 +5,9 @@
 
 ## 1. 한 줄 결론
 
-PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite 기준 `0.6419406290`까지 확인됐다.
+PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite 기준 `0.6421286661`까지 확인됐다.
 
-이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest broader-val512 stop-line-exposure composite는 objective `0.6419`, lane/stop-line/crosswalk F1 `0.5463 / 0.5309 / 0.6219`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. 둘 다 lane/stop-line이 `0.60` 미만이라 최종 성공으로 보지 않는다.
+이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest stop/cross lane-frozen trained composite는 broader-val512 objective `0.6421`, lane/stop-line/crosswalk F1 `0.5571 / 0.5278 / 0.6142`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. 둘 다 lane/stop-line이 `0.60` 미만이라 최종 성공으로 보지 않는다.
 
 Active goal:
 
@@ -25,7 +25,8 @@ Run:
 
 - checkpoint: `phase_4/checkpoints/best.pt`
 - retained lane-preserving composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/metrics.csv`
-- latest stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
+- latest stop/cross lane-frozen composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
+- previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
 Note: older exact-eval and visual-check exports were pruned from active `runs` during artifact cleanup. The numeric results below remain as historical evidence, but those old export directories are no longer current retained artifacts.
@@ -40,12 +41,12 @@ Final exact epoch-2 result:
 | crosswalk F1 | `0.5853658536585366` |
 | support lane/stop/cross | `2390 / 60 / 81` |
 
-Current broader-composite F1 기준 gap:
+Current useful broader runtime evidence 기준 gap:
 
 - lane: `0.5628 -> 0.6000`, `+0.0372` 필요.
-- stop-line: `0.4235 -> 0.6000`, `+0.1765` 필요.
-- crosswalk: `0.6187`, broader-val512에서 `0.6000` 이상 통과.
-- 따라서 F1 0.6+ 목표의 병목은 stop-line, 그 다음 lane이다. crosswalk는 hull decode로 broader pass를 만들었지만, 이 자체는 opt-in postprocess partial-positive이고 lane/stop-line 실패를 가리지 않는다.
+- stop-line: `0.5309 -> 0.6000`, `+0.0691` 필요 on the stop-line-priority trained composite, but that same composite regresses lane to `0.5463`.
+- crosswalk: `0.6219` on the stop-line-priority trained composite and `0.6187` on the retained lane-preserving composite, both broader-val512 pass.
+- 따라서 F1 0.6+ 목표의 병목은 stop-line과 lane의 동시 보존이다. crosswalk는 hull decode로 broader pass를 만들었지만, 이 자체는 opt-in postprocess partial-positive이고 lane/stop-line 실패를 가리지 않는다.
 
 Gate 4 exact crosswalk threshold candidate:
 
@@ -125,7 +126,20 @@ Current retained lane-preserving broader task-balance runtime composite:
 - lane-family mean/min F1: `0.5659 / 0.5164`.
 - 판단: this is no longer artifact-only CSV recombination; the known lane-preserving task-balance lower bound now has an opt-in runtime/evaluator contract. It still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`, and it is not a single raw checkpoint default.
 
-Latest stop-line-exposure trained broader task-balance runtime composite:
+Latest stop/cross lane-frozen trained runtime composite:
+
+- branch/worktree: `exp/lane-family-f1/stopline-cross-lane-frozen`.
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725/analysis_exports/full_runtime_task_balance_exact_val128_epoch2/summary.json`
+- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725/analysis_exports/full_runtime_task_balance_val512_epoch2/summary.json`
+- changed training axis: add `lane_family_stop_cross_heads_only`, which freezes trunk/detector/TL/lane and trains only stop-line + crosswalk heads. Final eval keeps fixed `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line runtime decode, and `crosswalk_polygon_mode=hull`.
+- data/storage contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly, no dataset copy; main run indexed `429350` records with split `326709 / 82641 / 20000`. After evaluation, smoke checkpoints were removed and the main run keeps only `best.pt`, summaries/history, and exact/broader metric exports (`101M`).
+- main training history best by phase objective was epoch `3`: objective `0.6731892262`, lane/stop/cross F1 `0.5517 / 0.6923 / 0.6368`, TP/FP/FN lane `1076 / 542 / 1207`, stop-line `36 / 15 / 17`, crosswalk `64 / 31 / 42`. This is not final evidence because it is the training validation slice, not the fixed epoch-2 eval.
+- fixed full runtime task-balance exact-val128 epoch-2 eval: objective `0.6451854982`, lane/stop/cross F1 `0.5800 / 0.4655 / 0.5963`, TP/FP/FN lane `1176 / 489 / 1214`, stop-line `27 / 29 / 33`, crosswalk `48 / 32 / 33`.
+- fixed full runtime task-balance broader-val512 epoch-2 eval: objective `0.6421286661`, lane/stop/cross F1 `0.5571 / 0.5278 / 0.6142`, TP/FP/FN lane `4464 / 2086 / 5013`, stop-line `128 / 86 / 143`, crosswalk `234 / 133 / 161`.
+- lane-family mean/min F1: `0.5664 / 0.5278`.
+- 판단: freezing lane out of the optimizer partially recovers lane versus the stop-line-priority run (`0.5463 -> 0.5571`) while preserving a small stop-line gain over projection-comp (`0.5164 -> 0.5278`). It still fails all-task `0.60`, exact-val128 rejects stop-line (`0.4655`), and crosswalk remains only slightly above broader threshold. Do not repeat this as freeze-policy, stop/cross sampler order, epoch-count, head-LR, or loss-weight tuning without a new candidate/geometry or instance-retention signal.
+
+Previous stop-line-exposure trained broader task-balance runtime composite:
 
 - branch/worktree: `exp/lane-family-f1/stopline-priority-positive-sampler`.
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_exact_val128_epoch2/summary.json`

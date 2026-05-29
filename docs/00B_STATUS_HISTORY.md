@@ -13300,3 +13300,80 @@ Verification:
 - It does not solve the all-task target because lane regresses sharply: broader lane F1 `0.5628 -> 0.5463`, TP `4532 -> 4218`, even though lane FP also falls.
 - Exact-val128 also rejects the branch: stop-line falls below projection-comp exact `0.5333 -> 0.4918`, and crosswalk falls below `0.60`.
 - Do not continue this as sampler order, positive-fraction, epoch-count, head-LR, or same projection-comp-runtime training. More stop-line exposure can trade recall into stop-line on some slices, but it does not preserve the retained lane/crosswalk runtime contract.
+
+## 265. 2026-05-29 Stop/cross lane-frozen priority train: lane recovers partly, target still fails
+
+Context:
+
+- Section 264 showed that more stop-line-positive exposure can move broader stop-line, but it also damaged lane recall.
+- This follow-up tested whether lane regression was caused by continuing to optimize the lane head under the stop-line-priority sampler.
+- The new axis was a training/freeze contract, not another postprocess sweep: keep the same projection-competition runtime decoder and final flip/cross-mask/hull eval, but remove the lane head from the optimizer and train only stop-line + crosswalk heads.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-cross-lane-frozen`.
+- Added freeze policy `lane_family_stop_cross_heads_only`.
+- Added experiment preset `stopline_cross_priority_lane_frozen`.
+- The preset sets `det=0`, `tl_attr=0`, `lane=0`, `stop_line=2.25`, `crosswalk=1.75`, with task-positive sampling `multi:stopline,crosswalk`.
+- Added a focused trainer test proving trunk/detector/TL/lane are frozen and only stop-line/crosswalk heads enter training.
+
+Training:
+
+- Smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105617`.
+- Main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Scale: smoke `1x32` train batches / `4` val batches; main `3` epochs, `512` train batches, `128` val batches, batch size `4`, CUDA.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+
+Smoke val4:
+
+| Metric | Value |
+| --- | ---: |
+| objective | `0.6324960408` |
+| lane F1 | `0.5255` |
+| stop-line F1 | `0.0000` |
+| crosswalk F1 | `0.6667` |
+| lane TP/FP/FN | `36 / 22 / 43` |
+| stop-line TP/FP/FN | `0 / 1 / 2` |
+| crosswalk TP/FP/FN | `3 / 1 / 2` |
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6243673793` | `0.5572` | `0.3368` | `0.6792` | `1133 / 599 / 1202` | `16 / 24 / 39` | `54 / 22 / 29` |
+| 2 | `0.6388026855` | `0.5679` | `0.4786` | `0.5875` | `1160 / 535 / 1230` | `28 / 29 / 32` | `47 / 32 / 34` |
+| 3 | `0.6731892262` | `0.5517` | `0.6923` | `0.6368` | `1076 / 542 / 1207` | `36 / 15 / 17` | `64 / 31 / 42` |
+
+Fixed full runtime task-balance eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6451854982` | `0.5800` | `0.4655` | `0.5963` | `1176 / 489 / 1214` | `27 / 29 / 33` | `48 / 32 / 33` |
+| broader val512 epoch2 | `0.6421286661` | `0.5571` | `0.5278` | `0.6142` | `4464 / 2086 / 5013` | `128 / 86 / 143` | `234 / 133 / 161` |
+
+Storage:
+
+- The smoke run initially held duplicate checkpoints and was `685M`; after pruning all `.pt` files and TensorBoard output, it is `296K`.
+- The main run initially held duplicate `best_*` and `last.pt` checkpoints plus TensorBoard output and was `689M`.
+- After evaluation, pruned all checkpoint files except `phase_4/checkpoints/best.pt`, removed TensorBoard output, and removed temporary YOLO downloads.
+- Retained main run size is about `101M`, with `best.pt`, summaries/history, and exact/broader metric exports.
+
+Verification:
+
+- `python -m py_compile model/engine/trainer.py tools/run_pv26_lane60_probe.py test/test_pv26_trainer.py`.
+- `python -m unittest discover -s test -p 'test_pv26_trainer.py' -k stop_cross`.
+- Real CUDA smoke train/eval.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Fixed full runtime task-balance exact-val128 epoch-2 eval with `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line runtime, and hull crosswalk.
+- Fixed full runtime task-balance broader-val512 epoch-2 eval with the same runtime composite.
+
+판단:
+
+- The freeze policy did what it was meant to do operationally: lane head params are not trainable and are absent from the optimizer, so lane weight-decay drift is removed.
+- It only partially fixes the section-264 tradeoff. Broader lane improves over the stop-line-priority run (`0.5463 -> 0.5571`) but still stays below the retained lane-preserving composite (`0.5628`).
+- Broader stop-line remains a small positive over projection-comp (`0.5164 -> 0.5278`) but below the stop-line-priority run (`0.5309`) and far below `0.60`.
+- Exact-val128 rejects the branch because stop-line is only `0.4655`, below projection-comp exact `0.5167`, and crosswalk is still under `0.60`.
+- Do not continue this as freeze-policy, stop/cross sampler order, epoch-count, head-LR, or loss-weight tuning. It confirms that retention scheduling alone is not enough; the next useful branch needs a new stop-line candidate/geometry signal or a stronger lane instance-retention contract.
