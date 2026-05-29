@@ -16183,3 +16183,89 @@ Verification:
 - The oracle-router value `0.7083` remains planning evidence only; it uses GT labels and does not make source routing deployable.
 - Do not repeat this as dense-feature sample count, side-offset, hidden size, router epoch/LR, class weight, source-mode, or same line-aligned dense/raw feature sweep.
 - Reopen stop-line source routing only with a materially new candidate-generation/geometry contract or a true verifier signal that first improves fixed exact TP/FP/FN.
+
+## 307. 2026-05-30 Stop-line raw-patch geometry-repair replay: endpoint deltas overfit train and collapse held-out
+
+맥락:
+
+- The raw-patch verifier in section 284 tested whether oriented raw-image patches could act as a no-GT candidate verifier. It overfit train and failed held-out.
+- This branch tested the stronger version of the same premise: not only classify candidates, but also predict endpoint repair deltas so near-but-unmatched stop-line candidates can become matched segments.
+- This is a learned no-GT geometry probe over existing candidate rows. It does not copy GT at runtime and it does not create a new dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-rawpatch-geometry-repair`.
+- Tool: `tools/probe_pv26_stopline_candidate_pool.py`.
+- New opt-in replay: `--raw-patch-geometry-repair-replay`.
+- Feature input:
+  - existing rich candidate numeric features;
+  - oriented grayscale candidate patch;
+  - x-gradient patch values.
+- MLP output:
+  - `raw_patch_geom_score`;
+  - four normalized endpoint deltas for repaired start/end points.
+- Training target:
+  - candidates with nearest GT distance `<=160px` are repair targets;
+  - target deltas are GT endpoint minus candidate endpoint, normalized by `192px`;
+  - runtime replay selects repaired candidates by a train-selected task threshold.
+- No model `.pt` artifact is saved.
+
+Training and evaluation:
+
+- Existing `seg_dataset/pv26_exhaustive_od_lane_dataset` was reused in place; no dataset copy was created.
+- CUDA val4 smoke ran with `4` val batches and `12` MLP epochs. It verified the path, but stop-line TP was zero on the slice.
+- Fixed exact-val128 ran with:
+  - `128` val batches;
+  - `180` MLP epochs;
+  - `top_k=20`;
+  - train/held-out split by validation batch half;
+  - `514` train candidate rows;
+  - `261` train repair targets;
+  - feature dim `3111`.
+
+Exact-val128 results:
+
+| Split | Variant | Stop-line F1 | Stop TP/FP/FN |
+| --- | --- | ---: | --- |
+| train | baseline | `0.3704` | `10 / 15 / 19` |
+| train | raw_patch_geometry_task_threshold | `0.8163` | `20 / 0 / 9` |
+| heldout | baseline | `0.5161` | `16 / 15 / 15` |
+| heldout | raw_patch_geometry_task_threshold | `0.1429` | `5 / 34 / 26` |
+| all | baseline | `0.4483` | `26 / 30 / 34` |
+| all | raw_patch_geometry_task_threshold | `0.4202` | `25 / 34 / 35` |
+| all | projection_comp reference | `0.5167` | `31 / 29 / 29` |
+
+Diagnostics:
+
+- Exact candidate pool had `1170` candidates and `442` oracle-positive rows.
+- The train-selected threshold was `6.459e-05`.
+- Selected repaired candidates moved substantially: selected mean endpoint delta was about `97.7px` over `679` selected exact candidates.
+- The movement improves the train half but generalizes poorly, adding held-out FP faster than TP.
+
+Artifacts:
+
+- Exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_geometry_repair_exact_val128_epoch2/raw_patch_geometry_repair_variants.csv`.
+- Exact projection-comp reference in same run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_geometry_repair_exact_val128_epoch2/fragment_projection_competition_variants.csv`.
+- Exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_geometry_repair_exact_val128_epoch2/summary.json`.
+
+Storage:
+
+- Retained exact export is about `2.6M`.
+- Temporary smoke export under `/tmp/stopline_rawpatch_geometry_smoke_val4` was removed.
+- Root `yolo26s.pt` was removed after evaluation.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_candidate_pool.py`.
+- `python tools/probe_pv26_stopline_candidate_pool.py --help | rg "raw-patch-geometry|geometry-repair"`.
+- CUDA fixed val4 raw-patch geometry smoke with `4` val batches.
+- CUDA fixed exact-val128 raw-patch geometry repair replay with `128` val batches.
+
+판단:
+
+- This is an actual learned geometry-repair probe, but it is exact-negative.
+- The no-GT patch MLP can fit train geometry, but it does not generalize to held-out exact records.
+- Broader-val512 was skipped because held-out exact and all-split exact both failed the gate.
+- Do not repeat this as raw patch size, MLP hidden size, geometry epoch/LR, target-distance, normalize/max-delta, top-k, threshold-grid, or same train-threshold replay sweep.
+- Reopen raw-patch geometry only with a materially different supervision/generalization premise, not another patch-MLP tuning pass.

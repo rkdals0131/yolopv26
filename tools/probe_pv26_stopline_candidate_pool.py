@@ -208,6 +208,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-patch-verifier-threshold-grid", type=int, default=101)
     parser.add_argument("--raw-patch-verifier-epochs", type=int, default=160)
     parser.add_argument("--raw-patch-verifier-lr", type=float, default=0.003)
+    parser.add_argument(
+        "--raw-patch-geometry-repair-replay",
+        action="store_true",
+        help=(
+            "Train a held-out raw-patch MLP that predicts candidate endpoint repair deltas plus "
+            "a no-GT repair score, then replay the train-selected task threshold."
+        ),
+    )
+    parser.add_argument("--raw-patch-geometry-train-fraction", type=float, default=0.5)
+    parser.add_argument("--raw-patch-geometry-top-k", type=int, default=20)
+    parser.add_argument("--raw-patch-geometry-threshold-grid", type=int, default=101)
+    parser.add_argument("--raw-patch-geometry-epochs", type=int, default=180)
+    parser.add_argument("--raw-patch-geometry-lr", type=float, default=0.002)
+    parser.add_argument("--raw-patch-geometry-target-distance", type=float, default=160.0)
+    parser.add_argument("--raw-patch-geometry-normalize-px", type=float, default=192.0)
+    parser.add_argument("--raw-patch-geometry-max-delta-px", type=float, default=192.0)
     return parser.parse_args()
 
 
@@ -1176,6 +1192,465 @@ def _run_raw_patch_verifier_replay(
     }
 
 
+def _endpoint_vector(points: Any) -> np.ndarray | None:
+    array = _points_array(points)
+    if array.shape[0] < 2 or not bool(np.isfinite(array).all()):
+        return None
+    return np.asarray([array[0, 0], array[0, 1], array[-1, 0], array[-1, 1]], dtype=np.float32)
+
+
+def _raw_patch_geometry_candidate_matrix(
+    records: list[dict[str, Any]],
+    *,
+    top_k: int,
+    image_cache: dict[str, np.ndarray],
+    target_distance_px: float,
+    normalize_px: float,
+) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    candidates: list[dict[str, Any]] = []
+    features: list[np.ndarray] = []
+    objectness: list[float] = []
+    deltas: list[np.ndarray] = []
+    regression_mask: list[float] = []
+    normalizer = max(float(normalize_px), 1.0e-6)
+    for record in records:
+        record_candidates = list(record.get("candidates", []))
+        record_rows = list(record.get("candidate_feature_rows", []))
+        gt_stop_lines = list(record.get("gt_stop_lines", []))
+        for candidate, row in zip(record_candidates, record_rows):
+            if int(candidate.get("proposal_rank", 10**6)) > int(top_k):
+                continue
+            candidates.append(candidate)
+            features.append(_raw_patch_feature_vector(candidate, row, image_cache=image_cache))
+
+            candidate_endpoints = _endpoint_vector(candidate.get("points_xy", []))
+            gt_index = int(candidate.get("nearest_gt_index", -1))
+            nearest_distance = float(candidate.get("nearest_gt_distance", float("inf")))
+            target_endpoints = None
+            if (
+                candidate_endpoints is not None
+                and 0 <= gt_index < len(gt_stop_lines)
+                and nearest_distance <= float(target_distance_px)
+            ):
+                target_endpoints = _endpoint_vector(gt_stop_lines[gt_index].get("points_xy", []))
+            if target_endpoints is None or candidate_endpoints is None:
+                objectness.append(0.0)
+                deltas.append(np.zeros((4,), dtype=np.float32))
+                regression_mask.append(0.0)
+                continue
+            delta = np.clip((target_endpoints - candidate_endpoints) / normalizer, -1.0, 1.0)
+            objectness.append(1.0)
+            deltas.append(delta.astype(np.float32))
+            regression_mask.append(1.0)
+    if not features:
+        return (
+            candidates,
+            np.zeros((0, 0), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+            np.zeros((0, 4), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+        )
+    return (
+        candidates,
+        np.stack(features, axis=0).astype(np.float32),
+        np.asarray(objectness, dtype=np.float32),
+        np.stack(deltas, axis=0).astype(np.float32),
+        np.asarray(regression_mask, dtype=np.float32),
+    )
+
+
+def _fit_raw_patch_geometry_mlp(
+    train_x: np.ndarray,
+    train_objectness: np.ndarray,
+    train_deltas: np.ndarray,
+    train_regression_mask: np.ndarray,
+    *,
+    epochs: int,
+    lr: float,
+) -> torch.nn.Module:
+    if train_x.ndim != 2:
+        raise ValueError("raw patch geometry train_x must be a 2D matrix")
+    torch.manual_seed(23)
+    feature_dim = int(train_x.shape[1])
+    model = torch.nn.Sequential(
+        torch.nn.Linear(feature_dim, 160),
+        torch.nn.SiLU(),
+        torch.nn.Linear(160, 96),
+        torch.nn.SiLU(),
+        torch.nn.Linear(96, 5),
+    )
+    x = torch.from_numpy(train_x.astype(np.float32))
+    y_obj = torch.from_numpy(train_objectness.astype(np.float32)).view(-1, 1)
+    y_delta = torch.from_numpy(train_deltas.astype(np.float32))
+    reg_mask = torch.from_numpy(train_regression_mask.astype(np.float32)).view(-1, 1)
+    positive = float(max(float(train_objectness.sum()), 1.0))
+    negative = float(max(float(train_objectness.shape[0] - train_objectness.sum()), 1.0))
+    bce = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([negative / positive], dtype=torch.float32))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=1.0e-4)
+    model.train()
+    for _ in range(max(1, int(epochs))):
+        optimizer.zero_grad(set_to_none=True)
+        raw = model(x)
+        obj_loss = bce(raw[:, :1], y_obj)
+        pred_delta = torch.tanh(raw[:, 1:])
+        if bool((reg_mask > 0.5).any()):
+            reg_loss = torch.nn.functional.smooth_l1_loss(
+                pred_delta[reg_mask.squeeze(1) > 0.5],
+                y_delta[reg_mask.squeeze(1) > 0.5],
+            )
+        else:
+            reg_loss = pred_delta.sum() * 0.0
+        loss = obj_loss + reg_loss
+        loss.backward()
+        optimizer.step()
+    model.eval()
+    return model
+
+
+def _predict_raw_patch_geometry_mlp(model: torch.nn.Module, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if x.size == 0:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
+    with torch.no_grad():
+        raw = model(torch.from_numpy(x.astype(np.float32)))
+        scores = torch.sigmoid(raw[:, 0]).cpu().numpy().astype(np.float32)
+        deltas = torch.tanh(raw[:, 1:]).cpu().numpy().astype(np.float32)
+    return scores, deltas
+
+
+def _apply_raw_patch_geometry_predictions(
+    candidates: list[dict[str, Any]],
+    scores: np.ndarray,
+    deltas: np.ndarray,
+    *,
+    normalize_px: float,
+    max_delta_px: float,
+) -> None:
+    normalizer = max(float(normalize_px), 1.0e-6)
+    max_delta = max(float(max_delta_px), 0.0)
+    for candidate, score, delta in zip(candidates, scores, deltas):
+        endpoints = _endpoint_vector(candidate.get("points_xy", []))
+        candidate["raw_patch_geom_score"] = float(score)
+        if endpoints is None:
+            candidate["raw_patch_geom_points_xy"] = candidate.get("points_xy", [])
+            candidate["raw_patch_geom_delta_norm"] = 0.0
+            continue
+        delta_px = np.asarray(delta, dtype=np.float32) * normalizer
+        delta_px = np.clip(delta_px, -max_delta, max_delta)
+        repaired = endpoints + delta_px
+        candidate["raw_patch_geom_points_xy"] = [
+            [float(repaired[0]), float(repaired[1])],
+            [float(repaired[2]), float(repaired[3])],
+        ]
+        candidate["raw_patch_geom_delta_norm"] = float(np.linalg.norm(delta_px.reshape(2, 2), axis=1).mean())
+
+
+def _geometry_repair_stop_lines(
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> list[dict[str, Any]]:
+    selected = [
+        candidate
+        for candidate in candidates
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+        and _float_feature(candidate, "raw_patch_geom_score", 0.0) >= float(threshold)
+    ]
+    selected.sort(
+        key=lambda candidate: (
+            _float_feature(candidate, "raw_patch_geom_score", 0.0),
+            _float_feature(candidate, "score", 0.0),
+            _float_feature(candidate, "length", 0.0),
+        ),
+        reverse=True,
+    )
+    predictions = [
+        {
+            "score": _float_feature(candidate, "raw_patch_geom_score", 0.0),
+            "center_score": _float_feature(candidate, "raw_patch_geom_score", 0.0),
+            "length": _float_feature(candidate, "length", 0.0),
+            "points_xy": candidate.get("raw_patch_geom_points_xy", candidate.get("points_xy", [])),
+        }
+        for candidate in selected
+    ]
+    predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
+    predictions = _dedupe_stop_line_predictions(predictions)
+    return predictions[: max(1, int(max_components))]
+
+
+def _geometry_records_metrics_row(
+    records: list[dict[str, Any]],
+    *,
+    name: str,
+    split: str,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> dict[str, Any]:
+    if not records:
+        raise ValueError(f"cannot evaluate empty {split} split")
+    predictions: list[dict[str, Any]] = []
+    raw_batches: list[dict[str, Any]] = []
+    for record in records:
+        raw_batches.append(record["raw_batch"])
+        stop_lines = _geometry_repair_stop_lines(
+            list(record.get("candidates", [])),
+            threshold=float(threshold),
+            top_k=int(top_k),
+            max_components=int(max_components),
+        )
+        predictions.append({**record["baseline_prediction"], "stop_lines": stop_lines})
+    merged_raw = _merge_raw_batches(raw_batches)
+    metrics = augment_lane_family_metrics(summarize_pv26_metrics(predictions, merged_raw))
+    prediction_count = sum(len(sample.get("stop_lines", [])) for sample in predictions)
+    row = _row_from_metrics(name, metrics, prediction_count=prediction_count, stats={})
+    row.update(
+        {
+            "split": str(split),
+            "score_key": "raw_patch_geom_score",
+            "threshold": float(threshold),
+            "top_k": int(top_k),
+            "sample_count": int(len(records)),
+        }
+    )
+    return row
+
+
+def _geometry_stop_line_fast_summary(
+    records: list[dict[str, Any]],
+    *,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> dict[str, float | int]:
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    prediction_count = 0
+    for record in records:
+        pred_rows = _geometry_repair_stop_lines(
+            list(record.get("candidates", [])),
+            threshold=float(threshold),
+            top_k=int(top_k),
+            max_components=int(max_components),
+        )
+        gt_rows = list(record.get("gt_stop_lines", []))
+        prediction_count += len(pred_rows)
+        if pred_rows and gt_rows:
+            cost_matrix = np.zeros((len(pred_rows), len(gt_rows)), dtype=np.float32)
+            for pred_index, pred in enumerate(pred_rows):
+                for gt_index, gt in enumerate(gt_rows):
+                    cost_matrix[pred_index, gt_index] = _mean_point_distance(
+                        pred["points_xy"],
+                        gt["points_xy"],
+                        STOP_LINE_POINT_COUNT,
+                    )
+            matches = _hungarian_from_cost(cost_matrix, max_cost=40.0)
+        else:
+            matches = []
+        total_tp += len(matches)
+        total_fp += len(pred_rows) - len(matches)
+        total_fn += len(gt_rows) - len(matches)
+    precision = float(total_tp / max(1, total_tp + total_fp))
+    recall = float(total_tp / max(1, total_tp + total_fn))
+    f1 = float(2.0 * precision * recall / max(1.0e-12, precision + recall))
+    return {
+        "stop_line_precision": precision,
+        "stop_line_recall": recall,
+        "stop_line_f1": f1,
+        "stop_line_tp": int(total_tp),
+        "stop_line_fp": int(total_fp),
+        "stop_line_fn": int(total_fn),
+        "pred_stop_line_count": int(prediction_count),
+    }
+
+
+def _best_geometry_task_threshold(
+    records: list[dict[str, Any]],
+    *,
+    top_k: int,
+    max_components: int,
+    grid_size: int,
+) -> dict[str, Any]:
+    scores = [
+        _float_feature(candidate, "raw_patch_geom_score", 0.0)
+        for record in records
+        for candidate in record.get("candidates", [])
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+    ]
+    if not scores:
+        raise ValueError("no candidates available for raw patch geometry threshold search")
+    thresholds = np.unique(np.quantile(np.asarray(scores, dtype=np.float64), np.linspace(0.0, 1.0, max(2, int(grid_size)))))
+    thresholds = np.unique(np.concatenate([thresholds, np.asarray([float(max(scores)) + 1.0e-6], dtype=np.float64)]))
+    best_row: dict[str, Any] | None = None
+    for threshold in thresholds:
+        row = _geometry_stop_line_fast_summary(
+            records,
+            threshold=float(threshold),
+            top_k=int(top_k),
+            max_components=int(max_components),
+        )
+        key = (
+            float(row.get("stop_line_f1", 0.0)),
+            float(row.get("stop_line_precision", 0.0)),
+            -float(row.get("pred_stop_line_count", 0.0)),
+        )
+        best_key = (
+            float(best_row.get("stop_line_f1", 0.0)),
+            float(best_row.get("stop_line_precision", 0.0)),
+            -float(best_row.get("pred_stop_line_count", 0.0)),
+        ) if best_row is not None else (-1.0, -1.0, 0.0)
+        if key > best_key:
+            best_row = {
+                **row,
+                "variant": "raw_patch_geometry_task_threshold",
+                "split": "train",
+                "score_key": "raw_patch_geom_score",
+                "threshold": float(threshold),
+                "top_k": int(top_k),
+                "sample_count": int(len(records)),
+            }
+    if best_row is None:
+        raise ValueError("failed to select raw patch geometry threshold")
+    return best_row
+
+
+def _run_raw_patch_geometry_repair_replay(
+    sample_records: list[dict[str, Any]],
+    *,
+    train_fraction: float,
+    top_k: int,
+    max_components: int,
+    threshold_grid: int,
+    epochs: int,
+    lr: float,
+    target_distance_px: float,
+    normalize_px: float,
+    max_delta_px: float,
+) -> dict[str, Any]:
+    if not sample_records:
+        raise ValueError("raw patch geometry repair replay requires sample records")
+    batch_indices = np.asarray([int(record["batch_index"]) for record in sample_records], dtype=np.int64)
+    min_batch = int(batch_indices.min())
+    max_batch = int(batch_indices.max())
+    cutoff = min_batch + int(round((max_batch - min_batch + 1) * float(train_fraction))) - 1
+    train_records = [record for record in sample_records if int(record["batch_index"]) <= cutoff]
+    heldout_records = [record for record in sample_records if int(record["batch_index"]) > cutoff]
+    if not train_records or not heldout_records:
+        raise ValueError("raw patch geometry repair replay requires non-empty train and held-out splits")
+
+    image_cache: dict[str, np.ndarray] = {}
+    train_candidates, train_features, train_objectness, train_deltas, train_regression_mask = _raw_patch_geometry_candidate_matrix(
+        train_records,
+        top_k=int(top_k),
+        image_cache=image_cache,
+        target_distance_px=float(target_distance_px),
+        normalize_px=float(normalize_px),
+    )
+    all_candidates, all_features, _all_objectness, _all_deltas, _all_regression_mask = _raw_patch_geometry_candidate_matrix(
+        sample_records,
+        top_k=int(top_k),
+        image_cache=image_cache,
+        target_distance_px=float(target_distance_px),
+        normalize_px=float(normalize_px),
+    )
+    if not train_candidates or train_features.shape[0] == 0 or all_features.shape[0] == 0:
+        raise ValueError("raw patch geometry repair replay found no train candidates")
+    all_features_std, mean, std = _standardize_from_train(train_features, all_features)
+    train_features_std = (np.where(np.isfinite(train_features), train_features, mean.reshape(1, -1)) - mean.reshape(1, -1)) / std.reshape(1, -1)
+    model = _fit_raw_patch_geometry_mlp(
+        train_features_std.astype(np.float32),
+        train_objectness.astype(np.float32),
+        train_deltas.astype(np.float32),
+        train_regression_mask.astype(np.float32),
+        epochs=int(epochs),
+        lr=float(lr),
+    )
+    all_scores, all_deltas_pred = _predict_raw_patch_geometry_mlp(model, all_features_std.astype(np.float32))
+    _apply_raw_patch_geometry_predictions(
+        all_candidates,
+        all_scores,
+        all_deltas_pred,
+        normalize_px=float(normalize_px),
+        max_delta_px=float(max_delta_px),
+    )
+
+    task_threshold_row = _best_geometry_task_threshold(
+        train_records,
+        top_k=int(top_k),
+        max_components=int(max_components),
+        grid_size=int(threshold_grid),
+    )
+    task_threshold = float(task_threshold_row["threshold"])
+    rows: list[dict[str, Any]] = [
+        _records_metrics_row(train_records, name="baseline", split="train"),
+        _records_metrics_row(heldout_records, name="baseline", split="heldout"),
+        _records_metrics_row(sample_records, name="baseline", split="all"),
+        _geometry_records_metrics_row(
+            train_records,
+            name="raw_patch_geometry_task_threshold",
+            split="train",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _geometry_records_metrics_row(
+            heldout_records,
+            name="raw_patch_geometry_task_threshold",
+            split="heldout",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _geometry_records_metrics_row(
+            sample_records,
+            name="raw_patch_geometry_task_threshold",
+            split="all_with_train_threshold",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+    ]
+    selected_deltas = [
+        _float_feature(candidate, "raw_patch_geom_delta_norm", 0.0)
+        for record in sample_records
+        for candidate in record.get("candidates", [])
+        if int(candidate.get("proposal_rank", 10**6)) <= int(top_k)
+        and _float_feature(candidate, "raw_patch_geom_score", 0.0) >= task_threshold
+    ]
+    return {
+        "split": {
+            "train_fraction": float(train_fraction),
+            "cutoff_batch_index": int(cutoff),
+            "train_samples": int(len(train_records)),
+            "heldout_samples": int(len(heldout_records)),
+            "train_candidate_count": int(len(train_candidates)),
+            "train_repair_target_count": int(train_regression_mask.sum()),
+            "image_cache_count": int(len(image_cache)),
+        },
+        "top_k": int(top_k),
+        "max_components": int(max_components),
+        "threshold_grid": int(threshold_grid),
+        "epochs": int(epochs),
+        "lr": float(lr),
+        "target_distance_px": float(target_distance_px),
+        "normalize_px": float(normalize_px),
+        "max_delta_px": float(max_delta_px),
+        "threshold": float(task_threshold),
+        "feature_dim": int(all_features.shape[1]),
+        "selected_delta_mean_px": float(np.mean(selected_deltas)) if selected_deltas else 0.0,
+        "selected_delta_count": int(len(selected_deltas)),
+        "rows": rows,
+        "interpretation": (
+            "Raw-patch geometry repair trains a small MLP on candidate numeric features plus an "
+            "oriented grayscale image patch to predict both a repair score and endpoint deltas. "
+            "The train-selected task threshold is then applied to held-out records. This is a "
+            "learned no-GT geometry probe, not a final deployed contract."
+        ),
+    }
+
+
 def _points_json(points: Any) -> str:
     try:
         array = np.asarray(points, dtype=np.float32).reshape(-1, 2)
@@ -1326,6 +1801,7 @@ def main() -> int:
         max(int(variant.top_k) for variant in VARIANTS),
         int(args.rich_validator_top_k) if bool(args.rich_validator_replay) else 0,
         int(args.raw_patch_verifier_top_k) if bool(args.raw_patch_verifier_replay) else 0,
+        int(args.raw_patch_geometry_top_k) if bool(args.raw_patch_geometry_repair_replay) else 0,
     )
     with torch.no_grad():
         for batch_index, batch in enumerate(val_loader, start=1):
@@ -1457,6 +1933,21 @@ def main() -> int:
         )
         _write_csv(output_dir / "raw_patch_verifier_variants.csv", list(raw_patch_verifier["rows"]))
         summary["raw_patch_verifier_replay"] = raw_patch_verifier
+    if bool(args.raw_patch_geometry_repair_replay):
+        raw_patch_geometry = _run_raw_patch_geometry_repair_replay(
+            sample_records,
+            train_fraction=float(args.raw_patch_geometry_train_fraction),
+            top_k=int(args.raw_patch_geometry_top_k),
+            max_components=int(postprocess_config.stop_line_max_components),
+            threshold_grid=int(args.raw_patch_geometry_threshold_grid),
+            epochs=int(args.raw_patch_geometry_epochs),
+            lr=float(args.raw_patch_geometry_lr),
+            target_distance_px=float(args.raw_patch_geometry_target_distance),
+            normalize_px=float(args.raw_patch_geometry_normalize_px),
+            max_delta_px=float(args.raw_patch_geometry_max_delta_px),
+        )
+        _write_csv(output_dir / "raw_patch_geometry_repair_variants.csv", list(raw_patch_geometry["rows"]))
+        summary["raw_patch_geometry_repair_replay"] = raw_patch_geometry
     if bool(args.projection_competition_replay):
         projection_competition = _run_projection_competition_replay(sample_records, merged_raw)
         _write_csv(
