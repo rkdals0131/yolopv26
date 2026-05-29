@@ -197,6 +197,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stopline_patch_segment_verifier_aux_weight": 0.35,
                             "stopline_segment_verifier_target_mode": "metric_quality",
                             "stopline_segment_verifier_quality_tau_px": 18.0,
+                            "stopline_empty_sample_mode": "positive_only",
                             "stopline_task_conflict_negative_mode": "lane_crosswalk",
                             "stopline_task_conflict_negative_weight": 0.45,
                             "stopline_task_conflict_negative_margin": 0.2,
@@ -420,6 +421,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.stopline_patch_segment_verifier_aux_weight, 0.35)
         self.assertEqual(scenario.train_defaults.stopline_segment_verifier_target_mode, "metric_quality")
         self.assertAlmostEqual(scenario.train_defaults.stopline_segment_verifier_quality_tau_px, 18.0)
+        self.assertEqual(scenario.train_defaults.stopline_empty_sample_mode, "positive_only")
         self.assertEqual(scenario.train_defaults.stopline_task_conflict_negative_mode, "lane_crosswalk")
         self.assertAlmostEqual(scenario.train_defaults.stopline_task_conflict_negative_weight, 0.45)
         self.assertAlmostEqual(scenario.train_defaults.stopline_task_conflict_negative_margin, 0.2)

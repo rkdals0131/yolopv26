@@ -194,6 +194,7 @@ class TrainDefaultsConfig:
     stopline_patch_segment_verifier_aux_weight: float = 0.0
     stopline_segment_verifier_target_mode: str = "matched_objectness"
     stopline_segment_verifier_quality_tau_px: float = 24.0
+    stopline_empty_sample_mode: str = "full"
     stopline_task_conflict_negative_mode: str = "none"
     stopline_task_conflict_negative_weight: float = 0.0
     stopline_task_conflict_negative_margin: float = 0.15
@@ -1123,6 +1124,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_segment_verifier_quality_tau_px", defaults.stopline_segment_verifier_quality_tau_px),
             field_name="train_defaults.stopline_segment_verifier_quality_tau_px",
         ),
+        stopline_empty_sample_mode=_coerce_str(
+            data.get("stopline_empty_sample_mode", defaults.stopline_empty_sample_mode),
+            field_name="train_defaults.stopline_empty_sample_mode",
+        ),
         stopline_task_conflict_negative_mode=_coerce_str(
             data.get("stopline_task_conflict_negative_mode", defaults.stopline_task_conflict_negative_mode),
             field_name="train_defaults.stopline_task_conflict_negative_mode",
@@ -1776,6 +1781,8 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} train_aug_stopline_copy_paste_margin_px must be > 0")
         if not 0.0 <= float(phase_train.train_aug_stopline_copy_paste_alpha) <= 1.0:
             raise ValueError(f"phase {index} train_aug_stopline_copy_paste_alpha must be between 0 and 1")
+        if str(phase_train.stopline_empty_sample_mode).strip().lower() not in {"full", "positive_only"}:
+            raise ValueError(f"phase {index} stopline_empty_sample_mode must be one of: full, positive_only")
         if float(phase_train.amp_init_scale) <= 0.0:
             raise ValueError(f"phase {index} amp_init_scale must be > 0")
         multitask_conflict = dict(phase_train.multitask_conflict)

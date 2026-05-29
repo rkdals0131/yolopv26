@@ -1675,6 +1675,7 @@ def _stop_line_mask_loss_with_selector_weight(
     patch_segment_verifier_aux_weight: float = 0.0,
     segment_verifier_target_mode: str = "matched_objectness",
     segment_verifier_quality_tau_px: float = 24.0,
+    empty_sample_mode: str = "full",
     task_conflict_negative_mode: str = "none",
     task_conflict_negative_weight: float = 0.0,
     task_conflict_negative_margin: float = 0.15,
@@ -1721,6 +1722,16 @@ def _stop_line_mask_loss_with_selector_weight(
     if not isinstance(aux, dict):
         return _zero_graph(mask_logits)
     source = encoded["mask"]["stop_line_source"].to(device=mask_logits.device, dtype=torch.bool)
+    empty_mode = str(empty_sample_mode or "full").strip().lower()
+    if empty_mode not in {"full", "positive_only"}:
+        raise ValueError(f"unsupported stopline_empty_sample_mode: {empty_sample_mode}")
+    if empty_mode == "positive_only":
+        valid_rows = encoded.get("mask", {}).get("stop_line_valid")
+        if isinstance(valid_rows, torch.Tensor):
+            has_stop_line = valid_rows.to(device=mask_logits.device, dtype=torch.bool).any(dim=1)
+        else:
+            has_stop_line = torch.zeros_like(source)
+        source = source & has_stop_line
     mask_target = aux["stop_line_mask"].to(device=mask_logits.device, dtype=mask_logits.dtype)
     center_heatmap_target = aux["stop_line_center_heatmap"].to(device=mask_logits.device, dtype=mask_logits.dtype)
     distance_heatmap_target = aux.get("stop_line_distance_heatmap")
@@ -2440,6 +2451,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_patch_segment_verifier_aux_weight: float = 0.0,
         stopline_segment_verifier_target_mode: str = "matched_objectness",
         stopline_segment_verifier_quality_tau_px: float = 24.0,
+        stopline_empty_sample_mode: str = "full",
         stopline_task_conflict_negative_mode: str = "none",
         stopline_task_conflict_negative_weight: float = 0.0,
         stopline_task_conflict_negative_margin: float = 0.15,
@@ -2541,6 +2553,9 @@ class PV26MultiTaskLoss(nn.Module):
                 f"unsupported stop-line segment verifier target mode: {self.stopline_segment_verifier_target_mode}"
             )
         self.stopline_segment_verifier_quality_tau_px = float(stopline_segment_verifier_quality_tau_px)
+        self.stopline_empty_sample_mode = str(stopline_empty_sample_mode).strip().lower()
+        if self.stopline_empty_sample_mode not in {"full", "positive_only"}:
+            raise ValueError(f"unsupported stopline_empty_sample_mode: {self.stopline_empty_sample_mode}")
         self.stopline_task_conflict_negative_mode = str(stopline_task_conflict_negative_mode)
         self.stopline_task_conflict_negative_weight = float(stopline_task_conflict_negative_weight)
         self.stopline_task_conflict_negative_margin = float(stopline_task_conflict_negative_margin)
@@ -2723,6 +2738,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_patch_segment_verifier_aux_weight": float(self.stopline_patch_segment_verifier_aux_weight),
             "stopline_segment_verifier_target_mode": self.stopline_segment_verifier_target_mode,
             "stopline_segment_verifier_quality_tau_px": float(self.stopline_segment_verifier_quality_tau_px),
+            "stopline_empty_sample_mode": self.stopline_empty_sample_mode,
             "stopline_task_conflict_negative_mode": self.stopline_task_conflict_negative_mode,
             "stopline_task_conflict_negative_weight": float(self.stopline_task_conflict_negative_weight),
             "stopline_task_conflict_negative_margin": float(self.stopline_task_conflict_negative_margin),
@@ -3634,6 +3650,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and float(self.stopline_axis_segment_verifier_aux_weight) == 0.0
                 and float(self.stopline_patch_segment_set_aux_weight) == 0.0
                 and float(self.stopline_patch_segment_verifier_aux_weight) == 0.0
+                and self.stopline_empty_sample_mode == "full"
                 and float(self.stopline_task_conflict_negative_weight) == 0.0
             ):
                 return _stop_line_mask_loss(prediction_dict, encoded)
@@ -3663,6 +3680,7 @@ class PV26MultiTaskLoss(nn.Module):
                 patch_segment_verifier_aux_weight=float(self.stopline_patch_segment_verifier_aux_weight),
                 segment_verifier_target_mode=self.stopline_segment_verifier_target_mode,
                 segment_verifier_quality_tau_px=float(self.stopline_segment_verifier_quality_tau_px),
+                empty_sample_mode=self.stopline_empty_sample_mode,
                 task_conflict_negative_mode=self.stopline_task_conflict_negative_mode,
                 task_conflict_negative_weight=float(self.stopline_task_conflict_negative_weight),
                 task_conflict_negative_margin=float(self.stopline_task_conflict_negative_margin),
@@ -3671,6 +3689,8 @@ class PV26MultiTaskLoss(nn.Module):
         stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)
         stop_source = encoded["mask"]["stop_line_source"].to(device=stop_pred.device, dtype=torch.bool)
         stop_valid = encoded["mask"]["stop_line_valid"].to(device=stop_pred.device, dtype=torch.bool)
+        if self.stopline_empty_sample_mode == "positive_only":
+            stop_source = stop_source & stop_valid.any(dim=1)
         assignment = self._build_query_assignment(
             stop_pred,
             stop_target,

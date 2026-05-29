@@ -16790,3 +16790,77 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 recovered no stop-line TP and still regressed retained lane TP.
 - Do not repeat this as copy-paste probability, donor margin, alpha/blending, donor selection, seed, head LR, epoch-count, or the same projection-comp-runtime training sweep.
 - Reopen pseudo/augmented stop-line feeding only with a materially different candidate-coverage/quality signal that first moves fixed smoke TP/FP/FN.
+
+## 315. 2026-05-30 Stop-line positive-only empty-sample loss smoke: empty source negatives were not the missing stop-line signal
+
+맥락:
+
+- The architecture-level GPT Pro review called out that the stop-line failure might be a learning/signal allocation problem, not only postprocess.
+- This branch reopened only the materially different loss-masking premise: in the large canonical train root, source-valid `aihub_lane_seoul` samples with no stop-line rows can act as full stop-line negatives. The new opt-in mode masks stop-line dense/vector losses to source-valid samples that contain at least one stop-line row.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. No dataset copy was created.
+- Runtime decode remained unchanged: retained row-scan/tangent lane decode, projection-competition stop-line decode, and `crosswalk_polygon_mode=hull`.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-positive-only-loss`.
+- Loss contract: `model/engine/loss.py`.
+  - New `stopline_empty_sample_mode="positive_only"` masks stop-line loss to samples with any `stop_line_valid` row.
+  - Dense and vector stop-line loss paths both keep the default `"full"` behavior unless the opt-in is set.
+- Config/runtime plumbing: `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, `tools/run_pv26_lane60_probe.py`.
+- Tests:
+  - `test/test_pv26_loss_runtime.py`, positive-only mode ignores empty source samples.
+  - `test/test_run_pv26_train.py`, scenario config override coverage for `stopline_empty_sample_mode`.
+- Changed axis:
+  - `stopline_empty_sample_mode=positive_only`.
+  - The retained lane/crosswalk runtime settings and projection-competition stop-line runtime settings were otherwise unchanged.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_positive_only_loss_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_084536`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6380183249` at epoch 1, but this is not success evidence because fixed task metrics failed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5414` | `36 / 11 / 50` | `0.0000` | `0 / 3 / 2` | `0.4000` | `2 / 1 / 5` |
+| fixed val4 epoch-2 best | `baseline` | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.4000` | `2 / 1 / 5` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- Positive-only empty-sample masking recovered no stop-line TP.
+- It matched the recent negative stop-line training baseline on lane TP and FP, but crosswalk fell to `2 / 1 / 5`.
+- It still lost `4` lane TP against the retained fixed reference, so it is not worth exact-val128 broadening.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_positive_only_loss_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_084536/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_positive_only_loss_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_084536/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `824K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_stopline_positive_only_mode_ignores_empty_source_samples test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_positive_only_loss|real_stopline_copy_paste_feeding"`.
+- CUDA stop-line positive-only loss smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The loss/config/runtime plumbing is valid and covered, and the training/evaluation used the existing larger canonical dataset root without copying data.
+- The trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 recovered no stop-line TP, still regressed retained lane TP, and regressed fixed smoke crosswalk.
+- Do not repeat this as `stopline_empty_sample_mode`, source-valid empty-sample filtering, head LR, loss weight, epoch-count, or the same projection-comp-runtime training sweep.
+- Reopen stop-line loss masking/allocation only with a materially different shared representation, candidate/geometry signal, or retention contract that first moves fixed smoke TP/FP/FN.

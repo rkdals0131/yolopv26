@@ -424,6 +424,33 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["stop_line_axis_direction"].grad)
         self.assertIsNotNone(predictions["stop_line_axis_valid_logits"].grad)
 
+    def test_stopline_positive_only_mode_ignores_empty_source_samples(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 2
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        encoded["mask"]["stop_line_valid"][1].zero_()
+        mask_logits = torch.zeros((batch_size, 1, h, w), dtype=torch.float32)
+        mask_logits[1].fill_(6.0)
+
+        def _loss(mode: str) -> torch.Tensor:
+            predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+            predictions["stop_line_mask_logits"] = mask_logits.clone().requires_grad_(True)
+            criterion = PV26MultiTaskLoss(
+                stage="stage_4_lane_family_finetune",
+                task_mode="roadmark_joint",
+                loss_weights={"lane": 0.0, "crosswalk": 0.0},
+                stopline_empty_sample_mode=mode,
+            )
+            return criterion(predictions, encoded)["total"]
+
+        full_loss = _loss("full")
+        positive_only_loss = _loss("positive_only")
+
+        self.assertGreater(float(full_loss.detach().cpu()), float(positive_only_loss.detach().cpu()) + 1.0)
+
     def test_stopline_segment_set_aux_loss_backprops_when_enabled(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
         from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
