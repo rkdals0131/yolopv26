@@ -4,10 +4,14 @@ from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from tools.probe_pv26_stopline_candidate_pool import (
     _candidate_feature_rows,
+    _oriented_raw_patch,
     _points_json,
     _projection_competition_variant_fields,
+    _raw_patch_feature_vector,
     _scenario_with_dataset_root,
     _write_candidate_features_csv,
 )
@@ -129,6 +133,46 @@ class StopLineCandidatePoolManifestTest(unittest.TestCase):
         self.assertEqual(fields["fragment_projection_comp_top_k"], 50)
         self.assertEqual(fields["fragment_projection_comp_rank_feature"], "length")
         self.assertEqual(fields["fragment_projection_comp_second_min_fragment_count"], 5)
+
+    def test_oriented_raw_patch_samples_line_region(self) -> None:
+        image = [[0.0 for _ in range(32)] for _ in range(32)]
+        for col in range(6, 26):
+            image[16][col] = 1.0
+
+        patch = _oriented_raw_patch(
+            np.asarray(image, dtype=np.float32),
+            [[6.0, 16.0], [25.0, 16.0]],
+            height=5,
+            width=9,
+            normal_radius_px=2.0,
+            min_half_length_px=8.0,
+        )
+
+        self.assertEqual(tuple(patch.shape), (5, 9))
+        self.assertGreater(float(patch[2].mean()), float(patch[0].mean()))
+
+    def test_raw_patch_feature_vector_uses_candidate_image_path(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "sample.png"
+            image = np.zeros((32, 32), dtype=np.uint8)
+            image[16, 6:26] = 255
+            Image.fromarray(image).save(image_path)
+
+            feature = _raw_patch_feature_vector(
+                {
+                    "points_xy": [[6.0, 16.0], [25.0, 16.0]],
+                    "score": 0.9,
+                    "length": 19.0,
+                    "proposal_rank": 1,
+                },
+                {"image_path": str(image_path)},
+                image_cache={},
+            )
+
+        self.assertEqual(feature.ndim, 1)
+        self.assertGreater(float(feature.max()), 0.0)
 
 
 if __name__ == "__main__":

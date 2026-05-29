@@ -14607,3 +14607,61 @@ Verification:
 - It does not beat baseline exact stop-line `26 / 30 / 34`, F1 `0.4483`, because it preserves TP while adding FP.
 - It is also below projection-competition exact and leaves crosswalk under `0.60`, so it is not a broader candidate.
 - Do not repeat this as patch-grid/radius, patch aux/verifier weight, score threshold, max-segment, head-LR, epoch-count, or same sampler tuning. Reopen only with a materially different candidate-coverage/verification contract that first improves fixed exact TP/FP/FN.
+
+## 284. 2026-05-29 Stop-line raw-patch verifier replay
+
+Context:
+
+- The raw-image/photometric candidate-row family had shown full-replay overfit but weak held-out transfer.
+- This branch tested a stricter no-GT held-out replay: keep the current checkpoint and candidate generation fixed, train a small MLP verifier on the first half of exact-val128 candidate rows, and apply the train-selected task threshold to held-out records.
+- The intent was to see whether oriented raw-image evidence around the candidate line can suppress FP without copying the dataset or changing the base checkpoint.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raw-patch-verifier`.
+- Added opt-in `--raw-patch-verifier-replay` to `tools/probe_pv26_stopline_candidate_pool.py`.
+- Feature input combines existing rich candidate numeric features, raw patch statistics, an oriented grayscale candidate patch, and x-gradient patch values.
+- Added unit coverage for oriented raw patch sampling and image-backed feature extraction in `test/test_stopline_candidate_pool_manifest.py`.
+
+Replay/training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Smoke: CUDA val4 candidate replay with `20` MLP epochs wrote `/tmp/stopline_raw_patch_verifier_smoke_val4`; it had no train positives and was only a wiring check.
+- Exact: CUDA exact-val128 candidate replay with `160` MLP epochs, `top_k=20`, `train_fraction=0.5`, and projection-competition replay for reference.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_verifier_exact_val128_epoch2`.
+- Exact split: train `256` samples, held-out `256` samples, train candidates `514`, train positives `148`, raw image cache `87`.
+
+Exact replay:
+
+| Split | Variant | Stop-line F1 | TP/FP/FN |
+| --- | --- | ---: | --- |
+| train | baseline | `0.3704` | `10 / 15 / 19` |
+| heldout | baseline | `0.5161` | `16 / 15 / 15` |
+| all | baseline | `0.4483` | `26 / 30 / 34` |
+| train | raw-patch MLP train threshold | `0.5854` | `12 / 0 / 17` |
+| heldout | raw-patch MLP train threshold | `0.2105` | `4 / 3 / 27` |
+| all | raw-patch MLP train threshold | `0.4051` | `16 / 3 / 44` |
+
+- Projection-competition exact reference in the same run remained `31 / 29 / 29`, F1 `0.5167`.
+- The raw-patch verifier learned a high-precision train gate but did not transfer to held-out records.
+- Broader-val512 was skipped because the exact held-out gate failed.
+
+Storage:
+
+- The replay reused the existing dataset root and did not materialize image copies.
+- Exact audit export is about `2.6M` total.
+- Root `yolo26s.pt` and the smoke directory were removed after verification.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_manifest.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_stopline_candidate_pool_manifest.py'`.
+- CUDA val4 smoke candidate replay.
+- CUDA exact-val128 raw-patch verifier replay.
+
+판단:
+
+- Raw-image candidate-local patches are not a held-out FP-control breakthrough in this fixed candidate-pool form.
+- Do not repeat this as patch height/width/radius, MLP depth, epoch count, learning rate, threshold-grid, or top-k tuning.
+- Reopen raw-image evidence only with a materially different trainable candidate-generation or segment-verification contract that improves exact held-out TP/FP/FN before broader-val512.

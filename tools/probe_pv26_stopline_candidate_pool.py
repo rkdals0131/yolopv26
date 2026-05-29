@@ -4,12 +4,14 @@ import argparse
 import csv
 from dataclasses import dataclass, replace
 import json
+import math
 from pathlib import Path
 import site
 import sys
 from typing import Any
 
 import numpy as np
+from PIL import Image
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +115,10 @@ RICH_VALIDATOR_EXTRA_FEATURES = (
 )
 RICH_VALIDATOR_FEATURES = BASE_VALIDATOR_FEATURES + RICH_VALIDATOR_EXTRA_FEATURES
 RAW_BATCH_KEYS = ("det_targets", "tl_attr_targets", "lane_targets", "source_mask", "valid_mask", "meta")
+RAW_PATCH_HEIGHT = 24
+RAW_PATCH_WIDTH = 64
+RAW_PATCH_NORMAL_RADIUS_PX = 48.0
+RAW_PATCH_MIN_HALF_LENGTH_PX = 64.0
 CANDIDATE_FEATURE_FIELDNAMES = (
     "batch_index",
     "sample_index",
@@ -189,6 +195,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also replay the fixed projection-competition readout from the generated candidate rows.",
     )
+    parser.add_argument(
+        "--raw-patch-verifier-replay",
+        action="store_true",
+        help=(
+            "Train a held-out raw-image patch MLP verifier over stop-line candidates and replay "
+            "its task threshold. This is an opt-in diagnostic/runtime-candidate probe."
+        ),
+    )
+    parser.add_argument("--raw-patch-verifier-train-fraction", type=float, default=0.5)
+    parser.add_argument("--raw-patch-verifier-top-k", type=int, default=20)
+    parser.add_argument("--raw-patch-verifier-threshold-grid", type=int, default=101)
+    parser.add_argument("--raw-patch-verifier-epochs", type=int, default=160)
+    parser.add_argument("--raw-patch-verifier-lr", type=float, default=0.003)
     return parser.parse_args()
 
 
@@ -390,6 +409,110 @@ def _rich_feature_matrix(candidates: list[dict[str, Any]]) -> tuple[np.ndarray, 
     matrix = [_rich_feature_vector(candidate) for candidate in candidates]
     labels = [float(bool(candidate.get("is_oracle_positive", False))) for candidate in candidates]
     return np.asarray(matrix, dtype=np.float64), np.asarray(labels, dtype=np.float64)
+
+
+def _points_array(points: Any) -> np.ndarray:
+    try:
+        return np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    except (TypeError, ValueError):
+        return np.zeros((0, 2), dtype=np.float32)
+
+
+def _load_raw_gray_image(path: str | Path, cache: dict[str, np.ndarray] | None = None) -> np.ndarray | None:
+    key = str(path)
+    if not key:
+        return None
+    if cache is not None and key in cache:
+        return cache[key]
+    candidate = Path(key).expanduser()
+    if not candidate.is_file():
+        return None
+    with Image.open(candidate) as image:
+        gray = np.asarray(image.convert("L"), dtype=np.float32) / 255.0
+    if cache is not None:
+        cache[key] = gray
+    return gray
+
+
+def _bilinear_sample_gray(image: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    if image.ndim != 2:
+        return np.zeros_like(xs, dtype=np.float32)
+    height, width = int(image.shape[0]), int(image.shape[1])
+    inside = (xs >= 0.0) & (ys >= 0.0) & (xs <= float(width - 1)) & (ys <= float(height - 1))
+    x0 = np.floor(np.clip(xs, 0.0, float(width - 1))).astype(np.int64)
+    y0 = np.floor(np.clip(ys, 0.0, float(height - 1))).astype(np.int64)
+    x1 = np.clip(x0 + 1, 0, width - 1)
+    y1 = np.clip(y0 + 1, 0, height - 1)
+    wx = np.clip(xs - x0.astype(np.float32), 0.0, 1.0)
+    wy = np.clip(ys - y0.astype(np.float32), 0.0, 1.0)
+    top = image[y0, x0] * (1.0 - wx) + image[y0, x1] * wx
+    bottom = image[y1, x0] * (1.0 - wx) + image[y1, x1] * wx
+    sampled = top * (1.0 - wy) + bottom * wy
+    return np.where(inside, sampled, 0.0).astype(np.float32)
+
+
+def _oriented_raw_patch(
+    image: np.ndarray | None,
+    points: Any,
+    *,
+    height: int = RAW_PATCH_HEIGHT,
+    width: int = RAW_PATCH_WIDTH,
+    normal_radius_px: float = RAW_PATCH_NORMAL_RADIUS_PX,
+    min_half_length_px: float = RAW_PATCH_MIN_HALF_LENGTH_PX,
+) -> np.ndarray:
+    if image is None or image.ndim != 2:
+        return np.zeros((int(height), int(width)), dtype=np.float32)
+    point_array = _points_array(points)
+    if point_array.shape[0] < 2 or not bool(np.isfinite(point_array).all()):
+        return np.zeros((int(height), int(width)), dtype=np.float32)
+    start = point_array[0].astype(np.float32)
+    end = point_array[-1].astype(np.float32)
+    axis = end - start
+    length = float(np.linalg.norm(axis))
+    if length <= 1.0e-6 or not math.isfinite(length):
+        return np.zeros((int(height), int(width)), dtype=np.float32)
+    axis = axis / length
+    normal = np.asarray([-axis[1], axis[0]], dtype=np.float32)
+    center = (start + end) * 0.5
+    half_length = max(float(length) * 0.75, float(min_half_length_px))
+    along = np.linspace(-half_length, half_length, int(width), dtype=np.float32)
+    normal_offsets = np.linspace(-float(normal_radius_px), float(normal_radius_px), int(height), dtype=np.float32)
+    grid_u, grid_v = np.meshgrid(along, normal_offsets)
+    xs = center[0] + axis[0] * grid_u + normal[0] * grid_v
+    ys = center[1] + axis[1] * grid_u + normal[1] * grid_v
+    return _bilinear_sample_gray(image, xs.astype(np.float32), ys.astype(np.float32))
+
+
+def _raw_patch_feature_vector(
+    candidate: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    image_cache: dict[str, np.ndarray],
+) -> np.ndarray:
+    image = _load_raw_gray_image(str(row.get("image_path", "")), image_cache)
+    patch = _oriented_raw_patch(image, candidate.get("points_xy", []))
+    grad_y, grad_x = np.gradient(patch.astype(np.float32))
+    patch_stats = np.asarray(
+        [
+            float(patch.mean()),
+            float(patch.std()),
+            float(np.abs(grad_x).mean()),
+            float(np.abs(grad_y).mean()),
+            float(np.percentile(patch, 10)),
+            float(np.percentile(patch, 90)),
+        ],
+        dtype=np.float32,
+    )
+    rich = np.asarray(_rich_feature_vector(candidate), dtype=np.float32)
+    return np.concatenate(
+        [
+            rich,
+            patch_stats,
+            patch.reshape(-1).astype(np.float32),
+            grad_x.reshape(-1).astype(np.float32),
+        ],
+        axis=0,
+    )
 
 
 def _standardize(train_x: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -861,6 +984,198 @@ def _run_rich_validator_replay(
     }
 
 
+def _standardize_from_train(train_x: np.ndarray, all_x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mean = np.nanmean(train_x, axis=0).astype(np.float32)
+    mean = np.where(np.isfinite(mean), mean, 0.0).astype(np.float32)
+    filled_train = np.where(np.isfinite(train_x), train_x, mean.reshape(1, -1)).astype(np.float32)
+    std = filled_train.std(axis=0).astype(np.float32)
+    std = np.where(std > 1.0e-6, std, 1.0).astype(np.float32)
+    filled_all = np.where(np.isfinite(all_x), all_x, mean.reshape(1, -1)).astype(np.float32)
+    return (filled_all - mean.reshape(1, -1)) / std.reshape(1, -1), mean, std
+
+
+def _raw_patch_candidate_matrix(
+    records: list[dict[str, Any]],
+    *,
+    top_k: int,
+    image_cache: dict[str, np.ndarray],
+) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
+    candidates: list[dict[str, Any]] = []
+    features: list[np.ndarray] = []
+    labels: list[float] = []
+    for record in records:
+        record_candidates = list(record.get("candidates", []))
+        record_rows = list(record.get("candidate_feature_rows", []))
+        for candidate, row in zip(record_candidates, record_rows):
+            if int(candidate.get("proposal_rank", 10**6)) > int(top_k):
+                continue
+            candidates.append(candidate)
+            features.append(_raw_patch_feature_vector(candidate, row, image_cache=image_cache))
+            labels.append(float(bool(candidate.get("is_oracle_positive", False))))
+    if not features:
+        return candidates, np.zeros((0, 0), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return (
+        candidates,
+        np.stack(features, axis=0).astype(np.float32),
+        np.asarray(labels, dtype=np.float32),
+    )
+
+
+def _fit_raw_patch_mlp(
+    train_x: np.ndarray,
+    train_y: np.ndarray,
+    *,
+    epochs: int,
+    lr: float,
+) -> torch.nn.Module:
+    if train_x.ndim != 2:
+        raise ValueError("raw patch verifier train_x must be a 2D matrix")
+    torch.manual_seed(17)
+    feature_dim = int(train_x.shape[1])
+    model = torch.nn.Sequential(
+        torch.nn.Linear(feature_dim, 128),
+        torch.nn.SiLU(),
+        torch.nn.Linear(128, 64),
+        torch.nn.SiLU(),
+        torch.nn.Linear(64, 1),
+    )
+    x = torch.from_numpy(train_x.astype(np.float32))
+    y = torch.from_numpy(train_y.astype(np.float32)).view(-1, 1)
+    positive = float(max(float(train_y.sum()), 1.0))
+    negative = float(max(float(train_y.shape[0] - train_y.sum()), 1.0))
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([negative / positive], dtype=torch.float32))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=1.0e-4)
+    model.train()
+    for _ in range(max(1, int(epochs))):
+        optimizer.zero_grad(set_to_none=True)
+        loss = criterion(model(x), y)
+        loss.backward()
+        optimizer.step()
+    model.eval()
+    return model
+
+
+def _predict_raw_patch_mlp(model: torch.nn.Module, x: np.ndarray) -> np.ndarray:
+    if x.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    with torch.no_grad():
+        logits = model(torch.from_numpy(x.astype(np.float32))).squeeze(1)
+        return torch.sigmoid(logits).cpu().numpy().astype(np.float32)
+
+
+def _run_raw_patch_verifier_replay(
+    sample_records: list[dict[str, Any]],
+    *,
+    train_fraction: float,
+    top_k: int,
+    max_components: int,
+    threshold_grid: int,
+    epochs: int,
+    lr: float,
+) -> dict[str, Any]:
+    if not sample_records:
+        raise ValueError("raw patch verifier replay requires sample records")
+    batch_indices = np.asarray([int(record["batch_index"]) for record in sample_records], dtype=np.int64)
+    min_batch = int(batch_indices.min())
+    max_batch = int(batch_indices.max())
+    cutoff = min_batch + int(round((max_batch - min_batch + 1) * float(train_fraction))) - 1
+    train_records = [record for record in sample_records if int(record["batch_index"]) <= cutoff]
+    heldout_records = [record for record in sample_records if int(record["batch_index"]) > cutoff]
+    if not train_records or not heldout_records:
+        raise ValueError("raw patch verifier replay requires non-empty train and held-out splits")
+
+    image_cache: dict[str, np.ndarray] = {}
+    train_candidates, train_features, train_labels = _raw_patch_candidate_matrix(
+        train_records,
+        top_k=int(top_k),
+        image_cache=image_cache,
+    )
+    all_candidates, all_features, _all_labels = _raw_patch_candidate_matrix(
+        sample_records,
+        top_k=int(top_k),
+        image_cache=image_cache,
+    )
+    if not train_candidates or train_features.shape[0] == 0 or all_features.shape[0] == 0:
+        raise ValueError("raw patch verifier replay found no train candidates")
+    all_features_std, mean, std = _standardize_from_train(train_features, all_features)
+    train_features_std = (np.where(np.isfinite(train_features), train_features, mean.reshape(1, -1)) - mean.reshape(1, -1)) / std.reshape(1, -1)
+    model = _fit_raw_patch_mlp(
+        train_features_std.astype(np.float32),
+        train_labels.astype(np.float32),
+        epochs=int(epochs),
+        lr=float(lr),
+    )
+    all_scores = _predict_raw_patch_mlp(model, all_features_std.astype(np.float32))
+    for candidate, score in zip(all_candidates, all_scores):
+        candidate["raw_patch_mlp_score"] = float(score)
+
+    task_threshold_row = _best_task_threshold(
+        train_records,
+        score_key="raw_patch_mlp_score",
+        top_k=int(top_k),
+        max_components=int(max_components),
+        grid_size=int(threshold_grid),
+    )
+    task_threshold = float(task_threshold_row["threshold"])
+    rows: list[dict[str, Any]] = [
+        _records_metrics_row(train_records, name="baseline", split="train"),
+        _records_metrics_row(heldout_records, name="baseline", split="heldout"),
+        _records_metrics_row(sample_records, name="baseline", split="all"),
+        _records_metrics_row(
+            train_records,
+            name="raw_patch_mlp_task_threshold",
+            split="train",
+            score_key="raw_patch_mlp_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            heldout_records,
+            name="raw_patch_mlp_task_threshold",
+            split="heldout",
+            score_key="raw_patch_mlp_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            sample_records,
+            name="raw_patch_mlp_task_threshold",
+            split="all_with_train_threshold",
+            score_key="raw_patch_mlp_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+    ]
+    return {
+        "split": {
+            "train_fraction": float(train_fraction),
+            "cutoff_batch_index": int(cutoff),
+            "train_samples": int(len(train_records)),
+            "heldout_samples": int(len(heldout_records)),
+            "train_candidate_count": int(len(train_candidates)),
+            "train_positive_count": int(train_labels.sum()),
+            "image_cache_count": int(len(image_cache)),
+        },
+        "top_k": int(top_k),
+        "max_components": int(max_components),
+        "threshold_grid": int(threshold_grid),
+        "epochs": int(epochs),
+        "lr": float(lr),
+        "threshold": float(task_threshold),
+        "feature_dim": int(all_features.shape[1]),
+        "rows": rows,
+        "interpretation": (
+            "Raw-patch verifier replay trains a small MLP on candidate numeric features plus an "
+            "oriented grayscale image patch from the earlier validation split, then applies the "
+            "train-selected task threshold to the held-out split. It is a learned no-GT verifier "
+            "probe, not a final deployed contract."
+        ),
+    }
+
+
 def _points_json(points: Any) -> str:
     try:
         array = np.asarray(points, dtype=np.float32).reshape(-1, 2)
@@ -1010,6 +1325,7 @@ def main() -> int:
     max_top_k = max(
         max(int(variant.top_k) for variant in VARIANTS),
         int(args.rich_validator_top_k) if bool(args.rich_validator_replay) else 0,
+        int(args.raw_patch_verifier_top_k) if bool(args.raw_patch_verifier_replay) else 0,
     )
     with torch.no_grad():
         for batch_index, batch in enumerate(val_loader, start=1):
@@ -1129,6 +1445,18 @@ def main() -> int:
         )
         _write_csv(output_dir / "rich_validator_variants.csv", list(rich_validator["rows"]))
         summary["rich_validator_replay"] = rich_validator
+    if bool(args.raw_patch_verifier_replay):
+        raw_patch_verifier = _run_raw_patch_verifier_replay(
+            sample_records,
+            train_fraction=float(args.raw_patch_verifier_train_fraction),
+            top_k=int(args.raw_patch_verifier_top_k),
+            max_components=int(postprocess_config.stop_line_max_components),
+            threshold_grid=int(args.raw_patch_verifier_threshold_grid),
+            epochs=int(args.raw_patch_verifier_epochs),
+            lr=float(args.raw_patch_verifier_lr),
+        )
+        _write_csv(output_dir / "raw_patch_verifier_variants.csv", list(raw_patch_verifier["rows"]))
+        summary["raw_patch_verifier_replay"] = raw_patch_verifier
     if bool(args.projection_competition_replay):
         projection_competition = _run_projection_competition_replay(sample_records, merged_raw)
         _write_csv(
