@@ -51,6 +51,8 @@ Latest stop-line context segment-set smoke added an opt-in interacting seed-quer
 
 Latest stop-line distance-heatmap target changed the stop-line dense center/selector supervision from midpoint-centered positives to a full-segment Gaussian distance heatmap. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran both CUDA `2x64` smoke and a larger `3x512` train-batch scale audit. The `2x64` fixed exact-val128 result was lane/stop/cross `0.5427 / 0.3919 / 0.5868`, stop-line TP/FP/FN `29 / 59 / 31`. The larger `3x512` run raised internal phase objective to `0.6357`, but fixed exact-val128 was still worse for stop-line: lane/stop/cross `0.5602 / 0.3522 / 0.6071`, stop-line TP/FP/FN `28 / 71 / 32`. Broader-val512 was skipped because exact stayed below both baseline exact `0.4483` and projection-competition exact `0.5167`. Negative checkpoints and TensorBoard outputs were pruned; retained run sizes are about `16M` for the smoke and `11M` for the scale audit.
 
+Latest lane feature-ROI bounded-residual repair probe reopened the earlier learned repair family with a TP-preserving confidence contract: repair labels require a candidate to be outside the lane metric threshold but near GT, already matched candidates are do-not-repair negatives, the MLP predicts bounded residuals around the original polyline, negatives get identity geometry loss, and runtime selection uses quality plus mean-move gates. It reused the existing dataset root in place and ran CUDA val4 smoke plus a larger train64 candidate-collection slice. The final train64 smoke still did not move the metric: baseline and repaired lane/stop/cross stayed `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`, with only `2` selected repairs from `664` train examples. Exact-val128 and broader-val512 were skipped because the fixed smoke gate had no positive TP/FP/FN movement. Negative repair weights and root `yolo26s.pt` were pruned; retained replay artifacts are CSV/summary only, and the probe now saves repair weights only with `--save-repair-model`.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -109,6 +111,7 @@ Run:
 - latest stop-line context segment-set exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_context_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_042145/analysis_exports/context_segment_eval_val128_epoch2/metrics.csv`
 - latest stop-line distance-heatmap target smoke exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_043625/analysis_exports/distance_heatmap_val128_epoch2/metrics.csv`
 - latest stop-line distance-heatmap target scale exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_044418/analysis_exports/distance_heatmap_val128_epoch2/metrics.csv`
+- latest lane feature-ROI bounded-residual repair train64 smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_train64_smoke_val4_20260530_02/summary.json`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
@@ -715,14 +718,16 @@ Latest stop-line endpoint-pair metric-verifier train/eval result:
 - exact-val128 checkpoint eval: objective `0.6095422894`, lane/stop/cross F1 `0.5616 / 0.3387 / 0.5818`, TP/FP/FN lane `1112 / 458 / 1278`, stop-line `21 / 43 / 39`, crosswalk `48 / 36 / 33`.
 - 판단: the endpoint-pair metric verifier fixes the raw endpoint-pair FP explosion directionally (`142` exact FP down to `43`), but it loses too much TP (`26 -> 21`) and remains below baseline exact `0.4483`, simple seeded segment-set task-best `0.4737`, metric-quality verifier `0.4660`, and projection-comp exact `0.5167`. Broader val512 was intentionally skipped because the exact gate failed. Do not continue this exact branch as endpoint side top-K, verifier-score weight, metric-quality tau, segment threshold, max-segment, head-LR, or epoch-count tuning. Reopen endpoint-pair only with a materially different candidate-coverage or consensus signal that improves exact TP/FP/FN first.
 
-Latest lane feature-ROI repair replay result:
+Latest lane feature-ROI bounded-residual repair probe result:
 
-- branch/worktree: `exp/lane-family-f1/task-specific-adapter-routing`.
-- artifact: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_replay_20260529/smoke_val4_epoch2/summary.json`.
-- changed axis: no-GT out-of-fold lane repair replay that samples dense lane feature, centerline/support logits, and tangent fields along unmatched predicted polylines, then applies replace-only learned logistic/ridge repair candidates.
-- val4 baseline lane/stop/cross F1: `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`.
-- val4 repaired lane/stop/cross F1: `0.5547 / 0.0000 / 0.5455`, lane TP/FP/FN `38 / 13 / 48`; selected repair count `4`.
-- 판단: learned feature-ROI repair moved geometry but worsened the assignment metric immediately. Do not broaden or repeat this exact replay as top-K, ridge/logistic, sampled-feature, or repair-budget tuning without a new TP-preserving confidence signal.
+- branch/worktree: `exp/lane-family-f1/lane-feature-roi-repair`.
+- artifacts:
+  - final train64 smoke: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_train64_smoke_val4_20260530_02/summary.json`.
+  - earlier 2026-05-29 replay: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_replay_20260529/smoke_val4_epoch2/summary.json`.
+- changed axis: no-GT lane repair replay with dense lane feature/centerline/support/tangent samples along decoded candidate polylines, but now trained as a bounded-residual replacement head with do-not-repair negatives, identity geometry loss, and mean-move FP control.
+- final train64 smoke baseline lane/stop/cross F1: `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`.
+- final train64 smoke repaired lane/stop/cross F1: `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`; selected repair count `2`, train examples `664` (`161` repair-positive / `503` negative).
+- 판단: the TP-preserving repair contract no longer destroys already matched lanes, but it also fails to convert any near-unmatched candidates into TP on fixed val4. Exact-val128 and broader-val512 are intentionally skipped. Do not repeat this family as repair-label threshold, feature MLP size, point-loss weight, mean-move gate, or train-batch scaling unless a new confidence/instance signal first moves fixed smoke TP/FP/FN.
 
 Latest lane task-mask context gate:
 

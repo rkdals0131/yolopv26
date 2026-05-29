@@ -15971,3 +15971,64 @@ Verification:
 - It still does not solve the no-GT stop-line along-axis midpoint/extent problem. The larger run improves lane/crosswalk exact F1, but stop-line falls to `28 / 71 / 32`, adding `42` FP versus projection-competition exact `31 / 29 / 29`.
 - Do not repeat this as distance-heatmap sigma/span, center/selector target mode, selector/geometry/local-x loss weight, head-LR, epoch-count, or train-batch scaling.
 - Reopen dense stop-line target work only with a materially different candidate-quality, verifier, or geometry-contract signal that first improves fixed exact TP/FP/FN over projection-competition.
+
+## 304. 2026-05-30 Lane feature-ROI bounded-residual repair: smoke-flat after larger candidate training
+
+맥락:
+
+- The 2026-05-29 lane feature-ROI replay was smoke-negative: no-GT replace-only repair worsened lane `40 / 11 / 46 -> 38 / 13 / 48`.
+- GPT Pro's architecture-level direction still left a narrower open premise: a feature-sampled repair head might work if it explicitly protects already matched lanes instead of treating every GT-near prediction as repair-positive.
+- This run reopened only that TP-preserving confidence premise. It did not copy the dataset; it reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-feature-roi-repair`.
+- Probe: `tools/probe_pv26_lane_feature_roi_repair.py`.
+- Runtime contract: no-GT validation replay, replace-only repairs, current lane flip/cross-mask runtime path, stop-line route, and crosswalk hull retained.
+- Candidate features: sampled decoded-lane polyline coordinates, lane feature mean/std, centerline/support logits, tangent fields, and simple shape features.
+- Repair label change:
+  - positive only when nearest GT distance is `>40px` and `<=120px`;
+  - already matched candidates (`<=40px`) are do-not-repair negatives;
+  - far candidates (`>=180px`) are negatives.
+- Geometry change:
+  - MLP predicts bounded residuals around the original normalized polyline instead of absolute points;
+  - point head is zero-initialized;
+  - negatives receive identity geometry loss;
+  - runtime selection uses quality score plus `min_mean_move_px` / `max_mean_move_px`.
+
+Smoke and larger candidate-training results:
+
+| Variant | Train candidate batches | Repair epochs | Selected repairs | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| baseline reference | - | - | - | `0.5839` | `0.0000` | `0.5455` | `40 / 11 / 46` |
+| naive absolute-output smoke | `8` | `5` | `22` | `0.3212` | `0.0000` | `0.5455` | `22 / 29 / 64` |
+| relabeled absolute-output smoke | `8` | `10` | `12` | `0.4672` | `0.0000` | `0.5455` | `32 / 19 / 54` |
+| bounded residual smoke | `8` | `10` | `12` | `0.5839` | `0.0000` | `0.5455` | `40 / 11 / 46` |
+| bounded residual train64 | `64` | `30` | `6` | `0.5693` | `0.0000` | `0.5455` | `39 / 12 / 47` |
+| bounded residual train64 + point-weight/min-move | `64` | `30` | `2` | `0.5839` | `0.0000` | `0.5455` | `40 / 11 / 46` |
+
+Final retained artifact:
+
+- `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_train64_smoke_val4_20260530_02/summary.json`.
+- Final train examples: `664` total, `161` repair-positive and `503` negative.
+- Final settings: `point_loss_weight=20`, `negative_identity_loss_weight=0.25`, `max_repair_delta_norm=0.30`, `min_mean_move_px=5`, `max_repairs_per_sample=1`.
+
+Storage:
+
+- Existing dataset root was reused in place; no dataset copy was created.
+- Generated repair `.pt` weights and root `yolo26s.pt` were removed after the negative smoke gates; the probe now writes weights only when `--save-repair-model` is explicitly set.
+- Retained lane-feature-ROI replay directories are CSV/summary-only and each is `<=44K` after cleanup.
+
+Verification:
+
+- `python -m py_compile tools/probe_pv26_lane_feature_roi_repair.py`.
+- `python tools/probe_pv26_lane_feature_roi_repair.py --help | rg "point-loss|min-mean-move|save-repair-model"`.
+- CUDA fixed val4 smoke with `8` train candidate batches.
+- CUDA larger fixed val4 smoke with `64` train candidate batches and `30` repair epochs.
+
+판단:
+
+- The updated contract successfully prevents the catastrophic matched-lane damage seen in the naive repair head, but it does not recover any lane TP on fixed val4.
+- Exact-val128 and broader-val512 were skipped because the required smoke movement was absent.
+- Do not repeat this as repair-label threshold, sampled-feature set, MLP hidden size, point-loss weight, mean-move gate, max-repair budget, or train-batch scaling.
+- Reopen lane repair only with a materially new instance/confidence signal that first converts near-unmatched candidates into TP on fixed smoke without damaging already matched lanes.
