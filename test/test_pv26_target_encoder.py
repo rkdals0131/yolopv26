@@ -222,6 +222,28 @@ class PV26TargetEncoderTests(unittest.TestCase):
         self.assertLess(float((axis_recovered_start - expected_start).abs().max().item()), 1.0e-5)
         self.assertLess(float((axis_recovered_end - expected_end).abs().max().item()), 1.0e-5)
 
+    def test_stopline_distance_heatmap_marks_full_segment_not_only_midpoint(self) -> None:
+        from model.data.roadmark_v2_targets import NETWORK_HW, ROADMARK_DENSE_OUTPUT_HW, build_stopline_dense_targets
+
+        targets = build_stopline_dense_targets(
+            [{"points_xy": [[100.0, 500.0], [340.0, 500.0]]}],
+            [True],
+        )
+
+        distance_heatmap = targets["stop_line_distance_heatmap"][0]
+        center_heatmap = targets["stop_line_center_heatmap"][0]
+        output_h, output_w = ROADMARK_DENSE_OUTPUT_HW
+        y = int(round(500.0 * float(output_h) / float(NETWORK_HW[0])))
+        start_x = int(round(100.0 * float(output_w) / float(NETWORK_HW[1])))
+        mid_x = int(round(220.0 * float(output_w) / float(NETWORK_HW[1])))
+        end_x = int(round(340.0 * float(output_w) / float(NETWORK_HW[1])))
+
+        self.assertGreater(float(distance_heatmap[y, start_x].item()), 0.90)
+        self.assertGreater(float(distance_heatmap[y, mid_x].item()), 0.90)
+        self.assertGreater(float(distance_heatmap[y, end_x].item()), 0.90)
+        self.assertLess(float(center_heatmap[y, start_x].item()), 0.10)
+        self.assertGreater(float(center_heatmap[y, mid_x].item()), 0.90)
+
     def test_stopline_endpoint_targets_encode_left_and_right_endpoints(self) -> None:
         from model.data.roadmark_v2_targets import NETWORK_HW, ROADMARK_DENSE_OUTPUT_HW, build_stopline_dense_targets
 

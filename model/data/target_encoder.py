@@ -356,6 +356,7 @@ def encode_pv26_batch(
     lane_slot_type = torch.zeros((batch_size, LANE_ROW_SLOT_COUNT), dtype=torch.long)
     lane_centerline = torch.zeros((batch_size, 1, *LANE_CENTERLINE_OUTPUT_HW), dtype=torch.float32)
     stop_line_center_heatmap = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_distance_heatmap = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_center_offset = torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_angle = torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_half_length = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
@@ -524,6 +525,7 @@ def encode_pv26_batch(
                 source_enabled=bool(stop_line_source[batch_index]),
             )
             stop_line_center_heatmap[batch_index] = stop_line_v2["stop_line_center_heatmap"]
+            stop_line_distance_heatmap[batch_index] = stop_line_v2["stop_line_distance_heatmap"]
             stop_line_center_offset[batch_index] = stop_line_v2["stop_line_center_offset"]
             stop_line_angle[batch_index] = stop_line_v2["stop_line_angle"]
             stop_line_half_length[batch_index] = stop_line_v2["stop_line_half_length"]
@@ -568,6 +570,7 @@ def encode_pv26_batch(
         "lane_slot_color": lane_slot_color,
         "lane_slot_type": lane_slot_type,
         "stop_line_center_heatmap": stop_line_center_heatmap,
+        "stop_line_distance_heatmap": stop_line_distance_heatmap,
         "stop_line_center_offset": stop_line_center_offset,
         "stop_line_angle": stop_line_angle,
         "stop_line_half_length": stop_line_half_length,

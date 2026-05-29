@@ -259,6 +259,7 @@ def build_stopline_dense_targets(
     encoded, row_valid = _encode_stop_line_rows(rows, valid_tensor, source_enabled)
     output_h, output_w = int(output_hw[0]), int(output_hw[1])
     center_heatmap = torch.zeros((1, output_h, output_w), dtype=torch.float32)
+    distance_heatmap = torch.zeros((1, output_h, output_w), dtype=torch.float32)
     center_offset = torch.zeros((2, output_h, output_w), dtype=torch.float32)
     angle = torch.zeros((2, output_h, output_w), dtype=torch.float32)
     half_length = torch.zeros((1, output_h, output_w), dtype=torch.float32)
@@ -319,6 +320,26 @@ def build_stopline_dense_targets(
             scaled_norm = max(float(torch.linalg.norm(scaled_delta).item()), 1.0e-6)
             scaled_axis = scaled_delta / scaled_norm
             scaled_normal = torch.stack([-scaled_axis[1], scaled_axis[0]])
+            distance_sigma = max(1.0, float(center_span) * 0.5)
+            distance_radius = max(1, int(round(distance_sigma * 3.0)))
+            distance_min_col = max(0, int(torch.floor(torch.minimum(scaled_start[0], scaled_end[0]) - distance_radius).item()))
+            distance_max_col = min(
+                output_w - 1,
+                int(torch.ceil(torch.maximum(scaled_start[0], scaled_end[0]) + distance_radius).item()),
+            )
+            distance_min_row = max(0, int(torch.floor(torch.minimum(scaled_start[1], scaled_end[1]) - distance_radius).item()))
+            distance_max_row = min(
+                output_h - 1,
+                int(torch.ceil(torch.maximum(scaled_start[1], scaled_end[1]) + distance_radius).item()),
+            )
+            for target_row in range(distance_min_row, distance_max_row + 1):
+                for target_col in range(distance_min_col, distance_max_col + 1):
+                    dist_sq = _point_segment_distance_sq(float(target_col), float(target_row), scaled_start, scaled_end)
+                    if dist_sq > float(distance_radius * distance_radius):
+                        continue
+                    value = float(np.exp(-dist_sq / (2.0 * distance_sigma * distance_sigma)))
+                    if value > float(distance_heatmap[0, target_row, target_col].item()):
+                        distance_heatmap[0, target_row, target_col] = value
             axis_distance_norm = max(float(output_w), float(output_h), 1.0)
             endpoint_sigma = max(1.0, float(endpoint_radius))
             endpoint_support_radius = max(1, int(round(endpoint_sigma * 3.0)))
@@ -371,6 +392,7 @@ def build_stopline_dense_targets(
         "stop_line_vector_targets": encoded,
         "stop_line_vector_valid": row_valid,
         "stop_line_center_heatmap": center_heatmap,
+        "stop_line_distance_heatmap": distance_heatmap,
         "stop_line_center_offset": center_offset,
         "stop_line_angle": angle,
         "stop_line_half_length": half_length,

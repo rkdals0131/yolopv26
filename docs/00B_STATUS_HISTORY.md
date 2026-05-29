@@ -15867,3 +15867,107 @@ Verification:
 - It still does not solve the no-GT along-axis midpoint/extent problem. Exact stop-line TP falls below projection-competition by `8` TP and adds `6` FP versus the `31 / 29 / 29` projection-comp reference.
 - Do not repeat this as context-layer count, query count, score threshold, verifier-score weight, aux-weight, head-LR, epoch-count, or larger-range scaling.
 - Reopen segment-set work only with a materially different candidate-coverage or quality target that first improves fixed exact TP/FP/FN over projection-competition.
+
+## 302. 2026-05-30 Stop-line distance-heatmap target: full-segment dense supervision does not fix stop-line geometry
+
+Context:
+
+- GPT Pro's review emphasized that stop-line may be failing because the current head/loss does not directly supervise along-axis midpoint/extent recovery.
+- Instead of adding another postprocess threshold or another sparse segment-set decoder, this branch changed one training target axis: stop-line center/selector supervision receives a full-segment Gaussian distance heatmap rather than only midpoint-centered positives.
+- The premise was that all pixels near the stop-line segment should carry dense segment-support signal, giving projection-competition better proposal/selector evidence without changing lane/crosswalk runtime.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-distance-heatmap-target`.
+- Added `stop_line_distance_heatmap` to `build_stopline_dense_targets()` and the roadmark-v2 target batch.
+- Added opt-in loss target modes:
+  - `stopline_center_target_mode="distance_heatmap"`;
+  - `stopline_selector_target_mode="distance_heatmap"`.
+- Added probe preset `stopline_distance_heatmap_target`.
+- Lane and crosswalk were not the intended axis: lane stayed on row-scan/tangent settings and crosswalk stayed `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_043625`.
+- Larger scale-audit run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_044418`.
+- Smoke scale: CUDA `2` epochs, `64` train batches per epoch, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Larger scale: CUDA `3` epochs, `512` train batches per epoch, `128` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0` on both runs.
+
+Smoke fixed val4:
+
+| Metric | Value |
+| --- | ---: |
+| phase objective | `0.6066496484626835` |
+| lane F1 | `0.4885` |
+| stop-line F1 | `0.0000` |
+| crosswalk F1 | `0.4000` |
+| lane TP/FP/FN | `32 / 13 / 54` |
+| stop-line TP/FP/FN | `0 / 5 / 2` |
+| crosswalk TP/FP/FN | `2 / 1 / 5` |
+
+Smoke fixed exact-val128:
+
+| Metric | Value |
+| --- | ---: |
+| phase objective | `0.62128953687386` |
+| lane F1 | `0.5427` |
+| stop-line F1 | `0.3919` |
+| crosswalk F1 | `0.5868` |
+| lane TP/FP/FN | `1075 / 497 / 1315` |
+| stop-line TP/FP/FN | `29 / 59 / 31` |
+| crosswalk TP/FP/FN | `49 / 37 / 32` |
+
+Larger scale internal result:
+
+| Metric | Value |
+| --- | ---: |
+| best internal phase objective | `0.6356975775373115` at epoch `3` |
+| task-best internal lane F1 | `0.5601816805450417` |
+| task-best internal stop-line F1 | `0.45283018867924524` |
+| task-best internal crosswalk F1 | `0.6918238993710693` |
+
+Larger scale fixed exact-val128:
+
+| Metric | Value |
+| --- | ---: |
+| phase objective | `0.6202514858451159` |
+| lane F1 | `0.5602` |
+| stop-line F1 | `0.3522` |
+| crosswalk F1 | `0.6071` |
+| lane TP/FP/FN | `1103 / 445 / 1287` |
+| stop-line TP/FP/FN | `28 / 71 / 32` |
+| crosswalk TP/FP/FN | `51 / 36 / 30` |
+
+- Smoke fixed val4 artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_043625/analysis_exports/distance_heatmap_val4_epoch2/metrics.csv`.
+- Smoke fixed exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_043625/analysis_exports/distance_heatmap_val128_epoch2/metrics.csv`.
+- Larger fixed exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_044418/analysis_exports/distance_heatmap_val128_epoch2/metrics.csv`.
+- Broader-val512 was skipped because both fixed exact results were below baseline exact stop-line F1 `0.4483` and projection-competition exact F1 `0.5167`; the larger run increased stop-line FP to `71`.
+
+Storage:
+
+- Both runs reused the existing dataset root directly.
+- Checkpoint files and TensorBoard outputs were removed after the negative fixed exact evaluations.
+- Root `yolo26n.pt` / `yolo26s.pt` were removed after verification.
+- Retained run sizes after cleanup: about `16M` for the smoke run and `11M` for the larger scale-audit run.
+
+Verification:
+
+- `python -m py_compile model/data/roadmark_v2_targets.py model/data/target_encoder.py model/engine/loss.py tools/run_pv26_lane60_probe.py test/test_pv26_target_encoder.py`.
+- `python -m unittest discover -s test -p 'test_pv26_target_encoder.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "stopline_distance_heatmap_target"`.
+- CUDA `2x64` train-batch smoke.
+- CUDA fixed val4 and exact-val128 smoke evaluations.
+- CUDA `3x512` train-batch larger scale audit.
+- CUDA fixed exact-val128 larger scale evaluation.
+
+판단:
+
+- Full-segment dense target supervision is a real loss/target-side change, distinct from threshold/TTA/postprocess-only sweeps and distinct from the segment-set architecture attempts.
+- It still does not solve the no-GT stop-line along-axis midpoint/extent problem. The larger run improves lane/crosswalk exact F1, but stop-line falls to `28 / 71 / 32`, adding `42` FP versus projection-competition exact `31 / 29 / 29`.
+- Do not repeat this as distance-heatmap sigma/span, center/selector target mode, selector/geometry/local-x loss weight, head-LR, epoch-count, or train-batch scaling.
+- Reopen dense stop-line target work only with a materially different candidate-quality, verifier, or geometry-contract signal that first improves fixed exact TP/FP/FN over projection-competition.

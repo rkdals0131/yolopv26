@@ -1634,6 +1634,9 @@ def _stop_line_mask_loss_with_selector_weight(
     source = encoded["mask"]["stop_line_source"].to(device=mask_logits.device, dtype=torch.bool)
     mask_target = aux["stop_line_mask"].to(device=mask_logits.device, dtype=mask_logits.dtype)
     center_heatmap_target = aux["stop_line_center_heatmap"].to(device=mask_logits.device, dtype=mask_logits.dtype)
+    distance_heatmap_target = aux.get("stop_line_distance_heatmap")
+    if isinstance(distance_heatmap_target, torch.Tensor):
+        distance_heatmap_target = distance_heatmap_target.to(device=mask_logits.device, dtype=mask_logits.dtype)
     centerline_target = aux.get("stop_line_centerline")
     if isinstance(centerline_target, torch.Tensor):
         centerline_target = centerline_target.to(device=mask_logits.device, dtype=mask_logits.dtype)
@@ -1657,6 +1660,8 @@ def _stop_line_mask_loss_with_selector_weight(
         center_target = torch.maximum(center_heatmap_target, local_centerline_target)
     elif resolved_center_target_mode == "centerline" and isinstance(centerline_target, torch.Tensor):
         center_target = centerline_target
+    elif resolved_center_target_mode == "distance_heatmap" and isinstance(distance_heatmap_target, torch.Tensor):
+        center_target = distance_heatmap_target
     elif isinstance(centerline_target, torch.Tensor):
         center_target = torch.maximum(center_heatmap_target, centerline_target)
     else:
@@ -1684,6 +1689,8 @@ def _stop_line_mask_loss_with_selector_weight(
         row_support = selector_source.amax(dim=-1, keepdim=True).expand_as(mask_target)
         col_support = mask_target.amax(dim=-2, keepdim=True).expand_as(mask_target)
         selector_target = row_support * col_support
+    elif selector_mode == "distance_heatmap" and isinstance(distance_heatmap_target, torch.Tensor):
+        selector_target = distance_heatmap_target
     else:
         raise ValueError(f"unsupported stopline_selector_target_mode: {selector_target_mode}")
     local_x_target = local_centerline_target if isinstance(local_centerline_target, torch.Tensor) else centerline_target
