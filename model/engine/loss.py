@@ -152,6 +152,7 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "lane_conditional_rows",
         "lane_seg_centerline_logits",
         "lane_seg_support_logits",
+        "lane_seg_center_offset",
         "lane_seg_tangent_axis",
         "lane_seg_color_logits",
         "lane_seg_type_logits",
@@ -2482,24 +2483,88 @@ class PV26MultiTaskLoss(nn.Module):
     ) -> tuple[torch.Tensor, dict[str, float | None]]:
         teacher_cache = self._teacher_cache(encoded)
         required = ("lane_row_logits", "lane_exist_logits", "lane_row_col_expectation", "lane_feature")
+        if self.distill_enabled and all(key in teacher_cache for key in required) and all(
+            key in predictions for key in required
+        ):
+            row_kl = _logit_kl_divergence(predictions["lane_row_logits"], teacher_cache["lane_row_logits"])
+            exist_bce = _binary_logit_distill(predictions["lane_exist_logits"], teacher_cache["lane_exist_logits"])
+            row_expectation = F.smooth_l1_loss(
+                predictions["lane_row_col_expectation"],
+                teacher_cache["lane_row_col_expectation"],
+                reduction="mean",
+            )
+            feature_cosine = _feature_cosine_similarity(predictions["lane_feature"], teacher_cache["lane_feature"])
+            raw_loss = row_kl + exist_bce + row_expectation
+            scaled_loss, scaling = self._normalize_distill_loss("lane", raw_loss, encoded)
+            return scaled_loss, {
+                "logit_kl": float(row_kl.detach().cpu()),
+                "feature_cosine": float(feature_cosine.detach().cpu()),
+                **scaling,
+            }
+        segfirst_required = (
+            "lane_seg_centerline_logits",
+            "lane_seg_support_logits",
+            "lane_seg_center_offset",
+            "lane_seg_tangent_axis",
+            "lane_seg_color_logits",
+            "lane_seg_type_logits",
+            "lane_feature",
+        )
         if (
             not self.distill_enabled
-            or any(key not in teacher_cache for key in required)
-            or any(key not in predictions for key in required)
+            or any(key not in teacher_cache for key in segfirst_required)
+            or any(key not in predictions for key in segfirst_required)
         ):
             return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
-        row_kl = _logit_kl_divergence(predictions["lane_row_logits"], teacher_cache["lane_row_logits"])
-        exist_bce = _binary_logit_distill(predictions["lane_exist_logits"], teacher_cache["lane_exist_logits"])
-        row_expectation = F.smooth_l1_loss(
-            predictions["lane_row_col_expectation"],
-            teacher_cache["lane_row_col_expectation"],
+        center_bce = _binary_logit_distill(
+            predictions["lane_seg_centerline_logits"],
+            teacher_cache["lane_seg_centerline_logits"],
+        )
+        center_dice = _soft_dice_distill(
+            predictions["lane_seg_centerline_logits"],
+            teacher_cache["lane_seg_centerline_logits"],
+        )
+        support_bce = _binary_logit_distill(
+            predictions["lane_seg_support_logits"],
+            teacher_cache["lane_seg_support_logits"],
+        )
+        support_dice = _soft_dice_distill(
+            predictions["lane_seg_support_logits"],
+            teacher_cache["lane_seg_support_logits"],
+        )
+        center_offset = F.smooth_l1_loss(
+            predictions["lane_seg_center_offset"],
+            teacher_cache["lane_seg_center_offset"],
             reduction="mean",
         )
+        tangent = F.smooth_l1_loss(
+            predictions["lane_seg_tangent_axis"],
+            teacher_cache["lane_seg_tangent_axis"],
+            reduction="mean",
+        )
+        student_color = predictions["lane_seg_color_logits"].permute(0, 2, 3, 1).reshape(
+            -1,
+            predictions["lane_seg_color_logits"].shape[1],
+        )
+        teacher_color = teacher_cache["lane_seg_color_logits"].permute(0, 2, 3, 1).reshape(
+            -1,
+            teacher_cache["lane_seg_color_logits"].shape[1],
+        )
+        student_type = predictions["lane_seg_type_logits"].permute(0, 2, 3, 1).reshape(
+            -1,
+            predictions["lane_seg_type_logits"].shape[1],
+        )
+        teacher_type = teacher_cache["lane_seg_type_logits"].permute(0, 2, 3, 1).reshape(
+            -1,
+            teacher_cache["lane_seg_type_logits"].shape[1],
+        )
+        color_kl = _logit_kl_divergence(student_color, teacher_color)
+        type_kl = _logit_kl_divergence(student_type, teacher_type)
         feature_cosine = _feature_cosine_similarity(predictions["lane_feature"], teacher_cache["lane_feature"])
-        raw_loss = row_kl + exist_bce + row_expectation
+        raw_loss = center_bce + center_dice + support_bce + support_dice + center_offset + tangent + color_kl + type_kl
         scaled_loss, scaling = self._normalize_distill_loss("lane", raw_loss, encoded)
         return scaled_loss, {
-            "logit_kl": float(row_kl.detach().cpu()),
+            "logit_kl": float((center_bce + support_bce + color_kl + type_kl).detach().cpu()),
             "feature_cosine": float(feature_cosine.detach().cpu()),
             **scaling,
         }

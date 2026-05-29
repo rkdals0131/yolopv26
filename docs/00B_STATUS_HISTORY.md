@@ -13839,3 +13839,73 @@ Verification:
 - It is far below the retained projection-competition runtime reference `0.5164`, TP/FP/FN `126 / 91 / 145`.
 - Lane also regresses versus the retained lane-preserving composite (`0.5628 -> 0.5454`), and crosswalk falls below the hull pass line (`0.6187 -> 0.5910`).
 - Do not repeat this as crop probability, crop scale/jitter, head-LR, epoch-count, sampler-order, or longer-run tuning. Reopen focus/scale feeding only with a new FP-control or candidate-geometry signal that first improves exact TP/FP/FN.
+
+## 273. 2026-05-29 Upper-trunk retention distill: crosswalk holds, lane collapses
+
+Context:
+
+- The user explicitly required actual training/evaluation, larger-scope data use, and smart storage handling without dataset copies.
+- Earlier stop-line exposure and lane-frozen runs showed small stop-line gains but lane regression. This branch tested whether source-checkpoint retention distillation can open upper-trunk capacity while keeping lane/crosswalk behavior anchored.
+- This is distinct from the closed same-checkpoint stop-line self-distill: the new distill weights are lane/crosswalk only, and stop-line distill is disabled.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/retention-distill-stopline-train`.
+- Retained run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_retention_distill_upper_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_162533`.
+- Seed/teacher checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Added seg-first lane dense outputs to the live distill teacher cache:
+  - `lane_seg_centerline_logits`
+  - `lane_seg_support_logits`
+  - `lane_seg_center_offset`
+  - `lane_seg_tangent_axis`
+  - `lane_seg_color_logits`
+  - `lane_seg_type_logits`
+- Added seg-first lane retention loss fallback in `PV26MultiTaskLoss._lane_distill_loss()`, so the current lane head can be retained without legacy row-head logits.
+- Added probe preset `stopline_retention_distill_upper_trunk`:
+  - freeze policy: `lane_family_plus_upper_trunk`
+  - trunk LR: `2e-6`
+  - head LR: `1e-4`
+  - loss weights: lane `1.50`, stop-line `2.50`, crosswalk `1.75`
+  - distill weights: lane `0.20`, stop-line `0.0`, crosswalk `0.20`
+  - projection-competition stop-line runtime and hull crosswalk retained.
+
+Training:
+
+- Smoke train: real CUDA `1` epoch, `8` train batches, `4` val batches, batch size `4`.
+- Main train: real CUDA `2` epochs, `512` train batches, `128` val batches, batch size `4`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+- Best phase-objective epoch was epoch `2`, objective `0.6390391066`.
+
+Fixed eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6390391066` | `0.5587` | `0.4793` | `0.6038` | `1109 / 471 / 1281` | `29 / 32 / 31` | `48 / 30 / 33` |
+| broader val512 epoch2 | `0.6348507903` | `0.5336` | `0.5195` | `0.6200` | `4208 / 2086 / 5269` | `133 / 108 / 138` | `226 / 108 / 169` |
+
+Storage:
+
+- The smoke run was pruned after the main train/eval completed.
+- The retained main run was reduced to `phase_4/checkpoints/best.pt`, summaries/history, and exact/broader metric exports.
+- Removed duplicate task-best checkpoints, `last.pt`, TensorBoard output, and temporary root `yolo26s.pt` / `yolo26n.pt` downloads.
+- Retained main run size is about `150M`.
+
+Verification:
+
+- `python -m compileall -q model/engine/loss.py model/engine/trainer.py tools/run_pv26_lane60_probe.py test/test_pv26_distill_retention.py`.
+- `python -m unittest discover -s test -p 'test_pv26_distill_retention.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- Real CUDA smoke train/eval.
+- Real CUDA main train: `2` epochs, `512` train batches, `128` val batches.
+- Fixed exact-val128 epoch-2 eval.
+- Fixed broader-val512 epoch-2 eval.
+
+판단:
+
+- Retention distillation is trainable and keeps crosswalk broader-pass, but it does not preserve lane under upper-trunk stop-line training.
+- Broader stop-line moves only `0.5164 -> 0.5195` versus retained projection-competition, with TP `126 -> 133` but FP `91 -> 108`.
+- Broader lane collapses from retained `0.5628` to `0.5336`, TP `4532 -> 4208`, FN `4945 -> 5269`.
+- Exact stop-line `0.4793` is also below both the regenerated candidate-pool projection-comp exact reference `0.5167` (`31 / 29 / 29`) and the pre-training full-runtime exact row `0.5333` (`32 / 28 / 28`).
+- Do not repeat this as distill weight, trunk LR, head LR, epoch-count, sampler-order, or same source-teacher tuning. Reopen only with a new lane-preserving shared-feature/candidate-geometry contract that first improves fixed exact TP/FP/FN.

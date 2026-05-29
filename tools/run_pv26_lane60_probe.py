@@ -1308,6 +1308,37 @@ EXPERIMENTS["stopline_focus_crop_feeding"] = {
     },
 }
 
+EXPERIMENTS["stopline_retention_distill_upper_trunk"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_plus_upper_trunk",
+    "trunk_lr": 2.0e-6,
+    "head_lr": 1.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 1.50,
+        "stop_line": 2.50,
+        "crosswalk": 1.75,
+    },
+    "train_defaults_overrides": {
+        "distill_enabled": True,
+        "distill_teacher_checkpoint": "__seed_checkpoint__",
+        "distill_loss_weights": {
+            "lane": 0.20,
+            "stop_line": 0.0,
+            "crosswalk": 0.20,
+        },
+        "distill_normalize_mode": "ema",
+        "distill_ema_decay": 0.95,
+        "distill_ema_warmup_steps": 4,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,lane,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -1391,7 +1422,10 @@ def _lane60_scenario(args: argparse.Namespace, *, source_run: Path, seed_checkpo
         "pcgrad_aggregate_every_n_steps": 100,
         "pcgrad_keep_raw_every_n_steps": 1000,
     }
-    train_defaults_replacements.update(dict(experiment.get("train_defaults_overrides", {})))
+    experiment_train_defaults_overrides = dict(experiment.get("train_defaults_overrides", {}))
+    if experiment_train_defaults_overrides.get("distill_teacher_checkpoint") == "__seed_checkpoint__":
+        experiment_train_defaults_overrides["distill_teacher_checkpoint"] = str(seed_checkpoint)
+    train_defaults_replacements.update(experiment_train_defaults_overrides)
     train_defaults = replace(scenario.train_defaults, **train_defaults_replacements)
     run_root = Path(args.run_root).expanduser().resolve() if args.run_root else scenario.run.run_root
     run_config = replace(
@@ -1422,7 +1456,7 @@ def _lane60_scenario(args: argparse.Namespace, *, source_run: Path, seed_checkpo
             "loss_weights": dict(probe_phase.loss_weights),
             "overrides": dict(phase_overrides),
         },
-        "train_defaults_overrides": dict(experiment.get("train_defaults_overrides", {})),
+        "train_defaults_overrides": dict(experiment_train_defaults_overrides),
     }
     return scenario, scenario_path, {
         "selected_phase_indices": (phase_index,),
