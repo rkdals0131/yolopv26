@@ -170,6 +170,42 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertEqual(len(predictions), 1)
         self.assertGreaterEqual(len(predictions[0]["points_xy"]), 4)
 
+    def test_bidirectional_seed_trace_extends_from_interior_seed(self) -> None:
+        maps = _maps_with_vertical_gap()
+        seed_map = torch.zeros((1, 12, 12), dtype=torch.float32)
+        seed_map[0, 6, 5] = 0.95
+        maps["seed_map"] = seed_map
+
+        upward_only = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="seed_trace",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                seed_threshold=0.5,
+                seed_trace_max_seeds=4,
+            ),
+        )
+        bidirectional = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="bidirectional_seed_trace",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                seed_threshold=0.5,
+                seed_trace_max_seeds=4,
+            ),
+        )
+
+        self.assertEqual(len(upward_only), 1)
+        self.assertEqual(len(bidirectional), 1)
+        self.assertEqual(len(upward_only[0]["points_xy"]), 3)
+        self.assertGreaterEqual(len(bidirectional[0]["points_xy"]), 6)
+
     def test_row_scan_seed_trace_preserves_row_scan_without_seed(self) -> None:
         maps = _maps_with_vertical_gap()
         maps["seed_map"] = torch.zeros((1, 12, 12), dtype=torch.float32)
@@ -184,6 +220,29 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
                 max_link_dx=1.0,
                 seed_threshold=0.5,
                 seed_trace_max_seeds=4,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 1)
+        self.assertGreaterEqual(len(predictions[0]["points_xy"]), 4)
+
+    def test_row_scan_bidirectional_seed_trace_suppresses_duplicate_trace(self) -> None:
+        maps = _maps_with_vertical_gap()
+        seed_map = torch.zeros((1, 12, 12), dtype=torch.float32)
+        seed_map[0, 6, 5] = 0.95
+        maps["seed_map"] = seed_map
+
+        predictions = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan_tangent_bidirectional_seed_trace",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                seed_threshold=0.5,
+                seed_trace_max_seeds=4,
+                lane_match_threshold=40.0,
             ),
         )
 

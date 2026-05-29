@@ -25,6 +25,8 @@ Latest lane row-native primary audit made `lane_head_mode="row_native"` selectab
 
 Latest cross-stitch task routing added an opt-in task-feature cross-stitch mixer on top of task-specific P2/P3/P4 adapters and trained it with PCGrad over the `lane_family_adapters` optimizer group. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran a real CUDA `64` train-batch smoke with skipped steps `0`. It is smoke-negative: fixed val4 epoch-2 was lane/stop/cross `0.4885 / 0.0000 / 0.5455`, with lane TP/FP/FN `32 / 13 / 54`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because lane regressed sharply and stop-line did not move. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `7.7M`.
 
+Latest lane bidirectional seed-trace added an opt-in interior-seed trace decoder that follows learned seed logits both upward and downward from centerline-supported points, then appends non-duplicate traces after the retained row-scan/tangent lane decode. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran a real CUDA `64` train-batch smoke with skipped steps `0`. It is smoke-negative: fixed val4 epoch-2 was lane/stop/cross `0.4923 / 0.0000 / 0.4000`, with lane TP/FP/FN `32 / 12 / 54`, stop-line `0 / 3 / 2`, and crosswalk `2 / 1 / 5`. Re-evaluating the same checkpoint through the existing projection-comp runtime decode produced the same fixed val4 counts, so the loss comes from the trained dense behavior, not only the appended trace decoder. Exact-val128 and broader-val512 were skipped. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `22M`.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -68,6 +70,7 @@ Run:
 - latest co-occurrence hard-positive sampler smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_cooccur_lane_stop_cross_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_000717/analysis_exports/cooccur_sampler_smoke_val4_epoch2/metrics.csv`
 - latest lane row-native primary scale-smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_primary_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_002505/analysis_exports/row_native_primary_scale_smoke_val4_epoch2/metrics.csv`
 - latest cross-stitch task routing smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_cross_stitch_task_routing_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_010213/analysis_exports/fixed_val4_epoch2/metrics.csv`
+- latest lane bidirectional seed-trace smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
@@ -317,6 +320,18 @@ Latest lane seed-trace instance decoder audit:
 - larger-slice training validation result: objective `0.6202068390`, lane/stop/cross F1 `0.5297 / 0.3299 / 0.6832`, TP/FP/FN lane `1048 / 574 / 1287`, stop-line `16 / 26 / 39`, crosswalk `55 / 23 / 28`.
 - fixed exact-val128 epoch-2 eval: objective `0.6328142036`, lane/stop/cross F1 `0.5488 / 0.5000 / 0.5644`, TP/FP/FN lane `1096 / 508 / 1294`, stop-line `29 / 27 / 31`, crosswalk `46 / 36 / 35`.
 - 판단: larger training improves the seed-trace lane result versus the 32-batch checkpoint but remains below the retained lane-preserving exact and broader references, and it does not preserve crosswalk or stop-line to the required level. Because exact-val128 misses all three `0.60` task gates, broader-val512 was skipped. Do not continue this as seed threshold, max seeds, aux weight, head-LR, freeze-policy, or longer-run tuning without a new TP-preserving instance quality signal.
+
+Latest lane bidirectional seed-trace smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-bidirectional-seed-trace`.
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614`.
+- changed axis: add an opt-in interior-seed trace vectorizer mode that traces from learned centerline-core seed logits upward and downward, then appends non-duplicate traces after the retained row-scan/tangent output. This was meant to test whether interior centerline-supported seeds recover truncated or missed lane instances without copying data or changing stop-line/crosswalk contracts.
+- data/storage contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The run indexed `429350` records with split `326709 / 82641 / 20000`. Negative checkpoints, TensorBoard output, and temporary root `yolo26s.pt` were pruned; retained run size is about `22M`.
+- CUDA smoke train: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, skipped steps `0`.
+- internal val4 task-best F1: lane `0.5271`, stop-line `0.0000`, crosswalk `0.7692`. This is not final evidence because it is the training validation slice, not the fixed epoch-2 eval.
+- fixed val4 epoch-2 eval: objective `0.6073871382`, lane/stop/cross `0.4923 / 0.0000 / 0.4000`, TP/FP/FN lane `32 / 12 / 54`, stop-line `0 / 3 / 2`, crosswalk `2 / 1 / 5`.
+- existing-decode ablation: re-running the same checkpoint with `lane60_experiment=stopline_projection_comp_runtime` produced the same fixed val4 counts. The regression is therefore not only the appended bidirectional trace branch; the short seed-supervised training already damaged retained dense behavior.
+- 판단: fixed smoke loses lane and crosswalk versus the retained fixed val4 reference and recovers no stop-line TP, so exact-val128 and broader-val512 were skipped. Do not continue this as seed-threshold, max-seeds, seed-aux-weight, head-LR, epoch-count, or same interior-trace tuning without a TP-preserving seed quality / instance-existence signal.
 
 Latest input-scale672 dense-target audit:
 

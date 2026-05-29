@@ -15017,3 +15017,69 @@ Verification:
 - It damages lane recall substantially before exact-val128 and broader-val512.
 - Do not repeat this as cross-stitch LR, mix init, adapter depth, PCGrad task-list, loss-weight, or longer-run tuning.
 - Reopen task-routing work only with a changed lane/stop-line emit contract that first protects fixed smoke TP/FP/FN.
+
+## 290. 2026-05-30 Lane bidirectional seed-trace smoke
+
+Context:
+
+- The bottom-anchor seed-trace instance decoder was already closed after exact-val128 missed all three `0.60` task gates.
+- The remaining lane headroom still included centerline-supported FN and nearby-unmatched buckets, so this branch tested a materially different trace premise: start from interior learned seed logits and trace both upward and downward along dense centerline/tangent evidence.
+- The experiment was intentionally kept as a real CUDA smoke before exact-val128 or broader-val512, because the fixed val4 gate is the cheap rejection point for TP/FP/FN movement.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-bidirectional-seed-trace`.
+- Added `bidirectional_seed_trace` / `row_scan_tangent_bidirectional_seed_trace` modes in `model/engine/lane_segfirst_vectorizer.py`.
+- Added vectorizer regression tests for interior-seed extension and duplicate suppression.
+- Added `lane_bidirectional_seed_trace` to `tools/run_pv26_lane60_probe.py`:
+  - freeze policy `lane_family_heads_only`
+  - head LR `2e-4`
+  - lane/stop/cross loss weights `2.25 / 2.25 / 1.75`
+  - `lane_segfirst_centerline_target_mode="core"`
+  - `lane_conditional_seed_aux_weight=0.5`
+  - `lane_conditional_seed_target_mode="centerline_core"`
+  - `lane_segfirst_track_mode="row_scan_tangent_bidirectional_seed_trace"`
+  - retained projection-competition stop-line runtime and `crosswalk_polygon_mode="hull"`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4 task-best F1: lane `0.5271`, stop-line `0.0000`, crosswalk `0.7692`. This is not final evidence because it is the training validation slice, not fixed epoch-2 evaluation.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| bidirectional seed-trace smoke | `0.4923` | `32 / 12 / 54` | `0.0000` | `0 / 3 / 2` | `0.4000` | `2 / 1 / 5` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Existing-decode ablation artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614/analysis_exports/fixed_val4_epoch2_existing_decode/metrics.csv`.
+- Re-evaluating the same checkpoint with `lane60_experiment=stopline_projection_comp_runtime` produced identical fixed val4 counts, so the regression is not only the appended bidirectional trace branch; the 64-batch seed-supervised train already changed the retained dense behavior negatively.
+- Exact-val128 and broader-val512 were skipped because fixed smoke regressed lane by `-8 TP`, `+1 FP`, crosswalk by `-1 TP`, and recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- The auto-downloaded root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `22M`.
+
+Verification:
+
+- `python -m py_compile model/engine/lane_segfirst_vectorizer.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_lane_segfirst_vectorizer.py'`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+- Existing-decode fixed val4 ablation.
+
+판단:
+
+- Interior bidirectional seed-trace is wired, trainable, and tested with real CUDA training, but it is smoke-negative.
+- It damages retained lane/crosswalk behavior before exact-val128 and broader-val512.
+- Do not repeat this as seed-threshold, max-seeds, seed-aux-weight, head-LR, epoch-count, or same interior/bidirectional trace tuning.
+- Reopen only with a materially new TP-preserving seed quality / instance-existence signal, or with a lane instance contract that first protects fixed smoke TP/FP/FN.
