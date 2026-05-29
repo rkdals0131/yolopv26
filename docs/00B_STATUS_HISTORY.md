@@ -13080,3 +13080,62 @@ Verification:
 - The subsequent heads-only training is not a breakthrough. It slightly reduces broader stop-line FP (`91 -> 86`) while holding TP fixed, but exact stop-line falls below the pre-training runtime eval (`0.5333 -> 0.5085`) and broader lane regresses (`0.5480 -> 0.5413`).
 - Do not repeat this as a head-LR, epoch-count, loss-weight, or same-runtime training sweep.
 - Future work should either combine this runtime stop-line contract with the retained lane flip/crosswalk-mask composite, or introduce a new model-side stop-line candidate-coverage signal that moves fixed exact TP/FP/FN before broadening.
+
+## 261. 2026-05-29 Full task-balance runtime composite and trained stop-head transplant check
+
+Context:
+
+- Section 260 made the projection-competition stop-line reference an opt-in runtime decoder, but the first fixed eval kept the lane path at normal `row_scan_tangent`.
+- The remaining historical task-balance lower bound also needs the retained lane flip-centerline average plus crosswalk-mask lane suppression.
+- The user explicitly required real evaluation on the broader data slice and smart storage handling.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-projcomp-runtime-contract`.
+- Ran `tools/probe_pv26_lane_flip_tta.py` with:
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - fixed variant `flip_centerline_avg_lane_cross_comp050`;
+  - `--crosswalk-polygon-mode hull`;
+  - validation epoch `2`, batch size `4`.
+- This composes the retained lane flip/crosswalk-mask path with the opt-in projection-comp stop-line runtime decoder. It no longer depends on CSV projection replay.
+
+Full runtime task-balance eval on `merged_lane_head.pt`:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 | `0.5888` | `0.5333` | `0.5988` | `1202 / 491 / 1188` | `32 / 28 / 28` | `50 / 36 / 31` |
+| broader val512 | `0.5628` | `0.5164` | `0.6187` | `4532 / 2097 / 4945` | `126 / 91 / 145` | `232 / 123 / 163` |
+
+Trained stop-line head transplant:
+
+- The trained projection-comp-runtime run slightly reduced broader stop-line FP on its own checkpoint, but lane/cross regressed.
+- To isolate whether the trained stop-line head alone was useful, merged the trained stop-line head into the retained lane/cross checkpoint.
+- Added `--allow-source-extra-keys` to `tools/merge_pv26_lane_family_task_heads.py` because newer stop-line heads include auxiliary keys absent from the older base checkpoint.
+- The option is explicit; default behavior still rejects source task-head keys missing in the base checkpoint.
+
+Transplant eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 | `0.5888` | `0.5042` | `0.5988` | `1202 / 491 / 1188` | `30 / 29 / 30` | `50 / 36 / 31` |
+| broader val512 | `0.5628` | `0.5113` | `0.6187` | `4532 / 2097 / 4945` | `124 / 90 / 147` | `232 / 123 / 163` |
+
+Storage:
+
+- The merged transplant checkpoint was negative and was pruned after evaluation.
+- Retained only small exact/broader metric exports under `runs/pv26_exhaustive_od_lane_train/lane60_stopproj_runtime_stop_head_merge_20260529/analysis_exports`.
+- Removed temporary YOLO weight downloads after the eval.
+
+Verification:
+
+- `python -m py_compile tools/merge_pv26_lane_family_task_heads.py test/test_merge_pv26_lane_family_task_heads.py`.
+- `python -m unittest discover -s test -p 'test_merge_pv26_lane_family_task_heads.py'`.
+- Full task-balance exact-val128 and broader-val512 runtime evals on `merged_lane_head.pt`.
+- Trained stop-line-head transplant exact-val128 and broader-val512 runtime evals.
+
+판단:
+
+- The known task-balance lower bound is now reproducible as an opt-in runtime/evaluator composite: broader lane/stop/cross `0.5628 / 0.5164 / 0.6187`.
+- It is still below all-task success because lane and stop-line remain under `0.60`.
+- The trained stop-line head should not be transplanted into the retained lane/cross checkpoint: it loses stop-line TP on exact and broader, and the tiny FP reduction does not compensate.
+- Do not repeat this as a stop-line-head transplant, epoch-count, or head-LR sweep. Future gains need a new candidate-coverage/geometry signal or a stronger lane instance recovery contract, not recombining this trained head.

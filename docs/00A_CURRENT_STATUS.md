@@ -111,16 +111,18 @@ Latest lane composite replay tooling status:
 - The restored flip probe intentionally exposes only `baseline`, `flip_centerline_avg`, and fixed `flip_centerline_avg_lane_cross_comp050`; it is not a new sweep surface for closed TTA/task-mask/vectorizer variants.
 - Focused tests pass, and a one-batch CUDA smoke on the retained merged checkpoint writes `metrics.csv` / `summary.json`. This is reproducibility status only, not F1 progress.
 
-Current best broader task-balance replay:
+Current best broader task-balance runtime composite:
 
-- branch/worktree: `exp/lane-family-f1/stopline-projcomp-flip-composite`.
-- code commit: none; artifact-only replay using the existing projection-competition CSV tool and the current flip-centerline reference row.
-- artifact retention: the original replay artifact was pruned from active `runs`; keep the metrics below as historical task-balance lower-bound evidence, not as a currently retained artifact pointer.
-- changed axis: keep current crosswalk-mask lane competition and hull crosswalk metrics, then replay projection-competition stop-line predictions from the same checkpoint/candidate pool.
-- lane / stop-line / crosswalk F1: `0.5628 / 0.5164 / 0.6187`.
-- stop-line TP/FP/FN: `126 / 91 / 145`.
+- branch/worktree: `exp/lane-family-f1/stopline-projcomp-runtime-contract`.
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/full_runtime_task_balance_exact_val128_epoch2/summary.json`
+- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/full_runtime_task_balance_val512_epoch2/summary.json`
+- runtime contract: run `tools/probe_pv26_lane_flip_tta.py` with fixed `flip_centerline_avg_lane_cross_comp050`, `crosswalk_polygon_mode=hull`, and `--lane60-experiment stopline_projection_comp_runtime`. This keeps the retained lane flip/crosswalk-mask path and uses the opt-in projection-competition stop-line runtime decoder instead of CSV replay.
+- exact-val128 lane / stop-line / crosswalk F1: `0.5888 / 0.5333 / 0.5988`.
+- exact TP/FP/FN lane: `1202 / 491 / 1188`; stop-line: `32 / 28 / 28`; crosswalk: `50 / 36 / 31`.
+- broader-val512 lane / stop-line / crosswalk F1: `0.5628 / 0.5164 / 0.6187`.
+- broader TP/FP/FN lane: `4532 / 2097 / 4945`; stop-line: `126 / 91 / 145`; crosswalk: `232 / 123 / 163`.
 - lane-family mean/min F1: `0.5659 / 0.5164`.
-- 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`.
+- 판단: this is no longer artifact-only CSV recombination; the known task-balance lower bound now has an opt-in runtime/evaluator contract. It still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`, and it is not a single raw checkpoint default.
 
 Latest stop-line projection-competition runtime contract train/eval result:
 
@@ -137,6 +139,7 @@ Latest stop-line projection-competition runtime contract train/eval result:
 - fixed exact-val128 eval of trained `best.pt`: objective `0.6419134349`, lane/stop/cross F1 `0.5635 / 0.5085 / 0.5854`, TP/FP/FN lane `1114 / 450 / 1276`, stop-line `30 / 28 / 30`, crosswalk `48 / 35 / 33`.
 - fixed broader-val512 eval of trained `best.pt`: objective `0.6392521545`, lane/stop/cross F1 `0.5413 / 0.5217 / 0.6144`, TP/FP/FN lane `4231 / 1926 / 5246`, stop-line `126 / 86 / 145`, crosswalk `231 / 126 / 164`.
 - train 판단: additional heads-only training with the projection-comp runtime metric slightly reduces broader stop-line FP (`91 -> 86`) while keeping TP fixed, but exact stop-line falls below the pre-training runtime eval (`0.5333 -> 0.5085`) and broader lane regresses (`0.5480 -> 0.5413`). This is not an all-task breakthrough and should not be repeated as a head-LR/epoch/loss-weight training sweep.
+- trained stop-line-head transplant check: merging only the trained stop-line head into the retained lane/cross checkpoint required explicit `--allow-source-extra-keys` because the trained head has newer auxiliary keys. Full task-balance runtime exact-val128 fell to lane/stop/cross `0.5888 / 0.5042 / 0.5988`, stop-line `30 / 29 / 30`; broader-val512 fell to `0.5628 / 0.5113 / 0.6187`, stop-line `124 / 90 / 147`. The merged checkpoint was pruned after eval; only metric exports remain under `runs/pv26_exhaustive_od_lane_train/lane60_stopproj_runtime_stop_head_merge_20260529/analysis_exports`.
 
 Latest projection/candidate tooling status:
 

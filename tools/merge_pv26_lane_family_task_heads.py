@@ -35,6 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crosswalk-checkpoint", required=True, help="Checkpoint providing crosswalk_head weights.")
     parser.add_argument("--output", required=True, help="Output merged checkpoint path.")
     parser.add_argument("--metadata", default="", help="Optional JSON metadata string to store in extra_state.")
+    parser.add_argument(
+        "--allow-source-extra-keys",
+        action="store_true",
+        help=(
+            "Allow source task-head keys that are absent from the base checkpoint. "
+            "Use this when transplanting from a newer compatible head architecture."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -57,14 +65,19 @@ def _replace_task_weights(
     source_state: dict[str, torch.Tensor],
     *,
     task_name: str,
+    allow_source_extra_keys: bool = False,
 ) -> int:
     replaced = 0
     for key, value in source_state.items():
         if not _matches_task(key, task_name):
             continue
         if key not in merged_state:
-            raise KeyError(f"source key for {task_name} is missing in base checkpoint: {key}")
-        if tuple(merged_state[key].shape) != tuple(value.shape):
+            if not allow_source_extra_keys:
+                raise KeyError(f"source key for {task_name} is missing in base checkpoint: {key}")
+            merged_state[key] = value.detach().clone()
+            replaced += 1
+            continue
+        if isinstance(merged_state[key], torch.Tensor) and tuple(merged_state[key].shape) != tuple(value.shape):
             raise ValueError(
                 f"shape mismatch for {task_name} key {key}: "
                 f"base={tuple(merged_state[key].shape)} source={tuple(value.shape)}"
@@ -100,6 +113,7 @@ def main() -> None:
             merged_heads,
             source["heads_state_dict"],
             task_name=task_name,
+            allow_source_extra_keys=bool(args.allow_source_extra_keys),
         )
         for task_name, source in sources.items()
     }
@@ -118,6 +132,7 @@ def main() -> None:
         "lane_checkpoint": str(lane_path),
         "stop_line_checkpoint": str(stop_line_path),
         "crosswalk_checkpoint": str(crosswalk_path),
+        "allow_source_extra_keys": bool(args.allow_source_extra_keys),
         "replacements": replacements,
         "metadata": metadata,
     }
