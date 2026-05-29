@@ -1593,6 +1593,49 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(all(parameter.requires_grad for parameter in stop_line_params))
         self.assertTrue(all(id(parameter) in optimizer_params for parameter in stop_line_params))
 
+    def test_lane_family_stopline_static_trunk_keeps_only_stopline_modules_in_train_mode(self) -> None:
+        from model.engine.trainer import PV26Trainer, build_pv26_optimizer, configure_pv26_train_stage
+
+        adapter = _DummyAdapter()
+        heads = _DummyRoadmarkHeads()
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_stopline_static_trunk",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=0.0, head_lr=1.0e-4)
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+
+        self.assertEqual(summary["freeze_policy"], "lane_family_stopline_static_trunk")
+        self.assertEqual(summary["head_training_policy"], "stopline_only")
+        self.assertEqual(summary["trainable_trunk_params"], 0)
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
+        self.assertFalse(any(id(parameter) in optimizer_params for parameter in heads.lane_head.parameters()))
+        self.assertTrue(all(id(parameter) in optimizer_params for parameter in heads.stop_line_head.parameters()))
+
+        trainer = PV26Trainer(
+            adapter,
+            heads,
+            stage="stage_4_lane_family_finetune",
+            freeze_policy="lane_family_stopline_static_trunk",
+            trunk_lr=0.0,
+            head_lr=1.0e-4,
+        )
+        trainer.adapter.raw_model.train()
+        trainer.heads.train()
+        trainer.apply_freeze_policy_train_modes()
+
+        self.assertFalse(trainer.adapter.raw_model.training)
+        self.assertFalse(trainer.heads.training)
+        self.assertFalse(heads.lane_head.training)
+        self.assertTrue(heads.stop_line_head.training)
+        self.assertFalse(heads.crosswalk_head.training)
+
     def test_lane_family_stopline_only_trains_stopline_only_architecture(self) -> None:
         from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
         from model.net import PV26Heads

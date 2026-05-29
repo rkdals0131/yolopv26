@@ -15426,3 +15426,72 @@ Verification:
 - The appended conditional rows do not act as bounded rescues; they flood lane FP and can also perturb crosswalk.
 - Do not repeat this as merge-mode, threshold, dedupe-distance, seed/objectness target, row-x weight, head-LR, freeze-policy, epoch-count, or same conditional-row contract tuning.
 - Reopen conditional instance work only with a materially new instance-existence/quality signal that first protects fixed smoke TP/FP/FN.
+
+## 296. 2026-05-30 Stop-line static-only specialist: frozen-mode confound removed, no stop-line TP recovered
+
+Context:
+
+- The lane seed-only diagnostic showed that `requires_grad=False` alone does not keep frozen BatchNorm buffers fixed when the whole model enters train mode.
+- Earlier stop-line-only specialist experiments trained only stop-line modules by parameter selection, but they did not force the frozen trunk and non-stop heads back to eval mode during train steps.
+- The narrow follow-up here tested whether removing that train-mode drift confound makes stop-line-only specialist training viable under the existing projection-competition runtime decode.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-static-only-specialist`.
+- Added freeze policy `lane_family_stopline_static_trunk`:
+  - trunk parameters frozen
+  - all heads frozen first
+  - only `stop_line_modules()` trainable
+  - during train steps, frozen trunk and all heads are forced to eval mode, then stop-line modules are switched back to train mode.
+- Added `stopline_static_only_specialist` to `tools/run_pv26_lane60_probe.py`:
+  - based on `stopline_projection_comp_runtime`
+  - freeze policy `lane_family_stopline_static_trunk`
+  - trunk LR `0.0`
+  - head LR `2e-4`
+  - loss weights det/TL/lane/crosswalk `0`, stop-line `4.0`
+  - task-positive sampling `stopline`
+  - projection-competition stop-line runtime and hull crosswalk retained.
+- Added trainer test coverage proving only stop-line modules stay train-mode.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_static_only_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_025025`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4 task-best F1: lane `0.5547`, stop-line `0.0000`, crosswalk `0.7273`. This is not final evidence because it is the training validation slice, not fixed epoch-2 evaluation.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| static stopline-only specialist | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_static_only_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_025025/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because fixed smoke recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `671M`, plus the auto-downloaded root `yolo26s.pt` was about `20M`.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `6.7M`.
+
+Verification:
+
+- `python -m py_compile model/engine/trainer.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_trainer.py' -k stopline_static_trunk`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `git diff --check`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "stopline_static_only_specialist"`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- `lane_family_stopline_static_trunk` is useful as a freeze-mode guard for future stop-line-only diagnostics.
+- As a stop-line improvement method, it is negative: removing frozen-mode drift does not recover any stop-line TP under the current stop-line head/projection-comp contract.
+- Do not repeat this as stopline-only sampler, static freeze-mode, head-LR, epoch-count, or same projection-comp runtime training sweep.
+- Reopen stop-line-only training only with a materially new candidate/geometry signal that first improves fixed smoke TP/FP/FN.

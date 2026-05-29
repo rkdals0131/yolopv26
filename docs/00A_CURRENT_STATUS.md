@@ -37,6 +37,8 @@ Latest stop-line priority static-trunk heads-only smoke generalized the frozen-B
 
 Latest lane conditional row rescue-append smoke kept the retained row-scan/tangent vectorizer output and appended conditional row decoder candidates with distance dedupe, instead of replacing row-scan outright. The CUDA `64` train-batch smoke reused the existing dataset root and had skipped steps `0`, but fixed val4 epoch-2 was lane/stop/cross `0.2049 / 0.0000 / 0.3636`, with lane TP/FP/FN `29 / 168 / 57`, stop-line `0 / 3 / 2`, and crosswalk `2 / 2 / 5`. Exact-val128 and broader-val512 were skipped because appending the conditional rows caused severe lane FP blow-up and crosswalk regression. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `7.3M`.
 
+Latest stop-line static-only specialist smoke added `lane_family_stopline_static_trunk`, which trains only stop-line modules while keeping the frozen trunk and non-stop heads in eval mode. The CUDA `64` train-batch smoke reused the existing dataset root and had skipped steps `0`, but fixed val4 epoch-2 stayed at lane/stop/cross `0.5507 / 0.0000 / 0.5455`, with lane TP/FP/FN `38 / 14 / 48`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because the static stopline-only training recovered no stop-line TP. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `6.7M`.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -87,6 +89,7 @@ Run:
 - latest lane conditional seed-branch-only trace fixed-BN smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_021142/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - latest stop-line priority static-trunk heads-only smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_022254/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - latest lane conditional row rescue-append smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_rescue_append_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_023911/analysis_exports/fixed_val4_epoch2/metrics.csv`
+- latest stop-line static-only specialist smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_static_only_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_025025/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
