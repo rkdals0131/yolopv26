@@ -364,6 +364,45 @@ class PV26PostprocessTests(unittest.TestCase):
         decoded_high_verifier = postprocess_pv26_batch(predictions, _meta_identity(), config=config)
         self.assertEqual(len(decoded_high_verifier[0]["stop_lines"]), 1)
 
+    def test_stopline_patch_segment_verifier_score_can_gate_decode(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        predictions["stop_line_patch_segment_logits"] = torch.full(
+            (1, STOP_LINE_QUERY_COUNT),
+            -8.0,
+            dtype=torch.float32,
+        )
+        predictions["stop_line_patch_segment_logits"][0, 0] = 8.0
+        predictions["stop_line_patch_segment_verifier_logits"] = torch.full(
+            (1, STOP_LINE_QUERY_COUNT),
+            -8.0,
+            dtype=torch.float32,
+        )
+        predictions["stop_line_patch_segment_points"] = torch.zeros(
+            (1, STOP_LINE_QUERY_COUNT, 2, 2),
+            dtype=torch.float32,
+        )
+        predictions["stop_line_patch_segment_points"][0, 0, 0] = torch.tensor([100.0 / 800.0, 500.0 / 608.0])
+        predictions["stop_line_patch_segment_points"][0, 0, 1] = torch.tensor([340.0 / 800.0, 500.0 / 608.0])
+
+        config = PV26PostprocessConfig(
+            det_conf_threshold=0.999,
+            lane_obj_threshold=0.999,
+            crosswalk_obj_threshold=0.999,
+            stop_line_patch_segment_set_enabled=True,
+            stop_line_patch_segment_set_score_threshold=0.90,
+            stop_line_patch_segment_verifier_score_weight=1.0,
+        )
+        decoded_low_verifier = postprocess_pv26_batch(predictions, _meta_identity(), config=config)
+        self.assertEqual(len(decoded_low_verifier[0]["stop_lines"]), 0)
+
+        predictions["stop_line_patch_segment_verifier_logits"][0, 0] = 8.0
+        decoded_high_verifier = postprocess_pv26_batch(predictions, _meta_identity(), config=config)
+        self.assertEqual(len(decoded_high_verifier[0]["stop_lines"]), 1)
+
     def test_stopline_endpoint_pair_segment_verifier_can_gate_decode(self) -> None:
         predictions = _make_prediction_batch()
         predictions["det"] = torch.zeros_like(predictions["det"])

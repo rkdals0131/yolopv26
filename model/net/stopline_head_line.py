@@ -112,6 +112,22 @@ class StopLineDenseLocalHead(nn.Module):
             nn.SiLU(inplace=True),
             nn.Linear(self.hidden_dim, 4),
         )
+        self.local_patch_grid_size = 7
+        self.local_patch_along_radius_px = 192.0
+        self.local_patch_normal_radius_px = 64.0
+        self.local_patch_encoder = nn.Sequential(
+            nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(self.hidden_dim),
+            nn.SiLU(inplace=True),
+        )
+        self.patch_segment_query_mlp = nn.Sequential(
+            nn.Linear(self.hidden_dim * 3 + 5, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, 4),
+        )
 
     def forward(
         self,
@@ -176,6 +192,13 @@ class StopLineDenseLocalHead(nn.Module):
             segment_seed_logits,
             angle,
         )
+        patch_segment_logits, patch_segment_points, patch_segment_verifier_logits = (
+            self._decode_local_patch_segment_set(
+                selector_feat,
+                segment_seed_logits,
+                angle,
+            )
+        )
         denoise_logits, denoise_points, denoise_targets, denoise_valid = self._decode_denoised_segment_set(
             selector_feat,
             encoded=encoded,
@@ -217,6 +240,10 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_axis_segment_logits": axis_segment_logits,
             "stop_line_axis_segment_points": axis_segment_points,
             "stop_line_axis_segment_verifier_logits": axis_segment_verifier_logits,
+            "stop_line_patch_segment_seed_logits": segment_seed_logits,
+            "stop_line_patch_segment_logits": patch_segment_logits,
+            "stop_line_patch_segment_points": patch_segment_points,
+            "stop_line_patch_segment_verifier_logits": patch_segment_verifier_logits,
             "stop_line_segment_denoise_logits": denoise_logits,
             "stop_line_segment_denoise_points": denoise_points,
             "stop_line_segment_denoise_targets": denoise_targets,
@@ -412,6 +439,88 @@ class StopLineDenseLocalHead(nn.Module):
         normal_delta_px = torch.tanh(query_raw[..., 2:3]) * float(self.axis_profile_normal_radius_px)
         half_length_px = F.softplus(query_raw[..., 3:4]) * 160.0 + 8.0
         normal_axis = torch.stack([-seed_axis[..., 1], seed_axis[..., 0]], dim=-1)
+        network_xy = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 2)
+        center_xy = seed_xy + (seed_axis * along_delta_px + normal_axis * normal_delta_px) / network_xy
+        start_xy = center_xy - seed_axis * half_length_px / network_xy
+        end_xy = center_xy + seed_axis * half_length_px / network_xy
+        segment_points = torch.stack([start_xy, end_xy], dim=2).clamp(0.0, 1.0)
+        segment_verifier_logits = self._verify_segments(feature_map, seed_features, segment_points)
+        if query_count == int(self.output_queries):
+            return segment_logits, segment_points, segment_verifier_logits
+        padded_logits = segment_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_verifier_logits = segment_verifier_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_points = segment_points.new_zeros((batch_size, int(self.output_queries), 2, 2))
+        padded_logits[:, :query_count] = segment_logits
+        padded_verifier_logits[:, :query_count] = segment_verifier_logits
+        padded_points[:, :query_count] = segment_points
+        return padded_logits, padded_points, padded_verifier_logits
+
+    def _decode_local_patch_segment_set(
+        self,
+        feature_map: torch.Tensor,
+        seed_logits: torch.Tensor,
+        angle: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, channels, _height, _width = feature_map.shape
+        top_scores, top_indices, seed_features, seed_xy = self._top_seed_features(feature_map, seed_logits)
+        query_count = int(seed_xy.shape[1])
+        if query_count == 0:
+            logits = feature_map.new_full((batch_size, int(self.output_queries)), -10.0)
+            points = feature_map.new_zeros((batch_size, int(self.output_queries), 2, 2))
+            verifier = feature_map.new_full((batch_size, int(self.output_queries)), -10.0)
+            return logits, points, verifier
+        flat_angle = angle.flatten(2).transpose(1, 2)
+        angle_gather_index = top_indices.unsqueeze(-1).expand(-1, -1, 2)
+        seed_axis = torch.gather(flat_angle, dim=1, index=angle_gather_index)
+        seed_axis = F.normalize(seed_axis, dim=-1, eps=1.0e-6)
+        normal_axis = torch.stack([-seed_axis[..., 1], seed_axis[..., 0]], dim=-1)
+        grid_size = int(self.local_patch_grid_size)
+        along_offsets = torch.linspace(
+            -float(self.local_patch_along_radius_px),
+            float(self.local_patch_along_radius_px),
+            steps=grid_size,
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        ).view(1, 1, grid_size, 1, 1)
+        normal_offsets = torch.linspace(
+            -float(self.local_patch_normal_radius_px),
+            float(self.local_patch_normal_radius_px),
+            steps=grid_size,
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        ).view(1, 1, 1, grid_size, 1)
+        network_scale = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 1, 1, 2)
+        patch_offsets = seed_axis[:, :, None, None, :] * along_offsets
+        patch_offsets = patch_offsets + normal_axis[:, :, None, None, :] * normal_offsets
+        patch_xy = seed_xy[:, :, None, None, :] + patch_offsets / network_scale
+        patch_grid = patch_xy.clamp(0.0, 1.0).mul(2.0).sub(1.0).view(
+            batch_size,
+            query_count * grid_size * grid_size,
+            1,
+            2,
+        )
+        sampled = F.grid_sample(
+            feature_map,
+            patch_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        sampled = sampled.view(batch_size, channels, query_count, grid_size, grid_size)
+        patch = sampled.permute(0, 2, 1, 3, 4).reshape(batch_size * query_count, channels, grid_size, grid_size)
+        encoded_patch = self.local_patch_encoder(patch)
+        encoded_patch = encoded_patch.view(batch_size, query_count, channels, grid_size, grid_size)
+        patch_mean = encoded_patch.mean(dim=(-1, -2))
+        patch_max = encoded_patch.amax(dim=(-1, -2))
+        query_input = torch.cat(
+            [seed_features, patch_mean, patch_max, seed_xy, seed_axis, top_scores.unsqueeze(-1)],
+            dim=-1,
+        )
+        query_raw = self.patch_segment_query_mlp(query_input)
+        segment_logits = query_raw[..., 0] + top_scores
+        along_delta_px = torch.tanh(query_raw[..., 1:2]) * float(self.local_patch_along_radius_px)
+        normal_delta_px = torch.tanh(query_raw[..., 2:3]) * float(self.local_patch_normal_radius_px)
+        half_length_px = F.softplus(query_raw[..., 3:4]) * 180.0 + 8.0
         network_xy = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 2)
         center_xy = seed_xy + (seed_axis * along_delta_px + normal_axis * normal_delta_px) / network_xy
         start_xy = center_xy - seed_axis * half_length_px / network_xy

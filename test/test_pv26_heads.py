@@ -235,6 +235,9 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(tuple(outputs["stop_line_endpoint_pair_verifier_logits"].shape), (1, 4))
         self.assertEqual(tuple(outputs["stop_line_axis_segment_logits"].shape), (1, 4))
         self.assertEqual(tuple(outputs["stop_line_axis_segment_points"].shape), (1, 4, 2, 2))
+        self.assertEqual(tuple(outputs["stop_line_patch_segment_logits"].shape), (1, 4))
+        self.assertEqual(tuple(outputs["stop_line_patch_segment_points"].shape), (1, 4, 2, 2))
+        self.assertEqual(tuple(outputs["stop_line_patch_segment_verifier_logits"].shape), (1, 4))
         self.assertGreater(int(outputs["stop_line_segment_denoise_valid"].sum().item()), 0)
         self.assertTrue(torch.isfinite(outputs["stop_line_segment_denoise_points"]).all())
         self.assertTrue(torch.isfinite(outputs["stop_line_axis_distance"]).all())
@@ -242,6 +245,7 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["stop_line_endpoint_offset"]).all())
         self.assertTrue(torch.isfinite(outputs["stop_line_endpoint_pair_points"]).all())
         self.assertTrue(torch.isfinite(outputs["stop_line_axis_segment_points"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line_patch_segment_points"]).all())
 
 
 if __name__ == "__main__":

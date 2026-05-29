@@ -380,6 +380,17 @@ class PV26LossRuntimeTests(unittest.TestCase):
                     0.5,
                     requires_grad=True,
                 ),
+                "stop_line_patch_segment_seed_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_patch_segment_logits": torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), requires_grad=True),
+                "stop_line_patch_segment_verifier_logits": torch.zeros(
+                    (batch_size, STOP_LINE_QUERY_COUNT),
+                    requires_grad=True,
+                ),
+                "stop_line_patch_segment_points": torch.full(
+                    (batch_size, STOP_LINE_QUERY_COUNT, 2, 2),
+                    0.5,
+                    requires_grad=True,
+                ),
                 "stop_line_segment_denoise_logits": torch.zeros(
                     (batch_size, STOP_LINE_QUERY_COUNT),
                     requires_grad=True,
@@ -409,6 +420,8 @@ class PV26LossRuntimeTests(unittest.TestCase):
             loss_weights={"lane": 0.0, "crosswalk": 0.0},
             stopline_segment_set_aux_weight=1.0,
             stopline_segment_verifier_aux_weight=1.0,
+            stopline_patch_segment_set_aux_weight=1.0,
+            stopline_patch_segment_verifier_aux_weight=1.0,
             stopline_segment_denoise_aux_weight=1.0,
             stopline_segment_verifier_target_mode="metric_quality",
             stopline_segment_verifier_quality_tau_px=18.0,
@@ -418,11 +431,16 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(losses["total"]))
         self.assertEqual(criterion.export_config()["stopline_segment_verifier_target_mode"], "metric_quality")
         self.assertAlmostEqual(criterion.export_config()["stopline_segment_verifier_quality_tau_px"], 18.0)
+        self.assertAlmostEqual(criterion.export_config()["stopline_patch_segment_set_aux_weight"], 1.0)
         losses["total"].backward()
         self.assertIsNotNone(predictions["stop_line_segment_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_verifier_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_points"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_seed_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_patch_segment_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_patch_segment_verifier_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_patch_segment_points"].grad)
+        self.assertIsNotNone(predictions["stop_line_patch_segment_seed_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_denoise_logits"].grad)
         self.assertIsNotNone(predictions["stop_line_segment_denoise_points"].grad)
 

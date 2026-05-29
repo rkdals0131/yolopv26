@@ -112,6 +112,10 @@ class PV26PostprocessConfig:
     stop_line_axis_segment_set_score_threshold: float = 0.50
     stop_line_axis_segment_set_max_segments: int = 3
     stop_line_axis_segment_verifier_score_weight: float = 0.0
+    stop_line_patch_segment_set_enabled: bool = False
+    stop_line_patch_segment_set_score_threshold: float = 0.50
+    stop_line_patch_segment_set_max_segments: int = 3
+    stop_line_patch_segment_verifier_score_weight: float = 0.0
     stop_line_projection_comp_enabled: bool = False
     stop_line_projection_comp_proposal_source: str = "max"
     stop_line_projection_comp_min_gap: float = 4.0
@@ -2815,6 +2819,9 @@ def _decode_stop_line_rows(
     axis_segment_logits: torch.Tensor | None = None,
     axis_segment_points: torch.Tensor | None = None,
     axis_segment_verifier_logits: torch.Tensor | None = None,
+    patch_segment_logits: torch.Tensor | None = None,
+    patch_segment_points: torch.Tensor | None = None,
+    patch_segment_verifier_logits: torch.Tensor | None = None,
     segment_set_enabled: bool = False,
     segment_set_score_threshold: float = 0.50,
     segment_set_max_segments: int = 3,
@@ -2823,6 +2830,10 @@ def _decode_stop_line_rows(
     axis_segment_set_score_threshold: float = 0.50,
     axis_segment_set_max_segments: int = 3,
     axis_segment_verifier_score_weight: float = 0.0,
+    patch_segment_set_enabled: bool = False,
+    patch_segment_set_score_threshold: float = 0.50,
+    patch_segment_set_max_segments: int = 3,
+    patch_segment_verifier_score_weight: float = 0.0,
     haf_enabled: bool = False,
     haf_valid_threshold: float = 0.50,
     haf_min_votes: int = 4,
@@ -2914,6 +2925,18 @@ def _decode_stop_line_rows(
                 verifier_score_weight=float(axis_segment_verifier_score_weight),
             )
         )
+    if bool(patch_segment_set_enabled):
+        segment_set_decoded.extend(
+            _decode_stopline_segment_set(
+                segment_logits=patch_segment_logits,
+                segment_points=patch_segment_points,
+                segment_verifier_logits=patch_segment_verifier_logits,
+                meta=meta,
+                score_threshold=float(patch_segment_set_score_threshold),
+                max_segments=int(patch_segment_set_max_segments),
+                verifier_score_weight=float(patch_segment_verifier_score_weight),
+            )
+        )
     if bool(endpoint_pair_enabled):
         segment_set_decoded.extend(
             _decode_stopline_endpoint_pair_segments(
@@ -3002,6 +3025,7 @@ def _decode_stop_line_rows(
                         int(max_components),
                         int(segment_set_max_segments),
                         int(axis_segment_set_max_segments),
+                        int(patch_segment_set_max_segments),
                         int(endpoint_pair_max_segments),
                         int(endpoint_pair_segment_max_segments),
                     )
@@ -3047,6 +3071,7 @@ def _decode_stop_line_rows(
             int(max_components),
             int(segment_set_max_segments),
             int(axis_segment_set_max_segments),
+            int(patch_segment_set_max_segments),
             int(endpoint_pair_max_segments),
             int(endpoint_pair_segment_max_segments),
         )
@@ -3155,6 +3180,9 @@ def postprocess_pv26_batch(
     stop_line_axis_segment_logits = predictions.get("stop_line_axis_segment_logits")
     stop_line_axis_segment_points = predictions.get("stop_line_axis_segment_points")
     stop_line_axis_segment_verifier_logits = predictions.get("stop_line_axis_segment_verifier_logits")
+    stop_line_patch_segment_logits = predictions.get("stop_line_patch_segment_logits")
+    stop_line_patch_segment_points = predictions.get("stop_line_patch_segment_points")
+    stop_line_patch_segment_verifier_logits = predictions.get("stop_line_patch_segment_verifier_logits")
     crosswalk_mask_logits = predictions.get("crosswalk_mask_logits")
     crosswalk_center_logits = predictions.get("crosswalk_center_logits")
     feature_shapes = predictions.get("det_feature_shapes")
@@ -3339,6 +3367,21 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_axis_segment_verifier_logits, torch.Tensor)
                         else None
                     ),
+                    patch_segment_logits=(
+                        stop_line_patch_segment_logits[batch_index]
+                        if isinstance(stop_line_patch_segment_logits, torch.Tensor)
+                        else None
+                    ),
+                    patch_segment_points=(
+                        stop_line_patch_segment_points[batch_index]
+                        if isinstance(stop_line_patch_segment_points, torch.Tensor)
+                        else None
+                    ),
+                    patch_segment_verifier_logits=(
+                        stop_line_patch_segment_verifier_logits[batch_index]
+                        if isinstance(stop_line_patch_segment_verifier_logits, torch.Tensor)
+                        else None
+                    ),
                     segment_set_enabled=config.stop_line_segment_set_enabled,
                     segment_set_score_threshold=config.stop_line_segment_set_score_threshold,
                     segment_set_max_segments=config.stop_line_segment_set_max_segments,
@@ -3347,6 +3390,10 @@ def postprocess_pv26_batch(
                     axis_segment_set_score_threshold=config.stop_line_axis_segment_set_score_threshold,
                     axis_segment_set_max_segments=config.stop_line_axis_segment_set_max_segments,
                     axis_segment_verifier_score_weight=config.stop_line_axis_segment_verifier_score_weight,
+                    patch_segment_set_enabled=config.stop_line_patch_segment_set_enabled,
+                    patch_segment_set_score_threshold=config.stop_line_patch_segment_set_score_threshold,
+                    patch_segment_set_max_segments=config.stop_line_patch_segment_set_max_segments,
+                    patch_segment_verifier_score_weight=config.stop_line_patch_segment_verifier_score_weight,
                     haf_enabled=config.stop_line_haf_enabled,
                     haf_valid_threshold=config.stop_line_haf_valid_threshold,
                     haf_min_votes=config.stop_line_haf_min_votes,

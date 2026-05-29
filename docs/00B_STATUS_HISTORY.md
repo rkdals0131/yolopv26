@@ -14524,3 +14524,86 @@ Verification:
 - Task-routed distillation is executable and produces a real single-checkpoint student, but it does not solve the teacher-composition problem.
 - It improves exact lane versus some recent trained checkpoints but fails stop-line and crosswalk gates, and stop-line stays below the retained projection-comp exact reference.
 - Do not repeat this as teacher-map, distill-weight, head-LR, epoch-count, same task-positive sampler, or same teacher-checkpoint tuning. Reopen only with a materially new task-specific routing, instance, or geometry signal that first improves fixed exact TP/FP/FN.
+
+## 283. 2026-05-29 Stop-line local 2D patch segment head
+
+Context:
+
+- The architecture-level review pointed at stop-line midpoint/extent as a contract problem, not only a threshold or postprocess problem.
+- Prior stop-line segment attempts included one-dimensional axis-profile readout and sparse seeded segment MLPs. This branch tested a distinct local `7x7` two-dimensional patch encoder around dense stop-line seeds, then emitted a small set of candidate segments plus verifier logits.
+- The intent was to change candidate geometry generation while keeping retained lane/crosswalk settings stable.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-local-patch-segment-head`.
+- Added opt-in local patch segment outputs in `model/net/stopline_head_line.py`: seed logits, segment logits, segment points, and verifier logits.
+- Added patch segment set/verifier auxiliary losses in `model/engine/loss.py`.
+- Added runtime decode/config plumbing in `model/engine/postprocess.py`, `tools/pv26_train/config.py`, and `tools/pv26_train/cli.py`.
+- Added probe preset `stopline_local_patch_segment_head` in `tools/run_pv26_lane60_probe.py`, with retained lane `row_scan_tangent`, crosswalk `hull`, lane-family heads-only freeze, `trunk_lr=0`, and `head_lr=1e-4`.
+- Tests cover head output shape/finiteness, loss backprop, postprocess verifier gating, and train-config parsing.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Real CUDA smoke: `1` epoch, `8` train batches, `4` val batches, batch size `4`.
+- Real CUDA main: `3` epochs, `512` train batches per epoch, `128` val batches, batch size `4`, device `cuda:0`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_local_patch_segment_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_221343`.
+- Data root: existing `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+
+Internal phase summary:
+
+| Signal | Value |
+| --- | ---: |
+| epoch 1 phase objective | `0.5937` |
+| epoch 2 phase objective | `0.6173` |
+| epoch 3 phase objective | `0.6307` |
+| task-best lane F1 | `0.5628` |
+| task-best stop-line F1 | `0.4870` |
+| task-best crosswalk F1 | `0.7037` |
+
+- The internal task-best values are not final evidence because the maintained gate is fixed exact epoch-2 runtime eval before broader-val512.
+
+Fixed exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7266` | `0.4636` | `0.5660` | `1108 / 417 / 1282` |
+| stop_line | `0.4333` | `0.4333` | `0.4333` | `26 / 34 / 34` |
+| crosswalk | `0.5765` | `0.6049` | `0.5904` | `49 / 36 / 32` |
+
+- Fixed exact phase objective: `0.6200894597`.
+- Lane-family mean F1: `0.5299076254`.
+- Primary projection-comp exact reference remains stronger on stop-line: `32 / 28 / 28`, F1 `0.5333`.
+- Crosswalk remains below `0.60`.
+- Broader-val512 was skipped because the fixed exact gate failed.
+
+Storage:
+
+- Removed root `yolo26n.pt` and `yolo26s.pt` after tests/training created them.
+- Removed the smoke run.
+- Pruned duplicate `last.pt`, `best_detector.pt`, `best_traffic_light.pt`, `best_lane.pt`, `best_stop_line.pt`, and `best_crosswalk.pt` from the main run; retained only `phase_4/checkpoints/best.pt`.
+- Removed the main run TensorBoard directory.
+- Retained run size after cleanup: about `115M`, with best checkpoint, summaries/history, and exact eval exports preserved.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_run_pv26_train.py test/test_pv26_postprocess.py test/test_pv26_loss_runtime.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_docs_sync.py'`.
+- `git diff --check`.
+- CUDA smoke train.
+- CUDA main `3` epoch / `512` train-batch run.
+- CUDA fixed exact-val128 epoch-2 eval.
+- Cleanup verified by retained run size and checkpoint directory.
+
+판단:
+
+- The local 2D patch segment contract is implemented, trainable, and evaluable, but it is exact-negative for the real gate.
+- It does not beat baseline exact stop-line `26 / 30 / 34`, F1 `0.4483`, because it preserves TP while adding FP.
+- It is also below projection-competition exact and leaves crosswalk under `0.60`, so it is not a broader candidate.
+- Do not repeat this as patch-grid/radius, patch aux/verifier weight, score threshold, max-segment, head-LR, epoch-count, or same sampler tuning. Reopen only with a materially different candidate-coverage/verification contract that first improves fixed exact TP/FP/FN.
