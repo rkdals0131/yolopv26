@@ -47,6 +47,8 @@ Latest stop-line focus-crop + task-conflict negative smoke added an opt-in stop-
 
 Latest stop/cross static-trunk lane-frozen smoke added `lane_family_stop_cross_static_trunk` to keep the frozen detector trunk and lane head in eval mode while training only stop-line/crosswalk heads. It reused the existing dataset root, indexed `429350` records, and ran CUDA `2x64` train-batch smoke with skipped steps `0`. Static mode did protect lane on fixed val4, but the stop-line specialist recovered no smoke TP and exact-val128 was negative: retained primary stop-line was `30 / 30 / 30`, F1 `0.5000`, while the static specialist was `30 / 32 / 30`, F1 `0.4918`. Broader-val512 and larger training were skipped. Negative checkpoints, TensorBoard, and root weights were pruned; retained run size is about `2.4M`.
 
+Latest stop-line context segment-set smoke added an opt-in interacting seed-query segment decoder on top of the stop-line dense head. It reused the existing dataset root, indexed `429350` records, and ran CUDA `2x64` train-batch smoke with skipped steps `0`; no dataset copy was created. Fixed val4 failed to recover any stop-line TP (`0 / 3 / 2`, F1 `0.0000`), and exact-val128 confirmed the branch as negative: lane/stop/cross `0.5447 / 0.3898 / 0.5868`, with stop-line TP/FP/FN `23 / 35 / 37`. This is below baseline exact `0.4483` and projection-competition exact `0.5167`, so broader-val512 and larger-range training were skipped. Negative checkpoints, TensorBoard, and root weights were pruned after export.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -102,6 +104,7 @@ Run:
 - latest lane static-only specialist router smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_static_only_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_033045/analysis_exports/router_val4_epoch2_best/metrics.csv`
 - latest stop-line focus-crop conflict-negative router smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_focus_crop_conflict_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_034652/analysis_exports/router_val4_epoch2_best/metrics.csv`
 - latest stop/cross static-trunk lane-frozen exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_040136/analysis_exports/router_exact_val128_epoch2_best/metrics.csv`
+- latest stop-line context segment-set exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_context_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_042145/analysis_exports/context_segment_eval_val128_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 

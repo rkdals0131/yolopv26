@@ -15780,3 +15780,90 @@ Verification:
 - It does not create a better stop-line specialist. On exact-val128, TP stayed fixed at `30` and FP increased from `30` to `32`.
 - Do not repeat this as static stop/cross freeze policy, stop/cross sampler order, head-LR, epoch-count, or larger-range scaling.
 - Reopen stop/cross retention training only with a materially new stop-line candidate/geometry or verifier signal that first improves fixed exact TP/FP/FN.
+
+## 301. 2026-05-30 Stop-line context segment set: interacting seed queries did not recover stop-line geometry
+
+Context:
+
+- GPT Pro's architecture-level review argued that simple postprocess/ranking work is probably insufficient, and that stop-line may need a changed segment-emission contract.
+- The simple dense-seeded segment-set family was already closed, so this experiment deliberately changed the architecture axis: top-K stop-line dense seeds interact through a small Transformer encoder before emitting candidate segments and verifier logits.
+- The hypothesis was that cross-seed context might recover along-axis midpoint/extent better than a one-shot seed MLP, while still keeping a bounded segment set and FP control.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-context-segment-set`.
+- Added opt-in context segment outputs to `StopLineDenseLocalHead`:
+  - `stop_line_context_segment_seed_logits`;
+  - `stop_line_context_segment_logits`;
+  - `stop_line_context_segment_points`;
+  - `stop_line_context_segment_verifier_logits`.
+- Added loss/config/runtime plumbing:
+  - `stopline_context_segment_set_aux_weight`;
+  - `stopline_context_segment_verifier_aux_weight`;
+  - `stop_line_context_segment_set_enabled`;
+  - `stop_line_context_segment_set_score_threshold`;
+  - `stop_line_context_segment_set_max_segments`;
+  - `stop_line_context_segment_verifier_score_weight`.
+- Added probe preset `stopline_context_segment_set`.
+- Lane and crosswalk decode were not the intended axis: lane stayed on row-scan/tangent settings and crosswalk stayed `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_context_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_042145`.
+- CUDA smoke: `2` epochs, `64` train batches per epoch, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Best internal phase objective: epoch `1`, `0.6523070210331471`. This is not gate success because fixed task F1 checks decide expansion.
+
+Fixed val4:
+
+| Metric | Value |
+| --- | ---: |
+| phase objective | `0.6080451697172513` |
+| lane F1 | `0.4923` |
+| stop-line F1 | `0.0000` |
+| crosswalk F1 | `0.3636` |
+| lane TP/FP/FN | `32 / 12 / 54` |
+| stop-line TP/FP/FN | `0 / 3 / 2` |
+| crosswalk TP/FP/FN | `2 / 2 / 5` |
+
+Fixed exact-val128:
+
+| Metric | Value |
+| --- | ---: |
+| phase objective | `0.6110894340757456` |
+| lane F1 | `0.5447` |
+| stop-line F1 | `0.3898` |
+| crosswalk F1 | `0.5868` |
+| lane TP/FP/FN | `1081 / 498 / 1309` |
+| stop-line TP/FP/FN | `23 / 35 / 37` |
+| crosswalk TP/FP/FN | `49 / 37 / 32` |
+
+- Fixed val4 artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_context_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_042145/analysis_exports/context_segment_eval_val4_epoch2/metrics.csv`.
+- Fixed exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_context_segment_set_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_042145/analysis_exports/context_segment_eval_val128_epoch2/metrics.csv`.
+- Broader-val512 and larger-range training were skipped because smoke recovered no stop-line TP and exact was below both baseline exact stop-line F1 `0.4483` and projection-competition exact `0.5167`.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- The root `yolo26n.pt` / `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative exact evaluation.
+- Retained run size after cleanup: about `17M`.
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_pv26_postprocess.py test/test_run_pv26_train.py`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA `2x64` train-batch smoke.
+- CUDA fixed val4 and exact-val128 evaluations.
+
+판단:
+
+- The interacting context segment set is a real architecture-side candidate, distinct from selector/ranking-only and from the earlier one-shot dense-seeded segment MLP.
+- It still does not solve the no-GT along-axis midpoint/extent problem. Exact stop-line TP falls below projection-competition by `8` TP and adds `6` FP versus the `31 / 29 / 29` projection-comp reference.
+- Do not repeat this as context-layer count, query count, score threshold, verifier-score weight, aux-weight, head-LR, epoch-count, or larger-range scaling.
+- Reopen segment-set work only with a materially different candidate-coverage or quality target that first improves fixed exact TP/FP/FN over projection-competition.

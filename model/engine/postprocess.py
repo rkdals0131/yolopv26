@@ -117,6 +117,10 @@ class PV26PostprocessConfig:
     stop_line_segment_set_score_threshold: float = 0.50
     stop_line_segment_set_max_segments: int = 3
     stop_line_segment_verifier_score_weight: float = 0.0
+    stop_line_context_segment_set_enabled: bool = False
+    stop_line_context_segment_set_score_threshold: float = 0.50
+    stop_line_context_segment_set_max_segments: int = 3
+    stop_line_context_segment_verifier_score_weight: float = 0.0
     stop_line_axis_segment_set_enabled: bool = False
     stop_line_axis_segment_set_score_threshold: float = 0.50
     stop_line_axis_segment_set_max_segments: int = 3
@@ -3133,6 +3137,9 @@ def _decode_stop_line_rows(
     segment_logits: torch.Tensor | None = None,
     segment_points: torch.Tensor | None = None,
     segment_verifier_logits: torch.Tensor | None = None,
+    context_segment_logits: torch.Tensor | None = None,
+    context_segment_points: torch.Tensor | None = None,
+    context_segment_verifier_logits: torch.Tensor | None = None,
     axis_segment_logits: torch.Tensor | None = None,
     axis_segment_points: torch.Tensor | None = None,
     axis_segment_verifier_logits: torch.Tensor | None = None,
@@ -3143,6 +3150,10 @@ def _decode_stop_line_rows(
     segment_set_score_threshold: float = 0.50,
     segment_set_max_segments: int = 3,
     segment_verifier_score_weight: float = 0.0,
+    context_segment_set_enabled: bool = False,
+    context_segment_set_score_threshold: float = 0.50,
+    context_segment_set_max_segments: int = 3,
+    context_segment_verifier_score_weight: float = 0.0,
     axis_segment_set_enabled: bool = False,
     axis_segment_set_score_threshold: float = 0.50,
     axis_segment_set_max_segments: int = 3,
@@ -3237,6 +3248,18 @@ def _decode_stop_line_rows(
             score_threshold=float(segment_set_score_threshold),
             max_segments=int(segment_set_max_segments),
             verifier_score_weight=float(segment_verifier_score_weight),
+        )
+    if bool(context_segment_set_enabled):
+        segment_set_decoded.extend(
+            _decode_stopline_segment_set(
+                segment_logits=context_segment_logits,
+                segment_points=context_segment_points,
+                segment_verifier_logits=context_segment_verifier_logits,
+                meta=meta,
+                score_threshold=float(context_segment_set_score_threshold),
+                max_segments=int(context_segment_set_max_segments),
+                verifier_score_weight=float(context_segment_verifier_score_weight),
+            )
         )
     if bool(axis_segment_set_enabled):
         segment_set_decoded.extend(
@@ -3368,6 +3391,7 @@ def _decode_stop_line_rows(
                         1,
                         int(max_components),
                         int(segment_set_max_segments),
+                        int(context_segment_set_max_segments),
                         int(axis_segment_set_max_segments),
                         int(patch_segment_set_max_segments),
                         int(endpoint_pair_max_segments),
@@ -3523,6 +3547,9 @@ def postprocess_pv26_batch(
     stop_line_segment_logits = predictions.get("stop_line_segment_logits")
     stop_line_segment_points = predictions.get("stop_line_segment_points")
     stop_line_segment_verifier_logits = predictions.get("stop_line_segment_verifier_logits")
+    stop_line_context_segment_logits = predictions.get("stop_line_context_segment_logits")
+    stop_line_context_segment_points = predictions.get("stop_line_context_segment_points")
+    stop_line_context_segment_verifier_logits = predictions.get("stop_line_context_segment_verifier_logits")
     stop_line_axis_segment_logits = predictions.get("stop_line_axis_segment_logits")
     stop_line_axis_segment_points = predictions.get("stop_line_axis_segment_points")
     stop_line_axis_segment_verifier_logits = predictions.get("stop_line_axis_segment_verifier_logits")
@@ -3698,6 +3725,21 @@ def postprocess_pv26_batch(
                         if isinstance(stop_line_segment_verifier_logits, torch.Tensor)
                         else None
                     ),
+                    context_segment_logits=(
+                        stop_line_context_segment_logits[batch_index]
+                        if isinstance(stop_line_context_segment_logits, torch.Tensor)
+                        else None
+                    ),
+                    context_segment_points=(
+                        stop_line_context_segment_points[batch_index]
+                        if isinstance(stop_line_context_segment_points, torch.Tensor)
+                        else None
+                    ),
+                    context_segment_verifier_logits=(
+                        stop_line_context_segment_verifier_logits[batch_index]
+                        if isinstance(stop_line_context_segment_verifier_logits, torch.Tensor)
+                        else None
+                    ),
                     axis_segment_logits=(
                         stop_line_axis_segment_logits[batch_index]
                         if isinstance(stop_line_axis_segment_logits, torch.Tensor)
@@ -3732,6 +3774,12 @@ def postprocess_pv26_batch(
                     segment_set_score_threshold=config.stop_line_segment_set_score_threshold,
                     segment_set_max_segments=config.stop_line_segment_set_max_segments,
                     segment_verifier_score_weight=config.stop_line_segment_verifier_score_weight,
+                    context_segment_set_enabled=config.stop_line_context_segment_set_enabled,
+                    context_segment_set_score_threshold=config.stop_line_context_segment_set_score_threshold,
+                    context_segment_set_max_segments=config.stop_line_context_segment_set_max_segments,
+                    context_segment_verifier_score_weight=(
+                        config.stop_line_context_segment_verifier_score_weight
+                    ),
                     axis_segment_set_enabled=config.stop_line_axis_segment_set_enabled,
                     axis_segment_set_score_threshold=config.stop_line_axis_segment_set_score_threshold,
                     axis_segment_set_max_segments=config.stop_line_axis_segment_set_max_segments,

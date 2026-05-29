@@ -280,6 +280,14 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         stop_line_segment_set_score_threshold=float(train_config.stop_line_segment_set_score_threshold),
         stop_line_segment_set_max_segments=int(train_config.stop_line_segment_set_max_segments),
         stop_line_segment_verifier_score_weight=float(train_config.stop_line_segment_verifier_score_weight),
+        stop_line_context_segment_set_enabled=bool(train_config.stop_line_context_segment_set_enabled),
+        stop_line_context_segment_set_score_threshold=float(
+            train_config.stop_line_context_segment_set_score_threshold
+        ),
+        stop_line_context_segment_set_max_segments=int(train_config.stop_line_context_segment_set_max_segments),
+        stop_line_context_segment_verifier_score_weight=float(
+            train_config.stop_line_context_segment_verifier_score_weight
+        ),
         stop_line_axis_segment_set_enabled=bool(train_config.stop_line_axis_segment_set_enabled),
         stop_line_axis_segment_set_score_threshold=float(train_config.stop_line_axis_segment_set_score_threshold),
         stop_line_axis_segment_set_max_segments=int(train_config.stop_line_axis_segment_set_max_segments),
@@ -710,6 +718,8 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_segment_set_aux_weight=train_config.stopline_segment_set_aux_weight,
         stopline_segment_verifier_aux_weight=train_config.stopline_segment_verifier_aux_weight,
         stopline_segment_denoise_aux_weight=train_config.stopline_segment_denoise_aux_weight,
+        stopline_context_segment_set_aux_weight=train_config.stopline_context_segment_set_aux_weight,
+        stopline_context_segment_verifier_aux_weight=train_config.stopline_context_segment_verifier_aux_weight,
         stopline_axis_segment_set_aux_weight=train_config.stopline_axis_segment_set_aux_weight,
         stopline_axis_segment_verifier_aux_weight=train_config.stopline_axis_segment_verifier_aux_weight,
         stopline_patch_segment_set_aux_weight=train_config.stopline_patch_segment_set_aux_weight,

@@ -96,6 +96,31 @@ class StopLineDenseLocalHead(nn.Module):
             nn.SiLU(inplace=True),
             nn.Linear(self.hidden_dim, 1),
         )
+        self.context_segment_position_mlp = nn.Sequential(
+            nn.Linear(2, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+        self.context_segment_score_mlp = nn.Sequential(
+            nn.Linear(1, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+        context_segment_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=4,
+            dim_feedforward=self.hidden_dim * 2,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.context_segment_encoder = nn.TransformerEncoder(context_segment_layer, num_layers=2)
+        self.context_segment_query_mlp = nn.Sequential(
+            nn.Linear(self.hidden_dim + 3, self.hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(self.hidden_dim, 5),
+        )
         self.axis_profile_sample_count = 33
         self.axis_profile_radius_px = 240.0
         self.axis_profile_normal_radius_px = 48.0
@@ -178,6 +203,12 @@ class StopLineDenseLocalHead(nn.Module):
             selector_feat,
             segment_seed_logits,
         )
+        context_segment_logits, context_segment_points, context_segment_verifier_logits = (
+            self._decode_context_segment_set(
+                selector_feat,
+                segment_seed_logits,
+            )
+        )
         endpoint_logits = self.endpoint_logits(dense_feat)
         endpoint_offset = self.endpoint_offset(dense_feat)
         endpoint_pair_logits, endpoint_pair_points, endpoint_pair_verifier_logits = (
@@ -236,6 +267,10 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_segment_logits": segment_logits,
             "stop_line_segment_points": segment_points,
             "stop_line_segment_verifier_logits": segment_verifier_logits,
+            "stop_line_context_segment_seed_logits": segment_seed_logits,
+            "stop_line_context_segment_logits": context_segment_logits,
+            "stop_line_context_segment_points": context_segment_points,
+            "stop_line_context_segment_verifier_logits": context_segment_verifier_logits,
             "stop_line_axis_segment_seed_logits": segment_seed_logits,
             "stop_line_axis_segment_logits": axis_segment_logits,
             "stop_line_axis_segment_points": axis_segment_points,
@@ -278,6 +313,40 @@ class StopLineDenseLocalHead(nn.Module):
         segment_logits = query_raw[..., 0] + top_scores
         segment_points = torch.sigmoid(query_raw[..., 1:5]).view(batch_size, query_count, 2, 2)
         segment_verifier_logits = self._verify_segments(feature_map, seed_features, segment_points)
+        if query_count == int(self.output_queries):
+            return segment_logits, segment_points, segment_verifier_logits
+        padded_logits = segment_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_verifier_logits = segment_verifier_logits.new_full((batch_size, int(self.output_queries)), -10.0)
+        padded_points = segment_points.new_zeros((batch_size, int(self.output_queries), 2, 2))
+        padded_logits[:, :query_count] = segment_logits
+        padded_verifier_logits[:, :query_count] = segment_verifier_logits
+        padded_points[:, :query_count] = segment_points
+        return padded_logits, padded_points, padded_verifier_logits
+
+    def _decode_context_segment_set(
+        self,
+        feature_map: torch.Tensor,
+        seed_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        top_scores, _top_indices, seed_features, seed_xy = self._top_seed_features(feature_map, seed_logits)
+        batch_size = int(feature_map.shape[0])
+        query_count = int(seed_xy.shape[1])
+        if query_count == 0:
+            logits = feature_map.new_full((batch_size, int(self.output_queries)), -10.0)
+            points = feature_map.new_zeros((batch_size, int(self.output_queries), 2, 2))
+            verifier = feature_map.new_full((batch_size, int(self.output_queries)), -10.0)
+            return logits, points, verifier
+        context_input = (
+            seed_features
+            + self.context_segment_position_mlp(seed_xy)
+            + self.context_segment_score_mlp(top_scores.unsqueeze(-1))
+        )
+        context_features = self.context_segment_encoder(context_input)
+        query_input = torch.cat([context_features, seed_xy, top_scores.unsqueeze(-1)], dim=-1)
+        query_raw = self.context_segment_query_mlp(query_input)
+        segment_logits = query_raw[..., 0] + top_scores
+        segment_points = torch.sigmoid(query_raw[..., 1:5]).view(batch_size, query_count, 2, 2)
+        segment_verifier_logits = self._verify_segments(feature_map, context_features, segment_points)
         if query_count == int(self.output_queries):
             return segment_logits, segment_points, segment_verifier_logits
         padded_logits = segment_logits.new_full((batch_size, int(self.output_queries)), -10.0)

@@ -1578,6 +1578,8 @@ def _stop_line_mask_loss_with_selector_weight(
     segment_set_aux_weight: float = 0.0,
     segment_verifier_aux_weight: float = 0.0,
     segment_denoise_aux_weight: float = 0.0,
+    context_segment_set_aux_weight: float = 0.0,
+    context_segment_verifier_aux_weight: float = 0.0,
     axis_segment_set_aux_weight: float = 0.0,
     axis_segment_verifier_aux_weight: float = 0.0,
     patch_segment_set_aux_weight: float = 0.0,
@@ -1608,6 +1610,10 @@ def _stop_line_mask_loss_with_selector_weight(
     segment_logits = predictions.get("stop_line_segment_logits")
     segment_points = predictions.get("stop_line_segment_points")
     segment_verifier_logits = predictions.get("stop_line_segment_verifier_logits")
+    context_segment_seed_logits = predictions.get("stop_line_context_segment_seed_logits")
+    context_segment_logits = predictions.get("stop_line_context_segment_logits")
+    context_segment_points = predictions.get("stop_line_context_segment_points")
+    context_segment_verifier_logits = predictions.get("stop_line_context_segment_verifier_logits")
     axis_segment_seed_logits = predictions.get("stop_line_axis_segment_seed_logits")
     axis_segment_logits = predictions.get("stop_line_axis_segment_logits")
     axis_segment_points = predictions.get("stop_line_axis_segment_points")
@@ -1919,6 +1925,20 @@ def _stop_line_mask_loss_with_selector_weight(
             denoise_valid=segment_denoise_valid,
             fallback_tensor=mask_logits,
         )
+    context_segment_set_loss = _zero_graph(mask_logits)
+    if float(context_segment_set_aux_weight) > 0.0:
+        context_segment_set_loss = _stop_line_segment_set_loss(
+            segment_logits=context_segment_logits,
+            segment_points=context_segment_points,
+            segment_verifier_logits=context_segment_verifier_logits,
+            segment_seed_logits=context_segment_seed_logits,
+            aux=aux,
+            encoded=encoded,
+            fallback_tensor=mask_logits,
+            verifier_aux_weight=float(context_segment_verifier_aux_weight),
+            verifier_target_mode=segment_verifier_target_mode,
+            verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
+        )
     return (
         0.5 * mask_ce
         + 0.5 * mask_dice
@@ -1947,6 +1967,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + float(axis_segment_set_aux_weight) * axis_segment_set_loss
         + float(patch_segment_set_aux_weight) * patch_segment_set_loss
         + float(segment_denoise_aux_weight) * segment_denoise_loss
+        + float(context_segment_set_aux_weight) * context_segment_set_loss
     )
 
 
@@ -2314,6 +2335,8 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_segment_set_aux_weight: float = 0.0,
         stopline_segment_verifier_aux_weight: float = 0.0,
         stopline_segment_denoise_aux_weight: float = 0.0,
+        stopline_context_segment_set_aux_weight: float = 0.0,
+        stopline_context_segment_verifier_aux_weight: float = 0.0,
         stopline_axis_segment_set_aux_weight: float = 0.0,
         stopline_axis_segment_verifier_aux_weight: float = 0.0,
         stopline_patch_segment_set_aux_weight: float = 0.0,
@@ -2403,6 +2426,8 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_segment_set_aux_weight = float(stopline_segment_set_aux_weight)
         self.stopline_segment_verifier_aux_weight = float(stopline_segment_verifier_aux_weight)
         self.stopline_segment_denoise_aux_weight = float(stopline_segment_denoise_aux_weight)
+        self.stopline_context_segment_set_aux_weight = float(stopline_context_segment_set_aux_weight)
+        self.stopline_context_segment_verifier_aux_weight = float(stopline_context_segment_verifier_aux_weight)
         self.stopline_axis_segment_set_aux_weight = float(stopline_axis_segment_set_aux_weight)
         self.stopline_axis_segment_verifier_aux_weight = float(stopline_axis_segment_verifier_aux_weight)
         self.stopline_patch_segment_set_aux_weight = float(stopline_patch_segment_set_aux_weight)
@@ -2557,6 +2582,8 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_segment_set_aux_weight": float(self.stopline_segment_set_aux_weight),
             "stopline_segment_verifier_aux_weight": float(self.stopline_segment_verifier_aux_weight),
             "stopline_segment_denoise_aux_weight": float(self.stopline_segment_denoise_aux_weight),
+            "stopline_context_segment_set_aux_weight": float(self.stopline_context_segment_set_aux_weight),
+            "stopline_context_segment_verifier_aux_weight": float(self.stopline_context_segment_verifier_aux_weight),
             "stopline_axis_segment_set_aux_weight": float(self.stopline_axis_segment_set_aux_weight),
             "stopline_axis_segment_verifier_aux_weight": float(self.stopline_axis_segment_verifier_aux_weight),
             "stopline_patch_segment_set_aux_weight": float(self.stopline_patch_segment_set_aux_weight),
@@ -3425,6 +3452,8 @@ class PV26MultiTaskLoss(nn.Module):
                 and float(self.stopline_segment_set_aux_weight) == 0.0
                 and float(self.stopline_segment_verifier_aux_weight) == 0.0
                 and float(self.stopline_segment_denoise_aux_weight) == 0.0
+                and float(self.stopline_context_segment_set_aux_weight) == 0.0
+                and float(self.stopline_context_segment_verifier_aux_weight) == 0.0
                 and float(self.stopline_axis_segment_set_aux_weight) == 0.0
                 and float(self.stopline_axis_segment_verifier_aux_weight) == 0.0
                 and float(self.stopline_patch_segment_set_aux_weight) == 0.0
@@ -3450,6 +3479,8 @@ class PV26MultiTaskLoss(nn.Module):
                 segment_set_aux_weight=float(self.stopline_segment_set_aux_weight),
                 segment_verifier_aux_weight=float(self.stopline_segment_verifier_aux_weight),
                 segment_denoise_aux_weight=float(self.stopline_segment_denoise_aux_weight),
+                context_segment_set_aux_weight=float(self.stopline_context_segment_set_aux_weight),
+                context_segment_verifier_aux_weight=float(self.stopline_context_segment_verifier_aux_weight),
                 axis_segment_set_aux_weight=float(self.stopline_axis_segment_set_aux_weight),
                 axis_segment_verifier_aux_weight=float(self.stopline_axis_segment_verifier_aux_weight),
                 patch_segment_set_aux_weight=float(self.stopline_patch_segment_set_aux_weight),
