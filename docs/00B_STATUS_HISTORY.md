@@ -16099,3 +16099,87 @@ Verification:
 - The learned router falls below the primary projection-competition exact reference (`0.5042` vs `0.5333`) and therefore broader-val512 was skipped.
 - Do not repeat this as source-mode set, MLP hidden size, router epoch, class weight, or output-stat feature sweep.
 - Reopen source routing only with a materially different runtime quality signal, not with the same predicted source statistics.
+
+## 306. 2026-05-30 Stop-line dense-aligned source router: richer no-GT quality signal still exact-negative
+
+맥락:
+
+- Section 305 closed the output-stat source router, but left one permitted reopen condition: source routing could be revisited only with a materially different runtime quality signal.
+- This branch tests that narrow premise by adding line-aligned dense-map/raw-image features around the primary and specialist stop-line candidate segments.
+- It is still a source-choice router over existing candidates. It is not a new candidate generator, not a new stop-line geometry head, and not a production success claim.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-dense-quality-router`.
+- Tool: `tools/probe_pv26_stopline_source_router.py`.
+- New CLI feature mode: `--feature-mode dense_aligned`.
+- Dense-aligned features:
+  - preserve the previous predicted output statistics;
+  - sample primary lines on primary outputs, primary lines on specialist outputs, specialist lines on primary outputs, and specialist lines on specialist outputs;
+  - sample stop-line `mask`, `center`, `selector`, and midpoint probability maps along the candidate line and side bands;
+  - sample raw network-image grayscale along the same segment/side bands;
+  - keep all features no-GT at runtime.
+- Router `.pt` artifacts are still disabled by default unless `--save-router-model` is explicitly used.
+
+Training and evaluation:
+
+- Existing `seg_dataset/pv26_exhaustive_od_lane_dataset` was reused in place; no dataset copy was created.
+- CUDA summary smoke passed with `2` router train batches and `1` val batch.
+- CUDA fixed val4 smoke used `8` router train batches and `4` val batches. It was uninformative because all variants had stop-line TP/FP/FN `0 / 3 / 2` except oracle `0 / 0 / 2`.
+- Exact-val128 run used:
+  - `256` router train batches;
+  - `128` val batches;
+  - hidden dim `128`;
+  - `180` router epochs;
+  - learning rate `0.0015`;
+  - feature mode `dense_aligned`;
+  - feature dimension `329` over `1024` train feature rows.
+
+Exact-val128 results:
+
+| Variant | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| oracle_router | `0.5888` | `0.7083` | `0.5988` | `34 / 2 / 26` |
+| primary | `0.5888` | `0.5333` | `0.5988` | `32 / 28 / 28` |
+| specialist | `0.5888` | `0.4959` | `0.5988` | `30 / 31 / 30` |
+| union_dedupe | `0.5888` | `0.4918` | `0.5988` | `30 / 32 / 30` |
+| learned_router | `0.5888` | `0.4909` | `0.5988` | `27 / 23 / 33` |
+| agreement | `0.5888` | `0.4706` | `0.5988` | `28 / 31 / 32` |
+| empty | `0.5888` | `0.0000` | `0.5988` | `0 / 0 / 60` |
+
+Diagnostics:
+
+- Train label counts: primary `9`, specialist `7`, union_dedupe `9`, agreement `319`, empty `680`.
+- Val label counts: primary `4`, specialist `1`, union_dedupe `1`, agreement `28`, empty `478`.
+- Val learned choices: primary `1`, specialist `0`, union_dedupe `0`, agreement `47`, empty `464`.
+- Train accuracy was `0.9326`, but the learned val choices over-suppressed true positives and underperformed the primary projection-competition route.
+
+Artifacts:
+
+- Smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_smoke_val4_epoch2/metrics.csv`.
+- Exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/metrics.csv`.
+- Exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/summary.json`.
+
+Storage:
+
+- Retained dense-router exports are CSV/summary-only: exact export is about `52K`, smoke export about `48K`.
+- The temporary `/tmp/stopline_dense_quality_router_summary_smoke` export was removed.
+- Root `yolo26s.pt` was removed after evaluation.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py`.
+- `python tools/probe_pv26_stopline_source_router.py --help | rg "feature-mode|dense-feature"`.
+- CUDA dense-aligned summary smoke with `2` train batches and `1` val batch.
+- CUDA fixed val4 dense-aligned smoke with `8` train batches and `4` val batches.
+- CUDA exact-val128 dense-aligned source-router evaluation with `256` train batches and `128` val batches.
+
+판단:
+
+- This is an actual trained/evaluated router branch, but it is exact-negative.
+- Dense-aligned no-GT quality features reduce FP versus primary (`23` vs `28`) but lose too many TP (`27` vs `32`), dropping F1 from primary `0.5333` to `0.4909`.
+- Broader-val512 was skipped because the exact learned-router gate failed.
+- The oracle-router value `0.7083` remains planning evidence only; it uses GT labels and does not make source routing deployable.
+- Do not repeat this as dense-feature sample count, side-offset, hidden size, router epoch/LR, class weight, source-mode, or same line-aligned dense/raw feature sweep.
+- Reopen stop-line source routing only with a materially new candidate-generation/geometry contract or a true verifier signal that first improves fixed exact TP/FP/FN.

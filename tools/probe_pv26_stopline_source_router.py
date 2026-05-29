@@ -31,6 +31,7 @@ from model.engine.metrics import (
     summarize_pv26_metrics,
 )
 from model.engine.postprocess import postprocess_pv26_batch
+from model.data.transform import transform_from_meta, transform_points
 from tools.evaluate_pv26_lane60_checkpoint import _advance_validation_sampler, _postprocess_override_config
 from tools.probe_pv26_lane_flip_tta import (
     DEFAULT_CHECKPOINT,
@@ -100,6 +101,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--router-epochs", type=int, default=80)
     parser.add_argument("--router-lr", type=float, default=3.0e-3)
     parser.add_argument("--router-weight-decay", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--feature-mode",
+        choices=("output_stats", "dense_aligned"),
+        default="output_stats",
+        help=(
+            "output_stats reproduces the closed scalar source-router premise. "
+            "dense_aligned appends no-GT line-aligned dense-map/raw-image quality features."
+        ),
+    )
+    parser.add_argument("--dense-feature-samples", type=int, default=25)
+    parser.add_argument("--dense-feature-side-offset", type=float, default=3.0)
     parser.add_argument("--seed", type=int, default=20260530)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--stop-line-mask-binary-threshold", type=float, default=None)
@@ -291,6 +303,281 @@ def _features_for_sample(primary_sample: dict[str, Any], specialist_sample: dict
     return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
 
 
+def _as_2d_prob(outputs: dict[str, torch.Tensor], key: str, sample_index: int) -> np.ndarray | None:
+    tensor = outputs.get(key)
+    if not isinstance(tensor, torch.Tensor):
+        return None
+    if tensor.ndim < 3 or int(sample_index) >= int(tensor.shape[0]):
+        return None
+    sample = tensor[int(sample_index)].detach().cpu()
+    sample = sample.sigmoid()
+    while sample.ndim > 2 and int(sample.shape[0]) == 1:
+        sample = sample.squeeze(0)
+    if sample.ndim != 2:
+        return None
+    array = sample.numpy().astype(np.float32)
+    if not bool(np.isfinite(array).all()):
+        return None
+    return array
+
+
+def _as_gray_image(image: torch.Tensor | None, sample_index: int) -> np.ndarray | None:
+    if not isinstance(image, torch.Tensor):
+        return None
+    if image.ndim != 4 or int(sample_index) >= int(image.shape[0]):
+        return None
+    sample = image[int(sample_index)].detach().cpu().float()
+    if sample.ndim != 3 or int(sample.shape[0]) < 1:
+        return None
+    if int(sample.shape[0]) >= 3:
+        gray = 0.299 * sample[0] + 0.587 * sample[1] + 0.114 * sample[2]
+    else:
+        gray = sample[0]
+    array = gray.numpy().astype(np.float32)
+    if not bool(np.isfinite(array).all()):
+        return None
+    return array
+
+
+def _bilinear_values(map_array: np.ndarray | None, xy: np.ndarray) -> np.ndarray:
+    if map_array is None or xy.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    height, width = int(map_array.shape[0]), int(map_array.shape[1])
+    x = np.clip(xy[:, 0].astype(np.float32), 0.0, float(width - 1))
+    y = np.clip(xy[:, 1].astype(np.float32), 0.0, float(height - 1))
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
+    x1 = np.clip(x0 + 1, 0, width - 1)
+    y1 = np.clip(y0 + 1, 0, height - 1)
+    wx = x - x0.astype(np.float32)
+    wy = y - y0.astype(np.float32)
+    top = (1.0 - wx) * map_array[y0, x0] + wx * map_array[y0, x1]
+    bottom = (1.0 - wx) * map_array[y1, x0] + wx * map_array[y1, x1]
+    return ((1.0 - wy) * top + wy * bottom).astype(np.float32)
+
+
+def _value_stats(values: np.ndarray) -> list[float]:
+    finite = values[np.isfinite(values)] if values.size else values
+    if finite.size == 0:
+        return [0.0, 0.0, 0.0]
+    return [float(finite.mean()), float(finite.max(initial=0.0)), float(finite.std())]
+
+
+def _line_dense_points(
+    line: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    output_hw: tuple[int, int],
+    sample_count: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    raw_points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if raw_points.shape[0] < 2 or not bool(np.isfinite(raw_points).all()):
+        return None
+    transform = transform_from_meta(meta)
+    network_points = np.asarray(transform_points(raw_points.tolist(), transform), dtype=np.float32)
+    start = network_points[0]
+    end = network_points[-1]
+    vector = end - start
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1.0e-6 or not math.isfinite(norm):
+        return None
+    count = max(3, int(sample_count))
+    weights = np.linspace(0.0, 1.0, num=count, dtype=np.float32)
+    points = start[None, :] * (1.0 - weights[:, None]) + end[None, :] * weights[:, None]
+    output_h, output_w = int(output_hw[0]), int(output_hw[1])
+    network_h, network_w = int(transform.network_hw[0]), int(transform.network_hw[1])
+    points[:, 0] *= float(output_w - 1) / max(float(network_w - 1), 1.0)
+    points[:, 1] *= float(output_h - 1) / max(float(network_h - 1), 1.0)
+    dense_vector = points[-1] - points[0]
+    dense_norm = float(np.linalg.norm(dense_vector))
+    if dense_norm <= 1.0e-6 or not math.isfinite(dense_norm):
+        return None
+    normal = np.asarray([-dense_vector[1], dense_vector[0]], dtype=np.float32) / dense_norm
+    return points.astype(np.float32), normal.astype(np.float32)
+
+
+def _single_line_dense_features(
+    line: dict[str, Any],
+    *,
+    maps: list[np.ndarray | None],
+    image_gray: np.ndarray | None,
+    meta: dict[str, Any],
+    sample_count: int,
+    side_offset: float,
+) -> list[float]:
+    reference = next((array for array in maps if isinstance(array, np.ndarray)), None)
+    if reference is None:
+        reference = image_gray
+    if reference is None:
+        return [0.0] * 35
+    line_points = _line_dense_points(
+        line,
+        meta,
+        output_hw=(int(reference.shape[0]), int(reference.shape[1])),
+        sample_count=int(sample_count),
+    )
+    if line_points is None:
+        return [0.0] * 35
+    points, normal = line_points
+    side_delta = normal[None, :] * float(side_offset)
+    side_points = np.concatenate([points + side_delta, points - side_delta], axis=0)
+    center_index = points.shape[0] // 2
+    edge_indices = np.unique(np.asarray([0, 1, points.shape[0] - 2, points.shape[0] - 1], dtype=np.int64))
+    features: list[float] = []
+    for array in maps:
+        line_values = _bilinear_values(array, points)
+        side_values = _bilinear_values(array, side_points)
+        edge_values = line_values[edge_indices] if line_values.size else np.zeros((0,), dtype=np.float32)
+        center_value = float(line_values[center_index]) if line_values.size else 0.0
+        line_stats = _value_stats(line_values)
+        side_mean = float(side_values.mean()) if side_values.size else 0.0
+        features.extend(
+            [
+                *line_stats,
+                side_mean,
+                float(line_stats[0] - side_mean),
+                float(edge_values.mean()) if edge_values.size else 0.0,
+                center_value,
+            ]
+        )
+    image_values = np.zeros((0,), dtype=np.float32)
+    side_image_values = np.zeros((0,), dtype=np.float32)
+    image_center_index = 0
+    image_edge_indices = np.zeros((0,), dtype=np.int64)
+    if image_gray is not None:
+        image_line_points = _line_dense_points(
+            line,
+            meta,
+            output_hw=(int(image_gray.shape[0]), int(image_gray.shape[1])),
+            sample_count=int(sample_count),
+        )
+        if image_line_points is not None:
+            image_points, image_normal = image_line_points
+            image_delta = image_normal[None, :] * float(side_offset)
+            image_side_points = np.concatenate([image_points + image_delta, image_points - image_delta], axis=0)
+            image_center_index = image_points.shape[0] // 2
+            image_edge_indices = np.unique(
+                np.asarray([0, 1, image_points.shape[0] - 2, image_points.shape[0] - 1], dtype=np.int64)
+            )
+            image_values = _bilinear_values(image_gray, image_points)
+            side_image_values = _bilinear_values(image_gray, image_side_points)
+    image_stats = _value_stats(image_values)
+    side_image_mean = float(side_image_values.mean()) if side_image_values.size else 0.0
+    features.extend(
+        [
+            *image_stats,
+            side_image_mean,
+            float(image_stats[0] - side_image_mean),
+            float(image_values[image_edge_indices].mean()) if image_values.size else 0.0,
+            float(image_values[image_center_index]) if image_values.size else 0.0,
+        ]
+    )
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
+
+
+def _source_dense_features(
+    lines: list[dict[str, Any]],
+    *,
+    outputs: dict[str, torch.Tensor],
+    image: torch.Tensor | None,
+    sample_index: int,
+    meta: dict[str, Any],
+    sample_count: int,
+    side_offset: float,
+) -> list[float]:
+    maps = [
+        _as_2d_prob(outputs, "stop_line_mask_logits", sample_index),
+        _as_2d_prob(outputs, "stop_line_center_logits", sample_index),
+        _as_2d_prob(outputs, "stop_line_selector_map_logits", sample_index),
+        _as_2d_prob(outputs, "stop_line_midpoint_logits", sample_index),
+    ]
+    image_gray = _as_gray_image(image, sample_index)
+    if not lines:
+        return [0.0] * 71
+    per_line = np.asarray(
+        [
+            _single_line_dense_features(
+                line,
+                maps=maps,
+                image_gray=image_gray,
+                meta=meta,
+                sample_count=int(sample_count),
+                side_offset=float(side_offset),
+            )
+            for line in lines
+        ],
+        dtype=np.float32,
+    )
+    if per_line.ndim != 2 or per_line.shape[0] == 0:
+        return [0.0] * 71
+    mean_values = per_line.mean(axis=0)
+    max_values = per_line.max(axis=0)
+    return [
+        float(len(lines)),
+        *[float(value) for value in mean_values.tolist()],
+        *[float(value) for value in max_values.tolist()],
+    ]
+
+
+def _dense_aligned_features_for_sample(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+    *,
+    primary_outputs: dict[str, torch.Tensor],
+    specialist_outputs: dict[str, torch.Tensor],
+    image: torch.Tensor | None,
+    sample_index: int,
+    meta: dict[str, Any],
+    sample_count: int,
+    side_offset: float,
+) -> list[float]:
+    primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
+    specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    primary_on_primary = _source_dense_features(
+        primary_lines,
+        outputs=primary_outputs,
+        image=image,
+        sample_index=int(sample_index),
+        meta=meta,
+        sample_count=int(sample_count),
+        side_offset=float(side_offset),
+    )
+    primary_on_specialist = _source_dense_features(
+        primary_lines,
+        outputs=specialist_outputs,
+        image=image,
+        sample_index=int(sample_index),
+        meta=meta,
+        sample_count=int(sample_count),
+        side_offset=float(side_offset),
+    )
+    specialist_on_primary = _source_dense_features(
+        specialist_lines,
+        outputs=primary_outputs,
+        image=image,
+        sample_index=int(sample_index),
+        meta=meta,
+        sample_count=int(sample_count),
+        side_offset=float(side_offset),
+    )
+    specialist_on_specialist = _source_dense_features(
+        specialist_lines,
+        outputs=specialist_outputs,
+        image=image,
+        sample_index=int(sample_index),
+        meta=meta,
+        sample_count=int(sample_count),
+        side_offset=float(side_offset),
+    )
+    dense_values = [
+        *primary_on_primary,
+        *primary_on_specialist,
+        *specialist_on_primary,
+        *specialist_on_specialist,
+    ]
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in dense_values]
+
+
 def _build_predictions_for_loader(
     *,
     loader: Any,
@@ -300,6 +587,9 @@ def _build_predictions_for_loader(
     postprocess_config: Any,
     stop_line_postprocess_config: Any,
     split_name: str,
+    feature_mode: str,
+    dense_feature_samples: int,
+    dense_feature_side_offset: float,
 ) -> tuple[list[dict[str, Any]], list[list[float]], list[int], dict[str, list[dict[str, Any]]]]:
     raw_batches: list[dict[str, Any]] = []
     features: list[list[float]] = []
@@ -318,6 +608,7 @@ def _build_predictions_for_loader(
             raw_batches.append(raw_batch)
             gt_samples = _extract_gt_samples(raw_batch)
             encoded = evaluator.prepare_batch(batch)
+            encoded_meta = _detach_to_cpu(encoded["meta"])
             base_outputs = _detach_to_cpu(evaluator.forward_encoded_batch(encoded))
             flipped_encoded = dict(encoded)
             flipped_encoded["image"] = torch.flip(encoded["image"], dims=(-1,))
@@ -343,12 +634,38 @@ def _build_predictions_for_loader(
                 _detach_to_cpu(encoded["meta"]),
                 config=stop_line_postprocess_config,
             )
-            for primary_sample, specialist_sample, gt_sample in zip(
-                primary_predictions,
-                specialist_predictions,
-                gt_samples,
+            for sample_index, (primary_sample, specialist_sample, gt_sample) in enumerate(
+                zip(
+                    primary_predictions,
+                    specialist_predictions,
+                    gt_samples,
+                )
             ):
-                features.append(_features_for_sample(primary_sample, specialist_sample))
+                sample_features = _features_for_sample(primary_sample, specialist_sample)
+                if str(feature_mode).strip().lower() == "dense_aligned":
+                    sample_meta = (
+                        encoded_meta[sample_index]
+                        if isinstance(encoded_meta, list)
+                        and sample_index < len(encoded_meta)
+                        and isinstance(encoded_meta[sample_index], dict)
+                        else primary_sample.get("meta", {})
+                    )
+                    if not isinstance(sample_meta, dict):
+                        sample_meta = {}
+                    sample_features.extend(
+                        _dense_aligned_features_for_sample(
+                            primary_sample,
+                            specialist_sample,
+                            primary_outputs=lane_outputs,
+                            specialist_outputs=stop_line_outputs,
+                            image=encoded.get("image") if isinstance(encoded, dict) else None,
+                            sample_index=int(sample_index),
+                            meta=sample_meta,
+                            sample_count=int(dense_feature_samples),
+                            side_offset=float(dense_feature_side_offset),
+                        )
+                    )
+                features.append(sample_features)
                 labels.append(_label_for_sample(primary_sample, specialist_sample, gt_sample))
                 for mode in ROUTER_MODES:
                     predictions_by_mode[mode].append(_source_prediction(primary_sample, specialist_sample, mode))
@@ -594,6 +911,9 @@ def main() -> int:
         postprocess_config=postprocess_config,
         stop_line_postprocess_config=stop_line_postprocess_config,
         split_name="train",
+        feature_mode=str(args.feature_mode),
+        dense_feature_samples=int(args.dense_feature_samples),
+        dense_feature_side_offset=float(args.dense_feature_side_offset),
     )
     router, feature_mean, feature_std, router_diagnostics = _train_router(
         train_features,
@@ -612,6 +932,9 @@ def main() -> int:
         postprocess_config=postprocess_config,
         stop_line_postprocess_config=stop_line_postprocess_config,
         split_name="val",
+        feature_mode=str(args.feature_mode),
+        dense_feature_samples=int(args.dense_feature_samples),
+        dense_feature_side_offset=float(args.dense_feature_side_offset),
     )
     val_choices = _predict_router_modes(router, feature_mean, feature_std, val_features)
     val_oracle_choices = [int(value) for value in val_labels]
@@ -657,6 +980,9 @@ def main() -> int:
         "validation_epoch": int(args.validation_epoch),
         "router_train_batches": int(args.router_train_batches),
         "max_val_batches": int(args.max_val_batches),
+        "feature_mode": str(args.feature_mode),
+        "dense_feature_samples": int(args.dense_feature_samples),
+        "dense_feature_side_offset": float(args.dense_feature_side_offset),
         "processed_train_batches": int(len(train_raw_batches)),
         "processed_val_batches": int(len(val_raw_batches)),
         "router_modes": list(ROUTER_MODES),
