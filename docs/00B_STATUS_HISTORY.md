@@ -13422,3 +13422,57 @@ Verification:
 - Broader stop-line falls from the lane-frozen full checkpoint `0.5278`, `128 / 86 / 143` to `0.4894`, `127 / 121 / 144`, which is also below the retained projection-competition reference `0.5164`, `126 / 91 / 145`.
 - Therefore the section-265 stop-line improvement is not a reusable stop-line-head-only improvement. It likely depends on the full stop/cross checkpoint interaction or validation-slice effect.
 - Do not continue this as task-head recombination, stop-head transplant, or cross-head preserve/replace variants. The next useful work needs a real stop-line candidate/geometry signal or lane instance recovery, not another recombination of these partial checkpoints.
+
+## 267. 2026-05-29 Stop/cross lane-frozen scale2048 audit: larger train range does not generalize
+
+Context:
+
+- The user explicitly asked for actual training/evaluation and larger-range dataset exposure, while avoiding dataset copies and storage bloat.
+- Section 265 was the best lane-frozen partial-positive at the standard `512` train-batch scale, so this follow-up tested whether the same stop/cross-only training contract benefits from wider per-epoch sample exposure.
+- This is intentionally recorded as a scale audit, not a new model/decoder success claim.
+
+Training:
+
+- Branch/worktree: `exp/lane-family-f1/stopcross-lanefrozen-scale2048`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_114452`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Scale: `3` epochs, `2048` train batches per epoch, `256` val batches, batch size `4`, CUDA.
+- Axis kept fixed: `lane_family_stop_cross_heads_only`, projection-competition stop-line runtime decode, fixed `flip_centerline_avg_lane_cross_comp050`, and `crosswalk_polygon_mode=hull`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6351293673` | `0.5603` | `0.4273` | `0.6462` | `2287 / 1152 / 2438` | `47 / 58 / 68` | `105 / 56 / 59` |
+| 2 | `0.6611931888` | `0.5475` | `0.6049` | `0.6300` | `2166 / 1128 / 2452` | `62 / 36 / 45` | `126 / 58 / 90` |
+| 3 | `0.6383710409` | `0.5463` | `0.5076` | `0.6327` | `2262 / 1164 / 2593` | `67 / 54 / 76` | `124 / 68 / 76` |
+
+Fixed full runtime task-balance eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6460998095` | `0.5775` | `0.4793` | `0.5839` | `1174 / 502 / 1216` | `29 / 32 / 31` | `47 / 33 / 34` |
+| broader val512 epoch2 | `0.6413086591` | `0.5564` | `0.5122` | `0.6162` | `4457 / 2087 / 5020` | `126 / 95 / 145` | `232 / 126 / 163` |
+
+Storage:
+
+- The run initially held duplicate task-best checkpoints, `last.pt`, TensorBoard output, and the temporary `yolo26s.pt` download.
+- After evaluation, pruned all checkpoint files except `phase_4/checkpoints/best.pt`, removed TensorBoard output, and removed `yolo26s.pt`.
+- Retained run size is about `104M`, with `best.pt`, summaries/history, and exact/broader metric exports.
+
+Verification:
+
+- Real CUDA main train: `3` epochs, `2048` train batches, `256` val batches.
+- Fixed full runtime task-balance exact-val128 epoch-2 eval.
+- Fixed full runtime task-balance broader-val512 epoch-2 eval.
+- Both evaluations reused the existing dataset root directly.
+
+판단:
+
+- The internal validation slice again shows why phase-objective is not enough: epoch 2 reaches stop-line F1 `0.6049`, but fixed exact-val128 stop-line is only `0.4793` and broader-val512 stop-line is only `0.5122`.
+- Larger train-batch exposure is negative against the standard section-265 run: broader lane/stop/cross moves from `0.5571 / 0.5278 / 0.6142` to `0.5564 / 0.5122 / 0.6162`.
+- It is also below the retained lane-preserving task-balance reference on stop-line (`0.5164 -> 0.5122`) and lane (`0.5628 -> 0.5564`).
+- Do not repeat this as train-batch count, epoch-count, val-batch count, same freeze-policy, or same sampler scaling. More data exposure on this contract does not fix the missing stop-line geometry/candidate signal.

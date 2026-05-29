@@ -7,7 +7,7 @@
 
 PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite 기준 `0.6421286661`까지 확인됐다.
 
-이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest stop/cross lane-frozen trained composite는 broader-val512 objective `0.6421`, lane/stop-line/crosswalk F1 `0.5571 / 0.5278 / 0.6142`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. 둘 다 lane/stop-line이 `0.60` 미만이라 최종 성공으로 보지 않는다.
+이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest stop/cross lane-frozen trained composite는 broader-val512 objective `0.6421`, lane/stop-line/crosswalk F1 `0.5571 / 0.5278 / 0.6142`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. User-requested larger-range `2048` train-batch scale audit of the same lane-frozen axis regressed to broader lane/stop/cross `0.5564 / 0.5122 / 0.6162`, so it is negative. All of these still leave lane/stop-line below `0.60`.
 
 Active goal:
 
@@ -26,6 +26,7 @@ Run:
 - checkpoint: `phase_4/checkpoints/best.pt`
 - retained lane-preserving composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/metrics.csv`
 - latest stop/cross lane-frozen composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
+- latest stop/cross lane-frozen scale2048 audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_114452/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
@@ -139,6 +140,17 @@ Latest stop/cross lane-frozen trained runtime composite:
 - lane-family mean/min F1: `0.5664 / 0.5278`.
 - 판단: freezing lane out of the optimizer partially recovers lane versus the stop-line-priority run (`0.5463 -> 0.5571`) while preserving a small stop-line gain over projection-comp (`0.5164 -> 0.5278`). It still fails all-task `0.60`, exact-val128 rejects stop-line (`0.4655`), and crosswalk remains only slightly above broader threshold. Do not repeat this as freeze-policy, stop/cross sampler order, epoch-count, head-LR, or loss-weight tuning without a new candidate/geometry or instance-retention signal.
 - stop-line-head-only transplant check: transplanting only this run's stop-line head into the retained lane/cross checkpoint restored retained lane/cross behavior but lost the stop-line gain. Exact-val128 lane/stop/cross was `0.5888 / 0.4800 / 0.5988`; broader-val512 was `0.5628 / 0.4894 / 0.6187`, stop-line TP/FP/FN `127 / 121 / 144`. The temporary merged checkpoint was pruned; only metric exports remain under `runs/pv26_exhaustive_od_lane_train/lane60_stopcross_lanefrozen_stop_head_merge_20260529/analysis_exports`. 판단: the lane-frozen stop-line gain is not a reusable stop-line-head-only improvement; do not continue this as another task-head recombination.
+
+Latest stop/cross lane-frozen larger-range scale audit:
+
+- branch/worktree: `exp/lane-family-f1/stopcross-lanefrozen-scale2048`.
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_114452`.
+- changed execution scale only: same `lane_family_stop_cross_heads_only` axis and same fixed final runtime eval, but train with `3` epochs, `2048` train batches per epoch, `256` val batches, batch size `4`, CUDA.
+- data/storage contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The run indexed `429350` records with split `326709 / 82641 / 20000`. After evaluation, duplicate task-best/last checkpoints, TensorBoard, and temporary `yolo26s.pt` were removed; retained run size is about `104M`.
+- internal best phase-objective epoch was epoch `2`: objective `0.6611931888`, lane/stop/cross F1 `0.5475 / 0.6049 / 0.6300`, TP/FP/FN lane `2166 / 1128 / 2452`, stop-line `62 / 36 / 45`, crosswalk `126 / 58 / 90`. This is not final evidence because it is the training validation slice, not the fixed epoch-2 eval.
+- fixed full runtime task-balance exact-val128 epoch-2 eval: objective `0.6460998095`, lane/stop/cross F1 `0.5775 / 0.4793 / 0.5839`, TP/FP/FN lane `1174 / 502 / 1216`, stop-line `29 / 32 / 31`, crosswalk `47 / 33 / 34`.
+- fixed full runtime task-balance broader-val512 epoch-2 eval: objective `0.6413086591`, lane/stop/cross F1 `0.5564 / 0.5122 / 0.6162`, TP/FP/FN lane `4457 / 2087 / 5020`, stop-line `126 / 95 / 145`, crosswalk `232 / 126 / 163`.
+- 판단: larger train-batch exposure did not improve the lane-frozen axis. It regresses stop-line below the retained projection-comp reference (`0.5164 -> 0.5122`) and below the 512-batch lane-frozen run (`0.5278 -> 0.5122`), while lane also stays below the retained lane composite. Do not continue this as a train-batch, epoch-count, val-batch, or same freeze/sampler scaling sweep.
 
 Previous stop-line-exposure trained broader task-balance runtime composite:
 
