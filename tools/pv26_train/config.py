@@ -118,6 +118,8 @@ class TrainDefaultsConfig:
     train_aug_affine_scale_min: float = 1.0
     train_aug_affine_scale_max: float = 1.0
     train_aug_affine_shear_degrees: float = 0.0
+    train_aug_synthetic_stopline_prob: float = 0.0
+    train_aug_synthetic_stopline_thickness_px: float = 5.0
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     roadmark_architecture: str = "native"
@@ -762,6 +764,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         train_aug_affine_shear_degrees=_coerce_float(
             data.get("train_aug_affine_shear_degrees", defaults.train_aug_affine_shear_degrees),
             field_name="train_defaults.train_aug_affine_shear_degrees",
+        ),
+        train_aug_synthetic_stopline_prob=_coerce_float(
+            data.get("train_aug_synthetic_stopline_prob", defaults.train_aug_synthetic_stopline_prob),
+            field_name="train_defaults.train_aug_synthetic_stopline_prob",
+        ),
+        train_aug_synthetic_stopline_thickness_px=_coerce_float(
+            data.get("train_aug_synthetic_stopline_thickness_px", defaults.train_aug_synthetic_stopline_thickness_px),
+            field_name="train_defaults.train_aug_synthetic_stopline_thickness_px",
         ),
         backbone_variant=backbone_variant,
         backbone_weights=_coerce_optional_str(
@@ -1741,6 +1751,10 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} train_aug_affine_scale_max must be >= train_aug_affine_scale_min")
         if float(phase_train.train_aug_affine_shear_degrees) < 0.0:
             raise ValueError(f"phase {index} train_aug_affine_shear_degrees must be >= 0")
+        if not 0.0 <= float(phase_train.train_aug_synthetic_stopline_prob) <= 1.0:
+            raise ValueError(f"phase {index} train_aug_synthetic_stopline_prob must be between 0 and 1")
+        if float(phase_train.train_aug_synthetic_stopline_thickness_px) <= 0.0:
+            raise ValueError(f"phase {index} train_aug_synthetic_stopline_thickness_px must be > 0")
         if float(phase_train.amp_init_scale) <= 0.0:
             raise ValueError(f"phase {index} amp_init_scale must be > 0")
         multitask_conflict = dict(phase_train.multitask_conflict)

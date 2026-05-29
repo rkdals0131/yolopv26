@@ -16636,3 +16636,79 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
 - Do not repeat this as affine probability, degree, translation, scale, shear, seed, head LR, epoch-count, or same projection-comp-runtime training sweep.
 - Reopen train-time geometric feeding only with a materially different signal that first improves fixed smoke TP/FP/FN, such as candidate/instance quality or geometry recovery evidence rather than a parameter sweep.
+
+## 313. 2026-05-30 Synthetic stop-line injection smoke: train-time positive injection works mechanically, but recovers no stop-line TP
+
+맥락:
+
+- The user explicitly asked to keep doing actual training and evaluation, including methodology beyond postprocess, while avoiding dataset copies and uncontrolled storage growth.
+- The previous shared-affine feeding branch was smoke-negative. This branch tested a more task-directed data/feeding premise: add synthetic stop-line pixels and labels during train augmentation, derived from existing lane geometry, so stop-line supervision can be increased without copying or rewriting the dataset.
+- This is distinct from sampler-only, focus crop, distance heatmap target, segment-set, HAF, and postprocess threshold families. It changes train-time image/label content, while runtime decode remains the retained projection-competition contract.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. It did not copy the dataset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/synthetic-stopline-injection`.
+- Train augmentation: `model/data/transform.py`.
+  - New opt-in config fields: `synthetic_stopline_prob` and `synthetic_stopline_thickness_px`.
+  - For no-stop-line samples with lane geometry, the transform samples a lower-image y-coordinate, interpolates lane x positions, chooses a plausible adjacent lane span, paints a bright line segment into the image, and appends a synthetic `stop_lines` row with matching `points_xy`.
+- Config/runtime plumbing: `tools/pv26_train/config.py`, `tools/pv26_train/runtime.py`, `tools/run_pv26_lane60_probe.py`.
+- Tests:
+  - `test/test_pv26_transform_roundtrip.py`, synthetic injection adds a stop-line label and modifies pixels from lane geometry.
+  - `test/test_run_pv26_train.py`, scenario config override coverage for synthetic stop-line fields.
+- Changed axis:
+  - `train_aug_synthetic_stopline_prob=0.45`;
+  - `train_aug_synthetic_stopline_thickness_px=5.0`;
+  - retained row-scan/tangent lane decode;
+  - retained projection-competition stop-line runtime decode;
+  - retained `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_synthetic_stopline_injection_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_081241`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6379765852` at epoch 1, but this is not success evidence because fixed task metrics failed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5414` | `36 / 11 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- Synthetic stop-line injection recovered no stop-line TP.
+- It reduced lane FP by `1` versus several recent negative smokes, but still lost `4` lane TP against the retained fixed reference, so it is not worth exact-val128 broadening.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_synthetic_stopline_injection_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_081241/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_synthetic_stopline_injection_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_081241/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `820K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/transform.py tools/pv26_train/config.py tools/pv26_train/runtime.py tools/run_pv26_lane60_probe.py test/test_pv26_transform_roundtrip.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_transform_roundtrip.PV26TransformRoundtripTests.test_synthetic_stopline_injection_adds_label_and_pixels_from_lanes test_pv26_transform_roundtrip.PV26TransformRoundtripTests.test_shared_affine_translates_all_geometry_and_keeps_shape test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "synthetic_stopline_injection|shared_affine_augmentation"`.
+- CUDA synthetic stop-line injection smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The transform/config/runtime plumbing is valid and covered, and the training/evaluation used the existing larger canonical dataset root without copying data.
+- The trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 recovered no stop-line TP and still regressed retained lane TP.
+- Do not repeat this as injection probability, thickness, lane-pair span, y-range, paint intensity, seed, head LR, epoch-count, or same projection-comp-runtime training sweep.
+- Reopen synthetic/pseudo stop-line data feeding only with a materially stronger realism/quality contract that first moves fixed smoke TP/FP/FN or with a verifier/candidate generator that can distinguish synthetic-induced support from real stop-line support.

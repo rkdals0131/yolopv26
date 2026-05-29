@@ -65,6 +65,8 @@ class TrainAugmentationConfig:
     affine_translate_frac: float = 0.0
     affine_scale_range: tuple[float, float] = (1.0, 1.0)
     affine_shear_degrees: float = 0.0
+    synthetic_stopline_prob: float = 0.0
+    synthetic_stopline_thickness_px: float = 5.0
     stopline_focus_crop_prob: float = 0.0
     stopline_focus_crop_scale_range: tuple[float, float] = (1.25, 1.75)
     stopline_focus_crop_jitter: float = 0.10
@@ -367,6 +369,143 @@ def _affine_box_xyxy(
     )
 
 
+def _lane_x_at_y(points: torch.Tensor, y: float) -> float | None:
+    reshaped = points.to(dtype=torch.float32).reshape(-1, 2)
+    if reshaped.shape[0] < 2 or not torch.isfinite(reshaped).all():
+        return None
+    best_x: float | None = None
+    best_distance = float("inf")
+    target_y = float(y)
+    for start, end in zip(reshaped[:-1], reshaped[1:]):
+        x0, y0 = float(start[0].item()), float(start[1].item())
+        x1, y1 = float(end[0].item()), float(end[1].item())
+        dy = y1 - y0
+        if abs(dy) > 1.0e-4:
+            t = (target_y - y0) / dy
+            if 0.0 <= t <= 1.0:
+                return x0 + t * (x1 - x0)
+        distance = min(abs(target_y - y0), abs(target_y - y1))
+        if distance < best_distance:
+            best_distance = distance
+            best_x = x0 if abs(target_y - y0) <= abs(target_y - y1) else x1
+    if best_distance <= 16.0:
+        return best_x
+    return None
+
+
+def _synthetic_stopline_points(
+    lanes: list[dict[str, object]],
+    *,
+    network_hw: tuple[int, int],
+    rng: random.Random,
+) -> torch.Tensor | None:
+    net_h, net_w = network_hw
+    if net_h <= 2 or net_w <= 2:
+        return None
+    min_span = min(max(4.0, 0.07 * float(net_w)), 0.35 * float(net_w))
+    max_span = max(min_span, 0.45 * float(net_w))
+    for _ in range(8):
+        y = rng.uniform(0.45 * float(net_h), 0.88 * float(net_h))
+        xs: list[float] = []
+        for row in lanes:
+            points = _row_points(row)
+            if points is None:
+                continue
+            x = _lane_x_at_y(points, y)
+            if x is None or x < 2.0 or x > float(net_w - 3):
+                continue
+            if all(abs(x - existing) > 4.0 for existing in xs):
+                xs.append(float(x))
+        if len(xs) < 2:
+            continue
+        xs.sort()
+        pairs = [(left, right, right - left) for left, right in zip(xs[:-1], xs[1:]) if right - left >= min_span]
+        if not pairs:
+            continue
+        left, right, span = min(pairs, key=lambda pair: abs(pair[2] - 0.22 * float(net_w)))
+        if span > max_span:
+            mid_x = 0.5 * (left + right)
+            half = 0.5 * max_span
+            left = mid_x - half
+            right = mid_x + half
+            span = max_span
+        pad = min(0.12 * span, 0.035 * float(net_w))
+        left = max(0.0, left - pad)
+        right = min(float(net_w - 1), right + pad)
+        if right - left < min_span:
+            continue
+        slope = rng.uniform(-0.018, 0.018) * (right - left)
+        y_left = max(0.0, min(float(net_h - 1), y - 0.5 * slope))
+        y_right = max(0.0, min(float(net_h - 1), y + 0.5 * slope))
+        return torch.tensor([[left, y_left], [right, y_right]], dtype=torch.float32)
+    return None
+
+
+def _draw_synthetic_stopline(
+    image: torch.FloatTensor,
+    points: torch.Tensor,
+    *,
+    thickness_px: float,
+) -> torch.FloatTensor:
+    if points.shape != (2, 2):
+        return image
+    _, height, width = image.shape
+    start = points[0].to(device=image.device, dtype=image.dtype)
+    end = points[1].to(device=image.device, dtype=image.dtype)
+    segment = end - start
+    length_sq = float(torch.dot(segment, segment).item())
+    if length_sq <= 1.0:
+        return image
+    yy = torch.arange(height, device=image.device, dtype=image.dtype).view(height, 1)
+    xx = torch.arange(width, device=image.device, dtype=image.dtype).view(1, width)
+    rel_x = xx - start[0]
+    rel_y = yy - start[1]
+    t = ((rel_x * segment[0] + rel_y * segment[1]) / length_sq).clamp(0.0, 1.0)
+    nearest_x = start[0] + t * segment[0]
+    nearest_y = start[1] + t * segment[1]
+    radius = max(1.0, float(thickness_px) * 0.5)
+    mask = (xx - nearest_x).square() + (yy - nearest_y).square() <= radius * radius
+    if not bool(mask.any().item()):
+        return image
+    painted = image.clone()
+    opacity = 0.78
+    intensity = 0.92
+    painted[:, mask] = painted[:, mask] * (1.0 - opacity) + intensity * opacity
+    return painted.clamp(0.0, 1.0).contiguous()
+
+
+def _apply_synthetic_stopline(
+    image: torch.FloatTensor,
+    *,
+    lanes: list[dict[str, object]],
+    stop_lines: list[dict[str, object]],
+    network_hw: tuple[int, int],
+    config: TrainAugmentationConfig,
+    rng: random.Random,
+) -> tuple[torch.FloatTensor, list[dict[str, object]], dict[str, object] | None]:
+    if stop_lines or rng.random() >= float(config.synthetic_stopline_prob):
+        return image, stop_lines, None
+    points = _synthetic_stopline_points(lanes, network_hw=network_hw, rng=rng)
+    if points is None:
+        return image, stop_lines, None
+    thickness = max(1.0, float(config.synthetic_stopline_thickness_px))
+    rendered = _draw_synthetic_stopline(image, points, thickness_px=thickness)
+    augmented_stop_lines = [*stop_lines, {"points_xy": points, "synthetic": True}]
+    meta_points = [
+        [float(points[0, 0].item()), float(points[0, 1].item())],
+        [float(points[1, 0].item()), float(points[1, 1].item())],
+    ]
+    return (
+        rendered,
+        augmented_stop_lines,
+        {
+            "applied": True,
+            "points_xy": meta_points,
+            "thickness_px": float(thickness),
+        },
+    )
+
+
 def _apply_shared_affine(
     image: torch.FloatTensor,
     *,
@@ -653,6 +792,18 @@ def apply_train_augmentations(
         config=config,
         rng=rng,
     )
+    (
+        augmented_image,
+        augmented_stop_lines,
+        synthetic_stopline_meta,
+    ) = _apply_synthetic_stopline(
+        augmented_image,
+        lanes=augmented_lanes,
+        stop_lines=augmented_stop_lines,
+        network_hw=network_hw,
+        config=config,
+        rng=rng,
+    )
     applied_flip = rng.random() < float(config.horizontal_flip_prob)
 
     if applied_flip:
@@ -673,6 +824,7 @@ def apply_train_augmentations(
         {
             "horizontal_flip": bool(applied_flip),
             "shared_affine": affine_meta,
+            "synthetic_stopline": synthetic_stopline_meta,
             "stopline_focus_crop": focus_crop_meta,
             **photo_meta,
         },

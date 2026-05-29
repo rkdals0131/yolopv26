@@ -294,6 +294,40 @@ class PV26TransformRoundtripTests(unittest.TestCase):
         self.assertGreaterEqual(float(augmented[3][0]["points_xy"].min().item()), 0.0)
         self.assertLessEqual(float(augmented[4][0]["points_xy"][..., 0].max().item()), 9.0)
 
+    def test_synthetic_stopline_injection_adds_label_and_pixels_from_lanes(self) -> None:
+        image = torch.zeros((3, 8, 10), dtype=torch.float32)
+        lanes = [
+            {"points_xy": torch.tensor([[2.0, 1.0], [2.0, 7.0]], dtype=torch.float32), "color": 0},
+            {"points_xy": torch.tensor([[7.0, 1.0], [7.0, 7.0]], dtype=torch.float32), "color": 0},
+        ]
+        config = TrainAugmentationConfig(
+            horizontal_flip_prob=0.0,
+            brightness_delta=0.0,
+            contrast_range=(1.0, 1.0),
+            gamma_range=(1.0, 1.0),
+            synthetic_stopline_prob=1.0,
+            synthetic_stopline_thickness_px=2.0,
+        )
+
+        augmented = apply_train_augmentations(
+            image,
+            det_boxes=[],
+            lanes=lanes,
+            stop_lines=[],
+            crosswalks=[],
+            network_hw=(8, 10),
+            config=config,
+            rng=random.Random(9),
+        )
+
+        self.assertEqual(len(augmented[3]), 1)
+        self.assertTrue(bool(augmented[3][0]["synthetic"]))
+        points = augmented[3][0]["points_xy"]
+        self.assertEqual(tuple(points.shape), (2, 2))
+        self.assertGreater(float(points[:, 0].max().item() - points[:, 0].min().item()), 4.0)
+        self.assertGreater(float(augmented[0].max().item()), 0.5)
+        self.assertIsNotNone(augmented[5]["synthetic_stopline"])
+
 
 if __name__ == "__main__":
     unittest.main()

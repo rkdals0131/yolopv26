@@ -64,6 +64,8 @@ def train_augmentation_from_defaults(defaults: TrainDefaultsConfig) -> bool | Tr
             float(defaults.train_aug_affine_scale_max),
         ),
         affine_shear_degrees=float(defaults.train_aug_affine_shear_degrees),
+        synthetic_stopline_prob=float(defaults.train_aug_synthetic_stopline_prob),
+        synthetic_stopline_thickness_px=float(defaults.train_aug_synthetic_stopline_thickness_px),
         stopline_focus_crop_prob=float(defaults.train_aug_stopline_focus_crop_prob),
         stopline_focus_crop_scale_range=(
             float(defaults.train_aug_stopline_focus_crop_scale_min),
