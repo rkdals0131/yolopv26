@@ -14200,3 +14200,79 @@ Verification:
 - The training slice can move internal stop-line F1 up to `0.5913`, but the fixed exact router output regresses to `27 / 42 / 33`, F1 `0.4186`.
 - This is therefore negative for the real target and should not be broadened.
 - Do not repeat this as gate-init, V3 neck LR, stop-line loss weight, epoch-count, or stopline-only sampler tuning. Reopen only with a new stop-line candidate/geometry signal that first beats projection-competition exact TP/FP/FN.
+
+## 278. 2026-05-29 Stop-line midpoint proposal head train
+
+Context:
+
+- The previous architecture-level review emphasized that stop-line failure may be a model/head contract issue, not only postprocess selection.
+- V3 isolated neck showed internal-val movement but failed the fixed exact gate, so the next narrow axis targeted the known stop-line midpoint/candidate-generation bottleneck directly.
+- This branch tested whether a dedicated midpoint proposal map, separated from the existing center/selector/readout burden, can feed projection-competition with better proposal cells.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-midpoint-proposal-head`.
+- Added `stop_line_midpoint_logits` to `StopLineDenseLocalHead`.
+- Added opt-in `stopline_midpoint_aux_weight` in `PV26MultiTaskLoss`, trained against the stop-line center heatmap target under the stop-line source mask.
+- Added `stop_line_projection_comp_proposal_source` to train defaults and postprocess config.
+- Extended projection-competition decode to use proposal sources `max`, `center`, `selector`, `midpoint`, or `midpoint_max`.
+- Added probe preset `stopline_midpoint_projection_comp`:
+  - base runtime decode: `stopline_projection_comp_runtime`;
+  - freeze policy: `lane_family_stopline_only`;
+  - trunk LR `0.0`, head LR `2e-4`;
+  - loss weights det/TL/lane/crosswalk `0`, stop-line `4.0`;
+  - `stopline_midpoint_aux_weight=1.0`;
+  - `stop_line_projection_comp_proposal_source=midpoint`;
+  - task-positive sampler: `stopline`;
+  - crosswalk hull decode retained for eval.
+
+Data and storage:
+
+- Real CUDA smoke and main training reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly.
+- No dataset copy was created.
+- The main run indexed `429350` records and used split train/val/test `326709 / 82641 / 20000`.
+- After evaluation, the smoke run, duplicate `last.pt` and task-best checkpoints, TensorBoard, and root `yolo26s.pt` were removed.
+- Retained run size: about `97M`.
+- Retained run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_midpoint_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_191031`.
+- Retained fixed exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_midpoint_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_191031/analysis_exports/router_exact_val128_epoch2/summary.json`.
+
+Training:
+
+- Smoke train: `1` epoch, `8` train batches, `4` val batches, batch size `4`, skipped steps `0`.
+- Main train: `3` epochs, `512` train batches, `128` val batches, batch size `4`, skipped steps `0`.
+
+| Epoch | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Phase Objective |
+| --- | ---: | ---: | ---: | --- | ---: |
+| 1 | `0.5543` | `0.1875` | `0.7190` | `6 / 3 / 49` | `0.6025` |
+| 2 | `0.5590` | `0.0923` | `0.5906` | `3 / 2 / 57` | `0.5776` |
+| 3 | `0.5527` | `0.1695` | `0.5882` | `5 / 1 / 48` | `0.6013` |
+
+- The best checkpoint by phase objective was epoch `1`.
+- The internal validation already showed the failure mode: the midpoint map proposal path controls FP but loses almost all stop-line recall.
+
+Fixed router exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7100` | `0.5029` | `0.5888` | `1202 / 491 / 1188` |
+| stop_line | `0.6667` | `0.1000` | `0.1739` | `6 / 3 / 54` |
+| crosswalk | `0.5814` | `0.6173` | `0.5988` | `50 / 36 / 31` |
+
+- Fixed exact phase objective: `0.6014268617`.
+- Projection-competition exact reference remains much stronger for stop-line: `32 / 28 / 28`, F1 `0.5333`.
+- Broader-val512 was skipped because fixed exact stop-line failed by a large margin.
+
+Verification:
+
+- `python -m py_compile model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_stopline_head_builds_denoise_queries_from_encoded_segments test_pv26_postprocess.PV26PostprocessTests.test_stopline_projection_comp_can_use_midpoint_proposal_source`.
+- CUDA smoke train/eval.
+- CUDA main `3` epoch / `512` train-batch run.
+- CUDA fixed router exact-val128 epoch-2 eval.
+
+판단:
+
+- A dedicated midpoint proposal head is executable and wired into runtime projection-competition, but it does not solve candidate generation.
+- Using midpoint as the proposal source suppresses FP too aggressively and collapses recall: exact stop-line `6 / 3 / 54`, F1 `0.1739`.
+- This is worse than the retained exact projection-competition reference and should not be broadened.
+- Do not repeat this as midpoint aux weight, proposal source (`midpoint` vs `midpoint_max`), head LR, epoch count, or stopline-only sampler tuning. Reopen only with a materially different candidate/geometry contract that first improves fixed exact TP/FP/FN.

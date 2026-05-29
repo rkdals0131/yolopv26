@@ -155,6 +155,7 @@ class TrainDefaultsConfig:
     stopline_geometry_aux_weight: float = 1.0
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
+    stopline_midpoint_aux_weight: float = 0.0
     stopline_haf_aux_weight: float = 0.0
     stopline_axis_distance_aux_weight: float = 0.0
     stopline_endpoint_pair_aux_weight: float = 0.0
@@ -197,6 +198,7 @@ class TrainDefaultsConfig:
     stop_line_axis_segment_set_max_segments: int = 3
     stop_line_axis_segment_verifier_score_weight: float = 0.0
     stop_line_projection_comp_enabled: bool = False
+    stop_line_projection_comp_proposal_source: str = "max"
     stop_line_projection_comp_min_gap: float = 4.0
     stop_line_projection_comp_topk: int = 50
     stop_line_projection_comp_union_min_score: float = 0.80
@@ -880,6 +882,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_centerline_target_weight", defaults.stopline_centerline_target_weight),
             field_name="train_defaults.stopline_centerline_target_weight",
         ),
+        stopline_midpoint_aux_weight=_coerce_float(
+            data.get("stopline_midpoint_aux_weight", defaults.stopline_midpoint_aux_weight),
+            field_name="train_defaults.stopline_midpoint_aux_weight",
+        ),
         stopline_haf_aux_weight=_coerce_float(
             data.get("stopline_haf_aux_weight", defaults.stopline_haf_aux_weight),
             field_name="train_defaults.stopline_haf_aux_weight",
@@ -1095,6 +1101,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stop_line_projection_comp_enabled=_coerce_bool(
             data.get("stop_line_projection_comp_enabled", defaults.stop_line_projection_comp_enabled),
             field_name="train_defaults.stop_line_projection_comp_enabled",
+        ),
+        stop_line_projection_comp_proposal_source=_coerce_str(
+            data.get(
+                "stop_line_projection_comp_proposal_source",
+                defaults.stop_line_projection_comp_proposal_source,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_proposal_source",
         ),
         stop_line_projection_comp_min_gap=_coerce_float(
             data.get("stop_line_projection_comp_min_gap", defaults.stop_line_projection_comp_min_gap),

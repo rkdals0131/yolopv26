@@ -113,6 +113,7 @@ class PV26PostprocessConfig:
     stop_line_axis_segment_set_max_segments: int = 3
     stop_line_axis_segment_verifier_score_weight: float = 0.0
     stop_line_projection_comp_enabled: bool = False
+    stop_line_projection_comp_proposal_source: str = "max"
     stop_line_projection_comp_min_gap: float = 4.0
     stop_line_projection_comp_topk: int = 50
     stop_line_projection_comp_union_min_score: float = 0.80
@@ -1083,10 +1084,12 @@ def _decode_stopline_projection_competition(
     *,
     mask_logits: torch.Tensor | None,
     center_logits: torch.Tensor | None,
+    midpoint_logits: torch.Tensor | None,
     selector_map_logits: torch.Tensor | None,
     center_offset: torch.Tensor | None,
     angle: torch.Tensor | None,
     meta: dict[str, Any],
+    proposal_source: str,
     min_gap: float,
     top_k: int,
     union_min_score: float,
@@ -1102,8 +1105,9 @@ def _decode_stopline_projection_competition(
 ) -> list[dict[str, Any]]:
     mask_probs = _stopline_2d_sigmoid_array(mask_logits)
     center_probs = _stopline_2d_sigmoid_array(center_logits)
+    midpoint_probs = _stopline_2d_sigmoid_array(midpoint_logits)
     selector_probs = _stopline_2d_sigmoid_array(selector_map_logits)
-    if mask_probs is None or (center_probs is None and selector_probs is None):
+    if mask_probs is None or (center_probs is None and selector_probs is None and midpoint_probs is None):
         return []
     if not isinstance(center_offset, torch.Tensor) or not isinstance(angle, torch.Tensor):
         return []
@@ -1117,9 +1121,32 @@ def _decode_stopline_projection_competition(
         angle_map = angle_map.squeeze(0)
     if offset_map.ndim != 3 or angle_map.ndim != 3 or int(offset_map.shape[0]) < 2 or int(angle_map.shape[0]) < 2:
         return []
-    proposal_map = selector_probs if center_probs is None else center_probs
-    if center_probs is not None and selector_probs is not None:
-        proposal_map = np.maximum(center_probs, selector_probs)
+    proposal_source = str(proposal_source or "max").strip().lower()
+    proposal_inputs = {
+        "center": center_probs,
+        "selector": selector_probs,
+        "midpoint": midpoint_probs,
+    }
+    if proposal_source == "max":
+        available = [value for value in proposal_inputs.values() if value is not None]
+        if not available:
+            return []
+        proposal_map = available[0]
+        for value in available[1:]:
+            proposal_map = np.maximum(proposal_map, value)
+    elif proposal_source in proposal_inputs:
+        proposal_map = proposal_inputs[proposal_source]
+        if proposal_map is None:
+            return []
+    elif proposal_source == "midpoint_max":
+        if midpoint_probs is None:
+            return []
+        proposal_map = midpoint_probs
+        for value in (center_probs, selector_probs):
+            if value is not None:
+                proposal_map = np.maximum(proposal_map, value)
+    else:
+        raise ValueError(f"unsupported stop_line_projection_comp_proposal_source: {proposal_source}")
     output_hw = (int(mask_probs.shape[0]), int(mask_probs.shape[1]))
 
     candidates: list[dict[str, Any]] = []
@@ -2766,6 +2793,7 @@ def _decode_stop_line_rows(
     mask_logits: torch.Tensor | None = None,
     selector_map_logits: torch.Tensor | None = None,
     center_logits: torch.Tensor | None = None,
+    midpoint_logits: torch.Tensor | None = None,
     center_offset: torch.Tensor | None = None,
     row_logits: torch.Tensor | None = None,
     x_logits: torch.Tensor | None = None,
@@ -2817,6 +2845,7 @@ def _decode_stop_line_rows(
     endpoint_pair_segment_max_segments: int = 3,
     endpoint_pair_verifier_score_weight: float = 0.0,
     projection_comp_enabled: bool = False,
+    projection_comp_proposal_source: str = "max",
     projection_comp_min_gap: float = 4.0,
     projection_comp_topk: int = 50,
     projection_comp_union_min_score: float = 0.80,
@@ -2843,10 +2872,12 @@ def _decode_stop_line_rows(
         return _decode_stopline_projection_competition(
             mask_logits=mask_logits,
             center_logits=center_logits,
+            midpoint_logits=midpoint_logits,
             selector_map_logits=selector_map_logits,
             center_offset=center_offset,
             angle=angle,
             meta=meta,
+            proposal_source=str(projection_comp_proposal_source),
             min_gap=float(projection_comp_min_gap),
             top_k=int(projection_comp_topk),
             union_min_score=float(projection_comp_union_min_score),
@@ -3104,6 +3135,7 @@ def postprocess_pv26_batch(
     stop_line_selector_map_logits = predictions.get("stop_line_selector_map_logits")
     stop_line_presence_logits = predictions.get("stop_line_presence_logits")
     stop_line_center_logits = predictions.get("stop_line_center_logits")
+    stop_line_midpoint_logits = predictions.get("stop_line_midpoint_logits")
     stop_line_center_offset = predictions.get("stop_line_center_offset")
     stop_line_angle = predictions.get("stop_line_angle")
     stop_line_half_length = predictions.get("stop_line_half_length")
@@ -3195,6 +3227,11 @@ def postprocess_pv26_batch(
                     center_logits=(
                         stop_line_center_logits[batch_index]
                         if isinstance(stop_line_center_logits, torch.Tensor)
+                        else None
+                    ),
+                    midpoint_logits=(
+                        stop_line_midpoint_logits[batch_index]
+                        if isinstance(stop_line_midpoint_logits, torch.Tensor)
                         else None
                     ),
                     center_offset=(
@@ -3334,6 +3371,7 @@ def postprocess_pv26_batch(
                     endpoint_pair_segment_max_segments=config.stop_line_endpoint_pair_segment_max_segments,
                     endpoint_pair_verifier_score_weight=config.stop_line_endpoint_pair_verifier_score_weight,
                     projection_comp_enabled=config.stop_line_projection_comp_enabled,
+                    projection_comp_proposal_source=config.stop_line_projection_comp_proposal_source,
                     projection_comp_min_gap=config.stop_line_projection_comp_min_gap,
                     projection_comp_topk=config.stop_line_projection_comp_topk,
                     projection_comp_union_min_score=config.stop_line_projection_comp_union_min_score,

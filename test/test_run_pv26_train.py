@@ -174,6 +174,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stopline_endpoint_pair_segment_aux_weight": 0.7,
                             "stopline_endpoint_pair_verifier_aux_weight": 0.6,
                             "stopline_segment_denoise_aux_weight": 0.8,
+                            "stopline_midpoint_aux_weight": 0.65,
                             "stopline_axis_distance_aux_weight": 0.55,
                             "stopline_axis_segment_set_aux_weight": 0.6,
                             "stopline_axis_segment_verifier_aux_weight": 0.4,
@@ -199,6 +200,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stop_line_axis_segment_set_max_segments": 5,
                             "stop_line_axis_segment_verifier_score_weight": 0.75,
                             "stop_line_projection_comp_enabled": True,
+                            "stop_line_projection_comp_proposal_source": "midpoint",
                             "stop_line_projection_comp_min_gap": 5.0,
                             "stop_line_projection_comp_topk": 40,
                             "stop_line_projection_comp_union_min_score": 0.81,
@@ -348,6 +350,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.stopline_endpoint_pair_segment_aux_weight, 0.7)
         self.assertAlmostEqual(scenario.train_defaults.stopline_endpoint_pair_verifier_aux_weight, 0.6)
         self.assertAlmostEqual(scenario.train_defaults.stopline_segment_denoise_aux_weight, 0.8)
+        self.assertAlmostEqual(scenario.train_defaults.stopline_midpoint_aux_weight, 0.65)
         self.assertAlmostEqual(scenario.train_defaults.stopline_axis_distance_aux_weight, 0.55)
         self.assertAlmostEqual(scenario.train_defaults.stopline_axis_segment_set_aux_weight, 0.6)
         self.assertAlmostEqual(scenario.train_defaults.stopline_axis_segment_verifier_aux_weight, 0.4)
@@ -373,6 +376,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.stop_line_axis_segment_set_max_segments, 5)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_axis_segment_verifier_score_weight, 0.75)
         self.assertTrue(scenario.train_defaults.stop_line_projection_comp_enabled)
+        self.assertEqual(scenario.train_defaults.stop_line_projection_comp_proposal_source, "midpoint")
         self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_min_gap, 5.0)
         self.assertEqual(scenario.train_defaults.stop_line_projection_comp_topk, 40)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_union_min_score, 0.81)

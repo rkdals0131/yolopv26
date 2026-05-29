@@ -161,6 +161,7 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "stop_line_x_logits",
         "stop_line_selector_map_logits",
         "stop_line_center_logits",
+        "stop_line_midpoint_logits",
         "stop_line_center_offset",
         "stop_line_angle",
         "stop_line_half_length",
@@ -1568,6 +1569,7 @@ def _stop_line_mask_loss_with_selector_weight(
     geometry_aux_weight: float = 1.0,
     center_target_mode: str = "union",
     centerline_target_weight: float = 1.0,
+    midpoint_aux_weight: float = 0.0,
     haf_aux_weight: float = 0.0,
     axis_distance_aux_weight: float = 0.0,
     endpoint_pair_aux_weight: float = 0.0,
@@ -1583,6 +1585,7 @@ def _stop_line_mask_loss_with_selector_weight(
 ) -> torch.Tensor:
     mask_logits = predictions.get("stop_line_mask_logits")
     center_logits = predictions.get("stop_line_center_logits")
+    midpoint_logits = predictions.get("stop_line_midpoint_logits")
     center_offset = predictions.get("stop_line_center_offset")
     angle = predictions.get("stop_line_angle")
     half_length = predictions.get("stop_line_half_length")
@@ -1672,6 +1675,16 @@ def _stop_line_mask_loss_with_selector_weight(
     if isinstance(center_logits, torch.Tensor):
         center_mask = source[:, None, None, None].expand_as(center_logits)
         center_loss = _masked_binary_ce_balanced(center_logits, center_target, center_mask, max_positive_weight=64.0)
+        if isinstance(midpoint_logits, torch.Tensor):
+            midpoint_mask = source[:, None, None, None].expand_as(midpoint_logits)
+            midpoint_loss = _masked_binary_ce_balanced(
+                midpoint_logits,
+                center_heatmap_target,
+                midpoint_mask,
+                max_positive_weight=64.0,
+            )
+        else:
+            midpoint_loss = _zero_graph(mask_logits)
         row_support_loss = _stop_line_row_support_loss(row_selector_logits, row_target, source)
         row_distribution_loss = _stop_line_row_distribution_loss(row_selector_logits, row_target, source)
         row_expectation_loss = _stop_line_row_expectation_loss(row_selector_logits, row_target, source)
@@ -1690,6 +1703,7 @@ def _stop_line_mask_loss_with_selector_weight(
             dense_selector_loss = _zero_graph(mask_logits)
     else:
         center_loss = _zero_graph(mask_logits)
+        midpoint_loss = _zero_graph(mask_logits)
         row_support_loss = _zero_graph(mask_logits)
         row_distribution_loss = _zero_graph(mask_logits)
         row_expectation_loss = _zero_graph(mask_logits)
@@ -1845,6 +1859,7 @@ def _stop_line_mask_loss_with_selector_weight(
         0.5 * mask_ce
         + 0.5 * mask_dice
         + 2.0 * center_loss
+        + float(midpoint_aux_weight) * midpoint_loss
         + float(local_x_aux_weight) * (0.5 * local_col_support_loss + 0.5 * local_col_distribution_loss)
         + float(selector_aux_weight)
         * (
@@ -2224,6 +2239,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_geometry_aux_weight: float = 1.0,
         stopline_center_target_mode: str = "union",
         stopline_centerline_target_weight: float = 1.0,
+        stopline_midpoint_aux_weight: float = 0.0,
         stopline_haf_aux_weight: float = 0.0,
         stopline_axis_distance_aux_weight: float = 0.0,
         stopline_endpoint_pair_aux_weight: float = 0.0,
@@ -2300,6 +2316,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_geometry_aux_weight = float(stopline_geometry_aux_weight)
         self.stopline_center_target_mode = str(stopline_center_target_mode)
         self.stopline_centerline_target_weight = float(stopline_centerline_target_weight)
+        self.stopline_midpoint_aux_weight = float(stopline_midpoint_aux_weight)
         self.stopline_haf_aux_weight = float(stopline_haf_aux_weight)
         self.stopline_axis_distance_aux_weight = float(stopline_axis_distance_aux_weight)
         self.stopline_endpoint_pair_aux_weight = float(stopline_endpoint_pair_aux_weight)
@@ -2410,6 +2427,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_geometry_aux_weight": float(self.stopline_geometry_aux_weight),
             "stopline_center_target_mode": self.stopline_center_target_mode,
             "stopline_centerline_target_weight": float(self.stopline_centerline_target_weight),
+            "stopline_midpoint_aux_weight": float(self.stopline_midpoint_aux_weight),
             "stopline_haf_aux_weight": float(self.stopline_haf_aux_weight),
             "stopline_axis_distance_aux_weight": float(self.stopline_axis_distance_aux_weight),
             "stopline_endpoint_pair_aux_weight": float(self.stopline_endpoint_pair_aux_weight),
@@ -3193,6 +3211,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and str(self.stopline_selector_target_mode).strip().lower() == "centerline"
                 and str(self.stopline_center_target_mode).strip().lower() == "union"
                 and float(self.stopline_centerline_target_weight) == 1.0
+                and float(self.stopline_midpoint_aux_weight) == 0.0
                 and float(self.stopline_haf_aux_weight) == 0.0
                 and float(self.stopline_axis_distance_aux_weight) == 0.0
                 and float(self.stopline_endpoint_pair_aux_weight) == 0.0
@@ -3214,6 +3233,7 @@ class PV26MultiTaskLoss(nn.Module):
                 geometry_aux_weight=float(self.stopline_geometry_aux_weight),
                 center_target_mode=self.stopline_center_target_mode,
                 centerline_target_weight=float(self.stopline_centerline_target_weight),
+                midpoint_aux_weight=float(self.stopline_midpoint_aux_weight),
                 haf_aux_weight=float(self.stopline_haf_aux_weight),
                 axis_distance_aux_weight=float(self.stopline_axis_distance_aux_weight),
                 endpoint_pair_aux_weight=float(self.stopline_endpoint_pair_aux_weight),

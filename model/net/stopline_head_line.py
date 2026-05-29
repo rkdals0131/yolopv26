@@ -73,6 +73,7 @@ class StopLineDenseLocalHead(nn.Module):
         self.x_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.selector_map_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.center_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.midpoint_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.center_offset = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.angle = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.half_length = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
@@ -194,6 +195,7 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_x_logits": x_logits,
             "stop_line_selector_map_logits": selector_map_logits,
             "stop_line_center_logits": center_logits,
+            "stop_line_midpoint_logits": self.midpoint_logits(dense_feat),
             "stop_line_center_offset": center_offset,
             "stop_line_angle": angle,
             "stop_line_half_length": half_length,

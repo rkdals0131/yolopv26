@@ -197,6 +197,7 @@ class PV26HeadsTests(unittest.TestCase):
 
         self.assertEqual(tuple(outputs["stop_line_segment_denoise_logits"].shape), (1, 4))
         self.assertEqual(tuple(outputs["stop_line_segment_denoise_points"].shape), (1, 4, 2, 2))
+        self.assertEqual(tuple(outputs["stop_line_midpoint_logits"].shape), (1, 1, 16, 20))
         self.assertEqual(tuple(outputs["stop_line_axis_distance"].shape), (1, 3, 16, 20))
         self.assertEqual(tuple(outputs["stop_line_axis_direction"].shape), (1, 2, 16, 20))
         self.assertEqual(tuple(outputs["stop_line_axis_valid_logits"].shape), (1, 1, 16, 20))

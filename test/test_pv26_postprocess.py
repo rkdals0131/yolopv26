@@ -440,6 +440,44 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertAlmostEqual(points[-1][0], 340.0, delta=12.0)
         self.assertAlmostEqual(points[-1][1], 500.0, delta=8.0)
 
+    def test_stopline_projection_comp_can_use_midpoint_proposal_source(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        h, w = 152, 200
+        predictions["stop_line_mask_logits"] = torch.full((1, 1, h, w), -8.0, dtype=torch.float32)
+        predictions["stop_line_center_logits"] = torch.full((1, 1, h, w), -8.0, dtype=torch.float32)
+        predictions["stop_line_selector_map_logits"] = torch.full((1, 1, h, w), -8.0, dtype=torch.float32)
+        predictions["stop_line_midpoint_logits"] = torch.full((1, 1, h, w), -8.0, dtype=torch.float32)
+        predictions["stop_line_center_offset"] = torch.zeros((1, 2, h, w), dtype=torch.float32)
+        predictions["stop_line_angle"] = torch.zeros((1, 2, h, w), dtype=torch.float32)
+        predictions["stop_line_angle"][:, 0] = 1.0
+        predictions["stop_line_mask_logits"][0, 0, 124, 25:86] = 8.0
+        predictions["stop_line_center_logits"][0, 0, 124, 25] = 8.0
+        predictions["stop_line_selector_map_logits"][0, 0, 124, 25] = 8.0
+        predictions["stop_line_midpoint_logits"][0, 0, 124, 55] = 8.0
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                lane_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.999,
+                stop_line_projection_comp_enabled=True,
+                stop_line_projection_comp_proposal_source="midpoint",
+                stop_line_projection_comp_topk=1,
+                stop_line_projection_comp_max_predictions=1,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["stop_lines"]), 1)
+        points = decoded[0]["stop_lines"][0]["points_xy"]
+        self.assertAlmostEqual(points[0][0], 100.0, delta=12.0)
+        self.assertAlmostEqual(points[-1][0], 340.0, delta=12.0)
+
     def test_lane_conditional_row_decode_can_replace_segfirst_vectorizer(self) -> None:
         predictions = _make_prediction_batch()
         predictions["det"] = torch.zeros_like(predictions["det"])
