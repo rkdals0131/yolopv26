@@ -13987,3 +13987,72 @@ Verification:
 - It still fails the real all-task target. Lane remains `+0.0372` short and stop-line remains `+0.0691` short, and the contract uses two checkpoints rather than one raw checkpoint default.
 - The newly trained stop-line-only upper-trunk specialist is negative. It preserves lane/crosswalk by construction, but stop-line regresses to broader `0.4826`, TP/FP/FN `125 / 122 / 146`, below both the existing router `0.5309` and the retained projection-comp runtime `0.5164`.
 - Do not repeat this as trunk LR, head LR, stop-line loss weight, epoch-count, or stopline-only sampler tuning. Reopen only with a new candidate-generation/geometry signal, or with a single-checkpoint training contract that first improves fixed exact TP/FP/FN while retaining lane/crosswalk.
+
+## 275. 2026-05-29 Lane task router and lane specialist smoke
+
+Context:
+
+- After the stop-line router, the current best broader all-task runtime lower bound is lane/stop/cross `0.5628 / 0.5309 / 0.6187`, but lane still needs `+0.0372` F1 and stop-line still needs `+0.0691` F1.
+- This branch tested whether the same task-router contract can isolate lane training without sacrificing the retained stop-line-priority router and hull crosswalk behavior.
+- The rule for this slice was real training plus a fixed smoke gate first. Broader training was allowed only if the trained lane specialist improved lane TP/FP/FN on the fixed route smoke.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-router-specialist-upper-trunk`.
+- Added `--lane-checkpoint` to `tools/probe_pv26_lane_flip_tta.py`.
+- Added `_merge_lane_outputs()`, which replaces only `lane` and `lane_*` keys from the lane-specialist forward pass and preserves stop-line/crosswalk outputs from the primary checkpoint.
+- Kept existing `--stop-line-checkpoint` routing, so the probe can route lane from one checkpoint, stop-line from another checkpoint, and crosswalk from the retained primary checkpoint.
+- Added probe preset `lane_router_specialist_upper_trunk` in `tools/run_pv26_lane60_probe.py`:
+  - base runtime: `stopline_projection_comp_runtime`;
+  - freeze policy: `lane_family_plus_upper_trunk`;
+  - trunk LR `2e-6`, head LR `2e-4`;
+  - loss weights det/TL/stop-line/crosswalk `0`, lane `4.0`;
+  - task-positive sampler `lane`;
+  - hull crosswalk retained for eval.
+- Added a focused unit test proving lane router merge leaves stop-line/crosswalk keys untouched and replaces only lane keys.
+
+Route baseline smoke:
+
+- Primary checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Lane checkpoint: same retained primary checkpoint, used only to prove the lane route path is behavior-preserving.
+- Stop-line checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/router_lane_path_smoke_val4_epoch2/summary.json`.
+- Result on fixed val4 epoch2: lane/stop/cross `0.5839 / 0.0000 / 0.5455`, TP/FP/FN lane `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+
+Specialist smoke train:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_router_specialist_upper_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_175539`.
+- Smoke train: real CUDA `1` epoch, `8` train batches, `4` val batches, batch size `4`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+- Internal val4 best phase-objective was `0.6443791320`; this is not final evidence because final judgement uses fixed router eval.
+
+Fixed router smoke eval:
+
+| Eval | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| route baseline val4 epoch2 | `0.5839` | `0.0000` | `0.5455` | `40 / 11 / 46` | `0 / 3 / 2` | `3 / 1 / 4` |
+| trained specialist val4 epoch2 | `0.5735` | `0.0000` | `0.5455` | `39 / 11 / 47` | `0 / 3 / 2` | `3 / 1 / 4` |
+
+Storage:
+
+- The transient smoke training run was pruned after copying the smoke metrics to the retained source-run export area.
+- Retained route-baseline smoke export: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/router_lane_path_smoke_val4_epoch2`.
+- Retained trained-specialist smoke export: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_router_specialist_smoke_val4_epoch2`.
+- Removed temporary root `yolo26s.pt` download.
+
+Verification:
+
+- `python -m compileall -q tools/probe_pv26_lane_flip_tta.py tools/run_pv26_lane60_probe.py test/test_lane_flip_tta_probe.py`.
+- `python -m unittest discover -s test -p 'test_lane_flip_tta_probe.py'`.
+- CUDA lane route baseline smoke val4.
+- CUDA lane specialist smoke train: `1` epoch, `8` train batches, `4` val batches.
+- CUDA trained lane-specialist fixed router smoke val4.
+- Storage cleanup confirmed: smoke run removed, root `yolo26s.pt` removed, small exports retained.
+
+판단:
+
+- The lane route extension is useful evaluator/runtime plumbing. It can isolate lane outputs from a separate checkpoint while preserving stop-line/crosswalk outputs from the chosen primary/specialist route.
+- The lane-only upper-trunk specialist itself is negative. Fixed router smoke regressed lane from TP/FP/FN `40 / 11 / 46` to `39 / 11 / 47`, so exact-val128, broader-val512, and a larger train were skipped.
+- Do not repeat this as trunk LR, head LR, lane loss weight, epoch-count, or lane-only sampler tuning. Reopen lane-router training only with a materially different lane instance/geometry signal that first improves fixed smoke TP/FP/FN without duplicating or damaging the retained row-scan lanes.

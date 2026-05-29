@@ -46,6 +46,8 @@ LANE_LOGIT_KEYS = (
     "lane_seg_color_logits",
     "lane_seg_type_logits",
 )
+LANE_OUTPUT_KEY = "lane"
+LANE_OUTPUT_PREFIX = "lane_"
 LANE_TANGENT_KEY = "lane_seg_tangent_axis"
 DEFAULT_VARIANTS = (
     "baseline",
@@ -74,6 +76,14 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
+    parser.add_argument(
+        "--lane-checkpoint",
+        default="",
+        help=(
+            "Optional second checkpoint used only for lane outputs. "
+            "Stop-line and crosswalk outputs stay on --checkpoint unless separately routed."
+        ),
+    )
     parser.add_argument(
         "--stop-line-checkpoint",
         default="",
@@ -242,6 +252,19 @@ def _merge_stop_line_outputs(
     return output
 
 
+def _merge_lane_outputs(
+    base: dict[str, Any],
+    lane_outputs: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if lane_outputs is None:
+        return base
+    output = dict(base)
+    for key, value in lane_outputs.items():
+        if key == LANE_OUTPUT_KEY or str(key).startswith(LANE_OUTPUT_PREFIX):
+            output[key] = value
+    return output
+
+
 def _merge_lane_dense_predictions(
     base: dict[str, Any],
     flipped_unflipped: dict[str, Any],
@@ -388,6 +411,13 @@ def main() -> int:
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
+    lane_checkpoint = (
+        Path(str(args.lane_checkpoint)).expanduser().resolve()
+        if str(args.lane_checkpoint).strip()
+        else None
+    )
+    if lane_checkpoint is not None and not lane_checkpoint.is_file():
+        raise FileNotFoundError(f"lane checkpoint not found: {lane_checkpoint}")
     stop_line_checkpoint = (
         Path(str(args.stop_line_checkpoint)).expanduser().resolve()
         if str(args.stop_line_checkpoint).strip()
@@ -458,6 +488,17 @@ def main() -> int:
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     load_report = trainer.load_model_weights(checkpoint, map_location=train_config.device)
+    lane_load_report: dict[str, Any] | None = None
+    lane_evaluator = None
+    if lane_checkpoint is not None:
+        lane_trainer = train_cli._build_phase_trainer(phase, train_config)
+        lane_load_report = lane_trainer.load_model_weights(
+            lane_checkpoint,
+            map_location=train_config.device,
+        )
+        lane_evaluator = lane_trainer.build_evaluator()
+        lane_evaluator.adapter.raw_model.eval()
+        lane_evaluator.heads.eval()
     stop_line_load_report: dict[str, Any] | None = None
     stop_line_evaluator = None
     if stop_line_checkpoint is not None:
@@ -491,7 +532,21 @@ def main() -> int:
             base_outputs = _detach_to_cpu(evaluator.forward_encoded_batch(encoded))
             flipped_encoded = dict(encoded)
             flipped_encoded["image"] = torch.flip(encoded["image"], dims=(-1,))
-            flipped_outputs = _detach_to_cpu(evaluator.forward_encoded_batch(flipped_encoded))
+            lane_base_outputs = (
+                _detach_to_cpu(lane_evaluator.forward_encoded_batch(encoded))
+                if lane_evaluator is not None
+                else None
+            )
+            lane_flipped_outputs = (
+                _detach_to_cpu(lane_evaluator.forward_encoded_batch(flipped_encoded))
+                if lane_evaluator is not None
+                else None
+            )
+            flipped_outputs = (
+                lane_flipped_outputs
+                if lane_flipped_outputs is not None
+                else _detach_to_cpu(evaluator.forward_encoded_batch(flipped_encoded))
+            )
             flipped_unflipped = _unflip_lane_dense_outputs(flipped_outputs)
             stop_line_outputs = (
                 _detach_to_cpu(stop_line_evaluator.forward_encoded_batch(encoded))
@@ -501,8 +556,9 @@ def main() -> int:
             meta_rows = _detach_to_cpu(encoded["meta"])
             outputs_by_variant: dict[str, dict[str, Any]] = {}
             for variant in variants:
+                lane_base = _merge_lane_outputs(base_outputs, lane_base_outputs)
                 lane_outputs = _merge_lane_dense_predictions(
-                    base_outputs,
+                    lane_base,
                     flipped_unflipped,
                     variant=variant,
                 )
@@ -548,6 +604,7 @@ def main() -> int:
     _write_csv(output_dir / "metrics.csv", rows)
     payload = {
         "checkpoint": str(checkpoint),
+        "lane_checkpoint": None if lane_checkpoint is None else str(lane_checkpoint),
         "stop_line_checkpoint": None if stop_line_checkpoint is None else str(stop_line_checkpoint),
         "scenario_path": str(scenario_path),
         "lane60_experiment": str(args.lane60_experiment),
@@ -568,6 +625,7 @@ def main() -> int:
         "train_config": _json_ready(train_config),
         "postprocess_config": _json_ready(postprocess_config),
         "load_report": _json_ready(load_report),
+        "lane_load_report": _json_ready(lane_load_report),
         "stop_line_load_report": _json_ready(stop_line_load_report),
         "rows": rows,
         "metrics_by_variant": _json_ready(metrics_by_variant),

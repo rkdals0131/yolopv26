@@ -1358,6 +1358,25 @@ EXPERIMENTS["stopline_router_specialist_upper_trunk"] = {
     },
 }
 
+EXPERIMENTS["lane_router_specialist_upper_trunk"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_plus_upper_trunk",
+    "trunk_lr": 2.0e-6,
+    "head_lr": 2.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 4.0,
+        "stop_line": 0.0,
+        "crosswalk": 0.0,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "lane",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from tools.probe_pv26_lane_flip_tta import (
+    _merge_lane_outputs,
     _merge_lane_dense_predictions,
     _merge_stop_line_outputs,
     _unflip_lane_dense_outputs,
@@ -85,6 +86,29 @@ class LaneFlipTTAProbeTest(unittest.TestCase):
         self.assertIs(merged["stop_line"], stop_line_outputs["stop_line"])
         self.assertIs(merged["stop_line_mask_logits"], stop_line_outputs["stop_line_mask_logits"])
         self.assertIs(merged["stop_line_center_logits"], stop_line_outputs["stop_line_center_logits"])
+
+    def test_merge_lane_outputs_replaces_only_lane_keys(self) -> None:
+        base = {
+            "lane": torch.tensor([1.0]),
+            "lane_seg_centerline_logits": torch.tensor([2.0]),
+            "stop_line_mask_logits": torch.tensor([3.0]),
+            "crosswalk_mask_logits": torch.tensor([4.0]),
+        }
+        lane_outputs = {
+            "lane": torch.tensor([10.0]),
+            "lane_seg_centerline_logits": torch.tensor([20.0]),
+            "lane_feature": torch.tensor([30.0]),
+            "stop_line_mask_logits": torch.tensor([40.0]),
+            "crosswalk_mask_logits": torch.tensor([50.0]),
+        }
+
+        merged = _merge_lane_outputs(base, lane_outputs)
+
+        self.assertIs(merged["lane"], lane_outputs["lane"])
+        self.assertIs(merged["lane_seg_centerline_logits"], lane_outputs["lane_seg_centerline_logits"])
+        self.assertIs(merged["lane_feature"], lane_outputs["lane_feature"])
+        self.assertIs(merged["stop_line_mask_logits"], base["stop_line_mask_logits"])
+        self.assertIs(merged["crosswalk_mask_logits"], base["crosswalk_mask_logits"])
 
 
 if __name__ == "__main__":
