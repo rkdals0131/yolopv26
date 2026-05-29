@@ -74,6 +74,7 @@ class PV26PostprocessConfig:
     lane_segfirst_center_offset_max_shift_px: float = 4.0
     lane_segfirst_center_offset_min_support_score: float = 0.50
     lane_conditional_row_enabled: bool = False
+    lane_conditional_row_merge_mode: str = "replace"
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
     stop_line_min_component_pixels: int = 24
@@ -308,6 +309,31 @@ def _dedupe_lane_predictions(predictions: list[dict[str, Any]]) -> list[dict[str
     for prediction in kept:
         prediction.pop("_anchor_mask", None)
         prediction.pop("_anchor_x", None)
+    return kept
+
+
+def _dedupe_lane_predictions_by_distance(
+    predictions: list[dict[str, Any]],
+    *,
+    distance_threshold: float = 24.0,
+) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    ordered = sorted(predictions, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    for candidate in ordered:
+        candidate_points = candidate.get("points_xy", [])
+        is_duplicate = False
+        for existing in kept:
+            if candidate.get("class_name") != existing.get("class_name") or candidate.get("lane_type") != existing.get("lane_type"):
+                continue
+            try:
+                distance = _mean_point_distance(candidate_points, existing.get("points_xy", []), target_count=20)
+            except Exception:
+                distance = float("inf")
+            if distance <= float(distance_threshold):
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            kept.append(candidate)
     return kept
 
 
@@ -2768,13 +2794,6 @@ def _decode_segfirst_lane_rows(
     )
     if not all(isinstance(predictions.get(key), torch.Tensor) for key in required):
         raise KeyError("seg-first lane postprocess requires all dense lane prediction maps")
-    conditional_rows = predictions.get("lane_conditional_rows")
-    if bool(config.lane_conditional_row_enabled) and isinstance(conditional_rows, torch.Tensor):
-        return _decode_lane_rows(
-            conditional_rows[batch_index],
-            meta=meta,
-            config=config,
-        )
     from .lane_segfirst_vectorizer import (
         LaneSegFirstVectorizerConfig,
         lane_segfirst_prediction_maps,
@@ -2782,7 +2801,7 @@ def _decode_segfirst_lane_rows(
     )
 
     maps = lane_segfirst_prediction_maps(predictions, batch_index=batch_index)
-    return vectorize_lane_segfirst_maps(
+    segfirst_lanes = vectorize_lane_segfirst_maps(
         maps,
         meta=meta,
         config=LaneSegFirstVectorizerConfig(
@@ -2801,6 +2820,20 @@ def _decode_segfirst_lane_rows(
             center_offset_min_support_score=float(config.lane_segfirst_center_offset_min_support_score),
         ),
     )
+    conditional_rows = predictions.get("lane_conditional_rows")
+    if not bool(config.lane_conditional_row_enabled) or not isinstance(conditional_rows, torch.Tensor):
+        return segfirst_lanes
+    conditional_lanes = _decode_lane_rows(
+        conditional_rows[batch_index],
+        meta=meta,
+        config=config,
+    )
+    merge_mode = str(config.lane_conditional_row_merge_mode).strip().lower()
+    if merge_mode == "replace":
+        return conditional_lanes
+    if merge_mode == "append":
+        return _dedupe_lane_predictions_by_distance([*segfirst_lanes, *conditional_lanes])
+    raise ValueError(f"unsupported lane_conditional_row_merge_mode: {config.lane_conditional_row_merge_mode}")
 
 
 def _decode_polyline_rows(

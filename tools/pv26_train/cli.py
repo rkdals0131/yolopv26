@@ -227,6 +227,7 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
             train_config.lane_segfirst_center_offset_min_support_score
         ),
         lane_conditional_row_enabled=bool(train_config.lane_conditional_row_enabled),
+        lane_conditional_row_merge_mode=str(train_config.lane_conditional_row_merge_mode),
         stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
         stop_line_haf_enabled=bool(train_config.stop_line_haf_enabled),
         stop_line_haf_valid_threshold=float(train_config.stop_line_haf_valid_threshold),

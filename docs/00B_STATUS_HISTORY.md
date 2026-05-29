@@ -15364,3 +15364,65 @@ Verification:
 - It does not make the existing stop-line-priority positive-sampler path viable: fixed smoke still loses lane heavily and recovers no stop-line TP.
 - Do not repeat this as static-trunk freeze-policy, stop-line task-order, positive-fraction, head-LR, epoch-count, or same projection-comp runtime training sweep.
 - Reopen only with a materially different candidate/geometry, adapter/routing, or lane-retention signal that first improves fixed smoke TP/FP/FN.
+
+## 295. 2026-05-30 Lane conditional row rescue-append: row-scan retention cannot save current conditional rows
+
+Context:
+
+- The earlier conditional row instance decoder failed because enabling it replaced the row-scan/tangent vectorizer and produced enormous lane FP on broader validation.
+- The narrow follow-up here kept the retained row-scan/tangent output and appended conditional row decoder candidates only as rescue lanes, then distance-deduped mixed outputs.
+- This was intentionally not a conditional threshold sweep: the changed axis was the runtime merge contract, while stop-line projection-comp and hull crosswalk remained fixed.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-conditional-row-rescue-append`.
+- Added `lane_conditional_row_merge_mode` with valid values `replace` and `append`.
+- `replace` preserves the old conditional-row behavior.
+- `append` keeps seg-first row-scan/tangent lanes, decodes conditional rows, then applies score-ordered distance dedupe to the mixed lane list.
+- Added evaluator CLI plumbing for `--lane-conditional-row-merge-mode`.
+- Added `lane_conditional_row_rescue_append` to `tools/run_pv26_lane60_probe.py`, based on the bottom-anchor/metric-quality conditional row contract but with `lane_conditional_row_merge_mode="append"`.
+- Added a postprocess unit test proving append mode keeps seg-first vectorizer output instead of replacing it.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_rescue_append_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_023911`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4 task-best F1: lane `0.2446`, stop-line `0.0000`, crosswalk `0.7692`. This is not final evidence because it is the training validation slice, not fixed epoch-2 evaluation.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| conditional row rescue append | `0.2049` | `29 / 168 / 57` | `0.0000` | `0 / 3 / 2` | `0.3636` | `2 / 2 / 5` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_rescue_append_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_023911/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because fixed smoke regressed lane by `-11 TP`, `+157 FP`, and also regressed crosswalk.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `769M`, plus the auto-downloaded root `yolo26s.pt` was about `20M`.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `7.3M`.
+
+Verification:
+
+- `python -m py_compile model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/evaluate_pv26_lane60_checkpoint.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py' -k conditional_row`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `git diff --check`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- Row-scan retention plus append/dedupe is wired and trainable, but this conditional row contract is strongly negative.
+- The appended conditional rows do not act as bounded rescues; they flood lane FP and can also perturb crosswalk.
+- Do not repeat this as merge-mode, threshold, dedupe-distance, seed/objectness target, row-x weight, head-LR, freeze-policy, epoch-count, or same conditional-row contract tuning.
+- Reopen conditional instance work only with a materially new instance-existence/quality signal that first protects fixed smoke TP/FP/FN.

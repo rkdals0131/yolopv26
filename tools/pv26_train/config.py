@@ -144,6 +144,7 @@ class TrainDefaultsConfig:
     lane_conditional_objectness_target_mode: str = "binary"
     lane_conditional_row_x_weight: float = 0.05
     lane_conditional_row_enabled: bool = False
+    lane_conditional_row_merge_mode: str = "replace"
     lane_family_shared_adapter_enabled: bool = False
     lane_family_task_adapter_enabled: bool = False
     lane_family_cross_stitch_enabled: bool = False
@@ -838,6 +839,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_conditional_row_enabled=_coerce_bool(
             data.get("lane_conditional_row_enabled", defaults.lane_conditional_row_enabled),
             field_name="train_defaults.lane_conditional_row_enabled",
+        ),
+        lane_conditional_row_merge_mode=_coerce_str(
+            data.get("lane_conditional_row_merge_mode", defaults.lane_conditional_row_merge_mode),
+            field_name="train_defaults.lane_conditional_row_merge_mode",
         ),
         lane_family_shared_adapter_enabled=_coerce_bool(
             data.get("lane_family_shared_adapter_enabled", defaults.lane_family_shared_adapter_enabled),
@@ -1543,6 +1548,10 @@ def validate_meta_train_scenario(
             )
         if phase_train.distill_teacher_mode != "cache":
             raise ValueError(f"phase {index} distill_teacher_mode must be 'cache'")
+        if phase_train.lane_conditional_row_merge_mode not in {"replace", "append"}:
+            raise ValueError(
+                f"phase {index} lane_conditional_row_merge_mode must be one of: replace, append"
+            )
         if phase_train.distill_normalize_mode not in {"none", "ema"}:
             raise ValueError(f"phase {index} distill_normalize_mode must be one of: none, ema")
         if phase_train.task_loss_normalize_mode not in {"none", "ema"}:
