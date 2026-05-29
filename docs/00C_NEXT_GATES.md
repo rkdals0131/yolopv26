@@ -98,6 +98,7 @@
 - lane soft-skeleton/clDice-style topology loss를 weight/iteration sweep만으로 반복하지 않는다.
 - lane dense instance-embedding row-link/loss를 embedding distance/weight sweep만으로 반복하지 않는다.
 - lane conditional row instance decoder를 같은 top-K seed logits, one-shot MLP row-vector emission, seed/objectness threshold, aux-weight, head-LR, freeze-policy, or longer-run sweep으로 반복하지 않는다. 2026-05-29 real 5-epoch train was stable, but conditional-row enabled broader val512 lane collapsed to `161 / 19210 / 9316 / 0.0112`; disabling the decoder recovered only `0.5336 / 0.4069 / 0.6319`, still below the retained broader runtime composite on lane and stop-line.
+- lane conditional bottom-anchor/metric-quality row decoder를 seed-target, objectness-target, row-x weight, threshold, head-LR, freeze-policy, or longer-run sweep으로 반복하지 않는다. 2026-05-29 real CUDA smoke reused the existing dataset root without copying data and had skipped steps `0`, but val4 lane/stop/cross F1 was only `0.0000 / 0.0000 / 0.6667`, with lane TP/FP/FN `0 / 59 / 79` and stop-line `0 / 1 / 2`. Do not broaden this contract to exact val128 or broader val512.
 - lane global/sample centerline threshold-only calibration을 lane 0.6 path로 반복하지 않는다.
 - lane flip-consistency regularizer를 weight/mask-mode sweep만으로 반복하지 않는다.
 - `core_centerline_refine_row_scan_tangent_positive_flip_consistency` restricts the same flip-consistency pressure to GT lane centerline-core positives, but exact val128 still misses the gate: objective `0.5981680601`, lane/stop/cross `0.5513 / 0.3966 / 0.5548`, skipped steps `0`.

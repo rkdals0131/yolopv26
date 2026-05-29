@@ -124,6 +124,15 @@ Current best broader task-balance runtime composite:
 - lane-family mean/min F1: `0.5659 / 0.5164`.
 - 판단: this is no longer artifact-only CSV recombination; the known task-balance lower bound now has an opt-in runtime/evaluator contract. It still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`, and it is not a single raw checkpoint default.
 
+Latest lane conditional bottom-anchor quality smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-conditional-bottom-anchor-quality`.
+- changed axis: keep the retained lane/stop/cross runtime settings, but change the conditional lane-row auxiliary from full-centerline seed supervision to a sparse bottom-anchor seed target, metric-quality objectness targets, and stronger row-x loss.
+- real CUDA smoke: `1` epoch, `32` train batches, `4` val batches, batch size `4`, seed checkpoint `merged_lane_head.pt`.
+- storage/data contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The failed smoke checkpoints were pruned after evaluation, leaving only summaries/history.
+- smoke val4 result: objective `0.2844807747`, lane/stop/cross F1 `0.0000 / 0.0000 / 0.6667`, lane TP/FP/FN `0 / 59 / 79`, stop-line `0 / 1 / 2`, crosswalk `4 / 3 / 1`, skipped steps `0`.
+- 판단: this seed/objectness contract is not worth broadening. It suppresses or misaligns lane instances badly enough that lane recall collapses on the rejection gate; do not continue it as a seed-target, objectness-target, row-x-weight, threshold, head-LR, or longer-run sweep.
+
 Latest stop-line projection-competition runtime contract train/eval result:
 
 - branch/worktree: `exp/lane-family-f1/stopline-projcomp-runtime-contract`.

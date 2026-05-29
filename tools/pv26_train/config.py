@@ -125,6 +125,9 @@ class TrainDefaultsConfig:
     lane_segfirst_task_conflict_negative_weight: float = 0.0
     lane_segfirst_task_conflict_negative_margin: float = 0.15
     lane_conditional_row_aux_weight: float = 0.0
+    lane_conditional_seed_target_mode: str = "centerline_core"
+    lane_conditional_objectness_target_mode: str = "binary"
+    lane_conditional_row_x_weight: float = 0.05
     lane_conditional_row_enabled: bool = False
     lane_family_shared_adapter_enabled: bool = False
     lane_family_task_adapter_enabled: bool = False
@@ -712,6 +715,21 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_conditional_row_aux_weight=_coerce_float(
             data.get("lane_conditional_row_aux_weight", defaults.lane_conditional_row_aux_weight),
             field_name="train_defaults.lane_conditional_row_aux_weight",
+        ),
+        lane_conditional_seed_target_mode=_coerce_str(
+            data.get("lane_conditional_seed_target_mode", defaults.lane_conditional_seed_target_mode),
+            field_name="train_defaults.lane_conditional_seed_target_mode",
+        ),
+        lane_conditional_objectness_target_mode=_coerce_str(
+            data.get(
+                "lane_conditional_objectness_target_mode",
+                defaults.lane_conditional_objectness_target_mode,
+            ),
+            field_name="train_defaults.lane_conditional_objectness_target_mode",
+        ),
+        lane_conditional_row_x_weight=_coerce_float(
+            data.get("lane_conditional_row_x_weight", defaults.lane_conditional_row_x_weight),
+            field_name="train_defaults.lane_conditional_row_x_weight",
         ),
         lane_conditional_row_enabled=_coerce_bool(
             data.get("lane_conditional_row_enabled", defaults.lane_conditional_row_enabled),

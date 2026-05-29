@@ -446,10 +446,16 @@ class PV26LossRuntimeTests(unittest.TestCase):
             stage="stage_4_lane_family_finetune",
             loss_weights={"stop_line": 0.0, "crosswalk": 0.0},
             lane_conditional_row_aux_weight=1.0,
+            lane_conditional_seed_target_mode="bottom_anchor",
+            lane_conditional_objectness_target_mode="metric_quality",
+            lane_conditional_row_x_weight=0.5,
         )
         losses = criterion(predictions, encoded)
 
         self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertEqual(criterion.export_config()["lane_conditional_seed_target_mode"], "bottom_anchor")
+        self.assertEqual(criterion.export_config()["lane_conditional_objectness_target_mode"], "metric_quality")
+        self.assertAlmostEqual(criterion.export_config()["lane_conditional_row_x_weight"], 0.5)
         losses["total"].backward()
         self.assertIsNotNone(predictions["lane_conditional_rows"].grad)
         self.assertIsNotNone(predictions["lane_conditional_seed_logits"].grad)

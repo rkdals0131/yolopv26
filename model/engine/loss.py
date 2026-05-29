@@ -475,6 +475,9 @@ def _lane_segfirst_loss(
     task_conflict_negative_weight: float = 0.0,
     task_conflict_negative_margin: float = 0.15,
     conditional_row_aux_weight: float = 0.0,
+    conditional_seed_target_mode: str = "centerline_core",
+    conditional_objectness_target_mode: str = "binary",
+    conditional_row_x_weight: float = 0.05,
     color_class_weights: dict[str, float] | None = None,
     breakdown: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
@@ -609,7 +612,13 @@ def _lane_segfirst_loss(
                 F.relu(conflict_prob[conflict_mask] - float(task_conflict_negative_margin)) ** 2.0
             ).mean()
     if float(conditional_row_aux_weight) > 0.0:
-        conditional_row_loss = _lane_conditional_row_loss(predictions, encoded)
+        conditional_row_loss = _lane_conditional_row_loss(
+            predictions,
+            encoded,
+            seed_target_mode=str(conditional_seed_target_mode),
+            objectness_target_mode=str(conditional_objectness_target_mode),
+            row_x_weight=float(conditional_row_x_weight),
+        )
 
     total = (
         weights["centerline_bce"] * centerline_bce
@@ -1088,7 +1097,60 @@ def _lane_row_classification_loss(
     return total
 
 
-def _lane_conditional_row_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> torch.Tensor:
+def _lane_conditional_bottom_anchor_seed_target(
+    seed_logits: torch.Tensor,
+    lane_target: torch.Tensor,
+    lane_valid: torch.Tensor,
+    lane_source: torch.Tensor,
+    ignore: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch_size, _, height, width = seed_logits.shape
+    target = torch.zeros_like(seed_logits)
+    valid_mask = lane_source.to(device=seed_logits.device, dtype=torch.bool)[:, None, None, None].expand_as(seed_logits).clone()
+    if isinstance(ignore, torch.Tensor):
+        ignore_mask = F.interpolate(
+            ignore.to(device=seed_logits.device, dtype=seed_logits.dtype),
+            size=(height, width),
+            mode="nearest",
+        ).to(dtype=torch.bool)
+        valid_mask = valid_mask & (~ignore_mask.expand_as(seed_logits))
+
+    anchor_rows = torch.linspace(
+        float(NETWORK_HW[0] - 1),
+        0.0,
+        LANE_ANCHOR_COUNT,
+        device=seed_logits.device,
+        dtype=seed_logits.dtype,
+    )
+    x_scale = float(width - 1) / max(float(NETWORK_HW[1] - 1), 1.0)
+    y_scale = float(height - 1) / max(float(NETWORK_HW[0] - 1), 1.0)
+    for batch_index in range(batch_size):
+        if not bool(lane_source[batch_index]):
+            continue
+        gt_rows = lane_target[batch_index, lane_valid[batch_index]]
+        for gt_row in gt_rows:
+            visible = gt_row[LANE_VIS_SLICE] > 0.5
+            visible_indices = torch.nonzero(visible, as_tuple=False).flatten()
+            if int(visible_indices.numel()) == 0:
+                continue
+            bottom_index = int(visible_indices[0].item())
+            x_value = gt_row[LANE_X_SLICE][bottom_index].clamp(0.0, float(NETWORK_HW[1] - 1))
+            y_value = anchor_rows[bottom_index].clamp(0.0, float(NETWORK_HW[0] - 1))
+            col = int(torch.round(x_value * x_scale).clamp(0, width - 1).item())
+            row = int(torch.round(y_value * y_scale).clamp(0, height - 1).item())
+            target[batch_index, 0, row, col] = 1.0
+            valid_mask[batch_index, 0, row, col] = True
+    return target, valid_mask
+
+
+def _lane_conditional_row_loss(
+    predictions: dict[str, torch.Tensor],
+    encoded: dict[str, Any],
+    *,
+    seed_target_mode: str = "centerline_core",
+    objectness_target_mode: str = "binary",
+    row_x_weight: float = 0.05,
+) -> torch.Tensor:
     conditional_rows = predictions.get("lane_conditional_rows")
     if not isinstance(conditional_rows, torch.Tensor):
         return _zero_graph(predictions["lane"])
@@ -1106,6 +1168,9 @@ def _lane_conditional_row_loss(predictions: dict[str, torch.Tensor], encoded: di
     lane_target = lane_target.to(device=device, dtype=dtype)
     lane_valid = lane_valid.to(device=device, dtype=torch.bool)
     lane_source = lane_source.to(device=device, dtype=torch.bool)
+    objectness_target_mode = str(objectness_target_mode).strip().lower()
+    if objectness_target_mode not in {"binary", "metric_quality"}:
+        raise ValueError(f"unsupported lane_conditional_objectness_target_mode: {objectness_target_mode}")
     batch_size, query_count, _ = conditional_rows.shape
     obj_target = torch.zeros((batch_size, query_count), device=device, dtype=dtype)
     obj_mask = lane_source[:, None].expand_as(obj_target)
@@ -1123,29 +1188,52 @@ def _lane_conditional_row_loss(predictions: dict[str, torch.Tensor], encoded: di
         pred_indices, gt_indices = _hungarian_match(cost)
         if int(pred_indices.numel()) == 0:
             continue
-        obj_target[batch_index, pred_indices] = 1.0
-        matched_pred_rows.append(conditional_rows[batch_index, pred_indices])
-        matched_gt_rows.append(gt_rows[gt_indices])
+        matched_pred = conditional_rows[batch_index, pred_indices]
+        matched_gt = gt_rows[gt_indices]
+        if objectness_target_mode == "metric_quality":
+            obj_target[batch_index, pred_indices] = _lane_match_quality(matched_pred, matched_gt).detach()
+        else:
+            obj_target[batch_index, pred_indices] = 1.0
+        matched_pred_rows.append(matched_pred)
+        matched_gt_rows.append(matched_gt)
 
     obj_loss = _objectness_loss(conditional_rows[..., 0], obj_target, obj_mask)
     seed_loss = _zero_graph(conditional_rows)
     seed_logits = predictions.get("lane_conditional_seed_logits")
     aux = encoded.get("roadmark_v2")
     if isinstance(seed_logits, torch.Tensor) and isinstance(aux, dict):
-        centerline_target = aux.get("lane_seg_centerline_core")
         ignore = aux.get("lane_seg_ignore")
-        if isinstance(centerline_target, torch.Tensor):
-            centerline_target = centerline_target.to(device=seed_logits.device, dtype=seed_logits.dtype)
-            source_mask = lane_source.to(device=seed_logits.device, dtype=torch.bool)
-            valid_mask = source_mask[:, None, None, None].expand_as(seed_logits)
-            if isinstance(ignore, torch.Tensor):
-                valid_mask = valid_mask & (~ignore.to(device=seed_logits.device, dtype=torch.bool).expand_as(seed_logits))
+        seed_target_mode = str(seed_target_mode).strip().lower()
+        if seed_target_mode == "centerline_core":
+            centerline_target = aux.get("lane_seg_centerline_core")
+            if isinstance(centerline_target, torch.Tensor):
+                centerline_target = centerline_target.to(device=seed_logits.device, dtype=seed_logits.dtype)
+                source_mask = lane_source.to(device=seed_logits.device, dtype=torch.bool)
+                valid_mask = source_mask[:, None, None, None].expand_as(seed_logits)
+                if isinstance(ignore, torch.Tensor):
+                    valid_mask = valid_mask & (~ignore.to(device=seed_logits.device, dtype=torch.bool).expand_as(seed_logits))
+                seed_loss = _masked_binary_ce_balanced(
+                    seed_logits,
+                    centerline_target,
+                    valid_mask,
+                    max_positive_weight=32.0,
+                )
+        elif seed_target_mode == "bottom_anchor":
+            seed_target, seed_valid = _lane_conditional_bottom_anchor_seed_target(
+                seed_logits,
+                lane_target.to(device=seed_logits.device, dtype=seed_logits.dtype),
+                lane_valid.to(device=seed_logits.device, dtype=torch.bool),
+                lane_source.to(device=seed_logits.device, dtype=torch.bool),
+                ignore if isinstance(ignore, torch.Tensor) else None,
+            )
             seed_loss = _masked_binary_ce_balanced(
                 seed_logits,
-                centerline_target,
-                valid_mask,
-                max_positive_weight=32.0,
+                seed_target,
+                seed_valid,
+                max_positive_weight=64.0,
             )
+        else:
+            raise ValueError(f"unsupported lane_conditional_seed_target_mode: {seed_target_mode}")
 
     if not matched_pred_rows:
         return obj_loss + 0.25 * seed_loss
@@ -1170,7 +1258,7 @@ def _lane_conditional_row_loss(predictions: dict[str, torch.Tensor], encoded: di
     type_target = matched_gt[:, LANE_TYPE_SLICE].argmax(dim=-1)
     color_loss = F.cross_entropy(matched_pred[:, LANE_COLOR_SLICE], color_target, reduction="mean")
     type_loss = F.cross_entropy(matched_pred[:, LANE_TYPE_SLICE], type_target, reduction="mean")
-    return obj_loss + 0.25 * seed_loss + 0.05 * x_loss + vis_loss + color_loss + 0.5 * type_loss
+    return obj_loss + 0.25 * seed_loss + float(row_x_weight) * x_loss + vis_loss + color_loss + 0.5 * type_loss
 
 
 def _stop_line_mask_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> torch.Tensor:
@@ -1992,6 +2080,9 @@ class PV26MultiTaskLoss(nn.Module):
         lane_segfirst_task_conflict_negative_weight: float = 0.0,
         lane_segfirst_task_conflict_negative_margin: float = 0.15,
         lane_conditional_row_aux_weight: float = 0.0,
+        lane_conditional_seed_target_mode: str = "centerline_core",
+        lane_conditional_objectness_target_mode: str = "binary",
+        lane_conditional_row_x_weight: float = 0.05,
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
         stopline_selector_aux_weight: float = 1.0,
@@ -2049,6 +2140,18 @@ class PV26MultiTaskLoss(nn.Module):
         self.lane_segfirst_task_conflict_negative_weight = float(lane_segfirst_task_conflict_negative_weight)
         self.lane_segfirst_task_conflict_negative_margin = float(lane_segfirst_task_conflict_negative_margin)
         self.lane_conditional_row_aux_weight = float(lane_conditional_row_aux_weight)
+        self.lane_conditional_seed_target_mode = str(lane_conditional_seed_target_mode)
+        self.lane_conditional_objectness_target_mode = str(lane_conditional_objectness_target_mode)
+        self.lane_conditional_row_x_weight = float(lane_conditional_row_x_weight)
+        if self.lane_conditional_seed_target_mode not in {"centerline_core", "bottom_anchor"}:
+            raise ValueError(
+                f"unsupported lane_conditional_seed_target_mode: {self.lane_conditional_seed_target_mode}"
+            )
+        if self.lane_conditional_objectness_target_mode not in {"binary", "metric_quality"}:
+            raise ValueError(
+                "unsupported lane_conditional_objectness_target_mode: "
+                f"{self.lane_conditional_objectness_target_mode}"
+            )
         self.lane_segfirst_color_class_weights = (
             {str(name): float(value) for name, value in lane_segfirst_color_class_weights.items()}
             if lane_segfirst_color_class_weights
@@ -2157,6 +2260,9 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_segfirst_task_conflict_negative_weight": float(self.lane_segfirst_task_conflict_negative_weight),
             "lane_segfirst_task_conflict_negative_margin": float(self.lane_segfirst_task_conflict_negative_margin),
             "lane_conditional_row_aux_weight": float(self.lane_conditional_row_aux_weight),
+            "lane_conditional_seed_target_mode": self.lane_conditional_seed_target_mode,
+            "lane_conditional_objectness_target_mode": self.lane_conditional_objectness_target_mode,
+            "lane_conditional_row_x_weight": float(self.lane_conditional_row_x_weight),
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
             "stopline_selector_aux_weight": float(self.stopline_selector_aux_weight),
@@ -2772,6 +2878,9 @@ class PV26MultiTaskLoss(nn.Module):
                 task_conflict_negative_weight=self.lane_segfirst_task_conflict_negative_weight,
                 task_conflict_negative_margin=self.lane_segfirst_task_conflict_negative_margin,
                 conditional_row_aux_weight=self.lane_conditional_row_aux_weight,
+                conditional_seed_target_mode=self.lane_conditional_seed_target_mode,
+                conditional_objectness_target_mode=self.lane_conditional_objectness_target_mode,
+                conditional_row_x_weight=self.lane_conditional_row_x_weight,
                 color_class_weights=self.lane_segfirst_color_class_weights,
                 breakdown=lane_breakdown,
             )

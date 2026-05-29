@@ -13139,3 +13139,59 @@ Verification:
 - It is still below all-task success because lane and stop-line remain under `0.60`.
 - The trained stop-line head should not be transplanted into the retained lane/cross checkpoint: it loses stop-line TP on exact and broader, and the tiny FP reduction does not compensate.
 - Do not repeat this as a stop-line-head transplant, epoch-count, or head-LR sweep. Future gains need a new candidate-coverage/geometry signal or a stronger lane instance recovery contract, not recombining this trained head.
+
+## 262. 2026-05-29 Lane conditional bottom-anchor quality smoke
+
+Context:
+
+- The earlier conditional lane-row instance decoder failed badly because the seed/objectness contract emitted too many lane-like candidates from full centerline supervision.
+- The new hypothesis was narrower: train the conditional row auxiliary with one sparse bottom/entry anchor per GT lane, use metric-quality objectness instead of binary matched-query objectness, and raise row-x geometry pressure.
+- The user explicitly required actual training/evaluation and smart storage handling without copying the dataset.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-conditional-bottom-anchor-quality`.
+- Added opt-in loss/config hooks:
+  - `lane_conditional_seed_target_mode=bottom_anchor`;
+  - `lane_conditional_objectness_target_mode=metric_quality`;
+  - `lane_conditional_row_x_weight=0.5`.
+- Added experiment preset `lane_conditional_bottom_anchor_quality` in `tools/run_pv26_lane60_probe.py`.
+- Kept the retained runtime settings fixed: lane `row_scan_tangent`, stop-line projection-competition runtime decoder, and `crosswalk_polygon_mode=hull`.
+
+Smoke train/eval:
+
+- Command shape: `1` epoch, `32` train batches, `4` val batches, batch size `4`, CUDA, seed checkpoint `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_bottom_anchor_quality_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_095845`.
+- Dataset contract: reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly; indexed split remained `326709 / 82641 / 20000` from `429350` records. No dataset copy was created.
+- Training health: skipped steps `0`.
+
+Smoke val4 result:
+
+| Metric | Value |
+| --- | ---: |
+| objective | `0.2844807747` |
+| lane F1 | `0.0000` |
+| stop-line F1 | `0.0000` |
+| crosswalk F1 | `0.6667` |
+| lane TP/FP/FN | `0 / 59 / 79` |
+| stop-line TP/FP/FN | `0 / 1 / 2` |
+| crosswalk TP/FP/FN | `4 / 3 / 1` |
+
+Storage:
+
+- The failed smoke run originally held duplicate task-best checkpoints and was `753M`.
+- Because the smoke gate failed, pruned all `.pt` checkpoint files from that run and retained only summary/history metadata; the run directory is now about `336K`.
+- Removed temporary YOLO weight downloads after tests/training.
+
+Verification:
+
+- `python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke training/eval above.
+
+판단:
+
+- This branch failed the rejection gate hard: lane produced many predictions but no matched TP on val4, and stop-line also stayed at zero TP.
+- Do not broaden to exact val128 or broader val512, and do not run a larger train on this same contract.
+- Do not repeat this as a bottom-anchor target, metric-quality objectness, row-x weight, threshold, head-LR, freeze-policy, or longer-run sweep. A future lane architecture branch needs a materially different instance-emission contract that first moves smoke TP/FP/FN.
