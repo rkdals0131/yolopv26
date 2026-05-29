@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import random
+import subprocess
+import sys
 import unittest
 
 import torch
@@ -20,6 +24,29 @@ from model.data.transform import (
 
 
 class PV26TransformRoundtripTests(unittest.TestCase):
+    def test_network_hw_can_be_overridden_before_import(self) -> None:
+        env = dict(os.environ)
+        env["PV26_NETWORK_HW"] = "672x896"
+        output = subprocess.check_output(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json;"
+                    "from model.data.transform import NETWORK_HW;"
+                    "from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW;"
+                    "print(json.dumps({'network_hw': NETWORK_HW, 'dense_hw': ROADMARK_DENSE_OUTPUT_HW}))"
+                ),
+            ],
+            cwd=os.getcwd(),
+            env=env,
+            text=True,
+        )
+
+        payload = json.loads(output)
+        self.assertEqual(payload["network_hw"], [672, 896])
+        self.assertEqual(payload["dense_hw"], [168, 224])
+
     def test_compute_letterbox_transform_preserves_resized_plus_padding_contract(self) -> None:
         network_hw = (608, 800)
         for raw_hw in ((720, 1280), (1080, 1920), (1536, 512), (512, 1536)):

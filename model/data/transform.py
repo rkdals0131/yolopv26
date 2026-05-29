@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 import random
 from typing import Iterable
@@ -10,7 +11,26 @@ import torch
 from PIL import Image
 
 
-NETWORK_HW = (608, 800)
+DEFAULT_NETWORK_HW = (608, 800)
+NETWORK_HW_ENV = "PV26_NETWORK_HW"
+
+
+def _parse_network_hw_env(value: str | None) -> tuple[int, int]:
+    if value is None or value.strip() == "":
+        return DEFAULT_NETWORK_HW
+    normalized = value.lower().replace("x", ",").replace(":", ",")
+    parts = [part.strip() for part in normalized.split(",") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"{NETWORK_HW_ENV} must be formatted as '<height>,<width>' or '<height>x<width>'")
+    height, width = (int(parts[0]), int(parts[1]))
+    if height <= 0 or width <= 0:
+        raise ValueError(f"{NETWORK_HW_ENV} dimensions must be positive")
+    if height % 32 != 0 or width % 32 != 0:
+        raise ValueError(f"{NETWORK_HW_ENV} dimensions must be divisible by 32 for the PV26 feature pyramid")
+    return (height, width)
+
+
+NETWORK_HW = _parse_network_hw_env(os.environ.get(NETWORK_HW_ENV))
 PADDING_FILL_UINT8 = 114
 
 

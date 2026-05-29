@@ -13550,3 +13550,72 @@ Verification:
 - Phase objective `0.6328` is misleading here; it is not all-task success.
 - Broader-val512 was skipped because exact-val128 failed before broadening.
 - Do not repeat this as seed threshold, max seeds, aux weight, head-LR, freeze-policy, or longer-run tuning. Reopen only with a new seed quality / instance-existence contract that can add lane TP without breaking the retained row-scan lanes or crosswalk hull behavior.
+
+## 269. 2026-05-29 Input-scale672 dense target: trainable but broader stop-line/lane regress
+
+Context:
+
+- The user explicitly pushed back against smoke-only or postprocess-only work: real training, post-training evaluation, larger-scope validation, and smart storage management were required.
+- Previous single-scale TTA was closed, but that was a runtime averaging pass. This branch tested a different input/feeding contract: train/evaluate with a larger online letterbox and a larger dense target grid.
+- The changed axis was input/dense target scale only. Dataset files were not copied.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/input-scale672-dense-target`.
+- Added `PV26_NETWORK_HW` process-start override in `model/data/transform.py`.
+- Changed `ROADMARK_DENSE_OUTPUT_HW` to derive from `NETWORK_HW // 4`, so `PV26_NETWORK_HW=672x896` uses dense output `168x224` instead of the default `152x200`.
+- Kept default behavior unchanged: no env var still gives `608x800` and `152x200`.
+- Updated loss-spec reporting and added a subprocess test proving the env override must happen before import.
+
+Training:
+
+- Smoke run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_projection_comp_runtime_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_133341`.
+- Main run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_projection_comp_runtime_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_133550`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime/eval contract: fixed `flip_centerline_avg_lane_cross_comp050`, `stopline_projection_comp_runtime`, and `crosswalk_polygon_mode=hull`.
+- Environment: `PV26_NETWORK_HW=672x896`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Smoke scale: `1` epoch, `16` train batches, `4` val batches, batch size `4`, CUDA, skipped steps `0`.
+- Main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, CUDA, skipped steps `0`.
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6265115065` | `0.5509` | `0.3214` | `0.6951` | `1082 / 511 / 1253` | `18 / 39 / 37` | `57 / 24 / 26` |
+| 2 | `0.6480047870` | `0.5635` | `0.5692` | `0.5465` | `1122 / 470 / 1268` | `37 / 33 / 23` | `47 / 44 / 34` |
+| 3 | `0.6524074556` | `0.5520` | `0.5333` | `0.6492` | `1046 / 461 / 1237` | `32 / 35 / 21` | `62 / 23 / 44` |
+
+Fixed runtime eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6483222172` | `0.5662` | `0.5426` | `0.5763` | `1119 / 444 / 1271` | `35 / 34 / 25` | `51 / 45 / 30` |
+| broader val512 epoch2 | `0.6378675580` | `0.5519` | `0.4734` | `0.6257` | `4322 / 1862 / 5155` | `129 / 145 / 142` | `239 / 130 / 156` |
+
+Storage:
+
+- The smoke run initially held duplicate checkpoints and was about `752M`; it was pruned after the main run passed shape/memory smoke.
+- The main run initially held duplicate task-best checkpoints, `last.pt`, TensorBoard output, and a temporary `yolo26s.pt` download.
+- Retained only `phase_4/checkpoints/best.pt`, summaries/history, and exact/broader metric exports.
+- Removed temporary `yolo26s.pt`.
+- Retained main run size is about `112M`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/transform.py model/data/roadmark_v2_targets.py model/engine/_loss_spec.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_transform_roundtrip.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_spec.py'`.
+- Real CUDA smoke train/eval at `PV26_NETWORK_HW=672x896`.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Fixed exact-val128 epoch-2 eval.
+- Fixed broader-val512 epoch-2 eval.
+
+판단:
+
+- The input-scale contract is trainable and default-safe, but it does not improve the final target.
+- Exact val128 has a stop-line gain over the retained exact projection-comp row (`0.5333 -> 0.5426`, TP `32 -> 35`), but lane and crosswalk remain below `0.60`.
+- Broader-val512 rejects the branch: retained task-balance `0.5628 / 0.5164 / 0.6187` moves to `0.5519 / 0.4734 / 0.6257`.
+- Crosswalk benefits from the larger dense grid, but stop-line FP rises sharply (`91 -> 145`) and lane TP falls (`4532 -> 4322`).
+- Do not repeat this as `672x896` longer-run, input-size ladder, dense-target-size, head-LR, or same projection-comp-runtime training sweep without a new candidate/geometry or lane-retention signal.

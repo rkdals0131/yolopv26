@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from typing import Any
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
 SPEC_VERSION = "pv26-loss-v10"
 LossSpec = dict[str, Any]
+_DEFAULT_NETWORK_HW = (608, 800)
+_NETWORK_HW_ENV = "PV26_NETWORK_HW"
+
+
+def _network_hw_for_spec() -> tuple[int, int]:
+    value = os.environ.get(_NETWORK_HW_ENV)
+    if value is None or value.strip() == "":
+        return _DEFAULT_NETWORK_HW
+    normalized = value.lower().replace("x", ",").replace(":", ",")
+    parts = [part.strip() for part in normalized.split(",") if part.strip()]
+    if len(parts) != 2:
+        return _DEFAULT_NETWORK_HW
+    height, width = (int(parts[0]), int(parts[1]))
+    return (height, width)
+
+
+NETWORK_HW = _network_hw_for_spec()
 
 
 @dataclass(frozen=True)
@@ -139,7 +157,7 @@ def _build_sample_contract() -> dict[str, Any]:
         },
         "image": {
             "dtype": "float32",
-            "shape": [3, 608, 800],
+            "shape": [3, int(NETWORK_HW[0]), int(NETWORK_HW[1])],
             "range": [0.0, 1.0],
             "color_order": "RGB",
         },
@@ -196,7 +214,7 @@ def _build_sample_contract() -> dict[str, Any]:
 
 def _build_encoded_batch_contract() -> dict[str, Any]:
     return {
-        "image": "float32[B, 3, 608, 800]",
+        "image": f"float32[B, 3, {int(NETWORK_HW[0])}, {int(NETWORK_HW[1])}]",
         "det_gt": "detector-native GT batch derived from N_gt_det",
         "tl_attr_gt_bits": "float32[B, N_gt_det_max, 4]",
         "tl_attr_gt_mask": "bool[B, N_gt_det_max]",
@@ -216,7 +234,7 @@ def _build_transform_contract() -> dict[str, Any]:
     return {
         "dataset_raw_hw": "variable",
         "vehicle_camera_raw_hw": [600, 800],
-        "network_hw": [608, 800],
+        "network_hw": [int(NETWORK_HW[0]), int(NETWORK_HW[1])],
         "scale_formula": "r = min(W_net / W_src, H_net / H_src)",
         "resize_formula": [
             "W_resize = round(W_src * r)",

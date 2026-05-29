@@ -13,7 +13,7 @@ LANE_SEED_OUTPUT_HW = (16, 100)
 LANE_CENTERLINE_OUTPUT_HW = (76, 100)
 LANE_ROW_CLASS_OUTPUT_HW = (16, 200)
 LANE_ROW_SLOT_COUNT = 8
-ROADMARK_DENSE_OUTPUT_HW = (152, 200)
+ROADMARK_DENSE_OUTPUT_HW = (int(NETWORK_HW[0]) // 4, int(NETWORK_HW[1]) // 4)
 
 
 def _scale_points_to_output(points: torch.Tensor, *, output_hw: tuple[int, int]) -> torch.Tensor:

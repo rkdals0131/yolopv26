@@ -7,7 +7,7 @@
 
 PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite 기준 `0.6421286661`까지 확인됐다.
 
-이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest stop/cross lane-frozen trained composite는 broader-val512 objective `0.6421`, lane/stop-line/crosswalk F1 `0.5571 / 0.5278 / 0.6142`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. User-requested larger-range `2048` train-batch scale audit of the same lane-frozen axis regressed to broader lane/stop/cross `0.5564 / 0.5122 / 0.6162`, so it is negative. Latest lane seed-trace instance decoder larger-slice train reached exact-val128 epoch-2 lane/stop/cross `0.5488 / 0.5000 / 0.5644`, so it is also negative and was not broadened. All of these still leave lane/stop-line below `0.60`.
+이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest stop/cross lane-frozen trained composite는 broader-val512 objective `0.6421`, lane/stop-line/crosswalk F1 `0.5571 / 0.5278 / 0.6142`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. User-requested larger-range `2048` train-batch scale audit of the same lane-frozen axis regressed to broader lane/stop/cross `0.5564 / 0.5122 / 0.6162`, so it is negative. Latest lane seed-trace instance decoder larger-slice train reached exact-val128 epoch-2 lane/stop/cross `0.5488 / 0.5000 / 0.5644`, so it is also negative. Latest input-scale `672x896` dense-target train reached fixed broader-val512 lane/stop/cross `0.5519 / 0.4734 / 0.6257`, so it is negative despite crosswalk passing. All of these still leave lane/stop-line below `0.60`.
 
 Active goal:
 
@@ -28,6 +28,7 @@ Run:
 - latest stop/cross lane-frozen composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_105725/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - latest stop/cross lane-frozen scale2048 audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_cross_priority_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_114452/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - latest lane seed-trace instance decoder exact audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_trace_instance_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_131325/analysis_exports/lane_seed_trace_exact_val128_epoch2/metrics.csv`
+- latest input-scale672 dense-target broader audit metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_projection_comp_runtime_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_133550/analysis_exports/input_scale672_broader_val512_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
@@ -164,6 +165,26 @@ Latest lane seed-trace instance decoder audit:
 - larger-slice training validation result: objective `0.6202068390`, lane/stop/cross F1 `0.5297 / 0.3299 / 0.6832`, TP/FP/FN lane `1048 / 574 / 1287`, stop-line `16 / 26 / 39`, crosswalk `55 / 23 / 28`.
 - fixed exact-val128 epoch-2 eval: objective `0.6328142036`, lane/stop/cross F1 `0.5488 / 0.5000 / 0.5644`, TP/FP/FN lane `1096 / 508 / 1294`, stop-line `29 / 27 / 31`, crosswalk `46 / 36 / 35`.
 - 판단: larger training improves the seed-trace lane result versus the 32-batch checkpoint but remains below the retained lane-preserving exact and broader references, and it does not preserve crosswalk or stop-line to the required level. Because exact-val128 misses all three `0.60` task gates, broader-val512 was skipped. Do not continue this as seed threshold, max seeds, aux weight, head-LR, freeze-policy, or longer-run tuning without a new TP-preserving instance quality signal.
+
+Latest input-scale672 dense-target audit:
+
+- branch/worktree: `exp/lane-family-f1/input-scale672-dense-target`.
+- run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_projection_comp_runtime_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_133550`.
+- changed axis: make `NETWORK_HW` opt-in through `PV26_NETWORK_HW`, compute `ROADMARK_DENSE_OUTPUT_HW` from that input size, and train/evaluate with `PV26_NETWORK_HW=672x896`. This is not the closed single-scale TTA family; it changes the online letterbox and dense target/output grid from `608x800` / `152x200` to `672x896` / `168x224`.
+- data/storage contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. Smoke run `...133341` was pruned. The main run retains only `phase_4/checkpoints/best.pt`, summaries/history, and exact/broader metric exports, about `112M`. Temporary `yolo26s.pt` was removed.
+- smoke: real CUDA `1` epoch, `16` train batches, `4` val batches, batch size `4`, skipped steps `0`.
+- main train: real CUDA `3` epochs, `512` train batches, `128` val batches, batch size `4`, skipped steps `0`, best phase-objective epoch `3`.
+- training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6265115065` | `0.5509` | `0.3214` | `0.6951` | `1082 / 511 / 1253` | `18 / 39 / 37` | `57 / 24 / 26` |
+| 2 | `0.6480047870` | `0.5635` | `0.5692` | `0.5465` | `1122 / 470 / 1268` | `37 / 33 / 23` | `47 / 44 / 34` |
+| 3 | `0.6524074556` | `0.5520` | `0.5333` | `0.6492` | `1046 / 461 / 1237` | `32 / 35 / 21` | `62 / 23 / 44` |
+
+- fixed exact-val128 epoch-2 eval: objective `0.6483222172`, lane/stop/cross F1 `0.5662 / 0.5426 / 0.5763`, TP/FP/FN lane `1119 / 444 / 1271`, stop-line `35 / 34 / 25`, crosswalk `51 / 45 / 30`.
+- fixed broader-val512 epoch-2 eval: objective `0.6378675580`, lane/stop/cross F1 `0.5519 / 0.4734 / 0.6257`, TP/FP/FN lane `4322 / 1862 / 5155`, stop-line `129 / 145 / 142`, crosswalk `239 / 130 / 156`.
+- 판단: larger dense target/input training is executable and crosswalk remains broader-pass, but it regresses the retained task-balance lane/stop-line reference (`0.5628 / 0.5164 / 0.6187` -> `0.5519 / 0.4734 / 0.6257`). Exact stop-line improves over the retained exact projection-comp row, but exact crosswalk fails and broader stop-line falls sharply. Do not continue this as `672x896` longer-run, input-size ladder, dense-output-size, head-LR, or same projection-comp-runtime training sweep without a new candidate/geometry or retention signal.
 
 Previous stop-line-exposure trained broader task-balance runtime composite:
 
