@@ -85,6 +85,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-line-endpoint-pair-segment-score-threshold", type=float, default=None)
     parser.add_argument("--stop-line-endpoint-pair-segment-max-segments", type=int, default=None)
     parser.add_argument("--stop-line-endpoint-pair-verifier-score-weight", type=float, default=None)
+    parser.add_argument("--stop-line-projection-comp-enabled", action="store_true", default=None)
+    parser.add_argument(
+        "--stop-line-projection-comp-disabled",
+        action="store_false",
+        dest="stop_line_projection_comp_enabled",
+    )
+    parser.add_argument("--stop-line-projection-comp-topk", type=int, default=None)
+    parser.add_argument("--stop-line-projection-comp-max-predictions", type=int, default=None)
     parser.add_argument(
         "--stop-line-component-gate-source",
         choices=("center", "selector", "max"),
@@ -235,6 +243,12 @@ def _postprocess_override_config(args: argparse.Namespace, trainer: Any) -> Any 
         replacements["stop_line_endpoint_pair_verifier_score_weight"] = float(
             args.stop_line_endpoint_pair_verifier_score_weight
         )
+    if getattr(args, "stop_line_projection_comp_enabled", None) is not None:
+        replacements["stop_line_projection_comp_enabled"] = bool(args.stop_line_projection_comp_enabled)
+    if getattr(args, "stop_line_projection_comp_topk", None) is not None:
+        replacements["stop_line_projection_comp_topk"] = int(args.stop_line_projection_comp_topk)
+    if getattr(args, "stop_line_projection_comp_max_predictions", None) is not None:
+        replacements["stop_line_projection_comp_max_predictions"] = int(args.stop_line_projection_comp_max_predictions)
     if getattr(args, "stop_line_component_gate_source", None) is not None:
         replacements["stop_line_component_gate_source"] = str(args.stop_line_component_gate_source)
     if getattr(args, "crosswalk_obj_threshold", None) is not None:

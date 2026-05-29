@@ -122,6 +122,22 @@ Current best broader task-balance replay:
 - lane-family mean/min F1: `0.5659 / 0.5164`.
 - 판단: this is a better task-balance lower bound than the objective-best runtime composite, but it still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`.
 
+Latest stop-line projection-competition runtime contract train/eval result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-projcomp-runtime-contract`.
+- changed axis: convert the fixed projection-competition stop-line replay (`proj_comp_length_s090_top2_second_frag5`) into an opt-in `postprocess_pv26_batch` runtime decoder, without adding a new model head or copying any dataset files.
+- runtime contract: select spaced stop-line support cells, build mask-extent candidates, union projection-compatible fragments, split large along-axis gaps, and cap to `2` predictions with the retained second-fragment guard. Lane remains normal `row_scan_tangent` in this evaluator path; crosswalk remains `crosswalk_polygon_mode=hull`.
+- pre-training exact-val128 runtime eval on `merged_lane_head.pt`: objective `0.6482167675`, lane/stop/cross F1 `0.5660 / 0.5333 / 0.5988`, TP/FP/FN lane `1162 / 554 / 1228`, stop-line `32 / 28 / 28`, crosswalk `50 / 36 / 31`.
+- pre-training broader-val512 runtime eval on `merged_lane_head.pt`: objective `0.6400621883`, lane/stop/cross F1 `0.5480 / 0.5164 / 0.6187`, TP/FP/FN lane `4457 / 2333 / 5020`, stop-line `126 / 91 / 145`, crosswalk `232 / 123 / 163`.
+- runtime 판단: the runtime decoder reproduces the retained projection-competition stop-line broader reference exactly (`126 / 91 / 145`, F1 `0.5164`). It promotes the stop-line replay from artifact-only evidence to a real opt-in runtime contract, but it is not yet the full task-balance composite because this evaluator path does not include the current flip-centerline/crosswalk-mask lane composite (`0.5628`).
+- actual train run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_projection_comp_runtime_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_085604`.
+- storage contract: training reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root directly; no dataset copy was created. The run used train/val/test split `326709 / 82641 / 20000` from `429350` indexed records.
+- main scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, validation epoch `2`, CUDA, seed checkpoint `merged_lane_head.pt`.
+- internal epoch-3 validation reached stop-line F1 `0.6415`, TP/FP/FN `34 / 19 / 19`, but that slice has stop-line support `53` and is not the fixed epoch-2 protocol.
+- fixed exact-val128 eval of trained `best.pt`: objective `0.6419134349`, lane/stop/cross F1 `0.5635 / 0.5085 / 0.5854`, TP/FP/FN lane `1114 / 450 / 1276`, stop-line `30 / 28 / 30`, crosswalk `48 / 35 / 33`.
+- fixed broader-val512 eval of trained `best.pt`: objective `0.6392521545`, lane/stop/cross F1 `0.5413 / 0.5217 / 0.6144`, TP/FP/FN lane `4231 / 1926 / 5246`, stop-line `126 / 86 / 145`, crosswalk `231 / 126 / 164`.
+- train 판단: additional heads-only training with the projection-comp runtime metric slightly reduces broader stop-line FP (`91 -> 86`) while keeping TP fixed, but exact stop-line falls below the pre-training runtime eval (`0.5333 -> 0.5085`) and broader lane regresses (`0.5480 -> 0.5413`). This is not an all-task breakthrough and should not be repeated as a head-LR/epoch/loss-weight training sweep.
+
 Latest projection/candidate tooling status:
 
 - Projection readout scripts/tests are restored in active `develop`.

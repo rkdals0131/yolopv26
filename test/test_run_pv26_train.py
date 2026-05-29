@@ -174,6 +174,19 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stop_line_axis_segment_set_score_threshold": 0.57,
                             "stop_line_axis_segment_set_max_segments": 5,
                             "stop_line_axis_segment_verifier_score_weight": 0.75,
+                            "stop_line_projection_comp_enabled": True,
+                            "stop_line_projection_comp_min_gap": 5.0,
+                            "stop_line_projection_comp_topk": 40,
+                            "stop_line_projection_comp_union_min_score": 0.81,
+                            "stop_line_projection_comp_single_min_score": 0.91,
+                            "stop_line_projection_comp_angle_threshold_deg": 15.0,
+                            "stop_line_projection_comp_offset_threshold_px": 44.0,
+                            "stop_line_projection_comp_min_cluster_count": 3,
+                            "stop_line_projection_comp_projection_gap_px": 280.0,
+                            "stop_line_projection_comp_max_predictions": 2,
+                            "stop_line_projection_comp_second_min_score": 0.2,
+                            "stop_line_projection_comp_second_min_fragment_count": 4,
+                            "stop_line_projection_comp_second_min_length_ratio": 0.1,
                             "stop_line_component_gate_source": "selector",
                             "distill_enabled": True,
                             "distill_teacher_checkpoint": "runs/teacher.pt",
@@ -311,6 +324,19 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.stop_line_axis_segment_set_score_threshold, 0.57)
         self.assertEqual(scenario.train_defaults.stop_line_axis_segment_set_max_segments, 5)
         self.assertAlmostEqual(scenario.train_defaults.stop_line_axis_segment_verifier_score_weight, 0.75)
+        self.assertTrue(scenario.train_defaults.stop_line_projection_comp_enabled)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_min_gap, 5.0)
+        self.assertEqual(scenario.train_defaults.stop_line_projection_comp_topk, 40)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_union_min_score, 0.81)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_single_min_score, 0.91)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_angle_threshold_deg, 15.0)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_offset_threshold_px, 44.0)
+        self.assertEqual(scenario.train_defaults.stop_line_projection_comp_min_cluster_count, 3)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_projection_gap_px, 280.0)
+        self.assertEqual(scenario.train_defaults.stop_line_projection_comp_max_predictions, 2)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_second_min_score, 0.2)
+        self.assertEqual(scenario.train_defaults.stop_line_projection_comp_second_min_fragment_count, 4)
+        self.assertAlmostEqual(scenario.train_defaults.stop_line_projection_comp_second_min_length_ratio, 0.1)
         self.assertEqual(scenario.train_defaults.stop_line_component_gate_source, "selector")
         self.assertTrue(scenario.train_defaults.distill_enabled)
         self.assertEqual(scenario.train_defaults.distill_teacher_checkpoint, "runs/teacher.pt")

@@ -100,6 +100,19 @@ class PV26PostprocessConfig:
     stop_line_axis_segment_set_score_threshold: float = 0.50
     stop_line_axis_segment_set_max_segments: int = 3
     stop_line_axis_segment_verifier_score_weight: float = 0.0
+    stop_line_projection_comp_enabled: bool = False
+    stop_line_projection_comp_min_gap: float = 4.0
+    stop_line_projection_comp_topk: int = 50
+    stop_line_projection_comp_union_min_score: float = 0.80
+    stop_line_projection_comp_single_min_score: float = 0.90
+    stop_line_projection_comp_angle_threshold_deg: float = 16.0
+    stop_line_projection_comp_offset_threshold_px: float = 48.0
+    stop_line_projection_comp_min_cluster_count: int = 2
+    stop_line_projection_comp_projection_gap_px: float = 320.0
+    stop_line_projection_comp_max_predictions: int = 2
+    stop_line_projection_comp_second_min_score: float = 0.0
+    stop_line_projection_comp_second_min_fragment_count: int = 5
+    stop_line_projection_comp_second_min_length_ratio: float = 0.0
     crosswalk_obj_threshold: float = 0.50
     crosswalk_mask_binary_threshold: float = 0.20
     crosswalk_min_component_pixels: int = 24
@@ -655,6 +668,534 @@ def _canonical_segment_endpoints(start: np.ndarray, end: np.ndarray) -> tuple[np
     if (float(start[0]), float(start[1])) <= (float(end[0]), float(end[1])):
         return start.astype(np.float32), end.astype(np.float32)
     return end.astype(np.float32), start.astype(np.float32)
+
+
+def _stopline_2d_sigmoid_array(tensor: torch.Tensor | None) -> np.ndarray | None:
+    if not isinstance(tensor, torch.Tensor) or not _tensor_all_finite(tensor):
+        return None
+    array = tensor.sigmoid().detach().cpu().numpy()
+    while array.ndim > 2 and int(array.shape[0]) == 1:
+        array = array.squeeze(0)
+    if array.ndim == 3 and int(array.shape[0]) == 1:
+        array = array.squeeze(0)
+    if array.ndim != 2:
+        return None
+    return np.asarray(array, dtype=np.float32)
+
+
+def _stopline_top_spaced_cells(
+    map_scores: np.ndarray,
+    *,
+    top_k: int,
+    threshold: float,
+    min_gap: float,
+) -> list[tuple[int, int, float]]:
+    if map_scores.ndim != 2:
+        return []
+    flat_scores = map_scores.reshape(-1)
+    flat_order = np.argsort(-flat_scores)
+    output_h, output_w = map_scores.shape
+    selected: list[tuple[int, int, float]] = []
+    for flat_index in flat_order.tolist():
+        score = float(flat_scores[flat_index])
+        if score < float(threshold):
+            break
+        row, col = divmod(int(flat_index), int(output_w))
+        too_close = False
+        for prev_row, prev_col, _ in selected:
+            if float(np.hypot(float(col - prev_col), float(row - prev_row))) < float(min_gap):
+                too_close = True
+                break
+        if too_close:
+            continue
+        selected.append((int(row), int(col), score))
+        if len(selected) >= int(top_k):
+            break
+    return selected
+
+
+def _stopline_nearest_component_label(
+    labels: np.ndarray,
+    *,
+    center_xy: np.ndarray,
+    search_radius: float,
+) -> int:
+    output_h, output_w = labels.shape
+    row = max(0, min(int(output_h) - 1, int(round(float(center_xy[1])))))
+    col = max(0, min(int(output_w) - 1, int(round(float(center_xy[0])))))
+    center_label = int(labels[row, col])
+    if center_label > 0:
+        return center_label
+    rows, cols = np.nonzero(labels > 0)
+    if rows.size == 0:
+        return 0
+    distances = np.sqrt(
+        (cols.astype(np.float32) - float(center_xy[0])) ** 2
+        + (rows.astype(np.float32) - float(center_xy[1])) ** 2
+    )
+    best_index = int(np.argmin(distances))
+    if float(distances[best_index]) > float(search_radius):
+        return 0
+    return int(labels[int(rows[best_index]), int(cols[best_index])])
+
+
+def _stopline_raw_points_from_map_segment(
+    *,
+    center_xy: np.ndarray,
+    axis: np.ndarray,
+    start_proj: float,
+    end_proj: float,
+    meta: dict[str, Any],
+    output_hw: tuple[int, int],
+) -> list[list[float]] | None:
+    center_xy = np.asarray(center_xy, dtype=np.float32).reshape(2)
+    axis = np.asarray(axis, dtype=np.float32).reshape(2)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm <= 1.0e-6 or not np.isfinite(axis_norm):
+        return None
+    axis = axis / axis_norm
+    if not np.isfinite(float(start_proj)) or not np.isfinite(float(end_proj)):
+        return None
+    if float(end_proj) - float(start_proj) <= 1.0:
+        return None
+    start = center_xy + axis * float(start_proj)
+    end = center_xy + axis * float(end_proj)
+    output_h, output_w = int(output_hw[0]), int(output_hw[1])
+    network_segment = np.stack([start, end], axis=0).astype(np.float32)
+    network_segment[:, 0] = (network_segment[:, 0] + 0.5) * (float(meta["network_hw"][1]) / float(output_w))
+    network_segment[:, 1] = (network_segment[:, 1] + 0.5) * (float(meta["network_hw"][0]) / float(output_h))
+    transform = transform_from_meta(meta)
+    network_points = sample_stop_line_centerline(network_segment.tolist(), target_count=STOP_LINE_POINT_COUNT)
+    raw_points = sample_stop_line_centerline(
+        inverse_transform_points(network_points.tolist(), transform),
+        target_count=STOP_LINE_POINT_COUNT,
+    )
+    if raw_points.shape[0] < 2 or not bool(np.isfinite(raw_points).all()):
+        return None
+    if unique_point_count(raw_points.tolist()) < 2:
+        return None
+    return [[float(x), float(y)] for x, y in raw_points.tolist()]
+
+
+def _stopline_normalize_axis(vector: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1.0e-6 or not np.isfinite(norm):
+        return None
+    axis = np.asarray(vector, dtype=np.float32) / norm
+    if float(axis[0]) < 0.0 or (abs(float(axis[0])) <= 1.0e-6 and float(axis[1]) < 0.0):
+        axis = -axis
+    return axis.astype(np.float32)
+
+
+def _stopline_projection_candidate_from_points(
+    *,
+    points_xy: list[list[float]],
+    score: float,
+    rank_length: float,
+    proposal_rank: int,
+) -> dict[str, Any] | None:
+    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 2 or not bool(np.isfinite(points).all()):
+        return None
+    axis = _stopline_normalize_axis(points[-1] - points[0])
+    if axis is None:
+        return None
+    normal = np.asarray([-float(axis[1]), float(axis[0])], dtype=np.float32)
+    center_xy = points.mean(axis=0).astype(np.float32)
+    raw_length = float(np.linalg.norm(points[-1] - points[0]))
+    return {
+        "score": float(score),
+        "center_score": float(score),
+        "length": raw_length,
+        "rank_length": float(rank_length),
+        "component_svd_length": float(rank_length),
+        "points_xy": [[float(x), float(y)] for x, y in points.tolist()],
+        "center_xy": center_xy,
+        "axis": axis,
+        "normal": normal,
+        "offset": float(np.dot(center_xy, normal)),
+        "proposal_rank": int(proposal_rank),
+    }
+
+
+def _stopline_map_extent_candidate(
+    *,
+    mask_probs: np.ndarray,
+    center_xy: np.ndarray,
+    angle_vec: np.ndarray,
+    meta: dict[str, Any],
+    output_hw: tuple[int, int],
+    score: float,
+    proposal_rank: int,
+    mask_threshold: float = 0.50,
+    normal_band: float = 4.0,
+    search_radius: float = 8.0,
+) -> dict[str, Any] | None:
+    binary = _prepare_stopline_binary_mask(mask_probs, threshold=float(mask_threshold))
+    labels, _ = ndimage.label(binary)
+    label = _stopline_nearest_component_label(labels, center_xy=center_xy, search_radius=float(search_radius))
+    if label <= 0:
+        return None
+    rows, cols = np.nonzero(labels == label)
+    if rows.size < 2:
+        return None
+    points = np.stack([cols.astype(np.float32), rows.astype(np.float32)], axis=1)
+    axis = np.asarray(angle_vec, dtype=np.float32).reshape(2)
+    axis = _stopline_normalize_axis(axis)
+    if axis is None:
+        return None
+    normal = np.asarray([-float(axis[1]), float(axis[0])], dtype=np.float32)
+    offsets = points - np.asarray(center_xy, dtype=np.float32).reshape(1, 2)
+    if float(normal_band) > 0.0:
+        local_mask = np.abs(offsets @ normal) <= float(normal_band)
+        if int(local_mask.sum()) >= 2:
+            offsets = offsets[local_mask]
+    if offsets.shape[0] < 2:
+        return None
+    projections = offsets @ axis
+    if projections.size < 2:
+        return None
+    if projections.size >= 8:
+        start_proj = float(np.quantile(projections, 0.05))
+        end_proj = float(np.quantile(projections, 0.95))
+    else:
+        start_proj = float(projections.min())
+        end_proj = float(projections.max())
+    raw_points = _stopline_raw_points_from_map_segment(
+        center_xy=center_xy,
+        axis=axis,
+        start_proj=start_proj,
+        end_proj=end_proj,
+        meta=meta,
+        output_hw=output_hw,
+    )
+    if raw_points is None:
+        return None
+    return _stopline_projection_candidate_from_points(
+        points_xy=raw_points,
+        score=float(score),
+        rank_length=float(end_proj - start_proj),
+        proposal_rank=int(proposal_rank),
+    )
+
+
+def _stopline_projection_angle_error(left: dict[str, Any], right: dict[str, Any]) -> float:
+    left_axis = np.asarray(left["axis"], dtype=np.float32)
+    right_axis = np.asarray(right["axis"], dtype=np.float32)
+    cosine = float(np.clip(abs(float(np.dot(left_axis, right_axis))), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _stopline_projection_offset_error(left: dict[str, Any], right: dict[str, Any]) -> float:
+    left_center = np.asarray(left["center_xy"], dtype=np.float32)
+    right_center = np.asarray(right["center_xy"], dtype=np.float32)
+    left_normal = np.asarray(left["normal"], dtype=np.float32)
+    right_normal = np.asarray(right["normal"], dtype=np.float32)
+    left_error = abs(float(np.dot(right_center, left_normal) - float(left["offset"])))
+    right_error = abs(float(np.dot(left_center, right_normal) - float(right["offset"])))
+    return float(max(left_error, right_error))
+
+
+def _stopline_projection_union_groups(
+    candidates: list[dict[str, Any]],
+    *,
+    angle_threshold_deg: float,
+    offset_threshold_px: float,
+) -> list[list[dict[str, Any]]]:
+    if not candidates:
+        return []
+    parent = list(range(len(candidates)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left_index, left in enumerate(candidates):
+        for right_index in range(left_index + 1, len(candidates)):
+            right = candidates[right_index]
+            if _stopline_projection_angle_error(left, right) > float(angle_threshold_deg):
+                continue
+            if _stopline_projection_offset_error(left, right) > float(offset_threshold_px):
+                continue
+            union(left_index, right_index)
+
+    groups_by_root: dict[int, list[dict[str, Any]]] = {}
+    for index, candidate in enumerate(candidates):
+        groups_by_root.setdefault(find(index), []).append(candidate)
+    return list(groups_by_root.values())
+
+
+def _stopline_projection_group_axis(group: list[dict[str, Any]]) -> np.ndarray | None:
+    if not group:
+        return None
+    reference_axis = np.asarray(group[0]["axis"], dtype=np.float32)
+    weighted_axis = np.zeros(2, dtype=np.float32)
+    for candidate in group:
+        axis = np.asarray(candidate["axis"], dtype=np.float32)
+        if float(np.dot(axis, reference_axis)) < 0.0:
+            axis = -axis
+        weighted_axis += axis * max(1.0e-3, float(candidate.get("score", 0.0)))
+    return _stopline_normalize_axis(weighted_axis)
+
+
+def _stopline_projection_interval(candidate: dict[str, Any], axis: np.ndarray) -> tuple[float, float]:
+    points = np.asarray(candidate.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    projections = [float(np.dot(point, axis)) for point in points]
+    return min(projections), max(projections)
+
+
+def _stopline_split_group_by_projection_gap(
+    group: list[dict[str, Any]],
+    projection_gap_px: float,
+) -> list[list[dict[str, Any]]]:
+    if len(group) <= 1:
+        return [group]
+    axis = _stopline_projection_group_axis(group)
+    if axis is None:
+        return [group]
+    intervals = [(*_stopline_projection_interval(candidate, axis), candidate) for candidate in group]
+    intervals.sort(key=lambda item: item[0])
+    parts: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_hi: float | None = None
+    for lo, hi, candidate in intervals:
+        if current and current_hi is not None and float(lo) - float(current_hi) > float(projection_gap_px):
+            parts.append(current)
+            current = []
+        current.append(candidate)
+        current_hi = max(float(current_hi) if current_hi is not None else float(hi), float(hi))
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _stopline_merge_projection_group(group: list[dict[str, Any]], *, min_cluster_count: int) -> dict[str, Any] | None:
+    if len(group) < max(1, int(min_cluster_count)):
+        return None
+    axis = _stopline_projection_group_axis(group)
+    if axis is None:
+        return None
+    normal = np.asarray([-float(axis[1]), float(axis[0])], dtype=np.float32)
+    weight_sum = 0.0
+    weighted_offset = 0.0
+    projections: list[float] = []
+    for candidate in group:
+        weight = max(1.0e-3, float(candidate.get("score", 0.0)))
+        center_xy = np.asarray(candidate["center_xy"], dtype=np.float32)
+        weighted_offset += float(np.dot(center_xy, normal)) * weight
+        weight_sum += weight
+        points = np.asarray(candidate.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+        projections.extend(float(np.dot(point, axis)) for point in points)
+    if not projections:
+        return None
+    offset = weighted_offset / max(1.0e-6, weight_sum)
+    start_t = min(projections)
+    end_t = max(projections)
+    if end_t <= start_t:
+        return None
+    start_xy = axis * start_t + normal * offset
+    end_xy = axis * end_t + normal * offset
+    raw_points = sample_stop_line_centerline(
+        [[float(start_xy[0]), float(start_xy[1])], [float(end_xy[0]), float(end_xy[1])]],
+        target_count=STOP_LINE_POINT_COUNT,
+    ).tolist()
+    length = float(np.linalg.norm(end_xy - start_xy))
+    max_score = max(float(candidate.get("score", 0.0)) for candidate in group)
+    mean_score = float(sum(float(candidate.get("score", 0.0)) for candidate in group) / max(1, len(group)))
+    rank_feature = max(float(candidate.get("rank_length", 0.0)) for candidate in group)
+    return {
+        "allowed": True,
+        "score": float(max_score + 0.02 * float(max(0, len(group) - 1))),
+        "center_score": float(mean_score),
+        "length": length,
+        "points_xy": [[float(x), float(y)] for x, y in raw_points],
+        "fragment_count": int(len(group)),
+        "_proposal_kind": "union",
+        "_rank_feature": float(rank_feature),
+    }
+
+
+def _stopline_projection_keep_additional(
+    prediction: dict[str, Any],
+    primary_prediction: dict[str, Any],
+    *,
+    second_min_score: float,
+    second_min_fragment_count: int,
+    second_min_length_ratio: float,
+) -> bool:
+    if float(prediction.get("score", 0.0)) < float(second_min_score):
+        return False
+    if int(prediction.get("fragment_count", 0)) < int(second_min_fragment_count):
+        return False
+    primary_length = max(1.0e-6, float(primary_prediction.get("length", 0.0)))
+    if float(prediction.get("length", 0.0)) / primary_length < float(second_min_length_ratio):
+        return False
+    return True
+
+
+def _stopline_projection_apply_cap(
+    predictions: list[dict[str, Any]],
+    *,
+    max_predictions: int,
+    second_min_score: float,
+    second_min_fragment_count: int,
+    second_min_length_ratio: float,
+) -> list[dict[str, Any]]:
+    max_predictions = max(1, int(max_predictions))
+    if len(predictions) <= 1 or max_predictions <= 1:
+        return predictions[:1]
+    capped = [predictions[0]]
+    for prediction in predictions[1:]:
+        if len(capped) >= max_predictions:
+            break
+        if _stopline_projection_keep_additional(
+            prediction,
+            predictions[0],
+            second_min_score=float(second_min_score),
+            second_min_fragment_count=int(second_min_fragment_count),
+            second_min_length_ratio=float(second_min_length_ratio),
+        ):
+            capped.append(prediction)
+    return capped
+
+
+def _decode_stopline_projection_competition(
+    *,
+    mask_logits: torch.Tensor | None,
+    center_logits: torch.Tensor | None,
+    selector_map_logits: torch.Tensor | None,
+    center_offset: torch.Tensor | None,
+    angle: torch.Tensor | None,
+    meta: dict[str, Any],
+    min_gap: float,
+    top_k: int,
+    union_min_score: float,
+    single_min_score: float,
+    angle_threshold_deg: float,
+    offset_threshold_px: float,
+    min_cluster_count: int,
+    projection_gap_px: float,
+    max_predictions: int,
+    second_min_score: float,
+    second_min_fragment_count: int,
+    second_min_length_ratio: float,
+) -> list[dict[str, Any]]:
+    mask_probs = _stopline_2d_sigmoid_array(mask_logits)
+    center_probs = _stopline_2d_sigmoid_array(center_logits)
+    selector_probs = _stopline_2d_sigmoid_array(selector_map_logits)
+    if mask_probs is None or (center_probs is None and selector_probs is None):
+        return []
+    if not isinstance(center_offset, torch.Tensor) or not isinstance(angle, torch.Tensor):
+        return []
+    if not _tensor_all_finite(center_offset) or not _tensor_all_finite(angle):
+        return []
+    offset_map = center_offset.detach().cpu()
+    angle_map = angle.detach().cpu()
+    if offset_map.ndim == 4:
+        offset_map = offset_map.squeeze(0)
+    if angle_map.ndim == 4:
+        angle_map = angle_map.squeeze(0)
+    if offset_map.ndim != 3 or angle_map.ndim != 3 or int(offset_map.shape[0]) < 2 or int(angle_map.shape[0]) < 2:
+        return []
+    proposal_map = selector_probs if center_probs is None else center_probs
+    if center_probs is not None and selector_probs is not None:
+        proposal_map = np.maximum(center_probs, selector_probs)
+    output_hw = (int(mask_probs.shape[0]), int(mask_probs.shape[1]))
+
+    candidates: list[dict[str, Any]] = []
+    top_cells = _stopline_top_spaced_cells(
+        proposal_map,
+        top_k=int(top_k),
+        threshold=0.0,
+        min_gap=float(min_gap),
+    )
+    offset_np = offset_map.numpy().astype(np.float32)
+    angle_np = angle_map.numpy().astype(np.float32)
+    for proposal_rank, (row, col, score) in enumerate(top_cells, start=1):
+        center_xy = np.asarray(
+            [float(col) + float(offset_np[0, row, col]), float(row) + float(offset_np[1, row, col])],
+            dtype=np.float32,
+        )
+        candidate = _stopline_map_extent_candidate(
+            mask_probs=mask_probs,
+            center_xy=center_xy,
+            angle_vec=angle_np[:, row, col],
+            meta=meta,
+            output_hw=output_hw,
+            score=float(score),
+            proposal_rank=int(proposal_rank),
+            mask_threshold=0.50,
+            normal_band=4.0,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if not candidates:
+        return []
+
+    union_candidates = [candidate for candidate in candidates if float(candidate["score"]) >= float(union_min_score)]
+    union_groups = _stopline_projection_union_groups(
+        union_candidates,
+        angle_threshold_deg=float(angle_threshold_deg),
+        offset_threshold_px=float(offset_threshold_px),
+    )
+    proposals: list[dict[str, Any]] = []
+    for group in union_groups:
+        for split_group in _stopline_split_group_by_projection_gap(group, float(projection_gap_px)):
+            merged = _stopline_merge_projection_group(split_group, min_cluster_count=int(min_cluster_count))
+            if merged is not None:
+                proposals.append(merged)
+
+    for candidate in candidates:
+        if float(candidate["score"]) < float(single_min_score):
+            continue
+        proposals.append(
+            {
+                "allowed": True,
+                "score": float(candidate["score"]),
+                "center_score": float(candidate["score"]),
+                "length": float(candidate["length"]),
+                "points_xy": candidate["points_xy"],
+                "fragment_count": 1,
+                "_proposal_kind": "single",
+                "_rank_feature": float(candidate.get("rank_length", 0.0)),
+            }
+        )
+
+    if not proposals:
+        return []
+    proposals.sort(
+        key=lambda item: (
+            float(item.get("_rank_feature", 0.0)),
+            1.0 if str(item.get("_proposal_kind", "")) == "union" else 0.0,
+            float(item.get("score", 0.0)),
+            float(item.get("length", 0.0)),
+        ),
+        reverse=True,
+    )
+    proposals = _dedupe_stop_line_predictions(proposals)
+    capped = _stopline_projection_apply_cap(
+        proposals,
+        max_predictions=int(max_predictions),
+        second_min_score=float(second_min_score),
+        second_min_fragment_count=int(second_min_fragment_count),
+        second_min_length_ratio=float(second_min_length_ratio),
+    )
+    cleaned: list[dict[str, Any]] = []
+    for prediction in capped:
+        output = dict(prediction)
+        output.pop("_proposal_kind", None)
+        output.pop("_rank_feature", None)
+        output["orientation_score"] = float(_stopline_orientation_score(output.get("points_xy", [])))
+        cleaned.append(output)
+    return cleaned
 
 
 def _decode_stopline_haf_consensus_segments(
@@ -2046,6 +2587,19 @@ def _decode_stop_line_rows(
     endpoint_pair_segment_score_threshold: float = 0.50,
     endpoint_pair_segment_max_segments: int = 3,
     endpoint_pair_verifier_score_weight: float = 0.0,
+    projection_comp_enabled: bool = False,
+    projection_comp_min_gap: float = 4.0,
+    projection_comp_topk: int = 50,
+    projection_comp_union_min_score: float = 0.80,
+    projection_comp_single_min_score: float = 0.90,
+    projection_comp_angle_threshold_deg: float = 16.0,
+    projection_comp_offset_threshold_px: float = 48.0,
+    projection_comp_min_cluster_count: int = 2,
+    projection_comp_projection_gap_px: float = 320.0,
+    projection_comp_max_predictions: int = 2,
+    projection_comp_second_min_score: float = 0.0,
+    projection_comp_second_min_fragment_count: int = 5,
+    projection_comp_second_min_length_ratio: float = 0.0,
     presence_logits: torch.Tensor | None = None,
     presence_threshold: float = 0.0,
     component_gate_source: str = "center",
@@ -2056,6 +2610,27 @@ def _decode_stop_line_rows(
         presence_score = float(presence_logits.reshape(-1)[0].sigmoid().detach().cpu().item())
         if presence_score < float(presence_threshold):
             return []
+    if bool(projection_comp_enabled):
+        return _decode_stopline_projection_competition(
+            mask_logits=mask_logits,
+            center_logits=center_logits,
+            selector_map_logits=selector_map_logits,
+            center_offset=center_offset,
+            angle=angle,
+            meta=meta,
+            min_gap=float(projection_comp_min_gap),
+            top_k=int(projection_comp_topk),
+            union_min_score=float(projection_comp_union_min_score),
+            single_min_score=float(projection_comp_single_min_score),
+            angle_threshold_deg=float(projection_comp_angle_threshold_deg),
+            offset_threshold_px=float(projection_comp_offset_threshold_px),
+            min_cluster_count=int(projection_comp_min_cluster_count),
+            projection_gap_px=float(projection_comp_projection_gap_px),
+            max_predictions=int(projection_comp_max_predictions),
+            second_min_score=float(projection_comp_second_min_score),
+            second_min_fragment_count=int(projection_comp_second_min_fragment_count),
+            second_min_length_ratio=float(projection_comp_second_min_length_ratio),
+        )
     segment_set_decoded: list[dict[str, Any]] = []
     if bool(segment_set_enabled):
         segment_set_decoded = _decode_stopline_segment_set(
@@ -2484,6 +3059,21 @@ def postprocess_pv26_batch(
                     endpoint_pair_segment_score_threshold=config.stop_line_endpoint_pair_segment_score_threshold,
                     endpoint_pair_segment_max_segments=config.stop_line_endpoint_pair_segment_max_segments,
                     endpoint_pair_verifier_score_weight=config.stop_line_endpoint_pair_verifier_score_weight,
+                    projection_comp_enabled=config.stop_line_projection_comp_enabled,
+                    projection_comp_min_gap=config.stop_line_projection_comp_min_gap,
+                    projection_comp_topk=config.stop_line_projection_comp_topk,
+                    projection_comp_union_min_score=config.stop_line_projection_comp_union_min_score,
+                    projection_comp_single_min_score=config.stop_line_projection_comp_single_min_score,
+                    projection_comp_angle_threshold_deg=config.stop_line_projection_comp_angle_threshold_deg,
+                    projection_comp_offset_threshold_px=config.stop_line_projection_comp_offset_threshold_px,
+                    projection_comp_min_cluster_count=config.stop_line_projection_comp_min_cluster_count,
+                    projection_comp_projection_gap_px=config.stop_line_projection_comp_projection_gap_px,
+                    projection_comp_max_predictions=config.stop_line_projection_comp_max_predictions,
+                    projection_comp_second_min_score=config.stop_line_projection_comp_second_min_score,
+                    projection_comp_second_min_fragment_count=(
+                        config.stop_line_projection_comp_second_min_fragment_count
+                    ),
+                    projection_comp_second_min_length_ratio=config.stop_line_projection_comp_second_min_length_ratio,
                 ),
                 "crosswalks": _decode_crosswalk_rows(
                     crosswalk_pred[batch_index],

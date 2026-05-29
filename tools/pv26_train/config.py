@@ -172,6 +172,19 @@ class TrainDefaultsConfig:
     stop_line_axis_segment_set_score_threshold: float = 0.50
     stop_line_axis_segment_set_max_segments: int = 3
     stop_line_axis_segment_verifier_score_weight: float = 0.0
+    stop_line_projection_comp_enabled: bool = False
+    stop_line_projection_comp_min_gap: float = 4.0
+    stop_line_projection_comp_topk: int = 50
+    stop_line_projection_comp_union_min_score: float = 0.80
+    stop_line_projection_comp_single_min_score: float = 0.90
+    stop_line_projection_comp_angle_threshold_deg: float = 16.0
+    stop_line_projection_comp_offset_threshold_px: float = 48.0
+    stop_line_projection_comp_min_cluster_count: int = 2
+    stop_line_projection_comp_projection_gap_px: float = 320.0
+    stop_line_projection_comp_max_predictions: int = 2
+    stop_line_projection_comp_second_min_score: float = 0.0
+    stop_line_projection_comp_second_min_fragment_count: int = 5
+    stop_line_projection_comp_second_min_length_ratio: float = 0.0
     stop_line_component_gate_source: str = "center"
     crosswalk_polygon_mode: str = "rect"
     distill_enabled: bool = False
@@ -929,6 +942,85 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
                 defaults.stop_line_axis_segment_verifier_score_weight,
             ),
             field_name="train_defaults.stop_line_axis_segment_verifier_score_weight",
+        ),
+        stop_line_projection_comp_enabled=_coerce_bool(
+            data.get("stop_line_projection_comp_enabled", defaults.stop_line_projection_comp_enabled),
+            field_name="train_defaults.stop_line_projection_comp_enabled",
+        ),
+        stop_line_projection_comp_min_gap=_coerce_float(
+            data.get("stop_line_projection_comp_min_gap", defaults.stop_line_projection_comp_min_gap),
+            field_name="train_defaults.stop_line_projection_comp_min_gap",
+        ),
+        stop_line_projection_comp_topk=_coerce_int(
+            data.get("stop_line_projection_comp_topk", defaults.stop_line_projection_comp_topk),
+            field_name="train_defaults.stop_line_projection_comp_topk",
+        ),
+        stop_line_projection_comp_union_min_score=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_union_min_score",
+                defaults.stop_line_projection_comp_union_min_score,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_union_min_score",
+        ),
+        stop_line_projection_comp_single_min_score=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_single_min_score",
+                defaults.stop_line_projection_comp_single_min_score,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_single_min_score",
+        ),
+        stop_line_projection_comp_angle_threshold_deg=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_angle_threshold_deg",
+                defaults.stop_line_projection_comp_angle_threshold_deg,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_angle_threshold_deg",
+        ),
+        stop_line_projection_comp_offset_threshold_px=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_offset_threshold_px",
+                defaults.stop_line_projection_comp_offset_threshold_px,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_offset_threshold_px",
+        ),
+        stop_line_projection_comp_min_cluster_count=_coerce_int(
+            data.get(
+                "stop_line_projection_comp_min_cluster_count",
+                defaults.stop_line_projection_comp_min_cluster_count,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_min_cluster_count",
+        ),
+        stop_line_projection_comp_projection_gap_px=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_projection_gap_px",
+                defaults.stop_line_projection_comp_projection_gap_px,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_projection_gap_px",
+        ),
+        stop_line_projection_comp_max_predictions=_coerce_int(
+            data.get("stop_line_projection_comp_max_predictions", defaults.stop_line_projection_comp_max_predictions),
+            field_name="train_defaults.stop_line_projection_comp_max_predictions",
+        ),
+        stop_line_projection_comp_second_min_score=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_second_min_score",
+                defaults.stop_line_projection_comp_second_min_score,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_second_min_score",
+        ),
+        stop_line_projection_comp_second_min_fragment_count=_coerce_int(
+            data.get(
+                "stop_line_projection_comp_second_min_fragment_count",
+                defaults.stop_line_projection_comp_second_min_fragment_count,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_second_min_fragment_count",
+        ),
+        stop_line_projection_comp_second_min_length_ratio=_coerce_float(
+            data.get(
+                "stop_line_projection_comp_second_min_length_ratio",
+                defaults.stop_line_projection_comp_second_min_length_ratio,
+            ),
+            field_name="train_defaults.stop_line_projection_comp_second_min_length_ratio",
         ),
         stop_line_component_gate_source=_coerce_str(
             data.get("stop_line_component_gate_source", defaults.stop_line_component_gate_source),

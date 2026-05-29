@@ -220,6 +220,23 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         stop_line_axis_segment_set_score_threshold=float(train_config.stop_line_axis_segment_set_score_threshold),
         stop_line_axis_segment_set_max_segments=int(train_config.stop_line_axis_segment_set_max_segments),
         stop_line_axis_segment_verifier_score_weight=float(train_config.stop_line_axis_segment_verifier_score_weight),
+        stop_line_projection_comp_enabled=bool(train_config.stop_line_projection_comp_enabled),
+        stop_line_projection_comp_min_gap=float(train_config.stop_line_projection_comp_min_gap),
+        stop_line_projection_comp_topk=int(train_config.stop_line_projection_comp_topk),
+        stop_line_projection_comp_union_min_score=float(train_config.stop_line_projection_comp_union_min_score),
+        stop_line_projection_comp_single_min_score=float(train_config.stop_line_projection_comp_single_min_score),
+        stop_line_projection_comp_angle_threshold_deg=float(train_config.stop_line_projection_comp_angle_threshold_deg),
+        stop_line_projection_comp_offset_threshold_px=float(train_config.stop_line_projection_comp_offset_threshold_px),
+        stop_line_projection_comp_min_cluster_count=int(train_config.stop_line_projection_comp_min_cluster_count),
+        stop_line_projection_comp_projection_gap_px=float(train_config.stop_line_projection_comp_projection_gap_px),
+        stop_line_projection_comp_max_predictions=int(train_config.stop_line_projection_comp_max_predictions),
+        stop_line_projection_comp_second_min_score=float(train_config.stop_line_projection_comp_second_min_score),
+        stop_line_projection_comp_second_min_fragment_count=int(
+            train_config.stop_line_projection_comp_second_min_fragment_count
+        ),
+        stop_line_projection_comp_second_min_length_ratio=float(
+            train_config.stop_line_projection_comp_second_min_length_ratio
+        ),
         stop_line_component_gate_source=str(train_config.stop_line_component_gate_source),
         crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
         crosswalk_polygon_mode=str(train_config.crosswalk_polygon_mode),
