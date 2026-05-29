@@ -134,6 +134,8 @@ def _with_zero_segfirst_targets(encoded: dict) -> dict:
             "lane_seg_centerline_soft": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "lane_seg_support": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "lane_seg_instance_id": torch.zeros((batch_size, h, w), dtype=torch.long),
+            "lane_seg_instance_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "lane_seg_color": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), dtype=torch.float32),
             "lane_seg_type": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), dtype=torch.float32),
             "lane_seg_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),

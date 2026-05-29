@@ -485,6 +485,7 @@ def _lane_segfirst_loss(
     conditional_seed_target_mode: str = "centerline_core",
     conditional_objectness_target_mode: str = "binary",
     conditional_row_x_weight: float = 0.05,
+    instance_embedding_aux_weight: float = 0.0,
     color_class_weights: dict[str, float] | None = None,
     breakdown: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
@@ -575,6 +576,7 @@ def _lane_segfirst_loss(
     task_conflict_negative_loss = _zero_graph(centerline_logits)
     conditional_row_loss = _zero_graph(centerline_logits)
     conditional_seed_loss = _zero_graph(centerline_logits)
+    instance_embedding_loss = _zero_graph(centerline_logits)
     if float(residual_risk_core_weight) > 0.0:
         risk_core = aux.get("lane_seg_residual_risk_core")
         if isinstance(risk_core, torch.Tensor):
@@ -655,6 +657,8 @@ def _lane_segfirst_loss(
             encoded,
             seed_target_mode=str(conditional_seed_target_mode),
         )
+    if float(instance_embedding_aux_weight) > 0.0:
+        instance_embedding_loss = _lane_instance_embedding_loss(predictions, encoded)
 
     total = (
         weights["centerline_bce"] * centerline_bce
@@ -669,6 +673,7 @@ def _lane_segfirst_loss(
         + float(task_conflict_negative_weight) * task_conflict_negative_loss
         + float(conditional_row_aux_weight) * conditional_row_loss
         + float(conditional_seed_aux_weight) * conditional_seed_loss
+        + float(instance_embedding_aux_weight) * instance_embedding_loss
     )
     if breakdown is not None:
         breakdown.update(
@@ -685,8 +690,92 @@ def _lane_segfirst_loss(
                 "seg_task_conflict_negative": task_conflict_negative_loss,
                 "seg_conditional_row": conditional_row_loss,
                 "seg_conditional_seed": conditional_seed_loss,
+                "seg_instance_embedding": instance_embedding_loss,
             }
         )
+    return total
+
+
+def _lane_instance_embedding_loss(
+    predictions: dict[str, torch.Tensor],
+    encoded: dict[str, Any],
+    *,
+    delta_var: float = 0.5,
+    delta_dist: float = 1.5,
+    reg_weight: float = 0.001,
+) -> torch.Tensor:
+    embedding = predictions.get("lane_seg_instance_embedding")
+    if not isinstance(embedding, torch.Tensor):
+        raise KeyError("lane instance embedding aux loss requires lane_seg_instance_embedding prediction")
+    aux = encoded.get("roadmark_v2")
+    if not isinstance(aux, dict):
+        return _zero_graph(embedding)
+    instance_id = aux.get("lane_seg_instance_id")
+    if not isinstance(instance_id, torch.Tensor):
+        return _zero_graph(embedding)
+    source = encoded["mask"]["lane_source"].to(device=embedding.device, dtype=torch.bool)
+    ids = instance_id.to(device=embedding.device, dtype=torch.long)
+    if ids.ndim == 4 and ids.shape[1] == 1:
+        ids = ids[:, 0]
+    elif ids.ndim != 3:
+        return _zero_graph(embedding)
+    ignore = aux.get("lane_seg_instance_ignore", aux.get("lane_seg_ignore"))
+    if isinstance(ignore, torch.Tensor):
+        ignore_mask = ignore.to(device=embedding.device, dtype=torch.bool)
+        if ignore_mask.ndim == 4 and ignore_mask.shape[1] == 1:
+            ignore_mask = ignore_mask[:, 0]
+        elif ignore_mask.ndim != 3:
+            ignore_mask = torch.zeros_like(ids, dtype=torch.bool)
+    else:
+        ignore_mask = torch.zeros_like(ids, dtype=torch.bool)
+
+    batch_size, channels, height, width = embedding.shape
+    if ids.shape != (batch_size, height, width):
+        return _zero_graph(embedding)
+    source_mask = source[:, None, None].expand(batch_size, height, width)
+    valid = source_mask & (ids > 0) & (~ignore_mask)
+    embedding_hwc = embedding.permute(0, 2, 3, 1)
+
+    var_losses: list[torch.Tensor] = []
+    dist_losses: list[torch.Tensor] = []
+    reg_losses: list[torch.Tensor] = []
+    for batch_index in range(batch_size):
+        sample_valid = valid[batch_index]
+        if not bool(sample_valid.any()):
+            continue
+        sample_ids = ids[batch_index]
+        instance_values = torch.unique(sample_ids[sample_valid])
+        means: list[torch.Tensor] = []
+        for instance_value in instance_values.tolist():
+            instance_mask = sample_valid & (sample_ids == int(instance_value))
+            if int(instance_mask.sum().item()) <= 0:
+                continue
+            pixels = embedding_hwc[batch_index][instance_mask]
+            mean = pixels.mean(dim=0)
+            means.append(mean)
+            pixel_distance = torch.linalg.norm(pixels - mean.view(1, channels), dim=1)
+            var_losses.append(F.relu(pixel_distance - float(delta_var)).pow(2).mean())
+        if not means:
+            continue
+        mean_tensor = torch.stack(means, dim=0)
+        reg_losses.append(torch.linalg.norm(mean_tensor, dim=1).mean())
+        if int(mean_tensor.shape[0]) >= 2:
+            distances = torch.cdist(mean_tensor, mean_tensor, p=2.0)
+            pair_mask = torch.triu(
+                torch.ones_like(distances, dtype=torch.bool),
+                diagonal=1,
+            )
+            dist_losses.append(F.relu(float(delta_dist) - distances[pair_mask]).pow(2).mean())
+
+    if not var_losses and not dist_losses and not reg_losses:
+        return _zero_graph(embedding)
+    total = _zero_graph(embedding)
+    if var_losses:
+        total = total + torch.stack(var_losses).mean()
+    if dist_losses:
+        total = total + torch.stack(dist_losses).mean()
+    if reg_losses:
+        total = total + float(reg_weight) * torch.stack(reg_losses).mean()
     return total
 
 
@@ -2326,6 +2415,7 @@ class PV26MultiTaskLoss(nn.Module):
         lane_conditional_seed_target_mode: str = "centerline_core",
         lane_conditional_objectness_target_mode: str = "binary",
         lane_conditional_row_x_weight: float = 0.05,
+        lane_segfirst_instance_embedding_aux_weight: float = 0.0,
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
         stopline_selector_aux_weight: float = 1.0,
@@ -2409,6 +2499,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.lane_conditional_seed_target_mode = str(lane_conditional_seed_target_mode)
         self.lane_conditional_objectness_target_mode = str(lane_conditional_objectness_target_mode)
         self.lane_conditional_row_x_weight = float(lane_conditional_row_x_weight)
+        self.lane_segfirst_instance_embedding_aux_weight = float(lane_segfirst_instance_embedding_aux_weight)
         if self.lane_conditional_seed_target_mode not in {"centerline_core", "bottom_anchor"}:
             raise ValueError(
                 f"unsupported lane_conditional_seed_target_mode: {self.lane_conditional_seed_target_mode}"
@@ -2607,6 +2698,7 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_conditional_seed_target_mode": self.lane_conditional_seed_target_mode,
             "lane_conditional_objectness_target_mode": self.lane_conditional_objectness_target_mode,
             "lane_conditional_row_x_weight": float(self.lane_conditional_row_x_weight),
+            "lane_segfirst_instance_embedding_aux_weight": float(self.lane_segfirst_instance_embedding_aux_weight),
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
             "stopline_selector_aux_weight": float(self.stopline_selector_aux_weight),
@@ -3421,6 +3513,7 @@ class PV26MultiTaskLoss(nn.Module):
                 conditional_seed_target_mode=self.lane_conditional_seed_target_mode,
                 conditional_objectness_target_mode=self.lane_conditional_objectness_target_mode,
                 conditional_row_x_weight=self.lane_conditional_row_x_weight,
+                instance_embedding_aux_weight=self.lane_segfirst_instance_embedding_aux_weight,
                 color_class_weights=self.lane_segfirst_color_class_weights,
                 breakdown=lane_breakdown,
             )

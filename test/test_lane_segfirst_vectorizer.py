@@ -299,6 +299,8 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertGreater(float(risk_ring_negative.sum()), 0.0)
         self.assertEqual(risk_core.shape, torch.Size([1, 80, 80]))
         self.assertEqual(risk_ring_negative.shape, torch.Size([1, 80, 80]))
+        self.assertEqual(maps["instance_id"].shape, torch.Size([80, 80]))
+        self.assertEqual(maps["instance_ignore"].shape, torch.Size([1, 80, 80]))
         self.assertEqual(maps["center_offset"].shape, torch.Size([2, 80, 80]))
         self.assertEqual(maps["center_offset_valid"].shape, torch.Size([1, 80, 80]))
         self.assertEqual(

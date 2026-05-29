@@ -144,6 +144,7 @@ class TrainDefaultsConfig:
     lane_conditional_seed_target_mode: str = "centerline_core"
     lane_conditional_objectness_target_mode: str = "binary"
     lane_conditional_row_x_weight: float = 0.05
+    lane_segfirst_instance_embedding_aux_weight: float = 0.0
     lane_conditional_row_enabled: bool = False
     lane_conditional_row_merge_mode: str = "replace"
     lane_family_shared_adapter_enabled: bool = False
@@ -874,6 +875,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_conditional_row_x_weight=_coerce_float(
             data.get("lane_conditional_row_x_weight", defaults.lane_conditional_row_x_weight),
             field_name="train_defaults.lane_conditional_row_x_weight",
+        ),
+        lane_segfirst_instance_embedding_aux_weight=_coerce_float(
+            data.get(
+                "lane_segfirst_instance_embedding_aux_weight",
+                defaults.lane_segfirst_instance_embedding_aux_weight,
+            ),
+            field_name="train_defaults.lane_segfirst_instance_embedding_aux_weight",
         ),
         lane_conditional_row_enabled=_coerce_bool(
             data.get("lane_conditional_row_enabled", defaults.lane_conditional_row_enabled),
@@ -1721,6 +1729,8 @@ def validate_meta_train_scenario(
             raise ValueError(
                 f"phase {index} lane_conditional_row_merge_mode must be one of: replace, append"
             )
+        if float(phase_train.lane_segfirst_instance_embedding_aux_weight) < 0.0:
+            raise ValueError(f"phase {index} lane_segfirst_instance_embedding_aux_weight must be >= 0")
         if phase_train.distill_normalize_mode not in {"none", "ema"}:
             raise ValueError(f"phase {index} distill_normalize_mode must be one of: none, ema")
         if phase_train.task_loss_normalize_mode not in {"none", "ema"}:

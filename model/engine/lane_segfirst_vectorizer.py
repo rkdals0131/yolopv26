@@ -247,6 +247,8 @@ def render_lane_segfirst_targets(
     support_image = Image.new("L", (w, h), 0)
     residual_risk_core_image = Image.new("L", (w, h), 0)
     residual_risk_ring_image = Image.new("L", (w, h), 0)
+    instance_id = np.zeros((h, w), dtype=np.int64)
+    instance_ignore = np.zeros((h, w), dtype=np.float32)
 
     if source_enabled:
         for lane_index, row in enumerate(lane_rows):
@@ -256,6 +258,13 @@ def render_lane_segfirst_targets(
             if network_points.shape[0] < 2:
                 continue
             points = _scale_points(network_points, source_hw=NETWORK_HW, target_hw=cfg.output_hw)
+            instance_image = Image.new("L", (w, h), 0)
+            _draw_line(instance_image, points, fill=1, width=cfg.centerline_core_width)
+            instance_mask = np.asarray(instance_image, dtype=np.uint8) > 0
+            overlap = instance_mask & (instance_id > 0)
+            instance_ignore[overlap] = 1.0
+            write_mask = instance_mask & (instance_id == 0)
+            instance_id[write_mask] = int(lane_index) + 1
             _draw_line(core_image, points, fill=1, width=cfg.centerline_core_width)
             _draw_line(support_image, points, fill=1, width=cfg.support_width)
             if _residual_risk_lane(network_points):
@@ -336,6 +345,8 @@ def render_lane_segfirst_targets(
         "residual_risk_core": torch.from_numpy(residual_risk_core.astype(np.float32)).unsqueeze(0),
         "residual_risk_ring_negative": torch.from_numpy(residual_risk_ring_negative).unsqueeze(0),
         "tangent_axis": torch.from_numpy(tangent_axis.astype(np.float32)),
+        "instance_id": torch.from_numpy(instance_id),
+        "instance_ignore": torch.from_numpy(instance_ignore).unsqueeze(0),
         "color_map": torch.from_numpy(color_map.astype(np.float32)),
         "lane_type_map": torch.from_numpy(lane_type_map.astype(np.float32)),
         "stop_line_ignore": torch.from_numpy(stop_mask.astype(np.float32)).unsqueeze(0),

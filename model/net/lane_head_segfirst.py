@@ -46,6 +46,7 @@ class LaneSegFirstHead(nn.Module):
         self.support_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.center_offset = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.tangent_axis = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
+        self.instance_embedding = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.color_logits = nn.Conv2d(self.hidden_dim, len(LANE_CLASSES), kernel_size=1)
         self.type_logits = nn.Conv2d(self.hidden_dim, len(LANE_TYPES), kernel_size=1)
         self.conditional_seed_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
@@ -79,6 +80,7 @@ class LaneSegFirstHead(nn.Module):
             "lane_seg_support_logits": self.support_logits(lane_feature),
             "lane_seg_center_offset": self.center_offset(lane_feature),
             "lane_seg_tangent_axis": self.tangent_axis(lane_feature),
+            "lane_seg_instance_embedding": self.instance_embedding(lane_feature),
             "lane_seg_color_logits": self.color_logits(lane_feature),
             "lane_seg_type_logits": self.type_logits(lane_feature),
             "lane_conditional_seed_logits": conditional_seed_logits,

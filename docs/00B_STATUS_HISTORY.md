@@ -16480,3 +16480,81 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
 - Do not repeat this as log-var init, clamp range, criterion LR, head LR, epoch-count, or same projection-comp-runtime training sweep.
 - Reopen task-loss allocation only if coupled to a materially different shared representation, adapter/routing surface, or lane/stop-line emit contract that first improves fixed smoke TP/FP/FN.
+
+## 311. 2026-05-30 Lane instance-embedding auxiliary smoke: dense instance separation trains, but does not move fixed lane/stop TP/FP/FN
+
+맥락:
+
+- The user explicitly warned that the remaining gap may be architecture/training-signal related, not only postprocess.
+- The closed lane conditional row/seed-trace branches changed runtime emission and caused lane FP blow-up or retained-lane regression.
+- This branch tested a narrower model-side instance-stability signal: the seg-first lane head predicts a dense 2D instance embedding, while runtime decode stays the retained row-scan/tangent vectorizer. The hypothesis was that instance separation on GT lane core pixels might stabilize centerline feature learning without adding a new lane candidate emitter.
+- This is distinct from conditional row emission, seed-trace append, and post-hoc row-link thresholding: the new signal is auxiliary-only during training.
+- The experiment reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. It did not copy the dataset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-instance-embedding-aux`.
+- Lane head: `model/net/lane_head_segfirst.py` now emits `lane_seg_instance_embedding`.
+- Dense targets: `model/engine/lane_segfirst_vectorizer.py`, `model/data/roadmark_v2_targets.py`, and `model/data/target_encoder.py` add `lane_seg_instance_id` plus `lane_seg_instance_ignore`.
+- Loss/config/probe: `model/engine/loss.py`, `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py`.
+- Tests:
+  - `test/test_pv26_heads.py`, documented output shape includes the 2-channel embedding.
+  - `test/test_pv26_loss_runtime.py`, embedding auxiliary backprop coverage.
+  - `test/test_run_pv26_train.py`, config override coverage.
+  - `test/test_lane_segfirst_vectorizer.py`, rendered instance target shape coverage.
+  - `test/test_pv26_evaluator.py`, zero-target helper updated for the new keys.
+- Changed axis:
+  - `lane_segfirst_instance_embedding_aux_weight=0.25`;
+  - retained row-scan/tangent lane decode;
+  - retained projection-competition stop-line runtime decode;
+  - retained `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_embedding_aux_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_074321`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6469808794` at epoch 1, but this is not success evidence because fixed task metrics failed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5000` | `33 / 13 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- The embedding auxiliary lost `4` lane TP and added `1` lane FP on the retained fixed variant, while recovering no stop-line TP.
+- The result matched the previous task-uncertainty negative fixed variant on lane/stop/cross, so there was no smoke TP/FP/FN movement to justify exact-val128.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_embedding_aux_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_074321/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_instance_embedding_aux_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_074321/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `820K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/lane_head_segfirst.py model/engine/lane_segfirst_vectorizer.py model/data/roadmark_v2_targets.py model/data/target_encoder.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_pv26_heads.py test/test_run_pv26_train.py test/test_lane_segfirst_vectorizer.py test/test_pv26_evaluator.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_produce_documented_output_shapes test_pv26_loss_runtime.PV26LossRuntimeTests.test_lane_instance_embedding_aux_loss_backprops_when_enabled test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides test_lane_segfirst_vectorizer.LaneSegFirstVectorizerTests.test_residual_risk_targets_only_mark_bucketed_lanes`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_roadmark_native_contract.RoadmarkNativeContractTest.test_segfirst_joint_loss_is_finite_on_synthetic_roadmark_batch`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "lane_instance_embedding_aux"`.
+- CUDA lane instance-embedding auxiliary smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The model/target/loss/config plumbing is valid and covered, but the trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
+- Do not repeat this as embedding dimension, margin, aux-weight, head LR, epoch-count, or same row-scan/tangent runtime sweep.
+- Reopen lane instance-separation only if it changes the emit/assignment contract or adds a materially new TP-preserving instance-quality signal that first improves fixed smoke TP/FP/FN.
