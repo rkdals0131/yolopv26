@@ -14816,3 +14816,67 @@ Verification:
 - It should not be expanded to exact-val128 or broader-val512 from this checkpoint because it loses lane TP before the exact gate.
 - Do not repeat this as lane-only architecture-name plumbing, head LR, epoch-count, lane-only sampler, placeholder contract, or same-router source sweep.
 - Reopen lane architecture isolation only with a materially different instance/emit signal that first improves fixed smoke TP/FP/FN while preserving the retained crosswalk hull and stop-line route.
+
+## 287. 2026-05-30 Co-occurrence hard-positive sampler smoke
+
+Context:
+
+- The user asked to keep trying learning methodology, model structure, postprocess/preprocess, data sampling, and feeding routes toward all-task F1 `>=0.60`, while avoiding dataset copies and managing storage.
+- Existing `multi:lane,stopline,crosswalk` sampling guarantees task-positive slots in a batch, but those positives can come from different records.
+- This branch tested a data-feeding contract where the same training record must be positive for all requested tasks, so lane/stop-line/crosswalk are seen together in the same scene.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/cooccur-hard-positive-sampler`.
+- Added `PV26TaskCooccurrenceBatchSampler` and `task_positive_task="cooccur:..."` parsing.
+- The co-occurrence sampler draws positive slots from records satisfying all requested task predicates and uses a det-source negative pool when a negative slot is requested.
+- Added regression coverage in `test/test_pv26_balanced_sampler.py`.
+- Added `cooccur_lane_stop_cross_sampler` preset to `tools/run_pv26_lane60_probe.py`.
+
+Data premise:
+
+- The existing dataset root was scanned in place; no dataset copy was created.
+- Train split co-occurrence counts from scene labels:
+  - `(lane=True, stop_line=True, crosswalk=True)`: `13,125`.
+  - `(lane=True, stop_line=True, crosswalk=False)`: `2,844`.
+  - lane+stop total: `15,969`, all from `aihub_lane_seoul`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_cooccur_lane_stop_cross_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_000717`.
+- CUDA smoke: `1` epoch, `8` train batches, `4` val batches, batch size `4`, device `cuda:0`.
+- Loss weights inherited from the projection-comp runtime preset: lane `2.25`, stop-line `2.25`, crosswalk `1.75`.
+- Skipped steps: `0`.
+- Internal val phase objective was `0.6388045832`, lane task-best F1 `0.5414`, stop-line `0.0000`, crosswalk `0.7273`. This is not final evidence because the fixed smoke gate is maintained separately.
+
+Fixed smoke val4:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| co-occurrence sampler checkpoint | `0.5294` | `36 / 14 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_cooccur_lane_stop_cross_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_000717/analysis_exports/cooccur_sampler_smoke_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because lane regressed sharply on smoke: TP `-4`, FP `+3`, FN `+4`.
+
+Storage:
+
+- The run reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly.
+- After the negative smoke, checkpoint files, TensorBoard output, and temporary root `yolo26s.pt` were removed.
+- Retained run size after cleanup: about `740K`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/data/sampler.py model/data/__init__.py test/test_pv26_balanced_sampler.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_balanced_sampler.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA co-occurrence sampler smoke train.
+- CUDA fixed val4 smoke evaluation.
+
+판단:
+
+- Co-occurrence sampling is implemented, trainable, and storage-clean, but the fixed smoke gate is clearly negative.
+- It should not be broadened from this checkpoint.
+- Do not repeat this as `cooccur:lane,stopline,crosswalk` fraction, task-order, epoch-count, train-batch count, or same loss-weight sweep.
+- Reopen co-occurrence/data-feeding work only if it is paired with a materially different instance/geometry/retention signal that first improves fixed smoke TP/FP/FN.

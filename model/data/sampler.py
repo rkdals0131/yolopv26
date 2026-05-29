@@ -411,6 +411,12 @@ def _parse_task_positive_spec(task_positive_task: str | None) -> list[str]:
         if not task_names:
             raise ValueError("multi task-positive spec requires at least one task name")
         return task_names
+    if lowered.startswith("cooccur:"):
+        payload = raw.split(":", 1)[1]
+        task_names = [_canonical_positive_task_name(item) for item in payload.split(",") if str(item).strip()]
+        if not task_names:
+            raise ValueError("cooccur task-positive spec requires at least one task name")
+        return task_names
     return [_canonical_positive_task_name(raw)]
 
 
@@ -422,6 +428,8 @@ def _task_positive_mode(task_positive_task: str | None) -> str | None:
         return "rotate"
     if lowered.startswith("multi:"):
         return "multi"
+    if lowered.startswith("cooccur:"):
+        return "cooccur"
     return "single"
 
 
@@ -593,6 +601,84 @@ class PV26TaskPositiveMultiBatchSampler(BatchSampler):
             yield batch
 
 
+class PV26TaskCooccurrenceBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        dataset: PV26CanonicalDataset,
+        *,
+        batch_size: int,
+        task_names: list[str],
+        positive_fraction: float = 0.5,
+        num_batches: int | None = None,
+        split: str | None = "train",
+        seed: int = 26,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        resolved_task_names = [_canonical_positive_task_name(item) for item in task_names]
+        if not resolved_task_names:
+            raise ValueError("task cooccurrence sampler requires at least one task")
+        self.task_names = list(resolved_task_names)
+        self.batch_size = int(batch_size)
+        fraction = max(0.0, min(1.0, float(positive_fraction)))
+        self.positive_count = min(self.batch_size, max(1, int(round(self.batch_size * fraction))))
+        self.negative_count = self.batch_size - self.positive_count
+
+        positive_indices: list[int] = []
+        eligible_indices: list[int] = []
+        for index, record in enumerate(dataset.records):
+            if split is not None and record.split != split:
+                continue
+            eligible_indices.append(index)
+            if all(_task_positive_available(record, task_name) for task_name in self.task_names):
+                positive_indices.append(index)
+        if not positive_indices:
+            joined = ",".join(self.task_names)
+            raise ValueError(f"task cooccurrence sampler found no positive samples for tasks={joined!r}")
+
+        positive_set = set(positive_indices)
+        all_negative_indices = [index for index in eligible_indices if index not in positive_set]
+        det_negative_indices = [
+            index
+            for index in all_negative_indices
+            if _record_has_det_supervision(dataset.records[index])
+        ]
+        if det_negative_indices:
+            negative_indices = det_negative_indices
+            self.negative_pool_policy = "det_source_not_task_cooccurrence"
+        else:
+            negative_indices = all_negative_indices
+            self.negative_pool_policy = "any_not_task_cooccurrence_fallback"
+        self.negative_pool_size = len(negative_indices)
+        if self.negative_count > 0 and not negative_indices:
+            self.negative_count = 0
+            self.positive_count = self.batch_size
+        self.num_batches = num_batches or max(1, math.ceil(len(positive_indices) / max(self.positive_count, 1)))
+
+        rng = random.Random(seed)
+        pos_shuffled = list(positive_indices)
+        neg_shuffled = list(negative_indices)
+        rng.shuffle(pos_shuffled)
+        rng.shuffle(neg_shuffled)
+        self._positive_cursor = _IndexCursor(indices=pos_shuffled, rng=random.Random(rng.randint(0, 1_000_000)))
+        self._negative_cursor = _IndexCursor(indices=neg_shuffled, rng=random.Random(rng.randint(0, 1_000_000))) if neg_shuffled else None
+        self._shuffle_rng = random.Random(seed + 1)
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    def __iter__(self):
+        for _ in range(self.num_batches):
+            batch: list[int] = []
+            for _ in range(self.positive_count):
+                batch.append(self._positive_cursor.draw())
+            if self._negative_cursor is not None:
+                for _ in range(self.negative_count):
+                    batch.append(self._negative_cursor.draw())
+            self._shuffle_rng.shuffle(batch)
+            yield batch
+
+
 def build_pv26_train_dataloader(
     dataset: PV26CanonicalDataset,
     *,
@@ -627,6 +713,16 @@ def build_pv26_train_dataloader(
                     allow_missing_tasks=False,
                 )
                 unavailable_positive_tasks = list(getattr(sampler, "unavailable_task_names", []))
+            elif positive_task_mode == "cooccur":
+                sampler = PV26TaskCooccurrenceBatchSampler(
+                    dataset,
+                    batch_size=batch_size,
+                    task_names=positive_task_names,
+                    positive_fraction=0.5 if task_positive_fraction is None else float(task_positive_fraction),
+                    num_batches=num_batches,
+                    split=split,
+                    seed=seed,
+                )
             elif len(positive_task_names) == 1:
                 sampler = PV26TaskPositiveBatchSampler(
                     dataset,
@@ -734,7 +830,10 @@ __all__ = [
     "DATASET_GROUP_BY_KEY",
     "DEFAULT_SAMPLER_RATIOS",
     "PV26BalancedBatchSampler",
+    "PV26TaskCooccurrenceBatchSampler",
     "PV26TaskPositiveBatchSampler",
+    "PV26TaskPositiveMultiBatchSampler",
+    "PV26TaskPositiveRotationBatchSampler",
     "PV26RandomSubsetBatchSampler",
     "PV26SequentialBatchSampler",
     "build_pv26_eval_dataloader",

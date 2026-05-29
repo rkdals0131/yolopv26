@@ -1585,6 +1585,15 @@ EXPERIMENTS["lane_only_segfirst_specialist"] = {
     },
 }
 
+EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "cooccur:lane,stopline,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

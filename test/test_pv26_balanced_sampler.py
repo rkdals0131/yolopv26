@@ -11,6 +11,7 @@ import torch
 from common.pv26_schema import OD_CLASSES
 from model.data import (
     PV26BalancedBatchSampler,
+    PV26TaskCooccurrenceBatchSampler,
     PV26TaskPositiveMultiBatchSampler,
     build_pv26_eval_dataloader,
     build_pv26_train_dataloader,
@@ -331,6 +332,86 @@ class PV26BalancedSamplerTests(unittest.TestCase):
                 self.assertEqual(sum(item["stop_line"] for item in flags), 2)
                 self.assertEqual(sum(item["lane"] for item in flags), 1)
                 self.assertEqual(sum(item["crosswalk"] for item in flags), 1)
+
+    def test_task_cooccurrence_sampler_draws_records_with_all_requested_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = _ToyCanonicalDataset(
+                dataset_keys=(
+                    ("bdd100k_det_100k", 4),
+                    ("aihub_lane_seoul", 16),
+                ),
+            )
+            scene_payloads = (
+                {
+                    "tasks": {"has_stop_line": True, "has_crosswalk": True},
+                    "lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}],
+                },
+                {"tasks": {"has_stop_line": True}},
+                {"tasks": {"has_crosswalk": True}},
+                {"lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}]},
+            )
+            for record_index, record in enumerate(dataset.records):
+                scene_path = root / f"{record.sample_id}.json"
+                if record.dataset_key == "aihub_lane_seoul":
+                    payload = scene_payloads[int(record.sample_id.rsplit("_", 1)[-1]) % len(scene_payloads)]
+                else:
+                    payload = {"tasks": {}}
+                scene_path.write_text(json.dumps(payload), encoding="utf-8")
+                dataset.records[record_index] = replace(record, scene_path=scene_path)
+
+            sampler = PV26TaskCooccurrenceBatchSampler(
+                dataset,
+                batch_size=4,
+                task_names=["lane", "stopline", "crosswalk"],
+                positive_fraction=0.75,
+                num_batches=3,
+                split="train",
+                seed=17,
+            )
+
+            self.assertEqual(sampler.positive_count, 3)
+            self.assertEqual(sampler.negative_count, 1)
+            self.assertEqual(sampler.negative_pool_policy, "det_source_not_task_cooccurrence")
+            for batch_indices in sampler:
+                flags = [_scene_flags(dataset.records[index].scene_path) for index in batch_indices]
+                self.assertEqual(sum(all(item.values()) for item in flags), 3)
+
+    def test_cooccurrence_task_positive_dataloader_records_sampler_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = _ToyCanonicalDataset(
+                dataset_keys=(
+                    ("bdd100k_det_100k", 4),
+                    ("aihub_lane_seoul", 8),
+                ),
+            )
+            for record_index, record in enumerate(dataset.records):
+                scene_path = root / f"{record.sample_id}.json"
+                if record.dataset_key == "aihub_lane_seoul":
+                    payload = {
+                        "tasks": {"has_stop_line": True, "has_crosswalk": True},
+                        "lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}],
+                    }
+                else:
+                    payload = {"tasks": {}}
+                scene_path.write_text(json.dumps(payload), encoding="utf-8")
+                dataset.records[record_index] = replace(record, scene_path=scene_path)
+
+            loader = build_pv26_train_dataloader(
+                dataset,
+                batch_size=4,
+                num_batches=1,
+                split="train",
+                seed=19,
+                task_positive_task="cooccur:lane,stopline,crosswalk",
+                task_positive_fraction=1.0,
+            )
+
+            metadata = loader._sampling_metadata  # type: ignore[attr-defined]
+            self.assertEqual(metadata["requested_task_positive_mode"], "cooccur")
+            self.assertEqual(metadata["sampler_type"], "PV26TaskCooccurrenceBatchSampler")
+            self.assertEqual(metadata["effective_task_positive_tasks"], ["lane", "stop_line", "crosswalk"])
 
     def test_multi_task_positive_dataloader_fails_fast_when_a_task_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
