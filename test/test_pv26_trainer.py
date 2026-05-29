@@ -696,6 +696,68 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
 
+    def test_lane_conditional_seed_only_freezes_dense_lane_maps(self) -> None:
+        from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
+        from model.net import PV26Heads
+
+        adapter = _DummyAdapter()
+        heads = PV26Heads(in_channels=PV26_TEST_CHANNELS, lane_head_mode="seg_first")
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_conditional_seed_only",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=0.0, head_lr=5.0e-4)
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+        seed_params = list(heads.lane_head.conditional_seed_logits.parameters())
+        seed_param_ids = {id(parameter) for parameter in seed_params}
+
+        self.assertEqual(summary["freeze_policy"], "lane_conditional_seed_only")
+        self.assertEqual(summary["head_training_policy"], "lane_conditional_seed_only")
+        self.assertEqual(summary["trainable_trunk_params"], 0)
+        self.assertEqual(summary["trainable_head_params"], sum(parameter.numel() for parameter in seed_params))
+        self.assertFalse(any(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertTrue(all(parameter.requires_grad for parameter in seed_params))
+        self.assertEqual(optimizer_params, seed_param_ids)
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.lane_head.centerline_logits.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.lane_head.support_logits.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.lane_head.tangent_axis.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.lane_head.conditional_query_mlp.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
+
+    def test_lane_conditional_seed_only_keeps_frozen_modules_in_eval_mode(self) -> None:
+        from model.engine.trainer import PV26Trainer
+        from model.net import PV26Heads
+
+        adapter = _DummyAdapter()
+        heads = PV26Heads(in_channels=PV26_TEST_CHANNELS, lane_head_mode="seg_first")
+        trainer = PV26Trainer(
+            adapter,
+            heads,
+            stage="stage_4_lane_family_finetune",
+            freeze_policy="lane_conditional_seed_only",
+            trunk_lr=0.0,
+            head_lr=5.0e-4,
+            loss_weights={
+                "det": 0.0,
+                "tl_attr": 0.0,
+                "lane": 1.0,
+                "stop_line": 0.0,
+                "crosswalk": 0.0,
+            },
+        )
+
+        trainer.adapter.raw_model.train()
+        trainer.heads.train()
+        trainer.apply_freeze_policy_train_modes()
+
+        self.assertFalse(trainer.adapter.raw_model.training)
+        self.assertFalse(trainer.heads.training)
+        self.assertTrue(all(parameter.requires_grad for parameter in heads.lane_head.conditional_seed_logits.parameters()))
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_with_real_runtime_returns_finite_losses(self) -> None:
         from model.net import PV26Heads

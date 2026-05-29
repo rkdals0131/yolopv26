@@ -210,6 +210,17 @@ def _stop_line_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
     return [stop_line_head] if isinstance(stop_line_head, torch.nn.Module) else []
 
 
+def _lane_conditional_seed_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
+    lane_head = getattr(heads, "lane_head", None)
+    if not isinstance(lane_head, torch.nn.Module):
+        roadmark_heads = getattr(heads, "roadmark_heads", None)
+        lane_head = getattr(roadmark_heads, "lane_head", None)
+    if not isinstance(lane_head, torch.nn.Module):
+        return []
+    conditional_seed_logits = getattr(lane_head, "conditional_seed_logits", None)
+    return [conditional_seed_logits] if isinstance(conditional_seed_logits, torch.nn.Module) else []
+
+
 def _parameter_ids_from_modules(modules: list[torch.nn.Module]) -> set[int]:
     parameter_ids: set[int] = set()
     for module in modules:
@@ -243,6 +254,13 @@ def _require_stop_line_modules(heads: torch.nn.Module, *, policy: str) -> list[t
     modules = _stop_line_modules(heads)
     if not modules:
         raise RuntimeError(f"{policy} requires stop_line_head or stop_line_modules")
+    return modules
+
+
+def _require_lane_conditional_seed_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
+    modules = _lane_conditional_seed_modules(heads)
+    if not modules:
+        raise RuntimeError(f"{policy} requires a seg-first lane_head with conditional_seed_logits")
     return modules
 
 
@@ -372,6 +390,12 @@ def configure_pv26_train_stage(
         for module in _require_stop_line_modules(heads, policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "stopline_only"
+    elif policy == "lane_conditional_seed_only":
+        adapter.freeze_trunk()
+        _set_module_requires_grad(heads, False)
+        for module in _require_lane_conditional_seed_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "lane_conditional_seed_only"
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:
@@ -402,6 +426,7 @@ def configure_pv26_train_stage(
         "lane_family_plus_upper_trunk",
         "lane_family_stop_cross_heads_only",
         "lane_family_stopline_only",
+        "lane_conditional_seed_only",
     }:
         stage_summary["head_training_policy"] = head_policy
     return stage_summary
@@ -540,6 +565,12 @@ class PV26Trainer:
             "purge_step": None,
         }
         self._tensorboard_train_step = 0
+
+    def apply_freeze_policy_train_modes(self) -> None:
+        policy = str(self.stage_summary.get("freeze_policy", self.freeze_policy or ""))
+        if policy == "lane_conditional_seed_only":
+            self.adapter.raw_model.eval()
+            self.heads.eval()
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         task_mode = str(getattr(self.criterion, "task_mode", LANE_FAMILY_TASK_MODE))

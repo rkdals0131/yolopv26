@@ -31,6 +31,8 @@ Latest stop-line priority retention-distill heads-only smoke added lane/cross te
 
 Latest stop-line source-union projection-comp smoke added a runtime proposal source that preserves center/selector source-local candidates before projection competition, plus rowx-band selector supervision. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran a real CUDA `64` train-batch smoke with skipped steps `0`. It is smoke-negative: fixed val4 epoch-2 was lane/stop/cross `0.4885 / 0.0000 / 0.5455`, with lane TP/FP/FN `32 / 13 / 54`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because lane regressed sharply and stop-line recovered no TP. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `7.3M`.
 
+Latest lane conditional seed-branch-only trace smoke added a freeze policy that trains only `LaneSegFirstHead.conditional_seed_logits`, then found that `requires_grad=False` alone still lets frozen BatchNorm buffers drift. The first CUDA `64` train-batch smoke reused the existing dataset root, improved the untrained seed-trace val4 from lane `0.3543` to `0.5324`, but failed to beat the row-scan baseline and its row-scan ablation regressed `38 / 14 / 48 -> 37 / 15 / 49`, exposing frozen-BN drift. The trainer now forces trunk/head eval mode for `lane_conditional_seed_only`. A rerun with that fix still failed fixed val4: lane/stop/cross `0.3409 / 0.0000 / 0.5455`, lane TP/FP/FN `30 / 60 / 56`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run sizes are about `24M` for the diagnostic pre-fix run and `6.1M` for the fixed rerun.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -77,6 +79,8 @@ Run:
 - latest lane bidirectional seed-trace smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_bidirectional_seed_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_011614/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - latest stop-line priority retention-distill heads-only smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_retention_distill_heads_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_013211/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - latest stop-line source-union projection-comp smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_source_union_projection_comp_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_014626/analysis_exports/fixed_val4_epoch2/metrics.csv`
+- latest lane conditional seed-branch-only trace diagnostic smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/fixed_val4_epoch2/metrics.csv`
+- latest lane conditional seed-branch-only trace fixed-BN smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_021142/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
@@ -359,6 +363,34 @@ Latest stop-line source-union projection-comp smoke:
 - CUDA smoke train: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, skipped steps `0`.
 - fixed val4 epoch-2 eval: objective `0.6211438491`, lane/stop/cross `0.4885 / 0.0000 / 0.5455`, TP/FP/FN lane `32 / 13 / 54`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
 - 판단: source-local center/selector proposal union plus rowx-band selector supervision did not recover any stop-line TP and damaged lane. Exact-val128 and broader-val512 were skipped. Do not continue this as proposal-source, top-k, min-gap, selector-target, selector-aux-weight, head-LR, or epoch-count tuning unless a new candidate-quality/geometry signal first moves fixed smoke TP/FP/FN.
+
+Latest lane conditional seed-branch-only trace smoke:
+
+- branch/worktree: `exp/lane-family-f1/lane-seed-branch-only-trace`.
+- diagnostic pre-fix run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030`.
+- fixed-BN rerun: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_021142`.
+- changed axis: add `lane_conditional_seed_only` freeze policy, train only `LaneSegFirstHead.conditional_seed_logits`, zero all dense lane loss terms, and evaluate with `row_scan_tangent_seed_trace`, projection-competition stop-line runtime, and `crosswalk_polygon_mode="hull"`.
+- implementation detail: `trainer.apply_freeze_policy_train_modes()` now forces trunk/head eval mode for `lane_conditional_seed_only`, preventing frozen BatchNorm running-stat mutation while still training the seed conv.
+- data/storage contract: both smoke runs reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. Both indexed `429350` records with split `326709 / 82641 / 20000`, trained real CUDA `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, skipped steps `0`.
+- diagnostic pre-fix fixed val4:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| base row-scan | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| base seed-trace | `0.3543` | `31 / 58 / 55` | `0.0000` | `0 / 4 / 2` | `0.5455` | `3 / 1 / 4` |
+| trained seed-trace, pre-fix | `0.5324` | `37 / 16 / 49` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| trained row-scan ablation, pre-fix | `0.5362` | `37 / 15 / 49` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- pre-fix interpretation: seed-only training reduced the untrained seed-trace FP blow-up, but did not beat base row-scan. The row-scan ablation changed despite seed-trace being disabled, proving that frozen BatchNorm buffers can damage retained dense behavior when only parameters are frozen.
+- fixed-BN rerun fixed val4: objective `0.5515308931`, lane/stop/cross `0.3409 / 0.0000 / 0.5455`, TP/FP/FN lane `30 / 60 / 56`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- artifacts:
+  - pre-fix fixed smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/fixed_val4_epoch2/metrics.csv`
+  - pre-fix row-scan ablation: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/fixed_val4_epoch2_row_scan_ablation/metrics.csv`
+  - base seed-trace reference: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/base_seed_fixed_val4_epoch2/metrics.csv`
+  - base row-scan reference: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/base_row_scan_fixed_val4_epoch2/metrics.csv`
+  - fixed-BN rerun smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_021142/analysis_exports/fixed_val4_epoch2/metrics.csv`
+- storage: negative checkpoints, TensorBoard output, and temporary root `yolo26s.pt` were pruned. Retained pre-fix diagnostic run size is about `24M`; retained fixed-BN rerun size is about `6.1M`.
+- 판단: seed-branch-only bottom-anchor trace is trainable but smoke-negative and FP-heavy. The reusable result is the freeze-mode fix; do not continue this as seed target, threshold, max-seeds, head-LR, epoch-count, or freeze-policy tuning without a new TP-preserving instance quality/existence signal.
 
 Latest input-scale672 dense-target audit:
 

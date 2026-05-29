@@ -15220,3 +15220,81 @@ Verification:
 - The selector row-x band signal did not recover any stop-line TP and damaged lane behavior.
 - Do not repeat this as proposal-source, top-k, min-gap, selector-target, selector-aux-weight, head-LR, epoch-count, or same projection-comp-runtime training sweep.
 - Reopen only with a materially different no-GT candidate-quality/geometry signal that first moves fixed smoke TP/FP/FN.
+
+## 293. 2026-05-30 Lane conditional seed-branch-only trace: frozen-BN fix found, seed trace rejects
+
+Context:
+
+- Previous seed-trace runs showed lane FN headroom but repeatedly damaged retained row-scan/tangent behavior.
+- The narrow hypothesis here was that training only the existing `LaneSegFirstHead.conditional_seed_logits` conv could learn bottom-anchor lane instance seeds while leaving dense centerline/support/tangent/crosswalk/stop-line behavior intact.
+- This was intentionally not a seed threshold or max-seed sweep: the changed axis was the training/freeze contract for the seed branch.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-seed-branch-only-trace`.
+- Added freeze policy `lane_conditional_seed_only`:
+  - trunk frozen
+  - all heads frozen
+  - only `lane_head.conditional_seed_logits` trainable
+- Added `lane_seed_branch_only_trace` to `tools/run_pv26_lane60_probe.py`:
+  - `lane_segfirst_track_mode="row_scan_tangent_seed_trace"`
+  - `lane_conditional_seed_target_mode="bottom_anchor"`
+  - `lane_conditional_seed_aux_weight=1.0`
+  - dense lane loss terms set to `0.0`
+  - stop-line/crosswalk train losses set to `0.0`
+  - projection-competition stop-line runtime and hull crosswalk retained for eval.
+- Added `trainer.apply_freeze_policy_train_modes()` and call it from `_trainer_step.run_train_step()`:
+  - for `lane_conditional_seed_only`, `adapter.raw_model.eval()` and `heads.eval()` are re-applied after the normal train-mode switch.
+  - This prevents frozen BatchNorm running-stat mutation while still allowing gradients on the seed conv.
+- Added tests covering both parameter selection and train-mode override.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Diagnostic pre-fix run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030`.
+- Fixed-BN rerun: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_021142`.
+- Both runs: real CUDA `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, skipped steps `0`.
+
+Fixed val4 diagnostics:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| base row-scan | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| base seed-trace | `0.3543` | `31 / 58 / 55` | `0.0000` | `0 / 4 / 2` | `0.5455` | `3 / 1 / 4` |
+| trained seed-trace, pre-fix | `0.5324` | `37 / 16 / 49` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| trained row-scan ablation, pre-fix | `0.5362` | `37 / 15 / 49` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| trained seed-trace, fixed-BN | `0.3409` | `30 / 60 / 56` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Artifacts:
+
+- Pre-fix fixed smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Pre-fix row-scan ablation: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/fixed_val4_epoch2_row_scan_ablation/metrics.csv`.
+- Base seed-trace reference: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/base_seed_fixed_val4_epoch2/metrics.csv`.
+- Base row-scan reference: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_020030/analysis_exports/base_row_scan_fixed_val4_epoch2/metrics.csv`.
+- Fixed-BN rerun smoke: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_branch_only_trace_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_021142/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+
+Storage:
+
+- Both runs reused the existing dataset root directly.
+- Pre-fix run was about `588M` before cleanup and about `24M` after pruning checkpoints/TensorBoard/root weights.
+- Fixed-BN rerun was about `571M` before cleanup and about `6.1M` after pruning checkpoints/TensorBoard/root weights.
+- Temporary root `yolo26s.pt` was removed.
+
+Verification:
+
+- `python -m py_compile model/engine/trainer.py model/engine/_trainer_step.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_trainer.py' -k lane_conditional_seed_only`.
+- CUDA 64-batch smoke train, pre-fix.
+- CUDA fixed val4 epoch-2 eval, pre-fix.
+- CUDA row-scan/base ablation evals, pre-fix.
+- CUDA 64-batch smoke train, fixed-BN.
+- CUDA fixed val4 epoch-2 eval, fixed-BN.
+
+판단:
+
+- The trainer freeze-mode fix is valid and should be retained: parameter freeze alone did not protect BatchNorm running stats.
+- The seed-only branch itself is negative. It can reduce untrained seed-trace FP blow-up, but it does not beat row-scan and the fixed-BN rerun becomes heavily FP-positive.
+- Exact-val128 and broader-val512 were skipped because fixed smoke failed by a wide margin.
+- Do not repeat this as seed target, threshold, max-seeds, head-LR, epoch-count, or freeze-policy tuning without a new TP-preserving lane instance quality/existence signal.

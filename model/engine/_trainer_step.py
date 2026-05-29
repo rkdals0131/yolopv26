@@ -168,6 +168,9 @@ def run_train_step(
 ) -> dict[str, Any]:
     trainer.adapter.raw_model.train()
     trainer.heads.train()
+    apply_freeze_policy_train_modes = getattr(trainer, "apply_freeze_policy_train_modes", None)
+    if callable(apply_freeze_policy_train_modes):
+        apply_freeze_policy_train_modes()
     load_started_at = time.perf_counter()
     encoded = trainer.prepare_batch(batch)
     if bool(getattr(trainer.criterion, "distill_enabled", False)):
