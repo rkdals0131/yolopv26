@@ -15,6 +15,7 @@ from .stopline_head_line import StopLineDenseLocalHead
 ROADMARK_V2_FEATURE_STRIDES = (4, 8, 16, 32)
 ROADMARK_V2_BRANCH_A_NAME = "roadmark_v2_branch_a"
 ROADMARK_V3_JOINT_NAME = "roadmark_v3_joint"
+LANE_ONLY_ROW_CLASSIFIER_NAME = "lane_only_row_classifier"
 LANE_HEAD_ROW_NATIVE = "row_native"
 LANE_HEAD_SEG_FIRST = "seg_first"
 
@@ -380,7 +381,7 @@ class PV26LaneOnlyHeads(nn.Module):
             "feature_channels": list(self.in_channels),
             "feature_strides": list(self.feature_strides),
             "mode": "lane_family_only",
-            "roadmark_architecture": "lane_only_row_classifier",
+            "roadmark_architecture": LANE_ONLY_ROW_CLASSIFIER_NAME,
             "lane_head": "seg_first_dense_centerline_tangent_color"
             if self.lane_head_mode == LANE_HEAD_SEG_FIRST
             else "row_classification_plus_dense_centerline_candidates",
@@ -407,6 +408,8 @@ class PV26LaneOnlyHeads(nn.Module):
             "det": torch.zeros((batch_size, 0, 12), device=device, dtype=dtype),
             "tl_attr": torch.zeros((batch_size, 0, 4), device=device, dtype=dtype),
             **lane_outputs,
+            "stop_line": torch.zeros((batch_size, 8, 9), device=device, dtype=dtype),
+            "crosswalk": torch.zeros((batch_size, 8, 33), device=device, dtype=dtype),
             "det_feature_shapes": [],
             "det_feature_strides": [],
         }
@@ -468,6 +471,7 @@ __all__ = [
     "ROADMARK_V2_BRANCH_A_NAME",
     "ROADMARK_V2_FEATURE_STRIDES",
     "ROADMARK_V3_JOINT_NAME",
+    "LANE_ONLY_ROW_CLASSIFIER_NAME",
     "PV26LaneOnlyHeads",
     "PV26RoadMarkV2LaneFamilyHeads",
     "PV26RoadMarkV3JointHeads",

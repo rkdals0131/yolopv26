@@ -7,8 +7,10 @@ import torch.nn as nn
 
 from .roadmark_joint_native import ROADMARK_JOINT_NATIVE_NAME, PV26RoadMarkNativeJointHeads
 from .roadmark_v2_heads import (
+    LANE_ONLY_ROW_CLASSIFIER_NAME,
     ROADMARK_V2_FEATURE_STRIDES,
     ROADMARK_V3_JOINT_NAME,
+    PV26LaneOnlyHeads,
     PV26RoadMarkV3JointHeads,
     PV26StopLineOnlyHeads,
 )
@@ -33,12 +35,14 @@ def _normalize_roadmark_architecture(value: str) -> str:
         return ROADMARK_JOINT_NATIVE_NAME
     if architecture in {"v3", "v3_stopline_isolated", ROADMARK_V3_JOINT_NAME}:
         return ROADMARK_V3_JOINT_NAME
+    if architecture in {"lane_only", "lane_only_row_classifier", LANE_ONLY_ROW_CLASSIFIER_NAME}:
+        return LANE_ONLY_ROW_CLASSIFIER_NAME
     if architecture in {"stopline_only", "stop_line_only", STOPLINE_ONLY_MASK_FIRST_NAME}:
         return STOPLINE_ONLY_MASK_FIRST_NAME
     raise ValueError(
         "roadmark_architecture must be one of: "
         f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, "
-        f"v3_stopline_isolated, {STOPLINE_ONLY_MASK_FIRST_NAME}"
+        f"v3_stopline_isolated, {LANE_ONLY_ROW_CLASSIFIER_NAME}, {STOPLINE_ONLY_MASK_FIRST_NAME}"
     )
 
 
@@ -96,12 +100,20 @@ class PV26Heads(nn.Module):
         )
         if self.roadmark_architecture == ROADMARK_V3_JOINT_NAME:
             roadmark_head_cls = PV26RoadMarkV3JointHeads
+        elif self.roadmark_architecture == LANE_ONLY_ROW_CLASSIFIER_NAME:
+            roadmark_head_cls = PV26LaneOnlyHeads
         elif self.roadmark_architecture == STOPLINE_ONLY_MASK_FIRST_NAME:
             roadmark_head_cls = PV26StopLineOnlyHeads
         else:
             roadmark_head_cls = PV26RoadMarkNativeJointHeads
         if roadmark_head_cls is PV26StopLineOnlyHeads:
             self.roadmark_heads = roadmark_head_cls(self.in_channels, self.feature_strides)
+        elif roadmark_head_cls is PV26LaneOnlyHeads:
+            self.roadmark_heads = roadmark_head_cls(
+                self.in_channels,
+                self.feature_strides,
+                lane_head_mode=self.lane_head_mode,
+            )
         else:
             self.roadmark_heads = roadmark_head_cls(
                 self.in_channels,

@@ -14752,3 +14752,67 @@ Verification:
 - It preserved crosswalk broader pass but regressed lane from retained `0.5628` to `0.5388`.
 - Stop-line broader `0.5077` remains below projection-competition runtime `0.5164` and below the two-checkpoint router `0.5309`.
 - Do not repeat this as decay, warmup, scale clamp, fixed loss weight, head LR, or epoch-count tuning. Reopen only with a materially different shared-feature, adapter, routing, or emit contract that first improves fixed TP/FP/FN.
+
+## 286. 2026-05-29 Lane-only seg-first specialist smoke
+
+Context:
+
+- The user explicitly pushed against postprocess-only caution and asked to test whether architecture/layer composition and head/task learning allocation are part of the bottleneck.
+- Previous lane router tooling could already route `lane*` outputs from a separate checkpoint while preserving stop-line from the stop-line-priority specialist and crosswalk from the retained primary checkpoint.
+- This branch tested the smallest architecture-isolation slice: make the existing `PV26LaneOnlyHeads` selectable as a real training architecture, train only lane on seg-first outputs, and compare it through the fixed router smoke gate before spending exact/broader budget.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-only-segfirst-specialist`.
+- Added selectable `roadmark_architecture="lane_only_row_classifier"` to `PV26Heads` and the training config allowlist.
+- `PV26LaneOnlyHeads` now reports the canonical architecture name and emits zero stop-line/crosswalk placeholder tensors so shared validation/postprocess contracts can run even when those branches are intentionally absent.
+- Added `lane_only_segfirst_specialist` probe preset:
+  - freeze policy `lane_family_heads_only`
+  - trunk LR `0.0`
+  - head LR `2e-4`
+  - loss weights det/TL/stop-line/crosswalk `0.0`, lane `4.0`
+  - task-positive sampler forced to lane.
+- Added unit coverage for the lane-only seg-first architecture path in `test/test_pv26_heads.py`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Smoke train: CUDA `1` epoch, `8` train batches, `4` val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_only_segfirst_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_235106`.
+- Internal training validation is not final evidence because stop-line/crosswalk placeholders are zero. It recorded phase objective `0.5950768294` and lane task-best F1 `0.5373`.
+
+Fixed router smoke val4:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary lane reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| lane-only specialist routed lane | `0.5735` | `39 / 11 / 47` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Reference artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_only_segfirst_reference_router_smoke_val4_epoch2/metrics.csv`.
+- Routed artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_only_segfirst_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_235106/analysis_exports/lane_router_smoke_val4_epoch2/metrics.csv`.
+- Lane mean point distance improved from `13.3898` to `12.6542`, but the assignment metric that matters worsened by one TP/FN at unchanged FP.
+
+Storage:
+
+- The first failed validation run was removed after fixing the placeholder-output contract.
+- The successful smoke run reused the existing dataset root and did not materialize dataset copies.
+- After the negative smoke, all checkpoint files and TensorBoard output from the run were pruned; only summaries/history and the small router smoke metric export remain.
+- Retained run size after cleanup: about `1.3M`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/net/heads.py model/net/roadmark_v2_heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA lane-only specialist smoke train.
+- CUDA fixed router val4 reference and lane-only routed comparison.
+
+판단:
+
+- The lane-only seg-first architecture is now wired, trainable, and evaluable through the existing runtime router, but the first real smoke gate is negative.
+- It should not be expanded to exact-val128 or broader-val512 from this checkpoint because it loses lane TP before the exact gate.
+- Do not repeat this as lane-only architecture-name plumbing, head LR, epoch-count, lane-only sampler, placeholder contract, or same-router source sweep.
+- Reopen lane architecture isolation only with a materially different instance/emit signal that first improves fixed smoke TP/FP/FN while preserving the retained crosswalk hull and stop-line route.
