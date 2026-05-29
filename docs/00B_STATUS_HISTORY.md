@@ -15495,3 +15495,72 @@ Verification:
 - As a stop-line improvement method, it is negative: removing frozen-mode drift does not recover any stop-line TP under the current stop-line head/projection-comp contract.
 - Do not repeat this as stopline-only sampler, static freeze-mode, head-LR, epoch-count, or same projection-comp runtime training sweep.
 - Reopen stop-line-only training only with a materially new candidate/geometry signal that first improves fixed smoke TP/FP/FN.
+
+## 297. 2026-05-30 Stop-line endpoint-HAF consensus: reciprocal dense vote gate did not recover stop-line TP
+
+Context:
+
+- GPT Pro's architecture review pointed back at stop-line candidate generation and along-axis extent recovery, not another projection-comp threshold sweep.
+- HAF-only and endpoint-pair-only contracts were already negative as simple production paths, but they had not been combined as a reciprocal runtime gate: endpoint heatmaps propose segments and HAF support pixels must vote for the same endpoints.
+- The hypothesis was that independent endpoint and support-field agreement might suppress endpoint-pair FP while keeping candidate-generation headroom.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-endpoint-haf-consensus`.
+- Added `stop_line_endpoint_haf_consensus_*` postprocess config fields and train-config/CLI plumbing.
+- Added `_decode_stopline_endpoint_haf_consensus_segments()`:
+  - top-k left/right endpoint heatmap peaks propose endpoint-pair segments
+  - sampled pixels along each segment must have HAF-valid support
+  - HAF endpoint votes must land near the proposed endpoint pair
+  - the emitted segment is refined from weighted HAF endpoint votes
+  - score combines endpoint score, HAF vote confidence, line consensus, support score, and covariance score.
+- Added `stopline_endpoint_haf_consensus` to `tools/run_pv26_lane60_probe.py`:
+  - heads-only stage-4 training
+  - endpoint-pair aux weight `1.0`
+  - HAF aux weight `0.75`
+  - endpoint-HAF consensus runtime decode enabled
+  - lane row-scan/tangent and crosswalk hull retained.
+- Added synthetic postprocess coverage proving matching HAF votes emit one stop-line and shifted/mismatched HAF votes are rejected.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_endpoint_haf_consensus_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_030122`.
+- CUDA smoke: `2` epochs, `64` train batches per epoch, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4:
+  - epoch 1 lane/stop/cross `0.5344 / 0.0000 / 0.7692`, TP/FP/FN lane `35 / 17 / 44`, stop-line `0 / 1 / 2`, crosswalk `5 / 3 / 0`
+  - epoch 2 lane/stop/cross `0.4885 / 0.0000 / 0.4615`, TP/FP/FN lane `32 / 13 / 54`, stop-line `0 / 3 / 2`, crosswalk `3 / 3 / 4`
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| endpoint-HAF consensus best checkpoint | `0.5038` | `33 / 12 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_endpoint_haf_consensus_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_030122/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Exact-val128, broader-val512, and larger-range training were skipped because fixed smoke recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `761M`, plus the auto-downloaded root `yolo26s.pt` was about `20M`.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `7.6M`.
+
+Verification:
+
+- `python -m py_compile model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_postprocess.py' -k endpoint_haf_consensus`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "stopline_endpoint_haf_consensus"`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- Endpoint-HAF reciprocal agreement is implemented and trainable, but it is negative as a stop-line breakthrough candidate.
+- The gate suppressed to zero matched stop-line TP on fixed smoke, so it does not justify exact/broader/larger-range expansion.
+- Do not repeat this as endpoint top-k, HAF valid threshold, min-votes, covariance, endpoint-error, aux-weight, head-LR, epoch-count, or same reciprocal-consensus decoder tuning.
+- Reopen endpoint/HAF work only with a materially new emit/quality signal that first recovers stop-line TP on fixed smoke without lane/crosswalk collapse.

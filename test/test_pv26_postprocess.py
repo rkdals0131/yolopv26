@@ -301,6 +301,60 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertAlmostEqual(points[-1][0], 340.0, places=1)
         self.assertAlmostEqual(points[-1][1], 500.0, places=1)
 
+    def test_stopline_endpoint_haf_consensus_requires_matching_votes(self) -> None:
+        from model.data.roadmark_v2_targets import build_stopline_dense_targets
+
+        targets = build_stopline_dense_targets(
+            [{"points_xy": [[100.0, 500.0], [340.0, 500.0]]}],
+            [True],
+        )
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        h, w = targets["stop_line_endpoint_heatmap"].shape[-2:]
+        endpoint_logits = torch.full((1, 2, h, w), -8.0, dtype=torch.float32)
+        endpoint_logits[0] = torch.where(
+            targets["stop_line_endpoint_heatmap"] > 0.99,
+            torch.full_like(targets["stop_line_endpoint_heatmap"], 8.0),
+            endpoint_logits[0],
+        )
+        haf_valid_logits = torch.full((1, 1, h, w), -8.0, dtype=torch.float32)
+        haf_valid_logits[0] = torch.where(
+            targets["stop_line_haf_valid"] > 0.5,
+            torch.full_like(targets["stop_line_haf_valid"], 8.0),
+            haf_valid_logits[0],
+        )
+        predictions["stop_line_endpoint_logits"] = endpoint_logits
+        predictions["stop_line_endpoint_offset"] = targets["stop_line_endpoint_offset"].unsqueeze(0)
+        predictions["stop_line_haf_endpoint"] = targets["stop_line_haf_endpoint"].unsqueeze(0)
+        predictions["stop_line_haf_valid_logits"] = haf_valid_logits
+
+        config = PV26PostprocessConfig(
+            det_conf_threshold=0.999,
+            lane_obj_threshold=0.999,
+            crosswalk_obj_threshold=0.999,
+            stop_line_endpoint_haf_consensus_enabled=True,
+            stop_line_endpoint_haf_consensus_score_threshold=0.75,
+            stop_line_endpoint_haf_consensus_topk=2,
+            stop_line_endpoint_haf_consensus_haf_valid_threshold=0.90,
+            stop_line_endpoint_haf_consensus_min_votes=2,
+            stop_line_endpoint_haf_consensus_max_endpoint_error=0.5,
+            stop_line_endpoint_haf_consensus_max_endpoint_covariance=0.25,
+            stop_line_endpoint_haf_consensus_max_segments=1,
+        )
+        decoded = postprocess_pv26_batch(predictions, _meta_identity(), config=config)
+
+        self.assertEqual(len(decoded[0]["stop_lines"]), 1)
+        points = decoded[0]["stop_lines"][0]["points_xy"]
+        self.assertAlmostEqual(points[0][0], 100.0, places=1)
+        self.assertAlmostEqual(points[-1][0], 340.0, places=1)
+
+        predictions["stop_line_haf_endpoint"] = predictions["stop_line_haf_endpoint"] + 16.0
+        decoded_mismatch = postprocess_pv26_batch(predictions, _meta_identity(), config=config)
+        self.assertEqual(len(decoded_mismatch[0]["stop_lines"]), 0)
+
     def test_stopline_segment_set_decodes_normalized_segment(self) -> None:
         predictions = _make_prediction_batch()
         predictions["det"] = torch.zeros_like(predictions["det"])

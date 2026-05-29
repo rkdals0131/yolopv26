@@ -250,6 +250,26 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         stop_line_endpoint_pair_score_threshold=float(train_config.stop_line_endpoint_pair_score_threshold),
         stop_line_endpoint_pair_topk=int(train_config.stop_line_endpoint_pair_topk),
         stop_line_endpoint_pair_max_segments=int(train_config.stop_line_endpoint_pair_max_segments),
+        stop_line_endpoint_haf_consensus_enabled=bool(
+            train_config.stop_line_endpoint_haf_consensus_enabled
+        ),
+        stop_line_endpoint_haf_consensus_score_threshold=float(
+            train_config.stop_line_endpoint_haf_consensus_score_threshold
+        ),
+        stop_line_endpoint_haf_consensus_topk=int(train_config.stop_line_endpoint_haf_consensus_topk),
+        stop_line_endpoint_haf_consensus_haf_valid_threshold=float(
+            train_config.stop_line_endpoint_haf_consensus_haf_valid_threshold
+        ),
+        stop_line_endpoint_haf_consensus_min_votes=int(train_config.stop_line_endpoint_haf_consensus_min_votes),
+        stop_line_endpoint_haf_consensus_max_endpoint_error=float(
+            train_config.stop_line_endpoint_haf_consensus_max_endpoint_error
+        ),
+        stop_line_endpoint_haf_consensus_max_endpoint_covariance=float(
+            train_config.stop_line_endpoint_haf_consensus_max_endpoint_covariance
+        ),
+        stop_line_endpoint_haf_consensus_max_segments=int(
+            train_config.stop_line_endpoint_haf_consensus_max_segments
+        ),
         stop_line_endpoint_pair_segment_enabled=bool(train_config.stop_line_endpoint_pair_segment_enabled),
         stop_line_endpoint_pair_segment_score_threshold=float(
             train_config.stop_line_endpoint_pair_segment_score_threshold

@@ -101,6 +101,14 @@ class PV26PostprocessConfig:
     stop_line_endpoint_pair_score_threshold: float = 0.55
     stop_line_endpoint_pair_topk: int = 8
     stop_line_endpoint_pair_max_segments: int = 3
+    stop_line_endpoint_haf_consensus_enabled: bool = False
+    stop_line_endpoint_haf_consensus_score_threshold: float = 0.55
+    stop_line_endpoint_haf_consensus_topk: int = 8
+    stop_line_endpoint_haf_consensus_haf_valid_threshold: float = 0.65
+    stop_line_endpoint_haf_consensus_min_votes: int = 4
+    stop_line_endpoint_haf_consensus_max_endpoint_error: float = 8.0
+    stop_line_endpoint_haf_consensus_max_endpoint_covariance: float = 32.0
+    stop_line_endpoint_haf_consensus_max_segments: int = 3
     stop_line_endpoint_pair_segment_enabled: bool = False
     stop_line_endpoint_pair_segment_score_threshold: float = 0.50
     stop_line_endpoint_pair_segment_max_segments: int = 3
@@ -1884,6 +1892,229 @@ def _decode_stopline_endpoint_pair_segments(
     return decoded
 
 
+def _decode_stopline_endpoint_haf_consensus_segments(
+    *,
+    endpoint_logits: torch.Tensor | None,
+    endpoint_offset: torch.Tensor | None,
+    haf_endpoint: torch.Tensor | None,
+    haf_valid_logits: torch.Tensor | None,
+    mask_logits: torch.Tensor | None,
+    selector_map_logits: torch.Tensor | None,
+    meta: dict[str, Any],
+    score_threshold: float,
+    topk: int,
+    haf_valid_threshold: float,
+    min_votes: int,
+    max_endpoint_error: float,
+    max_endpoint_covariance: float,
+    max_segments: int,
+) -> list[dict[str, Any]]:
+    if (
+        not isinstance(endpoint_logits, torch.Tensor)
+        or not isinstance(endpoint_offset, torch.Tensor)
+        or not isinstance(haf_endpoint, torch.Tensor)
+        or not isinstance(haf_valid_logits, torch.Tensor)
+    ):
+        return []
+    if (
+        not _tensor_all_finite(endpoint_logits)
+        or not _tensor_all_finite(endpoint_offset)
+        or not _tensor_all_finite(haf_endpoint)
+        or not _tensor_all_finite(haf_valid_logits)
+    ):
+        return []
+    logits = endpoint_logits.detach().cpu()
+    offsets = endpoint_offset.detach().cpu()
+    endpoint_votes = haf_endpoint.detach().cpu()
+    valid_map = haf_valid_logits.sigmoid().detach().cpu()
+    if logits.ndim == 4:
+        logits = logits.squeeze(0)
+    if offsets.ndim == 4:
+        offsets = offsets.squeeze(0)
+    if endpoint_votes.ndim == 4:
+        endpoint_votes = endpoint_votes.squeeze(0)
+    if valid_map.ndim == 4:
+        valid_map = valid_map.squeeze(0)
+    if valid_map.ndim == 3:
+        valid_map = valid_map.squeeze(0)
+    if (
+        logits.ndim != 3
+        or offsets.ndim != 3
+        or endpoint_votes.ndim != 3
+        or valid_map.ndim != 2
+        or int(logits.shape[0]) != 2
+        or int(offsets.shape[0]) != 4
+        or int(endpoint_votes.shape[0]) != 4
+    ):
+        return []
+    if offsets.shape[1:] != logits.shape[1:] or endpoint_votes.shape[1:] != logits.shape[1:]:
+        return []
+    output_h, output_w = int(valid_map.shape[0]), int(valid_map.shape[1])
+    if tuple(logits.shape[1:]) != (output_h, output_w):
+        return []
+
+    scores_np = logits.sigmoid().numpy().astype(np.float32)
+    offsets_np = offsets.numpy().astype(np.float32)
+    endpoint_vote_np = endpoint_votes.numpy().astype(np.float32)
+    valid_np = valid_map.numpy().astype(np.float32)
+    support_maps: list[np.ndarray] = []
+    for candidate_map in (selector_map_logits, mask_logits):
+        if not isinstance(candidate_map, torch.Tensor) or not _tensor_all_finite(candidate_map):
+            continue
+        map_tensor = candidate_map.detach().cpu()
+        if map_tensor.ndim == 4:
+            map_tensor = map_tensor.squeeze(0)
+        if map_tensor.ndim == 3:
+            map_tensor = map_tensor.squeeze(0)
+        if map_tensor.ndim == 2 and tuple(map_tensor.shape) == (output_h, output_w):
+            support_maps.append(map_tensor.sigmoid().numpy().astype(np.float32))
+
+    def _top_endpoints(side_index: int) -> list[dict[str, Any]]:
+        flat_scores = scores_np[side_index].reshape(-1)
+        count = min(max(int(topk), 1), int(flat_scores.shape[0]))
+        if count <= 0:
+            return []
+        top_indices = np.argpartition(-flat_scores, kth=count - 1)[:count]
+        top_indices = top_indices[np.argsort(-flat_scores[top_indices])]
+        endpoints: list[dict[str, Any]] = []
+        for flat_index in top_indices.tolist():
+            score = float(flat_scores[flat_index])
+            row_index = int(flat_index // output_w)
+            col_index = int(flat_index % output_w)
+            offset = offsets_np[side_index * 2 : side_index * 2 + 2, row_index, col_index]
+            point = np.array([float(col_index), float(row_index)], dtype=np.float32) + offset.astype(np.float32)
+            if not np.isfinite(point).all():
+                continue
+            point[0] = float(np.clip(point[0], 0.0, float(output_w - 1)))
+            point[1] = float(np.clip(point[1], 0.0, float(output_h - 1)))
+            endpoints.append({"point": point, "score": score})
+        return endpoints
+
+    left_endpoints = _top_endpoints(0)
+    right_endpoints = _top_endpoints(1)
+    if not left_endpoints or not right_endpoints:
+        return []
+
+    transform = transform_from_meta(meta)
+    sample_count = 24
+    decoded: list[dict[str, Any]] = []
+    for left in left_endpoints:
+        for right in right_endpoints:
+            start, end = _canonical_segment_endpoints(left["point"], right["point"])
+            length = float(np.linalg.norm(end - start))
+            if length < STOPLINE_MIN_COMPONENT_LENGTH:
+                continue
+            ts = np.linspace(0.0, 1.0, sample_count, dtype=np.float32)
+            sample_points = start[None, :] * (1.0 - ts[:, None]) + end[None, :] * ts[:, None]
+            sample_cols = np.clip(np.rint(sample_points[:, 0]).astype(np.int64), 0, output_w - 1)
+            sample_rows = np.clip(np.rint(sample_points[:, 1]).astype(np.int64), 0, output_h - 1)
+            candidate_votes: list[dict[str, Any]] = []
+            for sample_row, sample_col in zip(sample_rows.tolist(), sample_cols.tolist()):
+                valid_score = float(valid_np[sample_row, sample_col])
+                if valid_score < float(haf_valid_threshold):
+                    continue
+                point = np.array([float(sample_col), float(sample_row)], dtype=np.float32)
+                vote_start = point + endpoint_vote_np[0:2, sample_row, sample_col]
+                vote_end = point + endpoint_vote_np[2:4, sample_row, sample_col]
+                if not np.isfinite(vote_start).all() or not np.isfinite(vote_end).all():
+                    continue
+                vote_start, vote_end = _canonical_segment_endpoints(vote_start, vote_end)
+                endpoint_error = max(
+                    float(np.linalg.norm(vote_start - start)),
+                    float(np.linalg.norm(vote_end - end)),
+                )
+                if endpoint_error > float(max_endpoint_error):
+                    continue
+                candidate_votes.append(
+                    {
+                        "start": vote_start,
+                        "end": vote_end,
+                        "weight": max(valid_score, 1.0e-6),
+                    }
+                )
+            vote_count = len(candidate_votes)
+            if vote_count < int(min_votes):
+                continue
+            weight_sum = sum(float(vote["weight"]) for vote in candidate_votes)
+            if weight_sum <= 0.0:
+                continue
+            refined_start = sum(
+                np.asarray(vote["start"], dtype=np.float32) * float(vote["weight"])
+                for vote in candidate_votes
+            ) / weight_sum
+            refined_end = sum(
+                np.asarray(vote["end"], dtype=np.float32) * float(vote["weight"])
+                for vote in candidate_votes
+            ) / weight_sum
+            refined_start, refined_end = _canonical_segment_endpoints(refined_start, refined_end)
+            endpoint_errors = [
+                max(
+                    float(np.linalg.norm(np.asarray(vote["start"], dtype=np.float32) - refined_start)),
+                    float(np.linalg.norm(np.asarray(vote["end"], dtype=np.float32) - refined_end)),
+                )
+                for vote in candidate_votes
+            ]
+            endpoint_covariance = float(np.mean(np.square(endpoint_errors))) if endpoint_errors else float("inf")
+            if endpoint_covariance > float(max_endpoint_covariance):
+                continue
+            refined_length = float(np.linalg.norm(refined_end - refined_start))
+            if refined_length < STOPLINE_MIN_COMPONENT_LENGTH:
+                continue
+            support_score = 0.0
+            if support_maps:
+                support_values = [float(support_map[sample_rows, sample_cols].mean()) for support_map in support_maps]
+                support_score = float(max(support_values))
+            endpoint_score = float(np.sqrt(max(float(left["score"]) * float(right["score"]), 0.0)))
+            mean_vote_score = float(weight_sum / max(float(vote_count), 1.0))
+            consensus_score = min(1.0, float(vote_count) / float(sample_count))
+            covariance_score = 1.0 / (1.0 + max(endpoint_covariance, 0.0))
+            score = (
+                0.35 * endpoint_score
+                + 0.25 * mean_vote_score
+                + 0.20 * support_score
+                + 0.15 * consensus_score
+                + 0.05 * covariance_score
+            )
+            if score < float(score_threshold):
+                continue
+            grid_segment = np.stack([refined_start, refined_end], axis=0).astype(np.float32)
+            network_segment = grid_segment.copy()
+            network_segment[:, 0] = network_segment[:, 0] * (float(meta["network_hw"][1]) / float(output_w))
+            network_segment[:, 1] = network_segment[:, 1] * (float(meta["network_hw"][0]) / float(output_h))
+            network_points = sample_stop_line_centerline(
+                clip_points(network_segment.tolist(), transform.network_hw),
+                target_count=STOP_LINE_POINT_COUNT,
+            ).tolist()
+            if unique_point_count(network_points) < 2:
+                continue
+            raw_points = sample_stop_line_centerline(
+                inverse_transform_points(network_points, transform),
+                target_count=STOP_LINE_POINT_COUNT,
+            ).tolist()
+            if unique_point_count(raw_points) < 2:
+                continue
+            decoded.append(
+                {
+                    "allowed": True,
+                    "score": float(score),
+                    "center_score": float(mean_vote_score),
+                    "orientation_score": float(_stopline_orientation_score(raw_points)),
+                    "length": refined_length,
+                    "thickness": 1.0,
+                    "endpoint_haf_endpoint_score": float(endpoint_score),
+                    "endpoint_haf_support_score": float(support_score),
+                    "endpoint_haf_vote_count": int(vote_count),
+                    "endpoint_haf_endpoint_covariance": float(endpoint_covariance),
+                    "points_xy": [[float(x), float(y)] for x, y in raw_points],
+                }
+            )
+    decoded.sort(key=_stopline_prediction_sort_key, reverse=True)
+    decoded = _dedupe_stop_line_predictions(decoded)
+    if int(max_segments) > 0:
+        decoded = decoded[: int(max_segments)]
+    return decoded
+
+
 def _decode_stopline_direct_selector_segment(
     *,
     mask_logits: torch.Tensor | None,
@@ -2937,6 +3168,14 @@ def _decode_stop_line_rows(
     endpoint_pair_score_threshold: float = 0.55,
     endpoint_pair_topk: int = 8,
     endpoint_pair_max_segments: int = 3,
+    endpoint_haf_consensus_enabled: bool = False,
+    endpoint_haf_consensus_score_threshold: float = 0.55,
+    endpoint_haf_consensus_topk: int = 8,
+    endpoint_haf_consensus_haf_valid_threshold: float = 0.65,
+    endpoint_haf_consensus_min_votes: int = 4,
+    endpoint_haf_consensus_max_endpoint_error: float = 8.0,
+    endpoint_haf_consensus_max_endpoint_covariance: float = 32.0,
+    endpoint_haf_consensus_max_segments: int = 3,
     endpoint_pair_segment_enabled: bool = False,
     endpoint_pair_segment_score_threshold: float = 0.50,
     endpoint_pair_segment_max_segments: int = 3,
@@ -3036,6 +3275,25 @@ def _decode_stop_line_rows(
                 max_segments=int(endpoint_pair_max_segments),
             )
         )
+    if bool(endpoint_haf_consensus_enabled):
+        decoded = _decode_stopline_endpoint_haf_consensus_segments(
+            endpoint_logits=endpoint_logits,
+            endpoint_offset=endpoint_offset,
+            haf_endpoint=haf_endpoint,
+            haf_valid_logits=haf_valid_logits,
+            mask_logits=mask_logits,
+            selector_map_logits=selector_map_logits,
+            meta=meta,
+            score_threshold=float(endpoint_haf_consensus_score_threshold),
+            topk=int(endpoint_haf_consensus_topk),
+            haf_valid_threshold=float(endpoint_haf_consensus_haf_valid_threshold),
+            min_votes=int(endpoint_haf_consensus_min_votes),
+            max_endpoint_error=float(endpoint_haf_consensus_max_endpoint_error),
+            max_endpoint_covariance=float(endpoint_haf_consensus_max_endpoint_covariance),
+            max_segments=int(endpoint_haf_consensus_max_segments),
+        )
+        if decoded:
+            return decoded
     if bool(endpoint_pair_segment_enabled):
         segment_set_decoded.extend(
             _decode_stopline_segment_set(
@@ -3113,6 +3371,7 @@ def _decode_stop_line_rows(
                         int(axis_segment_set_max_segments),
                         int(patch_segment_set_max_segments),
                         int(endpoint_pair_max_segments),
+                        int(endpoint_haf_consensus_max_segments),
                         int(endpoint_pair_segment_max_segments),
                     )
                 ]
@@ -3159,6 +3418,7 @@ def _decode_stop_line_rows(
             int(axis_segment_set_max_segments),
             int(patch_segment_set_max_segments),
             int(endpoint_pair_max_segments),
+            int(endpoint_haf_consensus_max_segments),
             int(endpoint_pair_segment_max_segments),
         )
     ]
@@ -3499,6 +3759,22 @@ def postprocess_pv26_batch(
                     endpoint_pair_score_threshold=config.stop_line_endpoint_pair_score_threshold,
                     endpoint_pair_topk=config.stop_line_endpoint_pair_topk,
                     endpoint_pair_max_segments=config.stop_line_endpoint_pair_max_segments,
+                    endpoint_haf_consensus_enabled=config.stop_line_endpoint_haf_consensus_enabled,
+                    endpoint_haf_consensus_score_threshold=(
+                        config.stop_line_endpoint_haf_consensus_score_threshold
+                    ),
+                    endpoint_haf_consensus_topk=config.stop_line_endpoint_haf_consensus_topk,
+                    endpoint_haf_consensus_haf_valid_threshold=(
+                        config.stop_line_endpoint_haf_consensus_haf_valid_threshold
+                    ),
+                    endpoint_haf_consensus_min_votes=config.stop_line_endpoint_haf_consensus_min_votes,
+                    endpoint_haf_consensus_max_endpoint_error=(
+                        config.stop_line_endpoint_haf_consensus_max_endpoint_error
+                    ),
+                    endpoint_haf_consensus_max_endpoint_covariance=(
+                        config.stop_line_endpoint_haf_consensus_max_endpoint_covariance
+                    ),
+                    endpoint_haf_consensus_max_segments=config.stop_line_endpoint_haf_consensus_max_segments,
                     endpoint_pair_segment_enabled=config.stop_line_endpoint_pair_segment_enabled,
                     endpoint_pair_segment_score_threshold=config.stop_line_endpoint_pair_segment_score_threshold,
                     endpoint_pair_segment_max_segments=config.stop_line_endpoint_pair_segment_max_segments,

@@ -196,6 +196,14 @@ class TrainDefaultsConfig:
     stop_line_endpoint_pair_score_threshold: float = 0.55
     stop_line_endpoint_pair_topk: int = 8
     stop_line_endpoint_pair_max_segments: int = 3
+    stop_line_endpoint_haf_consensus_enabled: bool = False
+    stop_line_endpoint_haf_consensus_score_threshold: float = 0.55
+    stop_line_endpoint_haf_consensus_topk: int = 8
+    stop_line_endpoint_haf_consensus_haf_valid_threshold: float = 0.65
+    stop_line_endpoint_haf_consensus_min_votes: int = 4
+    stop_line_endpoint_haf_consensus_max_endpoint_error: float = 8.0
+    stop_line_endpoint_haf_consensus_max_endpoint_covariance: float = 32.0
+    stop_line_endpoint_haf_consensus_max_segments: int = 3
     stop_line_endpoint_pair_segment_enabled: bool = False
     stop_line_endpoint_pair_segment_score_threshold: float = 0.50
     stop_line_endpoint_pair_segment_max_segments: int = 3
@@ -1092,6 +1100,62 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stop_line_endpoint_pair_max_segments=_coerce_int(
             data.get("stop_line_endpoint_pair_max_segments", defaults.stop_line_endpoint_pair_max_segments),
             field_name="train_defaults.stop_line_endpoint_pair_max_segments",
+        ),
+        stop_line_endpoint_haf_consensus_enabled=_coerce_bool(
+            data.get(
+                "stop_line_endpoint_haf_consensus_enabled",
+                defaults.stop_line_endpoint_haf_consensus_enabled,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_enabled",
+        ),
+        stop_line_endpoint_haf_consensus_score_threshold=_coerce_float(
+            data.get(
+                "stop_line_endpoint_haf_consensus_score_threshold",
+                defaults.stop_line_endpoint_haf_consensus_score_threshold,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_score_threshold",
+        ),
+        stop_line_endpoint_haf_consensus_topk=_coerce_int(
+            data.get(
+                "stop_line_endpoint_haf_consensus_topk",
+                defaults.stop_line_endpoint_haf_consensus_topk,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_topk",
+        ),
+        stop_line_endpoint_haf_consensus_haf_valid_threshold=_coerce_float(
+            data.get(
+                "stop_line_endpoint_haf_consensus_haf_valid_threshold",
+                defaults.stop_line_endpoint_haf_consensus_haf_valid_threshold,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_haf_valid_threshold",
+        ),
+        stop_line_endpoint_haf_consensus_min_votes=_coerce_int(
+            data.get(
+                "stop_line_endpoint_haf_consensus_min_votes",
+                defaults.stop_line_endpoint_haf_consensus_min_votes,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_min_votes",
+        ),
+        stop_line_endpoint_haf_consensus_max_endpoint_error=_coerce_float(
+            data.get(
+                "stop_line_endpoint_haf_consensus_max_endpoint_error",
+                defaults.stop_line_endpoint_haf_consensus_max_endpoint_error,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_max_endpoint_error",
+        ),
+        stop_line_endpoint_haf_consensus_max_endpoint_covariance=_coerce_float(
+            data.get(
+                "stop_line_endpoint_haf_consensus_max_endpoint_covariance",
+                defaults.stop_line_endpoint_haf_consensus_max_endpoint_covariance,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_max_endpoint_covariance",
+        ),
+        stop_line_endpoint_haf_consensus_max_segments=_coerce_int(
+            data.get(
+                "stop_line_endpoint_haf_consensus_max_segments",
+                defaults.stop_line_endpoint_haf_consensus_max_segments,
+            ),
+            field_name="train_defaults.stop_line_endpoint_haf_consensus_max_segments",
         ),
         stop_line_endpoint_pair_segment_enabled=_coerce_bool(
             data.get(
