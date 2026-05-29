@@ -297,6 +297,9 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             *self.lane_family_adapter_modules(),
         )
 
+    def lane_modules(self) -> tuple[nn.Module, ...]:
+        return (self.lane_head,)
+
     def stop_line_modules(self) -> tuple[nn.Module, ...]:
         return (self.stop_line_head,)
 
@@ -448,6 +451,9 @@ class PV26LaneOnlyHeads(nn.Module):
             self.lane_head = LaneDenseRowSeedHead((p2, p3, p4))
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
+        return (self.lane_head,)
+
+    def lane_modules(self) -> tuple[nn.Module, ...]:
         return (self.lane_head,)
 
     def describe(self) -> dict[str, object]:

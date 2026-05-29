@@ -15564,3 +15564,74 @@ Verification:
 - The gate suppressed to zero matched stop-line TP on fixed smoke, so it does not justify exact/broader/larger-range expansion.
 - Do not repeat this as endpoint top-k, HAF valid threshold, min-votes, covariance, endpoint-error, aux-weight, head-LR, epoch-count, or same reciprocal-consensus decoder tuning.
 - Reopen endpoint/HAF work only with a materially new emit/quality signal that first recovers stop-line TP on fixed smoke without lane/crosswalk collapse.
+
+## 298. 2026-05-30 Lane static-only specialist: frozen-mode guarded lane-only training regressed router smoke
+
+Context:
+
+- Prior lane-router upper-trunk training and lane-only seg-first architecture smoke both regressed fixed router lane behavior.
+- The seed-only diagnostics had also shown that parameter freeze alone can still let frozen BatchNorm buffers drift when the full model is in train mode.
+- This branch tested a narrower lane training contract: keep the current native seg-first lane head, freeze all non-lane modules, and force the frozen trunk/non-lane heads to eval mode during train steps.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-static-only-specialist`.
+- Added `lane_modules()` surfaces for lane-family heads.
+- Added freeze policy `lane_family_lane_static_trunk`:
+  - trunk parameters frozen
+  - all heads frozen first
+  - only lane modules trainable
+  - during train steps, the frozen trunk and all heads are forced to eval mode, then lane modules are switched back to train mode.
+- Added `lane_static_only_specialist` to `tools/run_pv26_lane60_probe.py`:
+  - based on `stopline_projection_comp_runtime`
+  - freeze policy `lane_family_lane_static_trunk`
+  - trunk LR `0.0`
+  - head LR `2e-4`
+  - loss weights det/TL/stop-line/crosswalk `0`, lane `4.0`
+  - task-positive sampling `lane`
+  - retained row-scan/tangent lane decode, projection-competition stop-line runtime, and hull crosswalk postprocess.
+- Added trainer coverage proving only lane modules stay trainable and train-mode under the static policy.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_static_only_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_033045`.
+- CUDA smoke: `2` epochs, `64` train batches per epoch, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Best internal phase objective: epoch `2`, `0.6351878893481956`. This is not final evidence because fixed router task F1 gates decide expansion.
+
+Fixed router val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| baseline lane-specialist route | `0.5263` | `35 / 12 / 51` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| flip centerline avg | `0.5191` | `34 / 11 / 52` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| flip centerline avg + crosswalk-mask lane gate | `0.5191` | `34 / 11 / 52` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed router smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_static_only_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_033045/analysis_exports/router_val4_epoch2_best/metrics.csv`.
+- Exact-val128, broader-val512, and larger-range training were skipped because fixed smoke regressed well below the retained router lane reference.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `633M`, plus the auto-downloaded root `yolo26s.pt` was about `20M`.
+- The root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `1.1M`.
+
+Verification:
+
+- `python -m py_compile model/engine/trainer.py model/net/roadmark_v2_heads.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_trainer.py' -k lane_static_trunk`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "lane_static_only_specialist"`.
+- CUDA 2x64 train-batch smoke.
+- CUDA fixed router val4 epoch-2 evaluation.
+
+판단:
+
+- `lane_family_lane_static_trunk` is useful as a precise freeze-mode diagnostic for lane-only training.
+- As a lane improvement method, it is negative: removing frozen-mode drift does not make current seg-first lane-head-only specialization protect the retained router lane output.
+- Do not repeat this as lane-only sampler, static freeze-mode, head-LR, epoch-count, or same row-scan/tangent lane-specialist training.
+- Reopen lane-specialist training only with a materially new instance/geometry/quality signal that first improves fixed smoke TP/FP/FN while preserving the retained stop-line route and crosswalk hull.
