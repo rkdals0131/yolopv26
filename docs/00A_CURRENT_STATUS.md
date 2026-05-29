@@ -133,6 +133,15 @@ Latest lane conditional bottom-anchor quality smoke:
 - smoke val4 result: objective `0.2844807747`, lane/stop/cross F1 `0.0000 / 0.0000 / 0.6667`, lane TP/FP/FN `0 / 59 / 79`, stop-line `0 / 1 / 2`, crosswalk `4 / 3 / 1`, skipped steps `0`.
 - 판단: this seed/objectness contract is not worth broadening. It suppresses or misaligns lane instances badly enough that lane recall collapses on the rejection gate; do not continue it as a seed-target, objectness-target, row-x-weight, threshold, head-LR, or longer-run sweep.
 
+Latest stop-line priority positive-sampler smoke:
+
+- branch/worktree: `exp/lane-family-f1/stopline-priority-positive-sampler`.
+- changed axis: keep the projection-competition runtime decoder and retained lane/cross settings, but change the stage-4 task-positive sampler from `multi:lane,stopline,crosswalk` to `multi:stopline,lane,crosswalk`. With batch size `4` and fraction `1.0`, this gives stop-line `2` positive slots per batch instead of `1`.
+- real CUDA smoke: `1` epoch, `32` train batches, `4` val batches, batch size `4`, seed checkpoint `merged_lane_head.pt`.
+- storage/data contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The failed smoke checkpoints were pruned after evaluation, leaving only summaries/history.
+- smoke val4 result: objective `0.6340610868`, lane/stop/cross F1 `0.5271 / 0.0000 / 0.8000`, lane TP/FP/FN `34 / 16 / 45`, stop-line `0 / 1 / 2`, crosswalk `4 / 1 / 1`, skipped steps `0`.
+- 판단: stop-line positive exposure by task order is not enough. Do not broaden this as a sampler-order, positive-fraction, epoch-count, or head-LR sweep; the next stop-line work needs a new candidate/geometry signal that moves stop-line TP on smoke/exact.
+
 Latest stop-line projection-competition runtime contract train/eval result:
 
 - branch/worktree: `exp/lane-family-f1/stopline-projcomp-runtime-contract`.

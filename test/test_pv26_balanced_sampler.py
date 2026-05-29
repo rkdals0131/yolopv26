@@ -124,6 +124,15 @@ class _ToyCanonicalDataset:
         return [OD_CLASSES.index(class_name) for class_name in cls._det_supervised_classes(dataset_key)]
 
 
+def _scene_flags(scene_path: Path) -> dict[str, bool]:
+    payload = json.loads(scene_path.read_text(encoding="utf-8"))
+    return {
+        "lane": bool(payload.get("lanes")),
+        "stop_line": bool((payload.get("tasks") or {}).get("has_stop_line")),
+        "crosswalk": bool((payload.get("tasks") or {}).get("has_crosswalk")),
+    }
+
+
 class PV26BalancedSamplerTests(unittest.TestCase):
     def test_dataset_group_mapping_is_stable(self) -> None:
         self.assertEqual(dataset_group_for_key("bdd100k_det_100k"), "bdd100k")
@@ -280,6 +289,48 @@ class PV26BalancedSamplerTests(unittest.TestCase):
                     sum(record.dataset_key == "bdd100k_det_100k" for record in batch_records),
                     1,
                 )
+
+    def test_task_positive_multi_sampler_gives_extra_slot_to_first_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = _ToyCanonicalDataset(
+                dataset_keys=(
+                    ("bdd100k_det_100k", 4),
+                    ("aihub_lane_seoul", 18),
+                ),
+            )
+            scene_payloads = (
+                {"lanes": [{"points_xy": [[100, 80], [120, 240], [140, 420]], "visibility": [1, 1, 1]}]},
+                {"tasks": {"has_stop_line": True}},
+                {"tasks": {"has_crosswalk": True}},
+            )
+            for record_index, record in enumerate(dataset.records):
+                scene_path = root / f"{record.sample_id}.json"
+                if record.dataset_key == "aihub_lane_seoul":
+                    payload = scene_payloads[int(record.sample_id.rsplit("_", 1)[-1]) % len(scene_payloads)]
+                else:
+                    payload = {"tasks": {}}
+                scene_path.write_text(json.dumps(payload), encoding="utf-8")
+                dataset.records[record_index] = replace(record, scene_path=scene_path)
+
+            sampler = PV26TaskPositiveMultiBatchSampler(
+                dataset,
+                batch_size=4,
+                task_names=["stopline", "lane", "crosswalk"],
+                positive_fraction=1.0,
+                num_batches=2,
+                split="train",
+                seed=13,
+            )
+
+            self.assertEqual(sampler.positive_count, 4)
+            self.assertEqual(sampler.negative_count, 0)
+            self.assertEqual(sampler.task_names, ["stop_line", "lane", "crosswalk"])
+            for batch_indices in sampler:
+                flags = [_scene_flags(dataset.records[index].scene_path) for index in batch_indices]
+                self.assertEqual(sum(item["stop_line"] for item in flags), 2)
+                self.assertEqual(sum(item["lane"] for item in flags), 1)
+                self.assertEqual(sum(item["crosswalk"] for item in flags), 1)
 
     def test_multi_task_positive_dataloader_fails_fast_when_a_task_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

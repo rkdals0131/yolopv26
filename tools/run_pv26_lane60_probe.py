@@ -1139,6 +1139,16 @@ EXPERIMENTS = {
 }
 
 
+EXPERIMENTS["stopline_priority_positive_sampler"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,lane,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(

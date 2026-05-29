@@ -13195,3 +13195,57 @@ Verification:
 - This branch failed the rejection gate hard: lane produced many predictions but no matched TP on val4, and stop-line also stayed at zero TP.
 - Do not broaden to exact val128 or broader val512, and do not run a larger train on this same contract.
 - Do not repeat this as a bottom-anchor target, metric-quality objectness, row-x weight, threshold, head-LR, freeze-policy, or longer-run sweep. A future lane architecture branch needs a materially different instance-emission contract that first moves smoke TP/FP/FN.
+
+## 263. 2026-05-29 Stop-line priority positive-sampler smoke
+
+Context:
+
+- Stage-4 lane60 probes already use a task-positive multi sampler, but with `multi:lane,stopline,crosswalk`, batch size `4`, and fraction `1.0`, the extra positive slot goes to the first task. That gives lane `2` positive slots per batch and stop-line only `1`.
+- The new hypothesis was a data-feeding check: put stop-line first so the same sampler gives stop-line `2` positive slots per batch, without changing the model head or projection-competition runtime decoder.
+- This is intentionally a small smoke gate. It tests exposure before spending broader training/eval budget.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-priority-positive-sampler`.
+- Added experiment preset `stopline_priority_positive_sampler` in `tools/run_pv26_lane60_probe.py`.
+- Preset inherits `stopline_projection_comp_runtime` and overrides only:
+  - `task_positive_task=multi:stopline,lane,crosswalk`;
+  - `task_positive_fraction=1.0`.
+- Added a focused sampler test proving that stopline-first ordering gives batch quotas `stop_line=2`, `lane=1`, `crosswalk=1` for batch size `4`.
+
+Smoke train/eval:
+
+- Command shape: `1` epoch, `32` train batches, `4` val batches, batch size `4`, CUDA, seed checkpoint `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_100847`.
+- Dataset contract: reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly; indexed split remained `326709 / 82641 / 20000` from `429350` records. No dataset copy was created.
+- Training health: skipped steps `0`.
+
+Smoke val4 result:
+
+| Metric | Value |
+| --- | ---: |
+| objective | `0.6340610868` |
+| lane F1 | `0.5271` |
+| stop-line F1 | `0.0000` |
+| crosswalk F1 | `0.8000` |
+| lane TP/FP/FN | `34 / 16 / 45` |
+| stop-line TP/FP/FN | `0 / 1 / 2` |
+| crosswalk TP/FP/FN | `4 / 1 / 1` |
+
+Storage:
+
+- The failed smoke run originally held duplicate task-best checkpoints and was `752M`.
+- Because the stop-line gate failed, pruned all `.pt` checkpoint files from that run and retained only summary/history metadata; the run directory is now about `336K`.
+- Removed temporary YOLO weight downloads after training.
+
+Verification:
+
+- `python -m py_compile tools/run_pv26_lane60_probe.py test/test_pv26_balanced_sampler.py`.
+- `python -m unittest discover -s test -p 'test_pv26_balanced_sampler.py'`.
+- Real CUDA smoke training/eval above.
+
+판단:
+
+- This branch fails the actual stop-line requirement despite higher `phase_objective`. Stop-line support is low on val4, but the only stop-line evidence available on the rejection gate is still `0` TP.
+- Do not broaden to exact val128 or broader val512, and do not run a larger train on this same sampler-order contract.
+- Do not repeat this as a sampler order, positive fraction, epoch-count, head-LR, or same projection-comp-runtime training sweep. Stop-line needs a new candidate-coverage/geometry signal, not only more positive exposure in the same heads-only path.
