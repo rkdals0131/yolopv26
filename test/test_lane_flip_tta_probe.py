@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from tools.probe_pv26_lane_flip_tta import (
+    _apply_stop_line_source_mode,
     _merge_lane_outputs,
     _merge_lane_dense_predictions,
     _merge_stop_line_outputs,
@@ -109,6 +110,49 @@ class LaneFlipTTAProbeTest(unittest.TestCase):
         self.assertIs(merged["lane_feature"], lane_outputs["lane_feature"])
         self.assertIs(merged["stop_line_mask_logits"], base["stop_line_mask_logits"])
         self.assertIs(merged["crosswalk_mask_logits"], base["crosswalk_mask_logits"])
+
+    def test_stop_line_source_absent_fallback_uses_specialist_only_when_primary_empty(self) -> None:
+        primary = [
+            {"lanes": [], "stop_lines": [], "crosswalks": ["cw"]},
+            {"lanes": [], "stop_lines": [{"points_xy": [[0.0, 0.0], [10.0, 0.0]], "score": 0.8}], "crosswalks": []},
+        ]
+        specialist = [
+            {"lanes": [], "stop_lines": [{"points_xy": [[1.0, 0.0], [11.0, 0.0]], "score": 0.7}], "crosswalks": []},
+            {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 0.0], [110.0, 0.0]], "score": 0.9}], "crosswalks": []},
+        ]
+
+        routed = _apply_stop_line_source_mode(primary, specialist, mode="primary_absent_specialist")
+
+        self.assertEqual(routed[0]["stop_lines"], specialist[0]["stop_lines"])
+        self.assertEqual(routed[1]["stop_lines"], primary[1]["stop_lines"])
+        self.assertEqual(routed[0]["crosswalks"], ["cw"])
+
+    def test_stop_line_source_union_dedupes_close_lines_by_score(self) -> None:
+        primary = [
+            {
+                "lanes": [],
+                "stop_lines": [
+                    {"points_xy": [[0.0, 0.0], [20.0, 0.0]], "score": 0.6},
+                    {"points_xy": [[200.0, 0.0], [220.0, 0.0]], "score": 0.7},
+                ],
+                "crosswalks": [],
+            }
+        ]
+        specialist = [
+            {
+                "lanes": [],
+                "stop_lines": [
+                    {"points_xy": [[2.0, 0.0], [22.0, 0.0]], "score": 0.9},
+                    {"points_xy": [[400.0, 0.0], [420.0, 0.0]], "score": 0.5},
+                ],
+                "crosswalks": [],
+            }
+        ]
+
+        routed = _apply_stop_line_source_mode(primary, specialist, mode="union_dedupe")
+
+        self.assertEqual(len(routed[0]["stop_lines"]), 3)
+        self.assertEqual(routed[0]["stop_lines"][0]["score"], 0.9)
 
 
 if __name__ == "__main__":

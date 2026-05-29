@@ -20,7 +20,7 @@ if repo_root not in sys.path:
 
 from model.engine._trainer_epochs import _merge_raw_batches
 from model.engine.batch import augment_lane_family_metrics, raw_batch_for_metrics
-from model.engine.metrics import summarize_pv26_metrics
+from model.engine.metrics import STOP_LINE_POINT_COUNT, _mean_point_distance, summarize_pv26_metrics
 from model.engine.postprocess import postprocess_pv26_batch
 from tools.evaluate_pv26_lane60_checkpoint import (
     _advance_validation_sampler,
@@ -56,6 +56,14 @@ DEFAULT_VARIANTS = (
 )
 STOP_LINE_OUTPUT_KEY = "stop_line"
 STOP_LINE_OUTPUT_PREFIX = "stop_line_"
+STOP_LINE_SOURCE_MODES = (
+    "primary",
+    "specialist",
+    "primary_absent_specialist",
+    "specialist_absent_primary",
+    "union_dedupe",
+    "agreement",
+)
 SEMANTIC_VOTE_MODES = (
     "component",
     "centerline",
@@ -90,6 +98,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional second checkpoint used only for stop-line outputs. "
             "Lane and crosswalk outputs stay on --checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--stop-line-source-modes",
+        default="",
+        help=(
+            "Comma-separated final stop-line source modes. Defaults to specialist when "
+            "--stop-line-checkpoint is set, otherwise primary. Available: "
+            f"{', '.join(STOP_LINE_SOURCE_MODES)}"
         ),
     )
     parser.add_argument("--source-run", default=str(SOURCE_RUN))
@@ -307,10 +324,124 @@ def _semantic_vote_modes(raw: str) -> tuple[str, ...]:
     return modes
 
 
-def _variant_label(*, flip_variant: str, semantic_vote_mode: str, multi_mode: bool) -> str:
-    if not multi_mode and semantic_vote_mode == "component":
-        return str(flip_variant)
-    return f"{flip_variant}__semantic_{semantic_vote_mode}"
+def _stop_line_source_modes(raw: str, *, has_stop_line_checkpoint: bool) -> tuple[str, ...]:
+    if not str(raw).strip():
+        return ("specialist",) if has_stop_line_checkpoint else ("primary",)
+    modes = tuple(mode.strip() for mode in str(raw).split(",") if mode.strip())
+    if not modes:
+        raise ValueError("at least one stop-line source mode is required")
+    unknown = sorted(set(modes) - set(STOP_LINE_SOURCE_MODES))
+    if unknown:
+        raise ValueError(f"unknown stop-line source modes: {', '.join(unknown)}")
+    if not has_stop_line_checkpoint and any(mode != "primary" for mode in modes):
+        raise ValueError("--stop-line-source-modes other than primary require --stop-line-checkpoint")
+    return modes
+
+
+def _variant_label(
+    *,
+    flip_variant: str,
+    semantic_vote_mode: str,
+    stop_line_source_mode: str,
+    include_semantic_mode: bool,
+    include_stop_line_source_mode: bool,
+) -> str:
+    label = str(flip_variant)
+    if include_semantic_mode:
+        label = f"{label}__semantic_{semantic_vote_mode}"
+    if include_stop_line_source_mode:
+        label = f"{label}__stop_{stop_line_source_mode}"
+    return label
+
+
+def _stop_line_score(prediction: dict[str, Any]) -> float:
+    candidates = (
+        prediction.get("score"),
+        prediction.get("center_score"),
+        prediction.get("instance_score"),
+        prediction.get("orientation_score"),
+    )
+    values = [float(value) for value in candidates if isinstance(value, (int, float))]
+    return max(values) if values else 0.0
+
+
+def _stop_line_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
+    try:
+        return float(_mean_point_distance(a.get("points_xy", []), b.get("points_xy", []), STOP_LINE_POINT_COUNT))
+    except Exception:
+        return float("inf")
+
+
+def _dedupe_stop_lines_by_distance(
+    stop_lines: list[dict[str, Any]],
+    *,
+    distance_threshold: float = 40.0,
+) -> list[dict[str, Any]]:
+    sorted_lines = sorted(
+        [dict(line) for line in stop_lines],
+        key=lambda line: (
+            _stop_line_score(line),
+            float(line.get("fragment_count", 0.0)) if isinstance(line.get("fragment_count"), (int, float)) else 0.0,
+            float(line.get("length", 0.0)) if isinstance(line.get("length"), (int, float)) else 0.0,
+        ),
+        reverse=True,
+    )
+    kept: list[dict[str, Any]] = []
+    for line in sorted_lines:
+        if all(_stop_line_distance(line, existing) > float(distance_threshold) for existing in kept):
+            kept.append(line)
+    return kept
+
+
+def _agreed_stop_lines(
+    primary_lines: list[dict[str, Any]],
+    specialist_lines: list[dict[str, Any]],
+    *,
+    agreement_distance: float = 64.0,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for line in primary_lines:
+        if any(_stop_line_distance(line, other) <= float(agreement_distance) for other in specialist_lines):
+            selected.append(dict(line))
+    for line in specialist_lines:
+        if any(_stop_line_distance(line, other) <= float(agreement_distance) for other in primary_lines):
+            selected.append(dict(line))
+    return _dedupe_stop_lines_by_distance(selected)
+
+
+def _apply_stop_line_source_mode(
+    primary_predictions: list[dict[str, Any]],
+    specialist_predictions: list[dict[str, Any]] | None,
+    *,
+    mode: str,
+) -> list[dict[str, Any]]:
+    normalized = str(mode).strip()
+    if normalized == "primary":
+        return [dict(sample) for sample in primary_predictions]
+    if specialist_predictions is None:
+        raise ValueError(f"stop-line source mode {mode!r} requires specialist predictions")
+    if len(primary_predictions) != len(specialist_predictions):
+        raise ValueError("primary and specialist prediction batch sizes differ")
+    output: list[dict[str, Any]] = []
+    for primary_sample, specialist_sample in zip(primary_predictions, specialist_predictions):
+        primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
+        specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+        if normalized == "specialist":
+            chosen_lines = specialist_lines
+        elif normalized == "primary_absent_specialist":
+            chosen_lines = primary_lines if primary_lines else specialist_lines
+        elif normalized == "specialist_absent_primary":
+            chosen_lines = specialist_lines if specialist_lines else primary_lines
+        elif normalized == "union_dedupe":
+            chosen_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
+        elif normalized == "agreement":
+            chosen_lines = _agreed_stop_lines(primary_lines, specialist_lines)
+        else:
+            raise ValueError(f"unknown stop-line source mode: {mode}")
+        sample = dict(primary_sample)
+        sample["stop_lines"] = chosen_lines
+        output.append(sample)
+    return output
 
 
 def _metric(metrics: dict[str, Any], task: str, name: str) -> float:
@@ -395,19 +526,6 @@ def main() -> int:
     args = parse_args()
     variants = _variant_names(args.variants)
     semantic_vote_modes = _semantic_vote_modes(args.lane_semantic_vote_modes)
-    variant_matrix = [
-        (
-            _variant_label(
-                flip_variant=variant,
-                semantic_vote_mode=semantic_vote_mode,
-                multi_mode=len(semantic_vote_modes) > 1 or semantic_vote_mode != "component",
-            ),
-            variant,
-            semantic_vote_mode,
-        )
-        for variant in variants
-        for semantic_vote_mode in semantic_vote_modes
-    ]
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
@@ -425,6 +543,32 @@ def main() -> int:
     )
     if stop_line_checkpoint is not None and not stop_line_checkpoint.is_file():
         raise FileNotFoundError(f"stop-line checkpoint not found: {stop_line_checkpoint}")
+    stop_line_source_modes = _stop_line_source_modes(
+        args.stop_line_source_modes,
+        has_stop_line_checkpoint=stop_line_checkpoint is not None,
+    )
+    include_semantic_mode = len(semantic_vote_modes) > 1 or semantic_vote_modes[0] != "component"
+    default_stop_line_source_mode = "specialist" if stop_line_checkpoint is not None else "primary"
+    include_stop_line_source_mode = (
+        len(stop_line_source_modes) > 1 or stop_line_source_modes[0] != default_stop_line_source_mode
+    )
+    variant_matrix = [
+        (
+            _variant_label(
+                flip_variant=variant,
+                semantic_vote_mode=semantic_vote_mode,
+                stop_line_source_mode=stop_line_source_mode,
+                include_semantic_mode=include_semantic_mode,
+                include_stop_line_source_mode=include_stop_line_source_mode,
+            ),
+            variant,
+            semantic_vote_mode,
+            stop_line_source_mode,
+        )
+        for variant in variants
+        for semantic_vote_mode in semantic_vote_modes
+        for stop_line_source_mode in stop_line_source_modes
+    ]
     source_run = Path(args.source_run).expanduser().resolve()
     if not source_run.is_dir():
         raise FileNotFoundError(f"source run not found: {source_run}")
@@ -515,7 +659,7 @@ def main() -> int:
     evaluator.adapter.raw_model.eval()
     evaluator.heads.eval()
 
-    predictions_by_variant: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _ in variant_matrix}
+    predictions_by_variant: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _, _ in variant_matrix}
     raw_batches: list[dict[str, Any]] = []
     processed_batches = 0
     with torch.no_grad():
@@ -554,7 +698,8 @@ def main() -> int:
                 else None
             )
             meta_rows = _detach_to_cpu(encoded["meta"])
-            outputs_by_variant: dict[str, dict[str, Any]] = {}
+            primary_outputs_by_variant: dict[str, dict[str, Any]] = {}
+            specialist_outputs_by_variant: dict[str, dict[str, Any]] = {}
             for variant in variants:
                 lane_base = _merge_lane_outputs(base_outputs, lane_base_outputs)
                 lane_outputs = _merge_lane_dense_predictions(
@@ -562,17 +707,36 @@ def main() -> int:
                     flipped_unflipped,
                     variant=variant,
                 )
-                outputs_by_variant[variant] = _merge_stop_line_outputs(lane_outputs, stop_line_outputs)
-            for label, variant, semantic_vote_mode in variant_matrix:
+                primary_outputs_by_variant[variant] = lane_outputs
+                specialist_outputs_by_variant[variant] = _merge_stop_line_outputs(lane_outputs, stop_line_outputs)
+            postprocessed_cache: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+            for label, variant, semantic_vote_mode, stop_line_source_mode in variant_matrix:
                 variant_postprocess_config = dataclasses_replace(
                     postprocess_config,
                     lane_segfirst_semantic_vote_mode=str(semantic_vote_mode),
                 )
-                predictions_by_variant[label].extend(
-                    postprocess_pv26_batch(
-                        outputs_by_variant[variant],
+                primary_key = (variant, semantic_vote_mode, "primary")
+                if primary_key not in postprocessed_cache:
+                    postprocessed_cache[primary_key] = postprocess_pv26_batch(
+                        primary_outputs_by_variant[variant],
                         meta_rows,
                         config=variant_postprocess_config,
+                    )
+                specialist_predictions: list[dict[str, Any]] | None = None
+                if stop_line_checkpoint is not None:
+                    specialist_key = (variant, semantic_vote_mode, "specialist")
+                    if specialist_key not in postprocessed_cache:
+                        postprocessed_cache[specialist_key] = postprocess_pv26_batch(
+                            specialist_outputs_by_variant[variant],
+                            meta_rows,
+                            config=variant_postprocess_config,
+                        )
+                    specialist_predictions = postprocessed_cache[specialist_key]
+                predictions_by_variant[label].extend(
+                    _apply_stop_line_source_mode(
+                        postprocessed_cache[primary_key],
+                        specialist_predictions,
+                        mode=stop_line_source_mode,
                     )
                 )
             processed_batches += 1
@@ -580,10 +744,10 @@ def main() -> int:
     merged_raw = _merge_raw_batches(raw_batches)
     metrics_by_variant = {
         label: augment_lane_family_metrics(summarize_pv26_metrics(predictions_by_variant[label], merged_raw))
-        for label, _, _ in variant_matrix
+        for label, _, _, _ in variant_matrix
     }
     selection_by_variant: dict[str, dict[str, Any]] = {}
-    for name, _, _ in variant_matrix:
+    for name, _, _, _ in variant_matrix:
         epoch_summary: dict[str, Any] = {
             "epoch": int(args.validation_epoch),
             "stage": phase.stage,
@@ -596,7 +760,10 @@ def main() -> int:
         ).annotate_epoch(epoch_summary)
         selection = epoch_summary.get("selection_metrics")
         selection_by_variant[name] = dict(selection) if isinstance(selection, dict) else {}
-    rows = [_row_from_metrics(name, metrics_by_variant[name], selection_by_variant.get(name)) for name, _, _ in variant_matrix]
+    rows = [
+        _row_from_metrics(name, metrics_by_variant[name], selection_by_variant.get(name))
+        for name, _, _, _ in variant_matrix
+    ]
     rows.sort(key=lambda row: float(row.get("phase_objective", row.get("phase4_objective_proxy", 0.0))), reverse=True)
 
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else checkpoint.parent / "analysis_exports" / "lane_flip_tta"
@@ -614,13 +781,15 @@ def main() -> int:
         "processed_batches": int(processed_batches),
         "variants": list(variants),
         "semantic_vote_modes": list(semantic_vote_modes),
+        "stop_line_source_modes": list(stop_line_source_modes),
         "variant_matrix": [
             {
                 "label": label,
                 "flip_variant": variant,
                 "semantic_vote_mode": semantic_vote_mode,
+                "stop_line_source_mode": stop_line_source_mode,
             }
-            for label, variant, semantic_vote_mode in variant_matrix
+            for label, variant, semantic_vote_mode, stop_line_source_mode in variant_matrix
         ],
         "train_config": _json_ready(train_config),
         "postprocess_config": _json_ready(postprocess_config),

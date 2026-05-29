@@ -14056,3 +14056,72 @@ Verification:
 - The lane route extension is useful evaluator/runtime plumbing. It can isolate lane outputs from a separate checkpoint while preserving stop-line/crosswalk outputs from the chosen primary/specialist route.
 - The lane-only upper-trunk specialist itself is negative. Fixed router smoke regressed lane from TP/FP/FN `40 / 11 / 46` to `39 / 11 / 47`, so exact-val128, broader-val512, and a larger train were skipped.
 - Do not repeat this as trunk LR, head LR, lane loss weight, epoch-count, or lane-only sampler tuning. Reopen lane-router training only with a materially different lane instance/geometry signal that first improves fixed smoke TP/FP/FN without duplicating or damaging the retained row-scan lanes.
+
+## 276. 2026-05-29 Stop-line dual-source arbitration
+
+Context:
+
+- The current best broader all-task runtime lower bound uses retained primary lane/crosswalk and stop-line-priority specialist stop-line outputs: lane/stop/cross `0.5628 / 0.5309 / 0.6187`.
+- The retained primary projection-comp stop-line source is lower on broader (`0.5164`) but has fewer FP (`91` versus specialist `97`), so this branch tested whether simple no-GT source arbitration can recover some specialist TP without paying its FP cost.
+- This is a runtime/postprocess axis, not a new training run. Dataset handling still reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-dual-source-arbitration`.
+- Extended `tools/probe_pv26_lane_flip_tta.py` with `--stop-line-source-modes`.
+- Added final prediction-level stop-line source modes:
+  - `primary`;
+  - `specialist`;
+  - `primary_absent_specialist`;
+  - `specialist_absent_primary`;
+  - `union_dedupe`;
+  - `agreement`.
+- The source modes operate after normal postprocess. They replace only the final `stop_lines` list per sample; lane and crosswalk predictions remain from the retained primary path.
+- Added focused unit tests for absent fallback and distance-based union dedupe.
+
+Smoke val4:
+
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dual_source_arbitration_smoke_val4_epoch2/summary.json`.
+- All modes were identical on the smoke slice because it has only `2` stop-line GT rows and none were recovered: stop-line TP/FP/FN/F1 `0 / 3 / 2 / 0.0000`.
+- Lane/crosswalk stayed fixed at `0.5839 / 0.5455`, confirming no lane/crosswalk route regression.
+
+Exact val128:
+
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dual_source_arbitration_exact_val128_epoch2/summary.json`.
+
+| Mode | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| `primary_absent_specialist` | `0.5888` | `0.5455` | `0.5988` | `33 / 28 / 27` |
+| `primary` | `0.5888` | `0.5333` | `0.5988` | `32 / 28 / 28` |
+| `union_dedupe` | `0.5888` | `0.5203` | `0.5988` | `32 / 31 / 28` |
+| `agreement` | `0.5888` | `0.5042` | `0.5988` | `30 / 29 / 30` |
+| `specialist` | `0.5888` | `0.4918` | `0.5988` | `30 / 32 / 30` |
+
+Broader val512:
+
+- Artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dual_source_arbitration_broader_val512_epoch2/summary.json`.
+
+| Mode | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| `specialist` | `0.5628` | `0.5309` | `0.6187` | `133 / 97 / 138` |
+| `primary` | `0.5628` | `0.5164` | `0.6187` | `126 / 91 / 145` |
+| `primary_absent_specialist` | `0.5628` | `0.5129` | `0.6187` | `129 / 103 / 142` |
+
+Storage:
+
+- Retained only small metric exports under the primary source-run `analysis_exports`.
+- Removed the temporary root `yolo26s.pt` download after evaluation.
+
+Verification:
+
+- `python -m compileall -q tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `python -m unittest discover -s test -p 'test_lane_flip_tta_probe.py'`.
+- CUDA val4 smoke route eval.
+- CUDA exact-val128 epoch-2 route eval.
+- CUDA broader-val512 epoch-2 route eval.
+
+판단:
+
+- `primary_absent_specialist` is exact-positive but broader-negative. The exact stop-line gain `32 / 28 / 28 -> 33 / 28 / 27` does not transfer; broader moves to `129 / 103 / 142`, F1 `0.5129`, below both the specialist router `0.5309` and the primary projection-comp source `0.5164`.
+- The current best broader runtime lower bound remains the specialist router: lane/stop/cross `0.5628 / 0.5309 / 0.6187`.
+- Do not repeat this as source-mode ordering, absent fallback, union distance, agreement distance, score sorting, or dedupe threshold tuning. A future source-arbitration branch would need a materially new no-GT verifier/confidence signal that first moves broader TP/FP/FN.
