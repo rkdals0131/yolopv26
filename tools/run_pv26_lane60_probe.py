@@ -1339,6 +1339,44 @@ EXPERIMENTS["stopline_retention_distill_upper_trunk"] = {
     },
 }
 
+EXPERIMENTS["task_routed_distill_student"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_heads_only",
+    "trunk_lr": 0.0,
+    "head_lr": 1.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 1.50,
+        "stop_line": 2.50,
+        "crosswalk": 1.50,
+    },
+    "train_defaults_overrides": {
+        "distill_enabled": True,
+        "distill_teacher_checkpoint": "__seed_checkpoint__",
+        "distill_task_teacher_checkpoints": {
+            "stop_line": (
+                "runs/pv26_exhaustive_od_lane_train/"
+                "lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/"
+                "phase_4/checkpoints/best.pt"
+            ),
+        },
+        "distill_loss_weights": {
+            "lane": 0.15,
+            "stop_line": 0.25,
+            "crosswalk": 0.15,
+        },
+        "distill_normalize_mode": "ema",
+        "distill_ema_decay": 0.95,
+        "distill_ema_warmup_steps": 4,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,lane,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 EXPERIMENTS["stopline_router_specialist_upper_trunk"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_plus_upper_trunk",
@@ -1528,6 +1566,12 @@ def _lane60_scenario(args: argparse.Namespace, *, source_run: Path, seed_checkpo
     experiment_train_defaults_overrides = dict(experiment.get("train_defaults_overrides", {}))
     if experiment_train_defaults_overrides.get("distill_teacher_checkpoint") == "__seed_checkpoint__":
         experiment_train_defaults_overrides["distill_teacher_checkpoint"] = str(seed_checkpoint)
+    task_teacher_checkpoints = experiment_train_defaults_overrides.get("distill_task_teacher_checkpoints")
+    if isinstance(task_teacher_checkpoints, dict):
+        experiment_train_defaults_overrides["distill_task_teacher_checkpoints"] = {
+            task_name: str(seed_checkpoint) if checkpoint == "__seed_checkpoint__" else checkpoint
+            for task_name, checkpoint in task_teacher_checkpoints.items()
+        }
     train_defaults_replacements.update(experiment_train_defaults_overrides)
     train_defaults = replace(scenario.train_defaults, **train_defaults_replacements)
     run_root = Path(args.run_root).expanduser().resolve() if args.run_root else scenario.run.run_root

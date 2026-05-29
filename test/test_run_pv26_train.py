@@ -216,6 +216,9 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stop_line_component_gate_source": "selector",
                             "distill_enabled": True,
                             "distill_teacher_checkpoint": "runs/teacher.pt",
+                            "distill_task_teacher_checkpoints": {
+                                "stop_line": "runs/stopline_teacher.pt",
+                            },
                             "distill_loss_weights": {
                                 "lane": 0.0,
                                 "stop_line": 0.5,
@@ -392,6 +395,10 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.stop_line_component_gate_source, "selector")
         self.assertTrue(scenario.train_defaults.distill_enabled)
         self.assertEqual(scenario.train_defaults.distill_teacher_checkpoint, "runs/teacher.pt")
+        self.assertEqual(
+            scenario.train_defaults.distill_task_teacher_checkpoints,
+            {"stop_line": "runs/stopline_teacher.pt"},
+        )
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["lane"], 0.0)
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["stop_line"], 0.5)
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["crosswalk"], 0.0)

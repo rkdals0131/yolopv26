@@ -253,6 +253,25 @@ class _FakeDistillTeacher:
         }
 
 
+class _FakeCacheTeacher:
+    def __init__(self, cache: dict[str, torch.Tensor]) -> None:
+        self.cache = dict(cache)
+        self.device: torch.device | None = None
+        self.cache_calls = 0
+
+    def to(self, device: str | torch.device) -> "_FakeCacheTeacher":
+        self.device = torch.device(device)
+        return self
+
+    def eval(self) -> "_FakeCacheTeacher":
+        return self
+
+    def build_cache(self, encoded: dict) -> dict[str, torch.Tensor]:
+        del encoded
+        self.cache_calls += 1
+        return dict(self.cache)
+
+
 def _dummy_optimizer() -> torch.optim.Optimizer:
     return torch.optim.SGD([nn.Parameter(torch.tensor(0.0, requires_grad=True))], lr=1e-3)
 
@@ -1076,6 +1095,34 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(criterion.seen_phase, "train")
         self.assertIsInstance(criterion.seen_cache, dict)
         self.assertIn("stop_line_mask_logits", criterion.seen_cache)
+
+    def test_task_routed_distill_teacher_replaces_only_requested_task_cache(self) -> None:
+        from model.engine.trainer import PV26TaskRoutedDistillTeacher
+
+        default_teacher = _FakeCacheTeacher(
+            {
+                "lane_feature": torch.full((1, 1), 1.0),
+                "stop_line_feature": torch.full((1, 1), 1.0),
+                "crosswalk_feature": torch.full((1, 1), 1.0),
+            }
+        )
+        stop_line_teacher = _FakeCacheTeacher(
+            {
+                "lane_feature": torch.full((1, 1), 2.0),
+                "stop_line_feature": torch.full((1, 1), 2.0),
+                "crosswalk_feature": torch.full((1, 1), 2.0),
+            }
+        )
+        teacher = PV26TaskRoutedDistillTeacher(default_teacher, {"stop_line": stop_line_teacher})
+
+        teacher.to("cpu")
+        cache = teacher.build_cache({"image": torch.zeros((1, 3, 4, 4))})
+
+        self.assertEqual(float(cache["lane_feature"].item()), 1.0)
+        self.assertEqual(float(cache["stop_line_feature"].item()), 2.0)
+        self.assertEqual(float(cache["crosswalk_feature"].item()), 1.0)
+        self.assertEqual(default_teacher.device, torch.device("cpu"))
+        self.assertEqual(stop_line_teacher.device, torch.device("cpu"))
 
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_skips_non_finite_loss_when_enabled(self) -> None:

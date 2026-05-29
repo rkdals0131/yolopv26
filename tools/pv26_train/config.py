@@ -215,6 +215,7 @@ class TrainDefaultsConfig:
     crosswalk_polygon_mode: str = "rect"
     distill_enabled: bool = False
     distill_teacher_checkpoint: str | None = None
+    distill_task_teacher_checkpoints: dict[str, str] = field(default_factory=dict)
     distill_teacher_mode: str = "cache"
     distill_loss_weights: dict[str, float] = field(default_factory=dict)
     distill_normalize_mode: str = "none"
@@ -506,6 +507,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
     distill_loss_weights_payload = _coerce_mapping(
         data.get("distill_loss_weights", defaults.distill_loss_weights),
         field_name="train_defaults.distill_loss_weights",
+    )
+    distill_task_teacher_checkpoints_payload = _coerce_mapping(
+        data.get("distill_task_teacher_checkpoints", defaults.distill_task_teacher_checkpoints),
+        field_name="train_defaults.distill_task_teacher_checkpoints",
     )
     multitask_conflict_tasks = multitask_conflict_payload.get(
         "tasks",
@@ -1200,6 +1205,16 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("distill_teacher_checkpoint", defaults.distill_teacher_checkpoint),
             field_name="train_defaults.distill_teacher_checkpoint",
         ),
+        distill_task_teacher_checkpoints={
+            _coerce_str(
+                name,
+                field_name="train_defaults.distill_task_teacher_checkpoints.key",
+            ): _coerce_str(
+                value,
+                field_name=f"train_defaults.distill_task_teacher_checkpoints.{name}",
+            )
+            for name, value in distill_task_teacher_checkpoints_payload.items()
+        },
         distill_teacher_mode=_coerce_str(
             data.get("distill_teacher_mode", defaults.distill_teacher_mode),
             field_name="train_defaults.distill_teacher_mode",
@@ -1428,6 +1443,14 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} distill_normalize_mode must be one of: none, ema")
         if phase_train.distill_enabled and not phase_train.distill_teacher_checkpoint:
             raise ValueError(f"phase {index} distill_enabled requires distill_teacher_checkpoint")
+        unknown_distill_teacher_tasks = sorted(
+            set(phase_train.distill_task_teacher_checkpoints) - {"lane", "stop_line", "crosswalk"}
+        )
+        if unknown_distill_teacher_tasks:
+            raise ValueError(
+                f"phase {index} distill_task_teacher_checkpoints uses unsupported task names: "
+                f"{unknown_distill_teacher_tasks}"
+            )
         unknown_distill_tasks = sorted(set(phase_train.distill_loss_weights) - {"lane", "stop_line", "crosswalk"})
         if unknown_distill_tasks:
             raise ValueError(

@@ -100,6 +100,48 @@ class PV26DistillTeacher:
         }
 
 
+_DISTILL_TASK_CACHE_PREFIXES = {
+    "lane": ("lane_",),
+    "stop_line": ("stop_line_",),
+    "crosswalk": ("crosswalk_",),
+}
+
+
+class PV26TaskRoutedDistillTeacher:
+    def __init__(
+        self,
+        default_teacher: PV26DistillTeacher,
+        task_teachers: dict[str, PV26DistillTeacher],
+    ) -> None:
+        self.default_teacher = default_teacher
+        self.task_teachers = dict(task_teachers)
+
+    def to(self, device: str | torch.device) -> "PV26TaskRoutedDistillTeacher":
+        self.default_teacher.to(device)
+        for teacher in self.task_teachers.values():
+            teacher.to(device)
+        return self
+
+    def eval(self) -> "PV26TaskRoutedDistillTeacher":
+        self.default_teacher.eval()
+        for teacher in self.task_teachers.values():
+            teacher.eval()
+        return self
+
+    @torch.no_grad()
+    def build_cache(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
+        cache = dict(self.default_teacher.build_cache(encoded))
+        for task_name, teacher in self.task_teachers.items():
+            prefixes = _DISTILL_TASK_CACHE_PREFIXES.get(str(task_name), ())
+            if not prefixes:
+                continue
+            task_cache = teacher.build_cache(encoded)
+            for key, value in task_cache.items():
+                if key.startswith(prefixes):
+                    cache[key] = value
+        return cache
+
+
 def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
     return [parameter for parameter in module.parameters() if parameter.requires_grad]
 

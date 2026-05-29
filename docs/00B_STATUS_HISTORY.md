@@ -14452,3 +14452,75 @@ Verification:
 - The architecture can train and the fixed routing contract executes, but stop-line-only mask-first specialization does not beat the retained projection-comp exact gate.
 - This is a negative architecture result for the real target.
 - Do not repeat this as roadmark architecture plumbing, stopline-only freeze policy, head-LR, epoch-count, or stopline-only sampler tuning. Reopen only with a materially new stop-line candidate/geometry signal that first improves fixed exact TP/FP/FN.
+
+## 282. 2026-05-29 Task-routed multi-teacher distill student
+
+Context:
+
+- The two-checkpoint stop-line router remains the current best broader runtime lower bound, but it is not a single raw checkpoint.
+- The prior retention distill branch used a single source teacher and did not distill stop-line from the stronger stop-line-priority specialist.
+- This branch tested whether a single student checkpoint can absorb the retained primary lane/crosswalk behavior and the stop-line-priority specialist behavior through task-routed teacher caches.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/task-routed-distill-student`.
+- Added `PV26TaskRoutedDistillTeacher`, which builds the default teacher cache and replaces only task-prefixed cache keys from optional task-specific teachers.
+- Added `distill_task_teacher_checkpoints` to train config parsing/validation.
+- Added probe preset `task_routed_distill_student` with default teacher `__seed_checkpoint__`, stop-line teacher `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`, and distill weights lane/stop/cross `0.15 / 0.25 / 0.15`.
+- Tests cover the config key and task-routed cache replacement.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Real CUDA smoke: `1` epoch, `8` train batches, `4` val batches, batch size `4`.
+- Real CUDA main: `3` epochs, `512` train batches per epoch, `128` val batches, batch size `4`, device `cuda:0`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_task_routed_distill_student_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_212815`.
+- Data root: existing `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6286` | `0.5476` | `0.3619` | `0.7037` | `1087 / 548 / 1248` | `19 / 31 / 36` | `57 / 22 / 26` |
+| 2 | `0.6341` | `0.5503` | `0.4793` | `0.6026` | `1092 / 487 / 1298` | `29 / 32 / 31` | `47 / 28 / 34` |
+| 3 | `0.6575` | `0.5494` | `0.6034` | `0.6599` | `1040 / 463 / 1243` | `35 / 28 / 18` | `65 / 26 / 41` |
+
+- Best checkpoint by phase objective was epoch `3`.
+- The internal epoch-3 stop-line value is not final evidence because the maintained gate is fixed epoch-2 runtime eval, not the training validation slice.
+
+Fixed single-checkpoint exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7317` | `0.4770` | `0.5775` | `1140 / 418 / 1250` |
+| stop_line | `0.4677` | `0.4833` | `0.4754` | `29 / 33 / 31` |
+| crosswalk | `0.5783` | `0.5926` | `0.5854` | `48 / 35 / 33` |
+
+- Fixed exact phase objective: `0.6440023634`.
+- Primary projection-comp exact reference remains stronger on stop-line: `32 / 28 / 28`, F1 `0.5333`.
+- Crosswalk remains below `0.60`.
+- Broader-val512 was skipped because the fixed exact gate failed.
+
+Storage:
+
+- Removed root `yolo26s.pt`.
+- Removed the smoke run.
+- Pruned duplicate `last.pt` and task-best checkpoints from the main run; retained only `phase_4/checkpoints/best.pt`.
+- Removed the main run TensorBoard directory.
+- Retained run size after cleanup: about `111M`, with best checkpoint, summaries/history, and exact eval exports preserved.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/engine/trainer.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_trainer.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_task_routed_distill_teacher_replaces_only_requested_task_cache test_pv26_trainer.PV26TrainerTests.test_train_step_attaches_distill_teacher_cache_when_enabled`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA smoke train.
+- CUDA main `3` epoch / `512` train-batch run.
+- CUDA fixed single-checkpoint exact-val128 epoch-2 eval.
+- Cleanup verified by retained checkpoint directory and run size.
+
+판단:
+
+- Task-routed distillation is executable and produces a real single-checkpoint student, but it does not solve the teacher-composition problem.
+- It improves exact lane versus some recent trained checkpoints but fails stop-line and crosswalk gates, and stop-line stays below the retained projection-comp exact reference.
+- Do not repeat this as teacher-map, distill-weight, head-LR, epoch-count, same task-positive sampler, or same teacher-checkpoint tuning. Reopen only with a materially new task-specific routing, instance, or geometry signal that first improves fixed exact TP/FP/FN.

@@ -36,7 +36,12 @@ from model.data import (
     build_pv26_train_dataloader,
     collate_pv26_samples,
 )
-from model.engine.trainer import PV26DistillTeacher, PV26Trainer, build_pv26_scheduler
+from model.engine.trainer import (
+    PV26DistillTeacher,
+    PV26TaskRoutedDistillTeacher,
+    PV26Trainer,
+    build_pv26_scheduler,
+)
 from model.engine.loss import PV26MultiTaskLoss
 from model.engine.train_summary import resolve_summary_path
 from model.net import PV26Heads
@@ -128,8 +133,8 @@ def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
     return build_yolo26n_trunk(weights=weights)
 
 
-def _resolve_distill_teacher_checkpoint(train_config: TrainDefaultsConfig) -> Path:
-    checkpoint = train_config.distill_teacher_checkpoint
+def _resolve_distill_teacher_checkpoint(train_config: TrainDefaultsConfig, checkpoint: str | None = None) -> Path:
+    checkpoint = train_config.distill_teacher_checkpoint if checkpoint is None else checkpoint
     if checkpoint is None:
         raise ValueError("distill_enabled requires train_defaults.distill_teacher_checkpoint")
     checkpoint_path = Path(checkpoint).expanduser()
@@ -140,16 +145,11 @@ def _resolve_distill_teacher_checkpoint(train_config: TrainDefaultsConfig) -> Pa
     return checkpoint_path
 
 
-def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeacher | None:
-    if not train_config.distill_enabled:
-        return None
-    if str(train_config.distill_teacher_mode) != "cache":
-        raise ValueError("only distill_teacher_mode='cache' is supported")
+def _build_single_distill_teacher(train_config: TrainDefaultsConfig, checkpoint_path: Path) -> PV26DistillTeacher:
     if load_matching_state_dict is None:
         raise RuntimeError("load_matching_state_dict is required for distill teacher loading")
     import torch
 
-    checkpoint_path = _resolve_distill_teacher_checkpoint(train_config)
     adapter = _build_backbone_adapter(train_config)
     heads = PV26Heads(
         in_channels=_resolve_head_channels(adapter, train_config),
@@ -167,6 +167,28 @@ def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeac
     load_matching_state_dict(adapter.raw_model, adapter_state)
     load_matching_state_dict(heads, heads_state)
     return PV26DistillTeacher(adapter, heads)
+
+
+def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeacher | PV26TaskRoutedDistillTeacher | None:
+    if not train_config.distill_enabled:
+        return None
+    if str(train_config.distill_teacher_mode) != "cache":
+        raise ValueError("only distill_teacher_mode='cache' is supported")
+    default_teacher = _build_single_distill_teacher(
+        train_config,
+        _resolve_distill_teacher_checkpoint(train_config),
+    )
+    task_teacher_paths = dict(train_config.distill_task_teacher_checkpoints)
+    if not task_teacher_paths:
+        return default_teacher
+    task_teachers = {
+        task_name: _build_single_distill_teacher(
+            train_config,
+            _resolve_distill_teacher_checkpoint(train_config, checkpoint_path),
+        )
+        for task_name, checkpoint_path in task_teacher_paths.items()
+    }
+    return PV26TaskRoutedDistillTeacher(default_teacher, task_teachers)
 
 
 def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, ...]:
