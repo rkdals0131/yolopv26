@@ -362,6 +362,10 @@ def encode_pv26_batch(
     stop_line_haf_endpoint = torch.zeros((batch_size, 4, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_haf_valid = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_haf_ignore = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_axis_distance = torch.zeros((batch_size, 3, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_axis_direction = torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_axis_valid = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
+    stop_line_axis_ignore = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_endpoint_heatmap = torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_endpoint_offset = torch.zeros((batch_size, 4, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
     stop_line_mask = torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32)
@@ -524,6 +528,10 @@ def encode_pv26_batch(
             stop_line_haf_endpoint[batch_index] = stop_line_v2["stop_line_haf_endpoint"]
             stop_line_haf_valid[batch_index] = stop_line_v2["stop_line_haf_valid"]
             stop_line_haf_ignore[batch_index] = stop_line_v2["stop_line_haf_ignore"]
+            stop_line_axis_distance[batch_index] = stop_line_v2["stop_line_axis_distance"]
+            stop_line_axis_direction[batch_index] = stop_line_v2["stop_line_axis_direction"]
+            stop_line_axis_valid[batch_index] = stop_line_v2["stop_line_axis_valid"]
+            stop_line_axis_ignore[batch_index] = stop_line_v2["stop_line_axis_ignore"]
             stop_line_endpoint_heatmap[batch_index] = stop_line_v2["stop_line_endpoint_heatmap"]
             stop_line_endpoint_offset[batch_index] = stop_line_v2["stop_line_endpoint_offset"]
             stop_line_mask_targets = build_stopline_mask_targets(
@@ -564,6 +572,10 @@ def encode_pv26_batch(
         "stop_line_haf_endpoint": stop_line_haf_endpoint,
         "stop_line_haf_valid": stop_line_haf_valid,
         "stop_line_haf_ignore": stop_line_haf_ignore,
+        "stop_line_axis_distance": stop_line_axis_distance,
+        "stop_line_axis_direction": stop_line_axis_direction,
+        "stop_line_axis_valid": stop_line_axis_valid,
+        "stop_line_axis_ignore": stop_line_axis_ignore,
         "stop_line_endpoint_heatmap": stop_line_endpoint_heatmap,
         "stop_line_endpoint_offset": stop_line_endpoint_offset,
         "stop_line_mask": stop_line_mask,

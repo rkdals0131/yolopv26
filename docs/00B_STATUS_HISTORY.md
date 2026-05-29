@@ -13619,3 +13619,78 @@ Verification:
 - Broader-val512 rejects the branch: retained task-balance `0.5628 / 0.5164 / 0.6187` moves to `0.5519 / 0.4734 / 0.6257`.
 - Crosswalk benefits from the larger dense grid, but stop-line FP rises sharply (`91 -> 145`) and lane TP falls (`4532 -> 4322`).
 - Do not repeat this as `672x896` longer-run, input-size ladder, dense-target-size, head-LR, or same projection-comp-runtime training sweep without a new candidate/geometry or lane-retention signal.
+
+## 270. 2026-05-29 Stop-line axis-distance field: trains but runtime decode is far below projection competition
+
+Context:
+
+- The current stop-line diagnosis says the remaining no-GT failure is mostly along-axis midpoint/extent, not just missing dense support.
+- HAF/attraction-field endpoint voting and seeded segment-set contracts were already closed, so this branch tested a different dense geometry contract: predict canonical stop-line axis, start/end distances along that axis, and normal recenter offset from support pixels.
+- The user explicitly required real training, post-training evaluation, broader validation, and storage control without copying the dataset.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-axis-distance-field`.
+- Final retained run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_distance_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_142901`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Added target tensors:
+  - `stop_line_axis_distance`: 3ch start distance, end distance, normal recenter distance.
+  - `stop_line_axis_direction`: 2ch canonical axis vector.
+  - `stop_line_axis_valid` and `stop_line_axis_ignore`.
+- Added `StopLineDenseLocalHead` outputs for axis distance, direction, and valid logits.
+- Added `stopline_axis_distance_aux_weight` to the loss and disabled the fast loss path when it is nonzero.
+- Added an opt-in postprocess decoder that clusters endpoint votes reconstructed from support pixels, axis direction, along-axis distances, normal recenter, vote covariance, and line-support score.
+- Added probe preset `stopline_axis_distance_field`.
+- Default behavior remains off unless the explicit train/eval config enables the axis-distance decoder.
+
+Training:
+
+- Smoke train: real CUDA `1` epoch, `16` train batches, `4` val batches, batch size `4`.
+- Main train: real CUDA `3` epochs, `512` train batches, `128` val batches, batch size `4`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+- Best phase-objective epoch was epoch `1`.
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.5914785801` | `0.5357` | `0.1947` | `0.6875` | `1047 / 527 / 1288` | `11 / 47 / 44` | `55 / 22 / 28` |
+| 2 | `0.5816686869` | `0.5559` | `0.1707` | `0.5783` | `1099 / 465 / 1291` | `14 / 90 / 46` | `48 / 37 / 33` |
+| 3 | `0.5826148633` | `0.5482` | `0.2192` | `0.6294` | `1026 / 434 / 1257` | `16 / 77 / 37` | `62 / 29 / 44` |
+
+Fixed runtime eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.5807787881` | `0.5643` | `0.2128` | `0.5644` | `1104 / 419 / 1286` | `15 / 66 / 45` | `46 / 36 / 35` |
+| broader val512 epoch2 | `0.5809544355` | `0.5431` | `0.2629` | `0.6081` | `4220 / 1842 / 5257` | `69 / 185 / 202` | `225 / 120 / 170` |
+
+Storage:
+
+- The smoke run was about `752M`; it was pruned after the main train/eval completed.
+- The main run initially held duplicate task-best checkpoints, `last.pt`, TensorBoard output, and a temporary `yolo26s.pt` download.
+- Retained only `phase_4/checkpoints/best.pt`, summaries/history, and exact/broader metric exports.
+- Removed temporary `yolo26s.pt`.
+- Retained main run size is about `111M`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/roadmark_v2_targets.py model/data/target_encoder.py model/net/stopline_head_line.py model/engine/loss.py model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_target_encoder.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train/eval.
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Fixed exact-val128 epoch-2 eval.
+- Fixed broader-val512 epoch-2 eval.
+
+판단:
+
+- The axis-distance contract is trainable and the target bug caught by tests forced the design to include normal recenter, which was the right geometric fix.
+- Runtime decode is still not competitive. Exact stop-line F1 is only `0.2128`, far below baseline exact `0.4483` and projection-competition exact `0.5167`.
+- Broader stop-line F1 is only `0.2629`, far below current runtime `0.4235` and retained projection-competition runtime `0.5164`.
+- Lane also regresses versus the retained lane-preserving task-balance composite (`0.5628 -> 0.5431`), so the branch cannot be rescued by crosswalk, even though crosswalk stays just above `0.60` broader.
+- Do not repeat this as axis-distance aux-weight, valid-threshold, min-vote, support-score, endpoint-covariance, max-segment, head-LR, epoch-count, or longer-run tuning. Reopen only with a materially different verifier/candidate-coverage contract that first moves exact TP/FP/FN.

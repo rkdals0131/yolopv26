@@ -165,6 +165,9 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "stop_line_half_length",
         "stop_line_haf_endpoint",
         "stop_line_haf_valid_logits",
+        "stop_line_axis_distance",
+        "stop_line_axis_direction",
+        "stop_line_axis_valid_logits",
         "stop_line_endpoint_logits",
         "stop_line_endpoint_offset",
         "stop_line_endpoint_pair_logits",
@@ -1540,6 +1543,7 @@ def _stop_line_mask_loss_with_selector_weight(
     center_target_mode: str = "union",
     centerline_target_weight: float = 1.0,
     haf_aux_weight: float = 0.0,
+    axis_distance_aux_weight: float = 0.0,
     endpoint_pair_aux_weight: float = 0.0,
     endpoint_pair_segment_aux_weight: float = 0.0,
     endpoint_pair_verifier_aux_weight: float = 0.0,
@@ -1558,6 +1562,9 @@ def _stop_line_mask_loss_with_selector_weight(
     half_length = predictions.get("stop_line_half_length")
     haf_endpoint = predictions.get("stop_line_haf_endpoint")
     haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
+    axis_distance = predictions.get("stop_line_axis_distance")
+    axis_direction = predictions.get("stop_line_axis_direction")
+    axis_valid_logits = predictions.get("stop_line_axis_valid_logits")
     endpoint_logits = predictions.get("stop_line_endpoint_logits")
     endpoint_offset = predictions.get("stop_line_endpoint_offset")
     endpoint_pair_logits = predictions.get("stop_line_endpoint_pair_logits")
@@ -1711,6 +1718,43 @@ def _stop_line_mask_loss_with_selector_weight(
             haf_positive_mask.expand_as(haf_endpoint),
         )
         haf_loss = 0.5 * haf_valid_loss + haf_endpoint_loss
+    axis_distance_loss = _zero_graph(mask_logits)
+    if (
+        float(axis_distance_aux_weight) > 0.0
+        and isinstance(axis_distance, torch.Tensor)
+        and isinstance(axis_direction, torch.Tensor)
+        and isinstance(axis_valid_logits, torch.Tensor)
+        and "stop_line_axis_distance" in aux
+        and "stop_line_axis_direction" in aux
+        and "stop_line_axis_valid" in aux
+    ):
+        axis_distance_target = aux["stop_line_axis_distance"].to(device=mask_logits.device, dtype=mask_logits.dtype)
+        axis_direction_target = aux["stop_line_axis_direction"].to(device=mask_logits.device, dtype=mask_logits.dtype)
+        axis_valid_target = aux["stop_line_axis_valid"].to(device=mask_logits.device, dtype=mask_logits.dtype)
+        axis_ignore_target = aux.get("stop_line_axis_ignore")
+        if isinstance(axis_ignore_target, torch.Tensor):
+            axis_ignore = axis_ignore_target.to(device=mask_logits.device, dtype=torch.bool)
+        else:
+            axis_ignore = torch.zeros_like(axis_valid_target, dtype=torch.bool, device=mask_logits.device)
+        axis_sample_mask = source[:, None, None, None].expand_as(axis_valid_logits) & (~axis_ignore)
+        axis_valid_loss = _masked_binary_ce_balanced(
+            axis_valid_logits,
+            axis_valid_target,
+            axis_sample_mask,
+            max_positive_weight=32.0,
+        )
+        axis_positive_mask = (axis_valid_target > 0.5) & axis_sample_mask
+        axis_offset_loss = _masked_smooth_l1(
+            axis_distance,
+            axis_distance_target,
+            axis_positive_mask.expand_as(axis_distance),
+        )
+        axis_direction_loss = _masked_smooth_l1(
+            axis_direction,
+            axis_direction_target,
+            axis_positive_mask.expand_as(axis_direction),
+        )
+        axis_distance_loss = 0.5 * axis_valid_loss + axis_offset_loss + 0.25 * axis_direction_loss
     endpoint_pair_loss = _zero_graph(mask_logits)
     if float(endpoint_pair_aux_weight) > 0.0:
         endpoint_pair_loss = _stop_line_endpoint_pair_loss(
@@ -1790,6 +1834,7 @@ def _stop_line_mask_loss_with_selector_weight(
         + float(geometry_aux_weight) * angle_loss
         + float(geometry_aux_weight) * length_loss
         + float(haf_aux_weight) * haf_loss
+        + float(axis_distance_aux_weight) * axis_distance_loss
         + float(endpoint_pair_aux_weight) * endpoint_pair_loss
         + float(endpoint_pair_segment_aux_weight) * endpoint_pair_segment_loss
         + float(segment_set_aux_weight) * segment_set_loss
@@ -2153,6 +2198,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_center_target_mode: str = "union",
         stopline_centerline_target_weight: float = 1.0,
         stopline_haf_aux_weight: float = 0.0,
+        stopline_axis_distance_aux_weight: float = 0.0,
         stopline_endpoint_pair_aux_weight: float = 0.0,
         stopline_endpoint_pair_segment_aux_weight: float = 0.0,
         stopline_endpoint_pair_verifier_aux_weight: float = 0.0,
@@ -2227,6 +2273,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_center_target_mode = str(stopline_center_target_mode)
         self.stopline_centerline_target_weight = float(stopline_centerline_target_weight)
         self.stopline_haf_aux_weight = float(stopline_haf_aux_weight)
+        self.stopline_axis_distance_aux_weight = float(stopline_axis_distance_aux_weight)
         self.stopline_endpoint_pair_aux_weight = float(stopline_endpoint_pair_aux_weight)
         self.stopline_endpoint_pair_segment_aux_weight = float(stopline_endpoint_pair_segment_aux_weight)
         self.stopline_endpoint_pair_verifier_aux_weight = float(stopline_endpoint_pair_verifier_aux_weight)
@@ -2335,6 +2382,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_center_target_mode": self.stopline_center_target_mode,
             "stopline_centerline_target_weight": float(self.stopline_centerline_target_weight),
             "stopline_haf_aux_weight": float(self.stopline_haf_aux_weight),
+            "stopline_axis_distance_aux_weight": float(self.stopline_axis_distance_aux_weight),
             "stopline_endpoint_pair_aux_weight": float(self.stopline_endpoint_pair_aux_weight),
             "stopline_endpoint_pair_segment_aux_weight": float(self.stopline_endpoint_pair_segment_aux_weight),
             "stopline_endpoint_pair_verifier_aux_weight": float(self.stopline_endpoint_pair_verifier_aux_weight),
@@ -3052,6 +3100,7 @@ class PV26MultiTaskLoss(nn.Module):
                 and str(self.stopline_center_target_mode).strip().lower() == "union"
                 and float(self.stopline_centerline_target_weight) == 1.0
                 and float(self.stopline_haf_aux_weight) == 0.0
+                and float(self.stopline_axis_distance_aux_weight) == 0.0
                 and float(self.stopline_endpoint_pair_aux_weight) == 0.0
                 and float(self.stopline_endpoint_pair_segment_aux_weight) == 0.0
                 and float(self.stopline_endpoint_pair_verifier_aux_weight) == 0.0
@@ -3072,6 +3121,7 @@ class PV26MultiTaskLoss(nn.Module):
                 center_target_mode=self.stopline_center_target_mode,
                 centerline_target_weight=float(self.stopline_centerline_target_weight),
                 haf_aux_weight=float(self.stopline_haf_aux_weight),
+                axis_distance_aux_weight=float(self.stopline_axis_distance_aux_weight),
                 endpoint_pair_aux_weight=float(self.stopline_endpoint_pair_aux_weight),
                 endpoint_pair_segment_aux_weight=float(self.stopline_endpoint_pair_segment_aux_weight),
                 endpoint_pair_verifier_aux_weight=float(self.stopline_endpoint_pair_verifier_aux_weight),

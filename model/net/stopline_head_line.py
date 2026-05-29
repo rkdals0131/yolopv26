@@ -78,6 +78,9 @@ class StopLineDenseLocalHead(nn.Module):
         self.half_length = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.haf_endpoint = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
         self.haf_valid_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.axis_distance = nn.Conv2d(self.hidden_dim, 3, kernel_size=1)
+        self.axis_direction = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
+        self.axis_valid_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.endpoint_logits = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.endpoint_offset = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
         self.endpoint_pair_side_topk = 4
@@ -196,6 +199,9 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_half_length": half_length,
             "stop_line_haf_endpoint": self.haf_endpoint(dense_feat),
             "stop_line_haf_valid_logits": self.haf_valid_logits(dense_feat),
+            "stop_line_axis_distance": self.axis_distance(dense_feat),
+            "stop_line_axis_direction": F.normalize(self.axis_direction(dense_feat), dim=1, eps=1.0e-6),
+            "stop_line_axis_valid_logits": self.axis_valid_logits(dense_feat),
             "stop_line_endpoint_logits": endpoint_logits,
             "stop_line_endpoint_offset": endpoint_offset,
             "stop_line_endpoint_pair_logits": endpoint_pair_logits,

@@ -204,6 +204,17 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         stop_line_haf_cluster_endpoint_tolerance=float(train_config.stop_line_haf_cluster_endpoint_tolerance),
         stop_line_haf_max_endpoint_covariance=float(train_config.stop_line_haf_max_endpoint_covariance),
         stop_line_haf_max_segments=int(train_config.stop_line_haf_max_segments),
+        stop_line_axis_distance_enabled=bool(train_config.stop_line_axis_distance_enabled),
+        stop_line_axis_distance_valid_threshold=float(train_config.stop_line_axis_distance_valid_threshold),
+        stop_line_axis_distance_min_votes=int(train_config.stop_line_axis_distance_min_votes),
+        stop_line_axis_distance_cluster_endpoint_tolerance=float(
+            train_config.stop_line_axis_distance_cluster_endpoint_tolerance
+        ),
+        stop_line_axis_distance_max_endpoint_covariance=float(
+            train_config.stop_line_axis_distance_max_endpoint_covariance
+        ),
+        stop_line_axis_distance_min_support_score=float(train_config.stop_line_axis_distance_min_support_score),
+        stop_line_axis_distance_max_segments=int(train_config.stop_line_axis_distance_max_segments),
         stop_line_endpoint_pair_enabled=bool(train_config.stop_line_endpoint_pair_enabled),
         stop_line_endpoint_pair_score_threshold=float(train_config.stop_line_endpoint_pair_score_threshold),
         stop_line_endpoint_pair_topk=int(train_config.stop_line_endpoint_pair_topk),
@@ -631,6 +642,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_center_target_mode=train_config.stopline_center_target_mode,
         stopline_centerline_target_weight=train_config.stopline_centerline_target_weight,
         stopline_haf_aux_weight=train_config.stopline_haf_aux_weight,
+        stopline_axis_distance_aux_weight=train_config.stopline_axis_distance_aux_weight,
         stopline_endpoint_pair_aux_weight=train_config.stopline_endpoint_pair_aux_weight,
         stopline_endpoint_pair_segment_aux_weight=train_config.stopline_endpoint_pair_segment_aux_weight,
         stopline_endpoint_pair_verifier_aux_weight=train_config.stopline_endpoint_pair_verifier_aux_weight,

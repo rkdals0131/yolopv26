@@ -187,7 +187,11 @@ class PV26TargetEncoderTests(unittest.TestCase):
 
         valid = targets["stop_line_haf_valid"][0]
         endpoint = targets["stop_line_haf_endpoint"]
+        axis_valid = targets["stop_line_axis_valid"][0]
+        axis_distance = targets["stop_line_axis_distance"]
+        axis_direction = targets["stop_line_axis_direction"]
         self.assertGreater(int(valid.sum().item()), 0)
+        self.assertEqual(int(axis_valid.sum().item()), int(valid.sum().item()))
         rows, cols = torch.nonzero(valid > 0.5, as_tuple=True)
         points = torch.stack([cols.to(dtype=torch.float32), rows.to(dtype=torch.float32)], dim=0)
         recovered_start = points + endpoint[0:2, rows, cols]
@@ -209,6 +213,14 @@ class PV26TargetEncoderTests(unittest.TestCase):
         ).view(2, 1)
         self.assertLess(float((recovered_start - expected_start).abs().max().item()), 1.0e-5)
         self.assertLess(float((recovered_end - expected_end).abs().max().item()), 1.0e-5)
+        axis_norm = float(max(ROADMARK_DENSE_OUTPUT_HW))
+        axis = axis_direction[:, rows, cols]
+        normal = torch.stack([-axis[1], axis[0]], dim=0)
+        line_points = points + normal * axis_distance[2, rows, cols].view(1, -1) * axis_norm
+        axis_recovered_start = line_points + axis * axis_distance[0, rows, cols].view(1, -1) * axis_norm
+        axis_recovered_end = line_points + axis * axis_distance[1, rows, cols].view(1, -1) * axis_norm
+        self.assertLess(float((axis_recovered_start - expected_start).abs().max().item()), 1.0e-5)
+        self.assertLess(float((axis_recovered_end - expected_end).abs().max().item()), 1.0e-5)
 
     def test_stopline_endpoint_targets_encode_left_and_right_endpoints(self) -> None:
         from model.data.roadmark_v2_targets import NETWORK_HW, ROADMARK_DENSE_OUTPUT_HW, build_stopline_dense_targets

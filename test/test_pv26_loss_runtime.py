@@ -110,6 +110,10 @@ def _with_zero_segfirst_targets(encoded: dict) -> dict:
             "stop_line_haf_endpoint": torch.zeros((batch_size, 4, h, w), dtype=torch.float32),
             "stop_line_haf_valid": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "stop_line_haf_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_axis_distance": torch.zeros((batch_size, 3, h, w), dtype=torch.float32),
+            "stop_line_axis_direction": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
+            "stop_line_axis_valid": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "stop_line_axis_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "stop_line_mask": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "stop_line_centerline": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "crosswalk_mask": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
@@ -303,6 +307,50 @@ class PV26LossRuntimeTests(unittest.TestCase):
         losses["total"].backward()
         self.assertIsNotNone(predictions["stop_line_haf_endpoint"].grad)
         self.assertIsNotNone(predictions["stop_line_haf_valid_logits"].grad)
+
+    def test_stopline_axis_distance_aux_loss_backprops_when_enabled(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        encoded["roadmark_v2"]["stop_line_axis_valid"][0, 0, 20, 30] = 1.0
+        encoded["roadmark_v2"]["stop_line_axis_distance"][0, :, 20, 30] = torch.tensor(
+            [-0.05, 0.05, 0.0],
+            dtype=torch.float32,
+        )
+        encoded["roadmark_v2"]["stop_line_axis_direction"][0, :, 20, 30] = torch.tensor(
+            [1.0, 0.0],
+            dtype=torch.float32,
+        )
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "stop_line_mask_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_offset": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_angle": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_half_length": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_axis_distance": torch.zeros((batch_size, 3, h, w), requires_grad=True),
+                "stop_line_axis_direction": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_axis_valid_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+            }
+        )
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_mode="roadmark_joint",
+            loss_weights={"lane": 0.0, "crosswalk": 0.0},
+            stopline_axis_distance_aux_weight=1.0,
+        )
+        losses = criterion(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["stop_line_axis_distance"].grad)
+        self.assertIsNotNone(predictions["stop_line_axis_direction"].grad)
+        self.assertIsNotNone(predictions["stop_line_axis_valid_logits"].grad)
 
     def test_stopline_segment_set_aux_loss_backprops_when_enabled(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss

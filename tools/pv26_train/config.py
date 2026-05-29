@@ -146,6 +146,7 @@ class TrainDefaultsConfig:
     stopline_center_target_mode: str = "union"
     stopline_centerline_target_weight: float = 1.0
     stopline_haf_aux_weight: float = 0.0
+    stopline_axis_distance_aux_weight: float = 0.0
     stopline_endpoint_pair_aux_weight: float = 0.0
     stopline_endpoint_pair_segment_aux_weight: float = 0.0
     stopline_endpoint_pair_verifier_aux_weight: float = 0.0
@@ -162,6 +163,13 @@ class TrainDefaultsConfig:
     stop_line_haf_cluster_endpoint_tolerance: float = 3.0
     stop_line_haf_max_endpoint_covariance: float = 9.0
     stop_line_haf_max_segments: int = 3
+    stop_line_axis_distance_enabled: bool = False
+    stop_line_axis_distance_valid_threshold: float = 0.75
+    stop_line_axis_distance_min_votes: int = 3
+    stop_line_axis_distance_cluster_endpoint_tolerance: float = 4.0
+    stop_line_axis_distance_max_endpoint_covariance: float = 16.0
+    stop_line_axis_distance_min_support_score: float = 0.35
+    stop_line_axis_distance_max_segments: int = 3
     stop_line_endpoint_pair_enabled: bool = False
     stop_line_endpoint_pair_score_threshold: float = 0.55
     stop_line_endpoint_pair_topk: int = 8
@@ -812,6 +820,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_haf_aux_weight", defaults.stopline_haf_aux_weight),
             field_name="train_defaults.stopline_haf_aux_weight",
         ),
+        stopline_axis_distance_aux_weight=_coerce_float(
+            data.get("stopline_axis_distance_aux_weight", defaults.stopline_axis_distance_aux_weight),
+            field_name="train_defaults.stopline_axis_distance_aux_weight",
+        ),
         stopline_endpoint_pair_aux_weight=_coerce_float(
             data.get("stopline_endpoint_pair_aux_weight", defaults.stopline_endpoint_pair_aux_weight),
             field_name="train_defaults.stopline_endpoint_pair_aux_weight",
@@ -887,6 +899,46 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         stop_line_haf_max_segments=_coerce_int(
             data.get("stop_line_haf_max_segments", defaults.stop_line_haf_max_segments),
             field_name="train_defaults.stop_line_haf_max_segments",
+        ),
+        stop_line_axis_distance_enabled=_coerce_bool(
+            data.get("stop_line_axis_distance_enabled", defaults.stop_line_axis_distance_enabled),
+            field_name="train_defaults.stop_line_axis_distance_enabled",
+        ),
+        stop_line_axis_distance_valid_threshold=_coerce_float(
+            data.get(
+                "stop_line_axis_distance_valid_threshold",
+                defaults.stop_line_axis_distance_valid_threshold,
+            ),
+            field_name="train_defaults.stop_line_axis_distance_valid_threshold",
+        ),
+        stop_line_axis_distance_min_votes=_coerce_int(
+            data.get("stop_line_axis_distance_min_votes", defaults.stop_line_axis_distance_min_votes),
+            field_name="train_defaults.stop_line_axis_distance_min_votes",
+        ),
+        stop_line_axis_distance_cluster_endpoint_tolerance=_coerce_float(
+            data.get(
+                "stop_line_axis_distance_cluster_endpoint_tolerance",
+                defaults.stop_line_axis_distance_cluster_endpoint_tolerance,
+            ),
+            field_name="train_defaults.stop_line_axis_distance_cluster_endpoint_tolerance",
+        ),
+        stop_line_axis_distance_max_endpoint_covariance=_coerce_float(
+            data.get(
+                "stop_line_axis_distance_max_endpoint_covariance",
+                defaults.stop_line_axis_distance_max_endpoint_covariance,
+            ),
+            field_name="train_defaults.stop_line_axis_distance_max_endpoint_covariance",
+        ),
+        stop_line_axis_distance_min_support_score=_coerce_float(
+            data.get(
+                "stop_line_axis_distance_min_support_score",
+                defaults.stop_line_axis_distance_min_support_score,
+            ),
+            field_name="train_defaults.stop_line_axis_distance_min_support_score",
+        ),
+        stop_line_axis_distance_max_segments=_coerce_int(
+            data.get("stop_line_axis_distance_max_segments", defaults.stop_line_axis_distance_max_segments),
+            field_name="train_defaults.stop_line_axis_distance_max_segments",
         ),
         stop_line_endpoint_pair_enabled=_coerce_bool(
             data.get("stop_line_endpoint_pair_enabled", defaults.stop_line_endpoint_pair_enabled),
