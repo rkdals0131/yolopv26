@@ -242,6 +242,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "task_loss_ema_eps": 1.0e-4,
                             "task_loss_scale_min": 0.5,
                             "task_loss_scale_max": 2.5,
+                            "lane_family_cross_stitch_enabled": True,
                         },
                         "preview": {
                             "dataset_keys": ["custom_preview_dataset"],
@@ -434,6 +435,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.task_loss_ema_eps, 1.0e-4)
         self.assertAlmostEqual(scenario.train_defaults.task_loss_scale_min, 0.5)
         self.assertAlmostEqual(scenario.train_defaults.task_loss_scale_max, 2.5)
+        self.assertTrue(scenario.train_defaults.lane_family_cross_stitch_enabled)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)

@@ -1347,6 +1347,25 @@ EXPERIMENTS = {
 }
 
 
+EXPERIMENTS["cross_stitch_task_routing"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_heads_only",
+    "trunk_lr": 0.0,
+    "head_lr": 1.0e-4,
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "lane_family_task_adapter_enabled": True,
+        "lane_family_cross_stitch_enabled": True,
+        "multitask_conflict": {
+            "enabled": True,
+            "mode": "pcgrad_style",
+            "tasks": ["lane", "stop_line", "crosswalk"],
+            "param_groups": ["lane_family_adapters"],
+        },
+    },
+}
+
+
 EXPERIMENTS["stopline_priority_positive_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {

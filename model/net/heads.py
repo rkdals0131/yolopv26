@@ -75,6 +75,7 @@ class PV26Heads(nn.Module):
         roadmark_architecture: str = ROADMARK_JOINT_NATIVE_NAME,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
+        lane_family_cross_stitch_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -83,6 +84,7 @@ class PV26Heads(nn.Module):
         self.roadmark_architecture = _normalize_roadmark_architecture(roadmark_architecture)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
+        self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
         if len(self.in_channels) != 4:
             raise ValueError("PV26Heads expects exactly 4 pyramid levels (P2/P3/P4/P5).")
         if len(self.feature_strides) != 4:
@@ -121,6 +123,7 @@ class PV26Heads(nn.Module):
                 lane_head_mode=self.lane_head_mode,
                 lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
                 lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
+                lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,
             )
         self.lane_head_mode = str(getattr(self.roadmark_heads, "lane_head_mode", self.lane_head_mode))
         self.lane_head = getattr(self.roadmark_heads, "lane_head", None)

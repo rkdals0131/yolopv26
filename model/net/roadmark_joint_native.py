@@ -19,6 +19,7 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
         lane_head_mode: str = "seg_first",
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
+        lane_family_cross_stitch_enabled: bool = False,
     ) -> None:
         super().__init__(
             in_channels,
@@ -26,6 +27,7 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
             lane_head_mode=lane_head_mode,
             lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=lane_family_task_adapter_enabled,
+            lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
         )
 
     def describe(self) -> dict[str, object]:

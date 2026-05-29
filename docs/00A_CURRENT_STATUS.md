@@ -23,6 +23,8 @@ Latest co-occurrence hard-positive sampler added `task_positive_task="cooccur:la
 
 Latest lane row-native primary audit made `lane_head_mode="row_native"` selectable through the training config and trained the existing row-classification lane head as the primary lane contract instead of the seg-first centerline/tangent head. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, first ran `64` train batches, then continued at larger `512` train batches for `2` epochs. It is negative: fixed val4 after the larger run was lane/stop/cross `0.0000 / 0.0000 / 0.5455`, with lane TP/FP/FN `0 / 0 / 86`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because the lane head emitted no matched lanes even after the larger training slice. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `784K`.
 
+Latest cross-stitch task routing added an opt-in task-feature cross-stitch mixer on top of task-specific P2/P3/P4 adapters and trained it with PCGrad over the `lane_family_adapters` optimizer group. It reused the existing `pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and ran a real CUDA `64` train-batch smoke with skipped steps `0`. It is smoke-negative: fixed val4 epoch-2 was lane/stop/cross `0.4885 / 0.0000 / 0.5455`, with lane TP/FP/FN `32 / 13 / 54`, stop-line `0 / 3 / 2`, and crosswalk `3 / 1 / 4`. Exact-val128 and broader-val512 were skipped because lane regressed sharply and stop-line did not move. Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned; retained run size is about `7.7M`.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -65,6 +67,7 @@ Run:
 - latest lane-only seg-first specialist router smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_only_segfirst_specialist_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_235106/analysis_exports/lane_router_smoke_val4_epoch2/metrics.csv`
 - latest co-occurrence hard-positive sampler smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_cooccur_lane_stop_cross_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_000717/analysis_exports/cooccur_sampler_smoke_val4_epoch2/metrics.csv`
 - latest lane row-native primary scale-smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_primary_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_002505/analysis_exports/row_native_primary_scale_smoke_val4_epoch2/metrics.csv`
+- latest cross-stitch task routing smoke metrics: `runs/pv26_exhaustive_od_lane_train/lane60_cross_stitch_task_routing_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_010213/analysis_exports/fixed_val4_epoch2/metrics.csv`
 - previous stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 

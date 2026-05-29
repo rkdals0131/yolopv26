@@ -14951,3 +14951,69 @@ Verification:
 - This is materially different from the prior legacy row-head fallback/union smoke because the row-native head was actually trained as the primary lane head and still produced `0` matched lanes.
 - Do not repeat this as row-native primary head LR, lane loss weight, epoch-count, train-batch count, seed from the same row-native smoke, or baseline-variant evaluation.
 - Reopen row-native-style work only if the head contract changes, for example with a new instance-quality/assignment signal or conditional instance decoder that first moves fixed smoke TP/FP/FN.
+
+## 289. 2026-05-30 Cross-stitch task routing smoke
+
+Context:
+
+- The user explicitly asked to keep testing training methodology, head/neck learning allocation, and architecture-level causes, not only postprocess.
+- Shared adapter PCGrad and task-specific adapter routing had already failed, but they did not test a cross-stitch-style routing contract where task-specific features can learn how much to borrow from each other.
+- This branch tested the smallest fixed cross-stitch slice: task-specific P2/P3/P4 adapters plus a zero-init identity cross-stitch mixer, with PCGrad over the actual adapter/routing parameter group.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/cross-stitch-task-routing`.
+- Added `lane_family_cross_stitch_enabled` to training config and `PV26Heads`.
+- Added a `task_feature_cross_stitch_p2_p3_p4` mixer in `model/net/roadmark_v2_heads.py`.
+- The mixer starts as identity and mixes lane / stop-line / crosswalk task features per pyramid level.
+- Added `cross_stitch_task_routing` to `tools/run_pv26_lane60_probe.py`:
+  - freeze policy `lane_family_heads_only`
+  - trunk LR `0.0`
+  - head LR `1e-4`
+  - `lane_family_task_adapter_enabled=True`
+  - `lane_family_cross_stitch_enabled=True`
+  - PCGrad enabled for `param_groups=["lane_family_adapters"]`
+  - retained `row_scan_tangent`, projection-competition stop-line runtime, and `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Data root: existing `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- Dataset indexing: `429350` records, split train/val/test `326709 / 82641 / 20000`.
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_cross_stitch_task_routing_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_010213`.
+- CUDA smoke: `1` epoch, `64` train batches, `4` internal val batches, batch size `4`, device `cuda:0`.
+- Skipped steps: `0`.
+- Internal val4 task-best F1: lane `0.5191`, stop-line `0.0000`, crosswalk `0.7692`.
+- PCGrad diagnostic: `64` enabled steps over `lane_family_adapters`, mean target parameter count `73`, lane-vs-stop conflict rate `0.390625`.
+
+Fixed val4 evaluation:
+
+| Source | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained primary reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| cross-stitch routing smoke | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+- Fixed smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_cross_stitch_task_routing_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_010213/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Exact-val128 and broader-val512 were skipped because fixed smoke regressed lane by `-8 TP`, `+2 FP`, and recovered no stop-line TP.
+
+Storage:
+
+- The run reused the existing dataset root directly.
+- Before cleanup the run was about `795M`.
+- The auto-downloaded root `yolo26s.pt`, checkpoint files, and TensorBoard outputs were removed after the negative evaluation.
+- Retained run size after cleanup: about `7.7M`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall -q model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA 64-batch smoke train.
+- CUDA fixed val4 epoch-2 evaluation.
+
+판단:
+
+- Cross-stitch routing is wired, trainable, and creates a real shared routing gradient surface, but this contract is smoke-negative.
+- It damages lane recall substantially before exact-val128 and broader-val512.
+- Do not repeat this as cross-stitch LR, mix init, adapter depth, PCGrad task-list, loss-weight, or longer-run tuning.
+- Reopen task-routing work only with a changed lane/stop-line emit contract that first protects fixed smoke TP/FP/FN.

@@ -157,6 +157,7 @@ def _build_single_distill_teacher(train_config: TrainDefaultsConfig, checkpoint_
         lane_head_mode=train_config.lane_head_mode,
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
         lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
+        lane_family_cross_stitch_enabled=train_config.lane_family_cross_stitch_enabled,
     )
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(checkpoint, dict):
@@ -647,6 +648,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_head_mode=train_config.lane_head_mode,
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
         lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
+        lane_family_cross_stitch_enabled=train_config.lane_family_cross_stitch_enabled,
     )
     criterion = PV26MultiTaskLoss(
         stage=phase.stage,

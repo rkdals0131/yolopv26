@@ -97,6 +97,46 @@ class _LaneFamilyTaskFeatureAdapters(nn.Module):
         }
 
 
+class _LaneFamilyCrossStitchMixer(nn.Module):
+    TASKS = ("lane", "stop_line", "crosswalk")
+
+    def __init__(self, levels: int = 3) -> None:
+        super().__init__()
+        self.levels = int(levels)
+        if self.levels <= 0:
+            raise ValueError("lane-family cross-stitch mixer requires at least one feature level.")
+        self.mix = nn.Parameter(torch.eye(len(self.TASKS), dtype=torch.float32).repeat(self.levels, 1, 1))
+
+    def forward(
+        self,
+        task_features: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
+    ) -> dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+        missing = [task for task in self.TASKS if task not in task_features]
+        if missing:
+            raise ValueError(f"cross-stitch task features missing tasks: {missing}")
+        outputs: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+        for out_index, out_task in enumerate(self.TASKS):
+            mixed_levels: list[torch.Tensor] = []
+            for level in range(self.levels):
+                mixed: torch.Tensor | None = None
+                for in_index, in_task in enumerate(self.TASKS):
+                    source = task_features[in_task][level]
+                    weight = self.mix[level, out_index, in_index].to(device=source.device, dtype=source.dtype)
+                    value = weight * source
+                    mixed = value if mixed is None else mixed + value
+                if mixed is None:
+                    raise RuntimeError("cross-stitch mixer produced an empty feature level")
+                mixed_levels.append(mixed)
+            mixed_levels.append(task_features[out_task][3])
+            outputs[out_task] = (
+                mixed_levels[0],
+                mixed_levels[1],
+                mixed_levels[2],
+                mixed_levels[3],
+            )
+        return outputs
+
+
 class RoadMarkV2Heads(nn.Module):
     def __init__(
         self,
@@ -106,6 +146,7 @@ class RoadMarkV2Heads(nn.Module):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
+        lane_family_cross_stitch_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -113,6 +154,7 @@ class RoadMarkV2Heads(nn.Module):
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
+        self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
         if len(self.in_channels) != 4:
             raise ValueError("RoadMarkV2Heads expects exactly 4 pyramid levels (P2/P3/P4/P5).")
         if len(self.feature_strides) != 4:
@@ -135,6 +177,11 @@ class RoadMarkV2Heads(nn.Module):
             if self.lane_family_task_adapter_enabled
             else None
         )
+        self.cross_stitch_mixer = (
+            _LaneFamilyCrossStitchMixer(levels=3)
+            if self.lane_family_cross_stitch_enabled
+            else None
+        )
 
     def describe(self) -> dict[str, object]:
         return {
@@ -153,6 +200,9 @@ class RoadMarkV2Heads(nn.Module):
             "lane_family_task_adapter": "zero_init_residual_per_task_p2_p3_p4"
             if self.lane_family_task_adapter_enabled
             else "disabled",
+            "lane_family_cross_stitch": "task_feature_cross_stitch_p2_p3_p4"
+            if self.lane_family_cross_stitch_enabled
+            else "disabled",
         }
 
     def forward(
@@ -169,6 +219,14 @@ class RoadMarkV2Heads(nn.Module):
         if self.task_feature_adapters is not None:
             task_features = self.task_feature_adapters(features)
         p2, p3, p4, p5 = features
+        if self.cross_stitch_mixer is not None:
+            if task_features is None:
+                task_features = {
+                    "lane": (p2, p3, p4, p5),
+                    "stop_line": (p2, p3, p4, p5),
+                    "crosswalk": (p2, p3, p4, p5),
+                }
+            task_features = self.cross_stitch_mixer(task_features)
         _ = p5  # reserved for future coarse context branches
         outputs: dict[str, torch.Tensor] = {}
         lane_p2, lane_p3, lane_p4, _lane_p5 = task_features["lane"] if task_features is not None else (p2, p3, p4, p5)
@@ -193,6 +251,7 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
+        lane_family_cross_stitch_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -200,6 +259,7 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
+        self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
         if len(self.in_channels) != 4:
             raise ValueError("PV26RoadMarkV2LaneFamilyHeads expects exactly 4 pyramid levels.")
         if len(self.feature_strides) != 4:
@@ -210,12 +270,14 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             lane_head_mode=self.lane_head_mode,
             lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
+            lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,
         )
         self.lane_head = self.roadmark_heads.lane_head
         self.stop_line_head = self.roadmark_heads.stop_line_head
         self.crosswalk_head = self.roadmark_heads.crosswalk_head
         self.shared_feature_adapters = self.roadmark_heads.shared_feature_adapters
         self.task_feature_adapters = self.roadmark_heads.task_feature_adapters
+        self.cross_stitch_mixer = self.roadmark_heads.cross_stitch_mixer
 
     def lane_family_adapter_modules(self) -> tuple[nn.Module, ...]:
         modules: list[nn.Module] = []
@@ -223,6 +285,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             modules.append(self.shared_feature_adapters)
         if self.task_feature_adapters is not None:
             modules.append(self.task_feature_adapters)
+        if self.cross_stitch_mixer is not None:
+            modules.append(self.cross_stitch_mixer)
         return tuple(modules)
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
@@ -268,6 +332,7 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
+        lane_family_cross_stitch_enabled: bool = False,
     ) -> None:
         super().__init__(
             in_channels,
@@ -275,6 +340,7 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             lane_head_mode=lane_head_mode,
             lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=lane_family_task_adapter_enabled,
+            lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
         )
         p2, p3, _, _ = self.in_channels
         self.stopline_p2_isolator = _StoplineFeatureNeck(p2)
@@ -321,6 +387,14 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         if self.task_feature_adapters is not None:
             task_features = self.task_feature_adapters(features)
         p2, p3, p4, p5 = features
+        if self.cross_stitch_mixer is not None:
+            if task_features is None:
+                task_features = {
+                    "lane": (p2, p3, p4, p5),
+                    "stop_line": (p2, p3, p4, p5),
+                    "crosswalk": (p2, p3, p4, p5),
+                }
+            task_features = self.cross_stitch_mixer(task_features)
         _ = p5
         lane_p2, lane_p3, lane_p4, _lane_p5 = task_features["lane"] if task_features is not None else (p2, p3, p4, p5)
         stop_p2, stop_p3, _stop_p4, _stop_p5 = (
