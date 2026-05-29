@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from .roadmark_joint_native import ROADMARK_JOINT_NATIVE_NAME, PV26RoadMarkNativeJointHeads
-from .roadmark_v2_heads import ROADMARK_V2_FEATURE_STRIDES
+from .roadmark_v2_heads import ROADMARK_V2_FEATURE_STRIDES, ROADMARK_V3_JOINT_NAME, PV26RoadMarkV3JointHeads
 
 
 DET_DIM = 12
@@ -19,6 +19,18 @@ STOP_LINE_VECTOR_DIM = 9
 CROSSWALK_VECTOR_DIM = 33
 FEATURE_STRIDES = ROADMARK_V2_FEATURE_STRIDES
 DETECT_FEATURE_STRIDES = (8, 16, 32)
+
+
+def _normalize_roadmark_architecture(value: str) -> str:
+    architecture = str(value or ROADMARK_JOINT_NATIVE_NAME).strip().lower()
+    if architecture in {"native", "joint_native", ROADMARK_JOINT_NATIVE_NAME}:
+        return ROADMARK_JOINT_NATIVE_NAME
+    if architecture in {"v3", "v3_stopline_isolated", ROADMARK_V3_JOINT_NAME}:
+        return ROADMARK_V3_JOINT_NAME
+    raise ValueError(
+        "roadmark_architecture must be one of: "
+        f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, v3_stopline_isolated"
+    )
 
 
 class _ScalePredictionHead(nn.Module):
@@ -47,6 +59,7 @@ class PV26Heads(nn.Module):
         feature_strides: Iterable[int] = FEATURE_STRIDES,
         *,
         lane_head_mode: str = "seg_first",
+        roadmark_architecture: str = ROADMARK_JOINT_NATIVE_NAME,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
     ) -> None:
@@ -54,6 +67,7 @@ class PV26Heads(nn.Module):
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = str(lane_head_mode).strip().lower()
+        self.roadmark_architecture = _normalize_roadmark_architecture(roadmark_architecture)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
         if len(self.in_channels) != 4:
@@ -71,7 +85,12 @@ class PV26Heads(nn.Module):
         self.tl_attr_heads = nn.ModuleList(
             [_ScalePredictionHead(channel, TL_ATTR_DIM) for channel in self.det_in_channels]
         )
-        self.roadmark_heads = PV26RoadMarkNativeJointHeads(
+        roadmark_head_cls = (
+            PV26RoadMarkV3JointHeads
+            if self.roadmark_architecture == ROADMARK_V3_JOINT_NAME
+            else PV26RoadMarkNativeJointHeads
+        )
+        self.roadmark_heads = roadmark_head_cls(
             self.in_channels,
             self.feature_strides,
             lane_head_mode=self.lane_head_mode,
@@ -86,6 +105,12 @@ class PV26Heads(nn.Module):
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
         return self.roadmark_heads.lane_family_modules()
 
+    def stop_line_modules(self) -> tuple[nn.Module, ...]:
+        getter = getattr(self.roadmark_heads, "stop_line_modules", None)
+        if callable(getter):
+            return tuple(module for module in getter() if isinstance(module, nn.Module))
+        return (self.stop_line_head,)
+
     def describe(self) -> dict[str, object]:
         roadmark_payload = self.roadmark_heads.describe()
         return {
@@ -98,7 +123,7 @@ class PV26Heads(nn.Module):
             "lane_queries": LANE_QUERY_COUNT,
             "stop_line_queries": STOP_LINE_QUERY_COUNT,
             "crosswalk_queries": CROSSWALK_QUERY_COUNT,
-            "roadmark_architecture": ROADMARK_JOINT_NATIVE_NAME,
+            "roadmark_architecture": self.roadmark_architecture,
             "roadmark": roadmark_payload,
         }
 

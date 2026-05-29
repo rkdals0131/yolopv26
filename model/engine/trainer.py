@@ -152,6 +152,22 @@ def _lane_family_adapter_modules(heads: torch.nn.Module) -> list[torch.nn.Module
     return []
 
 
+def _stop_line_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
+    getter = getattr(heads, "stop_line_modules", None)
+    if callable(getter):
+        modules = [module for module in getter() if isinstance(module, torch.nn.Module)]
+        if modules:
+            return modules
+    roadmark_heads = getattr(heads, "roadmark_heads", None)
+    getter = getattr(roadmark_heads, "stop_line_modules", None)
+    if callable(getter):
+        modules = [module for module in getter() if isinstance(module, torch.nn.Module)]
+        if modules:
+            return modules
+    stop_line_head = getattr(heads, "stop_line_head", None)
+    return [stop_line_head] if isinstance(stop_line_head, torch.nn.Module) else []
+
+
 def _parameter_ids_from_modules(modules: list[torch.nn.Module]) -> set[int]:
     parameter_ids: set[int] = set()
     for module in modules:
@@ -178,6 +194,13 @@ def _require_named_head_modules(heads: torch.nn.Module, names: tuple[str, ...], 
             missing.append(name)
     if missing:
         raise RuntimeError(f"{policy} requires {', '.join(missing)} modules")
+    return modules
+
+
+def _require_stop_line_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
+    modules = _stop_line_modules(heads)
+    if not modules:
+        raise RuntimeError(f"{policy} requires stop_line_head or stop_line_modules")
     return modules
 
 
@@ -301,6 +324,12 @@ def configure_pv26_train_stage(
         for module in _require_named_head_modules(heads, ("stop_line_head", "crosswalk_head"), policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "stop_cross_only"
+    elif policy == "lane_family_stopline_only":
+        adapter.freeze_trunk()
+        _set_module_requires_grad(heads, False)
+        for module in _require_stop_line_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "stopline_only"
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:
@@ -326,7 +355,12 @@ def configure_pv26_train_stage(
     lane_family_trainable = _count_parameters(_trainable_parameters_from_modules(lane_family_modules_for_summary))
     if lane_family_trainable:
         stage_summary["trainable_lane_family_head_params"] = lane_family_trainable
-    if policy in {"lane_family_heads_only", "lane_family_plus_upper_trunk", "lane_family_stop_cross_heads_only"}:
+    if policy in {
+        "lane_family_heads_only",
+        "lane_family_plus_upper_trunk",
+        "lane_family_stop_cross_heads_only",
+        "lane_family_stopline_only",
+    }:
         stage_summary["head_training_policy"] = head_policy
     return stage_summary
 

@@ -20,6 +20,7 @@ DEFAULT_DATASET_ROOT = REPO_ROOT / "seg_dataset" / "pv26_exhaustive_od_lane_data
 DEFAULT_RUN_ROOT = REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train"
 DEFAULT_PRESET_NAME = "default"
 BACKBONE_VARIANTS = ("n", "s")
+ROADMARK_ARCHITECTURES = ("native", "v3_stopline_isolated")
 LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
 MULTITASK_CONFLICT_TASK_NAMES = LOSS_WEIGHT_NAMES
 DEFAULT_SAMPLER_RATIOS = {
@@ -106,6 +107,7 @@ class TrainDefaultsConfig:
     train_aug_stopline_focus_crop_jitter: float = 0.10
     backbone_variant: str = "s"
     backbone_weights: str | None = None
+    roadmark_architecture: str = "native"
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
     task_positive_task: str | None = "multi:lane,stopline,crosswalk"
     task_positive_fraction: float | None = 0.75
@@ -467,6 +469,15 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             "train_defaults.backbone_variant must be one of "
             f"{BACKBONE_VARIANTS}, got {backbone_variant!r}"
         )
+    roadmark_architecture = _coerce_str(
+        data.get("roadmark_architecture", defaults.roadmark_architecture),
+        field_name="train_defaults.roadmark_architecture",
+    )
+    if roadmark_architecture not in ROADMARK_ARCHITECTURES:
+        raise ValueError(
+            "train_defaults.roadmark_architecture must be one of "
+            f"{ROADMARK_ARCHITECTURES}, got {roadmark_architecture!r}"
+        )
     sampler_ratios_payload = _coerce_mapping(
         data.get("sampler_ratios", defaults.sampler_ratios),
         field_name="train_defaults.sampler_ratios",
@@ -641,6 +652,7 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("backbone_weights", defaults.backbone_weights),
             field_name="train_defaults.backbone_weights",
         ),
+        roadmark_architecture=roadmark_architecture,
         sampler_ratios=sampler_ratios,
         task_positive_task=_coerce_optional_str(
             data.get("task_positive_task", defaults.task_positive_task),

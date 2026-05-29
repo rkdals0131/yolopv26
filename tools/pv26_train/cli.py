@@ -153,6 +153,7 @@ def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeac
     adapter = _build_backbone_adapter(train_config)
     heads = PV26Heads(
         in_channels=_resolve_head_channels(adapter, train_config),
+        roadmark_architecture=train_config.roadmark_architecture,
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
         lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
     )
@@ -614,6 +615,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
     head_channels = _resolve_head_channels(adapter, train_config)
     heads = PV26Heads(
         in_channels=head_channels,
+        roadmark_architecture=train_config.roadmark_architecture,
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
         lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
     )

@@ -232,6 +232,9 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             *self.lane_family_adapter_modules(),
         )
 
+    def stop_line_modules(self) -> tuple[nn.Module, ...]:
+        return (self.stop_line_head,)
+
     def describe(self) -> dict[str, object]:
         payload = self.roadmark_heads.describe()
         payload["mode"] = "lane_family_only"
@@ -284,6 +287,13 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             self.stopline_p2_isolator,
             self.stopline_p3_isolator,
             *self.lane_family_adapter_modules(),
+        )
+
+    def stop_line_modules(self) -> tuple[nn.Module, ...]:
+        return (
+            self.stop_line_head,
+            self.stopline_p2_isolator,
+            self.stopline_p3_isolator,
         )
 
     def describe(self) -> dict[str, object]:

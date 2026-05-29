@@ -102,6 +102,31 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
         self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
 
+    def test_heads_can_use_v3_stopline_isolated_architecture(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            roadmark_architecture="v3_stopline_isolated",
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()
+        stop_line_modules = heads.stop_line_modules()
+
+        self.assertEqual(summary["roadmark_architecture"], "roadmark_v3_joint")
+        self.assertEqual(summary["roadmark"]["stopline_feature_isolation"], "gated_stopline_residual_isolator_p2_p3")
+        self.assertEqual(len(stop_line_modules), 3)
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
+
     def test_heads_reject_wrong_feature_count(self) -> None:
         from model.net import PV26Heads
 

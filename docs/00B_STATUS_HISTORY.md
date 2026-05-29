@@ -14125,3 +14125,78 @@ Verification:
 - `primary_absent_specialist` is exact-positive but broader-negative. The exact stop-line gain `32 / 28 / 28 -> 33 / 28 / 27` does not transfer; broader moves to `129 / 103 / 142`, F1 `0.5129`, below both the specialist router `0.5309` and the primary projection-comp source `0.5164`.
 - The current best broader runtime lower bound remains the specialist router: lane/stop/cross `0.5628 / 0.5309 / 0.6187`.
 - Do not repeat this as source-mode ordering, absent fallback, union distance, agreement distance, score sorting, or dedupe threshold tuning. A future source-arbitration branch would need a materially new no-GT verifier/confidence signal that first moves broader TP/FP/FN.
+
+## 277. 2026-05-29 V3 stop-line isolated-neck train
+
+Context:
+
+- The user explicitly asked not to stay only in postprocess/replay space: architecture, head/neck capacity, training exposure, and loss routing could be the bottleneck.
+- This branch tested a narrow architecture/training-exposure axis for stop-line without copying data or touching lane/crosswalk runtime outputs.
+- The current broader target still requires lane and stop-line to move together; this run only tested whether an isolated stop-line neck can produce a better stop-line specialist for the existing two-checkpoint router.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-v3-isolated-neck`.
+- Added opt-in `roadmark_architecture="v3_stopline_isolated"` in `PV26Heads`.
+- Routed that architecture to `PV26RoadMarkV3JointHeads`, whose gated P2/P3 residual isolators sit only in front of the stop-line head.
+- Added `stop_line_modules()` so the trainer can identify exactly the stop-line head plus V3 isolators.
+- Added freeze policy `lane_family_stopline_only`: freeze trunk and all heads first, then train only `stop_line_modules()`.
+- Added probe preset `stopline_v3_isolated_neck`:
+  - base runtime decode: `stopline_projection_comp_runtime`;
+  - freeze policy: `lane_family_stopline_only`;
+  - trunk LR `0.0`, head LR `2e-4`;
+  - loss weights det/TL/lane/crosswalk `0`, stop-line `4.0`;
+  - task-positive sampler: `stopline`;
+  - crosswalk hull decode retained for eval.
+
+Data and storage:
+
+- Real CUDA smoke and main training reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly.
+- No dataset copy was created.
+- The main run indexed `429350` records and used split train/val/test `326709 / 82641 / 20000`.
+- After evaluation, the smoke run, duplicate `last.pt` and task-best checkpoints, TensorBoard, and root `yolo26s.pt` were removed.
+- Retained run size: about `107M`.
+- Retained run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_v3_isolated_neck_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_183820`.
+- Retained fixed exact artifact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_v3_isolated_neck_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_183820/analysis_exports/router_exact_val128_epoch2/summary.json`.
+
+Training:
+
+- Smoke train: `1` epoch, `8` train batches, `4` val batches, batch size `4`, skipped steps `0`.
+- Main train: `3` epochs, `512` train batches, `128` val batches, batch size `4`, skipped steps `0`.
+- Internal phase validation improved by epoch:
+
+| Epoch | Lane F1 | Stop-line F1 | Crosswalk F1 | Stop TP/FP/FN | Phase Objective |
+| --- | ---: | ---: | ---: | --- | ---: |
+| 1 | `0.5543` | `0.3273` | `0.7190` | `18 / 37 / 37` | `0.6225` |
+| 2 | `0.5590` | `0.4308` | `0.5906` | `28 / 42 / 32` | `0.6288` |
+| 3 | `0.5527` | `0.5913` | `0.5882` | `34 / 28 / 19` | `0.6572` |
+
+- This internal epoch-3 stop-line value is not final evidence. It is the training phase validation slice, while the maintained gate is fixed router exact-val128 epoch `2`.
+
+Fixed router exact-val128 epoch 2:
+
+| Task | Precision | Recall | F1 | TP/FP/FN |
+| --- | ---: | ---: | ---: | --- |
+| lane | `0.7100` | `0.5029` | `0.5888` | `1202 / 491 / 1188` |
+| stop_line | `0.3913` | `0.4500` | `0.4186` | `27 / 42 / 33` |
+| crosswalk | `0.5814` | `0.6173` | `0.5988` | `50 / 36 / 31` |
+
+- Fixed exact phase objective: `0.6391368925`.
+- Projection-competition exact reference remains stronger for stop-line: `32 / 28 / 28`, F1 `0.5333`.
+- Broader-val512 was skipped because the fixed exact stop-line gate failed and the branch was already below the retained projection-comp reference.
+
+Verification:
+
+- `python -m py_compile model/net/heads.py model/net/roadmark_v2_heads.py model/engine/trainer.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_v3_stopline_isolated_architecture`.
+- `PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_lane_family_stopline_only_trains_v3_stopline_isolators`.
+- CUDA smoke train/eval.
+- CUDA main `3` epoch / `512` train-batch run.
+- CUDA fixed router exact-val128 epoch-2 eval.
+
+판단:
+
+- The V3 isolated stop-line neck is trainable and the stop-line-only freeze policy correctly trains the V3 stop-line modules without dataset duplication.
+- The training slice can move internal stop-line F1 up to `0.5913`, but the fixed exact router output regresses to `27 / 42 / 33`, F1 `0.4186`.
+- This is therefore negative for the real target and should not be broadened.
+- Do not repeat this as gate-init, V3 neck LR, stop-line loss weight, epoch-count, or stopline-only sampler tuning. Reopen only with a new stop-line candidate/geometry signal that first beats projection-competition exact TP/FP/FN.
