@@ -16269,3 +16269,68 @@ Verification:
 - Broader-val512 was skipped because held-out exact and all-split exact both failed the gate.
 - Do not repeat this as raw patch size, MLP hidden size, geometry epoch/LR, target-distance, normalize/max-delta, top-k, threshold-grid, or same train-threshold replay sweep.
 - Reopen raw-patch geometry only with a materially different supervision/generalization premise, not another patch-MLP tuning pass.
+
+## 308. 2026-05-30 Task-rotation sampler smoke: epoch-level task-positive feeding regresses lane and does not recover stop-line
+
+맥락:
+
+- The previous `multi:lane,stopline,crosswalk` path mixes task-positive records inside each batch, and the co-occurrence sampler overconcentrated all-positive scenes.
+- This branch tested a different data-feeding contract: alternate the task-positive focus by epoch with `rotate:stopline,lane,crosswalk`, while keeping the retained lane/crosswalk decode, projection-competition stop-line runtime decode, and hull crosswalk mode fixed.
+- The experiment reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. It did not copy the dataset.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/task-rotation-sampler`.
+- Tool: `tools/run_pv26_lane60_probe.py`.
+- New probe preset: `task_rotation_sampler`.
+- Changed axis:
+  - `task_positive_task="rotate:stopline,lane,crosswalk"`;
+  - `task_positive_fraction=1.0`;
+  - existing row-scan/tangent lane decode, projection-competition stop-line decode, and `crosswalk_polygon_mode=hull` retained.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_task_rotation_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_064823`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `3` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6704` at epoch 3, but this is not success evidence because fixed task metrics regressed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-3 best | `flip_centerline_avg_lane_cross_comp050` | `0.5224` | `35 / 13 / 51` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-3 best | `baseline` | `0.5263` | `35 / 12 / 51` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- The task-rotation sampler lost `5` lane TP and added `2` lane FP on the retained fixed variant, while recovering no stop-line TP.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_task_rotation_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_064823/analysis_exports/fixed_val4_epoch3_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_task_rotation_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_064823/analysis_exports/fixed_val4_epoch3_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `816K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/run_pv26_lane60_probe.py`.
+- `python tools/run_pv26_lane60_probe.py --help | rg "task_rotation_sampler"`.
+- CUDA task-rotation sampler smoke training with `3x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- This is a real trained data-feeding experiment, but it is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 regressed lane and recovered no stop-line TP.
+- Do not repeat this as task order, positive fraction, epoch-count, train-batch scaling, or the same projection-competition runtime training sweep.
+- Reopen data-feeding work only with a materially different candidate-generation, geometry, instance-retention, or task-routing signal that first improves fixed smoke TP/FP/FN.
