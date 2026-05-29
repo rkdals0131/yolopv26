@@ -100,6 +100,10 @@ class TrainDefaultsConfig:
     prefetch_factor: int | None = 2
     train_augmentation: bool = False
     train_augmentation_seed: int | None = None
+    train_aug_stopline_focus_crop_prob: float = 0.0
+    train_aug_stopline_focus_crop_scale_min: float = 1.25
+    train_aug_stopline_focus_crop_scale_max: float = 1.75
+    train_aug_stopline_focus_crop_jitter: float = 0.10
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
@@ -615,6 +619,22 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         train_augmentation_seed=_coerce_optional_int(
             data.get("train_augmentation_seed", defaults.train_augmentation_seed),
             field_name="train_defaults.train_augmentation_seed",
+        ),
+        train_aug_stopline_focus_crop_prob=_coerce_float(
+            data.get("train_aug_stopline_focus_crop_prob", defaults.train_aug_stopline_focus_crop_prob),
+            field_name="train_defaults.train_aug_stopline_focus_crop_prob",
+        ),
+        train_aug_stopline_focus_crop_scale_min=_coerce_float(
+            data.get("train_aug_stopline_focus_crop_scale_min", defaults.train_aug_stopline_focus_crop_scale_min),
+            field_name="train_defaults.train_aug_stopline_focus_crop_scale_min",
+        ),
+        train_aug_stopline_focus_crop_scale_max=_coerce_float(
+            data.get("train_aug_stopline_focus_crop_scale_max", defaults.train_aug_stopline_focus_crop_scale_max),
+            field_name="train_defaults.train_aug_stopline_focus_crop_scale_max",
+        ),
+        train_aug_stopline_focus_crop_jitter=_coerce_float(
+            data.get("train_aug_stopline_focus_crop_jitter", defaults.train_aug_stopline_focus_crop_jitter),
+            field_name="train_defaults.train_aug_stopline_focus_crop_jitter",
         ),
         backbone_variant=backbone_variant,
         backbone_weights=_coerce_optional_str(

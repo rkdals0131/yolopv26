@@ -131,6 +131,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "amp_init_scale": 1024.0,
                             "skip_non_finite_loss": True,
                             "oom_guard": True,
+                            "train_augmentation": True,
+                            "train_augmentation_seed": 42,
+                            "train_aug_stopline_focus_crop_prob": 0.7,
+                            "train_aug_stopline_focus_crop_scale_min": 1.2,
+                            "train_aug_stopline_focus_crop_scale_max": 1.6,
+                            "train_aug_stopline_focus_crop_jitter": 0.05,
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
                             "lane_segfirst_centerline_target_mode": "core",
@@ -303,6 +309,12 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.amp_init_scale, 1024.0)
         self.assertTrue(scenario.train_defaults.skip_non_finite_loss)
         self.assertTrue(scenario.train_defaults.oom_guard)
+        self.assertTrue(scenario.train_defaults.train_augmentation)
+        self.assertEqual(scenario.train_defaults.train_augmentation_seed, 42)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_prob, 0.7)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_scale_min, 1.2)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_scale_max, 1.6)
+        self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_focus_crop_jitter, 0.05)
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.train_defaults.lane_segfirst_centerline_target_mode, "core")

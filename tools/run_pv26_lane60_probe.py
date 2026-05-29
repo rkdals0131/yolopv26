@@ -1290,6 +1290,24 @@ EXPERIMENTS["stopline_cross_priority_lane_frozen"] = {
     },
 }
 
+EXPERIMENTS["stopline_focus_crop_feeding"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "head_lr": 2.0e-4,
+    "train_defaults_overrides": {
+        "train_augmentation": True,
+        "train_augmentation_seed": 260529,
+        "train_aug_stopline_focus_crop_prob": 0.75,
+        "train_aug_stopline_focus_crop_scale_min": 1.35,
+        "train_aug_stopline_focus_crop_scale_max": 1.80,
+        "train_aug_stopline_focus_crop_jitter": 0.08,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "lane_segfirst_center_offset_aux_weight": 0.0,
+        "lane_segfirst_center_offset_enabled": False,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -1361,19 +1379,20 @@ def _lane60_scenario(args: argparse.Namespace, *, source_run: Path, seed_checkpo
     phases = list(scenario.phases)
     phases[phase_index - 1] = probe_phase
 
-    train_defaults = replace(
-        scenario.train_defaults,
-        device=str(args.device),
-        batch_size=int(args.batch_size),
-        train_batches=int(args.train_batches),
-        val_batches=int(args.val_batches),
-        checkpoint_every=0,
-        profile_device_sync=False,
-        step_history_every_n_steps=100,
-        step_history_include_grad_details=False,
-        pcgrad_aggregate_every_n_steps=100,
-        pcgrad_keep_raw_every_n_steps=1000,
-    )
+    train_defaults_replacements = {
+        "device": str(args.device),
+        "batch_size": int(args.batch_size),
+        "train_batches": int(args.train_batches),
+        "val_batches": int(args.val_batches),
+        "checkpoint_every": 0,
+        "profile_device_sync": False,
+        "step_history_every_n_steps": 100,
+        "step_history_include_grad_details": False,
+        "pcgrad_aggregate_every_n_steps": 100,
+        "pcgrad_keep_raw_every_n_steps": 1000,
+    }
+    train_defaults_replacements.update(dict(experiment.get("train_defaults_overrides", {})))
+    train_defaults = replace(scenario.train_defaults, **train_defaults_replacements)
     run_root = Path(args.run_root).expanduser().resolve() if args.run_root else scenario.run.run_root
     run_config = replace(
         scenario.run,
@@ -1403,6 +1422,7 @@ def _lane60_scenario(args: argparse.Namespace, *, source_run: Path, seed_checkpo
             "loss_weights": dict(probe_phase.loss_weights),
             "overrides": dict(phase_overrides),
         },
+        "train_defaults_overrides": dict(experiment.get("train_defaults_overrides", {})),
     }
     return scenario, scenario_path, {
         "selected_phase_indices": (phase_index,),

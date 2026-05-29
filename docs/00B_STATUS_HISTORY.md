@@ -13769,3 +13769,73 @@ Verification:
 - Stop-line `0.5164`, TP/FP/FN `126 / 91 / 145` only matches the projection-competition runtime reference; it is not a new stop-line gain.
 - Crosswalk remains broader-pass at `0.6166`, but this is lower than retained hull `0.6187` and cannot compensate for lane regression.
 - Do not repeat this as center-offset aux-weight, max-shift, min-support-score, head-LR, epoch-count, freeze-policy, or longer-run tuning. Reopen lane recentering only with a materially different instance-quality or assignment-moving contract that first improves exact/broader TP/FP/FN without breaking the retained row-scan lanes.
+
+## 272. 2026-05-29 Stop-line focus-crop feeding: trainable but FP-control negative
+
+Context:
+
+- The user explicitly required real learning, post-training evaluation, broader validation, and smart storage management without copying the dataset.
+- Prior input-scale work changed the whole network/dense grid and failed broader stop-line. This branch tested a different feeding axis: zoom only train samples around GT stop-line geometry in network space, while validation/evaluation stays on the normal letterboxed image.
+- The intended failure mode was small/short stop-line evidence. The branch did not add a new model head or runtime postprocess.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-focus-crop-feeding-v2`.
+- Final retained run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_focus_crop_feeding_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_155424`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Added opt-in train augmentation config:
+  - `train_aug_stopline_focus_crop_prob`.
+  - `train_aug_stopline_focus_crop_scale_min/max`.
+  - `train_aug_stopline_focus_crop_jitter`.
+- Added train-time stop-line-centered crop/zoom in `model/data/transform.py`.
+- Recomputed lane/stop-line/crosswalk valid masks after augmentation in the dataset loader.
+- Kept detector-supervised samples on the stable path because crop can drop boxes while class rows are owned by the dataset loader.
+- Added probe preset `stopline_focus_crop_feeding`, with center-offset explicitly disabled.
+
+Training:
+
+- Smoke train: real CUDA `1` epoch, `32` train batches, `4` val batches, batch size `4`.
+- Main train: real CUDA `2` epochs, `512` train batches, `128` val batches, batch size `4`.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+- Best phase-objective epoch was epoch `2`.
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6025974240` | `0.5432` | `0.1860` | `0.6946` | `1085 / 575 / 1250` | `12 / 62 / 43` | `58 / 26 / 25` |
+| 2 | `0.6163024956` | `0.5592` | `0.3597` | `0.5591` | `1127 / 514 / 1263` | `25 / 54 / 35` | `52 / 53 / 29` |
+
+Fixed runtime eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| broader val512 epoch2 | `0.6125058329` | `0.5454` | `0.4061` | `0.5910` | `4350 / 2124 / 5127` | `119 / 196 / 152` | `229 / 151 / 166` |
+
+Storage:
+
+- The smoke run was pruned after the main train/eval completed.
+- The main run was reduced to `phase_4/checkpoints/best.pt`, summaries/history, and the broader metric export.
+- Removed duplicate task-best checkpoints, `last.pt`, TensorBoard output, and temporary root `yolo26s.pt` download.
+- Retained main run size is about `119M`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/transform.py model/data/dataset.py tools/pv26_train/config.py tools/pv26_train/runtime.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_transform_roundtrip.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loader.py'`.
+- `git diff --check`.
+- Real CUDA smoke train/eval.
+- Real CUDA main train: `2` epochs, `512` train batches, `128` val batches.
+- Fixed broader-val512 epoch-2 eval.
+
+판단:
+
+- Stop-line-centered crop/zoom feeding is trainable, but it does not solve the stop-line candidate geometry or FP-control bottleneck.
+- Broader stop-line TP improves versus the raw objective-best runtime (`101 -> 119`), but FP grows much more (`105 -> 196`), so F1 falls from `0.4235` to `0.4061`.
+- It is far below the retained projection-competition runtime reference `0.5164`, TP/FP/FN `126 / 91 / 145`.
+- Lane also regresses versus the retained lane-preserving composite (`0.5628 -> 0.5454`), and crosswalk falls below the hull pass line (`0.6187 -> 0.5910`).
+- Do not repeat this as crop probability, crop scale/jitter, head-LR, epoch-count, sampler-order, or longer-run tuning. Reopen focus/scale feeding only with a new FP-control or candidate-geometry signal that first improves exact TP/FP/FN.

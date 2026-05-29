@@ -7,6 +7,8 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
+from model.data.transform import TrainAugmentationConfig
+
 from .config import MetaTrainScenario, PHASE_STAGE_ORDER, PhaseConfig, TrainDefaultsConfig
 
 
@@ -48,6 +50,19 @@ _PHASE_OBJECTIVE_WEIGHTS = {
     },
 }
 DEFAULT_PHASE_VRAM_SWEEP_BATCH_SIZES = (1, 2, 4, 6, 8, 12, 16, 24, 32)
+
+
+def train_augmentation_from_defaults(defaults: TrainDefaultsConfig) -> bool | TrainAugmentationConfig:
+    if not bool(defaults.train_augmentation):
+        return False
+    return TrainAugmentationConfig(
+        stopline_focus_crop_prob=float(defaults.train_aug_stopline_focus_crop_prob),
+        stopline_focus_crop_scale_range=(
+            float(defaults.train_aug_stopline_focus_crop_scale_min),
+            float(defaults.train_aug_stopline_focus_crop_scale_max),
+        ),
+        stopline_focus_crop_jitter=float(defaults.train_aug_stopline_focus_crop_jitter),
+    )
 
 
 def _clamp01(value: float) -> float:
@@ -658,7 +673,7 @@ def run_phase_vram_sweep(
     log_meta_train("building canonical dataset index for phase VRAM sweep")
     dataset = canonical_dataset_cls(
         dataset_roots,
-        train_augmentation=scenario.train_defaults.train_augmentation,
+        train_augmentation=train_augmentation_from_defaults(scenario.train_defaults),
         train_augmentation_seed=scenario.train_defaults.train_augmentation_seed,
         progress_callback=log_meta_train,
     )
@@ -842,7 +857,7 @@ def run_phase_vram_stress(
     log_meta_train("building canonical dataset index for phase stress")
     dataset = canonical_dataset_cls(
         dataset_roots,
-        train_augmentation=phase_defaults.train_augmentation,
+        train_augmentation=train_augmentation_from_defaults(phase_defaults),
         train_augmentation_seed=phase_defaults.train_augmentation_seed,
         progress_callback=log_meta_train,
     )
@@ -929,7 +944,7 @@ def run_meta_train_scenario(
     log_meta_train("building canonical dataset index")
     dataset = canonical_dataset_cls(
         dataset_roots,
-        train_augmentation=scenario.train_defaults.train_augmentation,
+        train_augmentation=train_augmentation_from_defaults(scenario.train_defaults),
         train_augmentation_seed=scenario.train_defaults.train_augmentation_seed,
         progress_callback=log_meta_train,
     )

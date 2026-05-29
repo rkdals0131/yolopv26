@@ -218,6 +218,18 @@ def _build_geometry_rows(
     return rows, torch.tensor(valid, dtype=torch.bool)
 
 
+def _geometry_valid_mask(rows: list[dict[str, Any]], *, min_unique_points: int) -> torch.BoolTensor:
+    valid: list[bool] = []
+    for row in rows:
+        points = row.get("points_xy")
+        if isinstance(points, torch.Tensor):
+            point_rows = points.detach().cpu().reshape(-1, 2).tolist()
+        else:
+            point_rows = []
+        valid.append(unique_point_count(point_rows) >= int(min_unique_points))
+    return torch.tensor(valid, dtype=torch.bool)
+
+
 def _build_source_mask(dataset_key: str) -> dict[str, bool]:
     try:
         return dict(SOURCE_MASK_BY_DATASET[dataset_key])
@@ -358,6 +370,9 @@ class PV26CanonicalDataset(Dataset):
                 config=self.train_augmentation,
                 rng=rng,
             )
+            lane_valid = _geometry_valid_mask(lanes, min_unique_points=2)
+            stop_valid = _geometry_valid_mask(stop_lines, min_unique_points=2)
+            crosswalk_valid = _geometry_valid_mask(crosswalks, min_unique_points=3)
 
         return {
             "image": image,

@@ -8,6 +8,7 @@ from typing import Iterable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 
@@ -58,6 +59,9 @@ class TrainAugmentationConfig:
     brightness_delta: float = 0.10
     contrast_range: tuple[float, float] = (0.90, 1.10)
     gamma_range: tuple[float, float] = (0.95, 1.05)
+    stopline_focus_crop_prob: float = 0.0
+    stopline_focus_crop_scale_range: tuple[float, float] = (1.25, 1.75)
+    stopline_focus_crop_jitter: float = 0.10
 
 
 def compute_letterbox_transform(
@@ -223,6 +227,163 @@ def _flip_points_tensor(points: torch.Tensor, network_hw: tuple[int, int]) -> to
     return flipped
 
 
+def _crop_zoom_points_tensor(
+    points: torch.Tensor,
+    *,
+    crop_left: float,
+    crop_top: float,
+    scale_x: float,
+    scale_y: float,
+    network_hw: tuple[int, int],
+) -> torch.Tensor:
+    transformed = points.clone()
+    transformed[..., 0] = (transformed[..., 0] - float(crop_left)) * float(scale_x)
+    transformed[..., 1] = (transformed[..., 1] - float(crop_top)) * float(scale_y)
+    net_h, net_w = network_hw
+    transformed[..., 0] = transformed[..., 0].clamp(0.0, float(net_w - 1))
+    transformed[..., 1] = transformed[..., 1].clamp(0.0, float(net_h - 1))
+    return transformed
+
+
+def _crop_zoom_box_xyxy(
+    box: Iterable[float],
+    *,
+    crop_left: float,
+    crop_top: float,
+    scale_x: float,
+    scale_y: float,
+    network_hw: tuple[int, int],
+) -> list[float] | None:
+    x1, y1, x2, y2 = [float(value) for value in box]
+    transformed = [
+        (x1 - float(crop_left)) * float(scale_x),
+        (y1 - float(crop_top)) * float(scale_y),
+        (x2 - float(crop_left)) * float(scale_x),
+        (y2 - float(crop_top)) * float(scale_y),
+    ]
+    return clip_box_xyxy(transformed, network_hw)
+
+
+def _row_points(row: dict[str, object]) -> torch.Tensor | None:
+    points_xy = row.get("points_xy")
+    if not isinstance(points_xy, torch.Tensor) or points_xy.numel() < 2:
+        return None
+    return points_xy
+
+
+def _stopline_focus_center(stop_lines: list[dict[str, object]], *, rng: random.Random) -> tuple[float, float] | None:
+    candidates: list[torch.Tensor] = []
+    for row in stop_lines:
+        points = _row_points(row)
+        if points is None:
+            continue
+        reshaped = points.to(dtype=torch.float32).reshape(-1, 2)
+        if int(reshaped.shape[0]) >= 2 and torch.isfinite(reshaped).all():
+            candidates.append(reshaped)
+    if not candidates:
+        return None
+    points = candidates[rng.randrange(len(candidates))]
+    center = points.mean(dim=0)
+    return float(center[0].item()), float(center[1].item())
+
+
+def _apply_stopline_focus_crop(
+    image: torch.FloatTensor,
+    *,
+    det_boxes: list[list[float]],
+    lanes: list[dict[str, object]],
+    stop_lines: list[dict[str, object]],
+    crosswalks: list[dict[str, object]],
+    network_hw: tuple[int, int],
+    config: TrainAugmentationConfig,
+    rng: random.Random,
+) -> tuple[
+    torch.FloatTensor,
+    list[list[float]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[str, object] | None,
+]:
+    if rng.random() >= float(config.stopline_focus_crop_prob):
+        return image, det_boxes, lanes, stop_lines, crosswalks, None
+    if det_boxes:
+        # This augmentation can drop boxes, while class rows are owned by the
+        # dataset loader. Keep detector-supervised samples on the stable path.
+        return image, det_boxes, lanes, stop_lines, crosswalks, None
+    focus_center = _stopline_focus_center(stop_lines, rng=rng)
+    if focus_center is None:
+        return image, det_boxes, lanes, stop_lines, crosswalks, None
+
+    net_h, net_w = network_hw
+    scale_min, scale_max = sorted(float(value) for value in config.stopline_focus_crop_scale_range)
+    scale_min = max(1.0, scale_min)
+    scale_max = max(scale_min, scale_max)
+    zoom = rng.uniform(scale_min, scale_max)
+    crop_w = max(2, min(int(net_w), int(round(float(net_w) / zoom))))
+    crop_h = max(2, min(int(net_h), int(round(float(net_h) / zoom))))
+    jitter = max(0.0, float(config.stopline_focus_crop_jitter))
+    center_x = float(focus_center[0]) + rng.uniform(-jitter, jitter) * float(crop_w)
+    center_y = float(focus_center[1]) + rng.uniform(-jitter, jitter) * float(crop_h)
+    crop_left = int(round(center_x - 0.5 * float(crop_w)))
+    crop_top = int(round(center_y - 0.5 * float(crop_h)))
+    crop_left = max(0, min(crop_left, int(net_w) - crop_w))
+    crop_top = max(0, min(crop_top, int(net_h) - crop_h))
+    crop_right = crop_left + crop_w
+    crop_bottom = crop_top + crop_h
+    if crop_right <= crop_left + 1 or crop_bottom <= crop_top + 1:
+        return image, det_boxes, lanes, stop_lines, crosswalks, None
+
+    cropped = image[:, crop_top:crop_bottom, crop_left:crop_right].unsqueeze(0)
+    zoomed = F.interpolate(cropped, size=(int(net_h), int(net_w)), mode="bilinear", align_corners=False).squeeze(0)
+    scale_x = float(net_w) / float(crop_w)
+    scale_y = float(net_h) / float(crop_h)
+
+    transformed_det: list[list[float]] = []
+    for box in det_boxes:
+        transformed_box = _crop_zoom_box_xyxy(
+            box,
+            crop_left=float(crop_left),
+            crop_top=float(crop_top),
+            scale_x=scale_x,
+            scale_y=scale_y,
+            network_hw=network_hw,
+        )
+        if transformed_box is not None:
+            transformed_det.append(transformed_box)
+
+    for rows in (lanes, stop_lines, crosswalks):
+        for row in rows:
+            points = _row_points(row)
+            if points is None:
+                continue
+            row["points_xy"] = _crop_zoom_points_tensor(
+                points,
+                crop_left=float(crop_left),
+                crop_top=float(crop_top),
+                scale_x=scale_x,
+                scale_y=scale_y,
+                network_hw=network_hw,
+            )
+
+    return (
+        zoomed.contiguous(),
+        transformed_det,
+        lanes,
+        stop_lines,
+        crosswalks,
+        {
+            "applied": True,
+            "zoom": float(zoom),
+            "crop_left": int(crop_left),
+            "crop_top": int(crop_top),
+            "crop_right": int(crop_right),
+            "crop_bottom": int(crop_bottom),
+            "focus_center": [float(focus_center[0]), float(focus_center[1])],
+        },
+    )
+
+
 def _apply_photometric_jitter(
     image: torch.FloatTensor,
     *,
@@ -271,6 +432,23 @@ def apply_train_augmentations(
     augmented_lanes = _clone_geometry_rows(lanes)
     augmented_stop_lines = _clone_geometry_rows(stop_lines)
     augmented_crosswalks = _clone_geometry_rows(crosswalks)
+    (
+        augmented_image,
+        augmented_det,
+        augmented_lanes,
+        augmented_stop_lines,
+        augmented_crosswalks,
+        focus_crop_meta,
+    ) = _apply_stopline_focus_crop(
+        augmented_image,
+        det_boxes=augmented_det,
+        lanes=augmented_lanes,
+        stop_lines=augmented_stop_lines,
+        crosswalks=augmented_crosswalks,
+        network_hw=network_hw,
+        config=config,
+        rng=rng,
+    )
     applied_flip = rng.random() < float(config.horizontal_flip_prob)
 
     if applied_flip:
@@ -290,6 +468,7 @@ def apply_train_augmentations(
         augmented_crosswalks,
         {
             "horizontal_flip": bool(applied_flip),
+            "stopline_focus_crop": focus_crop_meta,
             **photo_meta,
         },
     )

@@ -175,6 +175,82 @@ class PV26TransformRoundtripTests(unittest.TestCase):
         self.assertGreaterEqual(float(augmented[5]["gamma"]), 0.9)
         self.assertLessEqual(float(augmented[5]["gamma"]), 1.1)
 
+    def test_stopline_focus_crop_zooms_geometry_without_changing_network_shape(self) -> None:
+        image = torch.arange(3 * 8 * 10, dtype=torch.float32).reshape(3, 8, 10) / 255.0
+        lanes = [{"points_xy": torch.tensor([[3.0, 7.0], [5.0, 3.0]], dtype=torch.float32), "color": 0}]
+        stop_lines = [{"points_xy": torch.tensor([[4.0, 4.0], [6.0, 4.0]], dtype=torch.float32)}]
+        crosswalks = [
+            {"points_xy": torch.tensor([[3.0, 3.0], [6.0, 3.0], [6.0, 6.0], [3.0, 6.0]], dtype=torch.float32)}
+        ]
+        config = TrainAugmentationConfig(
+            horizontal_flip_prob=0.0,
+            brightness_delta=0.0,
+            contrast_range=(1.0, 1.0),
+            gamma_range=(1.0, 1.0),
+            stopline_focus_crop_prob=1.0,
+            stopline_focus_crop_scale_range=(2.0, 2.0),
+            stopline_focus_crop_jitter=0.0,
+        )
+
+        augmented = apply_train_augmentations(
+            image,
+            det_boxes=[],
+            lanes=lanes,
+            stop_lines=stop_lines,
+            crosswalks=crosswalks,
+            network_hw=(8, 10),
+            config=config,
+            rng=random.Random(3),
+        )
+
+        self.assertEqual(tuple(augmented[0].shape), (3, 8, 10))
+        crop_meta = augmented[5]["stopline_focus_crop"]
+        self.assertEqual(
+            crop_meta,
+            {
+                "applied": True,
+                "zoom": 2.0,
+                "crop_left": 2,
+                "crop_top": 2,
+                "crop_right": 7,
+                "crop_bottom": 6,
+                "focus_center": [5.0, 4.0],
+            },
+        )
+        self.assertTrue(torch.allclose(augmented[3][0]["points_xy"], torch.tensor([[4.0, 4.0], [8.0, 4.0]])))
+        self.assertGreaterEqual(float(augmented[2][0]["points_xy"].min().item()), 0.0)
+        self.assertLessEqual(float(augmented[2][0]["points_xy"][..., 0].max().item()), 9.0)
+        self.assertLessEqual(float(augmented[4][0]["points_xy"][..., 1].max().item()), 7.0)
+
+    def test_stopline_focus_crop_skips_detector_supervised_samples(self) -> None:
+        image = torch.zeros((3, 8, 10), dtype=torch.float32)
+        det_boxes = [[1.0, 1.0, 4.0, 5.0]]
+        stop_lines = [{"points_xy": torch.tensor([[4.0, 4.0], [6.0, 4.0]], dtype=torch.float32)}]
+        config = TrainAugmentationConfig(
+            horizontal_flip_prob=0.0,
+            brightness_delta=0.0,
+            contrast_range=(1.0, 1.0),
+            gamma_range=(1.0, 1.0),
+            stopline_focus_crop_prob=1.0,
+            stopline_focus_crop_scale_range=(2.0, 2.0),
+            stopline_focus_crop_jitter=0.0,
+        )
+
+        augmented = apply_train_augmentations(
+            image,
+            det_boxes=det_boxes,
+            lanes=[],
+            stop_lines=stop_lines,
+            crosswalks=[],
+            network_hw=(8, 10),
+            config=config,
+            rng=random.Random(3),
+        )
+
+        self.assertEqual(augmented[1], det_boxes)
+        self.assertIsNone(augmented[5]["stopline_focus_crop"])
+        self.assertTrue(torch.equal(augmented[3][0]["points_xy"], stop_lines[0]["points_xy"]))
+
 
 if __name__ == "__main__":
     unittest.main()
