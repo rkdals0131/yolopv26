@@ -142,6 +142,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_segfirst_task_conflict_negative_weight": 0.4,
                             "lane_segfirst_task_conflict_negative_margin": 0.1,
                             "lane_conditional_row_aux_weight": 0.7,
+                            "lane_conditional_seed_aux_weight": 0.3,
                             "lane_conditional_seed_target_mode": "bottom_anchor",
                             "lane_conditional_objectness_target_mode": "metric_quality",
                             "lane_conditional_row_x_weight": 0.4,
@@ -149,6 +150,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_segfirst_track_mode": "row_scan",
                             "lane_segfirst_max_row_gap": 24,
                             "lane_segfirst_max_link_dx": 12.0,
+                            "lane_segfirst_seed_threshold": 0.62,
+                            "lane_segfirst_seed_trace_max_seeds": 12,
                             "lane_segfirst_loss_weights": {
                                 "centerline_bce": 1.25,
                                 "centerline_dice": 1.5,
@@ -299,6 +302,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_weight, 0.4)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_task_conflict_negative_margin, 0.1)
         self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_aux_weight, 0.7)
+        self.assertAlmostEqual(scenario.train_defaults.lane_conditional_seed_aux_weight, 0.3)
         self.assertEqual(scenario.train_defaults.lane_conditional_seed_target_mode, "bottom_anchor")
         self.assertEqual(scenario.train_defaults.lane_conditional_objectness_target_mode, "metric_quality")
         self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_x_weight, 0.4)
@@ -306,6 +310,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.lane_segfirst_track_mode, "row_scan")
         self.assertEqual(scenario.train_defaults.lane_segfirst_max_row_gap, 24)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_max_link_dx, 12.0)
+        self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_seed_threshold, 0.62)
+        self.assertEqual(scenario.train_defaults.lane_segfirst_seed_trace_max_seeds, 12)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_bce"], 1.25)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_loss_weights["centerline_dice"], 1.5)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_color_class_weights["yellow_lane"], 1.75)

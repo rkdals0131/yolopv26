@@ -13476,3 +13476,77 @@ Verification:
 - Larger train-batch exposure is negative against the standard section-265 run: broader lane/stop/cross moves from `0.5571 / 0.5278 / 0.6142` to `0.5564 / 0.5122 / 0.6162`.
 - It is also below the retained lane-preserving task-balance reference on stop-line (`0.5164 -> 0.5122`) and lane (`0.5628 -> 0.5564`).
 - Do not repeat this as train-batch count, epoch-count, val-batch count, same freeze-policy, or same sampler scaling. More data exposure on this contract does not fix the missing stop-line geometry/candidate signal.
+
+## 268. 2026-05-29 Lane seed-trace instance decoder: larger slice still rejects
+
+Context:
+
+- GPT Pro's architecture review argued that lane may be limited by the lack of a model-side instance emit contract, not only by postprocess thresholds.
+- This branch tested a narrower instance-native lane signal than the already-closed one-shot conditional row decoder: bottom-anchor seed supervision plus a runtime trace from learned seed peaks over the existing centerline/tangent field.
+- The user explicitly asked for real training/evaluation, larger-range data exposure, and smart storage without copying the dataset.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-seed-trace-instance`.
+- Final retained run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_trace_instance_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_131325`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Code added:
+  - `LaneSegFirstVectorizerConfig.seed_threshold`.
+  - `LaneSegFirstVectorizerConfig.seed_trace_max_seeds`.
+  - `track_mode="row_scan_tangent_seed_trace"`.
+  - `lane_conditional_seed_aux_weight`.
+  - `lane_conditional_seed_target_mode="bottom_anchor"`.
+- Runtime contract:
+  - pure `seed_trace` remains seed-only.
+  - combined `row_scan_seed_trace` / `row_scan_tangent_seed_trace` preserves row-scan predictions first.
+  - seed-trace candidates are appended only if their mean-point distance to existing predictions is greater than the lane matching threshold.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+
+Contract fixes during the run:
+
+- Initial smoke exposed a bug: `row_scan_tangent_seed_trace` returned immediately after seed traces, so it did not preserve the baseline row-scan/tangent lane decode.
+- After fixing that, exact-val128 still showed excessive lane FP with the first duplicate gate: lane/stop/cross `0.3272 / 0.5299 / 0.5799`, lane TP/FP/FN `1075 / 3105 / 1315`.
+- Strengthening duplicate suppression to the evaluator lane matching threshold improved the same checkpoint to lane/stop/cross `0.4130 / 0.5299 / 0.5799`, lane TP/FP/FN `1051 / 1649 / 1339`.
+- Both intermediate runs were pruned after the final larger-slice run.
+
+Smoke and larger-slice training:
+
+| Run | Train batches | Val batches | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |
+| fixed contract smoke | `32` | `4` | `0.5505488962` | `0.3041` | `0.0000` | `0.7273` | `33 / 105 / 46` | `0 / 1 / 2` | `4 / 2 / 1` |
+| larger slice | `512` | `128` | `0.6202068390` | `0.5297` | `0.3299` | `0.6832` | `1048 / 574 / 1287` | `16 / 26 / 39` | `55 / 23 / 28` |
+
+Fixed exact-val128 epoch-2 eval:
+
+| Checkpoint | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 32-batch checkpoint, dedup threshold `40px` | `0.5954080411` | `0.4130` | `0.5299` | `0.5799` | `1051 / 1649 / 1339` | `31 / 26 / 29` | `49 / 39 / 32` |
+| 512-batch checkpoint | `0.6328142036` | `0.5488` | `0.5000` | `0.5644` | `1096 / 508 / 1294` | `29 / 27 / 31` | `46 / 36 / 35` |
+
+Storage:
+
+- Pre-fix smoke run: about `752M`; pruned.
+- Fixed-contract 32-batch run: about `765M`; pruned after exact export showed lane FP failure.
+- Final 512-batch run initially had duplicate task-best checkpoints and `last.pt`.
+- Retained only `phase_4/checkpoints/best.pt`, summaries/history, and exact eval export.
+- Removed temporary `yolo26n.pt` and `yolo26s.pt` downloads.
+- Retained final run size is about `117M`.
+
+Verification:
+
+- `python -m py_compile model/engine/lane_segfirst_vectorizer.py model/engine/postprocess.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_lane_segfirst_vectorizer.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- Real CUDA smoke train/eval.
+- Real CUDA larger-slice train: `1` epoch, `512` train batches, `128` val batches.
+- Fixed exact-val128 epoch-2 eval of both the 32-batch and 512-batch checkpoints.
+
+판단:
+
+- The larger-slice run confirms that bottom-anchor seed-trace training can reduce the seed-trace FP blow-up versus the short run, but it still does not beat the retained lane-preserving reference.
+- Exact epoch-2 for the larger checkpoint misses all three task gates: lane `0.5488`, stop-line `0.5000`, crosswalk `0.5644`.
+- Phase objective `0.6328` is misleading here; it is not all-task success.
+- Broader-val512 was skipped because exact-val128 failed before broadening.
+- Do not repeat this as seed threshold, max seeds, aux weight, head-LR, freeze-policy, or longer-run tuning. Reopen only with a new seed quality / instance-existence contract that can add lane TP without breaking the retained row-scan lanes or crosswalk hull behavior.

@@ -43,6 +43,8 @@ class LaneSegFirstVectorizerConfig:
     max_row_gap: int = 12
     max_link_dx: float = 8.0
     max_turn_degrees: float = 0.0
+    seed_threshold: float = 0.50
+    seed_trace_max_seeds: int | None = 24
     lane_match_threshold: float = 40.0
 
 
@@ -569,6 +571,76 @@ def _passes_bottom_y_filter(
     return bottom_y >= float(target_hw[0]) * float(min_fraction)
 
 
+def _seed_trace_polylines(
+    centerline: np.ndarray,
+    seed_map: np.ndarray,
+    *,
+    cfg: LaneSegFirstVectorizerConfig,
+) -> list[list[list[float]]]:
+    if centerline.shape != seed_map.shape:
+        return []
+    width = int(centerline.shape[1])
+    local_max = seed_map >= ndimage.maximum_filter(seed_map, size=3, mode="nearest")
+    seed_mask = local_max & (seed_map >= float(cfg.seed_threshold))
+    seed_rows, seed_cols = np.nonzero(seed_mask)
+    if seed_rows.size == 0:
+        return []
+    seed_scores = seed_map[seed_rows, seed_cols]
+    order = np.argsort(-seed_scores)
+    max_seeds = cfg.seed_trace_max_seeds
+    if max_seeds is None and cfg.max_predictions is not None:
+        max_seeds = int(cfg.max_predictions)
+    if max_seeds is not None:
+        order = order[: max(0, int(max_seeds))]
+
+    polylines: list[list[list[float]]] = []
+    row_stride = max(1, int(cfg.row_stride))
+    search_radius = max(1, int(round(float(cfg.max_link_dx))))
+    max_gap = max(row_stride, int(cfg.max_row_gap))
+    for seed_index in order.tolist():
+        seed_row = int(seed_rows[seed_index])
+        seed_col = int(seed_cols[seed_index])
+        current_x = float(seed_col)
+        gap = 0
+        points: list[list[float]] = []
+        for row_index in range(seed_row, -1, -row_stride):
+            center_col = int(round(current_x))
+            start_col = max(0, center_col - search_radius)
+            end_col = min(width, center_col + search_radius + 1)
+            if start_col >= end_col:
+                break
+            row_values = centerline[row_index, start_col:end_col]
+            valid_cols = np.nonzero(row_values >= float(cfg.centerline_threshold))[0]
+            if valid_cols.size == 0:
+                gap += row_stride
+                if gap > max_gap:
+                    break
+                continue
+            local_scores = row_values[valid_cols]
+            best_local = int(valid_cols[int(np.argmax(local_scores))])
+            current_x = float(start_col + best_local)
+            points.append([current_x, float(row_index)])
+            gap = 0
+        if len(points) >= int(cfg.min_polyline_points):
+            polylines.append(points)
+    return polylines
+
+
+def _near_existing_prediction(
+    predictions: list[dict[str, Any]],
+    points_xy: list[list[float]],
+    *,
+    threshold_px: float,
+) -> bool:
+    if not predictions or float(threshold_px) <= 0.0:
+        return False
+    for prediction in predictions:
+        distance = _mean_point_distance(points_xy, prediction["points_xy"], target_count=20)
+        if float(distance) <= float(threshold_px):
+            return True
+    return False
+
+
 def vectorize_lane_segfirst_maps(
     maps: dict[str, torch.Tensor | np.ndarray],
     *,
@@ -583,13 +655,68 @@ def vectorize_lane_segfirst_maps(
     color_map = _as_numpy_chw(maps.get("color_map", np.zeros((len(LANE_CLASSES), *binary.shape), dtype=np.float32)), channels=len(LANE_CLASSES))
     type_map = _as_numpy_chw(maps.get("lane_type_map", np.zeros((len(LANE_TYPES), *binary.shape), dtype=np.float32)), channels=len(LANE_TYPES))
     tangent_axis = _as_numpy_chw(maps.get("tangent_axis", np.zeros((2, *binary.shape), dtype=np.float32)), channels=2)
+    seed_map = _as_numpy_channel(maps.get("seed_map", centerline))
     transform = transform_from_meta(meta) if meta is not None else None
 
     predictions: list[dict[str, Any]] = []
     track_mode = str(cfg.track_mode).strip().lower()
     row_tangent_modes = {"row_scan_tangent", "rowscan_tangent", "row_tangent", "tangent_row_scan"}
-    if track_mode in {"row_scan", "rowscan", "row", *row_tangent_modes}:
-        if track_mode in row_tangent_modes:
+    seed_trace_only_modes = {"seed_trace", "seeded_trace"}
+    row_seed_trace_modes = {"row_scan_seed_trace", "row_scan_tangent_seed_trace"}
+    if track_mode in seed_trace_only_modes:
+        for map_points in _seed_trace_polylines(centerline, seed_map, cfg=cfg):
+            if cfg.max_predictions is not None and len(predictions) >= int(cfg.max_predictions):
+                break
+            if len(map_points) < int(cfg.min_polyline_points):
+                continue
+            track_mask = _track_to_mask(map_points, output_hw=map_hw, width=3) & binary
+            if int(track_mask.sum()) < int(cfg.min_component_pixels):
+                continue
+            if transform is not None:
+                network_points = _scale_points_list(
+                    map_points,
+                    source_hw=map_hw,
+                    target_hw=transform.network_hw,
+                )
+            else:
+                network_points = map_points
+            network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
+            if unique_point_count(network_points) < 2:
+                continue
+            output_points = inverse_transform_points(network_points, transform) if transform is not None else network_points
+            if unique_point_count(output_points) < 2:
+                continue
+            if float(cfg.max_turn_degrees) > 0.0 and _max_turn_degrees(output_points) > float(cfg.max_turn_degrees):
+                continue
+            if float(cfg.min_polyline_length_px) > 0.0 and _polyline_length(output_points) < float(cfg.min_polyline_length_px):
+                continue
+            output_hw = transform.raw_hw if transform is not None else map_hw
+            if not _passes_bottom_y_filter(
+                output_points,
+                min_fraction=float(cfg.min_polyline_bottom_y_fraction),
+                target_hw=output_hw,
+            ):
+                continue
+            semantic_weights = _semantic_vote_weights(
+                centerline,
+                track_mask,
+                mode=cfg.semantic_vote_mode,
+                threshold=float(cfg.centerline_threshold),
+            )
+            color_index = _vote_index(color_map, track_mask, weights=semantic_weights)
+            type_index = _vote_index(type_map, track_mask, weights=semantic_weights)
+            predictions.append(
+                {
+                    "score": 1.0,
+                    "class_name": LANE_CLASSES[color_index],
+                    "lane_type": LANE_TYPES[type_index],
+                    "points_xy": [[float(x), float(y)] for x, y in output_points],
+                }
+            )
+        predictions.sort(key=lambda item: (max(point[1] for point in item["points_xy"]), -np.mean([point[0] for point in item["points_xy"]])), reverse=True)
+        return predictions
+    if track_mode in {"row_scan", "rowscan", "row", *row_tangent_modes, *row_seed_trace_modes}:
+        if track_mode in row_tangent_modes or track_mode == "row_scan_tangent_seed_trace":
             map_polylines = _component_to_polylines_tangent(
                 binary,
                 tangent_axis,
@@ -653,10 +780,70 @@ def vectorize_lane_segfirst_maps(
                     "points_xy": [[float(x), float(y)] for x, y in output_points],
                 }
             )
+        if track_mode in row_seed_trace_modes:
+            for map_points in _seed_trace_polylines(centerline, seed_map, cfg=cfg):
+                if cfg.max_predictions is not None and len(predictions) >= int(cfg.max_predictions):
+                    break
+                if len(map_points) < int(cfg.min_polyline_points):
+                    continue
+                track_mask = _track_to_mask(map_points, output_hw=map_hw, width=3) & binary
+                if int(track_mask.sum()) < int(cfg.min_component_pixels):
+                    continue
+                if transform is not None:
+                    network_points = _scale_points_list(
+                        map_points,
+                        source_hw=map_hw,
+                        target_hw=transform.network_hw,
+                    )
+                else:
+                    network_points = map_points
+                network_points = clip_points(network_points, map_hw if transform is None else transform.network_hw)
+                if unique_point_count(network_points) < 2:
+                    continue
+                output_points = inverse_transform_points(network_points, transform) if transform is not None else network_points
+                if unique_point_count(output_points) < 2:
+                    continue
+                if float(cfg.max_turn_degrees) > 0.0 and _max_turn_degrees(output_points) > float(cfg.max_turn_degrees):
+                    continue
+                if float(cfg.min_polyline_length_px) > 0.0 and _polyline_length(output_points) < float(cfg.min_polyline_length_px):
+                    continue
+                output_hw = transform.raw_hw if transform is not None else map_hw
+                if not _passes_bottom_y_filter(
+                    output_points,
+                    min_fraction=float(cfg.min_polyline_bottom_y_fraction),
+                    target_hw=output_hw,
+                ):
+                    continue
+                duplicate_threshold = float(cfg.lane_match_threshold)
+                if _near_existing_prediction(
+                    predictions,
+                    output_points,
+                    threshold_px=duplicate_threshold,
+                ):
+                    continue
+                semantic_weights = _semantic_vote_weights(
+                    centerline,
+                    track_mask,
+                    mode=cfg.semantic_vote_mode,
+                    threshold=float(cfg.centerline_threshold),
+                )
+                color_index = _vote_index(color_map, track_mask, weights=semantic_weights)
+                type_index = _vote_index(type_map, track_mask, weights=semantic_weights)
+                predictions.append(
+                    {
+                        "score": 1.0,
+                        "class_name": LANE_CLASSES[color_index],
+                        "lane_type": LANE_TYPES[type_index],
+                        "points_xy": [[float(x), float(y)] for x, y in output_points],
+                    }
+                )
         predictions.sort(key=lambda item: (max(point[1] for point in item["points_xy"]), -np.mean([point[0] for point in item["points_xy"]])), reverse=True)
         return predictions
     if track_mode != "component":
-        raise ValueError("track_mode must be one of: component, row_scan, row_scan_tangent")
+        raise ValueError(
+            "track_mode must be one of: component, row_scan, row_scan_tangent, "
+            "seed_trace, row_scan_seed_trace, row_scan_tangent_seed_trace"
+        )
 
     component_ids: list[int] = []
     component_sizes = ndimage.sum(
@@ -747,15 +934,21 @@ def lane_segfirst_prediction_maps(
     tangent_axis = predictions["lane_seg_tangent_axis"][batch_index].detach().cpu()
     color_logits = predictions["lane_seg_color_logits"][batch_index].detach().cpu()
     type_logits = predictions["lane_seg_type_logits"][batch_index].detach().cpu()
+    seed_logits = predictions.get("lane_conditional_seed_logits")
     tangent_norm = torch.linalg.norm(tangent_axis, dim=0, keepdim=True).clamp(min=1.0e-6)
     tangent_axis = tangent_axis / tangent_norm
     centerline_prob = centerline_logits.sigmoid()
     support_prob = support_logits.sigmoid()
+    if isinstance(seed_logits, torch.Tensor):
+        seed_prob = seed_logits[batch_index].detach().cpu().sigmoid()
+    else:
+        seed_prob = centerline_prob
     h, w = int(centerline_prob.shape[-2]), int(centerline_prob.shape[-1])
     return {
         "centerline_core": centerline_prob,
         "centerline_soft": centerline_prob,
         "support": support_prob,
+        "seed_map": seed_prob,
         "tangent_axis": tangent_axis,
         "color_map": color_logits.softmax(dim=0),
         "lane_type_map": type_logits.softmax(dim=0),

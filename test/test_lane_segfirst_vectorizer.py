@@ -123,6 +123,71 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertEqual(len(predictions), 1)
         self.assertEqual(len(predictions[0]["points_xy"]), 3)
 
+    def test_seed_trace_starts_from_seed_map_and_follows_centerline(self) -> None:
+        maps = _maps_with_vertical_gap()
+        seed_map = torch.zeros((1, 12, 12), dtype=torch.float32)
+        seed_map[0, 11, 5] = 0.95
+        maps["seed_map"] = seed_map
+
+        predictions = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="seed_trace",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                seed_threshold=0.5,
+                seed_trace_max_seeds=4,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 1)
+        self.assertGreaterEqual(len(predictions[0]["points_xy"]), 4)
+
+    def test_row_scan_seed_trace_preserves_row_scan_without_seed(self) -> None:
+        maps = _maps_with_vertical_gap()
+        maps["seed_map"] = torch.zeros((1, 12, 12), dtype=torch.float32)
+
+        predictions = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan_tangent_seed_trace",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                seed_threshold=0.5,
+                seed_trace_max_seeds=4,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 1)
+        self.assertGreaterEqual(len(predictions[0]["points_xy"]), 4)
+
+    def test_row_scan_seed_trace_suppresses_duplicate_seed_trace(self) -> None:
+        maps = _maps_with_vertical_gap()
+        seed_map = torch.zeros((1, 12, 12), dtype=torch.float32)
+        seed_map[0, 11, 5] = 0.95
+        maps["seed_map"] = seed_map
+
+        predictions = vectorize_lane_segfirst_maps(
+            maps,
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan_tangent_seed_trace",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=3,
+                max_link_dx=1.0,
+                seed_threshold=0.5,
+                seed_trace_max_seeds=4,
+                lane_match_threshold=40.0,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 1)
+        self.assertGreaterEqual(len(predictions[0]["points_xy"]), 4)
+
     def test_rejects_unknown_track_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "track_mode"):
             vectorize_lane_segfirst_maps(

@@ -460,6 +460,43 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["lane_conditional_rows"].grad)
         self.assertIsNotNone(predictions["lane_conditional_seed_logits"].grad)
 
+    def test_lane_conditional_seed_aux_loss_backprops_without_row_aux(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "lane_seg_centerline_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_support_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "lane_seg_color_logits": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), requires_grad=True),
+                "lane_seg_type_logits": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), requires_grad=True),
+                "lane_conditional_seed_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_conditional_rows": torch.zeros(
+                    (batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM),
+                    requires_grad=True,
+                ),
+            }
+        )
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"stop_line": 0.0, "crosswalk": 0.0},
+            lane_conditional_seed_aux_weight=1.0,
+            lane_conditional_seed_target_mode="bottom_anchor",
+        )
+        losses = criterion(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertAlmostEqual(criterion.export_config()["lane_conditional_seed_aux_weight"], 1.0)
+        losses["total"].backward()
+        self.assertIsNone(predictions["lane_conditional_rows"].grad)
+        self.assertIsNotNone(predictions["lane_conditional_seed_logits"].grad)
+
     def test_stage4_promotes_half_precision_lane_predictions_to_float32_for_loss(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

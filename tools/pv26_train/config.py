@@ -125,6 +125,7 @@ class TrainDefaultsConfig:
     lane_segfirst_task_conflict_negative_weight: float = 0.0
     lane_segfirst_task_conflict_negative_margin: float = 0.15
     lane_conditional_row_aux_weight: float = 0.0
+    lane_conditional_seed_aux_weight: float = 0.0
     lane_conditional_seed_target_mode: str = "centerline_core"
     lane_conditional_objectness_target_mode: str = "binary"
     lane_conditional_row_x_weight: float = 0.05
@@ -134,6 +135,8 @@ class TrainDefaultsConfig:
     lane_segfirst_track_mode: str = "component"
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
+    lane_segfirst_seed_threshold: float = 0.50
+    lane_segfirst_seed_trace_max_seeds: int = 24
     lane_segfirst_loss_weights: dict[str, float] = field(default_factory=dict)
     lane_segfirst_color_class_weights: dict[str, float] = field(default_factory=dict)
     stopline_local_x_aux_weight: float = 0.0
@@ -716,6 +719,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("lane_conditional_row_aux_weight", defaults.lane_conditional_row_aux_weight),
             field_name="train_defaults.lane_conditional_row_aux_weight",
         ),
+        lane_conditional_seed_aux_weight=_coerce_float(
+            data.get("lane_conditional_seed_aux_weight", defaults.lane_conditional_seed_aux_weight),
+            field_name="train_defaults.lane_conditional_seed_aux_weight",
+        ),
         lane_conditional_seed_target_mode=_coerce_str(
             data.get("lane_conditional_seed_target_mode", defaults.lane_conditional_seed_target_mode),
             field_name="train_defaults.lane_conditional_seed_target_mode",
@@ -754,6 +761,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_segfirst_max_link_dx=_coerce_float(
             data.get("lane_segfirst_max_link_dx", defaults.lane_segfirst_max_link_dx),
             field_name="train_defaults.lane_segfirst_max_link_dx",
+        ),
+        lane_segfirst_seed_threshold=_coerce_float(
+            data.get("lane_segfirst_seed_threshold", defaults.lane_segfirst_seed_threshold),
+            field_name="train_defaults.lane_segfirst_seed_threshold",
+        ),
+        lane_segfirst_seed_trace_max_seeds=_coerce_int(
+            data.get("lane_segfirst_seed_trace_max_seeds", defaults.lane_segfirst_seed_trace_max_seeds),
+            field_name="train_defaults.lane_segfirst_seed_trace_max_seeds",
         ),
         lane_segfirst_loss_weights={
             _coerce_str(name, field_name="train_defaults.lane_segfirst_loss_weights.key"): _coerce_float(

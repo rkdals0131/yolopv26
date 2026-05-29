@@ -68,6 +68,8 @@ class PV26PostprocessConfig:
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
     lane_segfirst_max_turn_degrees: float = 0.0
+    lane_segfirst_seed_threshold: float = 0.50
+    lane_segfirst_seed_trace_max_seeds: int = 24
     lane_conditional_row_enabled: bool = False
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
@@ -2496,6 +2498,8 @@ def _decode_segfirst_lane_rows(
             max_row_gap=int(config.lane_segfirst_max_row_gap),
             max_link_dx=float(config.lane_segfirst_max_link_dx),
             max_turn_degrees=float(config.lane_segfirst_max_turn_degrees),
+            seed_threshold=float(config.lane_segfirst_seed_threshold),
+            seed_trace_max_seeds=int(config.lane_segfirst_seed_trace_max_seeds),
         ),
     )
 
