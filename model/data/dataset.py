@@ -43,6 +43,7 @@ class SampleRecord:
     scene_path: Path
     image_path: Path
     det_path: Path | None
+    stop_line_count: int = 0
 
 
 OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
@@ -71,6 +72,8 @@ def _discover_records(
         image_file_name = str(scene.get("image", {}).get("file_name"))
         image_path = dataset_root / "images" / split / image_file_name
         det_path = dataset_root / "labels_det" / split / f"{sample_id}.txt"
+        stop_line_items = scene.get("stop_lines", [])
+        stop_line_count = len(stop_line_items) if isinstance(stop_line_items, list) else 0
         records.append(
             SampleRecord(
                 dataset_root=dataset_root,
@@ -80,6 +83,7 @@ def _discover_records(
                 scene_path=scene_path,
                 image_path=image_path,
                 det_path=det_path if det_path.is_file() else None,
+                stop_line_count=int(stop_line_count),
             )
         )
         if progress_callback is not None and scene_index % max(1, int(progress_every)) == 0:
@@ -286,9 +290,53 @@ class PV26CanonicalDataset(Dataset):
             progress_callback(
                 f"loaded {len(self.records)} canonical records from {len(roots)} dataset roots"
             )
+        self._stopline_copy_paste_donors = [
+            record
+            for record in self.records
+            if record.split == "train" and int(record.stop_line_count) > 0
+        ]
 
     def __len__(self) -> int:
         return len(self.records)
+
+    def _stopline_copy_paste_donor(
+        self,
+        *,
+        current_record: SampleRecord,
+        rng: random.Random,
+    ) -> dict[str, object] | None:
+        if not self._stopline_copy_paste_donors:
+            return None
+        for _ in range(min(8, len(self._stopline_copy_paste_donors))):
+            donor_record = self._stopline_copy_paste_donors[
+                rng.randrange(len(self._stopline_copy_paste_donors))
+            ]
+            if donor_record.scene_path == current_record.scene_path:
+                continue
+            donor_scene = _load_json(donor_record.scene_path)
+            donor_raw_h = int(donor_scene["image"]["height"])
+            donor_raw_w = int(donor_scene["image"]["width"])
+            donor_transform = compute_letterbox_transform((donor_raw_h, donor_raw_w))
+            donor_stop_lines, donor_valid = _build_geometry_rows(
+                donor_scene.get("stop_lines", []),
+                transform=donor_transform,
+                min_unique_points=2,
+                with_lane_attributes=False,
+            )
+            valid_stop_lines = [
+                row
+                for row, is_valid in zip(donor_stop_lines, donor_valid.tolist())
+                if bool(is_valid)
+            ]
+            if not valid_stop_lines:
+                continue
+            return {
+                "image": load_letterboxed_image(donor_record.image_path, donor_transform),
+                "stop_lines": valid_stop_lines,
+                "sample_id": donor_record.sample_id,
+                "dataset_key": donor_record.dataset_key,
+            }
+        return None
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
@@ -355,11 +403,20 @@ class PV26CanonicalDataset(Dataset):
         )
         augmentation_meta = None
         if record.split == "train" and self.train_augmentation is not None:
-            rng = None
+            rng = random.Random()
             if self.train_augmentation_seed is not None:
                 key = f"{self.train_augmentation_seed}:{record.dataset_key}:{record.split}:{record.sample_id}".encode("utf-8")
                 seed = int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
                 rng = random.Random(seed)
+            stopline_copy_paste_donor = None
+            if (
+                not stop_lines
+                and float(getattr(self.train_augmentation, "stopline_copy_paste_prob", 0.0)) > 0.0
+            ):
+                stopline_copy_paste_donor = self._stopline_copy_paste_donor(
+                    current_record=record,
+                    rng=rng,
+                )
             image, det_boxes, lanes, stop_lines, crosswalks, augmentation_meta = apply_train_augmentations(
                 image,
                 det_boxes=det_boxes,
@@ -369,6 +426,7 @@ class PV26CanonicalDataset(Dataset):
                 network_hw=NETWORK_HW,
                 config=self.train_augmentation,
                 rng=rng,
+                stopline_copy_paste_donor=stopline_copy_paste_donor,
             )
             lane_valid = _geometry_valid_mask(lanes, min_unique_points=2)
             stop_valid = _geometry_valid_mask(stop_lines, min_unique_points=2)

@@ -16712,3 +16712,81 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 recovered no stop-line TP and still regressed retained lane TP.
 - Do not repeat this as injection probability, thickness, lane-pair span, y-range, paint intensity, seed, head LR, epoch-count, or same projection-comp-runtime training sweep.
 - Reopen synthetic/pseudo stop-line data feeding only with a materially stronger realism/quality contract that first moves fixed smoke TP/FP/FN or with a verifier/candidate generator that can distinguish synthetic-induced support from real stop-line support.
+
+## 314. 2026-05-30 Real stop-line copy-paste feeding smoke: real donor patches train mechanically, but still recover no stop-line TP
+
+맥락:
+
+- The previous synthetic stop-line injection branch proved the train-time label/pixel injection path mechanically, but bright synthetic lines did not recover any stop-line TP.
+- This branch reopened only the materially different realism premise: use actual stop-line image patches from existing train donor samples instead of synthetic paint.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. Donor images were loaded on demand from existing stop-line-positive train records; no dataset copy was created.
+- Runtime decode remained unchanged: retained row-scan/tangent lane decode, projection-competition stop-line decode, and `crosswalk_polygon_mode=hull`.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/real-stopline-copy-paste-feeding`.
+- Dataset donor plumbing: `model/data/dataset.py`.
+  - `SampleRecord` now stores `stop_line_count`.
+  - `PV26CanonicalDataset` indexes train split stop-line donor records and samples a different-scene donor on demand for no-stop-line training samples.
+- Train augmentation: `model/data/transform.py`.
+  - New opt-in config fields: `stopline_copy_paste_prob`, `stopline_copy_paste_margin_px`, and `stopline_copy_paste_alpha`.
+  - The transform crops a real donor patch around donor stop-line endpoints, resizes/blends it into a plausible lane-derived target segment, and appends a matching `stop_lines` row with copy-paste metadata.
+- Config/runtime plumbing: `tools/pv26_train/config.py`, `tools/pv26_train/runtime.py`, `tools/run_pv26_lane60_probe.py`.
+- Tests:
+  - `test/test_pv26_transform_roundtrip.py`, real donor copy-paste adds a stop-line label and changes image pixels.
+  - `test/test_run_pv26_train.py`, scenario config override coverage for copy-paste fields.
+- Changed axis:
+  - `train_aug_stopline_copy_paste_prob=0.45`;
+  - `train_aug_stopline_copy_paste_margin_px=14.0`;
+  - `train_aug_stopline_copy_paste_alpha=0.85`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_real_stopline_copy_paste_feeding_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_083032`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6379765852` at epoch 1, but this is not success evidence because fixed task metrics failed.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5414` | `36 / 11 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- Real copy-paste recovered no stop-line TP.
+- It exactly matched the synthetic injection fixed variant on lane/stop/cross for both retained variant and baseline, so the stronger visual realism did not move the smoke metric.
+- It still lost `4` lane TP against the retained fixed reference, so it is not worth exact-val128 broadening.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_real_stopline_copy_paste_feeding_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_083032/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_real_stopline_copy_paste_feeding_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_083032/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `824K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/transform.py model/data/dataset.py tools/pv26_train/config.py tools/pv26_train/runtime.py tools/run_pv26_lane60_probe.py test/test_pv26_transform_roundtrip.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_transform_roundtrip.PV26TransformRoundtripTests.test_stopline_copy_paste_adds_real_patch_label_and_pixels_from_donor test_pv26_transform_roundtrip.PV26TransformRoundtripTests.test_synthetic_stopline_injection_adds_label_and_pixels_from_lanes test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "real_stopline_copy_paste_feeding|synthetic_stopline_injection"`.
+- CUDA real stop-line copy-paste smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- The dataset/transform/config/runtime plumbing is valid and covered, and the training/evaluation used the existing larger canonical dataset root without copying data.
+- The trained experiment is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 recovered no stop-line TP and still regressed retained lane TP.
+- Do not repeat this as copy-paste probability, donor margin, alpha/blending, donor selection, seed, head LR, epoch-count, or the same projection-comp-runtime training sweep.
+- Reopen pseudo/augmented stop-line feeding only with a materially different candidate-coverage/quality signal that first moves fixed smoke TP/FP/FN.

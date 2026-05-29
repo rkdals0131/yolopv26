@@ -120,6 +120,9 @@ class TrainDefaultsConfig:
     train_aug_affine_shear_degrees: float = 0.0
     train_aug_synthetic_stopline_prob: float = 0.0
     train_aug_synthetic_stopline_thickness_px: float = 5.0
+    train_aug_stopline_copy_paste_prob: float = 0.0
+    train_aug_stopline_copy_paste_margin_px: float = 14.0
+    train_aug_stopline_copy_paste_alpha: float = 0.85
     backbone_variant: str = "s"
     backbone_weights: str | None = None
     roadmark_architecture: str = "native"
@@ -772,6 +775,18 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         train_aug_synthetic_stopline_thickness_px=_coerce_float(
             data.get("train_aug_synthetic_stopline_thickness_px", defaults.train_aug_synthetic_stopline_thickness_px),
             field_name="train_defaults.train_aug_synthetic_stopline_thickness_px",
+        ),
+        train_aug_stopline_copy_paste_prob=_coerce_float(
+            data.get("train_aug_stopline_copy_paste_prob", defaults.train_aug_stopline_copy_paste_prob),
+            field_name="train_defaults.train_aug_stopline_copy_paste_prob",
+        ),
+        train_aug_stopline_copy_paste_margin_px=_coerce_float(
+            data.get("train_aug_stopline_copy_paste_margin_px", defaults.train_aug_stopline_copy_paste_margin_px),
+            field_name="train_defaults.train_aug_stopline_copy_paste_margin_px",
+        ),
+        train_aug_stopline_copy_paste_alpha=_coerce_float(
+            data.get("train_aug_stopline_copy_paste_alpha", defaults.train_aug_stopline_copy_paste_alpha),
+            field_name="train_defaults.train_aug_stopline_copy_paste_alpha",
         ),
         backbone_variant=backbone_variant,
         backbone_weights=_coerce_optional_str(
@@ -1755,6 +1770,12 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} train_aug_synthetic_stopline_prob must be between 0 and 1")
         if float(phase_train.train_aug_synthetic_stopline_thickness_px) <= 0.0:
             raise ValueError(f"phase {index} train_aug_synthetic_stopline_thickness_px must be > 0")
+        if not 0.0 <= float(phase_train.train_aug_stopline_copy_paste_prob) <= 1.0:
+            raise ValueError(f"phase {index} train_aug_stopline_copy_paste_prob must be between 0 and 1")
+        if float(phase_train.train_aug_stopline_copy_paste_margin_px) <= 0.0:
+            raise ValueError(f"phase {index} train_aug_stopline_copy_paste_margin_px must be > 0")
+        if not 0.0 <= float(phase_train.train_aug_stopline_copy_paste_alpha) <= 1.0:
+            raise ValueError(f"phase {index} train_aug_stopline_copy_paste_alpha must be between 0 and 1")
         if float(phase_train.amp_init_scale) <= 0.0:
             raise ValueError(f"phase {index} amp_init_scale must be > 0")
         multitask_conflict = dict(phase_train.multitask_conflict)

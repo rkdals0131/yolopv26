@@ -328,6 +328,47 @@ class PV26TransformRoundtripTests(unittest.TestCase):
         self.assertGreater(float(augmented[0].max().item()), 0.5)
         self.assertIsNotNone(augmented[5]["synthetic_stopline"])
 
+    def test_stopline_copy_paste_adds_real_patch_label_and_pixels_from_donor(self) -> None:
+        image = torch.zeros((3, 8, 10), dtype=torch.float32)
+        donor_image = torch.zeros((3, 8, 10), dtype=torch.float32)
+        donor_image[:, 3:5, 1:9] = 0.9
+        lanes = [
+            {"points_xy": torch.tensor([[2.0, 1.0], [2.0, 7.0]], dtype=torch.float32), "color": 0},
+            {"points_xy": torch.tensor([[7.0, 1.0], [7.0, 7.0]], dtype=torch.float32), "color": 0},
+        ]
+        donor = {
+            "image": donor_image,
+            "stop_lines": [{"points_xy": torch.tensor([[1.0, 4.0], [8.0, 4.0]], dtype=torch.float32)}],
+            "sample_id": "donor_stopline",
+        }
+        config = TrainAugmentationConfig(
+            horizontal_flip_prob=0.0,
+            brightness_delta=0.0,
+            contrast_range=(1.0, 1.0),
+            gamma_range=(1.0, 1.0),
+            stopline_copy_paste_prob=1.0,
+            stopline_copy_paste_margin_px=1.5,
+            stopline_copy_paste_alpha=1.0,
+        )
+
+        augmented = apply_train_augmentations(
+            image,
+            det_boxes=[],
+            lanes=lanes,
+            stop_lines=[],
+            crosswalks=[],
+            network_hw=(8, 10),
+            config=config,
+            rng=random.Random(9),
+            stopline_copy_paste_donor=donor,
+        )
+
+        self.assertEqual(len(augmented[3]), 1)
+        self.assertTrue(bool(augmented[3][0]["copy_paste"]))
+        self.assertGreater(float(augmented[0].max().item()), 0.5)
+        self.assertIsNotNone(augmented[5]["stopline_copy_paste"])
+        self.assertEqual(augmented[5]["stopline_copy_paste"]["donor_sample_id"], "donor_stopline")
+
 
 if __name__ == "__main__":
     unittest.main()

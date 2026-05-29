@@ -67,6 +67,9 @@ class TrainAugmentationConfig:
     affine_shear_degrees: float = 0.0
     synthetic_stopline_prob: float = 0.0
     synthetic_stopline_thickness_px: float = 5.0
+    stopline_copy_paste_prob: float = 0.0
+    stopline_copy_paste_margin_px: float = 14.0
+    stopline_copy_paste_alpha: float = 0.85
     stopline_focus_crop_prob: float = 0.0
     stopline_focus_crop_scale_range: tuple[float, float] = (1.25, 1.75)
     stopline_focus_crop_jitter: float = 0.10
@@ -506,6 +509,123 @@ def _apply_synthetic_stopline(
     )
 
 
+def _line_patch_bounds(
+    points: torch.Tensor,
+    *,
+    image_hw: tuple[int, int],
+    margin_px: float,
+) -> tuple[int, int, int, int] | None:
+    if points.shape != (2, 2):
+        return None
+    height, width = image_hw
+    margin = max(1.0, float(margin_px))
+    min_x = int(math.floor(float(points[:, 0].min().item()) - margin))
+    max_x = int(math.ceil(float(points[:, 0].max().item()) + margin))
+    min_y = int(math.floor(float(points[:, 1].min().item()) - margin))
+    max_y = int(math.ceil(float(points[:, 1].max().item()) + margin))
+    left = max(0, min(width - 1, min_x))
+    right = max(0, min(width, max_x + 1))
+    top = max(0, min(height - 1, min_y))
+    bottom = max(0, min(height, max_y + 1))
+    if right <= left + 1 or bottom <= top + 1:
+        return None
+    return left, top, right, bottom
+
+
+def _paste_stopline_patch(
+    image: torch.FloatTensor,
+    *,
+    patch: torch.Tensor,
+    target_points: torch.Tensor,
+    margin_px: float,
+    alpha: float,
+) -> torch.FloatTensor:
+    _, height, width = image.shape
+    bounds = _line_patch_bounds(target_points, image_hw=(height, width), margin_px=margin_px)
+    if bounds is None:
+        return image
+    left, top, right, bottom = bounds
+    target_h = int(bottom - top)
+    target_w = int(right - left)
+    if target_h <= 1 or target_w <= 1:
+        return image
+    resized = F.interpolate(
+        patch.unsqueeze(0),
+        size=(target_h, target_w),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(0)
+    pasted = image.clone()
+    blend = max(0.0, min(float(alpha), 1.0))
+    resized = resized.to(dtype=pasted.dtype, device=pasted.device)
+    pasted[:, top:bottom, left:right] = (
+        pasted[:, top:bottom, left:right] * (1.0 - blend) + resized * blend
+    )
+    return pasted.clamp(0.0, 1.0).contiguous()
+
+
+def _apply_stopline_copy_paste(
+    image: torch.FloatTensor,
+    *,
+    lanes: list[dict[str, object]],
+    stop_lines: list[dict[str, object]],
+    stopline_copy_paste_donor: dict[str, object] | None,
+    network_hw: tuple[int, int],
+    config: TrainAugmentationConfig,
+    rng: random.Random,
+) -> tuple[torch.FloatTensor, list[dict[str, object]], dict[str, object] | None]:
+    if stop_lines or stopline_copy_paste_donor is None:
+        return image, stop_lines, None
+    if rng.random() >= float(config.stopline_copy_paste_prob):
+        return image, stop_lines, None
+    donor_image = stopline_copy_paste_donor.get("image")
+    donor_rows = stopline_copy_paste_donor.get("stop_lines")
+    if not isinstance(donor_image, torch.Tensor) or not isinstance(donor_rows, list) or not donor_rows:
+        return image, stop_lines, None
+    target_points = _synthetic_stopline_points(lanes, network_hw=network_hw, rng=rng)
+    if target_points is None:
+        return image, stop_lines, None
+    donor_row = donor_rows[rng.randrange(len(donor_rows))]
+    donor_points = _row_points(donor_row) if isinstance(donor_row, dict) else None
+    if donor_points is None or donor_points.reshape(-1, 2).shape[0] < 2:
+        return image, stop_lines, None
+    donor_points = donor_points.to(dtype=torch.float32).reshape(-1, 2)
+    donor_endpoints = torch.stack([donor_points[0], donor_points[-1]], dim=0)
+    _, donor_h, donor_w = donor_image.shape
+    margin = max(1.0, float(config.stopline_copy_paste_margin_px))
+    donor_bounds = _line_patch_bounds(donor_endpoints, image_hw=(donor_h, donor_w), margin_px=margin)
+    if donor_bounds is None:
+        return image, stop_lines, None
+    left, top, right, bottom = donor_bounds
+    patch = donor_image[:, top:bottom, left:right].detach().clone().to(dtype=image.dtype, device=image.device)
+    if patch.numel() == 0:
+        return image, stop_lines, None
+    rendered = _paste_stopline_patch(
+        image,
+        patch=patch,
+        target_points=target_points,
+        margin_px=margin,
+        alpha=float(config.stopline_copy_paste_alpha),
+    )
+    augmented_stop_lines = [*stop_lines, {"points_xy": target_points, "copy_paste": True}]
+    meta_points = [
+        [float(target_points[0, 0].item()), float(target_points[0, 1].item())],
+        [float(target_points[1, 0].item()), float(target_points[1, 1].item())],
+    ]
+    return (
+        rendered,
+        augmented_stop_lines,
+        {
+            "applied": True,
+            "donor_sample_id": str(stopline_copy_paste_donor.get("sample_id") or ""),
+            "points_xy": meta_points,
+            "donor_bounds": [int(left), int(top), int(right), int(bottom)],
+            "margin_px": float(margin),
+            "alpha": float(max(0.0, min(float(config.stopline_copy_paste_alpha), 1.0))),
+        },
+    )
+
+
 def _apply_shared_affine(
     image: torch.FloatTensor,
     *,
@@ -742,6 +862,7 @@ def apply_train_augmentations(
     network_hw: tuple[int, int] = NETWORK_HW,
     config: TrainAugmentationConfig | None = None,
     rng: random.Random | None = None,
+    stopline_copy_paste_donor: dict[str, object] | None = None,
 ) -> tuple[
     torch.FloatTensor,
     list[list[float]],
@@ -795,6 +916,19 @@ def apply_train_augmentations(
     (
         augmented_image,
         augmented_stop_lines,
+        stopline_copy_paste_meta,
+    ) = _apply_stopline_copy_paste(
+        augmented_image,
+        lanes=augmented_lanes,
+        stop_lines=augmented_stop_lines,
+        stopline_copy_paste_donor=stopline_copy_paste_donor,
+        network_hw=network_hw,
+        config=config,
+        rng=rng,
+    )
+    (
+        augmented_image,
+        augmented_stop_lines,
         synthetic_stopline_meta,
     ) = _apply_synthetic_stopline(
         augmented_image,
@@ -824,6 +958,7 @@ def apply_train_augmentations(
         {
             "horizontal_flip": bool(applied_flip),
             "shared_affine": affine_meta,
+            "stopline_copy_paste": stopline_copy_paste_meta,
             "synthetic_stopline": synthetic_stopline_meta,
             "stopline_focus_crop": focus_crop_meta,
             **photo_meta,
