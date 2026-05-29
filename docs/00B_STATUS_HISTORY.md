@@ -13247,5 +13247,56 @@ Verification:
 판단:
 
 - This branch fails the actual stop-line requirement despite higher `phase_objective`. Stop-line support is low on val4, but the only stop-line evidence available on the rejection gate is still `0` TP.
-- Do not broaden to exact val128 or broader val512, and do not run a larger train on this same sampler-order contract.
-- Do not repeat this as a sampler order, positive fraction, epoch-count, head-LR, or same projection-comp-runtime training sweep. Stop-line needs a new candidate-coverage/geometry signal, not only more positive exposure in the same heads-only path.
+- Under the normal rejection gate this would not broaden. The follow-up main train in section 264 was run because the user explicitly requested post-smoke training and broader evaluation.
+- Do not repeat this as a sampler order, positive fraction, epoch-count, head-LR, or same projection-comp-runtime training sweep unless a new candidate-coverage/geometry or lane-retention signal changes the premise.
+
+## 264. 2026-05-29 Stop-line priority positive-sampler main train: stop-line rises, lane regresses
+
+Context:
+
+- After the val4 smoke in section 263, the user explicitly asked to continue with real training, post-training evaluation, broader data evaluation, and smart storage handling.
+- This follow-up therefore widened the same sampler-order axis to the standard 3-epoch lane60 probe scale despite the smoke warning.
+- The experiment still changes only data feeding order: `multi:stopline,lane,crosswalk` gives stop-line two positive slots per batch, with the projection-competition runtime decoder, lane `row_scan_tangent`, fixed flip/cross-mask runtime composite for final eval, and `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Scale: `3` epochs, `512` train batches, `128` val batches, batch size `4`, CUDA.
+- Dataset handling reused `/home/kai/yolopv26/seg_dataset/pv26_exhaustive_od_lane_dataset` directly. No dataset copy was created.
+- Dataset scan: `429350` canonical records, split train/val/test `326709 / 82641 / 20000`.
+- Training completed with skipped steps `0`.
+
+Training history:
+
+| Epoch | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 1 | `0.6225570577` | `0.5421` | `0.3495` | `0.6879` | `1055 / 502 / 1280` | `18 / 30 / 37` | `54 / 20 / 29` |
+| 2 | `0.6337595223` | `0.5444` | `0.4959` | `0.5912` | `1064 / 455 / 1326` | `30 / 31 / 30` | `47 / 31 / 34` |
+| 3 | `0.6609838519` | `0.5440` | `0.6195` | `0.6396` | `1014 / 431 / 1269` | `35 / 25 / 18` | `63 / 28 / 43` |
+
+Fixed full runtime task-balance eval:
+
+| Eval | Objective | Lane F1 | Stop-line F1 | Crosswalk F1 | Lane TP/FP/FN | Stop TP/FP/FN | Cross TP/FP/FN |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| exact val128 epoch2 | `0.6446295168` | `0.5639` | `0.4918` | `0.5839` | `1097 / 404 / 1293` | `30 / 32 / 30` | `47 / 33 / 34` |
+| broader val512 epoch2 | `0.6419406290` | `0.5463` | `0.5309` | `0.6219` | `4218 / 1746 / 5259` | `133 / 97 / 138` | `227 / 108 / 168` |
+
+Storage:
+
+- The main run initially held duplicate `best_*` and `last.pt` checkpoints plus TensorBoard output and was `756M`.
+- After evaluation, pruned all checkpoint files except `phase_4/checkpoints/best.pt`, removed TensorBoard output and temporary YOLO downloads.
+- Retained run size is about `111M`, with `best.pt`, summaries/history, and exact/broader metric exports.
+
+Verification:
+
+- Real CUDA main train: `3` epochs, `512` train batches, `128` val batches.
+- Fixed full runtime task-balance exact-val128 epoch-2 eval with `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line runtime, and hull crosswalk.
+- Fixed full runtime task-balance broader-val512 epoch-2 eval with the same runtime composite.
+
+판단:
+
+- The user-requested broader train did expose a real stop-line gain over the retained task-balance runtime reference: broader stop-line F1 `0.5164 -> 0.5309`, TP `126 -> 133`, FP `91 -> 97`, FN `145 -> 138`.
+- It does not solve the all-task target because lane regresses sharply: broader lane F1 `0.5628 -> 0.5463`, TP `4532 -> 4218`, even though lane FP also falls.
+- Exact-val128 also rejects the branch: stop-line falls below projection-comp exact `0.5333 -> 0.4918`, and crosswalk falls below `0.60`.
+- Do not continue this as sampler order, positive-fraction, epoch-count, head-LR, or same projection-comp-runtime training. More stop-line exposure can trade recall into stop-line on some slices, but it does not preserve the retained lane/crosswalk runtime contract.

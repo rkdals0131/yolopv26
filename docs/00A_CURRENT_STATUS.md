@@ -5,9 +5,9 @@
 
 ## 1. 한 줄 결론
 
-PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite replay 기준 `0.6230558331`까지 확인됐다.
+PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 runtime-TTA probe 기준 `phase_objective=0.6307743841`, broader-val512 runtime/postprocess composite 기준 `0.6419406290`까지 확인됐다.
 
-이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Broader-val512 composite에서도 objective는 `0.6231`까지 올라갔지만 lane/stop-line/crosswalk F1은 `0.5628 / 0.4235 / 0.6187`이라 최종 성공으로 보지 않는다.
+이 60% objective 돌파는 raw model만으로 만든 결론이 아니고, 세 task F1이 모두 0.6을 넘었다는 뜻도 아니다. core-centerline/refinement checkpoint 위에 row-scan/tangent-link vectorizer, small-fragment FP postprocess filters, lane-head transplant, flip-centerline TTA, crosswalk-mask lane competition, projection-competition stop-line runtime decode, 또는 hull-based crosswalk decode가 붙어서 만든 partial success다. Latest broader-val512 stop-line-exposure composite는 objective `0.6419`, lane/stop-line/crosswalk F1 `0.5463 / 0.5309 / 0.6219`이고, retained lane-preserving task-balance composite는 `0.5628 / 0.5164 / 0.6187`이다. 둘 다 lane/stop-line이 `0.60` 미만이라 최종 성공으로 보지 않는다.
 
 Active goal:
 
@@ -24,7 +24,8 @@ Run:
 남긴 핵심 파일:
 
 - checkpoint: `phase_4/checkpoints/best.pt`
-- current objective-best composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/metrics.csv`
+- retained lane-preserving composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_task_mask_context_val512_epoch2/metrics.csv`
+- latest stop-line-exposure composite metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/metrics.csv`
 - retained exact stop-line lane-extent probe: `analysis_exports/stopline_lane_extent_readout_val128_epoch2/variants.csv`
 
 Note: older exact-eval and visual-check exports were pruned from active `runs` during artifact cleanup. The numeric results below remain as historical evidence, but those old export directories are no longer current retained artifacts.
@@ -111,7 +112,7 @@ Latest lane composite replay tooling status:
 - The restored flip probe intentionally exposes only `baseline`, `flip_centerline_avg`, and fixed `flip_centerline_avg_lane_cross_comp050`; it is not a new sweep surface for closed TTA/task-mask/vectorizer variants.
 - Focused tests pass, and a one-batch CUDA smoke on the retained merged checkpoint writes `metrics.csv` / `summary.json`. This is reproducibility status only, not F1 progress.
 
-Current best broader task-balance runtime composite:
+Current retained lane-preserving broader task-balance runtime composite:
 
 - branch/worktree: `exp/lane-family-f1/stopline-projcomp-runtime-contract`.
 - artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/full_runtime_task_balance_exact_val128_epoch2/summary.json`
@@ -122,7 +123,20 @@ Current best broader task-balance runtime composite:
 - broader-val512 lane / stop-line / crosswalk F1: `0.5628 / 0.5164 / 0.6187`.
 - broader TP/FP/FN lane: `4532 / 2097 / 4945`; stop-line: `126 / 91 / 145`; crosswalk: `232 / 123 / 163`.
 - lane-family mean/min F1: `0.5659 / 0.5164`.
-- 판단: this is no longer artifact-only CSV recombination; the known task-balance lower bound now has an opt-in runtime/evaluator contract. It still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`, and it is not a single raw checkpoint default.
+- 판단: this is no longer artifact-only CSV recombination; the known lane-preserving task-balance lower bound now has an opt-in runtime/evaluator contract. It still fails all-task `0.60`: lane needs `+0.0372` and stop-line needs `+0.0836`, and it is not a single raw checkpoint default.
+
+Latest stop-line-exposure trained broader task-balance runtime composite:
+
+- branch/worktree: `exp/lane-family-f1/stopline-priority-positive-sampler`.
+- artifact exact: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_exact_val128_epoch2/summary.json`
+- artifact broader: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/analysis_exports/full_runtime_task_balance_val512_epoch2/summary.json`
+- changed training axis: same projection-competition runtime decoder and fixed lane/cross runtime composite, but stage-4 task-positive sampler order is `multi:stopline,lane,crosswalk`, giving stop-line `2` positive slots per batch.
+- exact-val128 lane / stop-line / crosswalk F1: `0.5639 / 0.4918 / 0.5839`.
+- exact TP/FP/FN lane: `1097 / 404 / 1293`; stop-line: `30 / 32 / 30`; crosswalk: `47 / 33 / 34`.
+- broader-val512 lane / stop-line / crosswalk F1: `0.5463 / 0.5309 / 0.6219`.
+- broader TP/FP/FN lane: `4218 / 1746 / 5259`; stop-line: `133 / 97 / 138`; crosswalk: `227 / 108 / 168`.
+- lane-family mean/min F1: `0.5664 / 0.5309`.
+- 판단: this is the current broader objective/min-F1 positive among runtime composites and it shows stop-line exposure can recover some stop-line TP. It is still not a solution because the gain comes with a large lane regression versus the retained lane-preserving task-balance composite (`0.5628 -> 0.5463`, TP `4532 -> 4218`). Do not repeat it as sampler/epoch/LR tuning without a new lane-retention or geometry signal.
 
 Latest lane conditional bottom-anchor quality smoke:
 
@@ -133,14 +147,18 @@ Latest lane conditional bottom-anchor quality smoke:
 - smoke val4 result: objective `0.2844807747`, lane/stop/cross F1 `0.0000 / 0.0000 / 0.6667`, lane TP/FP/FN `0 / 59 / 79`, stop-line `0 / 1 / 2`, crosswalk `4 / 3 / 1`, skipped steps `0`.
 - 판단: this seed/objectness contract is not worth broadening. It suppresses or misaligns lane instances badly enough that lane recall collapses on the rejection gate; do not continue it as a seed-target, objectness-target, row-x-weight, threshold, head-LR, or longer-run sweep.
 
-Latest stop-line priority positive-sampler smoke:
+Latest stop-line priority positive-sampler train/eval:
 
 - branch/worktree: `exp/lane-family-f1/stopline-priority-positive-sampler`.
 - changed axis: keep the projection-competition runtime decoder and retained lane/cross settings, but change the stage-4 task-positive sampler from `multi:lane,stopline,crosswalk` to `multi:stopline,lane,crosswalk`. With batch size `4` and fraction `1.0`, this gives stop-line `2` positive slots per batch instead of `1`.
 - real CUDA smoke: `1` epoch, `32` train batches, `4` val batches, batch size `4`, seed checkpoint `merged_lane_head.pt`.
-- storage/data contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The failed smoke checkpoints were pruned after evaluation, leaving only summaries/history.
+- main train: `3` epochs, `512` train batches, `128` val batches, batch size `4`, seed checkpoint `merged_lane_head.pt`.
+- storage/data contract: training reused `seg_dataset/pv26_exhaustive_od_lane_dataset` directly; no dataset copy was created. The main run indexed the existing `429350` canonical records with train/val/test split `326709 / 82641 / 20000`. Failed/duplicate checkpoints and TensorBoard were pruned after evaluation; the retained main run keeps only `best.pt`, summaries, history, and exact/broader metric exports and is about `111M`.
 - smoke val4 result: objective `0.6340610868`, lane/stop/cross F1 `0.5271 / 0.0000 / 0.8000`, lane TP/FP/FN `34 / 16 / 45`, stop-line `0 / 1 / 2`, crosswalk `4 / 1 / 1`, skipped steps `0`.
-- 판단: stop-line positive exposure by task order is not enough. Do not broaden this as a sampler-order, positive-fraction, epoch-count, or head-LR sweep; the next stop-line work needs a new candidate/geometry signal that moves stop-line TP on smoke/exact.
+- main training history best by phase objective was epoch `3`: objective `0.6609838519`, lane/stop/cross F1 `0.5440 / 0.6195 / 0.6396`, TP/FP/FN lane `1014 / 431 / 1269`, stop-line `35 / 25 / 18`, crosswalk `63 / 28 / 43`. This is not final evidence because that validation slice has stop-line support `53` and is not the fixed epoch-2 protocol.
+- fixed full runtime task-balance exact-val128 epoch-2 eval: objective `0.6446295168`, lane/stop/cross F1 `0.5639 / 0.4918 / 0.5839`, TP/FP/FN lane `1097 / 404 / 1293`, stop-line `30 / 32 / 30`, crosswalk `47 / 33 / 34`.
+- fixed full runtime task-balance broader-val512 epoch-2 eval: objective `0.6419406290`, lane/stop/cross F1 `0.5463 / 0.5309 / 0.6219`, TP/FP/FN lane `4218 / 1746 / 5259`, stop-line `133 / 97 / 138`, crosswalk `227 / 108 / 168`.
+- 판단: broader stop-line improves over the retained task-balance reference (`0.5164 -> 0.5309`, TP `126 -> 133`), but lane regresses badly (`0.5628 -> 0.5463`, TP `4532 -> 4218`). This is not all-task success and should not be repeated as sampler order, positive fraction, epoch count, or head-LR tuning. A future branch needs a new candidate/geometry or lane-retention signal, not only more stop-line-positive exposure.
 
 Latest stop-line projection-competition runtime contract train/eval result:
 
