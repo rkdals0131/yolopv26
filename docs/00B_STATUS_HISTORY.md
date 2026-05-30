@@ -17783,3 +17783,101 @@ Verification:
 - Broader-val512 was skipped because the exact TP/FP ratio is worse than the target gate.
 - Do not repeat this as quality-threshold, hidden-dim, train-batch, max-append, duplicate-distance, bbox-area, or candidate-distance tuning.
 - Reopen raw dropped-candidate rescue only with a materially stronger instance-quality/alignment signal that improves exact TP/FP/FN before broader expansion.
+
+## 327. Stop-line trainset raw-patch CNN verifier: train-split exposure still fails exact validation
+
+맥락:
+
+- The previous stop-line raw-patch CNN verifier trained and selected thresholds inside a validation-derived candidate split, so its failure could still be blamed on split leakage shape or too-small candidate exposure.
+- This branch tested the stronger version the user asked for: train the verifier from canonical train-split candidate rows, then replay one train-selected task threshold on exact validation.
+- It is still a verifier/candidate-selection replay, not a new checkpoint behavior and not a stop-line segment generator.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-trainset-patch-verifier`.
+- Added `tools/probe_pv26_stopline_trainset_patch_verifier.py`.
+- Added `test/test_stopline_trainset_patch_verifier.py`.
+- Candidate source:
+  - retained `merged_lane_head.pt`;
+  - projection-comp stop-line runtime candidate pool;
+  - fixed `proposal_min_gap=4`;
+  - fixed `candidate_top_k=50`.
+- Verifier:
+  - 2-channel raw/gradient oriented patch CNN plus numeric candidate features;
+  - trained from canonical train candidate rows;
+  - train-selected stop-line task threshold replayed on validation rows;
+  - runtime selection uses no GT, while GT is used only for training labels and final audit metrics.
+- Retained lane/cross contracts:
+  - lane `row_scan_tangent` runtime path;
+  - stop-line projection-comp candidate pool as baseline;
+  - crosswalk `crosswalk_polygon_mode=hull`.
+
+Training and evaluation:
+
+- Real CUDA smoke:
+  - `64` verifier train batches;
+  - `4` validation batches;
+  - validation epoch `2`;
+  - verifier epochs `20`.
+- Real CUDA exact:
+  - `256` verifier train batches;
+  - `128` validation batches;
+  - validation epoch `2`;
+  - verifier epochs `80`.
+- The existing canonical dataset root was reused in place.
+- Dataset index reported `429350` records.
+- No dataset copy was created.
+
+Smoke val4:
+
+| Split | Variant | Stop-line F1 | Stop-line TP/FP/FN | Candidate Stats |
+| --- | --- | ---: | --- | --- |
+| train | baseline | `0.6617` | `88 / 27 / 63` | train candidates `4244`, positives `2032` |
+| train | train-threshold replay | `0.7398` | `91 / 4 / 60` | threshold `0.7479965359` |
+| val | baseline | `0.0000` | `0 / 3 / 2` | val candidates `113`, positives `0` |
+| val | train-threshold replay | `0.0000` | `0 / 2 / 2` | no oracle-positive val candidates |
+
+Exact-val128:
+
+| Split | Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | --- | ---: | --- | ---: | ---: |
+| train | baseline | `0.6000` | `351 / 168 / 300` | `0.4062` | `0.6765` |
+| train | train-threshold replay | `0.7408` | `383 / 0 / 268` | `0.4062` | `0.6765` |
+| val | baseline | `0.5333` | `32 / 28 / 28` | `0.5660` | `0.5988` |
+| val | train-threshold replay | `0.4160` | `26 / 39 / 34` | `0.5660` | `0.5988` |
+
+Exact candidate stats:
+
+- train candidates `17459`;
+- train positives `8023`;
+- val candidates `2191`;
+- val positives `723`;
+- raw-image cache entries `607`;
+- numeric feature dimension `40`;
+- patch shape `2 x 24 x 64`;
+- train-selected threshold `0.3415479040`.
+
+Storage:
+
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train64_smoke_val4_20260530_02`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train256_exact_val128_20260530`.
+- Retained smoke directory is about `4.9M`.
+- Retained exact directory is about `22M`.
+- The probe writes CSV/summary only.
+- No checkpoint artifact was created.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_trainset_patch_verifier.py test/test_stopline_trainset_patch_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_stopline_trainset_patch_verifier`.
+- CUDA fixed val4 verifier training/replay.
+- CUDA exact-val128 verifier training/replay.
+
+판단:
+
+- Train-split candidate exposure did not fix the raw-patch verifier family.
+- It overfits train strongly, including zero train FP at the selected threshold, but held-out exact validation regresses from `32 / 28 / 28` to `26 / 39 / 34`.
+- Broader-val512 was skipped because exact validation lost TP, added FP, increased FN, and fell below projection-comp.
+- Do not repeat this as train-batch, epoch, LR, top-K, threshold-grid, raw-patch size/channel, CNN-depth, or same train-threshold replay tuning.
+- Reopen raw-image stop-line evidence only with a materially different candidate-generation or verification contract that first improves exact TP/FP/FN over projection-comp.

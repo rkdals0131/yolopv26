@@ -83,6 +83,8 @@ Latest lane feature-ROI bounded-residual repair probe reopened the earlier learn
 
 Latest lane area-ROI verifier trained a no-GT MLP over raw row-scan/tangent lane candidates that the default bbox/area filters drop. It reused the existing canonical dataset root in place, trained on `256` train batches, and evaluated exact-val128 after a fixed val4 smoke. Smoke moved lane TP/FP/FN `40 / 11 / 46 -> 42 / 14 / 44`, but exact-val128 showed the same FP-control failure at scale: lane `0.5888 -> 0.5931`, TP/FP/FN `1202 / 491 / 1188 -> 1253 / 582 / 1137`; stop-line and crosswalk stayed unchanged at `0.5333 / 0.5988`. This is learned runtime replay evidence, but not a production gate: TP gain `+51` came with FP `+91`, so broader-val512 was skipped. Artifacts are CSV/summary only (`36K` smoke, `152K` exact) and no dataset copy or checkpoint artifact was created.
 
+Latest stop-line train-split raw-patch CNN verifier moved beyond the prior validation-half replay by training candidate selection on canonical train batches and replaying one train-selected threshold on exact validation. It reused the existing canonical dataset root in place, trained on `256` train batches, and evaluated exact-val128 after a val4 smoke. The train split overfit strongly: stop-line `0.6000 -> 0.7408`, TP/FP/FN `351 / 168 / 300 -> 383 / 0 / 268`. Validation moved the wrong way: exact-val128 baseline/projection-comp `0.5333`, TP/FP/FN `32 / 28 / 28`, fell to `0.4160`, `26 / 39 / 34`. Broader-val512 was skipped. Retained artifacts are CSV/summary only (`4.9M` smoke, `22M` exact); no dataset copy or checkpoint artifact was created.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -163,6 +165,8 @@ Run:
 - latest lane feature-ROI bounded-residual repair train64 smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_train64_smoke_val4_20260530_02/summary.json`
 - latest lane area-ROI verifier smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train64_smoke_val4_20260530/summary.json`
 - latest lane area-ROI verifier exact summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train256_exact_val128_20260530/summary.json`
+- latest stop-line trainset raw-patch CNN verifier smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train64_smoke_val4_20260530_02/summary.json`
+- latest stop-line trainset raw-patch CNN verifier exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train256_exact_val128_20260530/summary.json`
 - latest stop-line learned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/summary.json`
@@ -794,6 +798,22 @@ Latest lane area-ROI verifier probe result:
 - smoke result: baseline lane/stop/cross `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`; verifier append result `0.5915 / 0.0000 / 0.5455`, lane TP/FP/FN `42 / 14 / 44`, selected candidates `5`, selected oracle-positive `2`.
 - exact-val128 result: baseline lane/stop/cross `0.5888 / 0.5333 / 0.5988`, lane TP/FP/FN `1202 / 491 / 1188`; verifier append result `0.5931 / 0.5333 / 0.5988`, lane TP/FP/FN `1253 / 582 / 1137`, selected candidates `142`, selected oracle-positive `58`.
 - 판단: the learned verifier finds real recall signal in raw dropped candidates, but FP-control is not strong enough. Exact TP gain `+51` is outweighed by FP `+91`, so this does not justify broader-val512 or production integration. Do not repeat this as quality-threshold, hidden-dim, train-batch, max-append, duplicate-distance, bbox-area, or candidate-distance tuning without a materially new instance-quality/alignment signal.
+
+Latest stop-line trainset raw-patch CNN verifier probe result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-trainset-patch-verifier`.
+- artifacts:
+  - fixed smoke: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train64_smoke_val4_20260530_02/summary.json`.
+  - exact-val128: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train256_exact_val128_20260530/summary.json`.
+- changed axis: train a 2-channel raw/gradient patch CNN verifier on stop-line projection-comp candidate rows collected from canonical train batches, then replay one train-selected task threshold on validation candidate rows. Runtime selection uses no GT; GT is used only for candidate labels and audit metrics.
+- storage contract: the probe reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root, wrote only CSV/summary artifacts, and created no checkpoint or dataset copy. Retained output sizes are about `4.9M` for smoke and `22M` for exact.
+- smoke result: train selected threshold improved train stop-line `0.6617 -> 0.7398`, TP/FP/FN `88 / 27 / 63 -> 91 / 4 / 60`; val4 had no oracle-positive candidate rows, so stop-line stayed `0 / 2 / 2` after one FP was removed.
+- exact-val128 result:
+  - train baseline stop-line `0.6000`, TP/FP/FN `351 / 168 / 300`;
+  - train threshold replay stop-line `0.7408`, TP/FP/FN `383 / 0 / 268`;
+  - val baseline/projection-comp stop-line `0.5333`, TP/FP/FN `32 / 28 / 28`;
+  - val train-threshold replay stop-line `0.4160`, TP/FP/FN `26 / 39 / 34`.
+- 판단: train-split exposure does not fix raw-patch verifier generalization. The learned selector overfits train candidates, loses `6` exact validation TP, adds `11` FP, and increases FN by `6`, so broader-val512 is intentionally skipped. Do not repeat this as train-batch, epoch, LR, top-K, threshold-grid, patch-size, CNN-depth, or same train-threshold replay tuning without a materially different candidate-generation or verification contract.
 
 Latest lane task-mask context gate:
 
