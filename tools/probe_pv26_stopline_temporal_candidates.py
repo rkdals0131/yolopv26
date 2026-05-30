@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 import numpy as np
+from PIL import Image
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +67,9 @@ TEMPORAL_FEATURES = (
     "temporal_proposal_mean",
     "temporal_proposal_max",
     "temporal_endpoint_proposal_mean",
+    "temporal_alignment_dx_norm",
+    "temporal_alignment_dy_norm",
+    "temporal_alignment_response",
     "temporal_center_x_norm",
     "temporal_center_y_norm",
     "temporal_abs_cos",
@@ -116,6 +120,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dataset-root", default="")
     parser.add_argument("--neighbor-offsets", default="-1,1")
+    parser.add_argument("--temporal-alignment-mode", choices=("none", "phase_corr"), default="none")
+    parser.add_argument("--temporal-alignment-size", default="160x120")
+    parser.add_argument("--temporal-alignment-max-shift-frac", type=float, default=0.15)
     parser.add_argument("--temporal-top-k", type=int, default=8)
     parser.add_argument("--max-temporal-candidates", type=int, default=16)
     parser.add_argument("--max-components", type=int, default=2)
@@ -133,6 +140,94 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crosswalk-polygon-mode", choices=("rect", "hull"), default="hull")
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
+
+
+def _parse_alignment_size(value: str) -> tuple[int, int]:
+    text = str(value).lower().replace(",", "x")
+    parts = [part for part in text.split("x") if part]
+    if len(parts) != 2:
+        raise ValueError(f"alignment size must be WIDTHxHEIGHT, got {value!r}")
+    width, height = int(parts[0]), int(parts[1])
+    if width <= 0 or height <= 0:
+        raise ValueError(f"alignment size must be positive, got {value!r}")
+    return width, height
+
+
+def _read_alignment_gray(path: str | Path, *, size: tuple[int, int]) -> np.ndarray:
+    resampling = getattr(Image, "Resampling", Image).BILINEAR
+    with Image.open(path) as image:
+        gray = image.convert("L").resize(size, resampling)
+    array = np.asarray(gray, dtype=np.float32) / 255.0
+    array -= float(array.mean())
+    window_y = np.hanning(array.shape[0]).astype(np.float32)
+    window_x = np.hanning(array.shape[1]).astype(np.float32)
+    return array * window_y[:, None] * window_x[None, :]
+
+
+def _phase_correlation_shift(reference: np.ndarray, moving: np.ndarray) -> tuple[float, float, float]:
+    ref = np.asarray(reference, dtype=np.float32)
+    mov = np.asarray(moving, dtype=np.float32)
+    if ref.shape != mov.shape or ref.ndim != 2:
+        raise ValueError("phase correlation inputs must be 2D arrays with matching shape")
+    if ref.size == 0:
+        return 0.0, 0.0, 0.0
+    ref_fft = np.fft.fft2(ref)
+    mov_fft = np.fft.fft2(mov)
+    cross = ref_fft * np.conj(mov_fft)
+    cross /= np.maximum(np.abs(cross), 1.0e-9)
+    corr = np.abs(np.fft.ifft2(cross))
+    peak_y, peak_x = np.unravel_index(int(np.argmax(corr)), corr.shape)
+    height, width = corr.shape
+    if peak_y > height // 2:
+        peak_y -= height
+    if peak_x > width // 2:
+        peak_x -= width
+    response = float(corr.max() / max(float(corr.sum()), 1.0e-9))
+    return float(peak_x), float(peak_y), response
+
+
+def _temporal_alignment(
+    *,
+    current_meta: dict[str, Any],
+    neighbor_meta: dict[str, Any],
+    mode: str,
+    size: tuple[int, int],
+    max_shift_frac: float,
+) -> dict[str, float]:
+    if str(mode) == "none":
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    if str(mode) != "phase_corr":
+        raise ValueError(f"unknown temporal alignment mode: {mode}")
+    current_path = str(current_meta.get("image_path", ""))
+    neighbor_path = str(neighbor_meta.get("image_path", ""))
+    if not current_path or not neighbor_path:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    try:
+        current_gray = _read_alignment_gray(current_path, size=size)
+        neighbor_gray = _read_alignment_gray(neighbor_path, size=size)
+        dx_small, dy_small, response = _phase_correlation_shift(current_gray, neighbor_gray)
+    except (OSError, ValueError):
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    raw_h, raw_w = int(current_meta.get("raw_hw", (1, 1))[0]), int(current_meta.get("raw_hw", (1, 1))[1])
+    width, height = int(size[0]), int(size[1])
+    dx = float(dx_small) * float(raw_w) / max(float(width), 1.0)
+    dy = float(dy_small) * float(raw_h) / max(float(height), 1.0)
+    max_dx = max(1.0, float(raw_w) * float(max_shift_frac))
+    max_dy = max(1.0, float(raw_h) * float(max_shift_frac))
+    if abs(dx) > max_dx or abs(dy) > max_dy:
+        return {"dx": 0.0, "dy": 0.0, "response": float(response), "applied": 0.0}
+    return {"dx": float(dx), "dy": float(dy), "response": float(response), "applied": 1.0}
+
+
+def _translate_stop_line_points(line: dict[str, Any], *, dx: float, dy: float, meta: dict[str, Any]) -> list[list[float]]:
+    points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] == 0:
+        return []
+    shifted = points + np.asarray([float(dx), float(dy)], dtype=np.float32).reshape(1, 2)
+    raw_h, raw_w = int(meta.get("raw_hw", (1, 1))[0]), int(meta.get("raw_hw", (1, 1))[1])
+    shifted[:, 0] = np.clip(shifted[:, 0], 0.0, max(float(raw_w - 1), 0.0))
+    shifted[:, 1] = np.clip(shifted[:, 1], 0.0, max(float(raw_h - 1), 0.0))
+    return [[float(point[0]), float(point[1])] for point in shifted.tolist()]
 
 
 def _line_score(line: dict[str, Any]) -> float:
@@ -181,6 +276,7 @@ def _stopline_temporal_features(
     selector_probs: np.ndarray | None,
     neighbor_offset: int,
     neighbor_rank: int,
+    alignment: dict[str, float] | None,
     current_stop_lines: list[dict[str, Any]],
 ) -> dict[str, float]:
     points_raw = np.asarray(candidate.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
@@ -211,6 +307,10 @@ def _stopline_temporal_features(
     norm = float(np.linalg.norm(delta))
     axis = delta / max(norm, 1.0e-6)
     nearest_distance = _nearest_current_distance(candidate, current_stop_lines)
+    alignment_payload = alignment or {}
+    alignment_dx = float(alignment_payload.get("dx", 0.0))
+    alignment_dy = float(alignment_payload.get("dy", 0.0))
+    alignment_response = float(alignment_payload.get("response", 0.0))
     features = {
         "temporal_neighbor_score": float(_line_score(candidate)),
         "temporal_neighbor_length": float(length),
@@ -229,6 +329,9 @@ def _stopline_temporal_features(
         "temporal_proposal_mean": float(proposal_mean),
         "temporal_proposal_max": float(proposal_max),
         "temporal_endpoint_proposal_mean": float(endpoint_mean),
+        "temporal_alignment_dx_norm": float(np.clip(alignment_dx / max(float(raw_w), 1.0), -1.0, 1.0)),
+        "temporal_alignment_dy_norm": float(np.clip(alignment_dy / max(float(raw_h), 1.0), -1.0, 1.0)),
+        "temporal_alignment_response": float(np.clip(alignment_response, 0.0, 1.0)),
         "temporal_center_x_norm": float(np.clip(float(center[0]) / max(float(raw_w), 1.0), 0.0, 1.0)),
         "temporal_center_y_norm": float(np.clip(float(center[1]) / max(float(raw_h), 1.0), 0.0, 1.0)),
         "temporal_abs_cos": float(abs(float(axis[0]))),
@@ -248,6 +351,10 @@ def _candidate_row(candidate: dict[str, Any], *, batch_index: int, sample_index:
         "neighbor_offset": int(candidate.get("neighbor_offset", 0)),
         "neighbor_dataset_index": int(candidate.get("neighbor_dataset_index", -1)),
         "neighbor_rank": int(candidate.get("neighbor_rank", 0)),
+        "temporal_alignment_dx": float(candidate.get("temporal_alignment_dx", 0.0)),
+        "temporal_alignment_dy": float(candidate.get("temporal_alignment_dy", 0.0)),
+        "temporal_alignment_response_raw": float(candidate.get("temporal_alignment_response_raw", 0.0)),
+        "temporal_alignment_applied": float(candidate.get("temporal_alignment_applied", 0.0)),
         "candidate_points_json": json.dumps([[float(x), float(y)] for x, y in points.tolist()], separators=(",", ":")),
         "score": float(candidate.get("score", 0.0)),
         "length": float(candidate.get("length", 0.0)),
@@ -266,18 +373,31 @@ def _build_temporal_candidates(
     selector_probs: np.ndarray | None,
     current_stop_lines: list[dict[str, Any]],
     gt_stop_lines: list[dict[str, Any]],
-    neighbor_predictions: list[tuple[int, int, dict[str, Any]]],
+    neighbor_predictions: list[tuple[int, int, dict[str, Any]] | tuple[int, int, dict[str, Any], dict[str, float]]],
     max_candidates: int,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for offset, neighbor_dataset_index, neighbor_prediction in neighbor_predictions:
+    for neighbor_payload in neighbor_predictions:
+        offset, neighbor_dataset_index, neighbor_prediction = neighbor_payload[:3]
+        alignment = dict(neighbor_payload[3]) if len(neighbor_payload) > 3 else {}
         neighbor_lines = list(neighbor_prediction.get("stop_lines", []))
         neighbor_lines.sort(key=_stopline_prediction_sort_key, reverse=True)
         for neighbor_rank, line in enumerate(neighbor_lines, start=1):
             candidate = _copy_stop_line(line, score=_line_score(line), source="temporal_neighbor")
+            if float(alignment.get("applied", 0.0)) > 0.0:
+                candidate["points_xy"] = _translate_stop_line_points(
+                    candidate,
+                    dx=float(alignment.get("dx", 0.0)),
+                    dy=float(alignment.get("dy", 0.0)),
+                    meta=meta,
+                )
             candidate["neighbor_offset"] = int(offset)
             candidate["neighbor_dataset_index"] = int(neighbor_dataset_index)
             candidate["neighbor_rank"] = int(neighbor_rank)
+            candidate["temporal_alignment_dx"] = float(alignment.get("dx", 0.0))
+            candidate["temporal_alignment_dy"] = float(alignment.get("dy", 0.0))
+            candidate["temporal_alignment_response_raw"] = float(alignment.get("response", 0.0))
+            candidate["temporal_alignment_applied"] = float(alignment.get("applied", 0.0))
             candidate["length"] = _line_length(candidate)
             candidate.update(
                 _stopline_temporal_features(
@@ -288,6 +408,7 @@ def _build_temporal_candidates(
                     selector_probs=selector_probs,
                     neighbor_offset=int(offset),
                     neighbor_rank=int(neighbor_rank),
+                    alignment=alignment,
                     current_stop_lines=current_stop_lines,
                 )
             )
@@ -323,6 +444,9 @@ def _collect_records(
     record_index_by_key: dict[tuple[str, str, str], int],
     max_batches: int,
     neighbor_offsets: tuple[int, ...],
+    temporal_alignment_mode: str,
+    temporal_alignment_size: tuple[int, int],
+    temporal_alignment_max_shift_frac: float,
     max_temporal_candidates: int,
     split_name: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -349,7 +473,7 @@ def _collect_records(
                 sample_id = str(meta.get("sample_id", ""))
                 dataset_key = str(meta.get("dataset_key", ""))
                 split = str(meta.get("split", ""))
-                neighbor_payloads: list[tuple[int, int, dict[str, Any]]] = []
+                neighbor_payloads: list[tuple[int, int, dict[str, Any], dict[str, float]]] = []
                 missing_neighbors = 0
                 for offset in neighbor_offsets:
                     neighbor_id = _neighbor_sample_id(sample_id, int(offset))
@@ -361,7 +485,16 @@ def _collect_records(
                         missing_neighbors += 1
                         continue
                     neighbor_payload = predictor.predict_index(neighbor_index)
-                    neighbor_payloads.append((int(offset), int(neighbor_index), dict(neighbor_payload["prediction"])))
+                    alignment = _temporal_alignment(
+                        current_meta=meta,
+                        neighbor_meta=dict(neighbor_payload.get("meta", {})),
+                        mode=str(temporal_alignment_mode),
+                        size=temporal_alignment_size,
+                        max_shift_frac=float(temporal_alignment_max_shift_frac),
+                    )
+                    neighbor_payloads.append(
+                        (int(offset), int(neighbor_index), dict(neighbor_payload["prediction"]), alignment)
+                    )
                 mask_probs = _as_2d_array(_sample_tensor(outputs, "stop_line_mask_logits", sample_index), sigmoid=True)
                 center_probs = _as_2d_array(_sample_tensor(outputs, "stop_line_center_logits", sample_index), sigmoid=True)
                 selector_probs = _as_2d_array(
@@ -406,6 +539,9 @@ def _collect_records(
                         "dataset_key": dataset_key,
                         "temporal_neighbor_count": int(len(neighbor_payloads)),
                         "missing_neighbor_count": int(missing_neighbors),
+                        "temporal_alignment_applied_count": int(
+                            sum(1 for payload in neighbor_payloads if float(payload[3].get("applied", 0.0)) > 0.0)
+                        ),
                         "baseline_stopline_count": int(len(list(baseline_prediction.get("stop_lines", [])))),
                         "gt_stopline_count": int(len(list(gt_sample.get("stop_lines", [])))),
                         "temporal_candidate_count": int(len(candidates)),
@@ -600,6 +736,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
 
         args.source_run = str(SOURCE_RUN)
     neighbor_offsets = _parse_neighbor_offsets(str(args.neighbor_offsets))
+    alignment_size = _parse_alignment_size(str(args.temporal_alignment_size))
     scenario, scenario_path, options, phase, train_config = _build_scenario(args)
     train_config = replace(
         train_config,
@@ -644,6 +781,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         record_index_by_key=record_index_by_key,
         max_batches=int(args.train_record_batches),
         neighbor_offsets=neighbor_offsets,
+        temporal_alignment_mode=str(args.temporal_alignment_mode),
+        temporal_alignment_size=alignment_size,
+        temporal_alignment_max_shift_frac=float(args.temporal_alignment_max_shift_frac),
         max_temporal_candidates=int(args.max_temporal_candidates),
         split_name="train",
     )
@@ -655,6 +795,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         record_index_by_key=record_index_by_key,
         max_batches=int(args.max_val_batches),
         neighbor_offsets=neighbor_offsets,
+        temporal_alignment_mode=str(args.temporal_alignment_mode),
+        temporal_alignment_size=alignment_size,
+        temporal_alignment_max_shift_frac=float(args.temporal_alignment_max_shift_frac),
         max_temporal_candidates=int(args.max_temporal_candidates),
         split_name="val",
     )
@@ -743,6 +886,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "max_val_batches": int(args.max_val_batches),
         "validation_epoch": int(args.validation_epoch),
         "neighbor_offsets": list(neighbor_offsets),
+        "temporal_alignment_mode": str(args.temporal_alignment_mode),
+        "temporal_alignment_size": list(alignment_size),
+        "temporal_alignment_max_shift_frac": float(args.temporal_alignment_max_shift_frac),
         "temporal_top_k": int(args.temporal_top_k),
         "max_temporal_candidates": int(args.max_temporal_candidates),
         "max_components": int(args.max_components),
@@ -756,6 +902,12 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             sum(int(row.get("is_oracle_positive", 0)) for row in train_candidate_rows)
         ),
         "val_temporal_oracle_positive_count": int(sum(int(row.get("is_oracle_positive", 0)) for row in val_candidate_rows)),
+        "train_temporal_alignment_applied_count": int(
+            sum(1 for row in train_candidate_rows if float(row.get("temporal_alignment_applied", 0.0)) > 0.0)
+        ),
+        "val_temporal_alignment_applied_count": int(
+            sum(1 for row in val_candidate_rows if float(row.get("temporal_alignment_applied", 0.0)) > 0.0)
+        ),
         "rows": rows,
         "interpretation": (
             "Temporal stop-line candidate probe. Runtime candidates come from neighboring frame predictions "

@@ -8,8 +8,10 @@ from model.data.transform import compute_letterbox_transform
 from tools.probe_pv26_stopline_temporal_candidates import (
     TEMPORAL_FEATURES,
     _build_temporal_candidates,
+    _phase_correlation_shift,
     _select_temporal_stop_lines,
     _stopline_temporal_features,
+    _translate_stop_line_points,
 )
 
 
@@ -40,6 +42,7 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
             selector_probs=selector,
             neighbor_offset=-1,
             neighbor_rank=1,
+            alignment={"dx": -16.0, "dy": 8.0, "response": 0.5},
             current_stop_lines=[],
         )
 
@@ -47,6 +50,30 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertTrue(np.isfinite(np.asarray(list(features.values()), dtype=np.float32)).all())
         self.assertGreater(features["temporal_neighbor_length"], 0.0)
         self.assertGreater(features["temporal_proposal_mean"], 0.0)
+        self.assertLess(features["temporal_alignment_dx_norm"], 0.0)
+        self.assertGreater(features["temporal_alignment_dy_norm"], 0.0)
+        self.assertAlmostEqual(features["temporal_alignment_response"], 0.5)
+
+    def test_phase_correlation_returns_shift_to_apply_to_moving(self) -> None:
+        reference = np.zeros((32, 32), dtype=np.float32)
+        reference[10, 10] = 1.0
+        moving = np.roll(np.roll(reference, 3, axis=0), 5, axis=1)
+
+        dx, dy, response = _phase_correlation_shift(reference, moving)
+
+        self.assertEqual((dx, dy), (-5.0, -3.0))
+        self.assertGreater(response, 0.0)
+
+    def test_translate_stop_line_points_clips_to_raw_frame(self) -> None:
+        translated = _translate_stop_line_points(
+            {"points_xy": [[10.0, 20.0], [799.0, 607.0]]},
+            dx=-15.0,
+            dy=10.0,
+            meta=_meta(),
+        )
+
+        self.assertEqual(translated[0], [0.0, 30.0])
+        self.assertEqual(translated[1], [784.0, 607.0])
 
     def test_build_candidates_marks_oracle_positive_neighbor_line(self) -> None:
         mask = np.ones((76, 100), dtype=np.float32) * 0.5

@@ -21845,3 +21845,151 @@ Decision:
 - Broader-val512 is skipped because exact failed.
 - Close this as image-space stop-line temporal-neighbor candidates, current-frame dense-map MLP verifier, offset `-1,+1`, top-k/cap defaults, threshold-grid, and same no-ego-motion neighbor replay.
 - Reopen temporal stop-line only with a materially different alignment/candidate-generation contract, such as ego-motion/BEV-aligned temporal aggregation that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 371. 2026-05-31 Stop-line phase-correlation temporal alignment: larger train exposure still exact-negative
+
+Context:
+
+- Section 370 closed the no-alignment temporal-neighbor candidate verifier because it added stop-line FP faster than TP, and even oracle temporal union barely moved exact-val128.
+- The user explicitly asked to keep actually training/evaluating, to use larger data exposure when needed, and to avoid dataset copies.
+- This branch reopened temporal stop-line under a materially different no-GT alignment contract:
+  - raw current/neighbor frames are downsampled;
+  - phase correlation estimates a translation from neighbor frame to current frame;
+  - neighbor-frame stop-line candidates are translated/clipped before current-frame dense features are sampled;
+  - the train-split MLP verifier is then trained/evaluated as before.
+- This is not the same no-ego-motion image-space replay, and it is not a threshold/top-k sweep.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Extended `tools/probe_pv26_stopline_temporal_candidates.py`.
+- Extended `test/test_stopline_temporal_candidates.py`.
+- New CLI:
+  - `--temporal-alignment-mode none|phase_corr`;
+  - `--temporal-alignment-size`, default `160x120`;
+  - `--temporal-alignment-max-shift-frac`, default `0.15`.
+- Added phase-correlation helpers and candidate translation:
+  - `_read_alignment_gray`;
+  - `_phase_correlation_shift`;
+  - `_temporal_alignment`;
+  - `_translate_stop_line_points`.
+- Candidate rows now export:
+  - `temporal_alignment_dx`;
+  - `temporal_alignment_dy`;
+  - `temporal_alignment_response_raw`;
+  - `temporal_alignment_applied`.
+- The MLP feature vector adds normalized alignment dx/dy/response.
+- Default behavior remains `--temporal-alignment-mode none`, so Section 370 artifacts remain reproducible.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Primary checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - `--crosswalk-polygon-mode hull`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - temporal offsets `-1,+1`;
+  - temporal top-k `8`;
+  - max temporal candidates `16`;
+  - max emitted stop-lines `2`;
+  - temporal alignment `phase_corr`.
+
+Smoke train64 / val4:
+
+- Train samples `256`; train temporal candidates `204`; train oracle-positive temporal candidates `63`.
+- Val samples `16`; val temporal candidates `6`; val oracle-positive temporal candidates `0`.
+- Phase-corr alignment was applied to `198` train candidates and `6` val candidates.
+- Train baseline-plus-temporal MLP improved versus no-alignment train:
+  - no-alignment train stop-line `92 / 77 / 59`, F1 `0.5750`;
+  - phase-corr train stop-line `93 / 66 / 58`, F1 `0.6000`.
+- Smoke validation was still not decision-useful because the tiny val slice had no temporal oracle-positive candidates.
+
+Exact train64 / val128:
+
+- Train samples `256`; train temporal candidates `204`; train oracle-positive candidates `64`.
+- Val samples `512`; val temporal candidates `98`; val oracle-positive candidates `20`.
+- Phase-corr alignment was applied to `198` train candidates and `98` val candidates.
+- Selected verifier threshold `0.27`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2637` | `12 / 19 / 48` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4928` | `34 / 44 / 26` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.3733` | `14 / 1 / 46` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5354` | `34 / 33 / 26` | `0.5988` |
+
+Exact train256 / val128:
+
+- The larger train exposure reused the same existing root, not a copied dataset.
+- Train samples `1024`; train temporal candidates `841`; train oracle-positive candidates `228`.
+- Val samples `512`; val temporal candidates `98`; val oracle-positive candidates `20`.
+- Phase-corr alignment was applied to `817` train candidates and `98` val candidates.
+- Selected verifier threshold `0.53`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2439` | `10 / 12 / 50` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.5116` | `33 / 36 / 27` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.3733` | `14 / 1 / 46` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5354` | `34 / 33 / 26` | `0.5988` |
+
+Diagnosis:
+
+- Phase-corr alignment improves the train split, but the deployable verifier still fails exact validation.
+- Train64 runtime union recovers `+2` TP over baseline but adds `+16` FP.
+- Train256 runtime union recovers only `+1` TP over baseline and adds `+8` FP.
+- Oracle temporal union is only `0.5354`, with `+2` TP and `+5` FP over baseline.
+- Larger train exposure does not solve the core issue: current image-plane temporal alignment does not create enough clean no-GT candidate headroom to beat primary projection-comp exact `0.5333`.
+- Broader-val512 is skipped because exact failed at both train coverages.
+
+Artifacts:
+
+- Phase-corr smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_phasecorr_train64_smoke_val4_20260531/summary.json`.
+- Phase-corr smoke variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_phasecorr_train64_smoke_val4_20260531/temporal_variants.csv`.
+- Phase-corr train64 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_phasecorr_train64_exact_val128_20260531/summary.json`.
+- Phase-corr train64 exact variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_phasecorr_train64_exact_val128_20260531/temporal_variants.csv`.
+- Phase-corr train256 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_phasecorr_train256_exact_val128_20260531/summary.json`.
+- Phase-corr train256 exact variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_phasecorr_train256_exact_val128_20260531/temporal_variants.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `256K`;
+  - train64 exact export about `416K`;
+  - train256 exact export about `1.1M`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/smoke-val4 phase-correlation temporal verifier run on the existing canonical dataset root.
+- CUDA train64/exact-val128 phase-correlation temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 larger-exposure phase-correlation temporal verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Phase-correlation temporal alignment is implemented and trainable.
+- It does not beat the exact primary projection-comp stop-line gate:
+  - train64 temporal union F1 `0.4928`;
+  - train256 temporal union F1 `0.5116`;
+  - primary projection-comp F1 `0.5333`.
+- Broader-val512 is skipped because exact failed.
+- Close this as raw-frame phase-correlation temporal alignment, alignment size `160x120`, max-shift fraction `0.15`, current-frame dense-map MLP verifier, temporal top-k/cap defaults, threshold-grid, and train scaling to `256` batches.
+- Reopen temporal stop-line only with a materially different motion/candidate contract, such as ego-motion/BEV-warped temporal aggregation or a learned temporal segment proposal that first improves fixed exact TP/FP/FN over primary projection-comp.
