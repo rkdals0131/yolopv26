@@ -146,6 +146,7 @@ class TrainDefaultsConfig:
     task_mode: str = "roadmark_joint"
     lane_assignment_mode: str = "fixed_slot"
     lane_objectness_target_mode: str = "binary"
+    lane_family_query_objectness_target_mode: str = "quality_floor"
     lane_objectness_quality_min: float = 0.25
     lane_objectness_quality_tau: float = 10.0
     lane_dynamic_coverage_weight: float = 0.0
@@ -861,6 +862,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_objectness_target_mode=_coerce_str(
             data.get("lane_objectness_target_mode", defaults.lane_objectness_target_mode),
             field_name="train_defaults.lane_objectness_target_mode",
+        ),
+        lane_family_query_objectness_target_mode=_coerce_str(
+            data.get(
+                "lane_family_query_objectness_target_mode",
+                defaults.lane_family_query_objectness_target_mode,
+            ),
+            field_name="train_defaults.lane_family_query_objectness_target_mode",
         ),
         lane_objectness_quality_min=_coerce_float(
             data.get("lane_objectness_quality_min", defaults.lane_objectness_quality_min),
@@ -1894,6 +1902,12 @@ def validate_meta_train_scenario(
         if phase_train.lane_objectness_target_mode not in {"binary", "quality_ramp"}:
             raise ValueError(
                 f"phase {index} lane_objectness_target_mode must be one of: binary, quality_ramp"
+            )
+        if phase_train.lane_family_query_objectness_target_mode not in {"quality_floor", "metric_quality"}:
+            raise ValueError(
+                "phase "
+                f"{index} lane_family_query_objectness_target_mode must be one of: "
+                "quality_floor, metric_quality"
             )
         if not 0.0 <= float(phase_train.lane_objectness_quality_min) < 1.0:
             raise ValueError(f"phase {index} lane_objectness_quality_min must be in [0, 1)")

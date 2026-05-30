@@ -2334,8 +2334,18 @@ def _focal_bce_with_logits(
     return bce * alpha_factor * modulating
 
 
-def _quality_to_objectness_target(quality: torch.Tensor, *, floor: float = 0.35) -> torch.Tensor:
+def _quality_to_objectness_target(
+    quality: torch.Tensor,
+    *,
+    mode: str = "quality_floor",
+    floor: float = 0.35,
+) -> torch.Tensor:
     bounded = quality.clamp(min=0.0, max=1.0)
+    mode = str(mode or "quality_floor").strip().lower()
+    if mode == "metric_quality":
+        return bounded
+    if mode != "quality_floor":
+        raise ValueError("lane_family_query_objectness_target_mode must be one of: quality_floor, metric_quality")
     return floor + (1.0 - floor) * bounded
 
 
@@ -2660,6 +2670,7 @@ class PV26MultiTaskLoss(nn.Module):
         task_mode: str = LANE_FAMILY_TASK_MODE,
         lane_assignment_mode: str = "fixed_slot",
         lane_objectness_target_mode: str = "binary",
+        lane_family_query_objectness_target_mode: str = "quality_floor",
         lane_objectness_quality_min: float = 0.25,
         lane_objectness_quality_tau: float = 10.0,
         lane_centerline_focal_weight: float = 0.0,
@@ -2745,6 +2756,7 @@ class PV26MultiTaskLoss(nn.Module):
         self.det_cls_negative_weight = float(det_cls_negative_weight)
         self.lane_assignment_mode = str(lane_assignment_mode)
         self.lane_objectness_target_mode = str(lane_objectness_target_mode)
+        self.lane_family_query_objectness_target_mode = str(lane_family_query_objectness_target_mode)
         self.lane_objectness_quality_min = float(lane_objectness_quality_min)
         self.lane_objectness_quality_tau = float(lane_objectness_quality_tau)
         self.lane_centerline_focal_weight = float(lane_centerline_focal_weight)
@@ -2963,6 +2975,7 @@ class PV26MultiTaskLoss(nn.Module):
             "task_mode": self.task_mode,
             "lane_assignment_mode": self.lane_assignment_mode,
             "lane_objectness_target_mode": self.lane_objectness_target_mode,
+            "lane_family_query_objectness_target_mode": self.lane_family_query_objectness_target_mode,
             "lane_objectness_quality_min": float(self.lane_objectness_quality_min),
             "lane_objectness_quality_tau": float(self.lane_objectness_quality_tau),
             "lane_centerline_focal_weight": float(self.lane_centerline_focal_weight),
@@ -4094,7 +4107,10 @@ class PV26MultiTaskLoss(nn.Module):
                 sample_pred[query_idx],
                 target_rows[batch_index, gt_idx].detach(),
             ).to(device=pred_rows.device, dtype=pred_rows.dtype)
-            obj_target[batch_index, query_idx] = _quality_to_objectness_target(quality)
+            obj_target[batch_index, query_idx] = _quality_to_objectness_target(
+                quality,
+                mode=self.lane_family_query_objectness_target_mode,
+            )
             fg_mask[batch_index, query_idx] = True
             matched_target_idx[batch_index, query_idx] = gt_idx
 

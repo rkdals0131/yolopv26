@@ -151,6 +151,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "train_aug_stopline_copy_paste_alpha": 0.75,
                             "roadmark_architecture": "current_family",
                             "lane_head_mode": "row_native",
+                            "lane_family_query_objectness_target_mode": "metric_quality",
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
                             "lane_segfirst_centerline_target_mode": "core",
@@ -385,6 +386,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_copy_paste_alpha, 0.75)
         self.assertEqual(scenario.train_defaults.roadmark_architecture, "current_family")
         self.assertEqual(scenario.train_defaults.lane_head_mode, "row_native")
+        self.assertEqual(scenario.train_defaults.lane_family_query_objectness_target_mode, "metric_quality")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)
         self.assertEqual(scenario.train_defaults.lane_segfirst_centerline_target_mode, "core")
@@ -528,6 +530,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertEqual(scenario.train_defaults.lane_head_mode, "seg_first")
         self.assertEqual(scenario.train_defaults.lane_objectness_target_mode, "binary")
+        self.assertEqual(scenario.train_defaults.lane_family_query_objectness_target_mode, "quality_floor")
         self.assertAlmostEqual(scenario.train_defaults.lane_objectness_quality_min, 0.25)
         self.assertAlmostEqual(scenario.train_defaults.lane_objectness_quality_tau, 10.0)
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)

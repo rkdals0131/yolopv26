@@ -2647,6 +2647,14 @@ EXPERIMENTS["current_family_dense_seed_vector_decoder"] = {
     },
 }
 
+EXPERIMENTS["current_family_metric_objectness_vector_decoder"] = {
+    **EXPERIMENTS["current_family_dense_seed_vector_decoder"],
+    "train_defaults_overrides": {
+        **EXPERIMENTS["current_family_dense_seed_vector_decoder"]["train_defaults_overrides"],
+        "lane_family_query_objectness_target_mode": "metric_quality",
+    },
+}
+
 EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {

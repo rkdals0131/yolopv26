@@ -232,6 +232,47 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["stop_line_dense_seed_logits"].grad)
         self.assertIsNotNone(predictions["crosswalk_dense_seed_logits"].grad)
 
+    def test_lane_family_query_metric_objectness_removes_quality_floor(self) -> None:
+        from model.engine import loss as loss_module
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        pred_rows = predictions["lane"].detach()
+        target_rows = encoded["lane"]
+        valid_mask = encoded["mask"]["lane_valid"]
+        source_mask = encoded["mask"]["lane_source"]
+        floor_criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
+        metric_criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            lane_family_query_objectness_target_mode="metric_quality",
+        )
+
+        floor_assignment = floor_criterion._build_query_assignment(
+            pred_rows,
+            target_rows,
+            valid_mask,
+            source_mask,
+            task_name="lane",
+            cost_builder=loss_module._lane_cost_matrix,
+            quality_builder=loss_module._lane_match_quality,
+        )
+        metric_assignment = metric_criterion._build_query_assignment(
+            pred_rows,
+            target_rows,
+            valid_mask,
+            source_mask,
+            task_name="lane",
+            cost_builder=loss_module._lane_cost_matrix,
+            quality_builder=loss_module._lane_match_quality,
+        )
+
+        floor_value = float(floor_assignment["obj_target"][0].max().item())
+        metric_value = float(metric_assignment["obj_target"][0].max().item())
+        self.assertGreaterEqual(floor_value, 0.35)
+        self.assertLess(metric_value, floor_value)
+        self.assertLess(metric_value, 0.35)
+
     def test_task_loss_ema_normalizer_scales_ready_task_losses(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

@@ -726,6 +726,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         task_mode=train_config.task_mode,
         lane_assignment_mode=train_config.lane_assignment_mode,
         lane_objectness_target_mode=train_config.lane_objectness_target_mode,
+        lane_family_query_objectness_target_mode=train_config.lane_family_query_objectness_target_mode,
         lane_objectness_quality_min=train_config.lane_objectness_quality_min,
         lane_objectness_quality_tau=train_config.lane_objectness_quality_tau,
         lane_dynamic_coverage_weight=train_config.lane_dynamic_coverage_weight,

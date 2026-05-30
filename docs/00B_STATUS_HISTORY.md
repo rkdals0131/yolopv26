@@ -19140,3 +19140,81 @@ Decision:
 - Exact-val128, broader-val512, and larger training were skipped because the first val4 gate failed on the strongest rejection condition.
 - Do not repeat this as dense seed radius, dense seed loss weight, top-K count, position MLP depth, object threshold, head LR, epoch-count, or train-batch scaling.
 - Reopen current-family vector-query work only with a materially different set-matching or proposal-to-metric quality contract that first creates nonzero matched TP on fixed validation.
+
+## 342. Current-family metric-objectness vector decoder: removing the matched-query objectness floor suppresses FP but still creates no TP
+
+Context:
+
+- The dense-seeded current-family vector decoder was allowed to reopen only if the next axis changed the set-matching or proposal-to-metric quality contract, not if it repeated seed radius, top-K, object threshold, LR, or training scale.
+- The failure mode was severe: dense seed queries produced lane FP (`0 / 97 / 86`) but no matched lane, stop-line, or crosswalk object.
+- This branch tested a narrower training-contract hypothesis: the old matched-query objectness target kept every Hungarian positive at least `0.35`, even when geometry quality was very poor, so the query decoder could learn to keep bad proposals alive.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-metric-objectness`.
+- `model/engine/loss.py` adds `lane_family_query_objectness_target_mode`.
+  - Default `quality_floor` preserves the old contract: `0.35 + 0.65 * quality`.
+  - Opt-in `metric_quality` uses the bounded metric quality directly.
+  - The mode applies to the shared lane-family query assignment path used by lane, stop-line, and crosswalk vector outputs.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` expose and validate the new train-default.
+- `tools/run_pv26_lane60_probe.py` adds `current_family_metric_objectness_vector_decoder`, inheriting the dense-seeded current-family decoder and setting `lane_family_query_objectness_target_mode="metric_quality"`.
+- `test/test_pv26_loss_runtime.py` verifies that a poor matched lane query receives a sub-`0.35` metric-quality target instead of the old floor.
+- `test/test_run_pv26_train.py` verifies default preservation and user-YAML override plumbing.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_metric_objectness_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_190323`.
+- CUDA training:
+  - epochs: `2`;
+  - train batches per epoch: `64`;
+  - validation batches: `4`;
+  - batch size: `4`;
+  - device: `cuda:0`;
+  - skipped steps: `0`.
+- Best internal phase objective:
+  - `0.2334973569` at epoch `1`.
+
+Phase-4 val4 results:
+
+| Epoch | Lane F1 | Lane TP/FP/FN | Stop F1 | Stop TP/FP/FN | Cross F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.0000` | `0 / 0 / 79` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 5` |
+| 2 | `0.0000` | `0 / 0 / 86` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 7` |
+
+Artifacts:
+
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_metric_objectness_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_190323/phase_4/history/epochs.jsonl`.
+- Phase summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_metric_objectness_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_190323/phase_4/summary.json`.
+- Run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_metric_objectness_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_190323/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned after the val4 gate failed.
+- Root `yolo26s.pt` from training was removed.
+- Retained run size after cleanup is about `348K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_lane_family_query_metric_objectness_removes_quality_floor test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_preserves_defaults_without_user_yaml test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg -n "current_family_metric_objectness_vector_decoder|experiment"`.
+- CUDA current-family metric-objectness vector decoder smoke training with `2x64` train batches.
+
+Decision:
+
+- This was a real training-contract change on the architecture path, not a postprocess threshold sweep.
+- It improved one failure symptom by suppressing dense-seeded lane FP (`97 -> 0`), but the critical gate did not move: all task TP stayed `0`.
+- Exact-val128, broader-val512, and larger training were skipped because the first val4 gate failed on the strongest rejection condition.
+- Do not repeat this as objectness-floor value, metric-quality/floor mode, object threshold, head LR, epoch-count, or train-batch scaling.
+- Reopen current-family vector-query work only with a materially different set-prediction/decoder/warm-start contract that first creates nonzero matched TP on fixed validation.
