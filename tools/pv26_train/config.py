@@ -161,6 +161,10 @@ class TrainDefaultsConfig:
     lane_segfirst_instance_embedding_aux_weight: float = 0.0
     lane_conditional_row_enabled: bool = False
     lane_conditional_row_merge_mode: str = "replace"
+    lane_conditional_row_dense_gate_enabled: bool = False
+    lane_conditional_row_dense_min_mean_centerline: float = 0.35
+    lane_conditional_row_dense_min_mean_support: float = 0.35
+    lane_conditional_row_dense_min_points: int = 4
     lane_conditional_row_coordinate_mode: str = "absolute_sigmoid"
     lane_conditional_row_max_delta_px: float = 160.0
     lane_family_shared_adapter_enabled: bool = False
@@ -951,6 +955,34 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_conditional_row_merge_mode=_coerce_str(
             data.get("lane_conditional_row_merge_mode", defaults.lane_conditional_row_merge_mode),
             field_name="train_defaults.lane_conditional_row_merge_mode",
+        ),
+        lane_conditional_row_dense_gate_enabled=_coerce_bool(
+            data.get(
+                "lane_conditional_row_dense_gate_enabled",
+                defaults.lane_conditional_row_dense_gate_enabled,
+            ),
+            field_name="train_defaults.lane_conditional_row_dense_gate_enabled",
+        ),
+        lane_conditional_row_dense_min_mean_centerline=_coerce_float(
+            data.get(
+                "lane_conditional_row_dense_min_mean_centerline",
+                defaults.lane_conditional_row_dense_min_mean_centerline,
+            ),
+            field_name="train_defaults.lane_conditional_row_dense_min_mean_centerline",
+        ),
+        lane_conditional_row_dense_min_mean_support=_coerce_float(
+            data.get(
+                "lane_conditional_row_dense_min_mean_support",
+                defaults.lane_conditional_row_dense_min_mean_support,
+            ),
+            field_name="train_defaults.lane_conditional_row_dense_min_mean_support",
+        ),
+        lane_conditional_row_dense_min_points=_coerce_int(
+            data.get(
+                "lane_conditional_row_dense_min_points",
+                defaults.lane_conditional_row_dense_min_points,
+            ),
+            field_name="train_defaults.lane_conditional_row_dense_min_points",
         ),
         lane_conditional_row_coordinate_mode=_coerce_str(
             data.get(
@@ -1831,6 +1863,16 @@ def validate_meta_train_scenario(
         if phase_train.lane_conditional_row_merge_mode not in {"replace", "append"}:
             raise ValueError(
                 f"phase {index} lane_conditional_row_merge_mode must be one of: replace, append"
+            )
+        if int(phase_train.lane_conditional_row_dense_min_points) < 1:
+            raise ValueError(f"phase {index} lane_conditional_row_dense_min_points must be >= 1")
+        if not 0.0 <= float(phase_train.lane_conditional_row_dense_min_mean_centerline) <= 1.0:
+            raise ValueError(
+                f"phase {index} lane_conditional_row_dense_min_mean_centerline must be in [0, 1]"
+            )
+        if not 0.0 <= float(phase_train.lane_conditional_row_dense_min_mean_support) <= 1.0:
+            raise ValueError(
+                f"phase {index} lane_conditional_row_dense_min_mean_support must be in [0, 1]"
             )
         if float(phase_train.lane_segfirst_instance_embedding_aux_weight) < 0.0:
             raise ValueError(f"phase {index} lane_segfirst_instance_embedding_aux_weight must be >= 0")

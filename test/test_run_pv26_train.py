@@ -168,6 +168,10 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_conditional_row_x_weight": 0.4,
                             "lane_segfirst_instance_embedding_aux_weight": 0.6,
                             "lane_conditional_row_enabled": True,
+                            "lane_conditional_row_dense_gate_enabled": True,
+                            "lane_conditional_row_dense_min_mean_centerline": 0.42,
+                            "lane_conditional_row_dense_min_mean_support": 0.37,
+                            "lane_conditional_row_dense_min_points": 6,
                             "lane_segfirst_track_mode": "row_scan",
                             "lane_segfirst_max_row_gap": 24,
                             "lane_segfirst_max_link_dx": 12.0,
@@ -397,6 +401,10 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_x_weight, 0.4)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_instance_embedding_aux_weight, 0.6)
         self.assertTrue(scenario.train_defaults.lane_conditional_row_enabled)
+        self.assertTrue(scenario.train_defaults.lane_conditional_row_dense_gate_enabled)
+        self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_dense_min_mean_centerline, 0.42)
+        self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_dense_min_mean_support, 0.37)
+        self.assertEqual(scenario.train_defaults.lane_conditional_row_dense_min_points, 6)
         self.assertEqual(scenario.train_defaults.lane_segfirst_track_mode, "row_scan")
         self.assertEqual(scenario.train_defaults.lane_segfirst_max_row_gap, 24)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_max_link_dx, 12.0)
@@ -639,6 +647,10 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             det_conf_threshold=0.31,
             det_iou_threshold=0.66,
             lane_obj_threshold=0.41,
+            lane_conditional_row_dense_gate_enabled=True,
+            lane_conditional_row_dense_min_mean_centerline=0.44,
+            lane_conditional_row_dense_min_mean_support=0.39,
+            lane_conditional_row_dense_min_points=5,
             stop_line_obj_threshold=0.42,
             crosswalk_obj_threshold=0.43,
         )
@@ -648,6 +660,10 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(config.det_conf_threshold, 0.31)
         self.assertAlmostEqual(config.det_iou_threshold, 0.66)
         self.assertAlmostEqual(config.lane_obj_threshold, 0.41)
+        self.assertTrue(config.lane_conditional_row_dense_gate_enabled)
+        self.assertAlmostEqual(config.lane_conditional_row_dense_min_mean_centerline, 0.44)
+        self.assertAlmostEqual(config.lane_conditional_row_dense_min_mean_support, 0.39)
+        self.assertEqual(config.lane_conditional_row_dense_min_points, 5)
         self.assertAlmostEqual(config.stop_line_obj_threshold, 0.42)
         self.assertAlmostEqual(config.crosswalk_obj_threshold, 0.43)
         self.assertFalse(config.allow_python_nms_fallback)

@@ -788,6 +788,101 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertLess(first_x, 320.0)
         self.assertGreater(second_x, 400.0)
 
+    def test_lane_conditional_row_dense_gate_keeps_supported_lane(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        h, w = 152, 200
+        predictions["lane_seg_centerline_logits"] = torch.full((1, 1, h, w), -8.0)
+        predictions["lane_seg_support_logits"] = torch.full((1, 1, h, w), -8.0)
+        predictions["lane_seg_tangent_axis"] = torch.zeros((1, 2, h, w))
+        predictions["lane_seg_tangent_axis"][:, 1] = -1.0
+        predictions["lane_seg_color_logits"] = torch.zeros((1, 3, h, w))
+        predictions["lane_seg_type_logits"] = torch.zeros((1, 2, h, w))
+        conditional = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+        conditional[0, 0, 0] = 8.0
+        conditional[0, 0, 2] = 6.0
+        conditional[0, 0, 5] = 6.0
+        conditional[0, 0, LANE_X_SLICE] = torch.linspace(120.0, 270.0, LANE_ANCHOR_COUNT)
+        conditional[0, 0, LANE_VIS_SLICE] = 8.0
+        predictions["lane_conditional_rows"] = conditional
+
+        anchor_rows = torch.linspace(607.0, 0.0, LANE_ANCHOR_COUNT)
+        for x, y in zip(conditional[0, 0, LANE_X_SLICE], anchor_rows, strict=True):
+            col = min(max(int(round(float(x) * w / 800.0)), 0), w - 1)
+            row = min(max(int(round(float(y) * h / 608.0)), 0), h - 1)
+            predictions["lane_seg_centerline_logits"][0, 0, row, col] = 8.0
+            predictions["lane_seg_support_logits"][0, 0, row, col] = 8.0
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                stop_line_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.999,
+                lane_conditional_row_enabled=True,
+                lane_conditional_row_dense_gate_enabled=True,
+                lane_conditional_row_dense_min_mean_centerline=0.70,
+                lane_conditional_row_dense_min_mean_support=0.70,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["lanes"]), 1)
+        self.assertEqual(decoded[0]["lanes"][0]["class_name"], "yellow_lane")
+        self.assertEqual(decoded[0]["lanes"][0]["lane_type"], "dotted")
+
+    def test_lane_conditional_row_dense_gate_filters_unsupported_append(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det"] = torch.zeros_like(predictions["det"])
+        predictions["lane"] = torch.zeros_like(predictions["lane"])
+        predictions["stop_line"] = torch.zeros_like(predictions["stop_line"])
+        predictions["crosswalk"] = torch.zeros_like(predictions["crosswalk"])
+        h, w = 152, 200
+        predictions["lane_seg_centerline_logits"] = torch.full((1, 1, h, w), -8.0)
+        predictions["lane_seg_support_logits"] = torch.full((1, 1, h, w), -8.0)
+        predictions["lane_seg_tangent_axis"] = torch.zeros((1, 2, h, w))
+        predictions["lane_seg_tangent_axis"][:, 1] = -1.0
+        predictions["lane_seg_color_logits"] = torch.zeros((1, 3, h, w))
+        predictions["lane_seg_color_logits"][:, 1] = 5.0
+        predictions["lane_seg_type_logits"] = torch.zeros((1, 2, h, w))
+        predictions["lane_seg_type_logits"][:, 1] = 5.0
+        for row in range(30, 140):
+            col = 50 + row // 8
+            predictions["lane_seg_centerline_logits"][0, 0, row, col] = 8.0
+            predictions["lane_seg_support_logits"][0, 0, row, col] = 8.0
+
+        conditional = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+        conditional[..., 0] = -10.0
+        conditional[0, 0, 0] = 8.0
+        conditional[0, 0, 2] = 6.0
+        conditional[0, 0, 5] = 6.0
+        conditional[0, 0, LANE_X_SLICE] = torch.linspace(420.0, 540.0, LANE_ANCHOR_COUNT)
+        conditional[0, 0, LANE_VIS_SLICE] = 8.0
+        predictions["lane_conditional_rows"] = conditional
+
+        decoded = postprocess_pv26_batch(
+            predictions,
+            _meta_identity(),
+            config=PV26PostprocessConfig(
+                det_conf_threshold=0.999,
+                stop_line_obj_threshold=0.999,
+                crosswalk_obj_threshold=0.999,
+                lane_segfirst_min_bbox_area_px=0.0,
+                lane_segfirst_max_bbox_aspect=0.0,
+                lane_segfirst_track_mode="row_scan_tangent",
+                lane_conditional_row_enabled=True,
+                lane_conditional_row_merge_mode="append",
+                lane_conditional_row_dense_gate_enabled=True,
+                lane_conditional_row_dense_min_mean_centerline=0.35,
+                lane_conditional_row_dense_min_mean_support=0.35,
+            ),
+        )
+
+        self.assertEqual(len(decoded[0]["lanes"]), 1)
+        self.assertLess(decoded[0]["lanes"][0]["points_xy"][0][0], 320.0)
+
     def test_postprocess_raises_when_torchvision_batched_nms_fails_by_default(self) -> None:
         predictions = _make_prediction_batch()
         torchvision_module = ModuleType("torchvision")

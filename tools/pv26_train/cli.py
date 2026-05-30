@@ -230,6 +230,14 @@ def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26Postproc
         ),
         lane_conditional_row_enabled=bool(train_config.lane_conditional_row_enabled),
         lane_conditional_row_merge_mode=str(train_config.lane_conditional_row_merge_mode),
+        lane_conditional_row_dense_gate_enabled=bool(train_config.lane_conditional_row_dense_gate_enabled),
+        lane_conditional_row_dense_min_mean_centerline=float(
+            train_config.lane_conditional_row_dense_min_mean_centerline
+        ),
+        lane_conditional_row_dense_min_mean_support=float(
+            train_config.lane_conditional_row_dense_min_mean_support
+        ),
+        lane_conditional_row_dense_min_points=int(train_config.lane_conditional_row_dense_min_points),
         stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
         stop_line_haf_enabled=bool(train_config.stop_line_haf_enabled),
         stop_line_haf_valid_threshold=float(train_config.stop_line_haf_valid_threshold),

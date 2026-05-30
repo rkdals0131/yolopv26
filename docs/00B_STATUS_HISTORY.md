@@ -17333,3 +17333,88 @@ Verification:
 - Exact-val128, broader-val512, and larger training were skipped because fixed val4 lost lane TP, added severe lane FP, and recovered no stop-line TP.
 - Do not repeat this as `lane_conditional_row_only`, append/replace, seed-relative max-delta, seed/objectness target, row-x weight, head LR, epoch-count, or train-batch scaling.
 - Reopen conditional row work only with a materially different instance-quality/matching contract that suppresses false appended lanes before exact/broader.
+
+## 322. 2026-05-30 Lane conditional row dense gate: FP mostly suppressed but still below retained lane smoke
+
+맥락:
+
+- Branch-only conditional-row training showed that frozen dense maps prevent some drift, but appended conditional rows still flooded FP.
+- This branch tested the next permitted premise from `00C`: a materially different runtime instance-quality/matching contract.
+- The new contract keeps an appended conditional row only when its visible anchor points land on retained dense lane centerline and support evidence.
+- This is not another objectness/max-delta/merge-mode threshold sweep; it ties conditional instances back to the dense seg-first evidence that the retained vectorizer already trusts.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-conditional-row-dense-gate`.
+- `model/engine/postprocess.py` adds opt-in dense gating fields:
+  - `lane_conditional_row_dense_gate_enabled`.
+  - `lane_conditional_row_dense_min_mean_centerline`.
+  - `lane_conditional_row_dense_min_mean_support`.
+  - `lane_conditional_row_dense_min_points`.
+- Conditional row predictions preserve their internal anchor mask/x positions until after dense gating, then internal fields are stripped before final output.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` wire the fields into train defaults and evaluator postprocess config.
+- `tools/run_pv26_lane60_probe.py` adds `lane_conditional_row_dense_gate`:
+  - `freeze_policy="lane_conditional_row_only"`.
+  - `lane_conditional_row_coordinate_mode="seed_relative"`.
+  - `lane_conditional_row_merge_mode="append"`.
+  - Dense seg-first losses stay zero, so only the conditional row branch trains.
+  - Projection-comp stop-line runtime and hull crosswalk decode are retained.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_dense_gate_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_104105`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+
+Internal val4-style training validation:
+
+| Epoch | Phase objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.6408025211` | `0.5547` | `38 / 13 / 48` | `0.0000` | `0 / 1 / 2` | `0.7273` | `4 / 2 / 1` |
+| 2 | `0.6395153929` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed val4 evaluation:
+
+| Eval | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| fixed val4 epoch-2 best | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` | `0.6395153929` |
+
+Reference:
+
+- Retained fixed val4 lane reference for this smoke family is `0.5839`, TP/FP/FN `40 / 11 / 46`.
+- Prior branch-only conditional row smoke was lane `0.2809`, TP/FP/FN `33 / 116 / 53`.
+- Dense gating suppresses most branch-only FP (`116 -> 14`) and recovers lane TP (`33 -> 38`), but it is still below the retained fixed lane reference and adds `+3` FP while losing `2` TP.
+- Stop-line remains unmoved at `0 / 3 / 2`.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_dense_gate_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_104105/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_dense_gate_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_104105/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_dense_gate_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_104105/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt`/`yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `6.6M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/postprocess.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_postprocess.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_postprocess.PV26PostprocessTests.test_lane_conditional_row_dense_gate_keeps_supported_lane test_pv26_postprocess.PV26PostprocessTests.test_lane_conditional_row_dense_gate_filters_unsupported_append test_pv26_postprocess.PV26PostprocessTests.test_lane_conditional_row_append_keeps_segfirst_vectorizer_output`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides test_run_pv26_train.RunPV26TrainScenarioTests.test_build_postprocess_config_uses_train_defaults_thresholds`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help`.
+- CUDA lane conditional row dense-gate smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- The dense gate is a real instance-quality contract and a useful diagnostic: it shows conditional rows can be constrained back near retained dense evidence.
+- It is still metric-negative because the retained fixed lane reference is better: `40 / 11 / 46` versus dense-gated `38 / 14 / 48`.
+- Exact-val128, broader-val512, and larger training were skipped because fixed val4 lost lane TP, added lane FP, and recovered no stop-line TP.
+- Do not repeat this as centerline/support dense threshold, min-point, append/replace, seed-relative max-delta, seed/objectness target, row-x weight, head LR, epoch-count, or train-batch scaling.
+- Reopen conditional row work only with a materially stronger learned instance-quality or matching signal that beats retained fixed val4 TP/FP/FN before exact/broader.

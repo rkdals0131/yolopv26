@@ -75,6 +75,10 @@ class PV26PostprocessConfig:
     lane_segfirst_center_offset_min_support_score: float = 0.50
     lane_conditional_row_enabled: bool = False
     lane_conditional_row_merge_mode: str = "replace"
+    lane_conditional_row_dense_gate_enabled: bool = False
+    lane_conditional_row_dense_min_mean_centerline: float = 0.35
+    lane_conditional_row_dense_min_mean_support: float = 0.35
+    lane_conditional_row_dense_min_points: int = 4
     stop_line_obj_threshold: float = 0.50
     stop_line_mask_binary_threshold: float = 0.50
     stop_line_min_component_pixels: int = 24
@@ -296,7 +300,11 @@ def _visibility_envelope(mask: torch.BoolTensor) -> torch.BoolTensor:
     return output
 
 
-def _dedupe_lane_predictions(predictions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedupe_lane_predictions(
+    predictions: list[dict[str, Any]],
+    *,
+    strip_internal: bool = True,
+) -> list[dict[str, Any]]:
     kept: list[dict[str, Any]] = []
     for candidate in predictions:
         candidate_mask = candidate["_anchor_mask"]
@@ -318,9 +326,10 @@ def _dedupe_lane_predictions(predictions: list[dict[str, Any]]) -> list[dict[str
                 break
         if not is_duplicate:
             kept.append(candidate)
-    for prediction in kept:
-        prediction.pop("_anchor_mask", None)
-        prediction.pop("_anchor_x", None)
+    if strip_internal:
+        for prediction in kept:
+            prediction.pop("_anchor_mask", None)
+            prediction.pop("_anchor_x", None)
     return kept
 
 
@@ -2975,6 +2984,7 @@ def _decode_lane_rows(
     *,
     meta: dict[str, Any],
     config: PV26PostprocessConfig,
+    strip_internal: bool = True,
 ) -> list[dict[str, Any]]:
     transform = transform_from_meta(meta)
     predictions: list[dict[str, Any]] = []
@@ -3008,7 +3018,93 @@ def _decode_lane_rows(
             }
         )
     predictions.sort(key=lambda item: item["score"], reverse=True)
-    return _dedupe_lane_predictions(predictions)
+    return _dedupe_lane_predictions(predictions, strip_internal=strip_internal)
+
+
+def _map_channel_to_numpy(value: torch.Tensor | np.ndarray) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+        array = value.detach().cpu().numpy()
+    else:
+        array = np.asarray(value)
+    if array.ndim == 3 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 2:
+        raise ValueError(f"expected single-channel map, got shape {array.shape}")
+    return np.asarray(array, dtype=np.float32)
+
+
+def _dense_gate_conditional_lane(
+    lane: dict[str, Any],
+    *,
+    maps: dict[str, torch.Tensor | np.ndarray],
+    meta: dict[str, Any],
+    config: PV26PostprocessConfig,
+) -> bool:
+    anchor_mask = torch.as_tensor(lane.get("_anchor_mask", []), dtype=torch.bool).reshape(-1)
+    anchor_x = torch.as_tensor(lane.get("_anchor_x", []), dtype=torch.float32).reshape(-1)
+    if int(anchor_mask.numel()) != LANE_ANCHOR_COUNT or int(anchor_x.numel()) != LANE_ANCHOR_COUNT:
+        return False
+    visible_count = int(anchor_mask.sum().item())
+    if visible_count < int(config.lane_conditional_row_dense_min_points):
+        return False
+
+    centerline = _map_channel_to_numpy(maps["centerline_core"])
+    support = _map_channel_to_numpy(maps["support"])
+    if centerline.shape != support.shape:
+        raise ValueError(
+            f"lane conditional dense gate requires centerline/support shape match, "
+            f"got {centerline.shape} and {support.shape}"
+        )
+
+    transform = transform_from_meta(meta)
+    anchor_rows = _lane_anchor_rows(transform, device=anchor_x.device, dtype=anchor_x.dtype)
+    points = torch.stack((anchor_x, anchor_rows), dim=-1)[anchor_mask]
+    map_h, map_w = int(centerline.shape[0]), int(centerline.shape[1])
+    network_h, network_w = transform.network_hw
+    map_x = torch.round(points[:, 0] * float(map_w) / max(float(network_w), 1.0)).to(dtype=torch.long)
+    map_y = torch.round(points[:, 1] * float(map_h) / max(float(network_h), 1.0)).to(dtype=torch.long)
+    map_x = map_x.clamp_(0, max(map_w - 1, 0))
+    map_y = map_y.clamp_(0, max(map_h - 1, 0))
+    center_values = centerline[map_y.cpu().numpy(), map_x.cpu().numpy()]
+    support_values = support[map_y.cpu().numpy(), map_x.cpu().numpy()]
+    mean_centerline = float(np.mean(center_values)) if center_values.size else 0.0
+    mean_support = float(np.mean(support_values)) if support_values.size else 0.0
+    lane["_conditional_dense_mean_centerline"] = mean_centerline
+    lane["_conditional_dense_mean_support"] = mean_support
+    lane["_conditional_dense_points"] = visible_count
+    return (
+        mean_centerline >= float(config.lane_conditional_row_dense_min_mean_centerline)
+        and mean_support >= float(config.lane_conditional_row_dense_min_mean_support)
+    )
+
+
+def _filter_conditional_lanes_by_dense_gate(
+    lanes: list[dict[str, Any]],
+    *,
+    maps: dict[str, torch.Tensor | np.ndarray],
+    meta: dict[str, Any],
+    config: PV26PostprocessConfig,
+) -> list[dict[str, Any]]:
+    if not bool(config.lane_conditional_row_dense_gate_enabled):
+        return lanes
+    return [
+        lane
+        for lane in lanes
+        if _dense_gate_conditional_lane(lane, maps=maps, meta=meta, config=config)
+    ]
+
+
+def _strip_lane_internal_fields(lanes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for lane in lanes:
+        public_lane = dict(lane)
+        public_lane.pop("_anchor_mask", None)
+        public_lane.pop("_anchor_x", None)
+        public_lane.pop("_conditional_dense_mean_centerline", None)
+        public_lane.pop("_conditional_dense_mean_support", None)
+        public_lane.pop("_conditional_dense_points", None)
+        cleaned.append(public_lane)
+    return cleaned
 
 
 def _decode_segfirst_lane_rows(
@@ -3062,7 +3158,15 @@ def _decode_segfirst_lane_rows(
         conditional_rows[batch_index],
         meta=meta,
         config=config,
+        strip_internal=False,
     )
+    conditional_lanes = _filter_conditional_lanes_by_dense_gate(
+        conditional_lanes,
+        maps=maps,
+        meta=meta,
+        config=config,
+    )
+    conditional_lanes = _strip_lane_internal_fields(conditional_lanes)
     merge_mode = str(config.lane_conditional_row_merge_mode).strip().lower()
     if merge_mode == "replace":
         return conditional_lanes
