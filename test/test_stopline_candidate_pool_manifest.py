@@ -11,6 +11,9 @@ from tools.probe_pv26_stopline_candidate_pool import (
     _oriented_raw_patch,
     _points_json,
     _projection_competition_variant_fields,
+    _predict_raw_patch_cnn,
+    _fit_raw_patch_cnn,
+    _raw_patch_cnn_feature_parts,
     _raw_patch_feature_vector,
     _scenario_with_dataset_root,
     _write_candidate_features_csv,
@@ -157,7 +160,7 @@ class StopLineCandidatePoolManifestTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             image_path = Path(tmp) / "sample.png"
             image = np.zeros((32, 32), dtype=np.uint8)
-            image[16, 6:26] = 255
+            image[14:19, 6:26] = 255
             Image.fromarray(image).save(image_path)
 
             feature = _raw_patch_feature_vector(
@@ -173,6 +176,42 @@ class StopLineCandidatePoolManifestTest(unittest.TestCase):
 
         self.assertEqual(feature.ndim, 1)
         self.assertGreater(float(feature.max()), 0.0)
+
+    def test_raw_patch_cnn_feature_parts_keep_patch_channels_and_tabular(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "sample.png"
+            image = np.zeros((32, 32), dtype=np.uint8)
+            image[14:19, 6:26] = 255
+            Image.fromarray(image).save(image_path)
+
+            patch, tabular = _raw_patch_cnn_feature_parts(
+                {
+                    "points_xy": [[6.0, 16.0], [25.0, 16.0]],
+                    "score": 0.9,
+                    "length": 19.0,
+                    "proposal_rank": 1,
+                },
+                {"image_path": str(image_path)},
+                image_cache={},
+            )
+
+        self.assertEqual(tuple(patch.shape), (2, 24, 64))
+        self.assertEqual(tabular.ndim, 1)
+        self.assertGreater(float(patch[0].max()), 0.0)
+
+    def test_raw_patch_cnn_verifier_predicts_candidate_scores(self) -> None:
+        patches = np.zeros((4, 2, 24, 64), dtype=np.float32)
+        patches[2:, :, 11:13, :] = 1.0
+        tabular = np.zeros((4, 8), dtype=np.float32)
+        labels = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float32)
+
+        model = _fit_raw_patch_cnn(patches, tabular, labels, epochs=1, lr=0.001, device="cpu")
+        scores = _predict_raw_patch_cnn(model, patches, tabular, device="cpu")
+
+        self.assertEqual(tuple(scores.shape), (4,))
+        self.assertTrue(np.isfinite(scores).all())
 
 
 if __name__ == "__main__":

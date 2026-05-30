@@ -17496,3 +17496,102 @@ Verification:
 - Exact-val128, broader-val512, and larger training were skipped because the smoke gate failed on the strongest possible rejection criterion: no matched objects at all.
 - Do not repeat this as denoise noise-scale, denoise loss-weight, query count, object threshold, head LR, epoch-count, or train-batch scaling.
 - Reopen current-family vector-query work only with a materially different set-prediction/matching target or dense-seeded proposal contract that first emits matched objects on fixed validation.
+
+## 324. Stop-line raw-patch CNN verifier replay: learned patch verifier overfits train and fails held-out exact
+
+맥락:
+
+- The previous raw-patch MLP verifier and endpoint-repair replay both showed that oriented raw-image evidence can fit the train half but does not transfer to held-out exact records.
+- This branch tested the less hand-flattened version of the same premise: a small CNN reads a candidate-aligned raw patch and gradient patch, while a tabular encoder reads existing candidate statistics.
+- The probe is still no-GT at runtime. GT labels are used only to train/evaluate the held-out verifier split.
+- The existing `seg_dataset/pv26_exhaustive_od_lane_dataset` was reused in place. No dataset copy was created.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raw-patch-cnn-verifier`.
+- Tool: `tools/probe_pv26_stopline_candidate_pool.py`.
+- New opt-in replay: `--raw-patch-cnn-verifier-replay`.
+- New CLI controls:
+  - `--raw-patch-cnn-train-fraction`;
+  - `--raw-patch-cnn-top-k`;
+  - `--raw-patch-cnn-threshold-grid`;
+  - `--raw-patch-cnn-epochs`;
+  - `--raw-patch-cnn-lr`.
+- Feature input:
+  - oriented grayscale candidate patch;
+  - patch gradient magnitude as a second channel;
+  - existing rich candidate numeric features plus patch statistics.
+- Model:
+  - two small Conv2d blocks with adaptive pooling;
+  - a small tabular MLP;
+  - concatenated classifier with weighted BCE.
+- Output:
+  - `raw_patch_cnn_score`;
+  - task threshold selected on the train split and replayed on held-out/all splits.
+
+Smoke:
+
+- CUDA val4 smoke used `4` val batches, `5` CNN epochs, `top_k=20`, and projection-comp replay in the same export.
+- The val4 candidate pool had `70` candidate rows and `0` oracle-positive rows, so it was only a wiring check.
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_cnn_verifier_smoke_val4_epoch2`.
+
+Exact-val128 training and evaluation:
+
+- CUDA exact replay used:
+  - `128` val batches;
+  - `80` CNN epochs;
+  - `top_k=20`;
+  - train/held-out split by validation batch half.
+- Exact candidate pool:
+  - `1170` candidate rows;
+  - `442` oracle-positive candidate rows.
+- CNN train split:
+  - `256` samples;
+  - `514` train candidate rows;
+  - `148` oracle-positive train rows;
+  - `87` cached source images.
+- Train-selected threshold: `0.9241744375228883`.
+- Patch tensor shape: `2 x 24 x 64`.
+- Tabular feature dim: `40`.
+
+Exact-val128 results:
+
+| Split | Variant | Stop-line F1 | Stop TP/FP/FN |
+| --- | --- | ---: | --- |
+| train | baseline | `0.3704` | `10 / 15 / 19` |
+| train | raw_patch_cnn_task_threshold | `0.5854` | `12 / 0 / 17` |
+| heldout | baseline | `0.5161` | `16 / 15 / 15` |
+| heldout | raw_patch_cnn_task_threshold | `0.3043` | `7 / 8 / 24` |
+| all | baseline | `0.4483` | `26 / 30 / 34` |
+| all | raw_patch_cnn_task_threshold | `0.4368` | `19 / 8 / 41` |
+| all | projection_comp reference | `0.5167` | `31 / 29 / 29` |
+
+Artifacts:
+
+- Exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_cnn_verifier_exact_val128_epoch2/raw_patch_cnn_verifier_variants.csv`.
+- Exact projection-comp reference: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_cnn_verifier_exact_val128_epoch2/fragment_projection_competition_variants.csv`.
+- Exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_raw_patch_cnn_verifier_exact_val128_epoch2/summary.json`.
+
+Storage:
+
+- Retained exact export is about `2.6M`.
+- Retained smoke export is about `168K`.
+- Root `yolo26s.pt` was removed after evaluation.
+- No checkpoint artifact was created by the verifier replay.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_candidate_pool.py test/test_stopline_candidate_pool_manifest.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_stopline_candidate_pool_manifest.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/probe_pv26_stopline_candidate_pool.py --help | rg "raw-patch-cnn|raw-patch-verifier"`.
+- CUDA fixed val4 raw-patch CNN verifier smoke with `4` val batches.
+- CUDA fixed exact-val128 raw-patch CNN verifier replay with `128` val batches.
+
+판단:
+
+- This is an actual learned verifier probe, but it is exact-negative.
+- The CNN learns a high-precision train threshold, but it loses too much held-out recall and does not beat the baseline or projection-comp exact reference.
+- Broader-val512 and larger training were skipped because the exact held-out/all-split gate failed.
+- Do not repeat this as CNN depth/channel, raw/gradient patch size, numeric feature set, epoch/LR, top-k, threshold-grid, or same train-threshold replay sweep.
+- Reopen raw-image verifier work only with a materially different candidate-generation or verification contract that first improves fixed exact TP/FP/FN.

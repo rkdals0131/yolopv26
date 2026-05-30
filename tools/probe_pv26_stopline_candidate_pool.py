@@ -209,6 +209,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-patch-verifier-epochs", type=int, default=160)
     parser.add_argument("--raw-patch-verifier-lr", type=float, default=0.003)
     parser.add_argument(
+        "--raw-patch-cnn-verifier-replay",
+        action="store_true",
+        help=(
+            "Train a held-out oriented raw-image patch CNN verifier over stop-line candidates and replay "
+            "its task threshold. This is distinct from the flattened raw-patch MLP replay."
+        ),
+    )
+    parser.add_argument("--raw-patch-cnn-train-fraction", type=float, default=0.5)
+    parser.add_argument("--raw-patch-cnn-top-k", type=int, default=20)
+    parser.add_argument("--raw-patch-cnn-threshold-grid", type=int, default=101)
+    parser.add_argument("--raw-patch-cnn-epochs", type=int, default=80)
+    parser.add_argument("--raw-patch-cnn-lr", type=float, default=0.001)
+    parser.add_argument(
         "--raw-patch-geometry-repair-replay",
         action="store_true",
         help=(
@@ -529,6 +542,33 @@ def _raw_patch_feature_vector(
         ],
         axis=0,
     )
+
+
+def _raw_patch_cnn_feature_parts(
+    candidate: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    image_cache: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    image = _load_raw_gray_image(str(row.get("image_path", "")), image_cache)
+    patch = _oriented_raw_patch(image, candidate.get("points_xy", []))
+    grad_y, grad_x = np.gradient(patch.astype(np.float32))
+    grad_mag = np.sqrt(np.square(grad_x.astype(np.float32)) + np.square(grad_y.astype(np.float32)))
+    patch_stats = np.asarray(
+        [
+            float(patch.mean()),
+            float(patch.std()),
+            float(np.abs(grad_x).mean()),
+            float(np.abs(grad_y).mean()),
+            float(grad_mag.mean()),
+            float(np.percentile(patch, 10)),
+            float(np.percentile(patch, 90)),
+        ],
+        dtype=np.float32,
+    )
+    tabular = np.concatenate([np.asarray(_rich_feature_vector(candidate), dtype=np.float32), patch_stats], axis=0)
+    patch_channels = np.stack([patch.astype(np.float32), grad_mag.astype(np.float32)], axis=0)
+    return patch_channels, tabular.astype(np.float32)
 
 
 def _standardize(train_x: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1079,6 +1119,124 @@ def _predict_raw_patch_mlp(model: torch.nn.Module, x: np.ndarray) -> np.ndarray:
         return torch.sigmoid(logits).cpu().numpy().astype(np.float32)
 
 
+class _RawPatchCnnVerifier(torch.nn.Module):
+    def __init__(self, tabular_dim: int) -> None:
+        super().__init__()
+        self.patch_encoder = torch.nn.Sequential(
+            torch.nn.Conv2d(2, 16, kernel_size=3, padding=1),
+            torch.nn.SiLU(),
+            torch.nn.MaxPool2d(kernel_size=2),
+            torch.nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            torch.nn.SiLU(),
+            torch.nn.AdaptiveAvgPool2d((3, 8)),
+            torch.nn.Flatten(),
+        )
+        self.tabular_encoder = torch.nn.Sequential(
+            torch.nn.Linear(int(tabular_dim), 48),
+            torch.nn.SiLU(),
+        )
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(32 * 3 * 8 + 48, 96),
+            torch.nn.SiLU(),
+            torch.nn.Dropout(p=0.10),
+            torch.nn.Linear(96, 1),
+        )
+
+    def forward(self, patches: torch.Tensor, tabular: torch.Tensor) -> torch.Tensor:
+        encoded_patch = self.patch_encoder(patches)
+        encoded_tabular = self.tabular_encoder(tabular)
+        return self.classifier(torch.cat([encoded_patch, encoded_tabular], dim=1))
+
+
+def _raw_patch_cnn_candidate_arrays(
+    records: list[dict[str, Any]],
+    *,
+    top_k: int,
+    image_cache: dict[str, np.ndarray],
+) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray, np.ndarray]:
+    candidates: list[dict[str, Any]] = []
+    patch_features: list[np.ndarray] = []
+    tabular_features: list[np.ndarray] = []
+    labels: list[float] = []
+    for record in records:
+        record_candidates = list(record.get("candidates", []))
+        record_rows = list(record.get("candidate_feature_rows", []))
+        for candidate, row in zip(record_candidates, record_rows):
+            if int(candidate.get("proposal_rank", 10**6)) > int(top_k):
+                continue
+            patch, tabular = _raw_patch_cnn_feature_parts(candidate, row, image_cache=image_cache)
+            candidates.append(candidate)
+            patch_features.append(patch)
+            tabular_features.append(tabular)
+            labels.append(float(bool(candidate.get("is_oracle_positive", False))))
+    if not patch_features:
+        return (
+            candidates,
+            np.zeros((0, 2, RAW_PATCH_HEIGHT, RAW_PATCH_WIDTH), dtype=np.float32),
+            np.zeros((0, 0), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+        )
+    return (
+        candidates,
+        np.stack(patch_features, axis=0).astype(np.float32),
+        np.stack(tabular_features, axis=0).astype(np.float32),
+        np.asarray(labels, dtype=np.float32),
+    )
+
+
+def _fit_raw_patch_cnn(
+    train_patches: np.ndarray,
+    train_tabular: np.ndarray,
+    train_y: np.ndarray,
+    *,
+    epochs: int,
+    lr: float,
+    device: str,
+) -> torch.nn.Module:
+    if train_patches.ndim != 4 or train_tabular.ndim != 2:
+        raise ValueError("raw patch CNN expects 4D patch tensor and 2D tabular matrix")
+    torch.manual_seed(29)
+    resolved_device = torch.device(device if str(device).startswith("cuda") and torch.cuda.is_available() else "cpu")
+    model = _RawPatchCnnVerifier(tabular_dim=int(train_tabular.shape[1])).to(resolved_device)
+    patches = torch.from_numpy(train_patches.astype(np.float32)).to(resolved_device)
+    tabular = torch.from_numpy(train_tabular.astype(np.float32)).to(resolved_device)
+    labels = torch.from_numpy(train_y.astype(np.float32)).view(-1, 1).to(resolved_device)
+    positive = float(max(float(train_y.sum()), 1.0))
+    negative = float(max(float(train_y.shape[0] - train_y.sum()), 1.0))
+    criterion = torch.nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor([negative / positive], dtype=torch.float32, device=resolved_device)
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=1.0e-4)
+    batch_size = min(128, int(train_y.shape[0]))
+    model.train()
+    for _ in range(max(1, int(epochs))):
+        order = torch.randperm(int(train_y.shape[0]), device=resolved_device)
+        for start in range(0, int(order.numel()), batch_size):
+            batch_indices = order[start : start + batch_size]
+            optimizer.zero_grad(set_to_none=True)
+            loss = criterion(model(patches[batch_indices], tabular[batch_indices]), labels[batch_indices])
+            loss.backward()
+            optimizer.step()
+    model.eval()
+    return model.cpu()
+
+
+def _predict_raw_patch_cnn(model: torch.nn.Module, patches: np.ndarray, tabular: np.ndarray, *, device: str) -> np.ndarray:
+    if patches.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    resolved_device = torch.device(device if str(device).startswith("cuda") and torch.cuda.is_available() else "cpu")
+    model = model.to(resolved_device)
+    scores: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, int(patches.shape[0]), 256):
+            batch_patches = torch.from_numpy(patches[start : start + 256].astype(np.float32)).to(resolved_device)
+            batch_tabular = torch.from_numpy(tabular[start : start + 256].astype(np.float32)).to(resolved_device)
+            logits = model(batch_patches, batch_tabular).squeeze(1)
+            scores.append(torch.sigmoid(logits).cpu().numpy().astype(np.float32))
+    model.cpu()
+    return np.concatenate(scores, axis=0) if scores else np.zeros((0,), dtype=np.float32)
+
+
 def _run_raw_patch_verifier_replay(
     sample_records: list[dict[str, Any]],
     *,
@@ -1188,6 +1346,130 @@ def _run_raw_patch_verifier_replay(
             "oriented grayscale image patch from the earlier validation split, then applies the "
             "train-selected task threshold to the held-out split. It is a learned no-GT verifier "
             "probe, not a final deployed contract."
+        ),
+    }
+
+
+def _run_raw_patch_cnn_verifier_replay(
+    sample_records: list[dict[str, Any]],
+    *,
+    train_fraction: float,
+    top_k: int,
+    max_components: int,
+    threshold_grid: int,
+    epochs: int,
+    lr: float,
+    device: str,
+) -> dict[str, Any]:
+    if not sample_records:
+        raise ValueError("raw patch CNN verifier replay requires sample records")
+    batch_indices = np.asarray([int(record["batch_index"]) for record in sample_records], dtype=np.int64)
+    min_batch = int(batch_indices.min())
+    max_batch = int(batch_indices.max())
+    cutoff = min_batch + int(round((max_batch - min_batch + 1) * float(train_fraction))) - 1
+    train_records = [record for record in sample_records if int(record["batch_index"]) <= cutoff]
+    heldout_records = [record for record in sample_records if int(record["batch_index"]) > cutoff]
+    if not train_records or not heldout_records:
+        raise ValueError("raw patch CNN verifier replay requires non-empty train and held-out splits")
+
+    image_cache: dict[str, np.ndarray] = {}
+    train_candidates, train_patches, train_tabular, train_labels = _raw_patch_cnn_candidate_arrays(
+        train_records,
+        top_k=int(top_k),
+        image_cache=image_cache,
+    )
+    all_candidates, all_patches, all_tabular, _all_labels = _raw_patch_cnn_candidate_arrays(
+        sample_records,
+        top_k=int(top_k),
+        image_cache=image_cache,
+    )
+    if not train_candidates or train_patches.shape[0] == 0 or all_patches.shape[0] == 0:
+        raise ValueError("raw patch CNN verifier replay found no train candidates")
+    all_tabular_std, mean, std = _standardize_from_train(train_tabular, all_tabular)
+    train_tabular_std = (
+        np.where(np.isfinite(train_tabular), train_tabular, mean.reshape(1, -1)) - mean.reshape(1, -1)
+    ) / std.reshape(1, -1)
+    model = _fit_raw_patch_cnn(
+        train_patches.astype(np.float32),
+        train_tabular_std.astype(np.float32),
+        train_labels.astype(np.float32),
+        epochs=int(epochs),
+        lr=float(lr),
+        device=str(device),
+    )
+    all_scores = _predict_raw_patch_cnn(
+        model,
+        all_patches.astype(np.float32),
+        all_tabular_std.astype(np.float32),
+        device=str(device),
+    )
+    for candidate, score in zip(all_candidates, all_scores):
+        candidate["raw_patch_cnn_score"] = float(score)
+
+    task_threshold_row = _best_task_threshold(
+        train_records,
+        score_key="raw_patch_cnn_score",
+        top_k=int(top_k),
+        max_components=int(max_components),
+        grid_size=int(threshold_grid),
+    )
+    task_threshold = float(task_threshold_row["threshold"])
+    rows: list[dict[str, Any]] = [
+        _records_metrics_row(train_records, name="baseline", split="train"),
+        _records_metrics_row(heldout_records, name="baseline", split="heldout"),
+        _records_metrics_row(sample_records, name="baseline", split="all"),
+        _records_metrics_row(
+            train_records,
+            name="raw_patch_cnn_task_threshold",
+            split="train",
+            score_key="raw_patch_cnn_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            heldout_records,
+            name="raw_patch_cnn_task_threshold",
+            split="heldout",
+            score_key="raw_patch_cnn_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+        _records_metrics_row(
+            sample_records,
+            name="raw_patch_cnn_task_threshold",
+            split="all_with_train_threshold",
+            score_key="raw_patch_cnn_score",
+            threshold=task_threshold,
+            top_k=int(top_k),
+            max_components=int(max_components),
+        ),
+    ]
+    return {
+        "split": {
+            "train_fraction": float(train_fraction),
+            "cutoff_batch_index": int(cutoff),
+            "train_samples": int(len(train_records)),
+            "heldout_samples": int(len(heldout_records)),
+            "train_candidate_count": int(len(train_candidates)),
+            "train_positive_count": int(train_labels.sum()),
+            "image_cache_count": int(len(image_cache)),
+        },
+        "top_k": int(top_k),
+        "max_components": int(max_components),
+        "threshold_grid": int(threshold_grid),
+        "epochs": int(epochs),
+        "lr": float(lr),
+        "threshold": float(task_threshold),
+        "patch_shape": [int(value) for value in all_patches.shape[1:]],
+        "tabular_feature_dim": int(all_tabular.shape[1]),
+        "rows": rows,
+        "interpretation": (
+            "Raw-patch CNN verifier replay trains a small convolutional verifier over oriented candidate "
+            "image patches plus standardized numeric features on the earlier validation split, then applies "
+            "the train-selected task threshold to held-out records. It is a learned no-GT verifier probe, "
+            "not a final deployed contract."
         ),
     }
 
@@ -1801,6 +2083,7 @@ def main() -> int:
         max(int(variant.top_k) for variant in VARIANTS),
         int(args.rich_validator_top_k) if bool(args.rich_validator_replay) else 0,
         int(args.raw_patch_verifier_top_k) if bool(args.raw_patch_verifier_replay) else 0,
+        int(args.raw_patch_cnn_top_k) if bool(args.raw_patch_cnn_verifier_replay) else 0,
         int(args.raw_patch_geometry_top_k) if bool(args.raw_patch_geometry_repair_replay) else 0,
     )
     with torch.no_grad():
@@ -1933,6 +2216,19 @@ def main() -> int:
         )
         _write_csv(output_dir / "raw_patch_verifier_variants.csv", list(raw_patch_verifier["rows"]))
         summary["raw_patch_verifier_replay"] = raw_patch_verifier
+    if bool(args.raw_patch_cnn_verifier_replay):
+        raw_patch_cnn = _run_raw_patch_cnn_verifier_replay(
+            sample_records,
+            train_fraction=float(args.raw_patch_cnn_train_fraction),
+            top_k=int(args.raw_patch_cnn_top_k),
+            max_components=int(postprocess_config.stop_line_max_components),
+            threshold_grid=int(args.raw_patch_cnn_threshold_grid),
+            epochs=int(args.raw_patch_cnn_epochs),
+            lr=float(args.raw_patch_cnn_lr),
+            device=train_config.device,
+        )
+        _write_csv(output_dir / "raw_patch_cnn_verifier_variants.csv", list(raw_patch_cnn["rows"]))
+        summary["raw_patch_cnn_verifier_replay"] = raw_patch_cnn
     if bool(args.raw_patch_geometry_repair_replay):
         raw_patch_geometry = _run_raw_patch_geometry_repair_replay(
             sample_records,
