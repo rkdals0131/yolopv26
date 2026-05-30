@@ -85,6 +85,8 @@ Latest lane area-ROI verifier trained a no-GT MLP over raw row-scan/tangent lane
 
 Latest stop-line train-split raw-patch CNN verifier moved beyond the prior validation-half replay by training candidate selection on canonical train batches and replaying one train-selected threshold on exact validation. It reused the existing canonical dataset root in place, trained on `256` train batches, and evaluated exact-val128 after a val4 smoke. The train split overfit strongly: stop-line `0.6000 -> 0.7408`, TP/FP/FN `351 / 168 / 300 -> 383 / 0 / 268`. Validation moved the wrong way: exact-val128 baseline/projection-comp `0.5333`, TP/FP/FN `32 / 28 / 28`, fell to `0.4160`, `26 / 39 / 34`. Broader-val512 was skipped. Retained artifacts are CSV/summary only (`4.9M` smoke, `22M` exact); no dataset copy or checkpoint artifact was created.
 
+Latest raw-image Hough stop-line candidate-generation probe generated Canny/Hough line candidates from the existing raw images, scored them with dense stop-line maps, trained a small MLP verifier on `64` canonical train batches, and replayed it on fixed val4. It reused the existing `429350` record dataset root in place and wrote only CSV/summary artifacts. This was smoke-negative: train baseline-plus-Hough moved stop-line `87 / 28 / 64 -> 93 / 144 / 58`, F1 `0.6541 -> 0.4794`, and val4 had no oracle-positive Hough candidates while FP increased `3 -> 8`. Exact-val128 and broader-val512 were skipped. Artifact size is about `3.2M`; no dataset copy or checkpoint artifact was created.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -167,6 +169,7 @@ Run:
 - latest lane area-ROI verifier exact summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train256_exact_val128_20260530/summary.json`
 - latest stop-line trainset raw-patch CNN verifier smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train64_smoke_val4_20260530_02/summary.json`
 - latest stop-line trainset raw-patch CNN verifier exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train256_exact_val128_20260530/summary.json`
+- latest stop-line raw-Hough candidate-generation smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_raw_hough_candidates_train64_smoke_val4_20260530/summary.json`
 - latest stop-line learned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/summary.json`
@@ -814,6 +817,25 @@ Latest stop-line trainset raw-patch CNN verifier probe result:
   - val baseline/projection-comp stop-line `0.5333`, TP/FP/FN `32 / 28 / 28`;
   - val train-threshold replay stop-line `0.4160`, TP/FP/FN `26 / 39 / 34`.
 - 판단: train-split exposure does not fix raw-patch verifier generalization. The learned selector overfits train candidates, loses `6` exact validation TP, adds `11` FP, and increases FN by `6`, so broader-val512 is intentionally skipped. Do not repeat this as train-batch, epoch, LR, top-K, threshold-grid, patch-size, CNN-depth, or same train-threshold replay tuning without a materially different candidate-generation or verification contract.
+
+Latest stop-line raw-Hough candidate-generation probe result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-raw-hough-candidates`.
+- artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_hough_candidates_train64_smoke_val4_20260530/summary.json`.
+- changed axis: use raw-image Canny/Hough line segments as new stop-line candidates, then score each segment using dense stop-line mask/center/selector support and train a small no-GT MLP verifier from canonical train candidates. This is candidate-generation, not another projection-comp threshold replay and not the older raw-axis stripe midpoint readout.
+- storage contract: the probe reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root, wrote only CSV/summary artifacts, and created no checkpoint or dataset copy. Retained output size is about `3.2M`.
+- smoke setup: `64` train batches, `4` validation batches, validation epoch `2`, Hough top-k `8`, max raw-Hough candidates `16`, verifier epochs `40`.
+- smoke train candidate stats: train candidates `2048`, train oracle-positive `117`.
+- smoke val candidate stats: val candidates `128`, val oracle-positive `0`.
+- smoke train result:
+  - baseline stop-line `0.6541`, TP/FP/FN `87 / 28 / 64`;
+  - raw-Hough-only `0.0997`, TP/FP/FN `18 / 192 / 133`;
+  - baseline-plus-raw-Hough `0.4794`, TP/FP/FN `93 / 144 / 58`.
+- smoke val4 result:
+  - baseline stop-line `0.0000`, TP/FP/FN `0 / 3 / 2`;
+  - raw-Hough-only `0.0000`, TP/FP/FN `0 / 8 / 2`;
+  - baseline-plus-raw-Hough `0.0000`, TP/FP/FN `0 / 8 / 2`.
+- 판단: raw-Hough candidate generation creates some train TP, but FP grows much faster and the fixed validation smoke has no oracle-positive Hough candidates while adding FP. Exact-val128 and broader-val512 are intentionally skipped. Do not repeat this as Canny threshold, Hough threshold, minLineLength, maxLineGap, Hough top-k, MLP epoch/LR, dense-score weight, or train-threshold tuning. Reopen raw-image candidate generation only with a materially different candidate-quality/geometry contract that first improves fixed smoke TP/FP/FN.
 
 Latest lane task-mask context gate:
 

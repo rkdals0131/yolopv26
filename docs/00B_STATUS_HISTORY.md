@@ -17881,3 +17881,85 @@ Verification:
 - Broader-val512 was skipped because exact validation lost TP, added FP, increased FN, and fell below projection-comp.
 - Do not repeat this as train-batch, epoch, LR, top-K, threshold-grid, raw-patch size/channel, CNN-depth, or same train-threshold replay tuning.
 - Reopen raw-image stop-line evidence only with a materially different candidate-generation or verification contract that first improves exact TP/FP/FN over projection-comp.
+
+## 328. Stop-line raw-Hough candidates: raw-image candidate generation is smoke-negative
+
+맥락:
+
+- The previous trainset raw-patch verifier changed candidate verification but not candidate geometry.
+- This branch tested a more direct candidate-generation premise: raw-image Canny/Hough line segments might recover stop-line candidates missing from the projection-comp dense candidate pool.
+- It is distinct from raw-axis stripe midpoint/extent readout because the Hough segment itself is the candidate geometry, not a stripe-derived recenter of an existing candidate.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raw-hough-candidates`.
+- Added `tools/probe_pv26_stopline_raw_hough_candidates.py`.
+- Added `test/test_stopline_raw_hough_candidates.py`.
+- Candidate source:
+  - retained `merged_lane_head.pt`;
+  - raw image loaded from the existing canonical dataset root;
+  - fixed OpenCV Canny/Hough segment generation;
+  - segment features from dense stop-line mask/center/selector line samples and raw edge support.
+- Verifier:
+  - small train-split MLP over fixed Hough features;
+  - train-selected task threshold replayed on validation;
+  - runtime selection uses no GT, while GT is used only for verifier labels and audit metrics.
+- Retained lane/cross contracts:
+  - lane `row_scan_tangent` runtime path;
+  - baseline stop-line projection-comp runtime path;
+  - crosswalk `crosswalk_polygon_mode=hull`.
+
+Training and evaluation:
+
+- Real CUDA smoke:
+  - `64` verifier train batches;
+  - `4` validation batches;
+  - validation epoch `2`;
+  - max raw-Hough candidates `16`;
+  - Hough top-k `8`;
+  - verifier epochs `40`.
+- The existing canonical dataset root was reused in place.
+- Dataset index reported `429350` records.
+- No dataset copy was created.
+
+Smoke val4:
+
+| Split | Variant | Stop-line F1 | Stop-line TP/FP/FN | Notes |
+| --- | --- | ---: | --- | --- |
+| train | baseline | `0.6541` | `87 / 28 / 64` | projection-comp baseline |
+| train | raw-Hough-only | `0.0997` | `18 / 192 / 133` | too many raw-line FP |
+| train | baseline-plus-raw-Hough | `0.4794` | `93 / 144 / 58` | TP `+6`, FP `+116` |
+| val | baseline | `0.0000` | `0 / 3 / 2` | fixed val4 smoke |
+| val | raw-Hough-only | `0.0000` | `0 / 8 / 2` | no oracle-positive Hough candidates |
+| val | baseline-plus-raw-Hough | `0.0000` | `0 / 8 / 2` | FP increased |
+
+Candidate stats:
+
+- train candidates `2048`;
+- train oracle-positive candidates `117`;
+- val candidates `128`;
+- val oracle-positive candidates `0`;
+- feature dimension `18`;
+- train-selected threshold `0.6209733176`.
+
+Storage:
+
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_hough_candidates_train64_smoke_val4_20260530`.
+- Retained smoke directory is about `3.2M`.
+- The probe writes CSV/summary only.
+- No checkpoint artifact was created.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_raw_hough_candidates.py test/test_stopline_raw_hough_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_stopline_raw_hough_candidates`.
+- CUDA fixed val4 raw-Hough candidate verifier training/replay.
+
+판단:
+
+- Raw-image Hough candidate generation creates some train TP, but FP grows much faster.
+- The fixed val4 gate is negative: there were no oracle-positive raw-Hough validation candidates and the replay added FP.
+- Exact-val128 and broader-val512 were skipped because smoke failed the TP/FP/FN gate.
+- Do not repeat this as Canny threshold, Hough threshold, minLineLength, maxLineGap, Hough top-k, MLP epoch/LR, dense-score weight, or train-threshold tuning.
+- Reopen raw-image candidate generation only with a materially different candidate-quality/geometry contract that first improves fixed smoke TP/FP/FN.
