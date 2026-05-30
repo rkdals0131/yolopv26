@@ -21993,3 +21993,117 @@ Decision:
 - Broader-val512 is skipped because exact failed.
 - Close this as raw-frame phase-correlation temporal alignment, alignment size `160x120`, max-shift fraction `0.15`, current-frame dense-map MLP verifier, temporal top-k/cap defaults, threshold-grid, and train scaling to `256` batches.
 - Reopen temporal stop-line only with a materially different motion/candidate contract, such as ego-motion/BEV-warped temporal aggregation or a learned temporal segment proposal that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 372. 2026-05-31 Stop-line crosswalk-hull edge candidate verifier: larger train exposure still coverage-negative
+
+Hypothesis:
+
+- Some stop-lines may be recoverable from predicted crosswalk hull geometry, especially near crosswalk entry/exit boundaries.
+- This is distinct from the earlier stop-line crosswalk-context fusion train:
+  - it does not feed crosswalk maps into the stop-line dense head;
+  - it generates new stop-line-like segment candidates from predicted crosswalk polygons;
+  - a no-GT verifier is trained over dense-map/crosswalk-edge features.
+
+Implementation:
+
+- Added `tools/probe_pv26_stopline_crosswalk_edge_candidates.py`.
+- Candidate generation:
+  - takes predicted `crosswalks` from `crosswalk_polygon_mode=hull`;
+  - fits each polygon's long/short PCA axes;
+  - emits edge-parallel stop-line candidates at fixed offsets `0,16,32px`;
+  - extracts line-aligned dense stop-line/crosswalk mask, center, selector, proposal, endpoint, geometry, and current-stop-line distance features.
+- Verifier:
+  - train-split MLP via existing raw-patch verifier helper;
+  - labels are oracle nearest-GT distance `<=40px`;
+  - GT is used only for train labels, oracle diagnostics, and metrics.
+- Fixed a leakage risk before running:
+  - `is_oracle_positive` is not used in runtime candidate sort;
+  - runtime order now uses dense proposal max, rank score, crosswalk score, and edge length.
+- Added `test/test_stopline_crosswalk_edge_candidates.py`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Primary checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - `--crosswalk-polygon-mode hull`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - crosswalk-edge offsets `0,16,32`;
+  - crosswalk-edge top-k `8`;
+  - max crosswalk-edge candidates `16`;
+  - max emitted stop-lines `2`.
+
+Smoke train64 / val4:
+
+- Train samples `256`; train crosswalk-edge candidates `1120`; scored train candidates `860`.
+- Train oracle-positive candidates `0`.
+- Val samples `16`; val crosswalk-edge candidates `24`; scored val candidates `20`.
+- Val oracle-positive candidates `0`.
+- Selected verifier threshold `0.11`.
+- Validation baseline-plus-crosswalk-edge MLP was still stop-line `0 / 4 / 2`, F1 `0.0000`; oracle edge replay also had no positive candidates.
+
+Exact train512 / val128:
+
+- The larger train exposure reused the same existing root, not a copied dataset.
+- Train samples `2048`; train crosswalk-edge candidates `8234`; scored train candidates `6338`.
+- Train oracle-positive candidates `0`.
+- Val samples `512`; val crosswalk-edge candidates `494`; scored val candidates `378`.
+- Val oracle-positive candidates `2`.
+- Selected verifier threshold `0.18`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5289` | `32 / 29 / 28` | `0.5988` |
+| crosswalk_edge_mlp | `0.5660` | `0.0000` | `0 / 0 / 60` | `0.5988` |
+| baseline_plus_crosswalk_edge_mlp | `0.5660` | `0.5289` | `32 / 29 / 28` | `0.5988` |
+| oracle_crosswalk_edge | `0.5660` | `0.0323` | `1 / 1 / 59` | `0.5988` |
+| baseline_plus_oracle_crosswalk_edge | `0.5660` | `0.5246` | `32 / 30 / 28` | `0.5988` |
+
+Diagnosis:
+
+- The candidate source is not useful enough:
+  - `0 / 6338` train scored candidates are oracle-positive;
+  - only `2 / 378` val scored candidates are oracle-positive.
+- Because train labels contain no positives, the verifier learns no deployable recovery rule.
+- Even oracle union does not improve over baseline; it adds one FP and keeps TP fixed.
+- The main failure is candidate coverage, not selector training.
+- Broader-val512 is skipped because exact failed and the candidate family has no meaningful oracle headroom.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train64_smoke_val4_20260531/summary.json`.
+- Smoke variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train64_smoke_val4_20260531/crosswalk_edge_variants.csv`.
+- Exact train512 summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train512_exact_val128_20260531/summary.json`.
+- Exact train512 variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train512_exact_val128_20260531/crosswalk_edge_variants.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `1.3M`;
+  - exact export about `8.6M`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_crosswalk_edge_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_crosswalk_edge_candidates`.
+- CUDA train64/smoke-val4 crosswalk-edge verifier run on the existing canonical dataset root.
+- CUDA train512/exact-val128 larger-exposure crosswalk-edge verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Close predicted crosswalk-hull edge stop-line candidates as a stop-line breakthrough path.
+- Do not repeat this as offset/top-k/max-candidate/threshold/verifier-epoch/train-batch scaling.
+- Reopen crosswalk-derived stop-line geometry only if the candidate source first shows materially higher oracle coverage on fixed exact validation, not merely a different verifier over the same hull-edge lines.
