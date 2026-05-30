@@ -30,6 +30,7 @@ DETECT_FEATURE_STRIDES = (8, 16, 32)
 STOPLINE_ONLY_MASK_FIRST_NAME = "stopline_only_mask_first"
 CURRENT_FAMILY_NAME = "current_family"
 CURRENT_FAMILY_SIGMOID_NAME = "current_family_sigmoid"
+CURRENT_FAMILY_ANCHOR_SIGMOID_NAME = "current_family_anchor_sigmoid"
 
 
 def _normalize_roadmark_architecture(value: str) -> str:
@@ -46,11 +47,13 @@ def _normalize_roadmark_architecture(value: str) -> str:
         return CURRENT_FAMILY_NAME
     if architecture in {"current_sigmoid", "current_family_normalized", CURRENT_FAMILY_SIGMOID_NAME}:
         return CURRENT_FAMILY_SIGMOID_NAME
+    if architecture in {"current_anchor", "current_family_anchor", CURRENT_FAMILY_ANCHOR_SIGMOID_NAME}:
+        return CURRENT_FAMILY_ANCHOR_SIGMOID_NAME
     raise ValueError(
         "roadmark_architecture must be one of: "
         f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, "
         f"v3_stopline_isolated, {LANE_ONLY_ROW_CLASSIFIER_NAME}, {STOPLINE_ONLY_MASK_FIRST_NAME}, "
-        f"{CURRENT_FAMILY_NAME}, {CURRENT_FAMILY_SIGMOID_NAME}"
+        f"{CURRENT_FAMILY_NAME}, {CURRENT_FAMILY_SIGMOID_NAME}, {CURRENT_FAMILY_ANCHOR_SIGMOID_NAME}"
     )
 
 
@@ -114,18 +117,27 @@ class PV26Heads(nn.Module):
             roadmark_head_cls = PV26LaneOnlyHeads
         elif self.roadmark_architecture == STOPLINE_ONLY_MASK_FIRST_NAME:
             roadmark_head_cls = PV26StopLineOnlyHeads
-        elif self.roadmark_architecture in {CURRENT_FAMILY_NAME, CURRENT_FAMILY_SIGMOID_NAME}:
+        elif self.roadmark_architecture in {
+            CURRENT_FAMILY_NAME,
+            CURRENT_FAMILY_SIGMOID_NAME,
+            CURRENT_FAMILY_ANCHOR_SIGMOID_NAME,
+        }:
             roadmark_head_cls = CurrentFamilyRoadMarkHeads
         else:
             roadmark_head_cls = PV26RoadMarkNativeJointHeads
         if roadmark_head_cls is PV26StopLineOnlyHeads:
             self.roadmark_heads = roadmark_head_cls(self.in_channels, self.feature_strides)
         elif roadmark_head_cls is CurrentFamilyRoadMarkHeads:
-            coordinate_mode = "sigmoid_network" if self.roadmark_architecture == CURRENT_FAMILY_SIGMOID_NAME else "raw"
+            coordinate_mode = (
+                "sigmoid_network"
+                if self.roadmark_architecture in {CURRENT_FAMILY_SIGMOID_NAME, CURRENT_FAMILY_ANCHOR_SIGMOID_NAME}
+                else "raw"
+            )
             self.roadmark_heads = roadmark_head_cls(
                 self.det_in_channels,
                 self.det_feature_strides,
                 coordinate_mode=coordinate_mode,
+                anchor_template_enabled=self.roadmark_architecture == CURRENT_FAMILY_ANCHOR_SIGMOID_NAME,
             )
         elif roadmark_head_cls is PV26LaneOnlyHeads:
             self.roadmark_heads = roadmark_head_cls(
@@ -196,7 +208,11 @@ class PV26Heads(nn.Module):
             det_outputs.append(det_head(feature))
             tl_attr_outputs.append(tl_attr_head(feature))
 
-        current_family_architectures = {CURRENT_FAMILY_NAME, CURRENT_FAMILY_SIGMOID_NAME}
+        current_family_architectures = {
+            CURRENT_FAMILY_NAME,
+            CURRENT_FAMILY_SIGMOID_NAME,
+            CURRENT_FAMILY_ANCHOR_SIGMOID_NAME,
+        }
         roadmark_features = features[1:] if self.roadmark_architecture in current_family_architectures else features
         roadmark_outputs = self.roadmark_heads(roadmark_features, encoded=encoded)
         return {

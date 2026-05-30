@@ -27,6 +27,7 @@ ROADMARK_ARCHITECTURES = (
     "stopline_only_mask_first",
     "current_family",
     "current_family_sigmoid",
+    "current_family_anchor_sigmoid",
 )
 LANE_HEAD_MODES = ("seg_first", "row_native")
 LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")

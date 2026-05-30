@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import math
 from typing import Iterable
 
 import torch
@@ -24,7 +25,87 @@ STOP_LINE_DECODER_LAYERS = 2
 STOP_LINE_DECODER_HEADS = 8
 CROSSWALK_DECODER_LAYERS = 2
 CROSSWALK_DECODER_HEADS = 8
-LANE_X_SLICE = slice(1 + 3 + 2, 1 + 3 + 2 + 16)
+LANE_ANCHOR_COUNT = (LANE_VECTOR_DIM - (1 + 3 + 2)) // 2
+LANE_X_SLICE = slice(1 + 3 + 2, 1 + 3 + 2 + LANE_ANCHOR_COUNT)
+LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
+
+
+def _logit(value: float) -> float:
+    clipped = min(max(float(value), 1.0e-4), 1.0 - 1.0e-4)
+    return float(math.log(clipped / (1.0 - clipped)))
+
+
+def _network_point_logit(x: float, y: float) -> tuple[float, float]:
+    return (
+        _logit(float(x) / max(float(NETWORK_HW[1] - 1), 1.0)),
+        _logit(float(y) / max(float(NETWORK_HW[0] - 1), 1.0)),
+    )
+
+
+def _build_lane_anchor_template() -> torch.Tensor:
+    template = torch.zeros((LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+    # Keep objectness neutral so training, not the prior, decides emission.
+    template[:, 0] = 0.0
+    x_min = float(NETWORK_HW[1]) * 0.08
+    x_max = float(NETWORK_HW[1]) * 0.92
+    centers = torch.linspace(x_min, x_max, steps=LANE_QUERY_COUNT)
+    for query_index, center_x in enumerate(centers.tolist()):
+        # Add a small deterministic fan so the vector loss starts from lane-like,
+        # not fully collapsed, row coordinates.
+        fan = (float(query_index % 5) - 2.0) * 2.0
+        row_values = torch.linspace(center_x + fan, center_x - fan, steps=LANE_ANCHOR_COUNT)
+        normalized = row_values.clamp(0.0, float(NETWORK_HW[1] - 1)) / float(NETWORK_HW[1] - 1)
+        template[query_index, LANE_X_SLICE] = torch.logit(normalized.clamp(1.0e-4, 1.0 - 1.0e-4))
+        template[query_index, LANE_VIS_SLICE] = 1.5
+    return template
+
+
+def _build_stop_line_anchor_template() -> torch.Tensor:
+    template = torch.zeros((STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+    y_values = torch.linspace(float(NETWORK_HW[0]) * 0.42, float(NETWORK_HW[0]) * 0.88, steps=STOP_LINE_QUERY_COUNT)
+    x_start_values = torch.linspace(float(NETWORK_HW[1]) * 0.10, float(NETWORK_HW[1]) * 0.28, steps=STOP_LINE_QUERY_COUNT)
+    x_end_values = torch.linspace(float(NETWORK_HW[1]) * 0.72, float(NETWORK_HW[1]) * 0.92, steps=STOP_LINE_QUERY_COUNT)
+    for query_index, (y_value, x_start, x_end) in enumerate(
+        zip(y_values.tolist(), x_start_values.tolist(), x_end_values.tolist())
+    ):
+        points = [
+            _network_point_logit(x_start, y_value),
+            _network_point_logit(0.66 * x_start + 0.34 * x_end, y_value),
+            _network_point_logit(0.34 * x_start + 0.66 * x_end, y_value),
+            _network_point_logit(x_end, y_value),
+        ]
+        template[query_index, 1:] = torch.tensor([value for point in points for value in point], dtype=torch.float32)
+    return template
+
+
+def _build_crosswalk_anchor_template() -> torch.Tensor:
+    template = torch.zeros((CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
+    centers_y = torch.linspace(float(NETWORK_HW[0]) * 0.46, float(NETWORK_HW[0]) * 0.84, steps=CROSSWALK_QUERY_COUNT)
+    centers_x = torch.linspace(float(NETWORK_HW[1]) * 0.38, float(NETWORK_HW[1]) * 0.62, steps=CROSSWALK_QUERY_COUNT)
+    for query_index, (center_x, center_y) in enumerate(zip(centers_x.tolist(), centers_y.tolist())):
+        half_w = float(NETWORK_HW[1]) * (0.18 + 0.02 * float(query_index % 3))
+        half_h = float(NETWORK_HW[0]) * 0.035
+        corners = [
+            (center_x - half_w, center_y - half_h),
+            (center_x + half_w, center_y - half_h),
+            (center_x + half_w, center_y + half_h),
+            (center_x - half_w, center_y + half_h),
+        ]
+        contour: list[tuple[float, float]] = []
+        for start, end in zip(corners, corners[1:] + corners[:1]):
+            for step in range(4):
+                alpha = float(step) / 4.0
+                contour.append(
+                    (
+                        (1.0 - alpha) * start[0] + alpha * end[0],
+                        (1.0 - alpha) * start[1] + alpha * end[1],
+                    )
+                )
+        template[query_index, 1:] = torch.tensor(
+            [value for point in contour for value in _network_point_logit(point[0], point[1])],
+            dtype=torch.float32,
+        )
+    return template
 
 
 def _build_2d_sincos_position_encoding(
@@ -188,11 +269,13 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         feature_strides: Iterable[int] = FEATURE_STRIDES,
         *,
         coordinate_mode: str = "raw",
+        anchor_template_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
         if self.coordinate_mode not in {"raw", "sigmoid_network"}:
             raise ValueError("CurrentFamilyRoadMarkHeads coordinate_mode must be one of: raw, sigmoid_network")
+        self.anchor_template_enabled = bool(anchor_template_enabled)
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -236,6 +319,16 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             decoder_layers=CROSSWALK_DECODER_LAYERS,
             decoder_heads=CROSSWALK_DECODER_HEADS,
         )
+        if self.anchor_template_enabled:
+            if self.coordinate_mode != "sigmoid_network":
+                raise ValueError("current-family anchor templates require sigmoid_network coordinate mode")
+            self.lane_anchor_template = nn.Parameter(_build_lane_anchor_template())
+            self.stop_line_anchor_template = nn.Parameter(_build_stop_line_anchor_template())
+            self.crosswalk_anchor_template = nn.Parameter(_build_crosswalk_anchor_template())
+        else:
+            self.register_parameter("lane_anchor_template", None)
+            self.register_parameter("stop_line_anchor_template", None)
+            self.register_parameter("crosswalk_anchor_template", None)
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
         return (
@@ -256,7 +349,13 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "crosswalk_queries": CROSSWALK_QUERY_COUNT,
             "roadmark_architecture": "current_family",
             "coordinate_mode": self.coordinate_mode,
+            "anchor_template": "network_geometry_prior" if self.anchor_template_enabled else "disabled",
         }
+
+    def _add_template(self, rows: torch.Tensor, template: torch.Tensor | None) -> torch.Tensor:
+        if template is None:
+            return rows
+        return rows + template.to(device=rows.device, dtype=rows.dtype).unsqueeze(0)
 
     def _scale_lane_rows(self, rows: torch.Tensor) -> torch.Tensor:
         if self.coordinate_mode != "sigmoid_network":
@@ -298,9 +397,13 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         stop_line_memory = self.stop_line_memory(fused_feature)
         crosswalk_memory = self.crosswalk_memory(fused_feature)
         return {
-            "lane": self._scale_lane_rows(self.lane_head(fused_feature)),
-            "stop_line": self._scale_point_rows(self.stop_line_head(stop_line_memory)),
-            "crosswalk": self._scale_point_rows(self.crosswalk_head(crosswalk_memory)),
+            "lane": self._scale_lane_rows(self._add_template(self.lane_head(fused_feature), self.lane_anchor_template)),
+            "stop_line": self._scale_point_rows(
+                self._add_template(self.stop_line_head(stop_line_memory), self.stop_line_anchor_template)
+            ),
+            "crosswalk": self._scale_point_rows(
+                self._add_template(self.crosswalk_head(crosswalk_memory), self.crosswalk_anchor_template)
+            ),
         }
 
 

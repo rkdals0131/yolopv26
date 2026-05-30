@@ -17096,3 +17096,84 @@ Verification:
 - Larger `3x512`, exact-val128, and broader-val512 were skipped because fixed val4 had zero TP for all three lane-family tasks and heavy lane/stop-line FP.
 - Do not repeat this as `current_family_sigmoid`, object threshold, head LR, epoch-count, train-batch scaling, or the same vector-loss fallback tuning.
 - Reopen vector-query architecture only with a materially different query initialization, denoising/matching, or decoder contract that first emits matched objects on fixed validation.
+
+## 319. 2026-05-30 Current-family anchor query prior: query initialization changes FP shape but still produces zero TP
+
+맥락:
+
+- Raw `current_family_vector_decoder` emitted no matched lane-family objects after real `3x512`.
+- `current_family_sigmoid_vector_decoder` changed coordinates into plausible network-pixel ranges but produced unmatched FP-heavy vectors on fixed val4.
+- This branch tested the documented reopen condition: materially different query initialization/geometry prior, not threshold/head-LR/epoch-count/train-batch scaling.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-anchor-query-prior`.
+- Architecture:
+  - `model/net/roadmark_current_family.py` adds opt-in `anchor_template_enabled=True` for `CurrentFamilyRoadMarkHeads`.
+  - The opt-in path requires `coordinate_mode="sigmoid_network"` and adds trainable query-specific network-geometry templates before sigmoid coordinate scaling.
+  - Lane priors initialize query-specific row-x tracks with visible row logits.
+  - Stop-line priors initialize horizontal four-point segments at query-specific y positions.
+  - Crosswalk priors initialize rectangle-like contour points.
+- Config/runtime:
+  - `model/net/heads.py` adds `roadmark_architecture="current_family_anchor_sigmoid"` and aliases.
+  - `tools/pv26_train/config.py` allows `current_family_anchor_sigmoid`.
+  - `tools/run_pv26_lane60_probe.py` adds `current_family_anchor_query_prior`.
+- Tests:
+  - `test/test_pv26_heads.py` verifies finite outputs, bounded network-pixel coordinates, and the architecture description field.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_prior_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_095757`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+
+Internal val4-style training validation:
+
+| Epoch | Phase objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.2334973569` | `0.0000` | `0 / 129 / 79` | `0.0000` | `0 / 28 / 2` | `0.0000` | `0 / 23 / 5` |
+| 2 | `0.2316818087` | `0.0000` | `0 / 80 / 86` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 7` |
+
+Fixed val4 evaluation:
+
+| Eval | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| fixed val4 epoch-2 best | `0.0000` | `0 / 131 / 86` | `0.0000` | `0 / 27 / 2` | `0.0000` | `0 / 22 / 7` | `0.2316818087` |
+
+Reference:
+
+- Sigmoid-only fixed val4 was lane/stop/cross `0.0000 / 0.0000 / 0.0000`, lane `0 / 169 / 86`, stop-line `0 / 68 / 2`, and crosswalk `0 / 0 / 7`.
+- The anchor query prior reduces lane FP `169 -> 131` and stop-line FP `68 -> 27`, but still produces zero TP across all lane-family tasks.
+- It introduces crosswalk FP `0 -> 22` while still missing all `7` crosswalk GT instances.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_prior_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_095757/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_prior_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_095757/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_prior_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_095757/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root weights were pruned.
+- Retained run size after cleanup is about `7.5M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/roadmark_current_family.py model/net/heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_anchor_prior_current_family_vector_decoder test_pv26_heads.PV26HeadsTests.test_heads_can_use_sigmoid_current_family_vector_decoder test_pv26_heads.PV26HeadsTests.test_heads_can_use_current_family_vector_decoder_architecture`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "current_family_anchor_query_prior|current_family_sigmoid_vector_decoder"`.
+- CUDA current-family anchor query prior smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- This is a materially different vector-query initialization/geometry contract, not a postprocess sweep.
+- It changes FP shape but still fails the production metric immediately.
+- Larger `3x512`, exact-val128, and broader-val512 were skipped because fixed val4 had zero TP for all three lane-family tasks.
+- Do not repeat this as `current_family_anchor_sigmoid`, anchor-template coordinate tuning, object threshold, head LR, epoch-count, or train-batch scaling.
+- Reopen vector-query architecture only with a materially different denoising/matching/proposal-supervision contract that first emits matched objects on fixed validation.
