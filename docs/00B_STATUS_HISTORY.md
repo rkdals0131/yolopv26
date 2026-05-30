@@ -21511,3 +21511,103 @@ Decision:
 - Exact-val128, broader-val512, and larger train exposure are skipped because fixed val4 has zero TP/FP/FN movement.
 - Close this as set-context layer/head count, same pairwise loss, same fixed-count union geometry replay, and train-batch scaling on the current line-ROI union-pool verifier surface.
 - Reopen lane candidate-pool selection only with a materially different model-side instance-emission or TP-preserving instance-quality signal that actually selects dropped oracle-positive candidates without losing retained TP at the first fixed gate.
+
+## 368. 2026-05-31 Stop-line mask-first det-negative specialist: larger-root FP-control combo is exact-negative
+
+Context:
+
+- The stop-line-only mask-first specialist had internal validation movement (`34 / 29 / 19`, F1 `0.5862`) but failed the fixed exact router gate (`28 / 42 / 32`, F1 `0.4308`).
+- The det-source hard-negative feeding axis proved the loader can expose BDD/traffic/obstacle det-source-only records from the full canonical root, but with the normal dense head it recovered no smoke stop-line TP and collapsed lane.
+- This branch combined those two premises under a different stop-line emit contract: keep the mask-first stop-line-only architecture, but train it with det-source stop-line empty negatives drawn from the existing full `429350`-record canonical root.
+- This is not a dataset copy, sampler-ratio-only repeat, or mask-first-only repeat. The changed axis is the combination of stop-line-only mask-first emit architecture plus larger-root det-source FP-control feeding.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/run_pv26_lane60_probe.py` now exposes `--experiment stopline_mask_first_det_negative`.
+- The preset derives from `stopline_only_mask_first_specialist` and changes only data feeding:
+  - `task_positive_task="multi:lane,stopline,crosswalk"`;
+  - `task_positive_fraction=0.75`;
+  - sampler ratios `bdd100k=0.05`, `aihub_traffic=0.10`, `aihub_lane=0.75`, `aihub_obstacle=0.10`;
+  - `lane_family_unlabeled_negative_mode="det_source_stop_line"`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train/val/test `326709 / 82641 / 20000`;
+  - source keys included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, `pv26_exhaustive_bdd100k_det_100k=100000`;
+  - no dataset copy was created.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_mask_first_det_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_042201`.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA train:
+  - epochs `2`;
+  - train batches `64`;
+  - validation batches `4`;
+  - batch size `4`;
+  - skipped steps `0`.
+- Internal training best:
+  - phase objective `0.23349735685862533` at epoch `1`.
+- Single-checkpoint fixed val4 is diagnostic only because this architecture is stop-line-only:
+  - lane/stop/cross `0.0000 / 0.0000 / 0.0000`;
+  - lane `0 / 0 / 86`;
+  - stop-line `0 / 3 / 2`;
+  - crosswalk `0 / 0 / 7`.
+- Fixed exact-val128 used the retained primary lane/crosswalk checkpoint plus source-router comparison:
+  - primary checkpoint `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`;
+  - specialist checkpoint `phase_4/checkpoints/best.pt` from this run before cleanup;
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - `--stop-line-lane60-experiment stopline_mask_first_det_negative`;
+  - router train batches `8`;
+  - max val batches `128`;
+  - validation epoch `2`;
+  - crosswalk polygon mode `hull`.
+
+Exact-val128 source-router result:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| primary | `0.5888` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| specialist | `0.5888` | `0.4833` | `29 / 31 / 31` | `0.5988` |
+| union_dedupe | `0.5888` | `0.5289` | `32 / 29 / 28` | `0.5988` |
+| agreement | `0.5888` | `0.5210` | `31 / 28 / 29` | `0.5988` |
+| endpoint_fusion | `0.5888` | `0.5042` | `30 / 29 / 30` | `0.5988` |
+| learned_router | `0.5888` | `0.4821` | `27 / 25 / 33` | `0.5988` |
+| oracle_router | `0.5888` | `0.6809` | `32 / 2 / 28` | `0.5988` |
+
+Artifacts:
+
+- Fixed val4 diagnostic metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_mask_first_det_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_042201/analysis_exports/fixed_val4_epoch1_best/metrics.csv`.
+- Fixed exact source-router metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_mask_first_det_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_042201/analysis_exports/source_router_exact_val128_epoch1_best/metrics.csv`.
+- Run summaries/history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_mask_first_det_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_042201/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_mask_first_det_negative_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_042201/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run size after cleanup is about `5.2M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_mask_first_det_negative|experiment"`.
+- Real CUDA `2x64` training on the existing canonical dataset root.
+- Fixed val4 diagnostic single-checkpoint evaluation.
+- Fixed exact-val128 source-router evaluation preserving retained primary lane/crosswalk outputs.
+
+Decision:
+
+- The combined larger-root hard-negative + mask-first specialist preset is valid and trainable.
+- It does not improve the real fixed exact stop-line gate: specialist stop-line falls to `0.4833` versus primary projection-comp `0.5333`, and learned routing falls to `0.4821`.
+- Oracle routing still shows source headroom (`0.6809` with FP `2`), but this no-GT specialist/router signal does not recover it.
+- Broader-val512 and larger training are skipped because exact failed.
+- Close this as mask-first + det-source hard-negative feeding, sampler ratios, task-positive fraction, negative-mode scope, head-LR, epoch-count, and train-batch scaling under the same mask-first emit contract.
+- Reopen only with a materially different stop-line geometry/candidate-generation or no-GT source-quality signal that first beats primary projection-comp on fixed exact TP/FP/FN.

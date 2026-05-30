@@ -2546,6 +2546,22 @@ EXPERIMENTS["stopline_only_mask_first_specialist"] = {
     },
 }
 
+EXPERIMENTS["stopline_mask_first_det_negative"] = {
+    **EXPERIMENTS["stopline_only_mask_first_specialist"],
+    "overrides": {
+        **EXPERIMENTS["stopline_only_mask_first_specialist"]["overrides"],
+        "task_positive_task": "multi:lane,stopline,crosswalk",
+        "task_positive_fraction": 0.75,
+        "sampler_ratios": {
+            "bdd100k": 0.05,
+            "aihub_traffic": 0.10,
+            "aihub_lane": 0.75,
+            "aihub_obstacle": 0.10,
+        },
+        "lane_family_unlabeled_negative_mode": "det_source_stop_line",
+    },
+}
+
 EXPERIMENTS["stopline_midpoint_projection_comp"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stopline_only",
