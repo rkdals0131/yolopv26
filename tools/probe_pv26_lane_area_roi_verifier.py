@@ -73,14 +73,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-duplicate-distance-px", type=float, default=LANE_MATCH_THRESHOLD)
     parser.add_argument("--quality-threshold", type=float, default=0.80)
     parser.add_argument("--max-appends-per-sample", type=int, default=2)
+    parser.add_argument("--max-suppressions-per-sample", type=int, default=2)
+    parser.add_argument(
+        "--candidate-source",
+        choices=("dropped_area", "retained"),
+        default="dropped_area",
+        help=(
+            "dropped_area trains the historical rescue verifier over lanes removed "
+            "by bbox/area filters. retained trains a suppress-only instance-quality "
+            "verifier over lanes emitted by the retained runtime decoder."
+        ),
+    )
     parser.add_argument(
         "--candidate-integration-mode",
-        choices=("append", "replace_nearest"),
+        choices=("append", "replace_nearest", "suppress_low_quality"),
         default="append",
         help=(
-            "How verifier-positive dropped candidates are integrated. "
+            "How verifier-scored candidates are integrated. "
             "append preserves the historical replay. replace_nearest keeps "
-            "the lane count fixed by replacing the nearest retained lane."
+            "the lane count fixed by replacing the nearest retained lane. "
+            "suppress_low_quality removes retained lanes whose keep probability "
+            "falls below --quality-threshold."
         ),
     )
     parser.add_argument("--replace-nearest-max-distance-px", type=float, default=120.0)
@@ -498,6 +511,27 @@ def _baseline_matched_gt_indices(
     return matched
 
 
+def _matched_lane_prediction_indices(
+    baseline_lanes: list[dict[str, Any]],
+    gt_lanes: list[dict[str, Any]],
+    *,
+    threshold_px: float = LANE_MATCH_THRESHOLD,
+) -> dict[int, tuple[int, float]]:
+    if not baseline_lanes or not gt_lanes:
+        return {}
+    cost = np.zeros((len(baseline_lanes), len(gt_lanes)), dtype=np.float32)
+    for pred_index, prediction in enumerate(baseline_lanes):
+        for gt_index, gt_lane in enumerate(gt_lanes):
+            cost[pred_index, gt_index] = float(_lane_distance(prediction, gt_lane))
+    pred_indices, gt_indices = linear_sum_assignment(cost)
+    matched: dict[int, tuple[int, float]] = {}
+    for pred_index, gt_index in zip(pred_indices.tolist(), gt_indices.tolist()):
+        distance = float(cost[pred_index, gt_index])
+        if distance <= float(threshold_px):
+            matched[int(pred_index)] = (int(gt_index), distance)
+    return matched
+
+
 def _is_dropped_by_lane_filter(candidate: dict[str, Any], *, postprocess_config: Any) -> bool:
     kept = _filter_lane_predictions(
         [candidate],
@@ -575,6 +609,7 @@ def _collect_examples(
     rows: list[dict[str, Any]] = []
     global_sample_index = 0
     split = "train" if training else "val"
+    candidate_source = str(getattr(args, "candidate_source", "dropped_area"))
     with torch.no_grad():
         for batch_index, batch in enumerate(islice(loader, max(0, int(max_batches))), start=1):
             display_batch_index = int(batch_index_offset) + int(batch_index)
@@ -607,6 +642,78 @@ def _collect_examples(
                 gt_lanes = list(sample_gt.get("lanes", []))
                 baseline_lanes = list(sample_pred.get("lanes", []))
                 baseline_matched_gt = _baseline_matched_gt_indices(baseline_lanes, gt_lanes)
+                if candidate_source == "retained":
+                    matched_predictions = _matched_lane_prediction_indices(baseline_lanes, gt_lanes)
+                    for pred_index, candidate in enumerate(baseline_lanes):
+                        match = matched_predictions.get(int(pred_index))
+                        if match is not None:
+                            gt_index, distance = int(match[0]), float(match[1])
+                            positive = True
+                            negative = False
+                        else:
+                            gt_index, distance = _nearest_gt(candidate, gt_lanes)
+                            positive = False
+                            negative = True
+                        features, sampled_map_points, map_hw = _lane_features(
+                            candidate,
+                            predictions=sample_prediction_tensors,
+                            maps=maps,
+                            meta=sample_meta,
+                        )
+                        if bool(args.alignment_context_features):
+                            other_lanes = [
+                                lane for lane_index, lane in enumerate(baseline_lanes) if lane_index != int(pred_index)
+                            ]
+                            features = np.concatenate(
+                                [features, _alignment_context_features(candidate, other_lanes)]
+                            ).astype(np.float32)
+                        if bool(args.side_contrast_features):
+                            features = np.concatenate(
+                                [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
+                            ).astype(np.float32)
+                        if bool(args.raw_image_line_features):
+                            sample_image = None
+                            if isinstance(batch_images, torch.Tensor) and int(batch_images.shape[0]) > sample_batch_index:
+                                sample_image = batch_images[sample_batch_index]
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _lane_raw_image_line_features(
+                                        sampled_map_points,
+                                        map_hw=map_hw,
+                                        image=sample_image,
+                                    ),
+                                ]
+                            ).astype(np.float32)
+                        examples.append(
+                            {
+                                "features": features.astype(np.float32),
+                                "positive": float(1.0 if positive else 0.0),
+                                "negative": float(1.0 if negative else 0.0),
+                                "nearest_gt_index": int(gt_index),
+                                "nearest_gt_distance": float(distance),
+                                "sample_index": int(global_sample_index),
+                                "sample_batch_index": int(sample_batch_index),
+                                "candidate_index": int(pred_index),
+                                "candidate": dict(candidate),
+                            }
+                        )
+                        rows.append(
+                            {
+                                "split": split,
+                                "batch_index": int(display_batch_index),
+                                "sample_index": int(global_sample_index),
+                                "sample_batch_index": int(sample_batch_index),
+                                "candidate_index": int(pred_index),
+                                "nearest_gt_index": int(gt_index),
+                                "nearest_gt_distance": float(distance),
+                                "positive": int(positive),
+                                "negative": int(negative),
+                                "baseline_matched_gt_count": int(len(baseline_matched_gt)),
+                            }
+                        )
+                    global_sample_index += 1
+                    continue
                 raw_candidates = _raw_lane_candidates(
                     maps=maps,
                     meta=sample_meta,
@@ -917,65 +1024,94 @@ def _apply_verifier(
         by_sample.setdefault(int(example["sample_index"]), []).append((float(probability), int(index)))
     selected_records: dict[int, dict[str, Any]] = {}
     integration_mode = str(getattr(args, "candidate_integration_mode", "append"))
-    for sample_index, candidates in by_sample.items():
-        candidates.sort(reverse=True)
-        if sample_index < 0 or sample_index >= len(repaired):
-            continue
-        lanes = repaired[sample_index].setdefault("lanes", [])
-        selected_for_sample = 0
-        replaced_lane_indices: set[int] = set()
-        for probability, index in candidates:
-            if selected_for_sample >= int(args.max_appends_per_sample):
-                break
-            if probability < float(args.quality_threshold):
+    if integration_mode == "suppress_low_quality":
+        max_suppressions = max(0, int(getattr(args, "max_suppressions_per_sample", 0)))
+        for sample_index, candidates in by_sample.items():
+            candidates.sort(key=lambda item: item[0])
+            if sample_index < 0 or sample_index >= len(repaired):
                 continue
-            candidate = dict(examples[index]["candidate"])
-            candidate["area_roi_verifier_score"] = float(probability)
-            candidate["area_roi_verifier_integration"] = integration_mode
-            if integration_mode == "append":
-                if _near_any_lane(
-                    candidate,
-                    lanes,
-                    threshold_px=float(args.candidate_duplicate_distance_px),
-                ):
+            lanes = repaired[sample_index].setdefault("lanes", [])
+            suppressed_lane_indices: set[int] = set()
+            for probability, index in candidates:
+                if len(suppressed_lane_indices) >= max_suppressions:
+                    break
+                if probability >= float(args.quality_threshold):
                     continue
-                lanes.append(candidate)
+                lane_index = int(examples[index]["candidate_index"])
+                if lane_index < 0 or lane_index >= len(lanes):
+                    continue
+                if lane_index in suppressed_lane_indices:
+                    continue
+                suppressed_lane_indices.add(lane_index)
                 selected_records[int(index)] = {
-                    "action": "append",
-                    "replaced_lane_index": -1,
-                    "replaced_lane_distance": float("nan"),
+                    "action": "suppress_low_quality",
+                    "replaced_lane_index": int(lane_index),
+                    "replaced_lane_distance": 0.0,
                 }
-                selected_for_sample += 1
+            if suppressed_lane_indices:
+                repaired[sample_index]["lanes"] = [
+                    lane for lane_index, lane in enumerate(lanes) if lane_index not in suppressed_lane_indices
+                ]
+    else:
+        for sample_index, candidates in by_sample.items():
+            candidates.sort(reverse=True)
+            if sample_index < 0 or sample_index >= len(repaired):
                 continue
+            lanes = repaired[sample_index].setdefault("lanes", [])
+            selected_for_sample = 0
+            replaced_lane_indices: set[int] = set()
+            for probability, index in candidates:
+                if selected_for_sample >= int(args.max_appends_per_sample):
+                    break
+                if probability < float(args.quality_threshold):
+                    continue
+                candidate = dict(examples[index]["candidate"])
+                candidate["area_roi_verifier_score"] = float(probability)
+                candidate["area_roi_verifier_integration"] = integration_mode
+                if integration_mode == "append":
+                    if _near_any_lane(
+                        candidate,
+                        lanes,
+                        threshold_px=float(args.candidate_duplicate_distance_px),
+                    ):
+                        continue
+                    lanes.append(candidate)
+                    selected_records[int(index)] = {
+                        "action": "append",
+                        "replaced_lane_index": -1,
+                        "replaced_lane_distance": float("nan"),
+                    }
+                    selected_for_sample += 1
+                    continue
 
-            if integration_mode == "replace_nearest":
-                replace_index, replace_distance = _nearest_lane_index(candidate, lanes)
-                if replace_index < 0:
+                if integration_mode == "replace_nearest":
+                    replace_index, replace_distance = _nearest_lane_index(candidate, lanes)
+                    if replace_index < 0:
+                        continue
+                    if replace_index in replaced_lane_indices:
+                        continue
+                    if float(replace_distance) > float(args.replace_nearest_max_distance_px):
+                        continue
+                    other_lanes = [lane for lane_index, lane in enumerate(lanes) if lane_index != int(replace_index)]
+                    if _near_any_lane(
+                        candidate,
+                        other_lanes,
+                        threshold_px=float(args.candidate_duplicate_distance_px),
+                    ):
+                        continue
+                    candidate["area_roi_replaced_lane_index"] = int(replace_index)
+                    candidate["area_roi_replaced_lane_distance_px"] = float(replace_distance)
+                    lanes[int(replace_index)] = candidate
+                    replaced_lane_indices.add(int(replace_index))
+                    selected_records[int(index)] = {
+                        "action": "replace_nearest",
+                        "replaced_lane_index": int(replace_index),
+                        "replaced_lane_distance": float(replace_distance),
+                    }
+                    selected_for_sample += 1
                     continue
-                if replace_index in replaced_lane_indices:
-                    continue
-                if float(replace_distance) > float(args.replace_nearest_max_distance_px):
-                    continue
-                other_lanes = [lane for lane_index, lane in enumerate(lanes) if lane_index != int(replace_index)]
-                if _near_any_lane(
-                    candidate,
-                    other_lanes,
-                    threshold_px=float(args.candidate_duplicate_distance_px),
-                ):
-                    continue
-                candidate["area_roi_replaced_lane_index"] = int(replace_index)
-                candidate["area_roi_replaced_lane_distance_px"] = float(replace_distance)
-                lanes[int(replace_index)] = candidate
-                replaced_lane_indices.add(int(replace_index))
-                selected_records[int(index)] = {
-                    "action": "replace_nearest",
-                    "replaced_lane_index": int(replace_index),
-                    "replaced_lane_distance": float(replace_distance),
-                }
-                selected_for_sample += 1
-                continue
 
-            raise ValueError(f"unsupported candidate integration mode: {integration_mode}")
+                raise ValueError(f"unsupported candidate integration mode: {integration_mode}")
     rows: list[dict[str, Any]] = []
     for index, example in enumerate(examples):
         sample_index = int(example["sample_index"])
@@ -1139,6 +1275,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "verifier_train_batches": int(args.verifier_train_batches),
         "verifier_ensemble_size": int(args.verifier_ensemble_size),
         "ensemble_probability_mode": str(args.ensemble_probability_mode),
+        "candidate_source": str(args.candidate_source),
+        "max_suppressions_per_sample": int(args.max_suppressions_per_sample),
         "max_val_batches": int(args.max_val_batches),
         "val_start_batch": int(args.val_start_batch),
         "eval_chunk_batches": int(args.eval_chunk_batches),
@@ -1161,9 +1299,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "repaired": repaired_tasks,
         "delta": deltas,
         "interpretation": (
-            "No-GT runtime replay of a learned line-ROI verifier over raw seg-first "
-            "lane candidates dropped by the default lane bbox/area filter. GT is used "
-            "only for train labels and final audit metrics, not candidate selection."
+            "No-GT runtime replay of a learned line-ROI verifier. "
+            "candidate_source=dropped_area scores raw seg-first lane candidates dropped by "
+            "the default lane bbox/area filter; candidate_source=retained scores emitted "
+            "runtime lanes for suppress-only instance-quality tests. GT is used only for "
+            "train labels and final audit metrics, not candidate selection."
         ),
     }
     return {

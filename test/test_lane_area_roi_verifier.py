@@ -16,6 +16,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _finalize_task_counts,
     _lane_raw_image_line_features,
     _lane_side_contrast_features,
+    _matched_lane_prediction_indices,
     _near_any_lane,
     _nearest_lane_index,
 )
@@ -29,6 +30,13 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
     def test_baseline_matched_gt_indices_uses_lane_metric_threshold(self) -> None:
         matched = _baseline_matched_gt_indices([_lane(10.0), _lane(150.0)], [_lane(12.0), _lane(260.0)])
         self.assertEqual(matched, {0})
+
+    def test_matched_lane_prediction_indices_return_prediction_matches(self) -> None:
+        matched = _matched_lane_prediction_indices([_lane(10.0), _lane(150.0)], [_lane(12.0), _lane(260.0)])
+
+        self.assertEqual(set(matched), {0})
+        self.assertEqual(matched[0][0], 0)
+        self.assertLess(matched[0][1], 5.0)
 
     def test_candidate_label_requires_unmatched_gt(self) -> None:
         positive, negative, gt_index, distance = _candidate_label(
@@ -107,6 +115,60 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(rows[0]["selected"], 1)
         self.assertEqual(rows[0]["integration_action"], "replace_nearest")
         self.assertEqual(rows[0]["replaced_lane_index"], 0)
+
+    def test_suppress_low_quality_removes_retained_lane_by_candidate_index(self) -> None:
+        class IndexedVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return torch.tensor([-10.0, 10.0], dtype=features.dtype, device=features.device)
+
+        predictions = [{"lanes": [_lane(0.0), _lane(100.0)]}]
+        examples = [
+            {
+                "features": np.asarray([0.0], dtype=np.float32),
+                "positive": 0.0,
+                "negative": 1.0,
+                "nearest_gt_index": -1,
+                "nearest_gt_distance": 80.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate": _lane(0.0),
+            },
+            {
+                "features": np.asarray([1.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 1.0,
+                "sample_index": 0,
+                "candidate_index": 1,
+                "candidate": _lane(100.0),
+            },
+        ]
+        repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=IndexedVerifier(),
+            args=SimpleNamespace(
+                quality_threshold=0.5,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=1,
+                max_suppressions_per_sample=1,
+                candidate_integration_mode="suppress_low_quality",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(len(repaired[0]["lanes"]), 1)
+        self.assertEqual(repaired[0]["lanes"][0]["points_xy"][0][0], 100.0)
+        self.assertEqual(rows[0]["selected"], 1)
+        self.assertEqual(rows[0]["integration_action"], "suppress_low_quality")
+        self.assertEqual(rows[1]["selected"], 0)
 
     def test_ensemble_probability_mode_can_require_member_agreement(self) -> None:
         class ConstantVerifier(torch.nn.Module):

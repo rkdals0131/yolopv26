@@ -19477,3 +19477,81 @@ Decision:
 - The broader result is negative as a standalone path: `0.5706` is below the previous area-ROI broader `0.5821`, and TP `+158` came with FP `+176`.
 - Stop-line was unchanged and still below target; crosswalk stayed retained at `0.6187`.
 - Close this as an ensemble-size / probability-mode / member-seed / train-batch scaling family. Reopen dropped-candidate lane rescue only with a materially stronger instance-quality/alignment signal or a model-side instance emitter that improves TP/FP/FN on the fixed gates.
+
+## 346. Lane retained-instance suppressor: FP reduction is not TP-preserving
+
+Context:
+
+- Lane still has an oracle selector ceiling, but dropped-candidate rescue and validation-half logistic gates have not produced a deployable lane `0.60` path.
+- This branch tested the complementary suppress-only premise: train on canonical train predictions from retained row-scan lane instances, then remove only low-quality retained lanes at runtime.
+- This is distinct from area-ROI append/replacement because it does not add dropped candidates. It directly asks whether a no-GT instance-quality signal can remove current lane FP without losing matched lanes.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_area_roi_verifier.py` now supports:
+  - `--candidate-source retained`;
+  - `--candidate-integration-mode suppress_low_quality`;
+  - `--max-suppressions-per-sample`;
+  - retained-prediction Hungarian labels via `_matched_lane_prediction_indices()`.
+- `test/test_lane_area_roi_verifier.py` covers retained prediction matching and suppress-low-quality removal by candidate index.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Retained checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke command used:
+  - candidate source: `retained`;
+  - integration: `suppress_low_quality`;
+  - threshold: `0.50`;
+  - max suppressions per sample: `2`;
+  - features: dense line-ROI + nearest-retained-lane context + side-contrast;
+  - verifier train batches: `64`;
+  - validation batches: `4`;
+  - validation epoch: `2`.
+- Train examples:
+  - `726`;
+  - positives/negatives: `459 / 267`;
+  - input dim: `420`.
+
+Fixed val4 result:
+
+| Metric | Baseline | Suppress replay |
+| --- | ---: | ---: |
+| lane F1 | `0.5839` | `0.4874` |
+| lane TP/FP/FN | `40 / 11 / 46` | `29 / 4 / 57` |
+| stop-line F1 | `0.0000` | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` | `3 / 1 / 4` |
+| suppressed / suppressed-positive | - | `18 / 11` |
+
+Artifacts:
+
+- Summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_retained_instance_suppressor_train64_smoke_val4_20260530/summary.json`.
+- Retained artifact size:
+  - about `48K`.
+
+Storage:
+
+- The probe wrote CSV/summary artifacts only and did not save a model checkpoint.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` weights were removed after the run.
+- No dataset copy was created.
+
+Verification:
+
+- `python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/val4 smoke probe on the existing dataset root.
+
+Decision:
+
+- The suppressor did reduce lane FP, but it removed true positives faster than false positives: `-11 TP` for `-7 FP`.
+- Exact-val128, broader-val512, and larger training are skipped because the first fixed smoke gate fails with a large recall collapse.
+- Close this as retained-lane verifier threshold / max-suppression cap / train-batch count / hidden-dim / line-ROI-context-side-contrast MLP tuning.
+- Reopen retained-lane FP suppression only with a materially different TP-preserving instance-quality signal, not with the same suppress-only verifier surface.
