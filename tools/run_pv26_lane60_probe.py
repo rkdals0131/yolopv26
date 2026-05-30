@@ -2372,6 +2372,20 @@ EXPERIMENTS["current_family_vector_decoder"] = {
     },
 }
 
+EXPERIMENTS["current_family_sigmoid_vector_decoder"] = {
+    **EXPERIMENTS["current_family_vector_decoder"],
+    "train_defaults_overrides": {
+        **EXPERIMENTS["current_family_vector_decoder"]["train_defaults_overrides"],
+        "roadmark_architecture": "current_family_sigmoid",
+    },
+    "overrides": {
+        **EXPERIMENTS["current_family_vector_decoder"]["overrides"],
+        "lane_obj_threshold": 0.45,
+        "stop_line_obj_threshold": 0.45,
+        "crosswalk_obj_threshold": 0.45,
+    },
+}
+
 EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {

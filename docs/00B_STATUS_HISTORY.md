@@ -17021,3 +17021,78 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 lost lane TP/precision and recovered no stop-line TP.
 - Do not repeat this as `lane_family_full_trunk`, trunk LR, distill weight, head LR, loss weight, epoch-count, train-batch scaling, or the same stop-line-priority sampler sweep.
 - Reopen full-trunk exposure only with a materially different emit/candidate geometry or retention contract that first moves fixed smoke TP/FP/FN.
+
+## 318. 2026-05-30 Current-family sigmoid vector decoder: coordinate normalization emits vectors, but all are unmatched or FP-heavy
+
+맥락:
+
+- The previous `current_family_vector_decoder` branch was a real architecture-level train, but the raw P3-P5 query-vector output emitted no matched lane-family objects after `3x512`.
+- The documented reopen condition was a materially different target normalization, warm-start, or decoder contract.
+- This branch kept the same older query-vector architecture but changed the coordinate contract: lane x coordinates and stop-line/crosswalk point coordinates are sigmoid-mapped into network pixel space before loss/eval.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-sigmoid-vector-decoder`.
+- Architecture:
+  - `model/net/roadmark_current_family.py` adds `coordinate_mode="sigmoid_network"` to `CurrentFamilyRoadMarkHeads`.
+  - Lane vector x-coordinate slice is mapped by `sigmoid() * (NETWORK_W - 1)`.
+  - Stop-line and crosswalk point slices are mapped by `sigmoid() * [NETWORK_W - 1, NETWORK_H - 1]`.
+  - Objectness, semantic logits, and visibility logits remain raw logits.
+- Config/runtime:
+  - `model/net/heads.py` adds `roadmark_architecture="current_family_sigmoid"` as an opt-in architecture alias.
+  - `tools/pv26_train/config.py` allows `current_family_sigmoid`.
+  - `tools/run_pv26_lane60_probe.py` adds `current_family_sigmoid_vector_decoder`.
+- Tests:
+  - `test/test_pv26_heads.py` verifies the new architecture output shapes and bounded coordinate ranges.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_sigmoid_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_094354`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Best internal phase objective was only `0.2334973569` at epoch 1.
+- Internal task-best lane/stop-line/crosswalk F1 all remained `0.0000`.
+
+Fixed val4 evaluation:
+
+| Eval | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| fixed val4 epoch-2 best | `0.0000` | `0 / 169 / 86` | `0.0000` | `0 / 68 / 2` | `0.0000` | `0 / 0 / 7` | `0.2316818087` |
+
+Reference:
+
+- Prior raw current-family vector decoder val128-style epoch-2 emitted no matched objects and no predictions: lane/stop/cross F1 all `0.0000`, lane `0 / 0 / 2390`, stop-line `0 / 0 / 60`, crosswalk `0 / 0 / 81`.
+- Sigmoid coordinate scaling changes the failure mode from no-emission to unmatched FP-heavy emission.
+- It still does not produce any matched lane, stop-line, or crosswalk object on fixed val4.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_sigmoid_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_094354/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_sigmoid_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_094354/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_sigmoid_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_094354/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `7.5M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/roadmark_current_family.py model/net/heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_current_family_vector_decoder_architecture test_pv26_heads.PV26HeadsTests.test_heads_can_use_sigmoid_current_family_vector_decoder`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "current_family_sigmoid_vector_decoder|current_family_vector_decoder"`.
+- CUDA current-family sigmoid vector decoder smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- This is a materially different architecture/decoder contract from the raw current-family vector decoder, not a postprocess threshold sweep.
+- It makes vector coordinates numerically plausible but still fails the production metric immediately.
+- Larger `3x512`, exact-val128, and broader-val512 were skipped because fixed val4 had zero TP for all three lane-family tasks and heavy lane/stop-line FP.
+- Do not repeat this as `current_family_sigmoid`, object threshold, head LR, epoch-count, train-batch scaling, or the same vector-loss fallback tuning.
+- Reopen vector-query architecture only with a materially different query initialization, denoising/matching, or decoder contract that first emits matched objects on fixed validation.

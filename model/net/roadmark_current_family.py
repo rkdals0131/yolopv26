@@ -6,6 +6,7 @@ from typing import Iterable
 import torch
 import torch.nn as nn
 
+from ..data.transform import NETWORK_HW
 from .roadmark_blocks import ConvNormAct, MultiScaleFusion
 
 
@@ -23,6 +24,7 @@ STOP_LINE_DECODER_LAYERS = 2
 STOP_LINE_DECODER_HEADS = 8
 CROSSWALK_DECODER_LAYERS = 2
 CROSSWALK_DECODER_HEADS = 8
+LANE_X_SLICE = slice(1 + 3 + 2, 1 + 3 + 2 + 16)
 
 
 def _build_2d_sincos_position_encoding(
@@ -180,8 +182,17 @@ class _SpatialQueryDecoderHead(nn.Module):
 
 
 class CurrentFamilyRoadMarkHeads(nn.Module):
-    def __init__(self, in_channels: Iterable[int], feature_strides: Iterable[int] = FEATURE_STRIDES) -> None:
+    def __init__(
+        self,
+        in_channels: Iterable[int],
+        feature_strides: Iterable[int] = FEATURE_STRIDES,
+        *,
+        coordinate_mode: str = "raw",
+    ) -> None:
         super().__init__()
+        self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
+        if self.coordinate_mode not in {"raw", "sigmoid_network"}:
+            raise ValueError("CurrentFamilyRoadMarkHeads coordinate_mode must be one of: raw, sigmoid_network")
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -244,7 +255,29 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "stop_line_queries": STOP_LINE_QUERY_COUNT,
             "crosswalk_queries": CROSSWALK_QUERY_COUNT,
             "roadmark_architecture": "current_family",
+            "coordinate_mode": self.coordinate_mode,
         }
+
+    def _scale_lane_rows(self, rows: torch.Tensor) -> torch.Tensor:
+        if self.coordinate_mode != "sigmoid_network":
+            return rows
+        scaled = rows.clone()
+        scaled[..., LANE_X_SLICE] = scaled[..., LANE_X_SLICE].sigmoid() * float(NETWORK_HW[1] - 1)
+        return scaled
+
+    def _scale_point_rows(self, rows: torch.Tensor) -> torch.Tensor:
+        if self.coordinate_mode != "sigmoid_network":
+            return rows
+        scaled = rows.clone()
+        point_shape = scaled[..., 1:].shape
+        points = scaled[..., 1:].reshape(*point_shape[:-1], -1, 2)
+        scale = torch.tensor(
+            [float(NETWORK_HW[1] - 1), float(NETWORK_HW[0] - 1)],
+            device=scaled.device,
+            dtype=scaled.dtype,
+        )
+        scaled[..., 1:] = (points.sigmoid() * scale).reshape_as(scaled[..., 1:])
+        return scaled
 
     def forward(
         self,
@@ -265,9 +298,9 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         stop_line_memory = self.stop_line_memory(fused_feature)
         crosswalk_memory = self.crosswalk_memory(fused_feature)
         return {
-            "lane": self.lane_head(fused_feature),
-            "stop_line": self.stop_line_head(stop_line_memory),
-            "crosswalk": self.crosswalk_head(crosswalk_memory),
+            "lane": self._scale_lane_rows(self.lane_head(fused_feature)),
+            "stop_line": self._scale_point_rows(self.stop_line_head(stop_line_memory)),
+            "crosswalk": self._scale_point_rows(self.crosswalk_head(crosswalk_memory)),
         }
 
 

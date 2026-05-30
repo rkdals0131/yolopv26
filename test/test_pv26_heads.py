@@ -207,6 +207,44 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
         self.assertNotIn("lane_seg_centerline_logits", outputs)
 
+    def test_heads_can_use_sigmoid_current_family_vector_decoder(self) -> None:
+        from model.data.transform import NETWORK_HW
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            roadmark_architecture="current_family_sigmoid",
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()
+        lane_x = outputs["lane"][..., 6:22]
+        stop_points = outputs["stop_line"][..., 1:].view(1, STOP_LINE_QUERY_COUNT, -1, 2)
+        cross_points = outputs["crosswalk"][..., 1:].view(1, CROSSWALK_QUERY_COUNT, -1, 2)
+
+        self.assertEqual(summary["roadmark_architecture"], "current_family_sigmoid")
+        self.assertEqual(summary["roadmark"]["roadmark_architecture"], "current_family")
+        self.assertEqual(summary["roadmark"]["coordinate_mode"], "sigmoid_network")
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
+        self.assertGreaterEqual(float(lane_x.min().item()), 0.0)
+        self.assertLessEqual(float(lane_x.max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(stop_points[..., 0].min().item()), 0.0)
+        self.assertLessEqual(float(stop_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(stop_points[..., 1].min().item()), 0.0)
+        self.assertLessEqual(float(stop_points[..., 1].max().item()), float(NETWORK_HW[0] - 1))
+        self.assertGreaterEqual(float(cross_points[..., 0].min().item()), 0.0)
+        self.assertLessEqual(float(cross_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(cross_points[..., 1].min().item()), 0.0)
+        self.assertLessEqual(float(cross_points[..., 1].max().item()), float(NETWORK_HW[0] - 1))
+
     def test_heads_can_use_lane_only_segfirst_architecture(self) -> None:
         from model.net import PV26Heads
 
