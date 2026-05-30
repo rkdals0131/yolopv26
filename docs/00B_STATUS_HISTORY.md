@@ -20833,3 +20833,128 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because fixed val4 has all task TP at `0`.
 - Close this as refinement pass count, detach/no-detach choice, geometry-query MLP depth, object threshold, head-LR, epoch-count, and train-batch scaling on the same vector-query contract.
 - Reopen current-family vector-query work only with a materially different pretraining, set-query, or quality contract that first emits matched TP on fixed validation.
+
+## 362. 2026-05-31 Stop-line crosswalk-context fusion: crosswalk dense context does not solve stop-line geometry
+
+Context:
+
+- Section 359 closed stop-line lane-context fusion: lane centerline/support probability context did not improve fixed exact stop-line over projection competition.
+- GPT Pro's architecture review correctly warned that stop-line may not be just a postprocess issue, but a layer/training/feature-allocation issue.
+- This branch tests a distinct cross-task feature contract: stop-line dense features receive crosswalk mask/center probability context, because crosswalk and stop-line often co-occur in structured road-marking scenes.
+- This is not a threshold/TTA/sweep variant. It changes the stop-line head input features and then trains/evaluates the checkpoint.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Added opt-in config knobs:
+  - `stopline_crosswalk_context_fusion_enabled`;
+  - `stopline_crosswalk_context_detach`.
+- `model/net/stopline_head_line.py` adds a zero-initialized residual projection from crosswalk mask/center probability maps into the stop-line dense feature before stop-line logits are emitted.
+- `model/net/roadmark_v2_heads.py` now computes crosswalk dense outputs before stop-line outputs when crosswalk context is enabled, then passes those maps to `StopLineDenseLocalHead`.
+- `model/net/heads.py`, `model/net/roadmark_joint_native.py`, `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py` expose the config path and experiment preset:
+  - `stopline_crosswalk_context_fusion_static`.
+- `test/test_pv26_heads.py` verifies the head can enable the stop-line crosswalk-context path.
+- `test/test_run_pv26_train.py` verifies scenario config defaults preserve the new knobs.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - split counts were train `326709`, val `82641`, test `20000`;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke:
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - stage 4 `lane_family_stopline_static_trunk`;
+  - stop-line loss weight `4.0`;
+  - lane/crosswalk losses `0.0`;
+  - skipped steps `0`.
+- The train loader reused the existing full root in place and did not copy the dataset.
+- Internal training validation best phase objective was `0.6408025211` at epoch 1, but stop-line task-best remained `0.0000`; phase objective is not the target.
+- Fixed evaluator replays used `tools/evaluate_pv26_lane60_checkpoint.py` with:
+  - `--validation-epoch 2`;
+  - `--train-batches 64`;
+  - `--batch-size 4`;
+  - `--device cuda`;
+  - the same source run and experiment preset.
+
+Fixed val4 result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.6395153929` |
+| lane F1 | `0.5507` |
+| lane TP/FP/FN | `38 / 14 / 48` |
+| stop-line F1 | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` |
+| support lane/stop/cross | `86 / 2 / 7` |
+
+Fixed exact-val128 result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.6406791615` |
+| lane F1 | `0.5660` |
+| lane TP/FP/FN | `1162 / 554 / 1228` |
+| stop-line F1 | `0.4590` |
+| stop-line TP/FP/FN | `28 / 34 / 32` |
+| crosswalk F1 | `0.5988` |
+| crosswalk TP/FP/FN | `50 / 36 / 31` |
+| support lane/stop/cross | `2390 / 60 / 81` |
+
+Gate comparison:
+
+- Projection-competition exact reference:
+  - stop-line `31 / 29 / 29`, F1 `0.5167`.
+- Primary projection-comp exact reference:
+  - stop-line `32 / 28 / 28`, F1 `0.5333`.
+- Crosswalk-context exact stop-line:
+  - `28 / 34 / 32`, F1 `0.4590`.
+- The new crosswalk-context head loses TP and adds FP versus both exact references.
+- Crosswalk exact is also below the final `0.60` task threshold at `0.5988`.
+
+Artifacts:
+
+- Retained run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_crosswalk_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_022705`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_crosswalk_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_022705/analysis_exports/fixed_val4_epoch1_best/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_crosswalk_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_022705/analysis_exports/fixed_val4_epoch1_best/summary.json`.
+- Fixed exact-val128 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_crosswalk_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_022705/analysis_exports/fixed_exact_val128_epoch1_best/metrics.csv`.
+- Fixed exact-val128 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_crosswalk_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_022705/analysis_exports/fixed_exact_val128_epoch1_best/summary.json`.
+- Training history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_crosswalk_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_022705/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned after metric export.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run size after cleanup is about `15M`.
+- The retained run has no `*.pt` files.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/stopline_head_line.py model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_enable_stopline_crosswalk_context_fusion`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_preserves_defaults_without_user_yaml`.
+- Real CUDA `2x64` train smoke on the existing canonical dataset root.
+- Fixed val4 and fixed exact-val128 replays through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+Decision:
+
+- The implementation is valid and trainable, but it is exact-negative.
+- Detached crosswalk mask/center context does not provide the missing no-GT stop-line along-axis midpoint/extent recovery signal.
+- Broader-val512 and larger training are skipped because fixed exact-val128 stayed below projection-competition and primary exact references.
+- Close this as crosswalk-context fusion gate, detach/no-detach, head-LR, epoch-count, train-batch scaling, and same projection-comp runtime path.
+- Reopen cross-task context fusion only with a materially different stop-line emit/candidate geometry or verifier signal that first improves fixed exact TP/FP/FN over projection-comp.

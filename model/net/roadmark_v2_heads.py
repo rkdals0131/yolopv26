@@ -153,6 +153,8 @@ class RoadMarkV2Heads(nn.Module):
         lane_family_cross_stitch_enabled: bool = False,
         stopline_lane_context_fusion_enabled: bool = False,
         stopline_lane_context_detach: bool = True,
+        stopline_crosswalk_context_fusion_enabled: bool = False,
+        stopline_crosswalk_context_detach: bool = True,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -171,6 +173,8 @@ class RoadMarkV2Heads(nn.Module):
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
         self.stopline_lane_context_fusion_enabled = bool(stopline_lane_context_fusion_enabled)
         self.stopline_lane_context_detach = bool(stopline_lane_context_detach)
+        self.stopline_crosswalk_context_fusion_enabled = bool(stopline_crosswalk_context_fusion_enabled)
+        self.stopline_crosswalk_context_detach = bool(stopline_crosswalk_context_detach)
         if len(self.in_channels) != 4:
             raise ValueError("RoadMarkV2Heads expects exactly 4 pyramid levels (P2/P3/P4/P5).")
         if len(self.feature_strides) != 4:
@@ -195,6 +199,8 @@ class RoadMarkV2Heads(nn.Module):
             (p2, p3),
             lane_context_fusion_enabled=self.stopline_lane_context_fusion_enabled,
             lane_context_detach=self.stopline_lane_context_detach,
+            crosswalk_context_fusion_enabled=self.stopline_crosswalk_context_fusion_enabled,
+            crosswalk_context_detach=self.stopline_crosswalk_context_detach,
         )
         self.crosswalk_head = CrosswalkMaskFirstHead((p2, p3, p4))
         self.shared_feature_adapters = (
@@ -251,6 +257,10 @@ class RoadMarkV2Heads(nn.Module):
             if self.stopline_lane_context_fusion_enabled
             else "disabled",
             "stopline_lane_context_detach": bool(self.stopline_lane_context_detach),
+            "stopline_crosswalk_context_fusion": "crosswalk_dense_prob_residual"
+            if self.stopline_crosswalk_context_fusion_enabled
+            else "disabled",
+            "stopline_crosswalk_context_detach": bool(self.stopline_crosswalk_context_detach),
         }
 
     def forward(
@@ -285,11 +295,17 @@ class RoadMarkV2Heads(nn.Module):
             task_features["crosswalk"] if task_features is not None else (p2, p3, p4, p5)
         )
         lane_outputs = self.lane_head((lane_p2, lane_p3, lane_p4), encoded=encoded)
+        crosswalk_outputs = self.crosswalk_head((cross_p2, cross_p3, cross_p4))
         outputs.update(lane_outputs)
         outputs.update(
-            self.stop_line_head((stop_p2, stop_p3), encoded=encoded, lane_context=lane_outputs)
+            self.stop_line_head(
+                (stop_p2, stop_p3),
+                encoded=encoded,
+                lane_context=lane_outputs,
+                crosswalk_context=crosswalk_outputs,
+            )
         )
-        outputs.update(self.crosswalk_head((cross_p2, cross_p3, cross_p4)))
+        outputs.update(crosswalk_outputs)
         return outputs
 
 
@@ -309,6 +325,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         lane_family_cross_stitch_enabled: bool = False,
         stopline_lane_context_fusion_enabled: bool = False,
         stopline_lane_context_detach: bool = True,
+        stopline_crosswalk_context_fusion_enabled: bool = False,
+        stopline_crosswalk_context_detach: bool = True,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -327,6 +345,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
         self.stopline_lane_context_fusion_enabled = bool(stopline_lane_context_fusion_enabled)
         self.stopline_lane_context_detach = bool(stopline_lane_context_detach)
+        self.stopline_crosswalk_context_fusion_enabled = bool(stopline_crosswalk_context_fusion_enabled)
+        self.stopline_crosswalk_context_detach = bool(stopline_crosswalk_context_detach)
         if len(self.in_channels) != 4:
             raise ValueError("PV26RoadMarkV2LaneFamilyHeads expects exactly 4 pyramid levels.")
         if len(self.feature_strides) != 4:
@@ -348,6 +368,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,
             stopline_lane_context_fusion_enabled=self.stopline_lane_context_fusion_enabled,
             stopline_lane_context_detach=self.stopline_lane_context_detach,
+            stopline_crosswalk_context_fusion_enabled=self.stopline_crosswalk_context_fusion_enabled,
+            stopline_crosswalk_context_detach=self.stopline_crosswalk_context_detach,
         )
         self.lane_head = self.roadmark_heads.lane_head
         self.stop_line_head = self.roadmark_heads.stop_line_head
@@ -424,6 +446,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         lane_family_cross_stitch_enabled: bool = False,
         stopline_lane_context_fusion_enabled: bool = False,
         stopline_lane_context_detach: bool = True,
+        stopline_crosswalk_context_fusion_enabled: bool = False,
+        stopline_crosswalk_context_detach: bool = True,
     ) -> None:
         super().__init__(
             in_channels,
@@ -442,6 +466,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
             stopline_lane_context_fusion_enabled=stopline_lane_context_fusion_enabled,
             stopline_lane_context_detach=stopline_lane_context_detach,
+            stopline_crosswalk_context_fusion_enabled=stopline_crosswalk_context_fusion_enabled,
+            stopline_crosswalk_context_detach=stopline_crosswalk_context_detach,
         )
         p2, p3, _, _ = self.in_channels
         self.stopline_p2_isolator = _StoplineFeatureNeck(p2)
@@ -505,6 +531,7 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             task_features["crosswalk"] if task_features is not None else (p2, p3, p4, p5)
         )
         lane_outputs = self.lane_head((lane_p2, lane_p3, lane_p4), encoded=encoded)
+        crosswalk_outputs = self.crosswalk_head((cross_p2, cross_p3, cross_p4))
         stop_outputs = self.stop_line_head(
             (
                 self.stopline_p2_isolator(stop_p2),
@@ -512,8 +539,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             ),
             encoded=encoded,
             lane_context=lane_outputs,
+            crosswalk_context=crosswalk_outputs,
         )
-        crosswalk_outputs = self.crosswalk_head((cross_p2, cross_p3, cross_p4))
         return {
             "det": torch.zeros((batch_size, 0, 12), device=device, dtype=dtype),
             "tl_attr": torch.zeros((batch_size, 0, 4), device=device, dtype=dtype),

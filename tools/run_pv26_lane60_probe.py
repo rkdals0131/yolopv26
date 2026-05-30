@@ -2462,6 +2462,15 @@ EXPERIMENTS["stopline_lane_context_fusion_static"] = {
     },
 }
 
+EXPERIMENTS["stopline_crosswalk_context_fusion_static"] = {
+    **EXPERIMENTS["stopline_static_only_specialist"],
+    "overrides": {
+        **EXPERIMENTS["stopline_static_only_specialist"]["overrides"],
+        "stopline_crosswalk_context_fusion_enabled": True,
+        "stopline_crosswalk_context_detach": True,
+    },
+}
+
 EXPERIMENTS["stopline_segment_metric_objectness_static"] = {
     **EXPERIMENTS["stopline_static_only_specialist"],
     "overrides": {

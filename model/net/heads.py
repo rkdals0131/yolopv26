@@ -148,6 +148,8 @@ class PV26Heads(nn.Module):
         lane_family_cross_stitch_enabled: bool = False,
         stopline_lane_context_fusion_enabled: bool = False,
         stopline_lane_context_detach: bool = True,
+        stopline_crosswalk_context_fusion_enabled: bool = False,
+        stopline_crosswalk_context_detach: bool = True,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -167,6 +169,8 @@ class PV26Heads(nn.Module):
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
         self.stopline_lane_context_fusion_enabled = bool(stopline_lane_context_fusion_enabled)
         self.stopline_lane_context_detach = bool(stopline_lane_context_detach)
+        self.stopline_crosswalk_context_fusion_enabled = bool(stopline_crosswalk_context_fusion_enabled)
+        self.stopline_crosswalk_context_detach = bool(stopline_crosswalk_context_detach)
         if len(self.in_channels) != 4:
             raise ValueError("PV26Heads expects exactly 4 pyramid levels (P2/P3/P4/P5).")
         if len(self.feature_strides) != 4:
@@ -287,6 +291,8 @@ class PV26Heads(nn.Module):
                 lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,
                 stopline_lane_context_fusion_enabled=self.stopline_lane_context_fusion_enabled,
                 stopline_lane_context_detach=self.stopline_lane_context_detach,
+                stopline_crosswalk_context_fusion_enabled=self.stopline_crosswalk_context_fusion_enabled,
+                stopline_crosswalk_context_detach=self.stopline_crosswalk_context_detach,
             )
         self.lane_head_mode = str(getattr(self.roadmark_heads, "lane_head_mode", self.lane_head_mode))
         self.lane_head = getattr(self.roadmark_heads, "lane_head", None)

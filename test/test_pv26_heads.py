@@ -155,6 +155,30 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["stop_line_mask_logits"]).all())
         self.assertTrue(torch.isfinite(outputs["stop_line_selector_map_logits"]).all())
 
+    def test_heads_can_enable_stopline_crosswalk_context_fusion(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            stopline_crosswalk_context_fusion_enabled=True,
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()["roadmark"]
+
+        self.assertEqual(summary["stopline_crosswalk_context_fusion"], "crosswalk_dense_prob_residual")
+        self.assertTrue(summary["stopline_crosswalk_context_detach"])
+        self.assertTrue(torch.isfinite(outputs["stop_line_mask_logits"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line_selector_map_logits"]).all())
+        self.assertIn("crosswalk_mask_logits", outputs)
+        self.assertIn("crosswalk_center_logits", outputs)
+
     def test_heads_can_use_seed_relative_conditional_row_decoder(self) -> None:
         from model.data.transform import NETWORK_HW
         from model.net import PV26Heads

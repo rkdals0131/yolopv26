@@ -256,6 +256,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "stop_line_component_gate_source": "selector",
                             "stopline_lane_context_fusion_enabled": True,
                             "stopline_lane_context_detach": False,
+                            "stopline_crosswalk_context_fusion_enabled": True,
+                            "stopline_crosswalk_context_detach": False,
                             "distill_enabled": True,
                             "distill_teacher_checkpoint": "runs/teacher.pt",
                             "distill_task_teacher_checkpoints": {
@@ -519,6 +521,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertTrue(scenario.train_defaults.lane_family_cross_stitch_enabled)
         self.assertTrue(scenario.train_defaults.stopline_lane_context_fusion_enabled)
         self.assertFalse(scenario.train_defaults.stopline_lane_context_detach)
+        self.assertTrue(scenario.train_defaults.stopline_crosswalk_context_fusion_enabled)
+        self.assertFalse(scenario.train_defaults.stopline_crosswalk_context_detach)
         self.assertEqual(scenario.phases[3].selection.metric_path, "val.metrics.lane_family.mean_f1")
         self.assertEqual(scenario.phases[3].selection.mode, "max")
         self.assertEqual(scenario.phases[3].loss_weights["det"], 0.0)

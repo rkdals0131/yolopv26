@@ -26,6 +26,8 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
         lane_family_cross_stitch_enabled: bool = False,
         stopline_lane_context_fusion_enabled: bool = False,
         stopline_lane_context_detach: bool = True,
+        stopline_crosswalk_context_fusion_enabled: bool = False,
+        stopline_crosswalk_context_detach: bool = True,
     ) -> None:
         super().__init__(
             in_channels,
@@ -42,6 +44,8 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
             lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
             stopline_lane_context_fusion_enabled=stopline_lane_context_fusion_enabled,
             stopline_lane_context_detach=stopline_lane_context_detach,
+            stopline_crosswalk_context_fusion_enabled=stopline_crosswalk_context_fusion_enabled,
+            stopline_crosswalk_context_detach=stopline_crosswalk_context_detach,
         )
 
     def describe(self) -> dict[str, object]:
