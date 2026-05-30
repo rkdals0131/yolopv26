@@ -71,6 +71,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-duplicate-distance-px", type=float, default=LANE_MATCH_THRESHOLD)
     parser.add_argument("--quality-threshold", type=float, default=0.80)
     parser.add_argument("--max-appends-per-sample", type=int, default=2)
+    parser.add_argument(
+        "--alignment-context-features",
+        action="store_true",
+        help=(
+            "Append no-GT geometry context between each dropped candidate and "
+            "the retained baseline lane predictions. This tests an "
+            "instance-alignment FP-control signal, not a verifier threshold sweep."
+        ),
+    )
     parser.add_argument("--verifier-epochs", type=int, default=40)
     parser.add_argument("--verifier-batch-size", type=int, default=256)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
@@ -134,6 +143,102 @@ def _lane_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
 
 def _near_any_lane(candidate: dict[str, Any], lanes: list[dict[str, Any]], *, threshold_px: float) -> bool:
     return any(_lane_distance(candidate, lane) <= float(threshold_px) for lane in lanes)
+
+
+def _polyline_array(lane: dict[str, Any]) -> np.ndarray:
+    return np.asarray(lane.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+
+
+def _polyline_length(lane: dict[str, Any]) -> float:
+    points = _polyline_array(lane)
+    if points.shape[0] < 2:
+        return 0.0
+    return float(np.linalg.norm(points[1:] - points[:-1], axis=1).sum())
+
+
+def _lane_center(points: np.ndarray) -> np.ndarray:
+    if points.shape[0] == 0:
+        return np.zeros(2, dtype=np.float32)
+    return points.mean(axis=0).astype(np.float32)
+
+
+def _lane_axis(points: np.ndarray) -> np.ndarray | None:
+    if points.shape[0] < 2:
+        return None
+    delta = points[-1] - points[0]
+    norm = float(np.linalg.norm(delta))
+    if norm <= 1.0e-6:
+        return None
+    axis = delta / norm
+    if float(axis[1]) > 0.0:
+        axis = -axis
+    return axis.astype(np.float32)
+
+
+def _angle_error_degrees(a: np.ndarray, b: np.ndarray) -> float:
+    axis_a = _lane_axis(a)
+    axis_b = _lane_axis(b)
+    if axis_a is None or axis_b is None:
+        return 180.0
+    dot = float(np.clip(abs(float(np.dot(axis_a, axis_b))), 0.0, 1.0))
+    return float(np.degrees(np.arccos(dot)))
+
+
+def _y_overlap_fraction(a: np.ndarray, b: np.ndarray) -> float:
+    if a.shape[0] == 0 or b.shape[0] == 0:
+        return 0.0
+    a_min, a_max = float(a[:, 1].min()), float(a[:, 1].max())
+    b_min, b_max = float(b[:, 1].min()), float(b[:, 1].max())
+    overlap = max(0.0, min(a_max, b_max) - max(a_min, b_min))
+    span = max(max(a_max, b_max) - min(a_min, b_min), 1.0e-6)
+    return float(overlap / span)
+
+
+def _alignment_context_features(candidate: dict[str, Any], baseline_lanes: list[dict[str, Any]]) -> np.ndarray:
+    """No-GT context between a rescue candidate and retained lane instances."""
+
+    candidate_points = _polyline_array(candidate)
+    candidate_center = _lane_center(candidate_points)
+    candidate_length = _polyline_length(candidate)
+    if not baseline_lanes:
+        return np.asarray(
+            [
+                0.0,  # has retained lane
+                1.0,  # normalized nearest distance sentinel
+                1.0,  # normalized center distance sentinel
+                1.0,  # normalized abs dx sentinel
+                1.0,  # normalized abs dy sentinel
+                0.0,  # y overlap
+                1.0,  # normalized angle error sentinel
+                0.0,  # candidate / nearest length ratio
+                0.0,  # nearest / candidate length ratio
+                0.0,  # sample retained lane count norm
+            ],
+            dtype=np.float32,
+        )
+
+    best_lane = min(baseline_lanes, key=lambda lane: _lane_distance(candidate, lane))
+    best_points = _polyline_array(best_lane)
+    best_distance = _lane_distance(candidate, best_lane)
+    best_center = _lane_center(best_points)
+    center_delta = candidate_center - best_center
+    best_length = _polyline_length(best_lane)
+    length_den = max(candidate_length, best_length, 1.0e-6)
+    return np.asarray(
+        [
+            1.0,
+            min(float(best_distance), 240.0) / 240.0,
+            min(float(np.linalg.norm(center_delta)), 240.0) / 240.0,
+            min(abs(float(center_delta[0])), 240.0) / 240.0,
+            min(abs(float(center_delta[1])), 240.0) / 240.0,
+            _y_overlap_fraction(candidate_points, best_points),
+            min(_angle_error_degrees(candidate_points, best_points), 90.0) / 90.0,
+            min(candidate_length / length_den, 2.0) / 2.0,
+            min(best_length / length_den, 2.0) / 2.0,
+            min(float(len(baseline_lanes)), 16.0) / 16.0,
+        ],
+        dtype=np.float32,
+    )
 
 
 def _baseline_matched_gt_indices(
@@ -294,6 +399,10 @@ def _collect_examples(
                         maps=maps,
                         meta=sample_meta,
                     )
+                    if bool(args.alignment_context_features):
+                        features = np.concatenate(
+                            [features, _alignment_context_features(candidate, baseline_lanes)]
+                        ).astype(np.float32)
                     example = {
                         "features": features.astype(np.float32),
                         "positive": float(1.0 if positive else 0.0),
@@ -682,6 +791,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "negative_distance_px": float(args.negative_distance_px),
         "quality_threshold": float(args.quality_threshold),
         "max_appends_per_sample": int(args.max_appends_per_sample),
+        "alignment_context_features": bool(args.alignment_context_features),
         "train_summary": train_summary,
         "val_candidate_count": int(eval_payload["val_candidate_count"]),
         "selected_candidate_count": int(eval_payload["selected_candidate_count"]),

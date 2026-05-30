@@ -4,6 +4,7 @@ import unittest
 
 from tools.probe_pv26_lane_area_roi_verifier import (
     _accumulate_task_counts,
+    _alignment_context_features,
     _baseline_matched_gt_indices,
     _candidate_label,
     _empty_task_count_payload,
@@ -48,6 +49,22 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         candidate = {"points_xy": [[12.0, 0.0], [12.0, 100.0]], "class_name": "yellow", "lane_type": "dashed"}
         self.assertTrue(_near_any_lane(candidate, [_lane(10.0)], threshold_px=5.0))
         self.assertFalse(_near_any_lane(candidate, [_lane(30.0)], threshold_px=5.0))
+
+    def test_alignment_context_features_describe_nearest_retained_lane(self) -> None:
+        features = _alignment_context_features(_lane(70.0), [_lane(10.0), _lane(100.0)])
+
+        self.assertEqual(features.shape, (10,))
+        self.assertEqual(float(features[0]), 1.0)
+        self.assertLess(float(features[1]), 1.0)
+        self.assertGreater(float(features[5]), 0.9)
+        self.assertLess(float(features[6]), 0.01)
+
+    def test_alignment_context_features_handles_empty_retained_lanes(self) -> None:
+        features = _alignment_context_features(_lane(70.0), [])
+
+        self.assertEqual(features.shape, (10,))
+        self.assertEqual(float(features[0]), 0.0)
+        self.assertEqual(float(features[5]), 0.0)
 
     def test_task_count_accumulator_sums_chunked_metrics(self) -> None:
         counts = _empty_task_count_payload()

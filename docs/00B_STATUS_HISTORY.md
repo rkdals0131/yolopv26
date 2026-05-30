@@ -18066,3 +18066,84 @@ Verification:
 - Crosswalk in this chunked stress aggregate is also below `0.60`, so this is not a production lane-family success.
 - Do not repeat this as threshold, cap, hidden-size, train-batch, duplicate-distance, bbox-area, or candidate-distance tuning.
 - Reopen dropped-candidate rescue only with a materially new instance-quality/alignment signal that improves TP/FP/FN ratio before broader integration.
+
+## 330. Lane area-ROI alignment-context verifier: retained-lane context is still smoke-negative
+
+맥락:
+
+- Section 329 closed plain area-ROI dropped-candidate verifier scaling, but explicitly left one possible reopening condition: a materially stronger no-GT instance-quality/alignment signal.
+- This branch tested that reopening condition directly by adding candidate-vs-retained-lane geometry context, not by changing the verifier threshold, append cap, hidden size, or train exposure.
+- The goal was to suppress FP candidates that look like duplicate/parallel retained lane fragments while preserving recoverable dropped candidates.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-roi-alignment-context`.
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added opt-in `--alignment-context-features`.
+- Added no-GT features between each dropped candidate and the nearest retained baseline lane:
+  - retained-lane existence;
+  - nearest lane distance;
+  - center distance and x/y deltas;
+  - y-overlap;
+  - angle error;
+  - candidate/nearest length ratios;
+  - retained-lane count.
+- Added `test/test_lane_area_roi_verifier.py` coverage for non-empty and empty retained-lane context.
+- Retained contracts:
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - stop-line projection-competition runtime;
+  - crosswalk `crosswalk_polygon_mode=hull`.
+
+Training and evaluation:
+
+- Real CUDA smoke:
+  - `64` verifier train batches;
+  - `4` validation batches;
+  - batch size `4`;
+  - validation epoch `2`;
+  - device `cuda:0`.
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Train examples:
+  - `439` total;
+  - positives / negatives: `66 / 373`;
+  - feature dimension: `368`.
+- The verifier overfit the tiny train slice by epoch 40, so held-out smoke TP/FP/FN was the gate.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| alignment-context verifier append | `0.5816` | `41 / 14 / 45` | `0.0000` | `0.5455` |
+
+Candidate stats:
+
+- val candidates: `29`;
+- selected candidates: `4`;
+- selected oracle-positive candidates: `1`.
+
+Storage:
+
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_alignment_context_train64_smoke_val4_20260530`.
+- Retained size: about `36K`.
+- The probe writes CSV/summary only.
+- No checkpoint artifact was created.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_area_roi_verifier`.
+- CUDA fixed val4 alignment-context verifier training/replay.
+
+판단:
+
+- This was the allowed stronger alignment-signal variant, and it failed the smoke gate.
+- Lane recovered only `+1` TP but added `+3` FP, so lane F1 fell `0.5839 -> 0.5816`.
+- Stop-line and crosswalk did not move because this is lane-only append replay.
+- Exact-val128, broader-val512, and larger training were skipped because fixed val4 lost F1 and FP grew faster than TP.
+- Do not repeat nearest-retained-lane distance/center/overlap/angle/length context as a feature, threshold, cap, train-batch, or hidden-size sweep.
+- Reopen dropped-candidate rescue only with an actually different instance/geometry contract that improves fixed smoke TP/FP/FN before exact or broader expansion.
