@@ -18893,3 +18893,93 @@ Decision:
 - Broader-val512 was skipped because exact lost lane TP and added FP.
 - Do not repeat this as repair-mode subset, selector threshold, hidden-dim, epoch/LR, train-batch count, mean-move gate, or same deterministic repair-bank tuning.
 - Reopen lane repair only with a materially new no-GT alignment/instance-quality signal or a model-side instance emitter that first improves TP/FP/FN.
+
+## 339. Lane conditional denoise-row training: train-time GT-denoised row queries are runtime-flat
+
+Context:
+
+- Prior conditional row branches closed one-shot top-K row emission, bottom-anchor/metric-quality supervision, seed-relative coordinates, branch-only training, and dense-evidence gating because they either emitted zero TP or added too many FP.
+- This slice tested a different training contract rather than another runtime threshold:
+  - keep the runtime path as the existing conditional row decoder;
+  - add train-only GT-denoised conditional row queries so the shared query MLP sees jittered GT bottom-anchor seed features, row-x targets, row visibility, color, and lane type;
+  - freeze training to the conditional row branch so dense row-scan/tangent, stop-line, and crosswalk behavior are protected.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-conditional-denoise-row`.
+- Updated `model/net/lane_head_segfirst.py`:
+  - retained the `encoded` payload through forward;
+  - added `lane_conditional_denoise_rows`, `lane_conditional_denoise_targets`, and `lane_conditional_denoise_valid`;
+  - shared the same `_rows_from_seed_inputs(...)` helper between runtime conditional rows and denoised train rows.
+- Updated `model/engine/loss.py`:
+  - added `lane_conditional_denoise_aux_weight`;
+  - added objectness, row-x, visibility, color, and type losses for denoised conditional rows.
+- Updated config/CLI/probe plumbing:
+  - `tools/pv26_train/config.py`;
+  - `tools/pv26_train/cli.py`;
+  - `tools/run_pv26_lane60_probe.py`.
+- Added focused tests in:
+  - `test/test_pv26_heads.py`;
+  - `test/test_pv26_loss_runtime.py`;
+  - `test/test_run_pv26_train.py`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke train:
+  - experiment: `lane_conditional_denoise_row`;
+  - `2` epochs x `64` train batches;
+  - `4` val batches;
+  - batch size `4`;
+  - freeze policy `lane_conditional_row_only`;
+  - skipped steps `0`;
+  - best internal phase objective `0.6408025211` at epoch `1`.
+- Runtime fixed gate:
+  - `tools/probe_pv26_lane_flip_tta.py`;
+  - validation epoch `2`;
+  - `max_val_batches=4`;
+  - variant `flip_centerline_avg_lane_cross_comp050`;
+  - `crosswalk_polygon_mode=hull`.
+
+Fixed val4 result:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop F1 | Stop TP/FP/FN | Cross F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| retained fixed reference | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| denoise-row best | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Artifacts:
+
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_denoise_row_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_182111/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_denoise_row_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_182111/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Training history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_denoise_row_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_182111/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned after fixed val4 failed to move TP/FP/FN.
+- Retained run size is about `760K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/lane_head_segfirst.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads test_pv26_loss_runtime test_run_pv26_train`.
+- `python tools/run_pv26_lane60_probe.py --help | rg -n "lane_conditional_denoise_row|experiment"`.
+- CUDA `2x64` train smoke on `lane_conditional_denoise_row`.
+- Fixed val4 evaluation with `tools/probe_pv26_lane_flip_tta.py`.
+
+Decision:
+
+- This was a model-side/train-loss contract change, not a postprocess threshold sweep.
+- It trained cleanly but was runtime-flat at the first fixed gate.
+- Exact-val128, broader-val512, and larger training were skipped because the learned denoised train signal did not change lane/stop-line/crosswalk TP/FP/FN.
+- Do not repeat this as denoise jitter, denoise weight, row-aux weight, seed-aux weight, head-LR, epoch-count, train-batch scaling, dense-gate threshold, or append/replace tuning.
+- Reopen conditional row work only with a materially different runtime instance-existence/quality or matching contract that first improves fixed smoke TP/FP/FN.

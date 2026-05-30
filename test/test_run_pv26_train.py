@@ -167,6 +167,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "lane_conditional_seed_target_mode": "bottom_anchor",
                             "lane_conditional_objectness_target_mode": "metric_quality",
                             "lane_conditional_row_x_weight": 0.4,
+                            "lane_conditional_denoise_aux_weight": 0.8,
                             "lane_segfirst_instance_embedding_aux_weight": 0.6,
                             "lane_conditional_row_enabled": True,
                             "lane_conditional_row_dense_gate_enabled": True,
@@ -400,6 +401,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(scenario.train_defaults.lane_conditional_seed_target_mode, "bottom_anchor")
         self.assertEqual(scenario.train_defaults.lane_conditional_objectness_target_mode, "metric_quality")
         self.assertAlmostEqual(scenario.train_defaults.lane_conditional_row_x_weight, 0.4)
+        self.assertAlmostEqual(scenario.train_defaults.lane_conditional_denoise_aux_weight, 0.8)
         self.assertAlmostEqual(scenario.train_defaults.lane_segfirst_instance_embedding_aux_weight, 0.6)
         self.assertTrue(scenario.train_defaults.lane_conditional_row_enabled)
         self.assertTrue(scenario.train_defaults.lane_conditional_row_dense_gate_enabled)

@@ -164,6 +164,7 @@ class TrainDefaultsConfig:
     lane_conditional_seed_target_mode: str = "centerline_core"
     lane_conditional_objectness_target_mode: str = "binary"
     lane_conditional_row_x_weight: float = 0.05
+    lane_conditional_denoise_aux_weight: float = 0.0
     lane_segfirst_instance_embedding_aux_weight: float = 0.0
     lane_conditional_row_enabled: bool = False
     lane_conditional_row_merge_mode: str = "replace"
@@ -962,6 +963,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_conditional_row_x_weight=_coerce_float(
             data.get("lane_conditional_row_x_weight", defaults.lane_conditional_row_x_weight),
             field_name="train_defaults.lane_conditional_row_x_weight",
+        ),
+        lane_conditional_denoise_aux_weight=_coerce_float(
+            data.get(
+                "lane_conditional_denoise_aux_weight",
+                defaults.lane_conditional_denoise_aux_weight,
+            ),
+            field_name="train_defaults.lane_conditional_denoise_aux_weight",
         ),
         lane_segfirst_instance_embedding_aux_weight=_coerce_float(
             data.get(
@@ -1894,6 +1902,8 @@ def validate_meta_train_scenario(
             raise ValueError(
                 f"phase {index} lane_conditional_row_merge_mode must be one of: replace, append"
             )
+        if float(phase_train.lane_conditional_denoise_aux_weight) < 0.0:
+            raise ValueError(f"phase {index} lane_conditional_denoise_aux_weight must be >= 0")
         if int(phase_train.lane_conditional_row_dense_min_points) < 1:
             raise ValueError(f"phase {index} lane_conditional_row_dense_min_points must be >= 1")
         if not 0.0 <= float(phase_train.lane_conditional_row_dense_min_mean_centerline) <= 1.0:

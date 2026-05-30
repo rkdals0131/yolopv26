@@ -746,6 +746,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_conditional_seed_target_mode=train_config.lane_conditional_seed_target_mode,
         lane_conditional_objectness_target_mode=train_config.lane_conditional_objectness_target_mode,
         lane_conditional_row_x_weight=train_config.lane_conditional_row_x_weight,
+        lane_conditional_denoise_aux_weight=train_config.lane_conditional_denoise_aux_weight,
         lane_segfirst_instance_embedding_aux_weight=train_config.lane_segfirst_instance_embedding_aux_weight,
         lane_segfirst_color_class_weights=train_config.lane_segfirst_color_class_weights,
         stopline_local_x_aux_weight=train_config.stopline_local_x_aux_weight,

@@ -154,6 +154,8 @@ class PV26HeadsTests(unittest.TestCase):
         summary = heads.describe()["roadmark"]
         rows = outputs["lane_conditional_rows"]
         seed_logits = outputs["lane_conditional_seed_logits"]
+        denoise_rows = outputs["lane_conditional_denoise_rows"]
+        denoise_valid = outputs["lane_conditional_denoise_valid"]
         flat_seed_logits = seed_logits.flatten(2).squeeze(1)
         _, top_indices = torch.topk(flat_seed_logits, k=LANE_QUERY_COUNT, dim=1)
         seed_cols = top_indices.remainder(seed_logits.shape[-1]).to(dtype=rows.dtype)
@@ -163,6 +165,8 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(summary["lane_conditional_row_coordinate_mode"], "seed_relative")
         self.assertEqual(summary["lane_conditional_row_max_delta_px"], max_delta)
         self.assertTrue(torch.isfinite(rows).all())
+        self.assertEqual(tuple(denoise_rows.shape), tuple(rows.shape))
+        self.assertFalse(bool(denoise_valid.any()))
         self.assertGreaterEqual(float(lane_x.min().item()), 0.0)
         self.assertLessEqual(float(lane_x.max().item()), float(NETWORK_HW[1] - 1))
         self.assertLessEqual(float((lane_x - seed_x.unsqueeze(-1)).abs().max().item()), max_delta + 1.0e-4)

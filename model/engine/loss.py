@@ -150,6 +150,9 @@ def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
         "lane_refine_delta",
         "lane_conditional_seed_logits",
         "lane_conditional_rows",
+        "lane_conditional_denoise_rows",
+        "lane_conditional_denoise_targets",
+        "lane_conditional_denoise_valid",
         "lane_seg_centerline_logits",
         "lane_seg_support_logits",
         "lane_seg_center_offset",
@@ -485,6 +488,7 @@ def _lane_segfirst_loss(
     conditional_seed_target_mode: str = "centerline_core",
     conditional_objectness_target_mode: str = "binary",
     conditional_row_x_weight: float = 0.05,
+    conditional_denoise_aux_weight: float = 0.0,
     instance_embedding_aux_weight: float = 0.0,
     color_class_weights: dict[str, float] | None = None,
     breakdown: dict[str, torch.Tensor] | None = None,
@@ -576,6 +580,7 @@ def _lane_segfirst_loss(
     task_conflict_negative_loss = _zero_graph(centerline_logits)
     conditional_row_loss = _zero_graph(centerline_logits)
     conditional_seed_loss = _zero_graph(centerline_logits)
+    conditional_denoise_loss = _zero_graph(centerline_logits)
     instance_embedding_loss = _zero_graph(centerline_logits)
     if float(residual_risk_core_weight) > 0.0:
         risk_core = aux.get("lane_seg_residual_risk_core")
@@ -657,6 +662,12 @@ def _lane_segfirst_loss(
             encoded,
             seed_target_mode=str(conditional_seed_target_mode),
         )
+    if float(conditional_denoise_aux_weight) > 0.0:
+        conditional_denoise_loss = _lane_conditional_denoise_row_loss(
+            predictions,
+            encoded,
+            row_x_weight=float(conditional_row_x_weight),
+        )
     if float(instance_embedding_aux_weight) > 0.0:
         instance_embedding_loss = _lane_instance_embedding_loss(predictions, encoded)
 
@@ -673,6 +684,7 @@ def _lane_segfirst_loss(
         + float(task_conflict_negative_weight) * task_conflict_negative_loss
         + float(conditional_row_aux_weight) * conditional_row_loss
         + float(conditional_seed_aux_weight) * conditional_seed_loss
+        + float(conditional_denoise_aux_weight) * conditional_denoise_loss
         + float(instance_embedding_aux_weight) * instance_embedding_loss
     )
     if breakdown is not None:
@@ -690,6 +702,7 @@ def _lane_segfirst_loss(
                 "seg_task_conflict_negative": task_conflict_negative_loss,
                 "seg_conditional_row": conditional_row_loss,
                 "seg_conditional_seed": conditional_seed_loss,
+                "seg_conditional_denoise": conditional_denoise_loss,
                 "seg_instance_embedding": instance_embedding_loss,
             }
         )
@@ -1439,6 +1452,60 @@ def _lane_conditional_seed_loss(
             max_positive_weight=64.0,
         )
     raise ValueError(f"unsupported lane_conditional_seed_target_mode: {seed_target_mode}")
+
+
+def _lane_conditional_denoise_row_loss(
+    predictions: dict[str, torch.Tensor],
+    encoded: dict[str, Any],
+    *,
+    row_x_weight: float = 0.05,
+) -> torch.Tensor:
+    denoise_rows = predictions.get("lane_conditional_denoise_rows")
+    denoise_targets = predictions.get("lane_conditional_denoise_targets")
+    denoise_valid = predictions.get("lane_conditional_denoise_valid")
+    if (
+        not isinstance(denoise_rows, torch.Tensor)
+        or not isinstance(denoise_targets, torch.Tensor)
+        or not isinstance(denoise_valid, torch.Tensor)
+    ):
+        return _zero_graph(predictions.get("lane", None))
+    if denoise_rows.shape != denoise_targets.shape or denoise_rows.shape[:2] != denoise_valid.shape:
+        raise ValueError("lane conditional denoise rows, targets, and valid mask must share batch/query dimensions")
+    mask_payload = encoded.get("mask")
+    lane_source = mask_payload.get("lane_source") if isinstance(mask_payload, dict) else None
+    device = denoise_rows.device
+    dtype = denoise_rows.dtype
+    valid = denoise_valid.to(device=device, dtype=torch.bool)
+    if isinstance(lane_source, torch.Tensor):
+        obj_mask = lane_source.to(device=device, dtype=torch.bool)[:, None].expand_as(valid)
+    else:
+        obj_mask = torch.ones_like(valid, dtype=torch.bool)
+    obj_target = valid.to(dtype=dtype)
+    obj_loss = _objectness_loss(denoise_rows[..., 0], obj_target, obj_mask)
+    if not bool(valid.any()):
+        return obj_loss
+
+    matched_pred = denoise_rows[valid]
+    matched_gt = denoise_targets.to(device=device, dtype=dtype)[valid]
+    visible = matched_gt[:, LANE_VIS_SLICE] > 0.5
+    if bool(visible.any()):
+        x_loss = F.smooth_l1_loss(
+            matched_pred[:, LANE_X_SLICE][visible],
+            matched_gt[:, LANE_X_SLICE][visible],
+            reduction="mean",
+        )
+    else:
+        x_loss = _zero_graph(matched_pred)
+    vis_loss = F.binary_cross_entropy_with_logits(
+        matched_pred[:, LANE_VIS_SLICE],
+        matched_gt[:, LANE_VIS_SLICE],
+        reduction="mean",
+    )
+    color_target = matched_gt[:, LANE_COLOR_SLICE].argmax(dim=-1)
+    type_target = matched_gt[:, LANE_TYPE_SLICE].argmax(dim=-1)
+    color_loss = F.cross_entropy(matched_pred[:, LANE_COLOR_SLICE], color_target, reduction="mean")
+    type_loss = F.cross_entropy(matched_pred[:, LANE_TYPE_SLICE], type_target, reduction="mean")
+    return obj_loss + float(row_x_weight) * x_loss + vis_loss + color_loss + 0.5 * type_loss
 
 
 def _stop_line_mask_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> torch.Tensor:
@@ -2523,6 +2590,7 @@ class PV26MultiTaskLoss(nn.Module):
         lane_conditional_seed_target_mode: str = "centerline_core",
         lane_conditional_objectness_target_mode: str = "binary",
         lane_conditional_row_x_weight: float = 0.05,
+        lane_conditional_denoise_aux_weight: float = 0.0,
         lane_segfirst_instance_embedding_aux_weight: float = 0.0,
         lane_segfirst_color_class_weights: dict[str, float] | None = None,
         stopline_local_x_aux_weight: float = 0.0,
@@ -2609,7 +2677,10 @@ class PV26MultiTaskLoss(nn.Module):
         self.lane_conditional_seed_target_mode = str(lane_conditional_seed_target_mode)
         self.lane_conditional_objectness_target_mode = str(lane_conditional_objectness_target_mode)
         self.lane_conditional_row_x_weight = float(lane_conditional_row_x_weight)
+        self.lane_conditional_denoise_aux_weight = float(lane_conditional_denoise_aux_weight)
         self.lane_segfirst_instance_embedding_aux_weight = float(lane_segfirst_instance_embedding_aux_weight)
+        if self.lane_conditional_denoise_aux_weight < 0.0:
+            raise ValueError("lane_conditional_denoise_aux_weight must be >= 0")
         if self.lane_conditional_seed_target_mode not in {"centerline_core", "bottom_anchor"}:
             raise ValueError(
                 f"unsupported lane_conditional_seed_target_mode: {self.lane_conditional_seed_target_mode}"
@@ -2822,6 +2893,7 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_conditional_seed_target_mode": self.lane_conditional_seed_target_mode,
             "lane_conditional_objectness_target_mode": self.lane_conditional_objectness_target_mode,
             "lane_conditional_row_x_weight": float(self.lane_conditional_row_x_weight),
+            "lane_conditional_denoise_aux_weight": float(self.lane_conditional_denoise_aux_weight),
             "lane_segfirst_instance_embedding_aux_weight": float(self.lane_segfirst_instance_embedding_aux_weight),
             "lane_segfirst_color_class_weights": dict(self.lane_segfirst_color_class_weights),
             "stopline_local_x_aux_weight": float(self.stopline_local_x_aux_weight),
@@ -3639,6 +3711,7 @@ class PV26MultiTaskLoss(nn.Module):
                 conditional_seed_target_mode=self.lane_conditional_seed_target_mode,
                 conditional_objectness_target_mode=self.lane_conditional_objectness_target_mode,
                 conditional_row_x_weight=self.lane_conditional_row_x_weight,
+                conditional_denoise_aux_weight=self.lane_conditional_denoise_aux_weight,
                 instance_embedding_aux_weight=self.lane_segfirst_instance_embedding_aux_weight,
                 color_class_weights=self.lane_segfirst_color_class_weights,
                 breakdown=lane_breakdown,
