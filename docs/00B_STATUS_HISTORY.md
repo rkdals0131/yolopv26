@@ -19627,3 +19627,106 @@ Decision:
 - More importantly, stop-line remains exactly `0 / 3 / 2`; the changed data exposure creates no stop-line TP at the first fixed gate.
 - Exact-val128, broader-val512, and larger training are skipped.
 - Close cooccur stop/cross lane-frozen as a freeze-policy / cooccur-fraction / train-batch / head-LR / epoch-count tuning family. Reopen co-occurrence only with a new candidate/geometry or TP-preserving instance signal that first moves fixed smoke TP/FP/FN.
+
+## 348. Stop-line head checkpoint interpolation does not preserve a useful stop-line gain
+
+Context:
+
+- The previous architecture review argued that not every failure should be treated as postprocess-only; model-side training exposure, head allocation, and representation can matter.
+- A retained stop-line-priority specialist can improve broader stop-line only in a two-checkpoint router, but directly deploying or transplanting it has tended to damage lane/crosswalk retention.
+- This branch tested a fixed weight-space retention contract: train stop-line-priority heads-only checkpoints, then interpolate only the `stop_line_head.*` tensors into the retained `merged_lane_head.pt` base.
+- This is not a threshold/TTA sweep. It is a fixed-alpha checkpoint-interpolation/model-soup probe with one alpha (`0.50`) and one scope (`stop_line_head`).
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Added `tools/interpolate_pv26_checkpoints.py`.
+- Added `test/test_interpolate_pv26_checkpoints.py`.
+- The tool loads PV26 checkpoint dicts, interpolates only selected floating tensors, keeps base tensors outside the selected scope, clears optimizer/scheduler/scaler state, and writes a `.summary.json` beside the output checkpoint.
+- Supported scopes are `heads`, `adapter_heads`, and `stop_line_head`; this run used `stop_line_head`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train split reported `326709` records on the larger run;
+  - no dataset copy was created.
+- Retained base checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Previously trained larger stop-line-priority checkpoint was also tested as an existing full-scale donor:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Same-turn real CUDA training was run at two scales:
+  - `2` epochs x `64` train batches, `4` val batches;
+  - `2` epochs x `256` train batches, `32` val batches.
+- Both same-turn runs used the current stop-line-priority positive sampler, projection-competition runtime contract, `flip_centerline_avg_lane_cross_comp050` lane variant, and `crosswalk_polygon_mode=hull`.
+
+Fixed-alpha interpolation summary:
+
+- For each interpolation, `alpha=0.50`, `scope=stop_line_head`.
+- Tensor handling summary was stable:
+  - adapter kept from base: `708` tensors;
+  - head tensors interpolated: `111`;
+  - head tensors copied from base: `678`;
+  - non-floating tensors kept from base: `19`;
+  - prefix-skipped tensors: `659`.
+
+Fixed val4 / exact results:
+
+| Source | Eval | Lane F1 | Lane TP/FP/FN | Stop F1 | Stop TP/FP/FN | Cross F1 | Cross TP/FP/FN | Decision |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- | --- |
+| previous larger donor, interpolated | val4 | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` | smoke stop-line flat |
+| previous larger donor, interpolated | exact-val128 | `0.5888` | `1202 / 491 / 1188` | `0.4793` | `29 / 32 / 31` | `0.5988` | `50 / 36 / 31` | below projection-comp exact |
+| same-turn train64 raw | val4 | `0.5224` | `35 / 13 / 51` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` | raw lane regression |
+| same-turn train64 interpolated | val4 | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` | retention only, no stop TP |
+| same-turn train256 raw | val4 | `0.5414` | `36 / 11 / 50` | `0.0000` | `0 / 4 / 2` | `0.4000` | `2 / 1 / 5` | raw lane/cross regression |
+| same-turn train256 interpolated | val4 | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 4 / 2` | `0.5455` | `3 / 1 / 4` | retention only, no stop TP |
+
+Reference comparison:
+
+- Primary/projection-comp exact references remain stronger than the interpolated exact donor:
+  - projection-comp exact: `31 / 29 / 29`, F1 `0.5167`;
+  - primary projection-comp exact in the router ledger: `32 / 28 / 28`, F1 `0.5333`.
+- The best interpolated exact stop-line result is only `29 / 32 / 31`, F1 `0.4793`.
+- The same-turn train256 internal validation did show stop-line `0.3125`, but external fixed val4 recovered `0` stop-line TP, so internal phase objective is not deployable evidence.
+
+Artifacts:
+
+- Tool:
+  - `tools/interpolate_pv26_checkpoints.py`.
+- Unit test:
+  - `test/test_interpolate_pv26_checkpoints.py`.
+- Previous larger donor interpolation exact metrics:
+  - `runs/pv26_exhaustive_od_lane_train/checkpoint_interpolation_stopline_priority_alpha050/exact_val128_epoch2/metrics.csv`.
+- Train64 raw fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_205902/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Train64 interpolated fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_205902/analysis_exports/stopline_head_alpha050/fixed_val4_epoch2/metrics.csv`.
+- Train256 raw fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_210827/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Train256 interpolated fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_210827/analysis_exports/stopline_head_alpha050/fixed_val4_epoch2/metrics.csv`.
+
+Storage:
+
+- Negative checkpoints, interpolated `.pt` files, TensorBoard events, and root `yolo26s.pt` were removed after metric export.
+- Retained artifact sizes after pruning:
+  - previous interpolation audit: about `680K`;
+  - train64 run: about `1.2M`;
+  - train256 run: about `1.6M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/interpolate_pv26_checkpoints.py test/test_interpolate_pv26_checkpoints.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_interpolate_pv26_checkpoints`.
+- Real CUDA training for `2x64` and `2x256`.
+- Fixed val4 replay with `tools/probe_pv26_lane_flip_tta.py`, `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line, and hull crosswalk.
+- Exact-val128 replay for the previous larger donor interpolation.
+
+Decision:
+
+- Fixed-alpha stop-line-head interpolation can restore retained lane/crosswalk behavior, but it does not carry useful stop-line TP into the first fixed smoke gate.
+- The one donor that had enough prior scale to justify exact evaluation still stayed below projection-comp exact on stop-line.
+- Exact-val128 and broader-val512 are skipped for the same-turn train64/train256 checkpoints because fixed val4 stop-line recovered `0` TP.
+- Close fixed-alpha checkpoint interpolation/model-soup as an alpha/scope/donor/training-scale tuning family. Reopen only with a new stop-line candidate-coverage/geometry signal or a model-side emit contract that first improves fixed TP/FP/FN.
