@@ -7,8 +7,10 @@ import torch
 
 from model.data.transform import compute_letterbox_transform
 from tools.probe_pv26_stopline_source_router import (
+    LINE_PROFILE_MAP_KEYS,
     ROUTER_MODES,
     _draw_stopline_raster,
+    _line_profile_features_for_sample,
     _source_raster_for_sample,
     _train_raster_router,
 )
@@ -61,6 +63,35 @@ class StoplineSourceRouterTests(unittest.TestCase):
         self.assertGreater(float(raster[1].sum()), 0.0)
         self.assertGreater(float(raster[2].sum()), 0.0)
         self.assertGreater(float(raster[6].mean()), float(raster[4].mean()))
+
+    def test_line_profile_features_keep_fixed_along_axis_shape(self) -> None:
+        outputs = {
+            "stop_line_mask_logits": torch.linspace(-2.0, 2.0, steps=96, dtype=torch.float32).reshape(1, 1, 8, 12),
+            "stop_line_center_logits": torch.ones((1, 1, 8, 12), dtype=torch.float32),
+            "stop_line_selector_map_logits": torch.zeros((1, 1, 8, 12), dtype=torch.float32),
+            "stop_line_midpoint_logits": torch.full((1, 1, 8, 12), -1.0, dtype=torch.float32),
+        }
+        image = torch.ones((1, 3, 64, 96), dtype=torch.float32)
+        primary = {"stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.8}]}
+        specialist = {"stop_lines": [{"points_xy": [[120.0, 320.0], [680.0, 320.0]], "score": 0.9}]}
+
+        features = _line_profile_features_for_sample(
+            primary,
+            specialist,
+            primary_outputs=outputs,
+            specialist_outputs=outputs,
+            image=image,
+            sample_index=0,
+            meta=_meta(),
+            sample_count=5,
+            side_offset=2.0,
+        )
+
+        single_profile_dim = 4 + (len(LINE_PROFILE_MAP_KEYS) + 1) * 2 * 5
+        expected_dim = 4 * (13 + 2 * single_profile_dim)
+        self.assertEqual(len(features), expected_dim)
+        self.assertTrue(np.isfinite(np.asarray(features, dtype=np.float32)).all())
+        self.assertGreater(max(features), 0.0)
 
     def test_train_raster_router_can_fit_tiny_contract(self) -> None:
         rasters: list[np.ndarray] = []

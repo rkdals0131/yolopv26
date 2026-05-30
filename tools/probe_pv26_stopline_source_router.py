@@ -60,6 +60,12 @@ DEFAULT_STOP_LINE_CHECKPOINT = (
 )
 ROUTER_MODES = ("primary", "specialist", "union_dedupe", "agreement", "empty")
 DEFAULT_ROUTER_RASTER_SIZE = (64, 96)
+LINE_PROFILE_MAP_KEYS = (
+    "stop_line_mask_logits",
+    "stop_line_center_logits",
+    "stop_line_selector_map_logits",
+    "stop_line_midpoint_logits",
+)
 
 
 class SourceRouterMLP(nn.Module):
@@ -126,11 +132,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--router-weight-decay", type=float, default=1.0e-4)
     parser.add_argument(
         "--feature-mode",
-        choices=("output_stats", "dense_aligned", "raster_cnn"),
+        choices=("output_stats", "dense_aligned", "line_profile", "raster_cnn"),
         default="output_stats",
         help=(
             "output_stats reproduces the closed scalar source-router premise. "
             "dense_aligned appends no-GT line-aligned dense-map/raw-image quality features. "
+            "line_profile appends fixed along-axis source line profiles without spatial CNN pooling. "
             "raster_cnn trains a tiny router over raw-image, dense-map, and source prediction rasters."
         ),
     )
@@ -683,6 +690,151 @@ def _dense_aligned_features_for_sample(
     return [0.0 if not math.isfinite(float(value)) else float(value) for value in dense_values]
 
 
+def _fixed_profile_values(array: np.ndarray | None, points: np.ndarray, count: int) -> np.ndarray:
+    if array is None or points.size == 0:
+        return np.zeros((int(count),), dtype=np.float32)
+    values = _bilinear_values(array, points)
+    if values.size != int(count):
+        return np.zeros((int(count),), dtype=np.float32)
+    return values.astype(np.float32)
+
+
+def _single_line_profile_features(
+    line: dict[str, Any],
+    *,
+    outputs: dict[str, torch.Tensor],
+    image: torch.Tensor | None,
+    sample_index: int,
+    meta: dict[str, Any],
+    sample_count: int,
+    side_offset: float,
+) -> list[float]:
+    count = max(3, int(sample_count))
+    angle = _line_angle(line)
+    features: list[float] = [
+        _line_score(line),
+        _line_length(line),
+        math.cos(angle),
+        math.sin(angle),
+    ]
+    maps = [_as_2d_prob(outputs, key, sample_index) for key in LINE_PROFILE_MAP_KEYS]
+    for array in maps:
+        if array is None:
+            features.extend([0.0] * (count * 2))
+            continue
+        line_points = _line_dense_points(
+            line,
+            meta,
+            output_hw=(int(array.shape[0]), int(array.shape[1])),
+            sample_count=count,
+        )
+        if line_points is None:
+            features.extend([0.0] * (count * 2))
+            continue
+        points, normal = line_points
+        side_delta = normal[None, :] * float(side_offset)
+        center_values = _fixed_profile_values(array, points, count)
+        left_values = _fixed_profile_values(array, points + side_delta, count)
+        right_values = _fixed_profile_values(array, points - side_delta, count)
+        side_values = 0.5 * (left_values + right_values)
+        features.extend(float(value) for value in center_values.tolist())
+        features.extend(float(value) for value in (center_values - side_values).tolist())
+
+    gray = _as_gray_image(image, sample_index)
+    if gray is None:
+        features.extend([0.0] * (count * 2))
+    else:
+        image_points = _line_dense_points(
+            line,
+            meta,
+            output_hw=(int(gray.shape[0]), int(gray.shape[1])),
+            sample_count=count,
+        )
+        if image_points is None:
+            features.extend([0.0] * (count * 2))
+        else:
+            points, normal = image_points
+            side_delta = normal[None, :] * float(side_offset)
+            center_values = _fixed_profile_values(gray, points, count)
+            left_values = _fixed_profile_values(gray, points + side_delta, count)
+            right_values = _fixed_profile_values(gray, points - side_delta, count)
+            side_values = 0.5 * (left_values + right_values)
+            features.extend(float(value) for value in center_values.tolist())
+            features.extend(float(value) for value in (center_values - side_values).tolist())
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
+
+
+def _line_profile_features_for_lines(
+    lines: list[dict[str, Any]],
+    *,
+    outputs: dict[str, torch.Tensor],
+    image: torch.Tensor | None,
+    sample_index: int,
+    meta: dict[str, Any],
+    sample_count: int,
+    side_offset: float,
+    max_lines: int = 1,
+) -> list[float]:
+    count = max(3, int(sample_count))
+    single_dim = 4 + (len(LINE_PROFILE_MAP_KEYS) + 1) * 2 * count
+    selected = sorted(lines, key=_line_score, reverse=True)[: max(0, int(max_lines))]
+    features: list[float] = []
+    for line in selected:
+        values = _single_line_profile_features(
+            line,
+            outputs=outputs,
+            image=image,
+            sample_index=int(sample_index),
+            meta=meta,
+            sample_count=count,
+            side_offset=float(side_offset),
+        )
+        if len(values) != single_dim:
+            values = [0.0] * single_dim
+        features.extend(values)
+    missing = max(0, int(max_lines) - len(selected))
+    if missing:
+        features.extend([0.0] * (missing * single_dim))
+    return features
+
+
+def _line_profile_features_for_sample(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+    *,
+    primary_outputs: dict[str, torch.Tensor],
+    specialist_outputs: dict[str, torch.Tensor],
+    image: torch.Tensor | None,
+    sample_index: int,
+    meta: dict[str, Any],
+    sample_count: int,
+    side_offset: float,
+) -> list[float]:
+    primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
+    specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
+    agreement_lines = _source_prediction(primary_sample, specialist_sample, "agreement").get("stop_lines", [])
+    source_groups = (primary_lines, specialist_lines, union_lines, [dict(line) for line in agreement_lines])
+    output_groups = (primary_outputs, specialist_outputs)
+    features: list[float] = []
+    for lines in source_groups:
+        features.extend(_line_stats(lines))
+        for outputs in output_groups:
+            features.extend(
+                _line_profile_features_for_lines(
+                    lines,
+                    outputs=outputs,
+                    image=image,
+                    sample_index=int(sample_index),
+                    meta=meta,
+                    sample_count=int(sample_count),
+                    side_offset=float(side_offset),
+                    max_lines=1,
+                )
+            )
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
+
+
 def _build_predictions_for_loader(
     *,
     loader: Any,
@@ -762,6 +914,29 @@ def _build_predictions_for_loader(
                         sample_meta = {}
                     sample_features.extend(
                         _dense_aligned_features_for_sample(
+                            primary_sample,
+                            specialist_sample,
+                            primary_outputs=lane_outputs,
+                            specialist_outputs=stop_line_outputs,
+                            image=encoded.get("image") if isinstance(encoded, dict) else None,
+                            sample_index=int(sample_index),
+                            meta=sample_meta,
+                            sample_count=int(dense_feature_samples),
+                            side_offset=float(dense_feature_side_offset),
+                        )
+                    )
+                elif normalized_feature_mode == "line_profile":
+                    sample_meta = (
+                        encoded_meta[sample_index]
+                        if isinstance(encoded_meta, list)
+                        and sample_index < len(encoded_meta)
+                        and isinstance(encoded_meta[sample_index], dict)
+                        else primary_sample.get("meta", {})
+                    )
+                    if not isinstance(sample_meta, dict):
+                        sample_meta = {}
+                    sample_features.extend(
+                        _line_profile_features_for_sample(
                             primary_sample,
                             specialist_sample,
                             primary_outputs=lane_outputs,

@@ -20393,3 +20393,92 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because fixed val4 regressed lane TP/FP/FN.
 - Close union-pool lane reselection as retained+dropped pool scoring, top-k union reselection, original-count/max-extra count, source-flag features, and same line-ROI MLP training.
 - Reopen lane candidate-pool selection only with a materially different TP-preserving instance-quality or model-side instance-emission signal that first improves fixed smoke TP/FP/FN.
+
+## 357. 2026-05-31 Stop-line line-profile source-router: larger train still loses TP against primary projection-comp
+
+Context:
+
+- The existing two-checkpoint stop-line router has real oracle headroom on exact-val128, but output-stat, dense-aligned, and raster-CNN learned routers stayed below the primary projection-comp source.
+- This branch tested a different no-GT source-quality signal: preserve along-axis line evidence instead of reducing it to scalar summaries or low-res spatial CNN pooling.
+- The router samples fixed raw/dense profiles on the primary, specialist, union-dedupe, and agreement stop-line source lines, then trains the existing source-router MLP.
+- This is a learned source-router audit, not a single-checkpoint production success.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_stopline_source_router.py` adds `--feature-mode line_profile`.
+- `line_profile` appends fixed-length source features:
+  - source line stats for primary, specialist, union, and agreement modes;
+  - top source-line profile sampled on primary and specialist outputs;
+  - per-point center values and side-contrast values from stop-line mask / center / selector / midpoint logits;
+  - encoded grayscale line profile and side contrast.
+- `test/test_stopline_source_router.py` covers the fixed feature shape and finite profile values.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Primary checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Stop-line specialist checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Runtime/eval contract:
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - primary projection-comp stop-line;
+  - specialist stop-line source;
+  - hull crosswalk.
+- Smoke:
+  - router train batches `64`;
+  - fixed val4;
+  - feature dim `2129`;
+  - train examples `256`.
+- Exact train64:
+  - router train batches `64`;
+  - exact val128.
+- Larger train exact audit:
+  - router train batches `256`;
+  - exact val128;
+  - train examples `1024`;
+  - class labels primary/specialist/union/agreement/empty `9 / 7 / 9 / 319 / 680`.
+
+Results:
+
+| Run | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| train64 smoke val4 | primary | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 smoke val4 | learned_router | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 smoke val4 | oracle_router | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 0 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 exact val128 | primary | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train64 exact val128 | learned_router | `0.5888` | `1202 / 491 / 1188` | `0.4630` | `25 / 23 / 35` | `0.5988` | `50 / 36 / 31` |
+| train64 exact val128 | oracle_router | `0.5888` | `1202 / 491 / 1188` | `0.7083` | `34 / 2 / 26` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | primary | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | learned_router | `0.5888` | `1202 / 491 / 1188` | `0.4762` | `25 / 20 / 35` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | oracle_router | `0.5888` | `1202 / 491 / 1188` | `0.7083` | `34 / 2 / 26` | `0.5988` | `50 / 36 / 31` |
+
+Artifacts:
+
+- Smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_line_profile_source_router_train64_smoke_val4_20260531/summary.json`.
+- Exact train64 summary: `runs/pv26_exhaustive_od_lane_train/stopline_line_profile_source_router_train64_exact_val128_20260531/summary.json`.
+- Exact train256 summary: `runs/pv26_exhaustive_od_lane_train/stopline_line_profile_source_router_train256_exact_val128_20260531/summary.json`.
+- Retained sizes are about `48K`, `52K`, and `52K`.
+- The probe writes CSV/summary only; no router checkpoint or copied dataset was created.
+- Temporary root `yolo26s.pt` was pruned after evaluation.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py test/test_stopline_source_router.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_source_router`.
+- CUDA train64/fixed-val4 line-profile source-router run.
+- CUDA train64/exact-val128 line-profile source-router run.
+- CUDA train256/exact-val128 line-profile source-router scale audit.
+
+Decision:
+
+- The implementation is valid and trainable, and it keeps lane/crosswalk fixed because it only chooses stop-line source predictions.
+- The learned line-profile router reduces FP in exact-val128, but it loses too many TP compared with the primary projection-comp source.
+- The larger train256 audit improves stop-line F1 from `0.4630` to `0.4762`, but still stays below primary `0.5333` and projection-comp reference `0.5167`.
+- Broader-val512 is skipped because exact failed.
+- Close line-profile source routing as along-axis profile feature count, MLP hidden-size/epoch/LR, train-batch scaling, and same primary/specialist/union/agreement source-choice contract.
+- Reopen source routing only with a materially different candidate-generation or source-quality signal that first beats primary projection-comp exact TP/FP/FN.
