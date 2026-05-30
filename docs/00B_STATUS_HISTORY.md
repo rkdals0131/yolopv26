@@ -18983,3 +18983,75 @@ Decision:
 - Exact-val128, broader-val512, and larger training were skipped because the learned denoised train signal did not change lane/stop-line/crosswalk TP/FP/FN.
 - Do not repeat this as denoise jitter, denoise weight, row-aux weight, seed-aux weight, head-LR, epoch-count, train-batch scaling, dense-gate threshold, or append/replace tuning.
 - Reopen conditional row work only with a materially different runtime instance-existence/quality or matching contract that first improves fixed smoke TP/FP/FN.
+
+## 340. Lane area-ROI raw-image-line verifier: image-space line evidence is still FP-heavy
+
+Goal:
+
+- Test whether dropped lane candidates can be selected using a signal outside the already-closed dense side-band and nearest-retained-lane geometry context variants.
+- Add no-GT raw-image evidence sampled along each dropped candidate and side bands, then train/evaluate the existing area-ROI MLP verifier on the real canonical dataset.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-roi-raw-image-line-verifier`.
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`:
+  - added `--raw-image-line-features`;
+  - added `_lane_raw_image_line_features(...)`;
+  - samples grayscale and gradient evidence along the candidate centerline and at `3/6/12/24` px image-space side offsets;
+  - appends those features to the existing dropped-candidate verifier feature vector.
+- Updated `test/test_lane_area_roi_verifier.py`:
+  - added a synthetic bright-stripe test that verifies finite fixed-shape raw-image line features and center-vs-side contrast.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Verifier train:
+  - train batches: `64`;
+  - examples: `439` (`66` positive / `373` negative);
+  - feature dim: `426`;
+  - epochs: `40`.
+- Fixed smoke eval:
+  - validation epoch `2`;
+  - `4` val batches;
+  - lane flip variant `flip_centerline_avg_lane_cross_comp050`;
+  - `crosswalk_polygon_mode=hull`.
+
+Fixed val4 result:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop F1 | Stop TP/FP/FN | Cross F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| raw-image-line verifier append | `0.5833` | `42 / 16 / 44` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Artifact:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_raw_image_line_verifier_train64_smoke_val4_20260530/summary.json`.
+- Smoke replay rows:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_raw_image_line_verifier_train64_smoke_val4_20260530/verifier_replay_rows.csv`.
+- Retained output size:
+  - about `36K`.
+
+Storage:
+
+- The run wrote CSV/summary artifacts only and no verifier checkpoint.
+- The automatically downloaded root `yolo26s.pt` file was removed after the smoke run.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_area_roi_verifier`.
+- CUDA smoke train/eval with `--raw-image-line-features`.
+
+Decision:
+
+- The axis recovered `+2` lane TP but added `+5` lane FP, so lane F1 slightly regressed from `0.5839` to `0.5833`.
+- High-score rows did not separate positives from negatives: among `7` selected candidates, only `2` were oracle-positive, and unselected positive rows remained at much lower scores.
+- Exact-val128, broader-val512, and larger training were skipped because fixed smoke failed the TP/FP gate.
+- Do not repeat this as raw-image offset, quality-threshold, hidden-dim, epoch-count, train-batch scaling, max-append, or duplicate-distance tuning. Reopen only with a materially different lane instance-quality/alignment contract that controls FP before broadening.

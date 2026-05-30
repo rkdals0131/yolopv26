@@ -14,6 +14,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _candidate_label,
     _empty_task_count_payload,
     _finalize_task_counts,
+    _lane_raw_image_line_features,
     _lane_side_contrast_features,
     _near_any_lane,
     _nearest_lane_index,
@@ -149,6 +150,22 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertGreater(float(features[0]), 0.9)
         self.assertLess(float(features[6]), 0.1)
         self.assertGreater(float(features[-4]), 0.9)
+
+    def test_lane_raw_image_line_features_describe_bright_image_ridge(self) -> None:
+        image = torch.zeros((3, 64, 64), dtype=torch.float32)
+        image[:, :, 31:34] = 1.0
+        sampled = np.stack(
+            [np.full(20, 16.0, dtype=np.float32), np.linspace(4.0, 28.0, 20, dtype=np.float32)],
+            axis=1,
+        )
+
+        features = _lane_raw_image_line_features(sampled, map_hw=(32, 32), image=image)
+
+        self.assertEqual(features.shape, (68,))
+        self.assertTrue(np.isfinite(features).all())
+        self.assertGreater(float(features[0]), 0.9)
+        self.assertLess(float(features[20]), 0.2)
+        self.assertGreater(float(features[23]), 0.7)
 
     def test_task_count_accumulator_sums_chunked_metrics(self) -> None:
         counts = _empty_task_count_payload()

@@ -102,6 +102,15 @@ def parse_args() -> argparse.Namespace:
             "lane ridge rather than broad support/noise."
         ),
     )
+    parser.add_argument(
+        "--raw-image-line-features",
+        action="store_true",
+        help=(
+            "Append no-GT raw-image line evidence sampled along each dropped "
+            "candidate and its side bands. This tests image-space lane markings "
+            "as a distinct signal from dense lane logits."
+        ),
+    )
     parser.add_argument("--verifier-epochs", type=int, default=40)
     parser.add_argument("--verifier-batch-size", type=int, default=256)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
@@ -359,6 +368,105 @@ def _lane_side_contrast_features(
     return _finite_feature_array(features)
 
 
+def _lane_raw_image_line_features(
+    sampled_map_points: np.ndarray,
+    *,
+    map_hw: tuple[int, int],
+    image: torch.Tensor | np.ndarray | None,
+    offsets_px: tuple[float, ...] = (3.0, 6.0, 12.0, 24.0),
+) -> np.ndarray:
+    """No-GT image-space line evidence around a raw lane candidate."""
+
+    sampled = np.asarray(sampled_map_points, dtype=np.float32).reshape(-1, 2)
+    feature_count = 20 + 12 * len(offsets_px)
+    if sampled.shape[0] == 0 or image is None:
+        return np.zeros(feature_count, dtype=np.float32)
+    if isinstance(image, torch.Tensor):
+        image_array = image.detach().cpu().numpy().astype(np.float32)
+    else:
+        image_array = np.asarray(image, dtype=np.float32)
+    if image_array.ndim == 3 and int(image_array.shape[0]) in (1, 3):
+        chw = image_array
+    elif image_array.ndim == 3 and int(image_array.shape[-1]) in (1, 3):
+        chw = np.moveaxis(image_array, -1, 0).astype(np.float32)
+    else:
+        return np.zeros(feature_count, dtype=np.float32)
+    if int(chw.shape[0]) == 1:
+        gray = chw[0]
+    else:
+        gray = 0.299 * chw[0] + 0.587 * chw[1] + 0.114 * chw[2]
+    finite_gray = gray[np.isfinite(gray)]
+    if finite_gray.size and float(finite_gray.max(initial=0.0)) > 2.0:
+        gray = gray / 255.0
+    gray = np.nan_to_num(gray.astype(np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+    image_h, image_w = int(gray.shape[0]), int(gray.shape[1])
+    if image_h < 2 or image_w < 2:
+        return np.zeros(feature_count, dtype=np.float32)
+    map_h, map_w = int(map_hw[0]), int(map_hw[1])
+    image_points = sampled.copy()
+    image_points[:, 0] = image_points[:, 0] * max(float(image_w - 1), 1.0) / max(float(map_w - 1), 1.0)
+    image_points[:, 1] = image_points[:, 1] * max(float(image_h - 1), 1.0) / max(float(map_h - 1), 1.0)
+    candidate_tangent, candidate_normal = _sample_tangent_and_normal(image_points)
+
+    grad_y, grad_x = np.gradient(gray)
+    grad_x = grad_x.astype(np.float32)
+    grad_y = grad_y.astype(np.float32)
+    grad_mag = np.sqrt((grad_x * grad_x) + (grad_y * grad_y)).astype(np.float32)
+    grad_xy = np.stack([grad_x, grad_y], axis=0)
+    center_gray = _values_at_points(gray, image_points).astype(np.float32).reshape(-1)
+    center_grad = _values_at_points(grad_mag, image_points).astype(np.float32).reshape(-1)
+    center_grad_xy = _values_at_points(grad_xy, image_points).astype(np.float32).reshape(-1, 2)
+    if center_grad_xy.shape[0] == candidate_normal.shape[0] and center_grad_xy.size:
+        center_normal_edge = np.abs(np.sum(center_grad_xy * candidate_normal, axis=1))
+        center_tangent_edge = np.abs(np.sum(center_grad_xy * candidate_tangent, axis=1))
+    else:
+        center_normal_edge = np.zeros_like(center_grad)
+        center_tangent_edge = np.zeros_like(center_grad)
+
+    center_gray_stats = _summary_stats(center_gray)
+    center_grad_stats = _summary_stats(center_grad)
+    center_normal_stats = _summary_stats(center_normal_edge)
+    center_tangent_stats = _summary_stats(center_tangent_edge)
+    features: list[float] = []
+    features.extend(center_gray_stats)
+    features.extend(center_grad_stats)
+    features.extend(center_normal_stats[:4])
+    features.extend(center_tangent_stats[:4])
+    for offset_px in offsets_px:
+        offset = candidate_normal * float(offset_px)
+        left_points = image_points + offset
+        right_points = image_points - offset
+        left_gray = _values_at_points(gray, left_points).astype(np.float32).reshape(-1)
+        right_gray = _values_at_points(gray, right_points).astype(np.float32).reshape(-1)
+        side_gray = np.concatenate([left_gray, right_gray], axis=0)
+        side_gray_stats = _summary_stats(side_gray)
+        left_grad = _values_at_points(grad_mag, left_points).astype(np.float32).reshape(-1)
+        right_grad = _values_at_points(grad_mag, right_points).astype(np.float32).reshape(-1)
+        side_grad = np.concatenate([left_grad, right_grad], axis=0)
+        side_grad_stats = _summary_stats(side_grad)
+        features.extend(
+            [
+                side_gray_stats[0],
+                side_gray_stats[1],
+                side_gray_stats[2],
+                float(center_gray_stats[0] - side_gray_stats[0]),
+                float(center_gray_stats[1] - side_gray_stats[1]),
+                float(abs(float(left_gray.mean()) - float(right_gray.mean())))
+                if left_gray.size and right_gray.size
+                else 0.0,
+                side_grad_stats[0],
+                side_grad_stats[1],
+                side_grad_stats[2],
+                float(center_grad_stats[0] - side_grad_stats[0]),
+                float(center_grad_stats[1] - side_grad_stats[1]),
+                float(abs(float(left_grad.mean()) - float(right_grad.mean())))
+                if left_grad.size and right_grad.size
+                else 0.0,
+            ]
+        )
+    return _finite_feature_array(features)
+
+
 def _baseline_matched_gt_indices(
     baseline_lanes: list[dict[str, Any]],
     gt_lanes: list[dict[str, Any]],
@@ -468,6 +576,7 @@ def _collect_examples(
             raw_batch = raw_batch_for_metrics(batch)
             if raw_batch is None:
                 raise ValueError("lane area ROI verifier requires raw batches for metrics")
+            batch_images = batch.get("image") if isinstance(batch, dict) else None
             encoded = evaluator.prepare_batch(batch)
             predictions = _forward_predictions(evaluator, encoded, lane_flip_variant=str(args.lane_flip_variant))
             meta = _detach_to_cpu(encoded["meta"])
@@ -511,7 +620,7 @@ def _collect_examples(
                     )
                     if training and not positive and not negative:
                         continue
-                    features, sampled_map_points, _ = _lane_features(
+                    features, sampled_map_points, map_hw = _lane_features(
                         candidate,
                         predictions=sample_prediction_tensors,
                         maps=maps,
@@ -524,6 +633,20 @@ def _collect_examples(
                     if bool(args.side_contrast_features):
                         features = np.concatenate(
                             [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
+                        ).astype(np.float32)
+                    if bool(args.raw_image_line_features):
+                        sample_image = None
+                        if isinstance(batch_images, torch.Tensor) and int(batch_images.shape[0]) > sample_batch_index:
+                            sample_image = batch_images[sample_batch_index]
+                        features = np.concatenate(
+                            [
+                                features,
+                                _lane_raw_image_line_features(
+                                    sampled_map_points,
+                                    map_hw=map_hw,
+                                    image=sample_image,
+                                ),
+                            ]
                         ).astype(np.float32)
                     example = {
                         "features": features.astype(np.float32),
@@ -956,6 +1079,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "max_appends_per_sample": int(args.max_appends_per_sample),
         "alignment_context_features": bool(args.alignment_context_features),
         "side_contrast_features": bool(args.side_contrast_features),
+        "raw_image_line_features": bool(args.raw_image_line_features),
         "train_summary": train_summary,
         "val_candidate_count": int(eval_payload["val_candidate_count"]),
         "selected_candidate_count": int(eval_payload["selected_candidate_count"]),
