@@ -108,6 +108,54 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(rows[0]["integration_action"], "replace_nearest")
         self.assertEqual(rows[0]["replaced_lane_index"], 0)
 
+    def test_ensemble_probability_mode_can_require_member_agreement(self) -> None:
+        class ConstantVerifier(torch.nn.Module):
+            def __init__(self, logit: float) -> None:
+                super().__init__()
+                self.logit = float(logit)
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return torch.full(
+                    (int(features.shape[0]),),
+                    self.logit,
+                    dtype=features.dtype,
+                    device=features.device,
+                )
+
+        examples = [
+            {
+                "features": np.asarray([1.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 3.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate": _lane(75.0),
+            }
+        ]
+        predictions = [{"lanes": [_lane(0.0)]}]
+
+        _, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=[ConstantVerifier(10.0), ConstantVerifier(-10.0)],
+            args=SimpleNamespace(
+                quality_threshold=0.8,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=1,
+                candidate_integration_mode="append",
+                replace_nearest_max_distance_px=120.0,
+                ensemble_probability_mode="min",
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(rows[0]["selected"], 0)
+        self.assertLess(rows[0]["verifier_probability"], 0.1)
+
     def test_alignment_context_features_describe_nearest_retained_lane(self) -> None:
         features = _alignment_context_features(_lane(70.0), [_lane(10.0), _lane(100.0)])
 

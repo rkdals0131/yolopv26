@@ -112,6 +112,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--verifier-epochs", type=int, default=40)
+    parser.add_argument("--verifier-ensemble-size", type=int, default=1)
+    parser.add_argument(
+        "--ensemble-probability-mode",
+        choices=("mean", "min", "mean_minus_std"),
+        default="mean",
+        help=(
+            "How multiple independently seeded verifier probabilities are "
+            "collapsed. This is an uncertainty/stability signal, not another "
+            "single-model score threshold."
+        ),
+    )
     parser.add_argument("--verifier-batch-size", type=int, default=256)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
     parser.add_argument("--save-verifier-model", default="")
@@ -729,9 +740,14 @@ def _train_verifier(
     *,
     args: argparse.Namespace,
     device: str,
+    seed: int | None = None,
 ) -> tuple[LaneAreaRoiVerifierNet, dict[str, Any]]:
     if not examples:
         raise ValueError("no area-ROI verifier training examples collected")
+    effective_seed = int(args.seed) if seed is None else int(seed)
+    torch.manual_seed(effective_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(effective_seed)
     features = torch.tensor(np.stack([row["features"] for row in examples]), dtype=torch.float32)
     labels = torch.tensor([float(row["positive"]) for row in examples], dtype=torch.float32)
     mean = features.mean(dim=0)
@@ -749,7 +765,7 @@ def _train_verifier(
         device=device,
     )
     generator = torch.Generator(device="cpu")
-    generator.manual_seed(int(args.seed))
+    generator.manual_seed(effective_seed)
     batch_size = max(1, int(args.verifier_batch_size))
     history: list[dict[str, float]] = []
     for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
@@ -773,19 +789,57 @@ def _train_verifier(
         "negative_count": negative_count,
         "input_dim": int(features.shape[1]),
         "history": history,
+        "seed": effective_seed,
     }
     return model, summary
+
+
+def _train_verifier_or_ensemble(
+    examples: list[dict[str, Any]],
+    *,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[LaneAreaRoiVerifierNet | list[LaneAreaRoiVerifierNet], dict[str, Any]]:
+    ensemble_size = max(1, int(getattr(args, "verifier_ensemble_size", 1)))
+    if ensemble_size == 1:
+        return _train_verifier(examples, args=args, device=device)
+    models: list[LaneAreaRoiVerifierNet] = []
+    members: list[dict[str, Any]] = []
+    for member_index in range(ensemble_size):
+        model, member_summary = _train_verifier(
+            examples,
+            args=args,
+            device=device,
+            seed=int(args.seed) + (9973 * int(member_index)),
+        )
+        model.eval()
+        models.append(model)
+        member_summary["member_index"] = int(member_index)
+        members.append(member_summary)
+    first = members[0]
+    summary = {
+        "ensemble_size": int(ensemble_size),
+        "ensemble_probability_mode": str(getattr(args, "ensemble_probability_mode", "mean")),
+        "example_count": int(first.get("example_count", 0)),
+        "positive_count": int(first.get("positive_count", 0)),
+        "negative_count": int(first.get("negative_count", 0)),
+        "input_dim": int(first.get("input_dim", 0)),
+        "members": members,
+    }
+    return models, summary
 
 
 def _save_verifier_model(
     path: str,
     *,
-    model: LaneAreaRoiVerifierNet,
+    model: LaneAreaRoiVerifierNet | list[LaneAreaRoiVerifierNet],
     train_summary: dict[str, Any],
     args: argparse.Namespace,
 ) -> None:
     if not path:
         return
+    if isinstance(model, list):
+        raise ValueError("--save-verifier-model currently supports a single verifier model, not an ensemble")
     output_path = Path(path).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -830,7 +884,7 @@ def _apply_verifier(
     *,
     examples: list[dict[str, Any]],
     predictions_all: list[dict[str, Any]],
-    model: LaneAreaRoiVerifierNet,
+    model: LaneAreaRoiVerifierNet | list[LaneAreaRoiVerifierNet],
     args: argparse.Namespace,
     device: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -838,9 +892,26 @@ def _apply_verifier(
     if not examples:
         return repaired, []
     features = torch.tensor(np.stack([row["features"] for row in examples]), dtype=torch.float32, device=device)
-    features = (features - model.feature_mean) / model.feature_std
+    models = model if isinstance(model, list) else [model]
+    member_probabilities: list[np.ndarray] = []
     with torch.no_grad():
-        probabilities = torch.sigmoid(model(features)).detach().cpu().numpy().astype(np.float32)
+        for member in models:
+            normalized = (features - member.feature_mean) / member.feature_std
+            member_probabilities.append(torch.sigmoid(member(normalized)).detach().cpu().numpy().astype(np.float32))
+    stacked_probabilities = np.stack(member_probabilities, axis=0)
+    if len(models) == 1:
+        probabilities = stacked_probabilities[0]
+    else:
+        mode = str(getattr(args, "ensemble_probability_mode", "mean"))
+        if mode == "mean":
+            probabilities = stacked_probabilities.mean(axis=0)
+        elif mode == "min":
+            probabilities = stacked_probabilities.min(axis=0)
+        elif mode == "mean_minus_std":
+            probabilities = stacked_probabilities.mean(axis=0) - stacked_probabilities.std(axis=0)
+        else:
+            raise ValueError(f"unsupported ensemble probability mode: {mode}")
+        probabilities = np.clip(probabilities, 0.0, 1.0).astype(np.float32)
     by_sample: dict[int, list[tuple[float, int]]] = {}
     for index, (example, probability) in enumerate(zip(examples, probabilities.tolist())):
         by_sample.setdefault(int(example["sample_index"]), []).append((float(probability), int(index)))
@@ -1045,7 +1116,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             max_batches=int(args.verifier_train_batches),
             training=True,
         )
-        model, train_summary = _train_verifier(train_examples, args=args, device=device)
+        model, train_summary = _train_verifier_or_ensemble(train_examples, args=args, device=device)
         _save_verifier_model(str(args.save_verifier_model), model=model, train_summary=train_summary, args=args)
     eval_payload = _evaluate_verifier_streaming(
         val_loader=val_loader,
@@ -1066,6 +1137,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "phase_index": int(phase_index),
         "lane_flip_variant": str(args.lane_flip_variant),
         "verifier_train_batches": int(args.verifier_train_batches),
+        "verifier_ensemble_size": int(args.verifier_ensemble_size),
+        "ensemble_probability_mode": str(args.ensemble_probability_mode),
         "max_val_batches": int(args.max_val_batches),
         "val_start_batch": int(args.val_start_batch),
         "eval_chunk_batches": int(args.eval_chunk_batches),

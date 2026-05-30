@@ -19382,3 +19382,98 @@ Decision:
 - Exact-val128, broader-val512, and larger training were skipped because the first fixed val4 gate failed with all task TP at `0`.
 - Do not repeat this as teacher postprocess threshold/variant, distill weight, head LR, epoch-count, or train-batch scaling.
 - Reopen current-family vector-query work only with a materially different architecture/pretraining contract that first creates nonzero matched TP on fixed validation.
+
+## 345. Lane area-ROI ensemble-stability verifier: uncertainty helps exact slightly but not broader
+
+Context:
+
+- The learned lane area-ROI verifier has real recall headroom in raw dropped row-scan candidates, but the broad failure mode is still FP-control.
+- This branch tested ensemble stability as a materially different no-GT instance-quality signal: train multiple independently seeded verifier members and penalize candidates with high member disagreement.
+- This is not a dataset-copy, post-hoc GT replay, or threshold-only branch. It reuses the existing canonical dataset root and evaluates runtime-selected candidates.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_area_roi_verifier.py` adds:
+  - `--verifier-ensemble-size`;
+  - `--ensemble-probability-mode {mean,min,mean_minus_std}`;
+  - independently seeded member training using the same train examples;
+  - ensemble probability collapse in `_apply_verifier()`.
+- `test/test_lane_area_roi_verifier.py` adds a regression test that `min` ensemble mode requires member agreement and can suppress a candidate even when one member is overconfident.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Retained checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Probe settings:
+  - ensemble size: `3`;
+  - ensemble probability mode: `mean_minus_std`;
+  - candidate integration: append;
+  - validation epoch: `2`;
+  - batch size: `4`;
+  - device: `cuda:0`.
+
+Val4 smoke:
+
+| Metric | Baseline | Ensemble replay |
+| --- | ---: | ---: |
+| lane F1 | `0.5839` | `0.5915` |
+| lane TP/FP/FN | `40 / 11 / 46` | `42 / 14 / 44` |
+| stop-line F1 | `0.0000` | `0.0000` |
+| crosswalk F1 | `0.5455` | `0.5455` |
+| selected / oracle-positive | - | `5 / 2` |
+
+Exact val128:
+
+| Metric | Baseline | Ensemble replay |
+| --- | ---: | ---: |
+| lane F1 | `0.5888` | `0.5963` |
+| lane TP/FP/FN | `1202 / 491 / 1188` | `1240 / 529 / 1150` |
+| stop-line F1 | `0.5333` | `0.5333` |
+| crosswalk F1 | `0.5988` | `0.5988` |
+| selected / oracle-positive | - | `76 / 41` |
+
+Broader val512:
+
+| Metric | Baseline | Ensemble replay |
+| --- | ---: | ---: |
+| lane F1 | `0.5628` | `0.5706` |
+| lane TP/FP/FN | `4532 / 2097 / 4945` | `4690 / 2273 / 4787` |
+| stop-line F1 | `0.5050` | `0.5050` |
+| stop-line TP/FP/FN | `127 / 105 / 144` | `127 / 105 / 144` |
+| crosswalk F1 | `0.6187` | `0.6187` |
+| crosswalk TP/FP/FN | `232 / 123 / 163` | `232 / 123 / 163` |
+| selected / oracle-positive | - | `334 / 167` |
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_ensemble_stability_train64_smoke_val4_20260530/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_ensemble_stability_train384_exact_val128_20260530/summary.json`.
+- Broader summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_ensemble_stability_train384_broader_val512_20260530/summary.json`.
+
+Storage:
+
+- The probe wrote CSV/summary artifacts only and did not save an ensemble checkpoint.
+- Output sizes are about `40K`, `192K`, and `436K` for smoke/exact/broader respectively.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` weights were removed after the run.
+- No dataset copy was created.
+
+Verification:
+
+- `python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train/eval probe on val4, exact-val128, and broader-val512.
+
+Decision:
+
+- The uncertainty signal helped exact slightly over the previous plain area-ROI exact frontier (`0.5963` versus `0.5956`) but still did not reach lane `0.60`.
+- The broader result is negative as a standalone path: `0.5706` is below the previous area-ROI broader `0.5821`, and TP `+158` came with FP `+176`.
+- Stop-line was unchanged and still below target; crosswalk stayed retained at `0.6187`.
+- Close this as an ensemble-size / probability-mode / member-seed / train-batch scaling family. Reopen dropped-candidate lane rescue only with a materially stronger instance-quality/alignment signal or a model-side instance emitter that improves TP/FP/FN on the fixed gates.
