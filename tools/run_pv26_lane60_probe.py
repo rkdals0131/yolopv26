@@ -2693,6 +2693,15 @@ EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     },
 }
 
+EXPERIMENTS["cooccur_stop_cross_lane_frozen"] = {
+    **EXPERIMENTS["stopline_cross_priority_lane_frozen"],
+    "overrides": {
+        **EXPERIMENTS["stopline_cross_priority_lane_frozen"]["overrides"],
+        "task_positive_task": "cooccur:lane,stopline,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 
 EXPERIMENTS["stopline_det_negative_feeding"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],

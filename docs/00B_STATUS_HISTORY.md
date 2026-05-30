@@ -19555,3 +19555,75 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because the first fixed smoke gate fails with a large recall collapse.
 - Close this as retained-lane verifier threshold / max-suppression cap / train-batch count / hidden-dim / line-ROI-context-side-contrast MLP tuning.
 - Reopen retained-lane FP suppression only with a materially different TP-preserving instance-quality signal, not with the same suppress-only verifier surface.
+
+## 347. Co-occurrence lane-family feeding still needs a new geometry signal
+
+Context:
+
+- The user explicitly requested real training/evaluation over the existing large dataset root without copying data.
+- A previous co-occurrence hard-positive sampler was already negative, but the lane-regression failure left one retention variant worth checking: keep the co-occurring positive records, freeze the lane side, and train only stop-line/crosswalk heads.
+- This tests whether co-occurring lane/stop-line/crosswalk records can improve stop-line exposure without paying the lane-collapse cost of heads-only cooccur training.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Added experiment preset `cooccur_stop_cross_lane_frozen` in `tools/run_pv26_lane60_probe.py`.
+- The preset inherits the projection-competition runtime contract and `crosswalk_polygon_mode=hull`, uses `task_positive_task="cooccur:lane,stopline,crosswalk"`, and changes freeze policy to `lane_family_stop_cross_heads_only`.
+- A same-turn cooccur heads-only rerun was also performed before noticing the existing closed ledger; it is retained as a negative confirmation, not a reopened path.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Retained seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke:
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - skipped steps `0`.
+- Train-step source counts confirmed co-occurrence exposure:
+  - `lane_source_samples=4`;
+  - `stop_line_source_samples=4`;
+  - `crosswalk_source_samples=4`;
+  - `det_source_samples=0`.
+
+Fixed val4 result:
+
+| Metric | Retained reference | Cooccur heads-only rerun | Cooccur stop/cross lane-frozen |
+| --- | ---: | ---: | ---: |
+| lane F1 | `0.5839` | `0.5152` | `0.5547` |
+| lane TP/FP/FN | `40 / 11 / 46` | `34 / 12 / 52` | `38 / 13 / 48` |
+| stop-line F1 | `0.0000` | `0.0000` | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` | `0 / 3 / 2` | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` | `0.5455` | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` | `3 / 1 / 4` | `3 / 1 / 4` |
+
+Artifacts:
+
+- Cooccur heads-only rerun metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_cooccur_lane_stop_cross_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_203227/analysis_exports/fixed_val4_flip_comp_epoch1_best/metrics.csv`.
+- Cooccur stop/cross lane-frozen metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_cooccur_stop_cross_lane_frozen_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_204015/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard outputs, and root `yolo26s.pt` were removed after metric export.
+- Retained run sizes are about `808K` and `796K`.
+- No dataset copy was created.
+
+Verification:
+
+- `python -m py_compile tools/run_pv26_lane60_probe.py`.
+- Real CUDA training for both `cooccur_lane_stop_cross_sampler` and `cooccur_stop_cross_lane_frozen`.
+- Fixed val4 replay with `tools/probe_pv26_lane_flip_tta.py`, `flip_centerline_avg_lane_cross_comp050`, projection-competition stop-line, and hull crosswalk.
+
+Decision:
+
+- Lane-frozen retention reduces the lane damage compared with heads-only cooccur, but it still loses `2` lane TP and adds `2` lane FP versus the retained fixed reference.
+- More importantly, stop-line remains exactly `0 / 3 / 2`; the changed data exposure creates no stop-line TP at the first fixed gate.
+- Exact-val128, broader-val512, and larger training are skipped.
+- Close cooccur stop/cross lane-frozen as a freeze-policy / cooccur-fraction / train-batch / head-LR / epoch-count tuning family. Reopen co-occurrence only with a new candidate/geometry or TP-preserving instance signal that first moves fixed smoke TP/FP/FN.
