@@ -19730,3 +19730,101 @@ Decision:
 - The one donor that had enough prior scale to justify exact evaluation still stayed below projection-comp exact on stop-line.
 - Exact-val128 and broader-val512 are skipped for the same-turn train64/train256 checkpoints because fixed val4 stop-line recovered `0` TP.
 - Close fixed-alpha checkpoint interpolation/model-soup as an alpha/scope/donor/training-scale tuning family. Reopen only with a new stop-line candidate-coverage/geometry signal or a model-side emit contract that first improves fixed TP/FP/FN.
+
+## 349. Lane area-ROI cross-task conflict features are exact-negative
+
+Context:
+
+- The area-ROI dropped-candidate verifier has repeatedly shown real lane recall headroom, but the broader failure mode is FP-control.
+- A plausible missing no-GT signal was cross-task conflict: some rejected lane candidates may lie on stop-line or crosswalk dense support and should be down-ranked even if they look line-like in lane features.
+- This branch tests that hypothesis by adding stop-line/crosswalk dense-map summaries to the existing learned verifier surface, then training/evaluating on the real canonical dataset root.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Code touched:
+  - `tools/probe_pv26_lane_area_roi_verifier.py`;
+  - `test/test_lane_area_roi_verifier.py`.
+- Added opt-in CLI:
+  - `--cross-task-conflict-features`.
+- Added fixed no-GT feature block:
+  - `stop_line_mask_logits`;
+  - `stop_line_center_logits`;
+  - `stop_line_selector_map_logits`;
+  - `stop_line_segment_seed_logits`;
+  - `crosswalk_mask_logits`;
+  - `crosswalk_boundary_logits`;
+  - `crosswalk_center_logits`.
+- Each map contributes six probability summary stats sampled along the dropped lane candidate, raising input dim to `400`.
+- Also fixed train-only verifier-save plumbing by letting `--max-val-batches 0` still build the validation loader internally; this allowed a train512 save/load exact replay without keeping the long train+val process alive.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Retained checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime/eval contract:
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - projection-competition stop-line runtime;
+  - `crosswalk_polygon_mode=hull`.
+- Runs:
+  - train64 / val4 smoke;
+  - train256 / exact-val128;
+  - train512 save-only plus load-only exact-val128 replay.
+- A direct train1024 and direct train512 exact run were attempted but killed during long validation; no summaries were produced, so empty intermediate dirs were pruned. The split save/load train512 run completed.
+
+Results:
+
+| Run | Lane F1 baseline -> repaired | Lane TP/FP/FN baseline -> repaired | Selected / oracle-positive | Stop-line | Crosswalk |
+| --- | ---: | --- | ---: | ---: | ---: |
+| train64 val4 | `0.5839 -> 0.5915` | `40 / 11 / 46 -> 42 / 14 / 44` | `5 / 2` | unchanged `0.0000` | unchanged `0.5455` |
+| train256 exact-val128 | `0.5888 -> 0.5943` | `1202 / 491 / 1188 -> 1251 / 569 / 1139` | `127 / 54` | unchanged `0.5333` | unchanged `0.5988` |
+| train512 exact-val128 | `0.5888 -> 0.5944` | `1202 / 491 / 1188 -> 1240 / 542 / 1150` | `89 / 42` | unchanged `0.5333` | unchanged `0.5988` |
+
+Reference comparison:
+
+- Previous plain train384 area-ROI exact frontier:
+  - `0.5956`, TP/FP/FN `1249 / 555 / 1141`.
+- Previous ensemble-stability area-ROI exact frontier:
+  - `0.5963`, TP/FP/FN `1240 / 529 / 1150`.
+- Cross-task conflict train512 is below both:
+  - F1 `0.5944`;
+  - same TP as ensemble (`1240`) but `+13` FP.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_cross_task_conflict_train64_smoke_val4_20260530/summary.json`.
+- Train256 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_cross_task_conflict_train256_exact_val128_20260530/summary.json`.
+- Train512 train-only summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_cross_task_conflict_train512_model_20260530/summary.json`.
+- Train512 load-only exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_cross_task_conflict_train512_exact_val128_loaded_20260530/summary.json`.
+
+Storage:
+
+- No dataset copy was created.
+- Temporary empty failed run dirs were removed.
+- The temporary saved verifier `.pt` and root `yolo26s.pt` were pruned after the load-only replay.
+- Retained artifacts are CSV/summary-only:
+  - smoke about `36K`;
+  - train256 exact about `160K`;
+  - train512 train-only about `148K`;
+  - train512 exact about `88K`.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- Real CUDA train64 val4, train256 exact-val128, and train512 save/load exact-val128.
+
+Decision:
+
+- Cross-task dense-map evidence is a weak exact-positive signal, but it does not solve FP-control.
+- Larger train exposure did not improve the retained area-ROI exact frontier: train512 exact TP gain `+38` came with FP `+51` and F1 stayed below `0.60`.
+- Broader-val512 is skipped because exact did not beat the area-ROI frontier and remains below target.
+- Close this as cross-task conflict feature / stop-cross dense-map feature / saved-verifier replay / larger train-batch tuning on the same dropped-candidate area-ROI verifier surface. Reopen dropped-candidate rescue only with a materially different instance-quality or model-side instance-emission signal that first improves TP/FP/FN.

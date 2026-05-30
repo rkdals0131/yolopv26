@@ -14,6 +14,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _candidate_label,
     _empty_task_count_payload,
     _finalize_task_counts,
+    _lane_cross_task_conflict_features,
     _lane_raw_image_line_features,
     _lane_side_contrast_features,
     _matched_lane_prediction_indices,
@@ -276,6 +277,29 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertGreater(float(features[0]), 0.9)
         self.assertLess(float(features[20]), 0.2)
         self.assertGreater(float(features[23]), 0.7)
+
+    def test_lane_cross_task_conflict_features_sample_dense_task_maps(self) -> None:
+        sampled = np.stack(
+            [np.full(20, 16.0, dtype=np.float32), np.linspace(4.0, 28.0, 20, dtype=np.float32)],
+            axis=1,
+        )
+        high_logit = torch.full((1, 32, 32), -10.0, dtype=torch.float32)
+        high_logit[:, :, 16] = 10.0
+        low_logit = torch.full((1, 16, 16), -10.0, dtype=torch.float32)
+
+        features = _lane_cross_task_conflict_features(
+            sampled,
+            predictions={
+                "stop_line_mask_logits": high_logit,
+                "crosswalk_mask_logits": low_logit,
+            },
+            map_hw=(32, 32),
+        )
+
+        self.assertEqual(features.shape, (42,))
+        self.assertTrue(np.isfinite(features).all())
+        self.assertGreater(float(features[0]), 0.99)
+        self.assertLess(float(features[24]), 0.01)
 
     def test_task_count_accumulator_sums_chunked_metrics(self) -> None:
         counts = _empty_task_count_payload()

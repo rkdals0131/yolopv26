@@ -124,6 +124,15 @@ def parse_args() -> argparse.Namespace:
             "as a distinct signal from dense lane logits."
         ),
     )
+    parser.add_argument(
+        "--cross-task-conflict-features",
+        action="store_true",
+        help=(
+            "Append no-GT stop-line/crosswalk dense-map evidence sampled along "
+            "each lane candidate. This tests whether rejected lane candidates "
+            "are actually explained by another lane-family task."
+        ),
+    )
     parser.add_argument("--verifier-epochs", type=int, default=40)
     parser.add_argument("--verifier-ensemble-size", type=int, default=1)
     parser.add_argument(
@@ -491,6 +500,53 @@ def _lane_raw_image_line_features(
     return _finite_feature_array(features)
 
 
+CROSS_TASK_CONFLICT_MAP_KEYS = (
+    "stop_line_mask_logits",
+    "stop_line_center_logits",
+    "stop_line_selector_map_logits",
+    "stop_line_segment_seed_logits",
+    "crosswalk_mask_logits",
+    "crosswalk_boundary_logits",
+    "crosswalk_center_logits",
+)
+
+
+def _probability_channel_from_prediction(value: Any) -> np.ndarray | None:
+    if not isinstance(value, torch.Tensor):
+        return None
+    tensor = value.detach().float().cpu()
+    if tensor.ndim == 3:
+        tensor = tensor[0]
+    elif tensor.ndim != 2:
+        return None
+    return torch.sigmoid(tensor).numpy().astype(np.float32)
+
+
+def _lane_cross_task_conflict_features(
+    sampled_map_points: np.ndarray,
+    *,
+    predictions: dict[str, Any],
+    map_hw: tuple[int, int],
+) -> np.ndarray:
+    """No-GT evidence that a lane candidate overlaps another task's dense maps."""
+
+    sampled = np.asarray(sampled_map_points, dtype=np.float32).reshape(-1, 2)
+    features: list[float] = []
+    source_h, source_w = int(map_hw[0]), int(map_hw[1])
+    for key in CROSS_TASK_CONFLICT_MAP_KEYS:
+        dense_map = _probability_channel_from_prediction(predictions.get(key))
+        if dense_map is None or sampled.shape[0] == 0:
+            features.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            continue
+        target_h, target_w = int(dense_map.shape[0]), int(dense_map.shape[1])
+        points = sampled.copy()
+        points[:, 0] = points[:, 0] * max(float(target_w - 1), 1.0) / max(float(source_w - 1), 1.0)
+        points[:, 1] = points[:, 1] * max(float(target_h - 1), 1.0) / max(float(source_h - 1), 1.0)
+        values = _values_at_points(dense_map, points).astype(np.float32).reshape(-1)
+        features.extend(_summary_stats(values))
+    return _finite_feature_array(features)
+
+
 def _baseline_matched_gt_indices(
     baseline_lanes: list[dict[str, Any]],
     gt_lanes: list[dict[str, Any]],
@@ -685,6 +741,17 @@ def _collect_examples(
                                     ),
                                 ]
                             ).astype(np.float32)
+                        if bool(args.cross_task_conflict_features):
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _lane_cross_task_conflict_features(
+                                        sampled_map_points,
+                                        predictions=sample_prediction_tensors,
+                                        map_hw=map_hw,
+                                    ),
+                                ]
+                            ).astype(np.float32)
                         examples.append(
                             {
                                 "features": features.astype(np.float32),
@@ -763,6 +830,17 @@ def _collect_examples(
                                     sampled_map_points,
                                     map_hw=map_hw,
                                     image=sample_image,
+                                ),
+                            ]
+                        ).astype(np.float32)
+                    if bool(args.cross_task_conflict_features):
+                        features = np.concatenate(
+                            [
+                                features,
+                                _lane_cross_task_conflict_features(
+                                    sampled_map_points,
+                                    predictions=sample_prediction_tensors,
+                                    map_hw=map_hw,
                                 ),
                             ]
                         ).astype(np.float32)
@@ -1217,7 +1295,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
     scenario_args = argparse.Namespace(**vars(args))
-    scenario_args.max_val_batches = int(args.val_start_batch) + int(args.max_val_batches)
+    scenario_args.max_val_batches = max(1, int(args.val_start_batch) + int(args.max_val_batches))
     scenario, scenario_path, options, phase, train_config = _build_scenario(scenario_args)
     phase_index = int(tuple(options["selected_phase_indices"])[0])
     train_cli._configure_torch_multiprocessing()
@@ -1291,6 +1369,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "alignment_context_features": bool(args.alignment_context_features),
         "side_contrast_features": bool(args.side_contrast_features),
         "raw_image_line_features": bool(args.raw_image_line_features),
+        "cross_task_conflict_features": bool(args.cross_task_conflict_features),
         "train_summary": train_summary,
         "val_candidate_count": int(eval_payload["val_candidate_count"]),
         "selected_candidate_count": int(eval_payload["selected_candidate_count"]),
