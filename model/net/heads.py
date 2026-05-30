@@ -34,6 +34,7 @@ CURRENT_FAMILY_ANCHOR_SIGMOID_NAME = "current_family_anchor_sigmoid"
 CURRENT_FAMILY_ANCHOR_DENOISE_SIGMOID_NAME = "current_family_anchor_denoise_sigmoid"
 CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME = "current_family_anchor_query_seed_denoise_sigmoid"
 CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME = "current_family_dense_seed_sigmoid"
+CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME = "current_family_dense_seed_denoise_sigmoid"
 
 
 def _normalize_roadmark_architecture(value: str) -> str:
@@ -70,13 +71,20 @@ def _normalize_roadmark_architecture(value: str) -> str:
         CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME,
     }:
         return CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME
+    if architecture in {
+        "current_dense_seed_denoise",
+        "current_family_dense_seed_denoise",
+        CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME,
+    }:
+        return CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME
     raise ValueError(
         "roadmark_architecture must be one of: "
         f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, "
         f"v3_stopline_isolated, {LANE_ONLY_ROW_CLASSIFIER_NAME}, {STOPLINE_ONLY_MASK_FIRST_NAME}, "
         f"{CURRENT_FAMILY_NAME}, {CURRENT_FAMILY_SIGMOID_NAME}, {CURRENT_FAMILY_ANCHOR_SIGMOID_NAME}, "
         f"{CURRENT_FAMILY_ANCHOR_DENOISE_SIGMOID_NAME}, "
-        f"{CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME}, {CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME}"
+        f"{CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME}, {CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME}, "
+        f"{CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME}"
     )
 
 
@@ -151,6 +159,7 @@ class PV26Heads(nn.Module):
             CURRENT_FAMILY_ANCHOR_DENOISE_SIGMOID_NAME,
             CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME,
             CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME,
+            CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME,
         }:
             roadmark_head_cls = CurrentFamilyRoadMarkHeads
         else:
@@ -167,6 +176,7 @@ class PV26Heads(nn.Module):
                     CURRENT_FAMILY_ANCHOR_DENOISE_SIGMOID_NAME,
                     CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME,
                     CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME,
+                    CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME,
                 }
                 else "raw"
             )
@@ -184,10 +194,12 @@ class PV26Heads(nn.Module):
                 in {
                     CURRENT_FAMILY_ANCHOR_DENOISE_SIGMOID_NAME,
                     CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME,
+                    CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME,
                 },
                 anchor_query_seed_enabled=self.roadmark_architecture
                 == CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME,
-                dense_query_seed_enabled=self.roadmark_architecture == CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME,
+                dense_query_seed_enabled=self.roadmark_architecture
+                in {CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME, CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME},
             )
         elif roadmark_head_cls is PV26LaneOnlyHeads:
             self.roadmark_heads = roadmark_head_cls(
@@ -269,6 +281,7 @@ class PV26Heads(nn.Module):
             CURRENT_FAMILY_ANCHOR_DENOISE_SIGMOID_NAME,
             CURRENT_FAMILY_ANCHOR_QUERY_SEED_DENOISE_SIGMOID_NAME,
             CURRENT_FAMILY_DENSE_SEED_SIGMOID_NAME,
+            CURRENT_FAMILY_DENSE_SEED_DENOISE_SIGMOID_NAME,
         }
         roadmark_features = features[1:] if self.roadmark_architecture in current_family_architectures else features
         roadmark_outputs = self.roadmark_heads(roadmark_features, encoded=encoded)
