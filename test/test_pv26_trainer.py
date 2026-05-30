@@ -1568,6 +1568,36 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
         self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
 
+    def test_lane_family_full_trunk_keeps_non_lane_heads_frozen(self) -> None:
+        from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
+
+        adapter = _DummyAdapter()
+        heads = _DummyRoadmarkHeads()
+
+        summary = configure_pv26_train_stage(
+            adapter,
+            heads,
+            "stage_4_lane_family_finetune",
+            freeze_policy="lane_family_full_trunk",
+        )
+        optimizer = build_pv26_optimizer(adapter, heads, trunk_lr=5.0e-7, head_lr=1.0e-4)
+        group_names = {str(group.get("group_name")) for group in optimizer.param_groups}
+
+        self.assertEqual(summary["freeze_policy"], "lane_family_full_trunk")
+        self.assertEqual(summary["head_training_policy"], "lane_family_only")
+        self.assertEqual(
+            summary["trainable_trunk_params"],
+            sum(parameter.numel() for parameter in adapter.trunk.parameters()),
+        )
+        self.assertGreater(summary["trainable_lane_family_head_params"], 0)
+        self.assertEqual(group_names, {"trunk", "heads"})
+        self.assertTrue(all(parameter.requires_grad for parameter in adapter.trunk.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.det_heads.parameters()))
+        self.assertFalse(any(parameter.requires_grad for parameter in heads.tl_attr_heads.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.lane_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.stop_line_head.parameters()))
+        self.assertTrue(any(parameter.requires_grad for parameter in heads.crosswalk_head.parameters()))
+
     def test_lane_family_stop_cross_heads_only_freezes_lane_head(self) -> None:
         from model.engine.trainer import build_pv26_optimizer, configure_pv26_train_stage
 

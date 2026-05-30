@@ -2094,6 +2094,37 @@ EXPERIMENTS["stopline_retention_distill_upper_trunk"] = {
     },
 }
 
+EXPERIMENTS["stopline_retention_distill_full_trunk"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_full_trunk",
+    "trunk_lr": 5.0e-7,
+    "head_lr": 1.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 1.50,
+        "stop_line": 2.50,
+        "crosswalk": 1.75,
+    },
+    "train_defaults_overrides": {
+        "distill_enabled": True,
+        "distill_teacher_checkpoint": "__seed_checkpoint__",
+        "distill_loss_weights": {
+            "lane": 0.35,
+            "stop_line": 0.0,
+            "crosswalk": 0.25,
+        },
+        "distill_normalize_mode": "ema",
+        "distill_ema_decay": 0.95,
+        "distill_ema_warmup_steps": 4,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:stopline,lane,crosswalk",
+        "task_positive_fraction": 1.0,
+    },
+}
+
 EXPERIMENTS["task_routed_distill_student"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_heads_only",

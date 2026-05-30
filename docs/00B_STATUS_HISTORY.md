@@ -16935,3 +16935,89 @@ Verification:
 - Fixed exact-val128 and broader-val512 were skipped because the val128-style internal gate already had lane/stop/cross F1 all `0.0000`.
 - Do not repeat this as current-family head LR, object threshold, query count, epoch-count, train-batch scaling, or vector-loss fallback tuning.
 - Reopen vector-query architecture only with a materially different target normalization, warm-start, or decoder contract that first emits matched objects on fixed validation.
+
+## 317. 2026-05-30 Full-trunk retention-distill smoke: full shared-feature exposure still does not recover stop-line TP
+
+맥락:
+
+- The architecture-level review and user feedback both warned against treating the remaining gap as only a postprocess problem.
+- This branch reopened the training-exposure premise directly: stage 4 had mostly been heads-only, so the full shared trunk might have been too frozen for stop-line geometry/candidate recovery.
+- The branch changed one axis only. It did not copy the dataset, did not change lane/crosswalk runtime decode, and did not replace the retained projection-competition stop-line runtime contract.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/full-trunk-retention-distill`.
+- Freeze policy: `lane_family_full_trunk` in `model/engine/trainer.py`.
+  - Full trunk trainable through `adapter.unfreeze_trunk()`.
+  - Detector and traffic-light heads remain frozen.
+  - Lane, stop-line, and crosswalk heads remain trainable.
+  - Optimizer groups are `trunk` and `heads`.
+- Probe preset: `stopline_retention_distill_full_trunk` in `tools/run_pv26_lane60_probe.py`.
+  - `trunk_lr=5.0e-7`.
+  - `head_lr=1.0e-4`.
+  - Stop-line priority sampler remains `multi:stopline,lane,crosswalk`.
+  - Lane/crosswalk teacher distill is enabled from the seed checkpoint; stop-line distill weight stays `0.0`.
+- Test coverage: `test/test_pv26_trainer.py` verifies that the full trunk is trainable, detector/TL heads are frozen, lane-family heads are trainable, and optimizer groups are present.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_retention_distill_full_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_092447`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Existing dataset root reused in place: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal phase objective:
+  - Epoch 1: `0.6559073388`.
+  - Epoch 2: `0.6344014297`.
+- Internal phase objective is not success evidence; the fixed task metrics below are the gate.
+
+Internal val4-style training validation:
+
+| Epoch | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| ---: | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.5649` | `37 / 15 / 42` | `0.0000` | `0 / 1 / 2` | `0.8000` | `4 / 1 / 1` |
+| 2 | `0.5303` | `35 / 11 / 51` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5481` | `37 / 12 / 49` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5303` | `35 / 11 / 51` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- Full-trunk retention-distill recovered no stop-line TP.
+- It lost `3` lane TP and added `1` lane FP against the retained fixed reference.
+- Crosswalk matched the retained fixed val4 count but did not compensate for lane regression and stop-line flatness.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_retention_distill_full_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_092447/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_retention_distill_full_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_092447/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_retention_distill_full_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_092447/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `916K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/trainer.py tools/run_pv26_lane60_probe.py test/test_pv26_trainer.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_lane_family_full_trunk_keeps_non_lane_heads_frozen`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_retention_distill_full_trunk|stopline_retention_distill_upper_trunk"`.
+- CUDA full-trunk retention-distill smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+판단:
+
+- This is a real training/exposure experiment, not a postprocess sweep.
+- The full-trunk policy and preset are useful diagnostic plumbing, but this trained checkpoint is smoke-negative.
+- Exact-val128 and broader-val512 were skipped because fixed val4 lost lane TP/precision and recovered no stop-line TP.
+- Do not repeat this as `lane_family_full_trunk`, trunk LR, distill weight, head LR, loss weight, epoch-count, train-batch scaling, or the same stop-line-priority sampler sweep.
+- Reopen full-trunk exposure only with a materially different emit/candidate geometry or retention contract that first moves fixed smoke TP/FP/FN.

@@ -398,6 +398,12 @@ def configure_pv26_train_stage(
         for module in _require_lane_family_modules(heads, policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "lane_family_only"
+    elif policy == "lane_family_full_trunk":
+        adapter.unfreeze_trunk()
+        _set_module_requires_grad(heads, False)
+        for module in _require_lane_family_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "lane_family_only"
     elif policy in {"lane_family_heads_only", "lane_family_heads_static_trunk"}:
         adapter.freeze_trunk()
         _set_module_requires_grad(heads, False)
@@ -456,6 +462,7 @@ def configure_pv26_train_stage(
     if policy in {
         "lane_family_heads_only",
         "lane_family_heads_static_trunk",
+        "lane_family_full_trunk",
         "lane_family_plus_upper_trunk",
         "lane_family_stop_cross_heads_only",
         "lane_family_stop_cross_static_trunk",
