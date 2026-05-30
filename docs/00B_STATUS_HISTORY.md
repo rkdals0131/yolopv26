@@ -21730,3 +21730,118 @@ Decision:
 - Broader-val512 is skipped because exact failed.
 - Close this as output-stat utility-regression source routing, pairwise utility loss, router epoch/LR defaults, and train-batch scaling to `128` on the current primary/specialist/union/agreement/empty source-choice surface.
 - Reopen source routing only with a materially different candidate-generation/geometry or true no-GT source-quality signal that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 370. 2026-05-31 Stop-line temporal-neighbor candidates: train-split verifier is exact-negative
+
+Context:
+
+- The user explicitly asked to keep actually training/evaluating and to use the existing larger dataset root without copying it.
+- This experiment changed candidate source rather than re-ranking the same current-frame primary/specialist sources:
+  - neighboring-frame stop-line predictions become temporal candidates;
+  - current-frame dense stop-line maps provide no-GT quality features;
+  - a train-split MLP verifier selects temporal candidates at runtime.
+- It is not a checkpoint/model success claim. GT is used only for train labels, oracle diagnostics, and final metrics.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Added `tools/probe_pv26_stopline_temporal_candidates.py`.
+- Added `test/test_stopline_temporal_candidates.py`.
+- The probe:
+  - reuses the existing lane temporal neighbor sample-id logic for `-1,+1` frame lookup;
+  - decodes neighbor-frame stop-line predictions from the same checkpoint;
+  - samples current-frame stop-line mask/center/selector/proposal evidence along each temporal line;
+  - trains a small train-split MLP verifier using candidate oracle-positive labels;
+  - evaluates `baseline`, `temporal_mlp`, `baseline_plus_temporal_mlp`, `oracle_temporal`, and `baseline_plus_oracle_temporal`.
+- During smoke execution, the first version failed because train loader batches were encoded without raw metric payloads.
+  - The probe now forces `encode_train_batches_in_loader=False` and `encode_val_batches_in_loader=False`.
+- The second version was killed around train batch `40/64` because it reused the lane temporal predictor cache, which stored dense tensors/raw image batches for neighbor samples.
+  - The probe now uses a lightweight stop-line neighbor predictor that caches only postprocessed predictions.
+  - It also forces `num_workers=0`, `pin_memory=False`, and no persistent/prefetch worker state to avoid unnecessary memory pressure.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Primary checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - `--crosswalk-polygon-mode hull`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - temporal offsets `-1,+1`;
+  - temporal top-k `8`;
+  - max temporal candidates `16`;
+  - max emitted stop-lines `2`.
+- Train split:
+  - train record batches `64`;
+  - train samples `256`;
+  - train temporal candidates `204`;
+  - train oracle-positive candidates `59`;
+  - selected verifier threshold `0.29`.
+- Smoke val4:
+  - val samples `16`;
+  - val temporal candidates `6`;
+  - val temporal oracle-positive candidates `0`.
+  - This smoke was not decision-useful because temporal candidate coverage was absent on the tiny validation slice.
+- Exact-val128:
+  - val samples `512`;
+  - val temporal candidates `98`;
+  - val temporal oracle-positive candidates `19`.
+
+Exact-val128 result:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2340` | `11 / 23 / 49` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4823` | `34 / 47 / 26` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.3514` | `13 / 1 / 47` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5397` | `34 / 32 / 26` | `0.5988` |
+
+Diagnosis:
+
+- The learned temporal verifier recovers `+2` stop-line TP over primary when appended to baseline, but adds `+19` FP.
+- Even oracle temporal union is only `0.5397`, with `+2` TP and `+4` FP over baseline.
+- That is far below the `0.60` target and barely above primary exact by oracle, so the temporal neighbor candidate surface has weak exact headroom without ego-motion/alignment.
+- This is not worth broader-val512 because the deployable runtime verifier is below primary projection-comp on exact-val128.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_candidates_train64_smoke_val4_20260531/summary.json`.
+- Smoke variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_candidates_train64_smoke_val4_20260531/temporal_variants.csv`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_candidates_train64_exact_val128_20260531/summary.json`.
+- Exact variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_candidates_train64_exact_val128_20260531/temporal_variants.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `240K`;
+  - exact export about `392K`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` was pruned after the run.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/smoke-val4 temporal candidate verifier run on the existing canonical dataset root.
+- CUDA train64/exact-val128 temporal candidate verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The temporal-neighbor candidate verifier is implemented and trainable.
+- It does not beat the exact primary projection-comp stop-line gate:
+  - temporal MLP union F1 `0.4823`;
+  - primary projection-comp F1 `0.5333`.
+- Broader-val512 is skipped because exact failed.
+- Close this as image-space stop-line temporal-neighbor candidates, current-frame dense-map MLP verifier, offset `-1,+1`, top-k/cap defaults, threshold-grid, and same no-ego-motion neighbor replay.
+- Reopen temporal stop-line only with a materially different alignment/candidate-generation contract, such as ego-motion/BEV-aligned temporal aggregation that first improves fixed exact TP/FP/FN over primary projection-comp.
