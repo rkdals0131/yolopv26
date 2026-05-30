@@ -770,6 +770,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_segfirst_task_conflict_negative_weight=train_config.lane_segfirst_task_conflict_negative_weight,
         lane_segfirst_task_conflict_negative_margin=train_config.lane_segfirst_task_conflict_negative_margin,
         lane_conditional_row_aux_weight=train_config.lane_conditional_row_aux_weight,
+        lane_segfirst_row_link_aux_weight=train_config.lane_segfirst_row_link_aux_weight,
         lane_conditional_seed_aux_weight=train_config.lane_conditional_seed_aux_weight,
         lane_conditional_seed_target_mode=train_config.lane_conditional_seed_target_mode,
         lane_conditional_objectness_target_mode=train_config.lane_conditional_objectness_target_mode,

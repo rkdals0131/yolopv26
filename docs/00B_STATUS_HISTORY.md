@@ -20958,3 +20958,148 @@ Decision:
 - Broader-val512 and larger training are skipped because fixed exact-val128 stayed below projection-competition and primary exact references.
 - Close this as crosswalk-context fusion gate, detach/no-detach, head-LR, epoch-count, train-batch scaling, and same projection-comp runtime path.
 - Reopen cross-task context fusion only with a materially different stop-line emit/candidate geometry or verifier signal that first improves fixed exact TP/FP/FN over projection-comp.
+
+## 363. 2026-05-31 Lane row-link offset field: learned row assignment is trainable but smoke-negative
+
+Context:
+
+- GPT Pro's architecture review warned that lane may be limited by the current seg-first dense maps plus row-scan/tangent-link vectorizer, because the model does not emit lane instances directly.
+- The prior fixed lateral-duplicate runtime smoke showed that nearby missed-lane headroom is not solved by appending a shifted copy from dense support alone.
+- This branch tests a different lane assignment signal: learn a dense row-to-row x-delta field from GT lane geometry, then let the vectorizer follow that learned link field instead of relying only on local tangent.
+- This is not a threshold/TTA/sweep variant. It changes target encoding, lane head outputs, loss, freeze policy, and runtime vectorizer mode, then trains/evaluates real checkpoints.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `model/engine/lane_segfirst_vectorizer.py` now renders `row_link_delta` and `row_link_valid` targets and exposes `row_scan_row_link` / `row_link` track modes.
+- `model/data/roadmark_v2_targets.py` and `model/data/target_encoder.py` now emit:
+  - `lane_seg_row_link_delta`;
+  - `lane_seg_row_link_valid`.
+- `model/net/lane_head_segfirst.py` now emits `lane_seg_row_link_delta`.
+- `model/engine/loss.py` adds opt-in SmoothL1 supervision through `lane_segfirst_row_link_aux_weight`.
+- `model/engine/trainer.py` adds `lane_row_link_only`, freezing the rest of the lane-family stack while training the row-link module in static-trunk mode.
+- `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py` expose the `lane_row_link_offset_field` experiment preset.
+- `test/test_pv26_heads.py` verifies the new output shape.
+- `test/test_run_pv26_train.py` verifies config parsing for the row-link auxiliary loss.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - split counts were train `326709`, val `82641`, test `20000`;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- First attempt:
+  - run `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_024908`;
+  - failed before training with missing `lane_seg_row_link_delta` preallocation in `target_encoder.py`;
+  - fixed by adding the new dense target keys to `target_encoder.py`;
+  - failed run was removed.
+- CUDA smoke:
+  - run `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025148`;
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - freeze policy `lane_row_link_only`;
+  - lane row-link aux weight `1.0`;
+  - skipped steps `0`.
+- User-requested larger-range train:
+  - run `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025621`;
+  - `4` epochs;
+  - `512` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - freeze policy `lane_row_link_only`;
+  - lane row-link aux weight `1.0`;
+  - skipped steps `0`;
+  - best internal phase objective `0.6639639429` at epoch `3`.
+- Fixed evaluator replays used `tools/evaluate_pv26_lane60_checkpoint.py` with:
+  - `--validation-epoch 2`;
+  - matching `--train-batches`;
+  - `--batch-size 4`;
+  - `--device cuda:0`;
+  - source run `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512`;
+  - experiment preset `lane_row_link_offset_field`.
+
+Fixed val4 smoke result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.6176704840` |
+| lane F1 | `0.5000` |
+| lane TP/FP/FN | `35 / 19 / 51` |
+| stop-line F1 | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` |
+| support lane/stop/cross | `86 / 2 / 7` |
+
+Fixed val4 larger-range result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.6265500626` |
+| lane F1 | `0.5180` |
+| lane TP/FP/FN | `36 / 17 / 50` |
+| stop-line F1 | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` |
+| support lane/stop/cross | `86 / 2 / 7` |
+
+Gate comparison:
+
+- Retained fixed val4 lane reference:
+  - lane `40 / 11 / 46`, F1 `0.5839`;
+  - stop-line `0 / 3 / 2`, F1 `0.0000`;
+  - crosswalk `3 / 1 / 4`, F1 `0.5455`.
+- The `2x64` smoke lost `5` lane TP and added `8` lane FP versus the retained fixed reference.
+- The larger `4x512` audit recovered only one TP over the smoke, still lost `4` lane TP, and added `6` lane FP versus retained fixed reference.
+- Internal phase objective increased with larger training, but the task TP/FP/FN gate stayed negative.
+
+Artifacts:
+
+- Retained smoke run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025148`.
+- Smoke fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025148/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Smoke fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025148/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Retained larger run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025621`.
+- Larger fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025621/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Larger fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_link_offset_field_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_025621/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Failed run `..._024908` was removed.
+- Negative checkpoints and TensorBoard outputs were pruned after metric export.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run sizes after cleanup:
+  - smoke `6.6M`;
+  - larger scale audit `6.7M`.
+- The retained row-link runs have no `*.pt` files.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/lane_head_segfirst.py model/engine/lane_segfirst_vectorizer.py model/data/roadmark_v2_targets.py model/engine/loss.py model/engine/trainer.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/data/target_encoder.py model/data/roadmark_v2_targets.py model/engine/lane_segfirst_vectorizer.py model/engine/loss.py model/engine/trainer.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_produce_documented_output_shapes test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_roadmark_native_contract.RoadmarkNativeContractTest.test_target_encoder_emits_native_and_dense_roadmark_payloads`.
+- Real CUDA `2x64` train smoke on the existing canonical dataset root.
+- Real CUDA `4x512` larger-range train on the existing canonical dataset root.
+- Fixed val4 epoch-2 replays for both trained checkpoints.
+
+Decision:
+
+- The row-link offset-field implementation is valid and trainable.
+- It does not improve the fixed lane gate; it loses TP and adds FP relative to retained row-scan/tangent-link.
+- The larger `4x512` run is enough to reject simple train-batch/epoch scaling for this exact contract.
+- Exact-val128 and broader-val512 are skipped because the first fixed gate failed twice.
+- Close this as row-link aux weight, head-LR, freeze policy, track-mode threshold, epoch-count, and train-batch scaling on the same learned row-link offset contract.
+- Reopen learned lane assignment only with a materially different instance-emission or metric-quality contract that first improves fixed smoke TP/FP/FN over retained `40 / 11 / 46`.

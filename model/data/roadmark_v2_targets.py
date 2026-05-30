@@ -229,6 +229,8 @@ def build_lane_segfirst_targets(
         "lane_seg_support": maps["support"],
         "lane_seg_center_offset": maps["center_offset"],
         "lane_seg_center_offset_valid": maps["center_offset_valid"],
+        "lane_seg_row_link_delta": maps["row_link_delta"],
+        "lane_seg_row_link_valid": maps["row_link_valid"],
         "lane_seg_residual_risk_core": maps["residual_risk_core"],
         "lane_seg_residual_risk_ring_negative": maps["residual_risk_ring_negative"],
         "lane_seg_tangent_axis": maps["tangent_axis"],
