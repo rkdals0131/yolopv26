@@ -22545,3 +22545,96 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because the first fixed gate regresses lane and does not move stop-line.
 - Close this as det-source distill-only exposure, sampler ratio, distill weight, teacher checkpoint, head LR, epoch-count, train-batch scaling, and same static/head freeze-policy tuning.
 - Reopen full-root unlabeled exposure only with a materially different pseudo-label quality/selection, confidence mask, or emit/candidate geometry signal that first protects fixed smoke lane TP/FP/FN and moves stop-line TP.
+
+## 377. 2026-05-31 Lane-family det-source distill sample-selection still misses fixed gate
+
+Context:
+
+- The previous det-source distill-only exposure was a real full-root train, but it applied teacher distill on all lane-family training rows and regressed fixed val4 lane to `36 / 12 / 50`.
+- This run tested the allowed pseudo-label selection premise: keep full-root det-source-only rows, but apply dense teacher distill only to det-source-only rows, not to lane-family supervised rows.
+- This is not a sampler-ratio, distill-weight, head-LR, epoch-count, or postprocess threshold repeat.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Code changes:
+  - `model/engine/loss.py` adds `distill_sample_mode="det_source_only"` and batch-selects teacher distill rows using `det_source & !lane_source & !stop_line_source & !crosswalk_source`;
+  - `tools/pv26_train/config.py` parses and validates `distill_sample_mode`;
+  - `tools/pv26_train/cli.py` passes it into `PV26MultiTaskLoss`;
+  - `tools/run_pv26_lane60_probe.py` adds `lane_family_det_source_distill_unlabeled_only`;
+  - tests cover config parsing and verify supervised-row gradients are zero under det-source-only distill.
+- Preset:
+  - inherits `lane_family_det_source_distill_only`;
+  - adds `distill_sample_mode=det_source_only`;
+  - keeps static trunk, retained `merged_lane_head.pt` teacher, distill weights lane/stop/cross `0.15 / 0.25 / 0.15`, and projection-comp/hull retained runtime decode.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train/val/test `326709 / 82641 / 20000`;
+  - no dataset copy was created.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_unlabeled_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_082350`.
+- CUDA train:
+  - epochs `2`;
+  - train batches `64`;
+  - validation batches `4`;
+  - batch size `4`;
+  - device `cuda:0`;
+  - skipped batches `0`;
+  - best internal phase objective `0.6447944757` at epoch `1`.
+- Epoch source counts confirmed full-root exposure:
+  - epoch 1: `det_source_samples=64`, lane/stop/cross source samples `192 / 192 / 192`;
+  - epoch 2: `det_source_samples=64`, lane/stop/cross source samples `192 / 192 / 192`.
+
+Fixed val4 result:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| flip_centerline_avg_lane_cross_comp050 | `0.5672` | `38 / 10 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| baseline | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference:
+  - lane `0.5839`, TP/FP/FN `40 / 11 / 46`;
+  - stop-line `0.0000`, TP/FP/FN `0 / 3 / 2`;
+  - crosswalk `0.5455`, TP/FP/FN `3 / 1 / 4`.
+- Compared with unmasked det-source distill, sample-selection improves lane from `36 / 12 / 50` to `38 / 10 / 48`.
+- Compared with the retained fixed reference, it still loses `2` lane TP and recovers no stop-line TP.
+
+Artifacts:
+
+- Run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_unlabeled_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_082350/summary.json`.
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_unlabeled_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_082350/phase_4/history/epochs.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_unlabeled_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_082350/phase_4/history/train_steps.jsonl`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_unlabeled_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_082350/analysis_exports/fixed_val4_epoch1_best/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_unlabeled_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_082350/analysis_exports/fixed_val4_epoch1_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `836K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_distill_retention.PV26DistillRetentionTests test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_loss_runtime`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help`.
+- Real CUDA `2x64` train on the existing canonical root.
+- Fixed val4 `probe_pv26_lane_flip_tta.py` replay with `baseline` and `flip_centerline_avg_lane_cross_comp050`.
+
+Decision:
+
+- Det-source-only distill row selection is wired and trainable, but it is still fixed-gate negative.
+- Exact-val128, broader-val512, and larger training are skipped because the first fixed gate still loses lane TP versus retained and moves no stop-line TP.
+- Close this as `distill_sample_mode`, det-source sampler ratio, distill weight, teacher checkpoint, head LR, epoch-count, train-batch scaling, and same static/head freeze-policy tuning.
+- Reopen full-root unlabeled exposure only with stronger pseudo-label quality/confidence or a new emit/candidate geometry signal that first improves fixed TP/FP/FN.

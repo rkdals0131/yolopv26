@@ -58,6 +58,53 @@ class PV26DistillRetentionTests(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(predictions["lane_seg_centerline_logits"].grad)
 
+    def test_distill_sample_mode_det_source_only_masks_supervised_rows(self) -> None:
+        batch_size = 2
+        height, width = ROADMARK_DENSE_OUTPUT_HW
+        predictions = {
+            "lane_seg_centerline_logits": torch.zeros((batch_size, 1, height, width), requires_grad=True),
+            "lane_seg_support_logits": torch.zeros((batch_size, 1, height, width), requires_grad=True),
+            "lane_seg_center_offset": torch.zeros((batch_size, 2, height, width), requires_grad=True),
+            "lane_seg_tangent_axis": torch.zeros((batch_size, 2, height, width), requires_grad=True),
+            "lane_seg_color_logits": torch.zeros((batch_size, 4, height, width), requires_grad=True),
+            "lane_seg_type_logits": torch.zeros((batch_size, 3, height, width), requires_grad=True),
+            "lane_feature": torch.zeros((batch_size, 8, height, width), requires_grad=True),
+        }
+        teacher_cache = {
+            key: value.detach().clone() + 0.25
+            for key, value in predictions.items()
+        }
+        encoded = {
+            "teacher_cache": teacher_cache,
+            "_distill_phase": "train",
+            "mask": {
+                "det_source": torch.tensor([False, True]),
+                "lane_source": torch.tensor([True, False]),
+                "stop_line_source": torch.tensor([False, False]),
+                "crosswalk_source": torch.tensor([False, False]),
+            },
+        }
+
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_mode="roadmark_joint",
+            loss_weights={"det": 0.0, "tl_attr": 0.0, "lane": 0.0, "stop_line": 0.0, "crosswalk": 0.0},
+            distill_enabled=True,
+            distill_sample_mode="det_source_only",
+            distill_loss_weights={"lane": 1.0, "stop_line": 0.0, "crosswalk": 0.0},
+        )
+
+        loss, agreement = criterion._lane_distill_loss(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(float(loss.detach().cpu()), 0.0)
+        self.assertEqual(agreement["sample_count"], 1.0)
+        loss.backward()
+        grad = predictions["lane_seg_centerline_logits"].grad
+        self.assertIsNotNone(grad)
+        self.assertEqual(float(grad[0].abs().sum().detach().cpu()), 0.0)
+        self.assertGreater(float(grad[1].abs().sum().detach().cpu()), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

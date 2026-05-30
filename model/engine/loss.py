@@ -2814,6 +2814,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_task_conflict_negative_margin: float = 0.15,
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
+        distill_sample_mode: str = "all",
         distill_loss_weights: dict[str, float] | None = None,
         distill_normalize_mode: str = "none",
         distill_ema_decay: float = 0.95,
@@ -2948,6 +2949,9 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_task_conflict_negative_margin = float(stopline_task_conflict_negative_margin)
         self.distill_enabled = bool(distill_enabled)
         self.distill_teacher_mode = str(distill_teacher_mode)
+        self.distill_sample_mode = str(distill_sample_mode).strip().lower()
+        if self.distill_sample_mode not in {"all", "det_source_only"}:
+            raise ValueError(f"unsupported distill_sample_mode: {self.distill_sample_mode}")
         self.distill_normalize_mode = str(distill_normalize_mode)
         self.distill_ema_decay = float(distill_ema_decay)
         self.distill_ema_warmup_steps = int(distill_ema_warmup_steps)
@@ -3139,6 +3143,7 @@ class PV26MultiTaskLoss(nn.Module):
             "loss_weights": dict(self.loss_weights),
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
+            "distill_sample_mode": self.distill_sample_mode,
             "distill_normalize_mode": self.distill_normalize_mode,
             "distill_ema_decay": float(self.distill_ema_decay),
             "distill_ema_warmup_steps": int(self.distill_ema_warmup_steps),
@@ -3173,6 +3178,58 @@ class PV26MultiTaskLoss(nn.Module):
     def _teacher_cache(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         teacher_cache = encoded.get("teacher_cache")
         return teacher_cache if isinstance(teacher_cache, dict) else {}
+
+    def _distill_sample_indices(
+        self,
+        encoded: dict[str, Any],
+        *,
+        reference: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if self.distill_sample_mode == "all":
+            return None
+        batch_size = int(reference.shape[0]) if reference.ndim > 0 else 0
+        device = reference.device
+        if batch_size <= 0:
+            return torch.empty((0,), dtype=torch.long, device=device)
+        mask_payload = encoded.get("mask")
+        if not isinstance(mask_payload, dict):
+            return torch.empty((0,), dtype=torch.long, device=device)
+        required = ("det_source", "lane_source", "stop_line_source", "crosswalk_source")
+        masks: dict[str, torch.Tensor] = {}
+        for key in required:
+            value = mask_payload.get(key)
+            if not isinstance(value, torch.Tensor):
+                return torch.empty((0,), dtype=torch.long, device=device)
+            masks[key] = value.to(device=device, dtype=torch.bool).reshape(-1)
+            if int(masks[key].numel()) != batch_size:
+                raise ValueError(
+                    f"{key} mask shape {tuple(masks[key].shape)} is incompatible with distill batch size "
+                    f"{batch_size}"
+                )
+        det_only = (
+            masks["det_source"]
+            & (~masks["lane_source"])
+            & (~masks["stop_line_source"])
+            & (~masks["crosswalk_source"])
+        )
+        return torch.nonzero(det_only, as_tuple=False).flatten().to(dtype=torch.long)
+
+    @staticmethod
+    def _select_distill_batch(
+        payload: dict[str, torch.Tensor],
+        *,
+        keys: tuple[str, ...],
+        indices: torch.Tensor,
+        batch_size: int,
+    ) -> dict[str, torch.Tensor]:
+        selected: dict[str, torch.Tensor] = {}
+        for key in keys:
+            value = payload[key]
+            if isinstance(value, torch.Tensor) and value.ndim > 0 and int(value.shape[0]) == batch_size:
+                selected[key] = value.index_select(0, indices.to(device=value.device))
+            else:
+                selected[key] = value
+        return selected
 
     def _normalize_distill_loss(
         self,
@@ -3309,6 +3366,29 @@ class PV26MultiTaskLoss(nn.Module):
         if self.distill_enabled and all(key in teacher_cache for key in required) and all(
             key in predictions for key in required
         ):
+            reference = predictions["lane_row_logits"]
+            sample_indices = self._distill_sample_indices(encoded, reference=reference)
+            sample_count: float | None = None if sample_indices is None else float(sample_indices.numel())
+            if sample_indices is not None:
+                if int(sample_indices.numel()) == 0:
+                    return _zero_graph(reference), {
+                        "logit_kl": None,
+                        "feature_cosine": None,
+                        "sample_count": 0.0,
+                    }
+                batch_size = int(reference.shape[0])
+                predictions = self._select_distill_batch(
+                    predictions,
+                    keys=required,
+                    indices=sample_indices,
+                    batch_size=batch_size,
+                )
+                teacher_cache = self._select_distill_batch(
+                    teacher_cache,
+                    keys=required,
+                    indices=sample_indices,
+                    batch_size=batch_size,
+                )
             row_kl = _logit_kl_divergence(predictions["lane_row_logits"], teacher_cache["lane_row_logits"])
             exist_bce = _binary_logit_distill(predictions["lane_exist_logits"], teacher_cache["lane_exist_logits"])
             row_expectation = F.smooth_l1_loss(
@@ -3322,6 +3402,7 @@ class PV26MultiTaskLoss(nn.Module):
             return scaled_loss, {
                 "logit_kl": float(row_kl.detach().cpu()),
                 "feature_cosine": float(feature_cosine.detach().cpu()),
+                "sample_count": sample_count,
                 **scaling,
             }
         segfirst_required = (
@@ -3339,6 +3420,29 @@ class PV26MultiTaskLoss(nn.Module):
             or any(key not in predictions for key in segfirst_required)
         ):
             return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
+        reference = predictions["lane_seg_centerline_logits"]
+        sample_indices = self._distill_sample_indices(encoded, reference=reference)
+        sample_count = None if sample_indices is None else float(sample_indices.numel())
+        if sample_indices is not None:
+            if int(sample_indices.numel()) == 0:
+                return _zero_graph(reference), {
+                    "logit_kl": None,
+                    "feature_cosine": None,
+                    "sample_count": 0.0,
+                }
+            batch_size = int(reference.shape[0])
+            predictions = self._select_distill_batch(
+                predictions,
+                keys=segfirst_required,
+                indices=sample_indices,
+                batch_size=batch_size,
+            )
+            teacher_cache = self._select_distill_batch(
+                teacher_cache,
+                keys=segfirst_required,
+                indices=sample_indices,
+                batch_size=batch_size,
+            )
         center_bce = _binary_logit_distill(
             predictions["lane_seg_centerline_logits"],
             teacher_cache["lane_seg_centerline_logits"],
@@ -3389,6 +3493,7 @@ class PV26MultiTaskLoss(nn.Module):
         return scaled_loss, {
             "logit_kl": float((center_bce + support_bce + color_kl + type_kl).detach().cpu()),
             "feature_cosine": float(feature_cosine.detach().cpu()),
+            "sample_count": sample_count,
             **scaling,
         }
 
@@ -3412,6 +3517,29 @@ class PV26MultiTaskLoss(nn.Module):
             or any(key not in predictions for key in required)
         ):
             return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
+        reference = predictions["stop_line_mask_logits"]
+        sample_indices = self._distill_sample_indices(encoded, reference=reference)
+        sample_count = None if sample_indices is None else float(sample_indices.numel())
+        if sample_indices is not None:
+            if int(sample_indices.numel()) == 0:
+                return _zero_graph(reference), {
+                    "logit_kl": None,
+                    "feature_cosine": None,
+                    "sample_count": 0.0,
+                }
+            batch_size = int(reference.shape[0])
+            predictions = self._select_distill_batch(
+                predictions,
+                keys=required,
+                indices=sample_indices,
+                batch_size=batch_size,
+            )
+            teacher_cache = self._select_distill_batch(
+                teacher_cache,
+                keys=required,
+                indices=sample_indices,
+                batch_size=batch_size,
+            )
         mask_bce = _binary_logit_distill(predictions["stop_line_mask_logits"], teacher_cache["stop_line_mask_logits"])
         mask_dice = _soft_dice_distill(predictions["stop_line_mask_logits"], teacher_cache["stop_line_mask_logits"])
         center_bce = _binary_logit_distill(predictions["stop_line_center_logits"], teacher_cache["stop_line_center_logits"])
@@ -3432,6 +3560,7 @@ class PV26MultiTaskLoss(nn.Module):
         return scaled_loss, {
             "logit_kl": float((mask_bce + center_bce).detach().cpu()),
             "feature_cosine": float(feature_cosine.detach().cpu()),
+            "sample_count": sample_count,
             **scaling,
         }
 
@@ -3453,6 +3582,29 @@ class PV26MultiTaskLoss(nn.Module):
             or any(key not in predictions for key in required)
         ):
             return _zero_graph(_prediction_reference_tensor(predictions)), {"logit_kl": None, "feature_cosine": None}
+        reference = predictions["crosswalk_mask_logits"]
+        sample_indices = self._distill_sample_indices(encoded, reference=reference)
+        sample_count = None if sample_indices is None else float(sample_indices.numel())
+        if sample_indices is not None:
+            if int(sample_indices.numel()) == 0:
+                return _zero_graph(reference), {
+                    "logit_kl": None,
+                    "feature_cosine": None,
+                    "sample_count": 0.0,
+                }
+            batch_size = int(reference.shape[0])
+            predictions = self._select_distill_batch(
+                predictions,
+                keys=required,
+                indices=sample_indices,
+                batch_size=batch_size,
+            )
+            teacher_cache = self._select_distill_batch(
+                teacher_cache,
+                keys=required,
+                indices=sample_indices,
+                batch_size=batch_size,
+            )
         mask_bce = _binary_logit_distill(predictions["crosswalk_mask_logits"], teacher_cache["crosswalk_mask_logits"])
         mask_dice = _soft_dice_distill(predictions["crosswalk_mask_logits"], teacher_cache["crosswalk_mask_logits"])
         boundary_bce = _binary_logit_distill(
@@ -3469,6 +3621,7 @@ class PV26MultiTaskLoss(nn.Module):
         return scaled_loss, {
             "logit_kl": float((mask_bce + boundary_bce + center_bce).detach().cpu()),
             "feature_cosine": float(feature_cosine.detach().cpu()),
+            "sample_count": sample_count,
             **scaling,
         }
 

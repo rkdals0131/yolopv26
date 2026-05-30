@@ -2909,6 +2909,15 @@ EXPERIMENTS["lane_family_det_source_distill_only"] = {
 }
 
 
+EXPERIMENTS["lane_family_det_source_distill_unlabeled_only"] = {
+    **EXPERIMENTS["lane_family_det_source_distill_only"],
+    "train_defaults_overrides": {
+        **EXPERIMENTS["lane_family_det_source_distill_only"]["train_defaults_overrides"],
+        "distill_sample_mode": "det_source_only",
+    },
+}
+
+
 EXPERIMENTS["lane_row_link_offset_field"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_row_link_only",
