@@ -333,6 +333,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         anchor_query_seed_enabled: bool = False,
         dense_query_seed_enabled: bool = False,
         dense_seed_geometry_prior_enabled: bool = False,
+        iterative_refinement_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
@@ -343,6 +344,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         self.anchor_query_seed_enabled = bool(anchor_query_seed_enabled)
         self.dense_query_seed_enabled = bool(dense_query_seed_enabled)
         self.dense_seed_geometry_prior_enabled = bool(dense_seed_geometry_prior_enabled)
+        self.iterative_refinement_enabled = bool(iterative_refinement_enabled)
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -411,7 +413,13 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         if self.anchor_query_seed_enabled:
             if not self.anchor_template_enabled or self.coordinate_mode != "sigmoid_network":
                 raise ValueError("current-family anchor query seeds require sigmoid_network anchor templates")
-        geometry_query_input_enabled = self.denoise_enabled or self.anchor_query_seed_enabled
+        if self.iterative_refinement_enabled and self.coordinate_mode != "sigmoid_network":
+            raise ValueError("current-family iterative refinement requires sigmoid_network coordinate mode")
+        geometry_query_input_enabled = (
+            self.denoise_enabled
+            or self.anchor_query_seed_enabled
+            or self.iterative_refinement_enabled
+        )
         if geometry_query_input_enabled:
             if self.coordinate_mode != "sigmoid_network":
                 raise ValueError("current-family geometry query inputs require sigmoid_network coordinate mode")
@@ -474,6 +482,9 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "dense_query_seed": "topk_seed_heatmap" if self.dense_query_seed_enabled else "disabled",
             "dense_seed_geometry_prior": "seed_centered_shape_template"
             if self.dense_seed_geometry_prior_enabled
+            else "disabled",
+            "iterative_refinement": "self_conditioned_geometry_query"
+            if self.iterative_refinement_enabled
             else "disabled",
         }
 
@@ -689,6 +700,39 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         valid = torch.ones((int(batch_size), int(query_count)), device=device, dtype=torch.bool)
         return query_input(self._point_geometry_query_features(anchors, valid, noise_std=0.0))
 
+    def _refine_lane_rows(
+        self,
+        lane_memory: torch.Tensor,
+        rows: torch.Tensor,
+        seed_template: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if not self.iterative_refinement_enabled or not isinstance(self.lane_geometry_query_input, nn.Module):
+            return rows
+        conditioned = self._scale_lane_rows(self._add_template(rows, self.lane_anchor_template))
+        valid = torch.ones(conditioned.shape[:2], device=conditioned.device, dtype=torch.bool)
+        query = self.lane_geometry_query_input(
+            self._lane_geometry_query_features(conditioned.detach(), valid, noise_std=0.0)
+        )
+        refined = self.lane_head.forward_with_query(lane_memory, query)
+        return self._add_dynamic_template(refined, seed_template)
+
+    def _refine_point_rows(
+        self,
+        memory_feature: torch.Tensor,
+        rows: torch.Tensor,
+        seed_template: torch.Tensor | None,
+        anchor_template: torch.Tensor | None,
+        query_input: nn.Module | None,
+        head: _SpatialQueryDecoderHead,
+    ) -> torch.Tensor:
+        if not self.iterative_refinement_enabled or not isinstance(query_input, nn.Module):
+            return rows
+        conditioned = self._scale_point_rows(self._add_template(rows, anchor_template))
+        valid = torch.ones(conditioned.shape[:2], device=conditioned.device, dtype=torch.bool)
+        query = query_input(self._point_geometry_query_features(conditioned.detach(), valid, noise_std=0.0))
+        refined = head(memory_feature, query_seed=query)
+        return self._add_dynamic_template(refined, seed_template)
+
     def forward(
         self,
         features: list[torch.Tensor] | tuple[torch.Tensor, ...],
@@ -761,15 +805,38 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
                 device=fused_feature.device,
                 dtype=fused_feature.dtype,
             )
-        lane_rows = self._add_dynamic_template(lane_rows, self._lane_dense_seed_template(lane_seed_coords))
+        lane_seed_template = self._lane_dense_seed_template(lane_seed_coords)
+        stop_seed_template = self._stop_line_dense_seed_template(stop_seed_coords)
+        cross_seed_template = self._crosswalk_dense_seed_template(cross_seed_coords)
+        lane_rows = self._add_dynamic_template(lane_rows, lane_seed_template)
         stop_rows = self._add_dynamic_template(
             self.stop_line_head(stop_line_memory, query_seed=stop_line_query_seed),
-            self._stop_line_dense_seed_template(stop_seed_coords),
+            stop_seed_template,
         )
         cross_rows = self._add_dynamic_template(
             self.crosswalk_head(crosswalk_memory, query_seed=crosswalk_query_seed),
-            self._crosswalk_dense_seed_template(cross_seed_coords),
+            cross_seed_template,
         )
+        if self.iterative_refinement_enabled:
+            if lane_memory is None:
+                lane_memory = self.lane_head.memory(fused_feature)
+            lane_rows = self._refine_lane_rows(lane_memory, lane_rows, lane_seed_template)
+            stop_rows = self._refine_point_rows(
+                stop_line_memory,
+                stop_rows,
+                stop_seed_template,
+                self.stop_line_anchor_template,
+                self.stop_line_geometry_query_input,
+                self.stop_line_head,
+            )
+            cross_rows = self._refine_point_rows(
+                crosswalk_memory,
+                cross_rows,
+                cross_seed_template,
+                self.crosswalk_anchor_template,
+                self.crosswalk_geometry_query_input,
+                self.crosswalk_head,
+            )
         outputs = {
             "lane": self._scale_lane_rows(self._add_template(lane_rows, self.lane_anchor_template)),
             "stop_line": self._scale_point_rows(

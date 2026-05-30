@@ -20737,3 +20737,99 @@ Decision:
 - Broader-val512 is skipped because exact failed.
 - Close endpoint-fusion source routing as endpoint alignment/averaging, endpoint-pair max distance, source-mode order, MLP hidden-size/epoch/LR, class-weight, and train-batch scaling.
 - Reopen source routing only with a materially different candidate-generation or true runtime verifier signal that first beats primary projection-comp exact TP/FP/FN.
+
+## 361. 2026-05-31 Current-family self-conditioned geometry-refine vector decoder: second-pass query refinement still creates no matched objects
+
+Context:
+
+- Section 350 closed the dense-seed geometry prior because seed-centered lane/stop-line/crosswalk templates still produced zero matched TP at fixed val4.
+- The remaining architecture premise was that one-shot seed-centered templates might be too shallow: the model could need to see its first decoded geometry again as a query condition and refine it.
+- This branch is not a threshold, top-K, objectness, head-LR, or training-scale sweep. It changes the vector-query decoder contract by adding a second self-conditioned geometry refinement pass.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Added `roadmark_architecture="current_family_dense_seed_geometry_refine_denoise_sigmoid"`.
+- `model/net/roadmark_current_family.py` adds opt-in iterative refinement:
+  - run the existing dense-seed geometry prior first;
+  - detach the first lane/stop-line/crosswalk geometry prediction;
+  - normalize that geometry through the existing geometry-query MLP path;
+  - run the same lane/stop-line/crosswalk vector decoders a second time.
+- The first implementation exposed a real autograd in-place version error during backward. The retained implementation fixes it by feeding detached self-conditioned geometry into the refinement query path.
+- `model/net/heads.py`, `tools/pv26_train/config.py`, and `tools/run_pv26_lane60_probe.py` expose the architecture and experiment preset.
+- `test/test_pv26_heads.py` verifies finite bounded outputs, dense seed logits, `describe()` contract, and a backward pass through the new refinement architecture.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - split counts were train `326709`, val `82641`, test `20000`;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke:
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - stage 4 heads-only lane-family fine-tune;
+  - skipped steps `0`.
+- Training validation best phase objective was `0.2334973569` at epoch 1, with task-best lane/stop-line/crosswalk F1 all `0.0000`.
+- Fixed evaluator replay used `tools/evaluate_pv26_lane60_checkpoint.py` with:
+  - `--max-val-batches 4`;
+  - `--validation-epoch 2`;
+  - `--train-batches 64`;
+  - `--batch-size 4`;
+  - `--device cuda`;
+  - the same source run and experiment preset.
+
+Fixed val4 result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.2316818087` |
+| lane F1 | `0.0000` |
+| lane TP/FP/FN | `0 / 52 / 86` |
+| stop-line F1 | `0.0000` |
+| stop-line TP/FP/FN | `0 / 0 / 2` |
+| crosswalk F1 | `0.0000` |
+| crosswalk TP/FP/FN | `0 / 0 / 7` |
+| support lane/stop/cross | `86 / 2 / 7` |
+
+Artifacts:
+
+- Failed first run removed after the autograd fix:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_refine_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_020756`.
+- Retained run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_refine_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_021034`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_refine_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_021034/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_refine_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_021034/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Training history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_refine_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_021034/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned after fixed metric export.
+- Temporary root `yolo26s.pt` and `yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `8.4M`.
+- The retained run has no `*.pt` files.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/roadmark_current_family.py model/net/heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_dense_seed_geometry_refine_current_family_vector_decoder`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_preserves_defaults_without_user_yaml`.
+- Real CUDA `2x64` train smoke on the existing canonical dataset root.
+- Fixed val4 epoch-2 replay through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+Decision:
+
+- The self-conditioned refinement implementation is valid and trainable, but the architecture still recovered zero matched lane, stop-line, or crosswalk TP at the first fixed gate.
+- Unlike the previous seed-geometry prior, this refinement pass suppresses crosswalk FP, but lane becomes FP-heavy again and no task emits a match.
+- Exact-val128, broader-val512, and larger training are skipped because fixed val4 has all task TP at `0`.
+- Close this as refinement pass count, detach/no-detach choice, geometry-query MLP depth, object threshold, head-LR, epoch-count, and train-batch scaling on the same vector-query contract.
+- Reopen current-family vector-query work only with a materially different pretraining, set-query, or quality contract that first emits matched TP on fixed validation.
