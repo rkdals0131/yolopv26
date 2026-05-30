@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from itertools import islice
 import json
 from pathlib import Path
 import site
@@ -20,7 +21,6 @@ if repo_root not in sys.path:
 
 from model.engine import raw_batch_for_metrics
 from model.engine._trainer_epochs import _merge_raw_batches
-from model.engine.batch import augment_lane_family_metrics
 from model.engine.lane_segfirst_vectorizer import LaneSegFirstVectorizerConfig, vectorize_lane_segfirst_maps
 from model.engine.metrics import _extract_gt_samples, _mean_point_distance, summarize_pv26_metrics
 from model.engine.postprocess import _filter_lane_predictions, postprocess_pv26_batch
@@ -33,7 +33,6 @@ from tools.probe_pv26_lane_feature_roi_repair import (
     _forward_predictions,
     _json_ready,
     _lane_features,
-    _metric_payload,
     _nearest_gt,
     _task_delta,
 )
@@ -75,6 +74,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verifier-epochs", type=int, default=40)
     parser.add_argument("--verifier-batch-size", type=int, default=256)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
+    parser.add_argument("--save-verifier-model", default="")
+    parser.add_argument("--load-verifier-model", default="")
+    parser.add_argument("--val-start-batch", type=int, default=0)
+    parser.add_argument(
+        "--eval-chunk-batches",
+        type=int,
+        default=128,
+        help="Validation batches to keep in memory while replaying verifier metrics.",
+    )
     parser.add_argument("--hidden-dim", type=int, default=192)
     parser.add_argument("--seed", type=int, default=26)
     parser.add_argument("--backbone-weights", default="")
@@ -214,6 +222,8 @@ def _collect_examples(
     args: argparse.Namespace,
     max_batches: int,
     training: bool,
+    batch_index_offset: int = 0,
+    progress_total: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     from model.engine.lane_segfirst_vectorizer import lane_segfirst_prediction_maps
 
@@ -224,11 +234,14 @@ def _collect_examples(
     global_sample_index = 0
     split = "train" if training else "val"
     with torch.no_grad():
-        for batch_index, batch in enumerate(loader, start=1):
-            if batch_index > int(max_batches):
-                break
-            if batch_index == 1 or batch_index % 20 == 0:
-                print(f"[lane_area_roi_verifier] collect {split} batch {batch_index}/{max_batches}", flush=True)
+        for batch_index, batch in enumerate(islice(loader, max(0, int(max_batches))), start=1):
+            display_batch_index = int(batch_index_offset) + int(batch_index)
+            display_total = int(progress_total) if progress_total is not None else int(max_batches)
+            if batch_index == 1 or display_batch_index % 20 == 0:
+                print(
+                    f"[lane_area_roi_verifier] collect {split} batch {display_batch_index}/{display_total}",
+                    flush=True,
+                )
             raw_batch = raw_batch_for_metrics(batch)
             if raw_batch is None:
                 raise ValueError("lane area ROI verifier requires raw batches for metrics")
@@ -296,7 +309,7 @@ def _collect_examples(
                     rows.append(
                         {
                             "split": split,
-                            "batch_index": int(batch_index),
+                            "batch_index": int(display_batch_index),
                             "sample_index": int(global_sample_index),
                             "sample_batch_index": int(sample_batch_index),
                             "candidate_index": int(sample_candidate_index),
@@ -310,6 +323,51 @@ def _collect_examples(
                     sample_candidate_index += 1
                 global_sample_index += 1
     return examples, predictions_all, raw_batches, rows
+
+
+def _offset_sample_rows(rows: list[dict[str, Any]], *, sample_index_offset: int) -> list[dict[str, Any]]:
+    if int(sample_index_offset) == 0:
+        return rows
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        updated = dict(row)
+        if "sample_index" in updated:
+            updated["sample_index"] = int(updated["sample_index"]) + int(sample_index_offset)
+        output.append(updated)
+    return output
+
+
+def _empty_task_count_payload() -> dict[str, dict[str, float]]:
+    return {task: {"tp": 0.0, "fp": 0.0, "fn": 0.0} for task in ("lane", "stop_line", "crosswalk")}
+
+
+def _accumulate_task_counts(target: dict[str, dict[str, float]], metrics: dict[str, Any]) -> None:
+    for task in ("lane", "stop_line", "crosswalk"):
+        payload = metrics.get(task, {}) if isinstance(metrics.get(task), dict) else {}
+        target[task]["tp"] += float(payload.get("tp", 0.0))
+        target[task]["fp"] += float(payload.get("fp", 0.0))
+        target[task]["fn"] += float(payload.get("fn", 0.0))
+
+
+def _counts_to_metric_payload(counts: dict[str, float]) -> dict[str, float]:
+    tp = float(counts.get("tp", 0.0))
+    fp = float(counts.get("fp", 0.0))
+    fn = float(counts.get("fn", 0.0))
+    precision = tp / (tp + fp) if (tp + fp) > 0.0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0.0 else 0.0
+    f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0.0 else 0.0
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+    }
+
+
+def _finalize_task_counts(counts: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    return {task: _counts_to_metric_payload(counts[task]) for task in ("lane", "stop_line", "crosswalk")}
 
 
 def _train_verifier(
@@ -363,6 +421,55 @@ def _train_verifier(
         "history": history,
     }
     return model, summary
+
+
+def _save_verifier_model(
+    path: str,
+    *,
+    model: LaneAreaRoiVerifierNet,
+    train_summary: dict[str, Any],
+    args: argparse.Namespace,
+) -> None:
+    if not path:
+        return
+    output_path = Path(path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "input_dim": int(train_summary["input_dim"]),
+            "hidden_dim": int(args.hidden_dim),
+            "train_summary": train_summary,
+        },
+        output_path,
+    )
+
+
+def _load_verifier_model(path: str, *, args: argparse.Namespace, device: str) -> tuple[LaneAreaRoiVerifierNet, dict[str, Any]]:
+    input_path = Path(path).expanduser().resolve()
+    if not input_path.is_file():
+        raise FileNotFoundError(input_path)
+    payload = torch.load(input_path, map_location=device)
+    train_summary = dict(payload.get("train_summary", {}))
+    input_dim = int(payload.get("input_dim", train_summary.get("input_dim", 0)))
+    if input_dim <= 0:
+        raise ValueError(f"verifier checkpoint is missing input_dim: {input_path}")
+    hidden_dim = int(payload.get("hidden_dim", int(args.hidden_dim)))
+    model = LaneAreaRoiVerifierNet(input_dim, hidden_dim=hidden_dim).to(device)
+    state_dict = dict(payload["state_dict"])
+    feature_mean = state_dict.pop("feature_mean", None)
+    feature_std = state_dict.pop("feature_std", None)
+    model.load_state_dict(state_dict)
+    if feature_mean is None or feature_std is None:
+        raise ValueError(f"verifier checkpoint is missing normalization buffers: {input_path}")
+    model.register_buffer("feature_mean", feature_mean.to(device), persistent=True)
+    model.register_buffer("feature_std", feature_std.to(device), persistent=True)
+    model.eval()
+    if not train_summary:
+        train_summary = {"input_dim": input_dim, "loaded_from": str(input_path)}
+    else:
+        train_summary["loaded_from"] = str(input_path)
+    return model, train_summary
 
 
 def _apply_verifier(
@@ -429,10 +536,89 @@ def _apply_verifier(
     return repaired, rows
 
 
+def _evaluate_verifier_streaming(
+    *,
+    val_loader: Any,
+    evaluator: Any,
+    postprocess_config: Any,
+    model: LaneAreaRoiVerifierNet,
+    args: argparse.Namespace,
+    device: str,
+) -> dict[str, Any]:
+    max_val_batches = max(0, int(args.max_val_batches))
+    val_start_batch = max(0, int(args.val_start_batch))
+    chunk_batches = max(1, int(args.eval_chunk_batches))
+    baseline_counts = _empty_task_count_payload()
+    repaired_counts = _empty_task_count_payload()
+    val_rows: list[dict[str, Any]] = []
+    verifier_rows: list[dict[str, Any]] = []
+    val_candidate_count = 0
+    selected_candidate_count = 0
+    selected_oracle_positive_count = 0
+    evaluated_batches = 0
+    sample_offset = 0
+    val_iter = iter(val_loader)
+    for _ in range(val_start_batch):
+        try:
+            next(val_iter)
+        except StopIteration:
+            break
+
+    while evaluated_batches < max_val_batches:
+        chunk_size = min(chunk_batches, max_val_batches - evaluated_batches)
+        chunk_examples, baseline_predictions, raw_batches, chunk_val_rows = _collect_examples(
+            loader=val_iter,
+            evaluator=evaluator,
+            postprocess_config=postprocess_config,
+            args=args,
+            max_batches=chunk_size,
+            training=False,
+            batch_index_offset=val_start_batch + evaluated_batches,
+            progress_total=val_start_batch + max_val_batches,
+        )
+        if not raw_batches:
+            break
+        repaired_predictions, chunk_verifier_rows = _apply_verifier(
+            examples=chunk_examples,
+            predictions_all=baseline_predictions,
+            model=model,
+            args=args,
+            device=device,
+        )
+        merged_raw = _merge_raw_batches(raw_batches)
+        _accumulate_task_counts(baseline_counts, summarize_pv26_metrics(baseline_predictions, merged_raw))
+        _accumulate_task_counts(repaired_counts, summarize_pv26_metrics(repaired_predictions, merged_raw))
+
+        selected_rows = [row for row in chunk_verifier_rows if int(row.get("selected", 0))]
+        val_candidate_count += int(len(chunk_examples))
+        selected_candidate_count += int(len(selected_rows))
+        selected_oracle_positive_count += int(sum(int(row.get("positive", 0)) for row in selected_rows))
+        val_rows.extend(_offset_sample_rows(chunk_val_rows, sample_index_offset=sample_offset))
+        verifier_rows.extend(_offset_sample_rows(chunk_verifier_rows, sample_index_offset=sample_offset))
+        batch_count = int(len(raw_batches))
+        evaluated_batches += batch_count
+        sample_offset += int(len(baseline_predictions))
+        if batch_count < chunk_size:
+            break
+
+    return {
+        "baseline_tasks": _finalize_task_counts(baseline_counts),
+        "repaired_tasks": _finalize_task_counts(repaired_counts),
+        "val_rows": val_rows,
+        "verifier_rows": verifier_rows,
+        "val_candidate_count": int(val_candidate_count),
+        "selected_candidate_count": int(selected_candidate_count),
+        "selected_oracle_positive_count": int(selected_oracle_positive_count),
+        "evaluated_val_batches": int(evaluated_batches),
+    }
+
+
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
-    scenario, scenario_path, options, phase, train_config = _build_scenario(args)
+    scenario_args = argparse.Namespace(**vars(args))
+    scenario_args.max_val_batches = int(args.val_start_batch) + int(args.max_val_batches)
+    scenario, scenario_path, options, phase, train_config = _build_scenario(scenario_args)
     phase_index = int(tuple(options["selected_phase_indices"])[0])
     train_cli._configure_torch_multiprocessing()
     dataset = train_cli.PV26CanonicalDataset(
@@ -454,37 +640,31 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     evaluator.heads.eval()
     device = _resolve_device(str(args.device), str(train_config.device))
 
-    train_examples, _, _, train_rows = _collect_examples(
-        loader=train_loader,
+    if str(args.load_verifier_model):
+        model, train_summary = _load_verifier_model(str(args.load_verifier_model), args=args, device=device)
+        train_rows: list[dict[str, Any]] = []
+    else:
+        train_examples, _, _, train_rows = _collect_examples(
+            loader=train_loader,
+            evaluator=evaluator,
+            postprocess_config=postprocess_config,
+            args=args,
+            max_batches=int(args.verifier_train_batches),
+            training=True,
+        )
+        model, train_summary = _train_verifier(train_examples, args=args, device=device)
+        _save_verifier_model(str(args.save_verifier_model), model=model, train_summary=train_summary, args=args)
+    eval_payload = _evaluate_verifier_streaming(
+        val_loader=val_loader,
         evaluator=evaluator,
         postprocess_config=postprocess_config,
-        args=args,
-        max_batches=int(args.verifier_train_batches),
-        training=True,
-    )
-    model, train_summary = _train_verifier(train_examples, args=args, device=device)
-    val_examples, baseline_predictions, raw_batches, val_rows = _collect_examples(
-        loader=val_loader,
-        evaluator=evaluator,
-        postprocess_config=postprocess_config,
-        args=args,
-        max_batches=int(args.max_val_batches),
-        training=False,
-    )
-    repaired_predictions, verifier_rows = _apply_verifier(
-        examples=val_examples,
-        predictions_all=baseline_predictions,
         model=model,
         args=args,
         device=device,
     )
-    merged_raw = _merge_raw_batches(raw_batches)
-    baseline_metrics = augment_lane_family_metrics(summarize_pv26_metrics(baseline_predictions, merged_raw))
-    repaired_metrics = augment_lane_family_metrics(summarize_pv26_metrics(repaired_predictions, merged_raw))
-    baseline_tasks = {task: _metric_payload(baseline_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
-    repaired_tasks = {task: _metric_payload(repaired_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
+    baseline_tasks = eval_payload["baseline_tasks"]
+    repaired_tasks = eval_payload["repaired_tasks"]
     deltas = {task: _task_delta(repaired_tasks[task], baseline_tasks[task]) for task in baseline_tasks}
-    selected = [row for row in verifier_rows if int(row.get("selected", 0))]
     summary = {
         "checkpoint": str(Path(args.checkpoint).expanduser().resolve()),
         "source_run": str(Path(args.source_run).expanduser().resolve()),
@@ -494,15 +674,18 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "lane_flip_variant": str(args.lane_flip_variant),
         "verifier_train_batches": int(args.verifier_train_batches),
         "max_val_batches": int(args.max_val_batches),
+        "val_start_batch": int(args.val_start_batch),
+        "eval_chunk_batches": int(args.eval_chunk_batches),
+        "evaluated_val_batches": int(eval_payload["evaluated_val_batches"]),
         "validation_epoch": int(args.validation_epoch),
         "positive_distance_px": float(args.positive_distance_px),
         "negative_distance_px": float(args.negative_distance_px),
         "quality_threshold": float(args.quality_threshold),
         "max_appends_per_sample": int(args.max_appends_per_sample),
         "train_summary": train_summary,
-        "val_candidate_count": int(len(val_examples)),
-        "selected_candidate_count": int(len(selected)),
-        "selected_oracle_positive_count": int(sum(int(row.get("positive", 0)) for row in selected)),
+        "val_candidate_count": int(eval_payload["val_candidate_count"]),
+        "selected_candidate_count": int(eval_payload["selected_candidate_count"]),
+        "selected_oracle_positive_count": int(eval_payload["selected_oracle_positive_count"]),
         "baseline": baseline_tasks,
         "repaired": repaired_tasks,
         "delta": deltas,
@@ -515,8 +698,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "summary": summary,
         "train_rows": train_rows,
-        "val_rows": val_rows,
-        "verifier_rows": verifier_rows,
+        "val_rows": eval_payload["val_rows"],
+        "verifier_rows": eval_payload["verifier_rows"],
     }
 
 

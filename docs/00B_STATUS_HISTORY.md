@@ -17963,3 +17963,106 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because smoke failed the TP/FP/FN gate.
 - Do not repeat this as Canny threshold, Hough threshold, minLineLength, maxLineGap, Hough top-k, MLP epoch/LR, dense-score weight, or train-threshold tuning.
 - Reopen raw-image candidate generation only with a materially different candidate-quality/geometry contract that first improves fixed smoke TP/FP/FN.
+
+## 329. Lane area-ROI verifier stress audit: larger training and chunked broader eval still FP-limited
+
+맥락:
+
+- The earlier lane area-ROI verifier was not just a threshold replay; it trained a no-GT MLP over raw row-scan/tangent lane candidates dropped by the default bbox/area filters.
+- The first train256 exact-val128 result found real lane recall but added too many FP.
+- The user explicitly asked for real training, evaluation after training, larger-range evaluation, and smart storage management without copying datasets.
+- This follow-up therefore tested larger train exposure and broader validation while keeping the changed axis fixed: same dropped-candidate line-ROI verifier, no new postprocess family.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-roi-broader-stress`.
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added chunked validation replay:
+  - `--eval-chunk-batches`;
+  - accumulated lane / stop_line / crosswalk TP/FP/FN across chunks;
+  - avoided retaining every validation raw batch and prediction in memory.
+- Added verifier save/load:
+  - `--save-verifier-model`;
+  - `--load-verifier-model`;
+  - `--val-start-batch`;
+  - enables eval-only validation chunks under runtime limits.
+- Added `test/test_lane_area_roi_verifier.py` coverage for chunked metric count accumulation.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Larger training:
+  - `384` verifier train batches;
+  - `80` verifier epochs;
+  - batch size `4`;
+  - validation epoch `2`;
+  - device `cuda:0`.
+- Single-process train512 attempts were pruned after repeated no-summary exits around the long-run limit.
+- A saved train384 verifier model was created and reused for eval-only chunks.
+- Broader stress eval used four val128 chunks:
+  - chunk0: `val_start_batch=0`;
+  - chunk1: `val_start_batch=128`;
+  - chunk2: `val_start_batch=256`;
+  - chunk3: `val_start_batch=384`;
+  - aggregate totals sum TP/FP/FN over the four chunk summaries.
+
+Exact-val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `0.5988` |
+| train384 verifier append | `0.5956` | `1249 / 555 / 1141` | `0.5333` | `0.5988` |
+
+Chunked val512 aggregate:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 | Crosswalk TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| baseline | `0.5749` | `4634 / 1983 / 4871` | `0.5252` | `125 / 100 / 126` | `0.5969` | `228 / 136 / 172` |
+| train384 verifier append | `0.5821` | `4816 / 2227 / 4689` | `0.5252` | `125 / 100 / 126` | `0.5969` | `228 / 136 / 172` |
+
+Candidate stats:
+
+- train384 examples: `2289`;
+- train384 positives / negatives: `370 / 1919`;
+- exact-val128 selected candidates: `111`;
+- exact-val128 selected oracle-positive: `48`;
+- chunked val512 selected candidates: `426`;
+- chunked val512 selected oracle-positive: `192`.
+
+Storage:
+
+- Train384 exact artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_exact_val128_20260530`.
+- Saved train384 verifier artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_model_val4_20260530`.
+- Chunked val512 aggregate artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_broader_val512_chunked_aggregate_20260530`.
+- Four retained eval chunks:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_broader_val512_chunk0_20260530`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_broader_val512_chunk1_20260530`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_broader_val512_chunk2_20260530`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train384_broader_val512_chunk3_20260530`.
+- Retained sizes after cleanup:
+  - train384 exact: about `216K`;
+  - saved-model val4: about `580K`, including `432K` verifier weights;
+  - four val512 chunks: about `472K`;
+  - aggregate: about `8K`.
+- Failed empty or partial train512/nonchunked-val512 directories were removed.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_area_roi_verifier`.
+- CUDA train384 exact-val128 verifier training/replay.
+- CUDA train384 saved-model smoke val4 replay.
+- CUDA eval-only val128 chunks for start batches `0`, `128`, `256`, and `384`.
+
+판단:
+
+- Larger train exposure and broader chunked evaluation do not rescue this verifier family.
+- The signal is real: val512 recovered `+182` lane TP.
+- The FP-control remains too weak: val512 also added `+244` lane FP, so lane F1 rose only `0.5749 -> 0.5821`.
+- Stop-line and crosswalk do not move because this is lane-only append replay.
+- Crosswalk in this chunked stress aggregate is also below `0.60`, so this is not a production lane-family success.
+- Do not repeat this as threshold, cap, hidden-size, train-batch, duplicate-distance, bbox-area, or candidate-distance tuning.
+- Reopen dropped-candidate rescue only with a materially new instance-quality/alignment signal that improves TP/FP/FN ratio before broader integration.

@@ -3,8 +3,11 @@ from __future__ import annotations
 import unittest
 
 from tools.probe_pv26_lane_area_roi_verifier import (
+    _accumulate_task_counts,
     _baseline_matched_gt_indices,
     _candidate_label,
+    _empty_task_count_payload,
+    _finalize_task_counts,
     _near_any_lane,
 )
 
@@ -45,6 +48,33 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         candidate = {"points_xy": [[12.0, 0.0], [12.0, 100.0]], "class_name": "yellow", "lane_type": "dashed"}
         self.assertTrue(_near_any_lane(candidate, [_lane(10.0)], threshold_px=5.0))
         self.assertFalse(_near_any_lane(candidate, [_lane(30.0)], threshold_px=5.0))
+
+    def test_task_count_accumulator_sums_chunked_metrics(self) -> None:
+        counts = _empty_task_count_payload()
+        _accumulate_task_counts(
+            counts,
+            {
+                "lane": {"tp": 2, "fp": 1, "fn": 3},
+                "stop_line": {"tp": 1, "fp": 0, "fn": 1},
+                "crosswalk": {"tp": 0, "fp": 2, "fn": 4},
+            },
+        )
+        _accumulate_task_counts(
+            counts,
+            {
+                "lane": {"tp": 3, "fp": 2, "fn": 1},
+                "stop_line": {"tp": 2, "fp": 1, "fn": 0},
+                "crosswalk": {"tp": 4, "fp": 0, "fn": 0},
+            },
+        )
+
+        summary = _finalize_task_counts(counts)
+        self.assertEqual(summary["lane"]["tp"], 5.0)
+        self.assertEqual(summary["lane"]["fp"], 3.0)
+        self.assertEqual(summary["lane"]["fn"], 4.0)
+        self.assertAlmostEqual(summary["lane"]["f1"], 10.0 / 17.0)
+        self.assertEqual(summary["stop_line"]["tp"], 3.0)
+        self.assertAlmostEqual(summary["crosswalk"]["recall"], 0.5)
 
 
 if __name__ == "__main__":
