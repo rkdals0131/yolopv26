@@ -2490,6 +2490,18 @@ EXPERIMENTS["lane_row_native_primary"] = {
     },
 }
 
+EXPERIMENTS["lane_row_native_quality_dynamic"] = {
+    **EXPERIMENTS["lane_row_native_primary"],
+    "train_defaults_overrides": {
+        "lane_head_mode": "row_native",
+        "lane_assignment_mode": "dynamic_match",
+        "lane_objectness_target_mode": "quality_ramp",
+        "lane_objectness_quality_min": 0.15,
+        "lane_objectness_quality_tau": 16.0,
+        "lane_dynamic_coverage_weight": 0.0,
+    },
+}
+
 EXPERIMENTS["current_family_vector_decoder"] = {
     "freeze_policy": "lane_family_heads_only",
     "trunk_lr": 0.0,

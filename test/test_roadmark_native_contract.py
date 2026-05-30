@@ -90,10 +90,16 @@ class RoadmarkNativeContractTest(unittest.TestCase):
             loss_weights={"det": 1.0, "tl_attr": 1.0, "lane": 0.0, "stop_line": 0.0, "crosswalk": 0.0},
             task_mode="roadmark_joint",
             lane_dynamic_coverage_weight=0.1,
+            lane_objectness_target_mode="quality_ramp",
+            lane_objectness_quality_min=0.2,
+            lane_objectness_quality_tau=12.0,
         )
         config = criterion.export_config()
         self.assertEqual(config["task_mode"], "roadmark_joint")
         self.assertEqual(config["lane_dynamic_coverage_weight"], 0.1)
+        self.assertEqual(config["lane_objectness_target_mode"], "quality_ramp")
+        self.assertAlmostEqual(config["lane_objectness_quality_min"], 0.2)
+        self.assertAlmostEqual(config["lane_objectness_quality_tau"], 12.0)
         self.assertEqual(config["loss_weights"]["det"], 1.0)
         self.assertEqual(config["loss_weights"]["tl_attr"], 1.0)
 

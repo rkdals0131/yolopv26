@@ -18619,3 +18619,85 @@ Decision:
 - Broader-val512 was skipped because the exact gate is below baseline and far below the projection-competition reference.
 - Do not repeat this as support threshold, morphology kernel, PCA percentile, verifier epoch/LR, top-k, or score-threshold tuning.
 - Reopen dense/raw stop-line candidate generation only with a segment-emission contract that first increases exact candidate-bearing GT coverage and improves TP/FP/FN over the retained exact baseline.
+
+## 336. Lane row-native quality/dynamic assignment: objectness-quality does not revive row-native emit
+
+Context:
+
+- Section 288 closed plain row-native primary training: the existing row-classification lane head could be selected and trained, but larger `2x512` smoke still emitted `0` matched lanes.
+- The remaining plausible reopening condition was not more training, but a materially different row-native assignment/objectness target.
+- The existing `PV26MultiTaskLoss` already contained row-native objectness-quality controls, but the phase config/CLI did not expose or pass them into the loss.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-row-native-quality-dynamic`.
+- Added train-default config fields:
+  - `lane_objectness_target_mode`;
+  - `lane_objectness_quality_min`;
+  - `lane_objectness_quality_tau`.
+- Passed those fields from `tools/pv26_train/cli.py` into `PV26MultiTaskLoss`.
+- Added validation for allowed objectness target modes and numeric ranges.
+- Added lane60 probe experiment `lane_row_native_quality_dynamic`:
+  - `lane_head_mode="row_native"`;
+  - `lane_assignment_mode="dynamic_match"`;
+  - `lane_objectness_target_mode="quality_ramp"`;
+  - `lane_objectness_quality_min=0.15`;
+  - `lane_objectness_quality_tau=16.0`;
+  - `lane_dynamic_coverage_weight=0.0`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_quality_dynamic_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_173120`.
+- Training setup:
+  - real CUDA heads-only phase 4;
+  - epochs: `2`;
+  - train batches per epoch: `64`;
+  - validation batches per epoch: `4`;
+  - batch size: `4`;
+  - skipped steps: `0`.
+
+Fixed val4 epoch-2 best:
+
+| Task | F1 | TP/FP/FN | Support |
+| --- | ---: | --- | ---: |
+| lane | `0.0000` | `0 / 0 / 86` | `86` |
+| stop_line | `0.0000` | `0 / 3 / 2` | `2` |
+| crosswalk | `0.5000` | `3 / 2 / 4` | `7` |
+
+Artifacts:
+
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_quality_dynamic_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_173120/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_quality_dynamic_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_173120/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Training history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_row_native_quality_dynamic_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_173120/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned after fixed val4 failed.
+- Retained run size is about `8.2M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_run_pv26_train.py test/test_roadmark_native_contract.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_run_pv26_train test_roadmark_native_contract`.
+- `python tools/run_pv26_lane60_probe.py --help | rg -n "lane_row_native_quality_dynamic|experiment"`.
+- CUDA `2x64` train smoke on `lane_row_native_quality_dynamic`.
+- Fixed val4 evaluation with `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+Decision:
+
+- This was a training/loss contract change, not a postprocess threshold replay.
+- It still recovered zero lane TP at the first fixed gate.
+- Exact-val128, broader-val512, and larger training were skipped because the smoke gate hit the strongest rejection condition: lane `0 / 0 / 86`.
+- Do not repeat this as `quality_ramp` min/tau tuning, `dynamic_match` cost tuning, head-LR, epoch-count, or train-batch scaling.
+- Reopen row-native work only if the row-native emit contract itself changes enough to produce nonzero matched lane TP on fixed smoke before exact/broader expansion.

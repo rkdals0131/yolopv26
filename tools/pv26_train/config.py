@@ -144,6 +144,9 @@ class TrainDefaultsConfig:
     allow_python_nms_fallback: bool = False
     task_mode: str = "roadmark_joint"
     lane_assignment_mode: str = "fixed_slot"
+    lane_objectness_target_mode: str = "binary"
+    lane_objectness_quality_min: float = 0.25
+    lane_objectness_quality_tau: float = 10.0
     lane_dynamic_coverage_weight: float = 0.0
     lane_centerline_focal_weight: float = 0.0
     lane_centerline_dice_weight: float = 0.0
@@ -852,6 +855,18 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_assignment_mode=_coerce_str(
             data.get("lane_assignment_mode", defaults.lane_assignment_mode),
             field_name="train_defaults.lane_assignment_mode",
+        ),
+        lane_objectness_target_mode=_coerce_str(
+            data.get("lane_objectness_target_mode", defaults.lane_objectness_target_mode),
+            field_name="train_defaults.lane_objectness_target_mode",
+        ),
+        lane_objectness_quality_min=_coerce_float(
+            data.get("lane_objectness_quality_min", defaults.lane_objectness_quality_min),
+            field_name="train_defaults.lane_objectness_quality_min",
+        ),
+        lane_objectness_quality_tau=_coerce_float(
+            data.get("lane_objectness_quality_tau", defaults.lane_objectness_quality_tau),
+            field_name="train_defaults.lane_objectness_quality_tau",
         ),
         lane_dynamic_coverage_weight=_coerce_float(
             data.get("lane_dynamic_coverage_weight", defaults.lane_dynamic_coverage_weight),
@@ -1867,6 +1882,14 @@ def validate_meta_train_scenario(
             )
         if phase_train.distill_teacher_mode != "cache":
             raise ValueError(f"phase {index} distill_teacher_mode must be 'cache'")
+        if phase_train.lane_objectness_target_mode not in {"binary", "quality_ramp"}:
+            raise ValueError(
+                f"phase {index} lane_objectness_target_mode must be one of: binary, quality_ramp"
+            )
+        if not 0.0 <= float(phase_train.lane_objectness_quality_min) < 1.0:
+            raise ValueError(f"phase {index} lane_objectness_quality_min must be in [0, 1)")
+        if float(phase_train.lane_objectness_quality_tau) <= 0.0:
+            raise ValueError(f"phase {index} lane_objectness_quality_tau must be > 0")
         if phase_train.lane_conditional_row_merge_mode not in {"replace", "append"}:
             raise ValueError(
                 f"phase {index} lane_conditional_row_merge_mode must be one of: replace, append"
