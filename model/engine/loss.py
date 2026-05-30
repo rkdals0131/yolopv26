@@ -1531,6 +1531,7 @@ def _stop_line_segment_set_loss(
     fallback_tensor: torch.Tensor,
     verifier_aux_weight: float = 0.0,
     verifier_target_mode: str = "matched_objectness",
+    objectness_target_mode: str = "matched_objectness",
     verifier_quality_tau_px: float = 24.0,
 ) -> torch.Tensor:
     if not isinstance(segment_logits, torch.Tensor) or not isinstance(segment_points, torch.Tensor):
@@ -1542,6 +1543,9 @@ def _stop_line_segment_set_loss(
     verifier_target_mode = str(verifier_target_mode).strip().lower()
     if verifier_target_mode not in {"matched_objectness", "metric_quality"}:
         raise ValueError(f"unsupported stop-line segment verifier target mode: {verifier_target_mode}")
+    objectness_target_mode = str(objectness_target_mode).strip().lower()
+    if objectness_target_mode not in {"matched_objectness", "metric_quality"}:
+        raise ValueError(f"unsupported stop-line segment objectness target mode: {objectness_target_mode}")
     verifier_quality_tau_px = max(float(verifier_quality_tau_px), 1.0e-6)
     stop_target = encoded["stop_line"].to(device=device, dtype=dtype)
     stop_valid = encoded["mask"]["stop_line_valid"].to(device=device, dtype=torch.bool)
@@ -1584,7 +1588,7 @@ def _stop_line_segment_set_loss(
                     matched_flipped,
                     matched_direct,
                 )
-                if verifier_target_mode == "metric_quality":
+                if verifier_target_mode == "metric_quality" or objectness_target_mode == "metric_quality":
                     pred_pixels = pred_detached[:, None, :, :] * denom.view(1, 1, 1, 2)
                     target_pixels = target_segments[None, :, :, :] * denom.view(1, 1, 1, 2)
                     flipped_pixels = flipped_targets[None, :, :, :] * denom.view(1, 1, 1, 2)
@@ -1600,7 +1604,11 @@ def _stop_line_segment_set_loss(
                         direct_endpoint_distance,
                         flipped_endpoint_distance,
                     ).amin(dim=1)
-                    verifier_target = torch.exp(-torch.square(min_endpoint_distance / verifier_quality_tau_px))
+                    quality_target = torch.exp(-torch.square(min_endpoint_distance / verifier_quality_tau_px))
+                    if verifier_target_mode == "metric_quality":
+                        verifier_target = quality_target
+                    if objectness_target_mode == "metric_quality":
+                        objectness_target = quality_target.to(device=objectness_target.device, dtype=objectness_target.dtype)
                 point_loss = F.smooth_l1_loss(matched_pred, matched_target, reduction="mean")
         objectness_loss = F.binary_cross_entropy_with_logits(logits_b, objectness_target, reduction="mean")
         if (
@@ -1741,6 +1749,7 @@ def _stop_line_mask_loss_with_selector_weight(
     patch_segment_set_aux_weight: float = 0.0,
     patch_segment_verifier_aux_weight: float = 0.0,
     segment_verifier_target_mode: str = "matched_objectness",
+    segment_objectness_target_mode: str = "matched_objectness",
     segment_verifier_quality_tau_px: float = 24.0,
     empty_sample_mode: str = "full",
     task_conflict_negative_mode: str = "none",
@@ -2046,6 +2055,7 @@ def _stop_line_mask_loss_with_selector_weight(
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(endpoint_pair_verifier_aux_weight),
             verifier_target_mode=segment_verifier_target_mode,
+            objectness_target_mode=segment_objectness_target_mode,
             verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
         )
     segment_set_loss = _zero_graph(mask_logits)
@@ -2060,6 +2070,7 @@ def _stop_line_mask_loss_with_selector_weight(
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(segment_verifier_aux_weight),
             verifier_target_mode=segment_verifier_target_mode,
+            objectness_target_mode=segment_objectness_target_mode,
             verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
         )
     axis_segment_set_loss = _zero_graph(mask_logits)
@@ -2074,6 +2085,7 @@ def _stop_line_mask_loss_with_selector_weight(
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(axis_segment_verifier_aux_weight),
             verifier_target_mode=segment_verifier_target_mode,
+            objectness_target_mode=segment_objectness_target_mode,
             verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
         )
     patch_segment_set_loss = _zero_graph(mask_logits)
@@ -2088,6 +2100,7 @@ def _stop_line_mask_loss_with_selector_weight(
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(patch_segment_verifier_aux_weight),
             verifier_target_mode=segment_verifier_target_mode,
+            objectness_target_mode=segment_objectness_target_mode,
             verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
         )
     segment_denoise_loss = _zero_graph(mask_logits)
@@ -2111,6 +2124,7 @@ def _stop_line_mask_loss_with_selector_weight(
             fallback_tensor=mask_logits,
             verifier_aux_weight=float(context_segment_verifier_aux_weight),
             verifier_target_mode=segment_verifier_target_mode,
+            objectness_target_mode=segment_objectness_target_mode,
             verifier_quality_tau_px=float(segment_verifier_quality_tau_px),
         )
     return (
@@ -2735,6 +2749,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_patch_segment_set_aux_weight: float = 0.0,
         stopline_patch_segment_verifier_aux_weight: float = 0.0,
         stopline_segment_verifier_target_mode: str = "matched_objectness",
+        stopline_segment_objectness_target_mode: str = "matched_objectness",
         stopline_segment_verifier_quality_tau_px: float = 24.0,
         stopline_empty_sample_mode: str = "full",
         lane_family_unlabeled_negative_mode: str = "none",
@@ -2844,6 +2859,12 @@ class PV26MultiTaskLoss(nn.Module):
         if self.stopline_segment_verifier_target_mode not in {"matched_objectness", "metric_quality"}:
             raise ValueError(
                 f"unsupported stop-line segment verifier target mode: {self.stopline_segment_verifier_target_mode}"
+            )
+        self.stopline_segment_objectness_target_mode = str(stopline_segment_objectness_target_mode).strip().lower()
+        if self.stopline_segment_objectness_target_mode not in {"matched_objectness", "metric_quality"}:
+            raise ValueError(
+                "unsupported stop-line segment objectness target mode: "
+                f"{self.stopline_segment_objectness_target_mode}"
             )
         self.stopline_segment_verifier_quality_tau_px = float(stopline_segment_verifier_quality_tau_px)
         self.stopline_empty_sample_mode = str(stopline_empty_sample_mode).strip().lower()
@@ -3044,6 +3065,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_patch_segment_set_aux_weight": float(self.stopline_patch_segment_set_aux_weight),
             "stopline_patch_segment_verifier_aux_weight": float(self.stopline_patch_segment_verifier_aux_weight),
             "stopline_segment_verifier_target_mode": self.stopline_segment_verifier_target_mode,
+            "stopline_segment_objectness_target_mode": self.stopline_segment_objectness_target_mode,
             "stopline_segment_verifier_quality_tau_px": float(self.stopline_segment_verifier_quality_tau_px),
             "stopline_empty_sample_mode": self.stopline_empty_sample_mode,
             "lane_family_unlabeled_negative_mode": self.lane_family_unlabeled_negative_mode,
@@ -4001,6 +4023,7 @@ class PV26MultiTaskLoss(nn.Module):
                 patch_segment_set_aux_weight=float(self.stopline_patch_segment_set_aux_weight),
                 patch_segment_verifier_aux_weight=float(self.stopline_patch_segment_verifier_aux_weight),
                 segment_verifier_target_mode=self.stopline_segment_verifier_target_mode,
+                segment_objectness_target_mode=self.stopline_segment_objectness_target_mode,
                 segment_verifier_quality_tau_px=float(self.stopline_segment_verifier_quality_tau_px),
                 empty_sample_mode=self.stopline_empty_sample_mode,
                 task_conflict_negative_mode=self.stopline_task_conflict_negative_mode,

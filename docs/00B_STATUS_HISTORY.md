@@ -20142,3 +20142,87 @@ Decision:
 - The learned lane-context residual does not create enough stop-line candidate/geometry recovery: exact stop-line remains `0.4590`, below projection-comp exact `0.5167`.
 - Close this as lane-context fusion gate/detach/head-LR/epoch-count/train-batch scaling on the same projection-comp stop-line runtime path.
 - Reopen model-side lane-conditioned stop-line work only with a materially different candidate-coverage or along-axis geometry signal that first improves fixed exact TP/FP/FN over projection-comp.
+
+## 354. 2026-05-30 Stop-line segment metric-objectness: soft metric objectness does not beat projection-comp exact
+
+Context:
+
+- GPT Pro's architecture review correctly pushed away from pure postprocess sweeps and toward changed segment/instance contracts.
+- The existing stop-line segment-set loss still used hard Hungarian matched/unmatched objectness for primary segment logits, while the verifier could already use metric-quality labels.
+- This branch changed the primary segment objectness target itself to a nearest-GT endpoint-distance quality target, so near-GT but unassigned segment queries are no longer necessarily pushed as hard negatives.
+- The run reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. No dataset copy was created.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Loss:
+  - `model/engine/loss.py` adds `stopline_segment_objectness_target_mode`.
+  - Supported modes are `matched_objectness` and `metric_quality`.
+  - `metric_quality` uses `exp(-(endpoint_distance / tau)^2)` as the primary segment objectness target.
+- Config/runtime plumbing:
+  - `tools/pv26_train/config.py`;
+  - `tools/pv26_train/cli.py`;
+  - `tools/run_pv26_lane60_probe.py`.
+- New lane60 probe experiment: `stopline_segment_metric_objectness_static`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_objectness_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_233552`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Freeze policy: `lane_family_stopline_static_trunk`.
+- Loss weights: lane `0.0`, stop-line `4.0`, crosswalk `0.0`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6408025211` at epoch 1. This is not success evidence because fixed exact stop-line stayed below the projection-comp reference.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed exact-val128 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed exact-val128 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5888` | `1202 / 491 / 1188` | `0.4628` | `28 / 33 / 32` | `0.5988` | `50 / 36 / 31` |
+
+Reference:
+
+- Baseline exact stop-line reference: F1 `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- Projection-competition exact reference: F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
+- Primary projection-comp exact reference used in router audits: F1 `0.5333`, TP/FP/FN `32 / 28 / 28`.
+- The metric-objectness run is slightly above baseline exact but below both projection-comp references.
+- Broader-val512 and larger training are skipped because the exact gate failed.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_objectness_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_233552/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_objectness_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_233552/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Fixed exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_objectness_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_233552/analysis_exports/fixed_exact_val128_epoch2_best/metrics.csv`.
+- Fixed exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_segment_metric_objectness_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_233552/analysis_exports/fixed_exact_val128_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26n.pt` / `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `1.3M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_stopline_segment_set_aux_loss_backprops_when_enabled test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- CUDA `stopline_segment_metric_objectness_static` smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+- CUDA fixed exact-val128 evaluation with `flip_centerline_avg_lane_cross_comp050`.
+
+Decision:
+
+- The implementation is valid and trainable.
+- Soft metric-quality objectness does not create enough stop-line candidate/geometry recovery: exact stop-line is `0.4628`, below projection-comp exact `0.5167`.
+- Close this as segment objectness target mode, metric-quality tau, verifier target/weight, segment score threshold, max-segment cap, head-LR, epoch-count, or train-batch scaling on the same segment-set runtime path.
+- Reopen segment-set stop-line work only with a materially different candidate-coverage, matching, or along-axis geometry signal that first improves fixed exact TP/FP/FN over projection-comp.

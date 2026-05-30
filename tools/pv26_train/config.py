@@ -218,6 +218,7 @@ class TrainDefaultsConfig:
     stopline_patch_segment_set_aux_weight: float = 0.0
     stopline_patch_segment_verifier_aux_weight: float = 0.0
     stopline_segment_verifier_target_mode: str = "matched_objectness"
+    stopline_segment_objectness_target_mode: str = "matched_objectness"
     stopline_segment_verifier_quality_tau_px: float = 24.0
     stopline_empty_sample_mode: str = "full"
     stopline_task_conflict_negative_mode: str = "none"
@@ -1248,6 +1249,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("stopline_segment_verifier_target_mode", defaults.stopline_segment_verifier_target_mode),
             field_name="train_defaults.stopline_segment_verifier_target_mode",
         ),
+        stopline_segment_objectness_target_mode=_coerce_str(
+            data.get(
+                "stopline_segment_objectness_target_mode",
+                defaults.stopline_segment_objectness_target_mode,
+            ),
+            field_name="train_defaults.stopline_segment_objectness_target_mode",
+        ),
         stopline_segment_verifier_quality_tau_px=_coerce_float(
             data.get("stopline_segment_verifier_quality_tau_px", defaults.stopline_segment_verifier_quality_tau_px),
             field_name="train_defaults.stopline_segment_verifier_quality_tau_px",
@@ -1922,6 +1930,22 @@ def validate_meta_train_scenario(
             raise ValueError(f"phase {index} train_aug_stopline_copy_paste_alpha must be between 0 and 1")
         if str(phase_train.stopline_empty_sample_mode).strip().lower() not in {"full", "positive_only"}:
             raise ValueError(f"phase {index} stopline_empty_sample_mode must be one of: full, positive_only")
+        if str(phase_train.stopline_segment_verifier_target_mode).strip().lower() not in {
+            "matched_objectness",
+            "metric_quality",
+        }:
+            raise ValueError(
+                f"phase {index} stopline_segment_verifier_target_mode must be one of: "
+                "matched_objectness, metric_quality"
+            )
+        if str(phase_train.stopline_segment_objectness_target_mode).strip().lower() not in {
+            "matched_objectness",
+            "metric_quality",
+        }:
+            raise ValueError(
+                f"phase {index} stopline_segment_objectness_target_mode must be one of: "
+                "matched_objectness, metric_quality"
+            )
         if float(phase_train.amp_init_scale) <= 0.0:
             raise ValueError(f"phase {index} amp_init_scale must be > 0")
         multitask_conflict = dict(phase_train.multitask_conflict)

@@ -795,6 +795,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_patch_segment_set_aux_weight=train_config.stopline_patch_segment_set_aux_weight,
         stopline_patch_segment_verifier_aux_weight=train_config.stopline_patch_segment_verifier_aux_weight,
         stopline_segment_verifier_target_mode=train_config.stopline_segment_verifier_target_mode,
+        stopline_segment_objectness_target_mode=train_config.stopline_segment_objectness_target_mode,
         stopline_segment_verifier_quality_tau_px=train_config.stopline_segment_verifier_quality_tau_px,
         stopline_empty_sample_mode=train_config.stopline_empty_sample_mode,
         lane_family_unlabeled_negative_mode=train_config.lane_family_unlabeled_negative_mode,

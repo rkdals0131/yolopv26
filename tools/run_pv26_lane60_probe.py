@@ -2456,6 +2456,22 @@ EXPERIMENTS["stopline_lane_context_fusion_static"] = {
     },
 }
 
+EXPERIMENTS["stopline_segment_metric_objectness_static"] = {
+    **EXPERIMENTS["stopline_static_only_specialist"],
+    "overrides": {
+        **EXPERIMENTS["stopline_static_only_specialist"]["overrides"],
+        "stopline_segment_set_aux_weight": 1.0,
+        "stopline_segment_verifier_aux_weight": 0.5,
+        "stopline_segment_verifier_target_mode": "metric_quality",
+        "stopline_segment_objectness_target_mode": "metric_quality",
+        "stopline_segment_verifier_quality_tau_px": 24.0,
+        "stop_line_segment_set_enabled": True,
+        "stop_line_segment_set_score_threshold": 0.55,
+        "stop_line_segment_set_max_segments": 4,
+        "stop_line_segment_verifier_score_weight": 0.5,
+    },
+}
+
 EXPERIMENTS["stopline_v3_isolated_neck"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stopline_only",
