@@ -2663,6 +2663,27 @@ EXPERIMENTS["current_family_dense_denoise_vector_decoder"] = {
     },
 }
 
+EXPERIMENTS["current_family_teacher_runtime_vector_decoder"] = {
+    **EXPERIMENTS["current_family_dense_denoise_vector_decoder"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        **EXPERIMENTS["current_family_dense_denoise_vector_decoder"]["overrides"],
+    },
+    "train_defaults_overrides": {
+        **EXPERIMENTS["current_family_dense_denoise_vector_decoder"]["train_defaults_overrides"],
+        "distill_enabled": True,
+        "distill_teacher_checkpoint": "__seed_checkpoint__",
+        "distill_teacher_roadmark_architecture": "native",
+        "distill_teacher_runtime_targets_enabled": True,
+        "distill_loss_weights": {
+            "lane": 0.0,
+            "stop_line": 0.0,
+            "crosswalk": 0.0,
+        },
+        "lane_family_query_target_source": "teacher_runtime",
+    },
+}
+
 EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {

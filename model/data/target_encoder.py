@@ -11,8 +11,8 @@ from common.geometry import (
     sample_stop_line_centerline,
 )
 from common.task_mode import LANE_FAMILY_TASK_MODE, active_tasks_for_mode, filter_source_mask_for_task_mode
-from common.pv26_schema import OD_CLASSES
-from .transform import NETWORK_HW
+from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES
+from .transform import NETWORK_HW, clip_points, transform_from_meta, transform_points
 from .roadmark_v2_targets import (
     LANE_CENTERLINE_OUTPUT_HW,
     LANE_ROW_CLASS_OUTPUT_HW,
@@ -627,4 +627,98 @@ def encode_pv26_batch(
     }
 
 
-__all__ = ["encode_pv26_batch", "lane_supervised_valid_mask"]
+def encode_lane_family_runtime_predictions(
+    predictions: list[dict[str, Any]],
+    meta: list[dict[str, Any]],
+) -> dict[str, torch.Tensor]:
+    """Encode decoded runtime lane-family predictions back into query-vector targets."""
+    batch_size = len(predictions)
+    lane_encoded = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_SIZE), dtype=torch.float32)
+    lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
+    stop_line_encoded = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_SIZE), dtype=torch.float32)
+    stop_line_valid = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT), dtype=torch.bool)
+    crosswalk_encoded = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_SIZE), dtype=torch.float32)
+    crosswalk_valid = torch.zeros((batch_size, CROSSWALK_QUERY_COUNT), dtype=torch.bool)
+
+    for batch_index, sample_predictions in enumerate(predictions):
+        sample_meta = meta[batch_index] if batch_index < len(meta) and isinstance(meta[batch_index], dict) else {}
+        if not sample_meta:
+            continue
+        transform = transform_from_meta(sample_meta)
+
+        lane_rows: list[dict[str, Any]] = []
+        for lane in sample_predictions.get("lanes", []):
+            if not isinstance(lane, dict):
+                continue
+            network_points = clip_points(
+                transform_points(lane.get("points_xy", []), transform),
+                transform.network_hw,
+            )
+            if len(network_points) < 2:
+                continue
+            class_name = str(lane.get("class_name") or LANE_CLASSES[0])
+            lane_type = str(lane.get("lane_type") or LANE_TYPES[0])
+            color_index = LANE_CLASSES.index(class_name) if class_name in LANE_CLASSES else 0
+            lane_type_index = LANE_TYPES.index(lane_type) if lane_type in LANE_TYPES else 0
+            lane_rows.append(
+                {
+                    "points_xy": network_points,
+                    "visibility": [1.0] * len(network_points),
+                    "color": color_index,
+                    "lane_type": lane_type_index,
+                }
+            )
+        lane_row_valid = torch.ones(len(lane_rows), dtype=torch.bool)
+        lane_encoded[batch_index], lane_valid[batch_index] = _encode_lane_rows(
+            lane_rows,
+            lane_row_valid,
+            source_enabled=True,
+        )
+
+        stop_rows: list[dict[str, Any]] = []
+        for stop_line in sample_predictions.get("stop_lines", []):
+            if not isinstance(stop_line, dict):
+                continue
+            network_points = clip_points(
+                transform_points(stop_line.get("points_xy", []), transform),
+                transform.network_hw,
+            )
+            if len(network_points) < 2:
+                continue
+            stop_rows.append({"points_xy": network_points})
+        stop_row_valid = torch.ones(len(stop_rows), dtype=torch.bool)
+        stop_line_encoded[batch_index], stop_line_valid[batch_index] = _encode_stop_line_rows(
+            stop_rows,
+            stop_row_valid,
+            source_enabled=True,
+        )
+
+        crosswalk_rows: list[dict[str, Any]] = []
+        for crosswalk in sample_predictions.get("crosswalks", []):
+            if not isinstance(crosswalk, dict):
+                continue
+            network_points = clip_points(
+                transform_points(crosswalk.get("points_xy", []), transform),
+                transform.network_hw,
+            )
+            if len(network_points) < 3:
+                continue
+            crosswalk_rows.append({"points_xy": network_points})
+        crosswalk_row_valid = torch.ones(len(crosswalk_rows), dtype=torch.bool)
+        crosswalk_encoded[batch_index], crosswalk_valid[batch_index] = _encode_crosswalk_rows(
+            crosswalk_rows,
+            crosswalk_row_valid,
+            source_enabled=True,
+        )
+
+    return {
+        "teacher_runtime_lane": lane_encoded,
+        "teacher_runtime_lane_valid": lane_valid,
+        "teacher_runtime_stop_line": stop_line_encoded,
+        "teacher_runtime_stop_line_valid": stop_line_valid,
+        "teacher_runtime_crosswalk": crosswalk_encoded,
+        "teacher_runtime_crosswalk_valid": crosswalk_valid,
+    }
+
+
+__all__ = ["encode_pv26_batch", "encode_lane_family_runtime_predictions", "lane_supervised_valid_mask"]

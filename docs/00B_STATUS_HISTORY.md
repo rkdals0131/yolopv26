@@ -19297,3 +19297,88 @@ Decision:
 - Exact-val128, broader-val512, and larger training were skipped because the first val4 gate failed on the strongest rejection condition.
 - Do not repeat this as denoise noise scale/loss weight, dense seed top-K/radius/loss weight, object threshold, head LR, epoch-count, or train-batch scaling.
 - Reopen current-family vector-query work only with a materially different decoder pretraining, assignment target, or teacher-generated runtime target that first creates nonzero matched TP on fixed validation.
+
+## 344. Current-family teacher-runtime vector target: runtime pseudo targets still emit no matched objects
+
+Context:
+
+- Section 343 left only one current-family vector-query reopening premise: a materially different assignment target or teacher-generated runtime target.
+- This branch tested that premise directly by training query-vector losses against decoded retained runtime teacher predictions, not just encoded GT set rows.
+- The intended teacher contract was the retained native runtime path:
+  - lane row-scan/tangent;
+  - projection-competition stop-line;
+  - hull crosswalk.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `model/data/target_encoder.py` adds `encode_lane_family_runtime_predictions()`, which maps postprocessed runtime predictions back through each sample transform and reuses the existing lane/stop-line/crosswalk row encoders.
+- `model/engine/trainer.py` can now have `PV26DistillTeacher` decode teacher outputs through a `PV26PostprocessConfig` and attach `teacher_runtime_*` tensors to `teacher_cache`.
+- `model/engine/loss.py` adds `lane_family_query_target_source="teacher_runtime"` so current-family vector losses can opt into teacher-runtime query targets.
+- `tools/pv26_train/config.py` validates the new target source and requires runtime-target distillation when it is selected.
+- `tools/pv26_train/cli.py` passes the loss option and lets the teacher architecture differ from the student architecture.
+- `tools/run_pv26_lane60_probe.py` adds `current_family_teacher_runtime_vector_decoder`.
+- `test/test_pv26_loss_runtime.py` covers the teacher-runtime target-source path.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint / native teacher:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Initial run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_teacher_runtime_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_192823`;
+  - this exposed a preset wiring issue: the teacher-runtime postprocess inherited component/rect defaults rather than retained row-scan/projection-comp/hull settings.
+- Corrected run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_teacher_runtime_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_193445`.
+- CUDA training:
+  - epochs: `2`;
+  - train batches per epoch: `64`;
+  - validation batches: `4`;
+  - batch size: `4`;
+  - device: `cuda:0`;
+  - skipped steps: `0`.
+- Best internal phase objective:
+  - `0.2334973569` at epoch `1`.
+
+Phase-4 val4 results:
+
+| Run | Epoch | Lane F1 | Lane TP/FP/FN | Stop F1 | Stop TP/FP/FN | Cross F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | --- | ---: | --- | ---: | --- |
+| initial | 1 | `0.0000` | `0 / 0 / 79` | `0.0000` | `0 / 3 / 2` | `0.0000` | `0 / 0 / 5` |
+| initial | 2 | `0.0000` | `0 / 14 / 86` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 7` |
+| corrected | 1 | `0.0000` | `0 / 1 / 79` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 5` |
+| corrected | 2 | `0.0000` | `0 / 205 / 86` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 7` |
+
+Artifacts:
+
+- Corrected phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_teacher_runtime_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_193445/phase_4/history/epochs.jsonl`.
+- Corrected phase summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_teacher_runtime_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_193445/phase_4/summary.json`.
+- Corrected run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_teacher_runtime_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_193445/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned after the val4 gate failed.
+- Root `yolo26s.pt` from training was removed.
+- Retained corrected run size after cleanup is about `356K`.
+- No dataset copy was created.
+
+Verification:
+
+- `python -m py_compile model/data/target_encoder.py model/engine/trainer.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_lane_family_query_loss_can_use_teacher_runtime_targets test_pv26_loss_runtime.PV26LossRuntimeTests.test_current_family_denoise_vectors_contribute_to_task_losses test_pv26_trainer.PV26TrainerTests.test_task_routed_distill_teacher_replaces_only_requested_task_cache`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python tools/run_pv26_lane60_probe.py --help | rg "current_family_teacher_runtime_vector_decoder|current_family_dense_denoise_vector_decoder"`.
+- CUDA current-family teacher-runtime vector target smoke training with `2x64` train batches.
+
+Decision:
+
+- This was a real teacher-generated runtime target change, not a threshold, LR, epoch-count, or postprocess sweep.
+- It is still strongly negative: retained native runtime pseudo targets did not make the current-family vector decoder produce any matched lane, stop-line, or crosswalk object.
+- Exact-val128, broader-val512, and larger training were skipped because the first fixed val4 gate failed with all task TP at `0`.
+- Do not repeat this as teacher postprocess threshold/variant, distill weight, head LR, epoch-count, or train-batch scaling.
+- Reopen current-family vector-query work only with a materially different architecture/pretraining contract that first creates nonzero matched TP on fixed validation.

@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import torch
 
-from ..data.target_encoder import encode_pv26_batch
+from ..data.target_encoder import encode_lane_family_runtime_predictions, encode_pv26_batch
 from common.task_mode import LANE_FAMILY_TASK_MODE
 from . import _trainer_checkpoint as _checkpoint
 from . import _trainer_epochs as _epochs
@@ -17,6 +17,7 @@ from . import trainer_reporting as _reporting
 from .batch import move_batch_to_device
 from .loss import PV26MultiTaskLoss
 from .multitask_conflict import init_multitask_conflict_state, normalize_multitask_conflict
+from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
 from .spec import build_loss_spec
 from .train_summary import resolve_summary_path
 from ..net.trunk import forward_pyramid_features
@@ -68,9 +69,16 @@ def _count_parameters(parameters: list[torch.nn.Parameter]) -> int:
 
 
 class PV26DistillTeacher:
-    def __init__(self, adapter: Any, heads: torch.nn.Module) -> None:
+    def __init__(
+        self,
+        adapter: Any,
+        heads: torch.nn.Module,
+        *,
+        runtime_target_postprocess_config: PV26PostprocessConfig | None = None,
+    ) -> None:
         self.adapter = adapter
         self.heads = heads
+        self.runtime_target_postprocess_config = runtime_target_postprocess_config
         self.eval()
         for parameter in self.adapter.raw_model.parameters():
             parameter.requires_grad = False
@@ -93,17 +101,25 @@ class PV26DistillTeacher:
         self.eval()
         features = forward_pyramid_features(self.adapter, encoded["image"])
         outputs = self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
-        return {
+        cache = {
             key: value.detach()
             for key, value in outputs.items()
             if key in DISTILL_TEACHER_CACHE_KEYS and isinstance(value, torch.Tensor)
         }
+        if self.runtime_target_postprocess_config is not None and isinstance(encoded.get("meta"), list):
+            runtime_predictions = postprocess_pv26_batch(
+                outputs,
+                encoded["meta"],
+                config=self.runtime_target_postprocess_config,
+            )
+            cache.update(encode_lane_family_runtime_predictions(runtime_predictions, encoded["meta"]))
+        return cache
 
 
 _DISTILL_TASK_CACHE_PREFIXES = {
-    "lane": ("lane_",),
-    "stop_line": ("stop_line_",),
-    "crosswalk": ("crosswalk_",),
+    "lane": ("lane_", "teacher_runtime_lane"),
+    "stop_line": ("stop_line_", "teacher_runtime_stop_line"),
+    "crosswalk": ("crosswalk_", "teacher_runtime_crosswalk"),
 }
 
 

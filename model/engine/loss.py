@@ -2570,6 +2570,24 @@ def _crosswalk_query_denoise_loss(predictions: dict[str, torch.Tensor], encoded:
     return obj_loss + 3.0 * points_loss + 0.5 * shape + 0.5 * area + overlap
 
 
+def _query_targets(
+    encoded: dict[str, Any],
+    task_name: str,
+    *,
+    target_source: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    mask = encoded["mask"]
+    if str(target_source).strip().lower() == "teacher_runtime":
+        teacher_cache = encoded.get("teacher_cache")
+        if isinstance(teacher_cache, dict):
+            target = teacher_cache.get(f"teacher_runtime_{task_name}")
+            valid = teacher_cache.get(f"teacher_runtime_{task_name}_valid")
+            source = mask.get(f"{task_name}_source")
+            if isinstance(target, torch.Tensor) and isinstance(valid, torch.Tensor) and isinstance(source, torch.Tensor):
+                return target, valid, source
+    return encoded[task_name], mask[f"{task_name}_valid"], mask[f"{task_name}_source"]
+
+
 def _draw_seed_point(target: torch.Tensor, x_value: torch.Tensor, y_value: torch.Tensor) -> None:
     height, width = int(target.shape[-2]), int(target.shape[-1])
     if height <= 0 or width <= 0:
@@ -2671,6 +2689,7 @@ class PV26MultiTaskLoss(nn.Module):
         lane_assignment_mode: str = "fixed_slot",
         lane_objectness_target_mode: str = "binary",
         lane_family_query_objectness_target_mode: str = "quality_floor",
+        lane_family_query_target_source: str = "encoded",
         lane_objectness_quality_min: float = 0.25,
         lane_objectness_quality_tau: float = 10.0,
         lane_centerline_focal_weight: float = 0.0,
@@ -2757,6 +2776,9 @@ class PV26MultiTaskLoss(nn.Module):
         self.lane_assignment_mode = str(lane_assignment_mode)
         self.lane_objectness_target_mode = str(lane_objectness_target_mode)
         self.lane_family_query_objectness_target_mode = str(lane_family_query_objectness_target_mode)
+        self.lane_family_query_target_source = str(lane_family_query_target_source)
+        if self.lane_family_query_target_source not in {"encoded", "teacher_runtime"}:
+            raise ValueError("lane_family_query_target_source must be one of: encoded, teacher_runtime")
         self.lane_objectness_quality_min = float(lane_objectness_quality_min)
         self.lane_objectness_quality_tau = float(lane_objectness_quality_tau)
         self.lane_centerline_focal_weight = float(lane_centerline_focal_weight)
@@ -2976,6 +2998,7 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_assignment_mode": self.lane_assignment_mode,
             "lane_objectness_target_mode": self.lane_objectness_target_mode,
             "lane_family_query_objectness_target_mode": self.lane_family_query_objectness_target_mode,
+            "lane_family_query_target_source": self.lane_family_query_target_source,
             "lane_objectness_quality_min": float(self.lane_objectness_quality_min),
             "lane_objectness_quality_tau": float(self.lane_objectness_quality_tau),
             "lane_centerline_focal_weight": float(self.lane_centerline_focal_weight),
@@ -3852,9 +3875,14 @@ class PV26MultiTaskLoss(nn.Module):
             }
             return lane_loss
         lane_pred = prediction_dict["lane"]
-        lane_target = encoded["lane"].to(device=lane_pred.device, dtype=torch.float32)
-        lane_source = encoded["mask"]["lane_source"].to(device=lane_pred.device, dtype=torch.bool)
-        lane_valid = encoded["mask"]["lane_valid"].to(device=lane_pred.device, dtype=torch.bool)
+        lane_target_raw, lane_valid_raw, lane_source_raw = _query_targets(
+            encoded,
+            "lane",
+            target_source=self.lane_family_query_target_source,
+        )
+        lane_target = lane_target_raw.to(device=lane_pred.device, dtype=torch.float32)
+        lane_source = lane_source_raw.to(device=lane_pred.device, dtype=torch.bool)
+        lane_valid = lane_valid_raw.to(device=lane_pred.device, dtype=torch.bool)
         assignment = self._build_query_assignment(
             lane_pred,
             lane_target,
@@ -3980,9 +4008,14 @@ class PV26MultiTaskLoss(nn.Module):
                 task_conflict_negative_margin=float(self.stopline_task_conflict_negative_margin),
             )
         stop_pred = prediction_dict["stop_line"]
-        stop_target = encoded["stop_line"].to(device=stop_pred.device, dtype=torch.float32)
-        stop_source = encoded["mask"]["stop_line_source"].to(device=stop_pred.device, dtype=torch.bool)
-        stop_valid = encoded["mask"]["stop_line_valid"].to(device=stop_pred.device, dtype=torch.bool)
+        stop_target_raw, stop_valid_raw, stop_source_raw = _query_targets(
+            encoded,
+            "stop_line",
+            target_source=self.lane_family_query_target_source,
+        )
+        stop_target = stop_target_raw.to(device=stop_pred.device, dtype=torch.float32)
+        stop_source = stop_source_raw.to(device=stop_pred.device, dtype=torch.bool)
+        stop_valid = stop_valid_raw.to(device=stop_pred.device, dtype=torch.bool)
         if self.stopline_empty_sample_mode == "positive_only":
             stop_source = stop_source & stop_valid.any(dim=1)
         assignment = self._build_query_assignment(
@@ -4025,9 +4058,14 @@ class PV26MultiTaskLoss(nn.Module):
         if self.task_mode in {CROSSWALK_ONLY_TASK_MODE, ROADMARK_JOINT_TASK_MODE} and "crosswalk_mask_logits" in prediction_dict:
             self.last_lane_assignment_modes["crosswalk"] = "dense_mask_only"
             return aux_loss
-        cross_target = encoded["crosswalk"].to(device=cross_pred.device, dtype=torch.float32)
-        cross_source = encoded["mask"]["crosswalk_source"].to(device=cross_pred.device, dtype=torch.bool)
-        cross_valid = encoded["mask"]["crosswalk_valid"].to(device=cross_pred.device, dtype=torch.bool)
+        cross_target_raw, cross_valid_raw, cross_source_raw = _query_targets(
+            encoded,
+            "crosswalk",
+            target_source=self.lane_family_query_target_source,
+        )
+        cross_target = cross_target_raw.to(device=cross_pred.device, dtype=torch.float32)
+        cross_source = cross_source_raw.to(device=cross_pred.device, dtype=torch.bool)
+        cross_valid = cross_valid_raw.to(device=cross_pred.device, dtype=torch.bool)
         denoise_loss = _crosswalk_query_denoise_loss(prediction_dict, encoded)
         seed_loss = _dense_query_seed_loss(prediction_dict, encoded, "crosswalk")
         assignment = self._build_query_assignment(

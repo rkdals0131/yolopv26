@@ -151,9 +151,14 @@ def _build_single_distill_teacher(train_config: TrainDefaultsConfig, checkpoint_
     import torch
 
     adapter = _build_backbone_adapter(train_config)
+    teacher_roadmark_architecture = (
+        train_config.distill_teacher_roadmark_architecture
+        if train_config.distill_teacher_roadmark_architecture
+        else train_config.roadmark_architecture
+    )
     heads = PV26Heads(
         in_channels=_resolve_head_channels(adapter, train_config),
-        roadmark_architecture=train_config.roadmark_architecture,
+        roadmark_architecture=teacher_roadmark_architecture,
         lane_head_mode=train_config.lane_head_mode,
         lane_conditional_row_coordinate_mode=train_config.lane_conditional_row_coordinate_mode,
         lane_conditional_row_max_delta_px=train_config.lane_conditional_row_max_delta_px,
@@ -170,7 +175,8 @@ def _build_single_distill_teacher(train_config: TrainDefaultsConfig, checkpoint_
         raise KeyError("distill teacher checkpoint requires adapter_state_dict and heads_state_dict")
     load_matching_state_dict(adapter.raw_model, adapter_state)
     load_matching_state_dict(heads, heads_state)
-    return PV26DistillTeacher(adapter, heads)
+    runtime_target_config = _build_postprocess_config(train_config) if train_config.distill_teacher_runtime_targets_enabled else None
+    return PV26DistillTeacher(adapter, heads, runtime_target_postprocess_config=runtime_target_config)
 
 
 def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeacher | PV26TaskRoutedDistillTeacher | None:
@@ -727,6 +733,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_assignment_mode=train_config.lane_assignment_mode,
         lane_objectness_target_mode=train_config.lane_objectness_target_mode,
         lane_family_query_objectness_target_mode=train_config.lane_family_query_objectness_target_mode,
+        lane_family_query_target_source=train_config.lane_family_query_target_source,
         lane_objectness_quality_min=train_config.lane_objectness_quality_min,
         lane_objectness_quality_tau=train_config.lane_objectness_quality_tau,
         lane_dynamic_coverage_weight=train_config.lane_dynamic_coverage_weight,

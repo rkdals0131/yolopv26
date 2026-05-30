@@ -273,6 +273,31 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertLess(metric_value, floor_value)
         self.assertLess(metric_value, 0.35)
 
+    def test_lane_family_query_loss_can_use_teacher_runtime_targets(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        teacher_lane = torch.zeros_like(encoded["lane"])
+        teacher_valid = torch.zeros_like(encoded["mask"]["lane_valid"])
+        teacher_lane[0, 0] = encoded["lane"][0, 0]
+        teacher_lane[0, 0, 0] = 1.0
+        teacher_valid[0, 0] = True
+        encoded["teacher_cache"] = {
+            "teacher_runtime_lane": teacher_lane,
+            "teacher_runtime_lane_valid": teacher_valid,
+        }
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"lane": 1.0, "stop_line": 0.0, "crosswalk": 0.0},
+            lane_family_query_target_source="teacher_runtime",
+        )
+
+        losses = criterion(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertEqual(criterion.export_config()["lane_family_query_target_source"], "teacher_runtime")
+
     def test_task_loss_ema_normalizer_scales_ready_task_losses(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

@@ -148,6 +148,7 @@ class TrainDefaultsConfig:
     lane_assignment_mode: str = "fixed_slot"
     lane_objectness_target_mode: str = "binary"
     lane_family_query_objectness_target_mode: str = "quality_floor"
+    lane_family_query_target_source: str = "encoded"
     lane_objectness_quality_min: float = 0.25
     lane_objectness_quality_tau: float = 10.0
     lane_dynamic_coverage_weight: float = 0.0
@@ -281,6 +282,8 @@ class TrainDefaultsConfig:
     distill_enabled: bool = False
     distill_teacher_checkpoint: str | None = None
     distill_task_teacher_checkpoints: dict[str, str] = field(default_factory=dict)
+    distill_teacher_roadmark_architecture: str | None = None
+    distill_teacher_runtime_targets_enabled: bool = False
     distill_teacher_mode: str = "cache"
     distill_loss_weights: dict[str, float] = field(default_factory=dict)
     distill_normalize_mode: str = "none"
@@ -870,6 +873,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
                 defaults.lane_family_query_objectness_target_mode,
             ),
             field_name="train_defaults.lane_family_query_objectness_target_mode",
+        ),
+        lane_family_query_target_source=_coerce_str(
+            data.get("lane_family_query_target_source", defaults.lane_family_query_target_source),
+            field_name="train_defaults.lane_family_query_target_source",
         ),
         lane_objectness_quality_min=_coerce_float(
             data.get("lane_objectness_quality_min", defaults.lane_objectness_quality_min),
@@ -1601,6 +1608,17 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             )
             for name, value in distill_task_teacher_checkpoints_payload.items()
         },
+        distill_teacher_roadmark_architecture=_coerce_optional_str(
+            data.get("distill_teacher_roadmark_architecture", defaults.distill_teacher_roadmark_architecture),
+            field_name="train_defaults.distill_teacher_roadmark_architecture",
+        ),
+        distill_teacher_runtime_targets_enabled=_coerce_bool(
+            data.get(
+                "distill_teacher_runtime_targets_enabled",
+                defaults.distill_teacher_runtime_targets_enabled,
+            ),
+            field_name="train_defaults.distill_teacher_runtime_targets_enabled",
+        ),
         distill_teacher_mode=_coerce_str(
             data.get("distill_teacher_mode", defaults.distill_teacher_mode),
             field_name="train_defaults.distill_teacher_mode",
@@ -1909,6 +1927,28 @@ def validate_meta_train_scenario(
                 "phase "
                 f"{index} lane_family_query_objectness_target_mode must be one of: "
                 "quality_floor, metric_quality"
+            )
+        if phase_train.lane_family_query_target_source not in {"encoded", "teacher_runtime"}:
+            raise ValueError(
+                "phase "
+                f"{index} lane_family_query_target_source must be one of: encoded, teacher_runtime"
+            )
+        if (
+            phase_train.distill_teacher_roadmark_architecture is not None
+            and phase_train.distill_teacher_roadmark_architecture not in ROADMARK_ARCHITECTURES
+        ):
+            raise ValueError(
+                "phase "
+                f"{index} distill_teacher_roadmark_architecture must be one of: "
+                f"{ROADMARK_ARCHITECTURES}"
+            )
+        if phase_train.lane_family_query_target_source == "teacher_runtime" and (
+            not phase_train.distill_enabled or not phase_train.distill_teacher_runtime_targets_enabled
+        ):
+            raise ValueError(
+                "phase "
+                f"{index} lane_family_query_target_source='teacher_runtime' requires distill_enabled and "
+                "distill_teacher_runtime_targets_enabled"
             )
         if not 0.0 <= float(phase_train.lane_objectness_quality_min) < 1.0:
             raise ValueError(f"phase {index} lane_objectness_quality_min must be in [0, 1)")
