@@ -17,6 +17,12 @@ from tools.pv26_train import cli as train_cli
 
 
 STAGE4 = "stage_4_lane_family_finetune"
+DEFAULT_STOPLINE_HARDMINE_MANIFEST = (
+    REPO_ROOT
+    / "docs"
+    / "manifests"
+    / "stopline_hardmine_train256_20260530_sample_ids.txt"
+)
 EXPERIMENTS = {
     "upper_trunk_rebalance": {
         "freeze_policy": "lane_family_plus_upper_trunk",
@@ -2469,6 +2475,15 @@ EXPERIMENTS["stopline_segment_metric_objectness_static"] = {
         "stop_line_segment_set_score_threshold": 0.55,
         "stop_line_segment_set_max_segments": 4,
         "stop_line_segment_verifier_score_weight": 0.5,
+    },
+}
+
+EXPERIMENTS["stopline_hardmine_static_sampler"] = {
+    **EXPERIMENTS["stopline_static_only_specialist"],
+    "overrides": {
+        **EXPERIMENTS["stopline_static_only_specialist"]["overrides"],
+        "task_positive_task": f"sample_ids:{DEFAULT_STOPLINE_HARDMINE_MANIFEST}",
+        "task_positive_fraction": 1.0,
     },
 }
 

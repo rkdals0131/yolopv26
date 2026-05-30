@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 import random
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 import torch
 from torch.utils.data import BatchSampler, DataLoader
@@ -13,6 +15,7 @@ from common.pv26_schema import SOURCE_MASK_BY_DATASET
 
 from .dataset import (
     PV26CanonicalDataset,
+    SampleRecord,
     collate_pv26_encoded_batch,
     collate_pv26_encoded_eval_batch,
     collate_pv26_samples,
@@ -376,6 +379,113 @@ class PV26TaskPositiveBatchSampler(BatchSampler):
             yield batch
 
 
+def _load_sample_id_manifest(manifest_path: str) -> tuple[set[str], set[tuple[str, str]], int]:
+    path = Path(str(manifest_path)).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"sample-id manifest not found: {path}")
+
+    sample_ids: set[str] = set()
+    keyed_sample_ids: set[tuple[str, str]] = set()
+    row_count = 0
+    if path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames or "sample_id" not in reader.fieldnames:
+                raise ValueError(f"sample-id manifest CSV requires a sample_id column: {path}")
+            for row in reader:
+                sample_id = str(row.get("sample_id") or "").strip()
+                if not sample_id:
+                    continue
+                dataset_key = str(row.get("dataset_key") or "").strip()
+                if dataset_key:
+                    keyed_sample_ids.add((dataset_key, sample_id))
+                else:
+                    sample_ids.add(sample_id)
+                row_count += 1
+    else:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                sample_id = stripped.split(",", 1)[0].strip()
+                if not sample_id:
+                    continue
+                sample_ids.add(sample_id)
+                row_count += 1
+    if not sample_ids and not keyed_sample_ids:
+        raise ValueError(f"sample-id manifest has no usable sample_id rows: {path}")
+    return sample_ids, keyed_sample_ids, row_count
+
+
+class PV26SampleIdPositiveBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        dataset: PV26CanonicalDataset,
+        *,
+        batch_size: int,
+        manifest_path: str,
+        positive_fraction: float = 0.5,
+        num_batches: int | None = None,
+        split: str | None = "train",
+        seed: int = 26,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        self.batch_size = int(batch_size)
+        self.task_names = ["sample_id_manifest"]
+        self.manifest_path = str(manifest_path)
+        sample_ids, keyed_sample_ids, row_count = _load_sample_id_manifest(self.manifest_path)
+        self.manifest_entry_count = int(row_count)
+        fraction = max(0.0, min(1.0, float(positive_fraction)))
+        self.positive_count = min(self.batch_size, max(1, int(round(self.batch_size * fraction))))
+        self.negative_count = self.batch_size - self.positive_count
+
+        positive_indices: list[int] = []
+        eligible_indices: list[int] = []
+        for index, record in enumerate(dataset.records):
+            if split is not None and record.split != split:
+                continue
+            eligible_indices.append(index)
+            if record.sample_id in sample_ids or (record.dataset_key, record.sample_id) in keyed_sample_ids:
+                positive_indices.append(index)
+        if not positive_indices:
+            raise ValueError(f"sample-id positive sampler found no matching samples in split={split!r}: {self.manifest_path}")
+
+        positive_set = set(positive_indices)
+        negative_indices = [index for index in eligible_indices if index not in positive_set]
+        self.positive_pool_size = len(positive_indices)
+        self.negative_pool_size = len(negative_indices)
+        self.negative_pool_policy = "not_sample_id_manifest"
+        if self.negative_count > 0 and not negative_indices:
+            self.negative_count = 0
+            self.positive_count = self.batch_size
+        self.num_batches = num_batches or max(1, math.ceil(len(positive_indices) / max(self.positive_count, 1)))
+
+        rng = random.Random(seed)
+        pos_shuffled = list(positive_indices)
+        neg_shuffled = list(negative_indices)
+        rng.shuffle(pos_shuffled)
+        rng.shuffle(neg_shuffled)
+        self._positive_cursor = _IndexCursor(indices=pos_shuffled, rng=random.Random(rng.randint(0, 1_000_000)))
+        self._negative_cursor = _IndexCursor(indices=neg_shuffled, rng=random.Random(rng.randint(0, 1_000_000))) if neg_shuffled else None
+        self._shuffle_rng = random.Random(seed + 1)
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    def __iter__(self):
+        for _ in range(self.num_batches):
+            batch: list[int] = []
+            for _ in range(self.positive_count):
+                batch.append(self._positive_cursor.draw())
+            if self._negative_cursor is not None:
+                for _ in range(self.negative_count):
+                    batch.append(self._negative_cursor.draw())
+            self._shuffle_rng.shuffle(batch)
+            yield batch
+
+
 def _canonical_positive_task_name(task_name: str) -> str:
     key = str(task_name).strip().lower()
     aliases = {
@@ -399,6 +509,11 @@ def _parse_task_positive_spec(task_positive_task: str | None) -> list[str]:
         return []
     raw = str(task_positive_task).strip()
     lowered = raw.lower()
+    if lowered.startswith("sample_ids:"):
+        payload = raw.split(":", 1)[1].strip()
+        if not payload:
+            raise ValueError("sample_ids task-positive spec requires a manifest path")
+        return [payload]
     if lowered.startswith("rotate:"):
         payload = raw.split(":", 1)[1]
         task_names = [_canonical_positive_task_name(item) for item in payload.split(",") if str(item).strip()]
@@ -424,6 +539,8 @@ def _task_positive_mode(task_positive_task: str | None) -> str | None:
     if task_positive_task in (None, "", "none"):
         return None
     lowered = str(task_positive_task).strip().lower()
+    if lowered.startswith("sample_ids:"):
+        return "sample_ids"
     if lowered.startswith("rotate:"):
         return "rotate"
     if lowered.startswith("multi:"):
@@ -701,7 +818,17 @@ def build_pv26_train_dataloader(
     unavailable_positive_tasks: list[str] = []
     if positive_task_names:
         try:
-            if positive_task_mode == "multi":
+            if positive_task_mode == "sample_ids":
+                sampler = PV26SampleIdPositiveBatchSampler(
+                    dataset,
+                    batch_size=batch_size,
+                    manifest_path=positive_task_names[0],
+                    positive_fraction=0.5 if task_positive_fraction is None else float(task_positive_fraction),
+                    num_batches=num_batches,
+                    split=split,
+                    seed=seed,
+                )
+            elif positive_task_mode == "multi":
                 sampler = PV26TaskPositiveMultiBatchSampler(
                     dataset,
                     batch_size=batch_size,
@@ -789,6 +916,8 @@ def build_pv26_train_dataloader(
         "fallback_reason": fallback_reason,
         "negative_pool_policy": getattr(sampler, "negative_pool_policy", None),
         "negative_pool_size": getattr(sampler, "negative_pool_size", None),
+        "positive_pool_size": getattr(sampler, "positive_pool_size", None),
+        "positive_manifest_entry_count": getattr(sampler, "manifest_entry_count", None),
     }
     return loader
 
@@ -830,6 +959,7 @@ __all__ = [
     "DATASET_GROUP_BY_KEY",
     "DEFAULT_SAMPLER_RATIOS",
     "PV26BalancedBatchSampler",
+    "PV26SampleIdPositiveBatchSampler",
     "PV26TaskCooccurrenceBatchSampler",
     "PV26TaskPositiveBatchSampler",
     "PV26TaskPositiveMultiBatchSampler",

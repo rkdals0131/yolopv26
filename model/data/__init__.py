@@ -11,6 +11,7 @@ from .preview import render_overlay
 from .sampler import (
     PV26BalancedBatchSampler,
     PV26RandomSubsetBatchSampler,
+    PV26SampleIdPositiveBatchSampler,
     PV26SequentialBatchSampler,
     PV26TaskCooccurrenceBatchSampler,
     PV26TaskPositiveBatchSampler,
@@ -27,6 +28,7 @@ __all__ = [
     "PV26BalancedBatchSampler",
     "PV26CanonicalDataset",
     "PV26RandomSubsetBatchSampler",
+    "PV26SampleIdPositiveBatchSampler",
     "PV26SequentialBatchSampler",
     "PV26TaskCooccurrenceBatchSampler",
     "PV26TaskPositiveBatchSampler",

@@ -11,6 +11,7 @@ import torch
 from common.pv26_schema import OD_CLASSES
 from model.data import (
     PV26BalancedBatchSampler,
+    PV26SampleIdPositiveBatchSampler,
     PV26TaskCooccurrenceBatchSampler,
     PV26TaskPositiveMultiBatchSampler,
     build_pv26_eval_dataloader,
@@ -248,6 +249,108 @@ class PV26BalancedSamplerTests(unittest.TestCase):
                     sum(record.dataset_key == "aihub_lane_seoul" for record in batch_records),
                     3,
                 )
+
+    def test_sample_id_positive_sampler_uses_manifest_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path = root / "hard_samples.csv"
+            train_lane_id = "aihub_lane_seoul_train_1"
+            train_bdd_id = "bdd100k_det_100k_train_2"
+            val_lane_id = "aihub_lane_seoul_val_1"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "dataset_key,split,sample_id",
+                        f"aihub_lane_seoul,train,{train_lane_id}",
+                        f"bdd100k_det_100k,train,{train_bdd_id}",
+                        f"aihub_lane_seoul,val,{val_lane_id}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            dataset = _ToyCanonicalDataset()
+
+            sampler = PV26SampleIdPositiveBatchSampler(
+                dataset,
+                batch_size=4,
+                manifest_path=str(manifest_path),
+                positive_fraction=0.5,
+                num_batches=2,
+                split="train",
+                seed=7,
+            )
+
+            self.assertEqual(sampler.positive_count, 2)
+            self.assertEqual(sampler.positive_pool_size, 2)
+            self.assertEqual(sampler.manifest_entry_count, 3)
+            positive_ids = {train_lane_id, train_bdd_id}
+            for batch_indices in sampler:
+                batch_ids = {dataset.records[index].sample_id for index in batch_indices}
+                self.assertEqual(len(batch_ids & positive_ids), 2)
+                self.assertNotIn(val_lane_id, batch_ids)
+
+    def test_sample_id_positive_sampler_accepts_text_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path = root / "hard_samples.txt"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "# comments are ignored",
+                        "aihub_lane_seoul_train_0",
+                        "aihub_lane_seoul_train_1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            dataset = _ToyCanonicalDataset()
+
+            sampler = PV26SampleIdPositiveBatchSampler(
+                dataset,
+                batch_size=2,
+                manifest_path=str(manifest_path),
+                positive_fraction=1.0,
+                num_batches=1,
+                split="train",
+                seed=7,
+            )
+
+            batch_ids = {dataset.records[index].sample_id for index in next(iter(sampler))}
+            self.assertEqual(batch_ids, {"aihub_lane_seoul_train_0", "aihub_lane_seoul_train_1"})
+
+    def test_sample_id_positive_dataloader_records_sampler_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path = root / "hard_samples.csv"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "dataset_key,sample_id",
+                        "aihub_lane_seoul,aihub_lane_seoul_train_0",
+                        "aihub_lane_seoul,aihub_lane_seoul_train_1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            dataset = _ToyCanonicalDataset()
+
+            loader = build_pv26_train_dataloader(
+                dataset,
+                batch_size=4,
+                num_batches=1,
+                split="train",
+                seed=7,
+                task_positive_task=f"sample_ids:{manifest_path}",
+                task_positive_fraction=1.0,
+            )
+
+            metadata = loader._sampling_metadata  # type: ignore[attr-defined]
+            self.assertEqual(metadata["requested_task_positive_mode"], "sample_ids")
+            self.assertEqual(metadata["sampler_type"], "PV26SampleIdPositiveBatchSampler")
+            self.assertEqual(metadata["positive_pool_size"], 2)
+            self.assertEqual(metadata["positive_manifest_entry_count"], 2)
+            batch = next(iter(loader))
+            self.assertEqual({item["sample_id"] for item in batch["meta"]}, {"aihub_lane_seoul_train_0", "aihub_lane_seoul_train_1"})
 
     def test_task_positive_multi_sampler_prefers_det_source_for_negative_slot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

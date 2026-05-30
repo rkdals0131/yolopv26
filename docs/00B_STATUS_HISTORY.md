@@ -20226,3 +20226,90 @@ Decision:
 - Soft metric-quality objectness does not create enough stop-line candidate/geometry recovery: exact stop-line is `0.4628`, below projection-comp exact `0.5167`.
 - Close this as segment objectness target mode, metric-quality tau, verifier target/weight, segment score threshold, max-segment cap, head-LR, epoch-count, or train-batch scaling on the same segment-set runtime path.
 - Reopen segment-set stop-line work only with a materially different candidate-coverage, matching, or along-axis geometry signal that first improves fixed exact TP/FP/FN over projection-comp.
+
+## 355. 2026-05-30 Stop-line hard-mined sample-id sampler: train failure replay does not beat projection-comp exact
+
+Context:
+
+- The user explicitly asked to keep doing real training/evaluation and to use larger existing dataset exposure without copying datasets.
+- Generic stop-line positive sampler, det-source hard-negative feeding, co-occurrence, focus crop, copy-paste, and stop-line-priority train scaling were already closed or weak.
+- This branch tested a narrower data-feeding premise: use train-split candidate-pool failure evidence to oversample actual hard stop-line frames, rather than simply increasing all stop-line-positive sampling.
+- No validation failures were used for training selection. The manifest is mined from retained train candidate features.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `model/data/sampler.py` adds `PV26SampleIdPositiveBatchSampler`.
+- `task_positive_task="sample_ids:<manifest.csv>"` now selects train samples by `sample_id` or `(dataset_key, sample_id)` from a CSV/text manifest.
+- `model/data/__init__.py` exports the sampler.
+- `tools/run_pv26_lane60_probe.py` adds `stopline_hardmine_static_sampler`.
+- Manifest artifact:
+  - source CSV: `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train256_exact_val128_20260530/train_candidate_features.csv`;
+  - output: `runs/pv26_exhaustive_od_lane_train/stopline_hardmine_manifest_train256_20260530/train_sample_ids.csv`.
+- Tracked sample-id-only copy for the preset: `docs/manifests/stopline_hardmine_train256_20260530_sample_ids.txt`.
+- Fixed manifest rule:
+  - `gt_stop_line_count > 0`;
+  - and either no oracle-positive candidate exists or `min_nearest_gt_distance > 35px`.
+- Manifest size: `92` hard train samples.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_hardmine_static_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_235146`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Freeze policy: `lane_family_stopline_static_trunk`.
+- Loss weights: lane `0.0`, stop-line `4.0`, crosswalk `0.0`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6408025211` at epoch 1. This is not success evidence because fixed exact stop-line stayed below the projection-comp reference.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg` | `0.5899` | `41 / 12 / 45` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed exact-val128 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed exact-val128 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5888` | `1202 / 491 / 1188` | `0.4576` | `27 / 31 / 33` | `0.5988` | `50 / 36 / 31` |
+
+Reference:
+
+- Baseline exact stop-line reference: F1 `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- Projection-competition exact reference: F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
+- Primary projection-comp exact reference used in router audits: F1 `0.5333`, TP/FP/FN `32 / 28 / 28`.
+- The hard-mined sampler is only slightly above baseline exact and below both projection-comp references.
+- Broader-val512 and larger training are skipped because the exact gate failed.
+
+Artifacts:
+
+- Tracked manifest: `docs/manifests/stopline_hardmine_train256_20260530_sample_ids.txt`.
+- Full generated manifest: `runs/pv26_exhaustive_od_lane_train/stopline_hardmine_manifest_train256_20260530/train_sample_ids.csv`.
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_hardmine_static_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_235146/analysis_exports/flip_tta_val4_epoch2/metrics.csv`.
+- Fixed exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_hardmine_static_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_235146/analysis_exports/flip_tta_val128_epoch2/metrics.csv`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `1.3M`.
+- Tracked manifest size is about `8K`; full generated manifest size is about `36K`.
+- No dataset copy was created.
+
+Verification:
+
+- `python -m py_compile model/data/sampler.py model/data/__init__.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_balanced_sampler.py'`.
+- CUDA `stopline_hardmine_static_sampler` smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline`, `flip_centerline_avg`, and `flip_centerline_avg_lane_cross_comp050` variants.
+- CUDA fixed exact-val128 evaluation with the same variants.
+
+Decision:
+
+- The sampler implementation is valid and trainable.
+- Train-split hard failure replay does not create enough stop-line candidate/geometry recovery: exact stop-line is `0.4576`, below projection-comp exact `0.5167`.
+- Close this as manifest threshold, train-candidate artifact size, positive fraction, head-LR, epoch-count, or same static-trunk projection-comp runtime scaling.
+- Reopen failure-sample feeding only with a materially different training signal or candidate-generation/geometry contract that first improves fixed exact TP/FP/FN over projection-comp.
