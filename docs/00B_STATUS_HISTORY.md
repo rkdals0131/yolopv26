@@ -17251,3 +17251,85 @@ Verification:
 - Exact-val128, broader-val512, and larger training were skipped because fixed val4 recovered zero lane TP and regressed crosswalk.
 - Do not repeat this as `seed_relative` max-delta, merge-mode, seed/objectness target, row-x weight, head LR, epoch-count, or train-batch scaling.
 - Reopen conditional row work only with a materially different instance-existence/quality/matching contract that first yields nonzero lane TP on fixed smoke without FP blow-up.
+
+## 321. 2026-05-30 Lane conditional row branch-only: frozen dense maps do not fix conditional-row FP
+
+맥락:
+
+- The conditional row family had two different failure modes:
+  - Training the whole lane-family head damaged retained dense behavior and crosswalk in short smokes.
+  - Appending conditional rows preserved the idea of row-scan retention but flooded lane FP.
+- This branch tested whether the issue was mainly trainable-parameter exposure: train only the conditional lane seed + row MLP branch, keep the trunk/dense lane maps/stop-line/crosswalk frozen in eval mode, and append conditional rows after the retained row-scan/tangent lanes.
+- This is a training-distribution/freeze-contract change, not another threshold, max-delta, or merge-mode sweep.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-conditional-row-branch-only`.
+- `model/engine/trainer.py` adds `lane_conditional_row_only`.
+  - Trainable modules are only `LaneSegFirstHead.conditional_seed_logits` and `LaneSegFirstHead.conditional_query_mlp`.
+  - Trunk, dense lane heads, stop-line head, crosswalk head, detector head, and traffic-light head stay frozen.
+  - Train-mode handling keeps the raw trunk and parent heads in eval mode, then switches only the conditional row branch modules back to train mode.
+- `tools/run_pv26_lane60_probe.py` adds `lane_conditional_row_branch_only`.
+  - `lane_conditional_row_coordinate_mode="seed_relative"`.
+  - `lane_conditional_row_merge_mode="append"`.
+  - Dense seg-first lane losses are set to zero; only conditional row auxiliary loss trains the branch.
+  - Projection-comp stop-line runtime and hull crosswalk decode are retained.
+- `test/test_pv26_trainer.py` verifies that the optimizer contains only seed/row MLP parameters and that frozen modules stay eval-mode.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_branch_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_102541`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+
+Internal val4-style training validation:
+
+| Epoch | Phase objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.5444354622` | `0.3063` | `34 / 109 / 45` | `0.0000` | `0 / 1 / 2` | `0.7273` | `4 / 2 / 1` |
+| 2 | `0.5442709927` | `0.3091` | `34 / 100 / 52` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed val4 evaluation:
+
+| Eval | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| fixed val4 epoch-2 best | `0.2809` | `33 / 116 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` | `0.5334237819` |
+
+Reference:
+
+- Retained fixed val4 lane reference for this smoke family is `0.5839`, TP/FP/FN `40 / 11 / 46`.
+- Prior conditional row rescue-append fixed val4 was lane `0.2049`, TP/FP/FN `29 / 168 / 57`, crosswalk `2 / 2 / 5`.
+- Prior seed-relative replace fixed val4 was lane `0.0000`, TP/FP/FN `0 / 73 / 86`, crosswalk `3 / 2 / 4`.
+- Branch-only training improves over rescue-append on lane FP but still adds `+105` lane FP versus the retained fixed reference and loses lane TP, so it is not a viable exact/broader candidate.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_branch_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_102541/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_branch_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_102541/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_row_branch_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_102541/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt`/`yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `6.6M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/trainer.py tools/run_pv26_lane60_probe.py test/test_pv26_trainer.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_lane_conditional_row_only_trains_seed_and_row_mlp test_pv26_trainer.PV26TrainerTests.test_lane_conditional_row_only_keeps_frozen_modules_in_eval_mode test_pv26_trainer.PV26TrainerTests.test_lane_conditional_seed_only_freezes_dense_lane_maps`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "lane_conditional_row_branch_only|lane_seed_branch_only_trace"`.
+- CUDA lane conditional row branch-only smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- The branch-only policy is useful plumbing because it isolates conditional-row learning without drifting the dense heads.
+- The trained branch is still metric-negative: appended conditional rows are not sufficiently separable and flood FP.
+- Exact-val128, broader-val512, and larger training were skipped because fixed val4 lost lane TP, added severe lane FP, and recovered no stop-line TP.
+- Do not repeat this as `lane_conditional_row_only`, append/replace, seed-relative max-delta, seed/objectness target, row-x weight, head LR, epoch-count, or train-batch scaling.
+- Reopen conditional row work only with a materially different instance-quality/matching contract that suppresses false appended lanes before exact/broader.

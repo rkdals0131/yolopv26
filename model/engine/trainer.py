@@ -237,6 +237,21 @@ def _lane_conditional_seed_modules(heads: torch.nn.Module) -> list[torch.nn.Modu
     return [conditional_seed_logits] if isinstance(conditional_seed_logits, torch.nn.Module) else []
 
 
+def _lane_conditional_row_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
+    lane_head = getattr(heads, "lane_head", None)
+    if not isinstance(lane_head, torch.nn.Module):
+        roadmark_heads = getattr(heads, "roadmark_heads", None)
+        lane_head = getattr(roadmark_heads, "lane_head", None)
+    if not isinstance(lane_head, torch.nn.Module):
+        return []
+    modules: list[torch.nn.Module] = []
+    for name in ("conditional_seed_logits", "conditional_query_mlp"):
+        module = getattr(lane_head, name, None)
+        if isinstance(module, torch.nn.Module):
+            modules.append(module)
+    return modules
+
+
 def _parameter_ids_from_modules(modules: list[torch.nn.Module]) -> set[int]:
     parameter_ids: set[int] = set()
     for module in modules:
@@ -284,6 +299,13 @@ def _require_lane_conditional_seed_modules(heads: torch.nn.Module, *, policy: st
     modules = _lane_conditional_seed_modules(heads)
     if not modules:
         raise RuntimeError(f"{policy} requires a seg-first lane_head with conditional_seed_logits")
+    return modules
+
+
+def _require_lane_conditional_row_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
+    modules = _lane_conditional_row_modules(heads)
+    if not modules:
+        raise RuntimeError(f"{policy} requires a seg-first lane_head with conditional row modules")
     return modules
 
 
@@ -434,6 +456,12 @@ def configure_pv26_train_stage(
         for module in _require_lane_conditional_seed_modules(heads, policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "lane_conditional_seed_only"
+    elif policy == "lane_conditional_row_only":
+        adapter.freeze_trunk()
+        _set_module_requires_grad(heads, False)
+        for module in _require_lane_conditional_row_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "lane_conditional_row_only"
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:
@@ -471,6 +499,7 @@ def configure_pv26_train_stage(
         "lane_family_lane_only",
         "lane_family_lane_static_trunk",
         "lane_conditional_seed_only",
+        "lane_conditional_row_only",
     }:
         stage_summary["head_training_policy"] = head_policy
     return stage_summary
@@ -647,6 +676,11 @@ class PV26Trainer:
         if policy == "lane_conditional_seed_only":
             self.adapter.raw_model.eval()
             self.heads.eval()
+        if policy == "lane_conditional_row_only":
+            self.adapter.raw_model.eval()
+            self.heads.eval()
+            for module in _require_lane_conditional_row_modules(self.heads, policy=policy):
+                module.train()
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         task_mode = str(getattr(self.criterion, "task_mode", LANE_FAMILY_TASK_MODE))
