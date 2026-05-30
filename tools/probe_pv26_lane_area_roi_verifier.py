@@ -76,24 +76,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-suppressions-per-sample", type=int, default=2)
     parser.add_argument(
         "--candidate-source",
-        choices=("dropped_area", "retained"),
+        choices=("dropped_area", "retained", "union_pool"),
         default="dropped_area",
         help=(
             "dropped_area trains the historical rescue verifier over lanes removed "
             "by bbox/area filters. retained trains a suppress-only instance-quality "
-            "verifier over lanes emitted by the retained runtime decoder."
+            "verifier over lanes emitted by the retained runtime decoder. "
+            "union_pool trains one ranker over retained lanes plus dropped raw "
+            "candidates so runtime can reselect a fixed-size lane instance set."
         ),
     )
     parser.add_argument(
         "--candidate-integration-mode",
-        choices=("append", "replace_nearest", "suppress_low_quality"),
+        choices=("append", "replace_nearest", "suppress_low_quality", "select_topk_union"),
         default="append",
         help=(
             "How verifier-scored candidates are integrated. "
             "append preserves the historical replay. replace_nearest keeps "
             "the lane count fixed by replacing the nearest retained lane. "
             "suppress_low_quality removes retained lanes whose keep probability "
-            "falls below --quality-threshold."
+            "falls below --quality-threshold. select_topk_union discards the "
+            "original retained/dropped boundary and greedily keeps the top scored "
+            "non-duplicate candidates up to the original retained lane count plus "
+            "--max-appends-per-sample."
         ),
     )
     parser.add_argument("--replace-nearest-max-distance-px", type=float, default=120.0)
@@ -547,6 +552,25 @@ def _lane_cross_task_conflict_features(
     return _finite_feature_array(features)
 
 
+def _union_pool_source_features(
+    *,
+    source_kind: str,
+    baseline_lane_count: int,
+) -> np.ndarray:
+    """Small no-GT feature block that distinguishes retained and rescue candidates."""
+
+    retained = 1.0 if str(source_kind) == "retained" else 0.0
+    dropped = 1.0 if str(source_kind) == "dropped_area" else 0.0
+    return np.asarray(
+        [
+            retained,
+            dropped,
+            min(max(float(baseline_lane_count), 0.0), 16.0) / 16.0,
+        ],
+        dtype=np.float32,
+    )
+
+
 def _baseline_matched_gt_indices(
     baseline_lanes: list[dict[str, Any]],
     gt_lanes: list[dict[str, Any]],
@@ -698,7 +722,7 @@ def _collect_examples(
                 gt_lanes = list(sample_gt.get("lanes", []))
                 baseline_lanes = list(sample_pred.get("lanes", []))
                 baseline_matched_gt = _baseline_matched_gt_indices(baseline_lanes, gt_lanes)
-                if candidate_source == "retained":
+                if candidate_source in {"retained", "union_pool"}:
                     matched_predictions = _matched_lane_prediction_indices(baseline_lanes, gt_lanes)
                     for pred_index, candidate in enumerate(baseline_lanes):
                         match = matched_predictions.get(int(pred_index))
@@ -716,6 +740,16 @@ def _collect_examples(
                             maps=maps,
                             meta=sample_meta,
                         )
+                        if candidate_source == "union_pool":
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _union_pool_source_features(
+                                        source_kind="retained",
+                                        baseline_lane_count=len(baseline_lanes),
+                                    ),
+                                ]
+                            ).astype(np.float32)
                         if bool(args.alignment_context_features):
                             other_lanes = [
                                 lane for lane_index, lane in enumerate(baseline_lanes) if lane_index != int(pred_index)
@@ -762,6 +796,8 @@ def _collect_examples(
                                 "sample_index": int(global_sample_index),
                                 "sample_batch_index": int(sample_batch_index),
                                 "candidate_index": int(pred_index),
+                                "candidate_source_kind": "retained",
+                                "baseline_lane_count": int(len(baseline_lanes)),
                                 "candidate": dict(candidate),
                             }
                         )
@@ -777,10 +813,13 @@ def _collect_examples(
                                 "positive": int(positive),
                                 "negative": int(negative),
                                 "baseline_matched_gt_count": int(len(baseline_matched_gt)),
+                                "candidate_source_kind": "retained",
+                                "baseline_lane_count": int(len(baseline_lanes)),
                             }
                         )
-                    global_sample_index += 1
-                    continue
+                    if candidate_source == "retained":
+                        global_sample_index += 1
+                        continue
                 raw_candidates = _raw_lane_candidates(
                     maps=maps,
                     meta=sample_meta,
@@ -811,6 +850,16 @@ def _collect_examples(
                         maps=maps,
                         meta=sample_meta,
                     )
+                    if candidate_source == "union_pool":
+                        features = np.concatenate(
+                            [
+                                features,
+                                _union_pool_source_features(
+                                    source_kind="dropped_area",
+                                    baseline_lane_count=len(baseline_lanes),
+                                ),
+                            ]
+                        ).astype(np.float32)
                     if bool(args.alignment_context_features):
                         features = np.concatenate(
                             [features, _alignment_context_features(candidate, baseline_lanes)]
@@ -853,6 +902,8 @@ def _collect_examples(
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
                         "candidate_index": int(sample_candidate_index),
+                        "candidate_source_kind": "dropped_area",
+                        "baseline_lane_count": int(len(baseline_lanes)),
                         "candidate": dict(candidate),
                     }
                     examples.append(example)
@@ -868,6 +919,8 @@ def _collect_examples(
                             "positive": int(positive),
                             "negative": int(negative),
                             "baseline_matched_gt_count": int(len(baseline_matched_gt)),
+                            "candidate_source_kind": "dropped_area",
+                            "baseline_lane_count": int(len(baseline_lanes)),
                         }
                     )
                     sample_candidate_index += 1
@@ -1102,7 +1155,38 @@ def _apply_verifier(
         by_sample.setdefault(int(example["sample_index"]), []).append((float(probability), int(index)))
     selected_records: dict[int, dict[str, Any]] = {}
     integration_mode = str(getattr(args, "candidate_integration_mode", "append"))
-    if integration_mode == "suppress_low_quality":
+    if integration_mode == "select_topk_union":
+        for sample_index, candidates in by_sample.items():
+            candidates.sort(reverse=True)
+            if sample_index < 0 or sample_index >= len(repaired):
+                continue
+            original_lanes = list(repaired[sample_index].get("lanes", []))
+            target_count = max(0, int(len(original_lanes)) + int(getattr(args, "max_appends_per_sample", 0)))
+            if target_count <= 0:
+                continue
+            selected_lanes: list[dict[str, Any]] = []
+            for probability, index in candidates:
+                if len(selected_lanes) >= target_count:
+                    break
+                candidate = dict(examples[index]["candidate"])
+                if _near_any_lane(
+                    candidate,
+                    selected_lanes,
+                    threshold_px=float(args.candidate_duplicate_distance_px),
+                ):
+                    continue
+                candidate["area_roi_verifier_score"] = float(probability)
+                candidate["area_roi_verifier_integration"] = integration_mode
+                candidate["area_roi_source_kind"] = str(examples[index].get("candidate_source_kind", ""))
+                selected_lanes.append(candidate)
+                selected_records[int(index)] = {
+                    "action": "select_topk_union",
+                    "replaced_lane_index": -1,
+                    "replaced_lane_distance": float("nan"),
+                }
+            if selected_lanes:
+                repaired[sample_index]["lanes"] = selected_lanes
+    elif integration_mode == "suppress_low_quality":
         max_suppressions = max(0, int(getattr(args, "max_suppressions_per_sample", 0)))
         for sample_index, candidates in by_sample.items():
             candidates.sort(key=lambda item: item[0])
@@ -1207,6 +1291,8 @@ def _apply_verifier(
                 "verifier_probability": probability,
                 "selected": int(bool(selected)),
                 "integration_action": str(selected_record.get("action", "")),
+                "candidate_source_kind": str(example.get("candidate_source_kind", "")),
+                "baseline_lane_count": int(example.get("baseline_lane_count", -1)),
                 "replaced_lane_index": int(selected_record.get("replaced_lane_index", -1)),
                 "replaced_lane_distance": float(selected_record.get("replaced_lane_distance", float("nan"))),
             }
@@ -1381,8 +1467,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "No-GT runtime replay of a learned line-ROI verifier. "
             "candidate_source=dropped_area scores raw seg-first lane candidates dropped by "
             "the default lane bbox/area filter; candidate_source=retained scores emitted "
-            "runtime lanes for suppress-only instance-quality tests. GT is used only for "
-            "train labels and final audit metrics, not candidate selection."
+            "runtime lanes for suppress-only instance-quality tests; candidate_source=union_pool "
+            "scores retained lanes and dropped raw candidates together for fixed-count lane "
+            "instance reselection. GT is used only for train labels and final audit metrics, "
+            "not candidate selection."
         ),
     }
     return {

@@ -20313,3 +20313,83 @@ Decision:
 - Train-split hard failure replay does not create enough stop-line candidate/geometry recovery: exact stop-line is `0.4576`, below projection-comp exact `0.5167`.
 - Close this as manifest threshold, train-candidate artifact size, positive fraction, head-LR, epoch-count, or same static-trunk projection-comp runtime scaling.
 - Reopen failure-sample feeding only with a materially different training signal or candidate-generation/geometry contract that first improves fixed exact TP/FP/FN over projection-comp.
+
+## 356. 2026-05-31 Lane union-pool ranker: retained+dropped fixed-count reselection loses TP and adds FP
+
+Context:
+
+- Learned area-ROI dropped-candidate append recovered lane TP but added too much FP.
+- The retained-instance suppressor reduced FP but destroyed TP.
+- This branch tested a different instance-quality contract: score retained row-scan lanes and raw bbox/area-dropped candidates in one union pool, then reselect a fixed-size lane set instead of appending or suppressing in isolation.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. No dataset copy was created.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_area_roi_verifier.py` now supports:
+  - `--candidate-source union_pool`;
+  - `--candidate-integration-mode select_topk_union`.
+- Union-pool examples add a small no-GT source feature block:
+  - retained candidate flag;
+  - dropped-area candidate flag;
+  - retained baseline lane count.
+- Runtime selection greedily keeps the top scored non-duplicate candidates up to original retained lane count plus `--max-appends-per-sample`.
+- `test/test_lane_area_roi_verifier.py` covers fixed-count reselection that drops a low-score retained FP and keeps a dropped candidate.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records.
+- Retained checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime/eval contract:
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - projection-competition stop-line runtime;
+  - `crosswalk_polygon_mode=hull`.
+- CUDA verifier train:
+  - `64` canonical train batches;
+  - `1166` train examples;
+  - `525` positives;
+  - `641` negatives;
+  - skipped dataset copy entirely.
+- Fixed val4 replay:
+  - `4` validation batches;
+  - validation epoch `2`.
+
+Results:
+
+| Run | Lane F1 baseline -> union | Lane TP/FP/FN baseline -> union | Selected / oracle-positive | Stop-line | Crosswalk |
+| --- | ---: | --- | ---: | ---: | ---: |
+| count-expanding sanity, max append `2` | `0.5839 -> 0.5535` | `40 / 11 / 46 -> 44 / 29 / 42` | `73 / 45` | unchanged `0.0000` | unchanged `0.5455` |
+| fixed-count, max append `0` | `0.5839 -> 0.5547` | `40 / 11 / 46 -> 38 / 13 / 48` | `51 / 39` | unchanged `0.0000` | unchanged `0.5455` |
+
+Artifacts:
+
+- Count-expanding sanity:
+  - `runs/pv26_exhaustive_od_lane_train/lane_union_pool_ranker_train64_smoke_val4_20260531/summary.json`.
+- Fixed-count gate:
+  - `runs/pv26_exhaustive_od_lane_train/lane_union_pool_ranker_fixedcount_train64_smoke_val4_20260531/summary.json`.
+- Both artifacts include `train_candidates.csv`, `val_candidates.csv`, and `verifier_replay_rows.csv`.
+
+Storage:
+
+- No dataset copy was created.
+- No verifier checkpoint was saved.
+- The temporary root `yolo26s.pt` was pruned after evaluation.
+- Retained CSV/summary artifacts are about `184K` total.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA `union_pool` verifier train64 fixed val4 replay with count-expanding sanity and fixed-count gate.
+
+Decision:
+
+- The implementation is valid and trainable, but the ranker cannot preserve retained TP.
+- Count expansion repeats the old area-ROI failure shape: TP rises, FP rises faster.
+- Fixed-count reselection is worse: it loses `2` TP and adds `2` FP.
+- Exact-val128, broader-val512, and larger training are skipped because fixed val4 regressed lane TP/FP/FN.
+- Close union-pool lane reselection as retained+dropped pool scoring, top-k union reselection, original-count/max-extra count, source-flag features, and same line-ROI MLP training.
+- Reopen lane candidate-pool selection only with a materially different TP-preserving instance-quality or model-side instance-emission signal that first improves fixed smoke TP/FP/FN.

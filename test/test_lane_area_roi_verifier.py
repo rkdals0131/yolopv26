@@ -171,6 +171,76 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(rows[0]["integration_action"], "suppress_low_quality")
         self.assertEqual(rows[1]["selected"], 0)
 
+    def test_select_topk_union_reselects_retained_and_dropped_candidates(self) -> None:
+        class FeatureLogitVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return features[:, 0]
+
+        predictions = [{"lanes": [_lane(0.0), _lane(220.0)]}]
+        examples = [
+            {
+                "features": np.asarray([-10.0], dtype=np.float32),
+                "positive": 0.0,
+                "negative": 1.0,
+                "nearest_gt_index": -1,
+                "nearest_gt_distance": 90.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "candidate": _lane(0.0),
+            },
+            {
+                "features": np.asarray([8.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 1,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 1,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "candidate": _lane(220.0),
+            },
+            {
+                "features": np.asarray([10.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 2,
+                "candidate_source_kind": "dropped_area",
+                "baseline_lane_count": 2,
+                "candidate": _lane(75.0),
+            },
+        ]
+
+        repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=FeatureLogitVerifier(),
+            args=SimpleNamespace(
+                quality_threshold=0.5,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=0,
+                max_suppressions_per_sample=0,
+                candidate_integration_mode="select_topk_union",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(len(repaired[0]["lanes"]), 2)
+        self.assertEqual([lane["points_xy"][0][0] for lane in repaired[0]["lanes"]], [75.0, 220.0])
+        selected_sources = [row["candidate_source_kind"] for row in rows if row["selected"]]
+        self.assertEqual(selected_sources, ["retained", "dropped_area"])
+
     def test_ensemble_probability_mode_can_require_member_agreement(self) -> None:
         class ConstantVerifier(torch.nn.Module):
             def __init__(self, logit: float) -> None:
