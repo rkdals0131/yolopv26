@@ -58,7 +58,7 @@ DEFAULT_STOP_LINE_CHECKPOINT = (
     / "checkpoints"
     / "best.pt"
 )
-ROUTER_MODES = ("primary", "specialist", "union_dedupe", "agreement", "empty")
+ROUTER_MODES = ("primary", "specialist", "endpoint_fusion", "union_dedupe", "agreement", "empty")
 DEFAULT_ROUTER_RASTER_SIZE = (64, 96)
 LINE_PROFILE_MAP_KEYS = (
     "stop_line_mask_logits",
@@ -260,6 +260,90 @@ def _pair_stats(primary_lines: list[dict[str, Any]], specialist_lines: list[dict
         float(specialist_best - primary_best),
         float(specialist_len - primary_len),
     ]
+
+
+def _endpoint_array(line: dict[str, Any]) -> np.ndarray | None:
+    points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 2 or not bool(np.isfinite(points).all()):
+        return None
+    return np.stack([points[0], points[-1]], axis=0).astype(np.float32)
+
+
+def _aligned_endpoint_arrays(
+    primary_line: dict[str, Any],
+    specialist_line: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    primary_points = _endpoint_array(primary_line)
+    specialist_points = _endpoint_array(specialist_line)
+    if primary_points is None or specialist_points is None:
+        return None
+    same_cost = float(np.linalg.norm(primary_points[0] - specialist_points[0])) + float(
+        np.linalg.norm(primary_points[1] - specialist_points[1])
+    )
+    flipped_cost = float(np.linalg.norm(primary_points[0] - specialist_points[1])) + float(
+        np.linalg.norm(primary_points[1] - specialist_points[0])
+    )
+    if flipped_cost < same_cost:
+        specialist_points = specialist_points[::-1].copy()
+    return primary_points, specialist_points
+
+
+def _fuse_endpoint_pair(primary_line: dict[str, Any], specialist_line: dict[str, Any]) -> dict[str, Any] | None:
+    aligned = _aligned_endpoint_arrays(primary_line, specialist_line)
+    if aligned is None:
+        return None
+    primary_points, specialist_points = aligned
+    fused_points = 0.5 * (primary_points + specialist_points)
+    if not bool(np.isfinite(fused_points).all()):
+        return None
+    fused = dict(primary_line)
+    fused["points_xy"] = fused_points.astype(float).tolist()
+    fused["score"] = max(_line_score(primary_line), _line_score(specialist_line))
+    fused["source"] = "endpoint_fusion"
+    fused["primary_source_score"] = _line_score(primary_line)
+    fused["specialist_source_score"] = _line_score(specialist_line)
+    fused["source_pair_distance"] = _endpoint_pair_distance(primary_line, specialist_line)
+    return fused
+
+
+def _endpoint_pair_distance(primary_line: dict[str, Any], specialist_line: dict[str, Any]) -> float:
+    aligned = _aligned_endpoint_arrays(primary_line, specialist_line)
+    if aligned is None:
+        return float("inf")
+    primary_points, specialist_points = aligned
+    return float(np.linalg.norm(primary_points - specialist_points, axis=1).mean())
+
+
+def _endpoint_fusion_lines(
+    primary_lines: list[dict[str, Any]],
+    specialist_lines: list[dict[str, Any]],
+    *,
+    max_pair_distance: float = 96.0,
+) -> list[dict[str, Any]]:
+    """Fuse agreeing primary/specialist endpoints into a new geometry candidate.
+
+    This is a fixed no-GT geometry source, not a threshold sweep: each primary
+    candidate greedily pairs with the nearest unused specialist candidate within
+    a broad same-line distance and averages aligned endpoints.
+    """
+
+    unused_specialists = set(range(len(specialist_lines)))
+    fused: list[dict[str, Any]] = []
+    for primary_line in sorted(primary_lines, key=_line_score, reverse=True):
+        best_index = -1
+        best_distance = float("inf")
+        for specialist_index in list(unused_specialists):
+            distance = _endpoint_pair_distance(primary_line, specialist_lines[specialist_index])
+            if distance < best_distance:
+                best_distance = float(distance)
+                best_index = int(specialist_index)
+        if best_index < 0 or best_distance > float(max_pair_distance):
+            continue
+        unused_specialists.remove(best_index)
+        fused_line = _fuse_endpoint_pair(primary_line, specialist_lines[best_index])
+        if fused_line is not None:
+            fused.append(fused_line)
+    return _dedupe_stop_lines_by_distance(fused)
 
 
 def _points_to_segment_distance(points: np.ndarray, start: np.ndarray, end: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -467,6 +551,8 @@ def _source_prediction(
         chosen = primary_lines
     elif mode == "specialist":
         chosen = specialist_lines
+    elif mode == "endpoint_fusion":
+        chosen = _endpoint_fusion_lines(primary_lines, specialist_lines)
     elif mode == "union_dedupe":
         chosen = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
     elif mode == "agreement":

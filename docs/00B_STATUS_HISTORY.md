@@ -20653,3 +20653,87 @@ Decision:
 - Broader-val512 is skipped because exact failed and FP growth was too large.
 - Close union-pool geometry selection as retained bias, set-geometry support, geometry-support gate, train-batch scaling, hidden-size/LR/epoch retuning, duplicate-distance, and fixed-count union selection.
 - Reopen lane candidate-pool selection only with a materially different TP-preserving instance-quality or model-side instance-emission signal that first improves exact TP/FP/FN.
+
+## 360. 2026-05-31 Stop-line endpoint-fusion source-router: new geometry source, exact-negative
+
+Hypothesis:
+
+- The previous source-router variants only chose among existing primary/specialist/union/agreement/empty outputs.
+- This branch tests whether existing primary projection-comp and stop-line specialist candidates contain complementary endpoint geometry that can be fused without GT.
+- It is distinct from scalar source-quality reranking because it adds a new fixed `endpoint_fusion` source mode: pair agreeing primary/specialist lines, align endpoint order, and average endpoints before router/oracle selection.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_stopline_source_router.py` adds:
+  - `endpoint_fusion` to `ROUTER_MODES`;
+  - endpoint extraction/alignment helpers;
+  - greedy primary/specialist pairing by aligned endpoint distance;
+  - fused endpoint candidate emission through `_source_prediction()`.
+- `test/test_stopline_source_router.py` verifies reversed endpoint alignment/averaging and source-mode emission.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Runtime/eval contract:
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - primary projection-comp stop-line;
+  - stop-line-priority specialist source;
+  - hull crosswalk.
+- Smoke:
+  - router train batches `64`;
+  - fixed val4.
+- Exact train64:
+  - router train batches `64`;
+  - exact val128.
+- Larger train exact audit:
+  - router train batches `256`;
+  - exact val128.
+
+Results:
+
+| Run | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| train64 smoke val4 | primary | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 smoke val4 | endpoint_fusion | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 smoke val4 | learned_router | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 exact val128 | primary | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train64 exact val128 | endpoint_fusion | `0.5888` | `1202 / 491 / 1188` | `0.5167` | `31 / 29 / 29` | `0.5988` | `50 / 36 / 31` |
+| train64 exact val128 | learned_router | `0.5888` | `1202 / 491 / 1188` | `0.5085` | `30 / 28 / 30` | `0.5988` | `50 / 36 / 31` |
+| train64 exact val128 | oracle_router | `0.5888` | `1202 / 491 / 1188` | `0.7083` | `34 / 2 / 26` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | primary | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | endpoint_fusion | `0.5888` | `1202 / 491 / 1188` | `0.5167` | `31 / 29 / 29` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | learned_router | `0.5888` | `1202 / 491 / 1188` | `0.5289` | `32 / 29 / 28` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | oracle_router | `0.5888` | `1202 / 491 / 1188` | `0.7083` | `34 / 2 / 26` | `0.5988` | `50 / 36 / 31` |
+
+Artifacts:
+
+- Smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_endpoint_fusion_source_router_train64_smoke_val4_20260531/summary.json`.
+- Exact train64 summary: `runs/pv26_exhaustive_od_lane_train/stopline_endpoint_fusion_source_router_train64_exact_val128_20260531/summary.json`.
+- Exact train256 summary: `runs/pv26_exhaustive_od_lane_train/stopline_endpoint_fusion_source_router_train256_exact_val128_20260531/summary.json`.
+- Retained sizes are about `56K`, `56K`, and `56K`.
+- The probe writes CSV/summary only; no router checkpoint or copied dataset was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after evaluation.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py test/test_stopline_source_router.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_source_router`.
+- CUDA train64/fixed-val4 endpoint-fusion source-router run.
+- CUDA train64/exact-val128 endpoint-fusion source-router run.
+- CUDA train256/exact-val128 endpoint-fusion source-router scale audit.
+
+Decision:
+
+- The implementation is valid and trainable.
+- Fixed val4 cannot reject or confirm the stop-line source-router family because all stop-line source variants had `0` TP there.
+- Fixed `endpoint_fusion` is below primary exact: `31 / 29 / 29`, F1 `0.5167`, versus `32 / 28 / 28`, F1 `0.5333`.
+- Train64 learned routing is worse: `30 / 28 / 30`, F1 `0.5085`.
+- Larger train256 learned routing recovers primary TP but adds one FP: `32 / 29 / 28`, F1 `0.5289`, still below primary.
+- Oracle source routing remains high (`34 / 2 / 26`, F1 `0.7083`), so source headroom remains planning evidence, not production success.
+- Broader-val512 is skipped because exact failed.
+- Close endpoint-fusion source routing as endpoint alignment/averaging, endpoint-pair max distance, source-mode order, MLP hidden-size/epoch/LR, class-weight, and train-batch scaling.
+- Reopen source routing only with a materially different candidate-generation or true runtime verifier signal that first beats primary projection-comp exact TP/FP/FN.

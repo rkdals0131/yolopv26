@@ -10,8 +10,10 @@ from tools.probe_pv26_stopline_source_router import (
     LINE_PROFILE_MAP_KEYS,
     ROUTER_MODES,
     _draw_stopline_raster,
+    _endpoint_fusion_lines,
     _lane_topology_features_for_sample,
     _line_profile_features_for_sample,
+    _source_prediction,
     _source_raster_for_sample,
     _train_raster_router,
 )
@@ -117,6 +119,28 @@ class StoplineSourceRouterTests(unittest.TestCase):
         specialist_mean = specialist_topology[2 : 2 + 20]
         self.assertGreater(primary_mean[7], specialist_mean[7])
         self.assertLess(primary_mean[2], specialist_mean[2])
+
+    def test_endpoint_fusion_aligns_and_averages_source_lines(self) -> None:
+        primary = {"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}
+        specialist = {"points_xy": [[690.0, 320.0], [110.0, 320.0]], "score": 0.9}
+
+        fused = _endpoint_fusion_lines([primary], [specialist], max_pair_distance=96.0)
+
+        self.assertEqual(len(fused), 1)
+        points = np.asarray(fused[0]["points_xy"], dtype=np.float32)
+        np.testing.assert_allclose(points, np.asarray([[105.0, 310.0], [695.0, 310.0]], dtype=np.float32))
+        self.assertEqual(fused[0]["source"], "endpoint_fusion")
+        self.assertAlmostEqual(float(fused[0]["score"]), 0.9)
+
+    def test_source_prediction_can_emit_endpoint_fusion_mode(self) -> None:
+        primary = {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}]}
+        specialist = {"stop_lines": [{"points_xy": [[110.0, 320.0], [690.0, 320.0]], "score": 0.9}]}
+
+        prediction = _source_prediction(primary, specialist, "endpoint_fusion")
+
+        self.assertIn("endpoint_fusion", ROUTER_MODES)
+        self.assertEqual(len(prediction["stop_lines"]), 1)
+        self.assertEqual(prediction["stop_lines"][0]["source"], "endpoint_fusion")
 
     def test_train_raster_router_can_fit_tiny_contract(self) -> None:
         rasters: list[np.ndarray] = []
