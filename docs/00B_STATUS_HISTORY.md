@@ -17177,3 +17177,77 @@ Verification:
 - Larger `3x512`, exact-val128, and broader-val512 were skipped because fixed val4 had zero TP for all three lane-family tasks.
 - Do not repeat this as `current_family_anchor_sigmoid`, anchor-template coordinate tuning, object threshold, head LR, epoch-count, or train-batch scaling.
 - Reopen vector-query architecture only with a materially different denoising/matching/proposal-supervision contract that first emits matched objects on fixed validation.
+
+## 320. 2026-05-30 Lane seed-relative row decoder: seed-local row coordinates still produce zero lane TP
+
+맥락:
+
+- The conditional row instance decoder family was still a plausible architecture-level lane hypothesis because the previous implementation emitted absolute sigmoid x coordinates for every row query, independent of the selected seed column.
+- The documented reopen condition was a materially different coordinate or instance-quality contract, not another threshold, merge, head-LR, or epoch sweep.
+- This branch changed the coordinate contract so conditional lane row x is predicted as a bounded residual around the selected seed column.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-seed-relative-row-decoder`.
+- `model/net/lane_head_segfirst.py` adds `lane_conditional_row_coordinate_mode`, with default `absolute_sigmoid` and opt-in `seed_relative`.
+- In `seed_relative` mode, each selected seed column is mapped into network x, the conditional row head predicts `tanh(raw_delta) * lane_conditional_row_max_delta_px`, and the decoded row x is clamped to network bounds.
+- `model/net/heads.py`, `model/net/roadmark_v2_heads.py`, `model/net/roadmark_joint_native.py`, `tools/pv26_train/config.py`, and `tools/pv26_train/cli.py` propagate the opt-in config.
+- `tools/run_pv26_lane60_probe.py` adds `lane_seed_relative_row_decoder`, using bottom-anchor seed supervision, metric-quality objectness, `seed_relative`, `max_delta=160`, and conditional-row `replace` mode.
+- `test/test_pv26_heads.py` verifies the new mode is described, emits finite row coordinates, keeps x in network bounds, and keeps decoded row x within the configured seed-relative delta.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_relative_row_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_101221`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+
+Internal val4-style training validation:
+
+| Epoch | Phase objective | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.2841136752` | `0.0000` | `0 / 79 / 79` | `0.0000` | `0 / 1 / 2` | `0.6667` | `4 / 3 / 1` |
+| 2 | `0.2938298603` | `0.0000` | `0 / 73 / 86` | `0.0000` | `0 / 3 / 2` | `0.5000` | `3 / 2 / 4` |
+
+Fixed val4 evaluation:
+
+| Eval | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| fixed val4 epoch-2 best | `0.0000` | `0 / 73 / 86` | `0.0000` | `0 / 3 / 2` | `0.5000` | `3 / 2 / 4` | `0.2938298603` |
+
+Reference:
+
+- Prior bottom-anchor/metric-quality conditional row smoke had fixed val4 lane/stop/cross `0.0000 / 0.0000 / 0.6667`, lane `0 / 59 / 79`, stop-line `0 / 1 / 2`.
+- Prior rescue-append smoke had fixed val4 lane/stop/cross `0.2049 / 0.0000 / 0.3636`, lane `29 / 168 / 57`, stop-line `0 / 3 / 2`, crosswalk `2 / 2 / 5`.
+- Seed-relative row coordinates reduce lane FP versus rescue-append (`168 -> 73`) but still recover zero lane TP and regress crosswalk versus retained hull behavior.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_relative_row_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_101221/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_relative_row_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_101221/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_lane_seed_relative_row_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_101221/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt`/`yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `7.8M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/lane_head_segfirst.py model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_seed_relative_conditional_row_decoder test_pv26_heads.PV26HeadsTests.test_heads_can_enable_lane_family_cross_stitch_routing test_pv26_heads.PV26HeadsTests.test_heads_produce_documented_output_shapes`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "lane_seed_relative_row_decoder|lane_conditional_row_rescue_append"`.
+- CUDA lane seed-relative row decoder smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- This is a real architecture/coordinate-contract experiment, not a postprocess threshold sweep.
+- The seed-local coordinate contract reduces unmatched lane FP compared with rescue-append but still fails the first metric gate because lane TP remains `0`.
+- Exact-val128, broader-val512, and larger training were skipped because fixed val4 recovered zero lane TP and regressed crosswalk.
+- Do not repeat this as `seed_relative` max-delta, merge-mode, seed/objectness target, row-x weight, head LR, epoch-count, or train-batch scaling.
+- Reopen conditional row work only with a materially different instance-existence/quality/matching contract that first yields nonzero lane TP on fixed smoke without FP blow-up.

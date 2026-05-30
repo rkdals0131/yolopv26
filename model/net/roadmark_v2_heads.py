@@ -144,6 +144,8 @@ class RoadMarkV2Heads(nn.Module):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
+        lane_conditional_row_max_delta_px: float = 160.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -152,6 +154,8 @@ class RoadMarkV2Heads(nn.Module):
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
+        self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
+        self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
@@ -162,7 +166,11 @@ class RoadMarkV2Heads(nn.Module):
 
         p2, p3, p4, _ = self.in_channels
         if self.lane_head_mode == LANE_HEAD_SEG_FIRST:
-            self.lane_head = LaneSegFirstHead((p2, p3, p4))
+            self.lane_head = LaneSegFirstHead(
+                (p2, p3, p4),
+                conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
+                conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
+            )
         else:
             self.lane_head = LaneDenseRowSeedHead((p2, p3, p4))
         self.stop_line_head = StopLineDenseLocalHead((p2, p3))
@@ -192,6 +200,14 @@ class RoadMarkV2Heads(nn.Module):
             if self.lane_head_mode == LANE_HEAD_SEG_FIRST
             else "row_classification_plus_dense_centerline_candidates",
             "lane_head_mode": self.lane_head_mode,
+            "lane_conditional_row_coordinate_mode": getattr(
+                self.lane_head,
+                "conditional_row_coordinate_mode",
+                "disabled",
+            ),
+            "lane_conditional_row_max_delta_px": float(
+                getattr(self.lane_head, "conditional_row_max_delta_px", 0.0)
+            ),
             "stop_line_head": "mask_first_line_decode",
             "crosswalk_head": "mask_first",
             "lane_family_shared_adapter": "zero_init_residual_p2_p3_p4"
@@ -249,6 +265,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
+        lane_conditional_row_max_delta_px: float = 160.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -257,6 +275,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
+        self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
+        self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
@@ -268,6 +288,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             self.in_channels,
             self.feature_strides,
             lane_head_mode=self.lane_head_mode,
+            lane_conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
+            lane_conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
             lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
             lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,
@@ -333,6 +355,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
+        lane_conditional_row_max_delta_px: float = 160.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -341,6 +365,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             in_channels,
             feature_strides=feature_strides,
             lane_head_mode=lane_head_mode,
+            lane_conditional_row_coordinate_mode=lane_conditional_row_coordinate_mode,
+            lane_conditional_row_max_delta_px=lane_conditional_row_max_delta_px,
             lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=lane_family_task_adapter_enabled,
             lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
@@ -435,18 +461,26 @@ class PV26LaneOnlyHeads(nn.Module):
         feature_strides: Iterable[int] = ROADMARK_V2_FEATURE_STRIDES,
         *,
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
+        lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
+        lane_conditional_row_max_delta_px: float = 160.0,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
+        self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
+        self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
         if len(self.in_channels) != 4:
             raise ValueError("PV26LaneOnlyHeads expects exactly 4 pyramid levels.")
         if len(self.feature_strides) != 4:
             raise ValueError("PV26LaneOnlyHeads expects exactly 4 feature strides.")
         p2, p3, p4, _ = self.in_channels
         if self.lane_head_mode == LANE_HEAD_SEG_FIRST:
-            self.lane_head = LaneSegFirstHead((p2, p3, p4))
+            self.lane_head = LaneSegFirstHead(
+                (p2, p3, p4),
+                conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
+                conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
+            )
         else:
             self.lane_head = LaneDenseRowSeedHead((p2, p3, p4))
 
@@ -466,6 +500,14 @@ class PV26LaneOnlyHeads(nn.Module):
             if self.lane_head_mode == LANE_HEAD_SEG_FIRST
             else "row_classification_plus_dense_centerline_candidates",
             "lane_head_mode": self.lane_head_mode,
+            "lane_conditional_row_coordinate_mode": getattr(
+                self.lane_head,
+                "conditional_row_coordinate_mode",
+                "disabled",
+            ),
+            "lane_conditional_row_max_delta_px": float(
+                getattr(self.lane_head, "conditional_row_max_delta_px", 0.0)
+            ),
             "lane_supervised_row_slots": 8,
             "lane_dense_candidate_queries": 16,
         }

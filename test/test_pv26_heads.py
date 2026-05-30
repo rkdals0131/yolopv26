@@ -130,6 +130,40 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
         self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
 
+    def test_heads_can_use_seed_relative_conditional_row_decoder(self) -> None:
+        from model.data.transform import NETWORK_HW
+        from model.net import PV26Heads
+
+        max_delta = 64.0
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            lane_conditional_row_coordinate_mode="seed_relative",
+            lane_conditional_row_max_delta_px=max_delta,
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()["roadmark"]
+        rows = outputs["lane_conditional_rows"]
+        seed_logits = outputs["lane_conditional_seed_logits"]
+        flat_seed_logits = seed_logits.flatten(2).squeeze(1)
+        _, top_indices = torch.topk(flat_seed_logits, k=LANE_QUERY_COUNT, dim=1)
+        seed_cols = top_indices.remainder(seed_logits.shape[-1]).to(dtype=rows.dtype)
+        seed_x = seed_cols / float(seed_logits.shape[-1] - 1) * float(NETWORK_HW[1] - 1)
+        lane_x = rows[..., 6:22]
+
+        self.assertEqual(summary["lane_conditional_row_coordinate_mode"], "seed_relative")
+        self.assertEqual(summary["lane_conditional_row_max_delta_px"], max_delta)
+        self.assertTrue(torch.isfinite(rows).all())
+        self.assertGreaterEqual(float(lane_x.min().item()), 0.0)
+        self.assertLessEqual(float(lane_x.max().item()), float(NETWORK_HW[1] - 1))
+        self.assertLessEqual(float((lane_x - seed_x.unsqueeze(-1)).abs().max().item()), max_delta + 1.0e-4)
+
     def test_heads_can_use_v3_stopline_isolated_architecture(self) -> None:
         from model.net import PV26Heads
 

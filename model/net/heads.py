@@ -83,6 +83,8 @@ class PV26Heads(nn.Module):
         feature_strides: Iterable[int] = FEATURE_STRIDES,
         *,
         lane_head_mode: str = "seg_first",
+        lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
+        lane_conditional_row_max_delta_px: float = 160.0,
         roadmark_architecture: str = ROADMARK_JOINT_NATIVE_NAME,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
@@ -92,6 +94,8 @@ class PV26Heads(nn.Module):
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         self.lane_head_mode = str(lane_head_mode).strip().lower()
+        self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
+        self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
         self.roadmark_architecture = _normalize_roadmark_architecture(roadmark_architecture)
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
@@ -144,12 +148,16 @@ class PV26Heads(nn.Module):
                 self.in_channels,
                 self.feature_strides,
                 lane_head_mode=self.lane_head_mode,
+                lane_conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
+                lane_conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
             )
         else:
             self.roadmark_heads = roadmark_head_cls(
                 self.in_channels,
                 self.feature_strides,
                 lane_head_mode=self.lane_head_mode,
+                lane_conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
+                lane_conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
                 lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
                 lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
                 lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,

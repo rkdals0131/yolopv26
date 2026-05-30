@@ -16,6 +16,18 @@ LANE_X_SLICE = slice(LANE_TYPE_SLICE.stop, LANE_TYPE_SLICE.stop + LANE_ANCHOR_CO
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
+LANE_CONDITIONAL_ROW_COORDINATE_MODES = ("absolute_sigmoid", "seed_relative")
+
+
+def _normalize_conditional_row_coordinate_mode(value: str) -> str:
+    mode = str(value or "absolute_sigmoid").strip().lower()
+    if mode in {"absolute", "absolute_sigmoid", "sigmoid"}:
+        return "absolute_sigmoid"
+    if mode in {"seed_relative", "seed-local", "seed_local", "relative"}:
+        return "seed_relative"
+    raise ValueError("lane_conditional_row_coordinate_mode must be one of: absolute_sigmoid, seed_relative")
+
+
 class LaneSegFirstHead(nn.Module):
     """Dense centerline-first lane head.
 
@@ -25,12 +37,25 @@ class LaneSegFirstHead(nn.Module):
     evaluation is wired in.
     """
 
-    def __init__(self, in_channels: tuple[int, int, int], *, hidden_dim: int = 128) -> None:
+    def __init__(
+        self,
+        in_channels: tuple[int, int, int],
+        *,
+        hidden_dim: int = 128,
+        conditional_row_coordinate_mode: str = "absolute_sigmoid",
+        conditional_row_max_delta_px: float = 160.0,
+    ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
         if len(self.in_channels) != 3:
             raise ValueError("LaneSegFirstHead expects P2/P3/P4 feature channels.")
         self.hidden_dim = int(hidden_dim)
+        self.conditional_row_coordinate_mode = _normalize_conditional_row_coordinate_mode(
+            conditional_row_coordinate_mode
+        )
+        self.conditional_row_max_delta_px = float(conditional_row_max_delta_px)
+        if self.conditional_row_max_delta_px <= 0.0:
+            raise ValueError("conditional_row_max_delta_px must be positive")
         self.output_hw = ROADMARK_DENSE_OUTPUT_HW
         self.fusion = MultiScaleFusion(self.in_channels, self.hidden_dim, target_level=0, depth=2)
         self.stem = nn.Sequential(
@@ -112,7 +137,12 @@ class LaneSegFirstHead(nn.Module):
         rows[..., 0] = raw[..., 0] + top_scores
         rows[..., LANE_COLOR_SLICE] = raw[..., LANE_COLOR_SLICE]
         rows[..., LANE_TYPE_SLICE] = raw[..., LANE_TYPE_SLICE]
-        rows[..., LANE_X_SLICE] = torch.sigmoid(raw[..., LANE_X_SLICE]) * float(NETWORK_HW[1] - 1)
+        if self.conditional_row_coordinate_mode == "seed_relative":
+            seed_x = seed_cols.to(dtype=feature_map.dtype) / denom_x * float(NETWORK_HW[1] - 1)
+            delta = torch.tanh(raw[..., LANE_X_SLICE]) * float(self.conditional_row_max_delta_px)
+            rows[..., LANE_X_SLICE] = (seed_x.unsqueeze(-1) + delta).clamp(0.0, float(NETWORK_HW[1] - 1))
+        else:
+            rows[..., LANE_X_SLICE] = torch.sigmoid(raw[..., LANE_X_SLICE]) * float(NETWORK_HW[1] - 1)
         rows[..., LANE_VIS_SLICE] = raw[..., LANE_VIS_SLICE]
         if query_count == LANE_QUERY_COUNT:
             return rows

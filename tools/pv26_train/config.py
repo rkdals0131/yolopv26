@@ -161,6 +161,8 @@ class TrainDefaultsConfig:
     lane_segfirst_instance_embedding_aux_weight: float = 0.0
     lane_conditional_row_enabled: bool = False
     lane_conditional_row_merge_mode: str = "replace"
+    lane_conditional_row_coordinate_mode: str = "absolute_sigmoid"
+    lane_conditional_row_max_delta_px: float = 160.0
     lane_family_shared_adapter_enabled: bool = False
     lane_family_task_adapter_enabled: bool = False
     lane_family_cross_stitch_enabled: bool = False
@@ -949,6 +951,20 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_conditional_row_merge_mode=_coerce_str(
             data.get("lane_conditional_row_merge_mode", defaults.lane_conditional_row_merge_mode),
             field_name="train_defaults.lane_conditional_row_merge_mode",
+        ),
+        lane_conditional_row_coordinate_mode=_coerce_str(
+            data.get(
+                "lane_conditional_row_coordinate_mode",
+                defaults.lane_conditional_row_coordinate_mode,
+            ),
+            field_name="train_defaults.lane_conditional_row_coordinate_mode",
+        ),
+        lane_conditional_row_max_delta_px=_coerce_float(
+            data.get(
+                "lane_conditional_row_max_delta_px",
+                defaults.lane_conditional_row_max_delta_px,
+            ),
+            field_name="train_defaults.lane_conditional_row_max_delta_px",
         ),
         lane_family_shared_adapter_enabled=_coerce_bool(
             data.get("lane_family_shared_adapter_enabled", defaults.lane_family_shared_adapter_enabled),
