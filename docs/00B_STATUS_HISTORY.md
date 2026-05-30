@@ -18701,3 +18701,90 @@ Decision:
 - Exact-val128, broader-val512, and larger training were skipped because the smoke gate hit the strongest rejection condition: lane `0 / 0 / 86`.
 - Do not repeat this as `quality_ramp` min/tau tuning, `dynamic_match` cost tuning, head-LR, epoch-count, or train-batch scaling.
 - Reopen row-native work only if the row-native emit contract itself changes enough to produce nonzero matched lane TP on fixed smoke before exact/broader expansion.
+
+## 337. Lane area-ROI replace-nearest integration: fixed-count replacement does not fix verifier FP-control
+
+Context:
+
+- The plain lane area-ROI verifier found real recall signal in raw bbox/area-dropped row-scan candidates, but append replay added FP faster than TP.
+- Train384 exact-val128 moved lane `0.5888 -> 0.5956`, TP/FP/FN `1202 / 491 / 1188 -> 1249 / 555 / 1141`.
+- Chunked val512 moved lane `0.5749 -> 0.5821`, TP/FP/FN `4634 / 1983 / 4871 -> 4816 / 2227 / 4689`.
+- The hypothesis for this slice was not another quality threshold sweep. It changed candidate integration from append to fixed-count nearest-lane replacement, so accepted raw candidates could repair an existing retained lane without increasing prediction count.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-roi-replace-nearest`.
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added `--candidate-integration-mode {append,replace_nearest}`.
+- Added `--replace-nearest-max-distance-px`.
+- Kept historical `append` as the default behavior.
+- In `replace_nearest` mode:
+  - raw dropped candidates near retained lanes are kept as training/eval examples instead of being skipped as append duplicates;
+  - verifier-positive candidates replace their nearest retained lane if it is within the fixed distance bound;
+  - one retained lane can be replaced at most once per sample;
+  - output lane count does not grow.
+- Added `test/test_lane_area_roi_verifier.py` coverage for nearest-lane lookup and fixed-count replacement replay.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime lane variant:
+  - `flip_centerline_avg_lane_cross_comp050`.
+
+Train64 fixed val4 smoke:
+
+| Mode | Lane F1 | Lane TP/FP/FN | Stop F1 | Cross F1 | Selected / Oracle-positive |
+| --- | ---: | --- | ---: | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` | - |
+| replace-nearest train64 | `0.5693` | `39 / 12 / 47` | `0.0000` | `0.5455` | `1 / 0` |
+
+Train64 verifier data:
+
+- examples: `440`;
+- positives / negatives: `66 / 374`;
+- input dim: `358`;
+- final logged loss: `0.001593`.
+
+Saved train384 verifier replay fixed val4:
+
+| Mode | Lane F1 | Lane TP/FP/FN | Stop F1 | Cross F1 | Selected / Oracle-positive |
+| --- | ---: | --- | ---: | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` | - |
+| replace-nearest train384 replay | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` | `1 / 0` |
+
+Artifacts:
+
+- Train64 smoke:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_replace_nearest_train64_smoke_val4_20260530/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_replace_nearest_train64_smoke_val4_20260530/train_candidates.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_replace_nearest_train64_smoke_val4_20260530/verifier_replay_rows.csv`.
+- Saved train384 replay smoke:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_replace_nearest_train384_replay_smoke_val4_20260530/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_replace_nearest_train384_replay_smoke_val4_20260530/verifier_replay_rows.csv`.
+
+Storage:
+
+- Failed train64 verifier checkpoint was pruned after the smoke gate failed.
+- Retained train64 smoke artifact size is about `36K`.
+- Retained train384 replay smoke artifact size is about `16K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64 replace-nearest verifier training plus fixed val4 replay.
+- CUDA saved train384 verifier replace-nearest fixed val4 replay.
+
+Decision:
+
+- Fixed-count replacement is a distinct FP-control contract from append, but it did not select oracle-positive candidates on the fixed smoke gate.
+- The actual trained replace-nearest smoke regressed lane TP/FP/FN.
+- The stronger saved train384 verifier did not move TP/FP/FN under the same replacement contract.
+- Exact-val128 and broader-val512 were skipped because fixed val4 failed before broadening.
+- Do not repeat area-ROI dropped-candidate rescue as replace-nearest distance, max-replacement, or saved-verifier replay tuning. Reopen only with a materially stronger no-GT instance-quality/alignment signal that first improves fixed smoke TP/FP/FN.

@@ -74,6 +74,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quality-threshold", type=float, default=0.80)
     parser.add_argument("--max-appends-per-sample", type=int, default=2)
     parser.add_argument(
+        "--candidate-integration-mode",
+        choices=("append", "replace_nearest"),
+        default="append",
+        help=(
+            "How verifier-positive dropped candidates are integrated. "
+            "append preserves the historical replay. replace_nearest keeps "
+            "the lane count fixed by replacing the nearest retained lane."
+        ),
+    )
+    parser.add_argument("--replace-nearest-max-distance-px", type=float, default=120.0)
+    parser.add_argument(
         "--alignment-context-features",
         action="store_true",
         help=(
@@ -154,6 +165,16 @@ def _lane_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
 
 def _near_any_lane(candidate: dict[str, Any], lanes: list[dict[str, Any]], *, threshold_px: float) -> bool:
     return any(_lane_distance(candidate, lane) <= float(threshold_px) for lane in lanes)
+
+
+def _nearest_lane_index(candidate: dict[str, Any], lanes: list[dict[str, Any]]) -> tuple[int, float]:
+    if not lanes:
+        return -1, float("inf")
+    distances = [float(_lane_distance(candidate, lane)) for lane in lanes]
+    if not distances:
+        return -1, float("inf")
+    index = int(np.argmin(np.asarray(distances, dtype=np.float32)))
+    return index, float(distances[index])
 
 
 def _polyline_array(lane: dict[str, Any]) -> np.ndarray:
@@ -475,7 +496,7 @@ def _collect_examples(
                 for candidate in raw_candidates:
                     if not _is_dropped_by_lane_filter(candidate, postprocess_config=postprocess_config):
                         continue
-                    if _near_any_lane(
+                    if str(getattr(args, "candidate_integration_mode", "append")) == "append" and _near_any_lane(
                         candidate,
                         baseline_lanes,
                         threshold_px=float(args.baseline_duplicate_distance_px),
@@ -700,37 +721,73 @@ def _apply_verifier(
     by_sample: dict[int, list[tuple[float, int]]] = {}
     for index, (example, probability) in enumerate(zip(examples, probabilities.tolist())):
         by_sample.setdefault(int(example["sample_index"]), []).append((float(probability), int(index)))
-    selected_indices: set[int] = set()
+    selected_records: dict[int, dict[str, Any]] = {}
+    integration_mode = str(getattr(args, "candidate_integration_mode", "append"))
     for sample_index, candidates in by_sample.items():
         candidates.sort(reverse=True)
-        accepted: list[dict[str, Any]] = list(repaired[sample_index].get("lanes", [])) if 0 <= sample_index < len(repaired) else []
+        if sample_index < 0 or sample_index >= len(repaired):
+            continue
+        lanes = repaired[sample_index].setdefault("lanes", [])
+        selected_for_sample = 0
+        replaced_lane_indices: set[int] = set()
         for probability, index in candidates:
-            if len(selected_indices) >= len(examples):
+            if selected_for_sample >= int(args.max_appends_per_sample):
                 break
             if probability < float(args.quality_threshold):
                 continue
             candidate = dict(examples[index]["candidate"])
-            if _near_any_lane(
-                candidate,
-                accepted,
-                threshold_px=float(args.candidate_duplicate_distance_px),
-            ):
+            candidate["area_roi_verifier_score"] = float(probability)
+            candidate["area_roi_verifier_integration"] = integration_mode
+            if integration_mode == "append":
+                if _near_any_lane(
+                    candidate,
+                    lanes,
+                    threshold_px=float(args.candidate_duplicate_distance_px),
+                ):
+                    continue
+                lanes.append(candidate)
+                selected_records[int(index)] = {
+                    "action": "append",
+                    "replaced_lane_index": -1,
+                    "replaced_lane_distance": float("nan"),
+                }
+                selected_for_sample += 1
                 continue
-            selected_indices.add(int(index))
-            accepted.append(candidate)
-            if sum(1 for item in selected_indices if int(examples[item]["sample_index"]) == int(sample_index)) >= int(
-                args.max_appends_per_sample
-            ):
-                break
+
+            if integration_mode == "replace_nearest":
+                replace_index, replace_distance = _nearest_lane_index(candidate, lanes)
+                if replace_index < 0:
+                    continue
+                if replace_index in replaced_lane_indices:
+                    continue
+                if float(replace_distance) > float(args.replace_nearest_max_distance_px):
+                    continue
+                other_lanes = [lane for lane_index, lane in enumerate(lanes) if lane_index != int(replace_index)]
+                if _near_any_lane(
+                    candidate,
+                    other_lanes,
+                    threshold_px=float(args.candidate_duplicate_distance_px),
+                ):
+                    continue
+                candidate["area_roi_replaced_lane_index"] = int(replace_index)
+                candidate["area_roi_replaced_lane_distance_px"] = float(replace_distance)
+                lanes[int(replace_index)] = candidate
+                replaced_lane_indices.add(int(replace_index))
+                selected_records[int(index)] = {
+                    "action": "replace_nearest",
+                    "replaced_lane_index": int(replace_index),
+                    "replaced_lane_distance": float(replace_distance),
+                }
+                selected_for_sample += 1
+                continue
+
+            raise ValueError(f"unsupported candidate integration mode: {integration_mode}")
     rows: list[dict[str, Any]] = []
     for index, example in enumerate(examples):
         sample_index = int(example["sample_index"])
-        selected = int(index) in selected_indices
+        selected_record = selected_records.get(int(index), {})
+        selected = bool(selected_record)
         probability = float(probabilities[index])
-        if selected and 0 <= sample_index < len(repaired):
-            candidate = dict(example["candidate"])
-            candidate["area_roi_verifier_score"] = probability
-            repaired[sample_index].setdefault("lanes", []).append(candidate)
         rows.append(
             {
                 "sample_index": sample_index,
@@ -741,6 +798,9 @@ def _apply_verifier(
                 "negative": int(float(example["negative"]) > 0.5),
                 "verifier_probability": probability,
                 "selected": int(bool(selected)),
+                "integration_action": str(selected_record.get("action", "")),
+                "replaced_lane_index": int(selected_record.get("replaced_lane_index", -1)),
+                "replaced_lane_distance": float(selected_record.get("replaced_lane_distance", float("nan"))),
             }
         )
     return repaired, rows
@@ -891,6 +951,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "positive_distance_px": float(args.positive_distance_px),
         "negative_distance_px": float(args.negative_distance_px),
         "quality_threshold": float(args.quality_threshold),
+        "candidate_integration_mode": str(args.candidate_integration_mode),
+        "replace_nearest_max_distance_px": float(args.replace_nearest_max_distance_px),
         "max_appends_per_sample": int(args.max_appends_per_sample),
         "alignment_context_features": bool(args.alignment_context_features),
         "side_contrast_features": bool(args.side_contrast_features),

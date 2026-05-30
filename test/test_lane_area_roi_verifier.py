@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -8,12 +9,14 @@ import torch
 from tools.probe_pv26_lane_area_roi_verifier import (
     _accumulate_task_counts,
     _alignment_context_features,
+    _apply_verifier,
     _baseline_matched_gt_indices,
     _candidate_label,
     _empty_task_count_payload,
     _finalize_task_counts,
     _lane_side_contrast_features,
     _near_any_lane,
+    _nearest_lane_index,
 )
 
 
@@ -53,6 +56,56 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         candidate = {"points_xy": [[12.0, 0.0], [12.0, 100.0]], "class_name": "yellow", "lane_type": "dashed"}
         self.assertTrue(_near_any_lane(candidate, [_lane(10.0)], threshold_px=5.0))
         self.assertFalse(_near_any_lane(candidate, [_lane(30.0)], threshold_px=5.0))
+
+    def test_nearest_lane_index_returns_distance(self) -> None:
+        index, distance = _nearest_lane_index(_lane(42.0), [_lane(5.0), _lane(50.0), _lane(120.0)])
+
+        self.assertEqual(index, 1)
+        self.assertLess(distance, 10.0)
+
+    def test_replace_nearest_integration_preserves_lane_count(self) -> None:
+        class ConstantVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return torch.full((int(features.shape[0]),), 10.0, dtype=features.dtype, device=features.device)
+
+        predictions = [{"lanes": [_lane(0.0), _lane(220.0)]}]
+        examples = [
+            {
+                "features": np.asarray([1.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 3.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate": _lane(75.0),
+            }
+        ]
+        repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=ConstantVerifier(),
+            args=SimpleNamespace(
+                quality_threshold=0.8,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=1,
+                candidate_integration_mode="replace_nearest",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(len(repaired[0]["lanes"]), 2)
+        self.assertEqual(repaired[0]["lanes"][0]["points_xy"][0][0], 75.0)
+        self.assertEqual(repaired[0]["lanes"][1]["points_xy"][0][0], 220.0)
+        self.assertEqual(rows[0]["selected"], 1)
+        self.assertEqual(rows[0]["integration_action"], "replace_nearest")
+        self.assertEqual(rows[0]["replaced_lane_index"], 0)
 
     def test_alignment_context_features_describe_nearest_retained_lane(self) -> None:
         features = _alignment_context_features(_lane(70.0), [_lane(10.0), _lane(100.0)])
