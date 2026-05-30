@@ -81,6 +81,8 @@ Latest stop-line distance-heatmap target changed the stop-line dense center/sele
 
 Latest lane feature-ROI bounded-residual repair probe reopened the earlier learned repair family with a TP-preserving confidence contract: repair labels require a candidate to be outside the lane metric threshold but near GT, already matched candidates are do-not-repair negatives, the MLP predicts bounded residuals around the original polyline, negatives get identity geometry loss, and runtime selection uses quality plus mean-move gates. It reused the existing dataset root in place and ran CUDA val4 smoke plus a larger train64 candidate-collection slice. The final train64 smoke still did not move the metric: baseline and repaired lane/stop/cross stayed `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`, with only `2` selected repairs from `664` train examples. Exact-val128 and broader-val512 were skipped because the fixed smoke gate had no positive TP/FP/FN movement. Negative repair weights and root `yolo26s.pt` were pruned; retained replay artifacts are CSV/summary only, and the probe now saves repair weights only with `--save-repair-model`.
 
+Latest lane area-ROI verifier trained a no-GT MLP over raw row-scan/tangent lane candidates that the default bbox/area filters drop. It reused the existing canonical dataset root in place, trained on `256` train batches, and evaluated exact-val128 after a fixed val4 smoke. Smoke moved lane TP/FP/FN `40 / 11 / 46 -> 42 / 14 / 44`, but exact-val128 showed the same FP-control failure at scale: lane `0.5888 -> 0.5931`, TP/FP/FN `1202 / 491 / 1188 -> 1253 / 582 / 1137`; stop-line and crosswalk stayed unchanged at `0.5333 / 0.5988`. This is learned runtime replay evidence, but not a production gate: TP gain `+51` came with FP `+91`, so broader-val512 was skipped. Artifacts are CSV/summary only (`36K` smoke, `152K` exact) and no dataset copy or checkpoint artifact was created.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -159,6 +161,8 @@ Run:
 - latest stop-line distance-heatmap target smoke exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_043625/analysis_exports/distance_heatmap_val128_epoch2/metrics.csv`
 - latest stop-line distance-heatmap target scale exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_distance_heatmap_target_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_044418/analysis_exports/distance_heatmap_val128_epoch2/metrics.csv`
 - latest lane feature-ROI bounded-residual repair train64 smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_train64_smoke_val4_20260530_02/summary.json`
+- latest lane area-ROI verifier smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train64_smoke_val4_20260530/summary.json`
+- latest lane area-ROI verifier exact summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train256_exact_val128_20260530/summary.json`
 - latest stop-line learned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/summary.json`
@@ -778,6 +782,18 @@ Latest lane feature-ROI bounded-residual repair probe result:
 - final train64 smoke baseline lane/stop/cross F1: `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`.
 - final train64 smoke repaired lane/stop/cross F1: `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`; selected repair count `2`, train examples `664` (`161` repair-positive / `503` negative).
 - 판단: the TP-preserving repair contract no longer destroys already matched lanes, but it also fails to convert any near-unmatched candidates into TP on fixed val4. Exact-val128 and broader-val512 are intentionally skipped. Do not repeat this family as repair-label threshold, feature MLP size, point-loss weight, mean-move gate, or train-batch scaling unless a new confidence/instance signal first moves fixed smoke TP/FP/FN.
+
+Latest lane area-ROI verifier probe result:
+
+- branch/worktree: `exp/lane-family-f1/lane-area-roi-verifier`.
+- artifacts:
+  - fixed smoke: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train64_smoke_val4_20260530/summary.json`.
+  - exact-val128: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train256_exact_val128_20260530/summary.json`.
+- changed axis: train a small no-GT MLP verifier over line-ROI dense features sampled from raw seg-first lane candidates dropped by default bbox/area filters. Candidate positives require a nearby GT lane that the baseline output did not already match; runtime selection uses only verifier probability, duplicate distance, and a fixed append cap.
+- storage contract: the probe reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root, wrote only CSV/summary artifacts, and created no checkpoint or dataset copy. Retained output sizes are `36K` for smoke and `152K` for exact.
+- smoke result: baseline lane/stop/cross `0.5839 / 0.0000 / 0.5455`, lane TP/FP/FN `40 / 11 / 46`; verifier append result `0.5915 / 0.0000 / 0.5455`, lane TP/FP/FN `42 / 14 / 44`, selected candidates `5`, selected oracle-positive `2`.
+- exact-val128 result: baseline lane/stop/cross `0.5888 / 0.5333 / 0.5988`, lane TP/FP/FN `1202 / 491 / 1188`; verifier append result `0.5931 / 0.5333 / 0.5988`, lane TP/FP/FN `1253 / 582 / 1137`, selected candidates `142`, selected oracle-positive `58`.
+- 판단: the learned verifier finds real recall signal in raw dropped candidates, but FP-control is not strong enough. Exact TP gain `+51` is outweighed by FP `+91`, so this does not justify broader-val512 or production integration. Do not repeat this as quality-threshold, hidden-dim, train-batch, max-append, duplicate-distance, bbox-area, or candidate-distance tuning without a materially new instance-quality/alignment signal.
 
 Latest lane task-mask context gate:
 

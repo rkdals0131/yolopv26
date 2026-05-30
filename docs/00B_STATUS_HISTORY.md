@@ -17685,3 +17685,101 @@ Verification:
 - Exact-val128, broader-val512, and larger training were skipped because the fixed val4 rejection gate failed.
 - Do not repeat this as sampler-ratio, positive-fraction, negative-mode scope, epoch-count, train-batch, or head-LR scaling.
 - Larger-data exposure alone is not enough; reopen only with a materially different label-quality, candidate-generation, or stop-line geometry signal that first moves fixed smoke TP/FP/FN without lane collapse.
+
+## 326. Lane area-ROI verifier: learned dropped-candidate gate is exact-negative
+
+맥락:
+
+- Raw row-scan/tangent lane candidates dropped by the default bbox/area filters still contain recoverable lane recall, but earlier area-rescue variants added too much FP.
+- This branch tested a distinct FP-control signal: train a no-GT runtime MLP verifier on line-ROI dense features from those dropped candidates.
+- It is not a threshold-only area rescue and not GT-copy repair. GT is used only for training labels and audit metrics.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-roi-verifier`.
+- Added `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added `test/test_lane_area_roi_verifier.py`.
+- Candidate source:
+  - raw seg-first row-scan/tangent candidates;
+  - candidate must be dropped by default `_filter_lane_predictions()`;
+  - candidate must not be near an already emitted baseline lane;
+  - positive label requires nearest GT within `40px` and that GT not already matched by baseline Hungarian matching.
+- Runtime replay:
+  - no GT candidate selection;
+  - fixed `quality_threshold=0.80`;
+  - fixed `max_appends_per_sample=2`;
+  - duplicate distance `40px`.
+- The retained lane path stayed `flip_centerline_avg_lane_cross_comp050`.
+- Stop-line stayed `stopline_projection_comp_runtime`.
+- Crosswalk stayed `crosswalk_polygon_mode=hull`.
+
+Training and evaluation:
+
+- Real CUDA smoke:
+  - `64` verifier train batches;
+  - `4` validation batches;
+  - batch size `4`;
+  - validation epoch `2`.
+- Real CUDA exact:
+  - `256` verifier train batches;
+  - `128` validation batches;
+  - batch size `4`;
+  - validation epoch `2`.
+- The existing canonical dataset root was reused in place.
+- Dataset index reported `429350` records.
+- No dataset copy was created.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| area-ROI verifier append | `0.5915` | `42 / 14 / 44` | `0.0000` | `0.5455` |
+
+Smoke candidate stats:
+
+- train examples `439`;
+- train positives/negatives `66 / 373`;
+- val candidates `29`;
+- selected candidates `5`;
+- selected oracle-positive candidates `2`.
+
+Exact-val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 | Crosswalk TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| area-ROI verifier append | `0.5931` | `1253 / 582 / 1137` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+
+Exact candidate stats:
+
+- train examples `1568`;
+- train positives/negatives `253 / 1315`;
+- val candidates `749`;
+- selected candidates `142`;
+- selected oracle-positive candidates `58`.
+
+Storage:
+
+- Smoke artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train64_smoke_val4_20260530`.
+- Exact artifact: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_verifier_train256_exact_val128_20260530`.
+- Retained smoke directory is about `36K`.
+- Retained exact directory is about `152K`.
+- The probe writes CSV/summary only.
+- No checkpoint artifact was created.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_area_roi_verifier`.
+- CUDA fixed val4 verifier training/replay.
+- CUDA exact-val128 verifier training/replay.
+
+판단:
+
+- This learned verifier did find real recall signal: exact lane TP increased by `+51`.
+- It is still exact-negative as a production path because FP increased by `+91`, precision fell, and F1 only moved `+0.0044`.
+- Broader-val512 was skipped because the exact TP/FP ratio is worse than the target gate.
+- Do not repeat this as quality-threshold, hidden-dim, train-batch, max-append, duplicate-distance, bbox-area, or candidate-distance tuning.
+- Reopen raw dropped-candidate rescue only with a materially stronger instance-quality/alignment signal that improves exact TP/FP/FN before broader expansion.
