@@ -161,6 +161,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--verifier-batch-size", type=int, default=256)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
+    parser.add_argument(
+        "--verifier-loss-mode",
+        choices=("bce", "sample_pairwise_rank"),
+        default="bce",
+        help=(
+            "bce keeps the historical independent candidate classifier. "
+            "sample_pairwise_rank trains the same scorer to rank positive "
+            "lane candidates above negative candidates inside each sample, "
+            "which tests a set-selection signal rather than another score "
+            "threshold sweep."
+        ),
+    )
+    parser.add_argument("--pairwise-margin", type=float, default=0.20)
+    parser.add_argument(
+        "--pairwise-bce-weight",
+        type=float,
+        default=0.35,
+        help="BCE stabilizer weight used by --verifier-loss-mode sample_pairwise_rank.",
+    )
     parser.add_argument("--save-verifier-model", default="")
     parser.add_argument("--load-verifier-model", default="")
     parser.add_argument("--val-start-batch", type=int, default=0)
@@ -1045,6 +1064,7 @@ def _train_verifier(
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.verifier_lr), weight_decay=1.0e-4)
     features = features.to(device)
     labels = labels.to(device)
+    sample_indices = torch.tensor([int(row.get("sample_index", -1)) for row in examples], dtype=torch.long, device=device)
     positive_count = int(labels.sum().item())
     negative_count = int(labels.numel() - positive_count)
     pos_weight = torch.tensor(
@@ -1056,19 +1076,57 @@ def _train_verifier(
     generator.manual_seed(effective_seed)
     batch_size = max(1, int(args.verifier_batch_size))
     history: list[dict[str, float]] = []
-    for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
-        order = torch.randperm(int(labels.numel()), generator=generator)
-        losses: list[float] = []
-        for start in range(0, int(order.numel()), batch_size):
-            index = order[start : start + batch_size].to(device)
-            logits = model(features[index])
-            loss = F.binary_cross_entropy_with_logits(logits, labels[index], pos_weight=pos_weight)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            losses.append(float(loss.detach().cpu()))
-        if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
-            history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
+    loss_mode = str(getattr(args, "verifier_loss_mode", "bce"))
+    if loss_mode == "sample_pairwise_rank":
+        grouped_indices: list[torch.Tensor] = []
+        for sample_index in sorted({int(value) for value in sample_indices.detach().cpu().tolist()}):
+            group = torch.nonzero(sample_indices == int(sample_index), as_tuple=False).reshape(-1)
+            group_labels = labels[group]
+            if bool((group_labels > 0.5).any()) and bool((group_labels <= 0.5).any()):
+                grouped_indices.append(group)
+        if not grouped_indices:
+            raise ValueError("sample_pairwise_rank requires at least one sample with positive and negative candidates")
+        bce_weight = float(np.clip(float(getattr(args, "pairwise_bce_weight", 0.35)), 0.0, 1.0))
+        rank_weight = 1.0 - bce_weight
+        margin = float(getattr(args, "pairwise_margin", 0.20))
+        for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
+            order = torch.randperm(len(grouped_indices), generator=generator).tolist()
+            losses: list[float] = []
+            for group_order_index in order:
+                group = grouped_indices[int(group_order_index)]
+                logits = model(features[group])
+                group_labels = labels[group]
+                positive_logits = logits[group_labels > 0.5]
+                negative_logits = logits[group_labels <= 0.5]
+                pairwise_loss = F.softplus(
+                    negative_logits[:, None] - positive_logits[None, :] + margin
+                ).mean()
+                bce_loss = F.binary_cross_entropy_with_logits(
+                    logits,
+                    group_labels,
+                    pos_weight=pos_weight,
+                )
+                loss = (rank_weight * pairwise_loss) + (bce_weight * bce_loss)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.detach().cpu()))
+            if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
+                history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
+    else:
+        for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
+            order = torch.randperm(int(labels.numel()), generator=generator)
+            losses: list[float] = []
+            for start in range(0, int(order.numel()), batch_size):
+                index = order[start : start + batch_size].to(device)
+                logits = model(features[index])
+                loss = F.binary_cross_entropy_with_logits(logits, labels[index], pos_weight=pos_weight)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.detach().cpu()))
+            if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
+                history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
     model.register_buffer("feature_mean", mean.to(device), persistent=True)
     model.register_buffer("feature_std", std.to(device), persistent=True)
     summary = {
@@ -1076,6 +1134,9 @@ def _train_verifier(
         "positive_count": positive_count,
         "negative_count": negative_count,
         "input_dim": int(features.shape[1]),
+        "loss_mode": loss_mode,
+        "pairwise_margin": float(getattr(args, "pairwise_margin", 0.20)),
+        "pairwise_bce_weight": float(getattr(args, "pairwise_bce_weight", 0.35)),
         "history": history,
         "seed": effective_seed,
     }
@@ -1533,6 +1594,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "side_contrast_features": bool(args.side_contrast_features),
         "raw_image_line_features": bool(args.raw_image_line_features),
         "cross_task_conflict_features": bool(args.cross_task_conflict_features),
+        "verifier_loss_mode": str(args.verifier_loss_mode),
+        "pairwise_margin": float(args.pairwise_margin),
+        "pairwise_bce_weight": float(args.pairwise_bce_weight),
         "train_summary": train_summary,
         "val_candidate_count": int(eval_payload["val_candidate_count"]),
         "selected_candidate_count": int(eval_payload["selected_candidate_count"]),

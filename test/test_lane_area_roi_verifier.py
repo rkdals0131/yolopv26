@@ -21,6 +21,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _matched_lane_prediction_indices,
     _near_any_lane,
     _nearest_lane_index,
+    _train_verifier,
 )
 
 
@@ -374,6 +375,51 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["selected"], 0)
         self.assertLess(rows[0]["verifier_probability"], 0.1)
+
+    def test_pairwise_rank_verifier_training_reports_loss_mode(self) -> None:
+        examples = [
+            {
+                "features": np.asarray([1.0, 0.0], dtype=np.float32),
+                "positive": 1.0,
+                "sample_index": 0,
+            },
+            {
+                "features": np.asarray([0.0, 1.0], dtype=np.float32),
+                "positive": 0.0,
+                "sample_index": 0,
+            },
+            {
+                "features": np.asarray([0.8, 0.2], dtype=np.float32),
+                "positive": 1.0,
+                "sample_index": 1,
+            },
+            {
+                "features": np.asarray([0.2, 0.8], dtype=np.float32),
+                "positive": 0.0,
+                "sample_index": 1,
+            },
+        ]
+
+        _model, summary = _train_verifier(
+            examples,
+            args=SimpleNamespace(
+                seed=7,
+                hidden_dim=8,
+                verifier_lr=1.0e-2,
+                verifier_batch_size=4,
+                verifier_epochs=2,
+                verifier_loss_mode="sample_pairwise_rank",
+                pairwise_margin=0.2,
+                pairwise_bce_weight=0.35,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(summary["loss_mode"], "sample_pairwise_rank")
+        self.assertEqual(summary["positive_count"], 2)
+        self.assertEqual(summary["negative_count"], 2)
+        self.assertEqual(summary["input_dim"], 2)
+        self.assertTrue(summary["history"])
 
     def test_alignment_context_features_describe_nearest_retained_lane(self) -> None:
         features = _alignment_context_features(_lane(70.0), [_lane(10.0), _lane(100.0)])

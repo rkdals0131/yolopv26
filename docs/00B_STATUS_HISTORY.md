@@ -21325,3 +21325,95 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because the first fixed gate failed against both same-config seed and retained fixed lane references.
 - Close this as hard-FN manifest threshold, manifest size, positive fraction, head-LR, epoch-count, and train-batch scaling on the same `sample_ids` lane-FN feeding contract.
 - Reopen lane failure-evidence feeding only with a materially different training signal, for example an instance-quality/emit loss that uses the hard samples to change candidate generation rather than only resampling the same heads.
+
+## 366. 2026-05-31 Lane pairwise union-pool ranker: sample-level ranking loss is fixed-gate flat
+
+Context:
+
+- The learned lane area-ROI and union-pool verifier family has real recall headroom, but independent candidate BCE training repeatedly added FP faster than TP.
+- This branch tested a different training objective on the same bounded candidate surface: rank positive candidates above negative candidates within each sample, then run the existing fixed-count union geometry selection.
+- This is not a threshold, candidate-count, hidden-dim, or train-batch sweep. The changed axis is the verifier loss: independent BCE -> sample-local pairwise ranking with a small BCE stabilizer.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_area_roi_verifier.py` now exposes:
+  - `--verifier-loss-mode {bce,sample_pairwise_rank}`;
+  - `--pairwise-margin`;
+  - `--pairwise-bce-weight`.
+- `sample_pairwise_rank` trains on per-sample positive/negative candidate groups with a softplus pairwise rank loss plus optional BCE stabilizer.
+- `test/test_lane_area_roi_verifier.py` covers the new pairwise train path.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA train64/fixed-val4 verifier replay:
+  - output `runs/pv26_exhaustive_od_lane_train/lane_area_roi_pairwise_union_train64_val4_20260531`;
+  - verifier train batches `64`;
+  - validation batches `4`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - candidate source `union_pool`;
+  - integration `select_topk_union_geometry`;
+  - `side_contrast_features=True`;
+  - `verifier_loss_mode=sample_pairwise_rank`;
+  - pairwise margin `0.20`;
+  - BCE stabilizer weight `0.35`.
+
+Fixed val4 result:
+
+| Metric | Baseline | Pairwise replay |
+| --- | ---: | ---: |
+| lane F1 | `0.5839` | `0.5839` |
+| lane TP/FP/FN | `40 / 11 / 46` | `40 / 11 / 46` |
+| stop-line F1 | `0.0000` | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` | `3 / 1 / 4` |
+
+Verifier details:
+
+- Train examples: `1166`.
+- Train positives/negatives: `525 / 641`.
+- Feature dim: `413`.
+- Validation candidates: `81`.
+- Selected candidates: `51`.
+- Selected oracle-positive candidates: `40`.
+- Selected sources: retained `51`, dropped-area `0`.
+- Unselected dropped-area oracle-positive candidates: `5`.
+
+Artifacts:
+
+- Summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_pairwise_union_train64_val4_20260531/summary.json`.
+- Train candidates: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_pairwise_union_train64_val4_20260531/train_candidates.csv`.
+- Validation candidates: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_pairwise_union_train64_val4_20260531/val_candidates.csv`.
+- Replay rows: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_pairwise_union_train64_val4_20260531/verifier_replay_rows.csv`.
+
+Storage:
+
+- Output artifact size is about `92K`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` was pruned after the run.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/probe_pv26_lane_area_roi_verifier.py --help | rg "verifier-loss-mode|pairwise"`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- Real CUDA train64/fixed-val4 pairwise union-pool verifier replay on the existing canonical dataset root.
+
+Decision:
+
+- The pairwise ranking implementation is valid and trainable.
+- It does not move the first fixed gate at all: lane TP/FP/FN remains `40 / 11 / 46`.
+- It also fails to use dropped-area headroom: all selected candidates are retained lanes, while `5` dropped-area oracle-positive candidates remain unselected.
+- Exact-val128, broader-val512, and larger train exposure are skipped because fixed val4 has zero TP/FP/FN movement.
+- Close this as verifier loss mode, pairwise margin, BCE stabilizer weight, same union geometry replay, and train-batch scaling on the current line-ROI union-pool verifier surface.
+- Reopen lane candidate-pool selection only with a materially different model-side instance-emission or TP-preserving instance-quality signal that actually selects dropped oracle-positive candidates without losing retained TP at the first fixed gate.
