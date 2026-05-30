@@ -18406,13 +18406,14 @@ Decision:
 - Do not repeat this as query-seed MLP depth, denoise noise scale, denoise loss weight, object threshold, head LR, epoch-count, or train-batch scaling.
 - Reopen current-family vector-query work only with a materially different proposal-supervision or dense-seeded decoder contract that first emits matched objects on fixed validation.
 
-## 334. Stop-line raw-LSD candidates: different raw line generator still has no validation oracle-positive candidates
+## 334. Stop-line raw-LSD candidates: exact coverage exists, but replay is FP-heavy
 
 Context:
 
 - Section 328 closed raw-image Canny/Hough candidate generation because validation had no oracle-positive raw-Hough candidates and replay only added FP.
 - This branch tested the allowed reopening condition narrowly: change the raw-image candidate generator itself, not Hough thresholds.
-- The new generator uses OpenCV LSD line segments while keeping the same dense stop-line map features, train-split MLP verifier, and fixed val4 replay.
+- The new generator uses OpenCV LSD line segments while keeping the same dense stop-line map features and train-split MLP verifier.
+- Because val4 is a very small candidate-coverage gate, the same trained verifier was also evaluated on exact-val128 before closing the branch.
 
 Implementation:
 
@@ -18436,17 +18437,21 @@ Training and evaluation:
 - Probe setup:
   - candidate generator: `lsd`;
   - train record batches: `64`;
-  - validation batches: `4`;
   - validation epoch: `2`;
   - max raw candidates: `16`;
   - top-k for verifier replay: `8`;
   - verifier epochs: `60`;
   - device: `cuda:0`.
-- Candidate stats:
+- Smoke candidate stats:
   - train candidates: `2048`;
   - train oracle-positive candidates: `53`;
   - val candidates: `128`;
   - val oracle-positive candidates: `0`.
+- Exact candidate stats:
+  - train candidates: `2048`;
+  - train oracle-positive candidates: `53`;
+  - val candidates: `4096`;
+  - val oracle-positive candidates: `33`.
 
 Fixed val4 replay:
 
@@ -18459,19 +18464,35 @@ Fixed val4 replay:
 | val | raw-LSD MLP | `0.0000` | `0 / 6 / 2` |
 | val | baseline + raw-LSD MLP | `0.0000` | `0 / 6 / 2` |
 
+Fixed exact-val128 replay:
+
+| Split | Variant | Stop-line F1 | Stop-line TP/FP/FN |
+| --- | --- | ---: | --- |
+| train | baseline | `0.6617` | `88 / 27 / 63` |
+| train | raw-LSD MLP | `0.0942` | `17 / 193 / 134` |
+| train | baseline + raw-LSD MLP | `0.4794` | `93 / 144 / 58` |
+| val | baseline | `0.5333` | `32 / 28 / 28` |
+| val | raw-LSD MLP | `0.0663` | `6 / 115 / 54` |
+| val | baseline + raw-LSD MLP | `0.3200` | `32 / 108 / 28` |
+
 Artifacts:
 
 - Summary:
   - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_smoke_val4_20260530/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_exact_val128_20260530/summary.json`.
 - Replay variants:
   - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_smoke_val4_20260530/raw_lsd_variants.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_exact_val128_20260530/raw_lsd_variants.csv`.
 - Candidate rows:
   - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_smoke_val4_20260530/train_candidate_features.csv`;
   - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_smoke_val4_20260530/val_candidate_features.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_exact_val128_20260530/train_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_exact_val128_20260530/val_candidate_features.csv`.
 
 Storage:
 
-- Retained artifact size is about `3.7M`.
+- Retained smoke artifact size is about `3.7M`.
+- Retained exact artifact size is about `11M`.
 - No checkpoint artifact was created.
 - No dataset copy was created.
 
@@ -18481,11 +18502,12 @@ Verification:
 - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_stopline_raw_hough_candidates`.
 - `PYTHONDONTWRITEBYTECODE=1 python tools/probe_pv26_stopline_raw_hough_candidates.py --help | rg "candidate-generator|lsd"`.
 - CUDA train64/val4 raw-LSD candidate verifier training/replay.
+- CUDA train64/exact-val128 raw-LSD candidate verifier training/replay.
 
 Decision:
 
-- LSD is a different raw line generator, but it did not fix the validation candidate-coverage problem.
-- The val4 split had zero oracle-positive LSD candidates, so no threshold, top-k, MLP, or longer verifier training can make this fixed replay recover stop-line TP.
-- Exact-val128 and broader-val512 were skipped because fixed val4 failed the candidate-coverage gate and increased FP.
+- LSD is a different raw line generator, and exact-val128 shows it does create some oracle-positive validation candidates (`33 / 4096` top-k rows).
+- The no-GT verifier/replay still fails the actual task metric: raw-LSD-only exact val drops to `6 / 115 / 54`, and baseline-plus-raw-LSD keeps TP fixed at `32` while adding `+80` FP.
+- Broader-val512 was skipped because exact-val128 is far below the baseline/projection-comp reference and FP-heavy.
 - Do not repeat this as LSD refine mode, blur/Canny edge support, LSD top-k, MLP epoch/LR, dense-score weight, or threshold tuning.
 - Reopen raw-image candidate generation only with a materially different candidate-quality/geometry contract that first creates oracle-positive validation candidates and improves fixed smoke TP/FP/FN.
