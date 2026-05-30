@@ -19055,3 +19055,88 @@ Decision:
 - High-score rows did not separate positives from negatives: among `7` selected candidates, only `2` were oracle-positive, and unselected positive rows remained at much lower scores.
 - Exact-val128, broader-val512, and larger training were skipped because fixed smoke failed the TP/FP gate.
 - Do not repeat this as raw-image offset, quality-threshold, hidden-dim, epoch-count, train-batch scaling, max-append, or duplicate-distance tuning. Reopen only with a materially different lane instance-quality/alignment contract that controls FP before broadening.
+
+## 341. Current-family dense-seeded query decoder: supervised seed proposals still create no matched objects
+
+Context:
+
+- The previous current-family vector-query branches tested raw vector outputs, sigmoid-normalized coordinates, output-side anchor priors, training-only denoise queries, and anchor geometry fed into the decoder query input.
+- Those branches were architecture-level rather than postprocess sweeps, but all failed the first gate by emitting zero matched lane-family objects.
+- This branch tested the explicit reopening condition left in `00C`: a dense-seeded proposal contract, where query inputs come from supervised dense seed heatmaps and top-K feature positions rather than fixed learned or anchor-only queries.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-seeded-query-decoder`.
+- Added `roadmark_architecture="current_family_dense_seed_sigmoid"`.
+- `model/net/roadmark_current_family.py` adds `_DenseSeedQueryHead`.
+  - It predicts a per-task dense seed logit map from each task memory feature.
+  - It gathers top-K memory features at seed positions.
+  - It adds a small normalized-position/score embedding before the existing current-family vector decoder.
+  - It requires the same sigmoid-network coordinate mode as the latest current-family vector branches.
+- `model/engine/loss.py` adds a dense seed auxiliary target/loss.
+  - Lane seed target uses the bottom-most visible lane anchor.
+  - Stop-line and crosswalk seed targets use encoded point centroids.
+  - A small soft `3x3` seed target is optimized with BCE and capped positive weighting.
+- `model/net/heads.py`, `tools/pv26_train/config.py`, and `tools/run_pv26_lane60_probe.py` route the new architecture/experiment.
+- `test/test_pv26_heads.py` and `test/test_pv26_loss_runtime.py` cover forward outputs and gradient contribution from the dense seed logits.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_185008`.
+- CUDA training:
+  - epochs: `2`;
+  - train batches per epoch: `64`;
+  - validation batches: `4`;
+  - batch size: `4`;
+  - device: `cuda:0`;
+  - skipped steps: `0`.
+- Best internal phase objective:
+  - `0.2334973569` at epoch `1`.
+
+Phase-4 val4 epoch-2 result:
+
+| Task | F1 | TP/FP/FN |
+| --- | ---: | --- |
+| lane | `0.0000` | `0 / 97 / 86` |
+| stop-line | `0.0000` | `0 / 0 / 2` |
+| crosswalk | `0.0000` | `0 / 0 / 7` |
+
+Artifacts:
+
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_185008/phase_4/history/epochs.jsonl`.
+- Phase summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_185008/phase_4/summary.json`.
+- Run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_185008/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned after the val4 gate failed.
+- Root `yolo26n.pt` from tests and root `yolo26s.pt` from training were removed.
+- Retained run size after cleanup is about `348K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/roadmark_current_family.py model/net/heads.py model/engine/loss.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_pv26_loss_runtime.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_dense_seed_current_family_vector_decoder test_pv26_loss_runtime.PV26LossRuntimeTests.test_current_family_dense_seed_logits_contribute_to_task_losses`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads test_pv26_loss_runtime test_run_pv26_train`.
+- `python tools/run_pv26_lane60_probe.py --help`.
+- CUDA current-family dense-seeded query decoder smoke training with `2x64` train batches.
+
+Decision:
+
+- This was a model-side architecture/proposal-supervision change, not a threshold or TTA sweep.
+- It is still strongly negative: supervised dense seed queries removed the previous anchor-query-seed crosswalk FP, but did not create any matched lane, stop-line, or crosswalk object.
+- Lane became FP-heavy (`97` FP) while still recovering `0` TP.
+- Exact-val128, broader-val512, and larger training were skipped because the first val4 gate failed on the strongest rejection condition.
+- Do not repeat this as dense seed radius, dense seed loss weight, top-K count, position MLP depth, object threshold, head LR, epoch-count, or train-batch scaling.
+- Reopen current-family vector-query work only with a materially different set-matching or proposal-to-metric quality contract that first creates nonzero matched TP on fixed validation.

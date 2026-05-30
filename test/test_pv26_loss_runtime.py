@@ -211,6 +211,27 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["stop_line_denoise"].grad)
         self.assertIsNotNone(predictions["crosswalk_denoise"].grad)
 
+    def test_current_family_dense_seed_logits_contribute_to_task_losses(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=4)
+        predictions = _zero_predictions(batch_size=1, q_det=4)
+        predictions["lane_dense_seed_logits"] = torch.zeros((1, 1, 32, 40), dtype=torch.float32, requires_grad=True)
+        predictions["stop_line_dense_seed_logits"] = torch.zeros((1, 1, 32, 40), dtype=torch.float32, requires_grad=True)
+        predictions["crosswalk_dense_seed_logits"] = torch.zeros((1, 1, 32, 40), dtype=torch.float32, requires_grad=True)
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0},
+        )
+
+        losses = criterion(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["lane_dense_seed_logits"].grad)
+        self.assertIsNotNone(predictions["stop_line_dense_seed_logits"].grad)
+        self.assertIsNotNone(predictions["crosswalk_dense_seed_logits"].grad)
+
     def test_task_loss_ema_normalizer_scales_ready_task_losses(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

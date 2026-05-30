@@ -2560,6 +2560,96 @@ def _crosswalk_query_denoise_loss(predictions: dict[str, torch.Tensor], encoded:
     return obj_loss + 3.0 * points_loss + 0.5 * shape + 0.5 * area + overlap
 
 
+def _draw_seed_point(target: torch.Tensor, x_value: torch.Tensor, y_value: torch.Tensor) -> None:
+    height, width = int(target.shape[-2]), int(target.shape[-1])
+    if height <= 0 or width <= 0:
+        return
+    x = int(torch.round(x_value.detach()).clamp(0, width - 1).item())
+    y = int(torch.round(y_value.detach()).clamp(0, height - 1).item())
+    for dy in (-1, 0, 1):
+        yy = y + dy
+        if yy < 0 or yy >= height:
+            continue
+        for dx in (-1, 0, 1):
+            xx = x + dx
+            if xx < 0 or xx >= width:
+                continue
+            target[yy, xx] = max(float(target[yy, xx].item()), 1.0 if dx == 0 and dy == 0 else 0.5)
+
+
+def _dense_query_seed_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any], task_name: str) -> torch.Tensor:
+    key = f"{task_name}_dense_seed_logits"
+    logits = predictions.get(key)
+    if not isinstance(logits, torch.Tensor):
+        return _zero_graph(_prediction_reference_tensor(predictions))
+    if logits.ndim != 4 or int(logits.shape[1]) != 1:
+        raise ValueError(f"{key} must have shape [B, 1, H, W]")
+    targets = encoded.get(task_name)
+    mask = encoded.get("mask")
+    if not isinstance(targets, torch.Tensor) or not isinstance(mask, dict):
+        return _zero_graph(logits)
+    source = mask.get(f"{task_name}_source")
+    valid = mask.get(f"{task_name}_valid")
+    if not isinstance(source, torch.Tensor) or not isinstance(valid, torch.Tensor):
+        return _zero_graph(logits)
+    batch_size, _, height, width = logits.shape
+    source = source.to(device=logits.device, dtype=torch.bool)
+    valid = valid.to(device=logits.device, dtype=torch.bool)
+    targets = targets.to(device=logits.device, dtype=logits.dtype)
+    target_map = torch.zeros((batch_size, height, width), device=logits.device, dtype=logits.dtype)
+    scale_x = max(float(width - 1), 1.0) / max(float(NETWORK_HW[1] - 1), 1.0)
+    scale_y = max(float(height - 1), 1.0) / max(float(NETWORK_HW[0] - 1), 1.0)
+    lane_anchor_rows = torch.linspace(
+        float(NETWORK_HW[0] - 1),
+        0.0,
+        LANE_ANCHOR_COUNT,
+        device=logits.device,
+        dtype=logits.dtype,
+    )
+    for batch_index in range(batch_size):
+        if not bool(source[batch_index]):
+            continue
+        row_indices = torch.nonzero(valid[batch_index], as_tuple=False).flatten()
+        for row_index in row_indices.tolist():
+            row = targets[batch_index, int(row_index)]
+            if task_name == "lane":
+                visible = row[LANE_VIS_SLICE] > 0.5
+                visible_indices = torch.nonzero(visible, as_tuple=False).flatten()
+                if int(visible_indices.numel()) == 0:
+                    continue
+                anchor_index = int(visible_indices[0].item())
+                x = row[LANE_X_SLICE][anchor_index] * scale_x
+                y = lane_anchor_rows[anchor_index] * scale_y
+            else:
+                points = row[1:].reshape(-1, 2)
+                if int(points.numel()) == 0:
+                    continue
+                center = points.mean(dim=0)
+                x = center[0] * scale_x
+                y = center[1] * scale_y
+            _draw_seed_point(target_map[batch_index], x, y)
+    supervised = source[:, None, None].expand_as(target_map)
+    if not bool(supervised.any()):
+        return _zero_graph(logits)
+    pred = logits[:, 0]
+    supervised_targets = target_map[supervised]
+    supervised_pred = pred[supervised]
+    positive = supervised_targets > 0.0
+    negative_count = int((~positive).sum().item())
+    positive_count = int(positive.sum().item())
+    pos_weight = torch.tensor(
+        min(max(float(negative_count) / max(float(positive_count), 1.0), 1.0), 128.0),
+        device=logits.device,
+        dtype=logits.dtype,
+    )
+    return F.binary_cross_entropy_with_logits(
+        supervised_pred,
+        supervised_targets,
+        pos_weight=pos_weight,
+        reduction="mean",
+    )
+
+
 class PV26MultiTaskLoss(nn.Module):
     def __init__(
         self,
@@ -3766,10 +3856,11 @@ class PV26MultiTaskLoss(nn.Module):
         obj_loss = _objectness_loss(lane_pred[..., 0], assignment["obj_target"], source_mask)
         aux_loss = _lane_v2_auxiliary_loss(prediction_dict, encoded)
         denoise_loss = _lane_query_denoise_loss(prediction_dict, encoded)
+        seed_loss = _dense_query_seed_loss(prediction_dict, encoded, "lane")
 
         valid = assignment["fg_mask"]
         if not bool(valid.any()):
-            return obj_loss + aux_loss + 0.5 * denoise_loss
+            return obj_loss + aux_loss + 0.5 * denoise_loss + 0.25 * seed_loss
 
         assigned_target = assignment["assigned_target"]
         color_target = assigned_target[..., LANE_COLOR_SLICE].argmax(dim=-1)
@@ -3805,6 +3896,7 @@ class PV26MultiTaskLoss(nn.Module):
             + 0.1 * visibility_tv
             + aux_loss
             + 0.5 * denoise_loss
+            + 0.25 * seed_loss
         )
 
     def _stop_line_loss(self, predictions: dict[str, torch.Tensor] | torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
@@ -3894,17 +3986,18 @@ class PV26MultiTaskLoss(nn.Module):
         obj_loss = _objectness_loss(stop_pred[..., 0], assignment["obj_target"], source_mask)
         aux_loss = _stop_line_v2_auxiliary_loss(prediction_dict, encoded)
         denoise_loss = _stop_line_query_denoise_loss(prediction_dict, encoded)
+        seed_loss = _dense_query_seed_loss(prediction_dict, encoded, "stop_line")
 
         valid = assignment["fg_mask"]
         if not bool(valid.any()):
-            return obj_loss + aux_loss + 0.5 * denoise_loss
+            return obj_loss + aux_loss + 0.5 * denoise_loss + 0.25 * seed_loss
 
         assigned_target = assignment["assigned_target"]
         points_pred = stop_pred[..., 1:][valid].view(-1, STOP_LINE_POINT_COUNT, 2)
         points_target = assigned_target[..., 1:][valid].view(-1, STOP_LINE_POINT_COUNT, 2)
         points_loss = F.smooth_l1_loss(points_pred, points_target, reduction="mean")
         angle_length = _batched_angle_length_cost(points_pred, points_target).mean()
-        return obj_loss + 6.0 * points_loss + 0.5 * angle_length + aux_loss + 0.5 * denoise_loss
+        return obj_loss + 6.0 * points_loss + 0.5 * angle_length + aux_loss + 0.5 * denoise_loss + 0.25 * seed_loss
 
     def _crosswalk_loss(self, predictions: dict[str, torch.Tensor] | torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
         prediction_dict = predictions if isinstance(predictions, dict) else {"crosswalk": predictions}
@@ -3923,6 +4016,7 @@ class PV26MultiTaskLoss(nn.Module):
         cross_source = encoded["mask"]["crosswalk_source"].to(device=cross_pred.device, dtype=torch.bool)
         cross_valid = encoded["mask"]["crosswalk_valid"].to(device=cross_pred.device, dtype=torch.bool)
         denoise_loss = _crosswalk_query_denoise_loss(prediction_dict, encoded)
+        seed_loss = _dense_query_seed_loss(prediction_dict, encoded, "crosswalk")
         assignment = self._build_query_assignment(
             cross_pred,
             cross_target,
@@ -3938,7 +4032,7 @@ class PV26MultiTaskLoss(nn.Module):
 
         valid = assignment["fg_mask"]
         if not bool(valid.any()):
-            return obj_loss + aux_loss + 0.5 * denoise_loss
+            return obj_loss + aux_loss + 0.5 * denoise_loss + 0.25 * seed_loss
 
         assigned_target = assignment["assigned_target"]
         points_pred = cross_pred[..., 1:][valid].view(-1, CROSSWALK_POINT_COUNT, 2)
@@ -3947,7 +4041,16 @@ class PV26MultiTaskLoss(nn.Module):
         shape = _polygon_shape_loss(points_pred, points_target)
         area = _polygon_area_loss(points_pred, points_target)
         overlap = _soft_polygon_iou_loss(points_pred, points_target)
-        return obj_loss + 3.0 * points_loss + 0.5 * shape + 0.5 * area + overlap + aux_loss + 0.5 * denoise_loss
+        return (
+            obj_loss
+            + 3.0 * points_loss
+            + 0.5 * shape
+            + 0.5 * area
+            + overlap
+            + aux_loss
+            + 0.5 * denoise_loss
+            + 0.25 * seed_loss
+        )
 
     def _build_query_assignment(
         self,
