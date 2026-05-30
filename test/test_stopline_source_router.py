@@ -16,6 +16,9 @@ from tools.probe_pv26_stopline_source_router import (
     _source_prediction,
     _source_raster_for_sample,
     _train_raster_router,
+    _predict_utility_router_modes,
+    _train_utility_router,
+    _utility_for_sample,
 )
 
 
@@ -141,6 +144,54 @@ class StoplineSourceRouterTests(unittest.TestCase):
         self.assertIn("endpoint_fusion", ROUTER_MODES)
         self.assertEqual(len(prediction["stop_lines"]), 1)
         self.assertEqual(prediction["stop_lines"][0]["source"], "endpoint_fusion")
+
+    def test_utility_prefers_empty_for_negative_fp_only_sample(self) -> None:
+        primary = {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}]}
+        specialist = {"stop_lines": []}
+        gt = {"stop_lines": []}
+
+        utilities = _utility_for_sample(primary, specialist, gt)
+
+        self.assertEqual(len(utilities), len(ROUTER_MODES))
+        self.assertEqual(int(np.argmax(utilities)), ROUTER_MODES.index("empty"))
+        self.assertLess(utilities[ROUTER_MODES.index("primary")], utilities[ROUTER_MODES.index("empty")])
+
+    def test_utility_prefers_true_positive_source_over_empty(self) -> None:
+        matched = {"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}
+        primary = {"lanes": [], "stop_lines": [matched]}
+        specialist = {"stop_lines": []}
+        gt = {"stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]]}]}
+
+        utilities = _utility_for_sample(primary, specialist, gt)
+
+        self.assertGreater(utilities[ROUTER_MODES.index("primary")], utilities[ROUTER_MODES.index("empty")])
+        self.assertNotEqual(int(np.argmax(utilities)), ROUTER_MODES.index("empty"))
+
+    def test_train_utility_router_can_fit_tiny_contract(self) -> None:
+        features: list[list[float]] = []
+        utilities: list[list[float]] = []
+        for index in range(len(ROUTER_MODES)):
+            feature = [0.0 for _ in ROUTER_MODES]
+            feature[index] = 1.0
+            target = [-1.0 for _ in ROUTER_MODES]
+            target[index] = 1.0
+            features.append(feature)
+            utilities.append(target)
+
+        model, mean, std, diagnostics = _train_utility_router(
+            features,
+            utilities,
+            hidden_dim=12,
+            epochs=100,
+            lr=5.0e-2,
+            weight_decay=0.0,
+            seed=123,
+        )
+        choices = _predict_utility_router_modes(model, mean, std, features)
+
+        self.assertEqual(choices, list(range(len(ROUTER_MODES))))
+        self.assertEqual(diagnostics["feature_count"], len(ROUTER_MODES))
+        self.assertGreaterEqual(float(diagnostics["train_top1_accuracy"]), 0.99)
 
     def test_train_raster_router_can_fit_tiny_contract(self) -> None:
         rasters: list[np.ndarray] = []

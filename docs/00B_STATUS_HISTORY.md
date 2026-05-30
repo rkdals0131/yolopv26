@@ -21611,3 +21611,122 @@ Decision:
 - Broader-val512 and larger training are skipped because exact failed.
 - Close this as mask-first + det-source hard-negative feeding, sampler ratios, task-positive fraction, negative-mode scope, head-LR, epoch-count, and train-batch scaling under the same mask-first emit contract.
 - Reopen only with a materially different stop-line geometry/candidate-generation or no-GT source-quality signal that first beats primary projection-comp on fixed exact TP/FP/FN.
+
+## 369. 2026-05-31 Stop-line utility-regression source-router: changed objective still exact-negative
+
+Context:
+
+- Previous source-router work kept showing large exact oracle headroom (`34 / 2 / 26`, F1 `0.7083`) while learned no-GT routers stayed below primary projection-comp.
+- Prior closed axes mostly changed source features (`output_stats`, `dense_aligned`, `raster_cnn`, `line_profile`, `lane_topology`) or source geometry (`endpoint_fusion`).
+- This run changed the router supervision objective instead:
+  - old objective: classify one best source label by cross-entropy;
+  - new objective: regress a full per-source utility vector and choose the highest predicted utility.
+- This is not a dataset copy, threshold sweep, or feature-mode repeat. The changed axis is the learned router objective.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_stopline_source_router.py` now exposes:
+  - `--router-objective ce`;
+  - `--router-objective utility_regression`.
+- Default behavior remains `ce`.
+- Utility target:
+  - no stop-line GT: utility is `-FP`, with a tiny stable tie-break so empty wins equal no-FP cases;
+  - stop-line GT present: utility is `2*TP - 0.75*FP - FN + F1`, with the same tiny tie-break.
+- Utility router training:
+  - MLP output dim remains one logit/value per `ROUTER_MODES` entry;
+  - loss is SmoothL1 utility regression plus a small pairwise ranking term;
+  - prediction uses argmax predicted utility.
+- Summary exports now include:
+  - `router_objective`;
+  - `val_utility_choice_counts`;
+  - utility choice diagnostics.
+- `test/test_stopline_source_router.py` adds coverage for:
+  - negative FP-only sample prefers `empty`;
+  - true-positive source beats `empty`;
+  - utility router can fit a tiny one-hot contract.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Primary checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Stop-line specialist checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Runtime contracts:
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - `--stop-line-lane60-experiment stopline_projection_comp_runtime`;
+  - `--feature-mode output_stats`;
+  - `--crosswalk-polygon-mode hull`;
+  - validation epoch `2`;
+  - batch size `4`.
+- Exact-val128 train64:
+  - router train batches `64`;
+  - max val batches `128`;
+  - train examples `256`;
+  - train top-1 utility-choice accuracy `0.8633`.
+- Exact-val128 train128:
+  - router train batches `128`;
+  - max val batches `128`;
+  - train examples `512`;
+  - train top-1 utility-choice accuracy `0.8418`.
+
+Exact-val128 result:
+
+| Variant | Train batches | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | ---: | --- | ---: |
+| primary | n/a | `0.5888` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| learned_utility_router | `64` | `0.5888` | `0.4918` | `30 / 32 / 30` | `0.5988` |
+| learned_utility_router | `128` | `0.5888` | `0.4878` | `30 / 33 / 30` | `0.5988` |
+| oracle_router | n/a | `0.5888` | `0.7083` | `34 / 2 / 26` | `0.5988` |
+| oracle_utility_router | n/a | `0.5888` | `0.7083` | `34 / 2 / 26` | `0.5988` |
+
+Choice-count diagnosis:
+
+- Train64 validation learned choices:
+  - primary `0`, specialist `0`, endpoint_fusion `4`, union_dedupe `9`, agreement `46`, empty `453`.
+- Train128 validation learned choices:
+  - primary `0`, specialist `0`, endpoint_fusion `0`, union_dedupe `10`, agreement `49`, empty `453`.
+- Validation utility/oracle choices were:
+  - primary `1`, specialist `0`, endpoint_fusion `3`, union_dedupe `1`, agreement `29`, empty `478`.
+- The learned utility router still over-emits non-empty agreement/union choices compared with the oracle distribution, adding FP without recovering enough TP.
+
+Artifacts:
+
+- Train64 exact metrics:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_source_router_utility_output_stats_train64_exact_val128_20260531/metrics.csv`.
+- Train64 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_source_router_utility_output_stats_train64_exact_val128_20260531/summary.json`.
+- Train128 exact metrics:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_source_router_utility_output_stats_train128_exact_val128_20260531/metrics.csv`.
+- Train128 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_source_router_utility_output_stats_train128_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- Both exports are CSV/summary-only, about `64K` each.
+- No router checkpoint was saved.
+- Temporary root `yolo26s.pt` was pruned after the runs.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_source_router`.
+- CUDA train64/exact-val128 utility-regression source-router run on the existing canonical dataset root.
+- CUDA train128/exact-val128 larger-coverage utility-regression source-router run on the existing canonical dataset root.
+
+Decision:
+
+- The utility-regression objective is implemented and trainable.
+- It does not beat the exact primary projection-comp stop-line gate:
+  - train64 learned utility F1 `0.4918`;
+  - train128 learned utility F1 `0.4878`;
+  - primary projection-comp F1 `0.5333`.
+- Oracle and oracle-utility routing still show source-choice headroom (`0.7083`), but the output-stat utility objective does not recover it without GT.
+- Broader-val512 is skipped because exact failed.
+- Close this as output-stat utility-regression source routing, pairwise utility loss, router epoch/LR defaults, and train-batch scaling to `128` on the current primary/specialist/union/agreement/empty source-choice surface.
+- Reopen source routing only with a materially different candidate-generation/geometry or true no-GT source-quality signal that first improves fixed exact TP/FP/FN over primary projection-comp.

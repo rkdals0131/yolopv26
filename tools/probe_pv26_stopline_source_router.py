@@ -131,6 +131,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--router-lr", type=float, default=3.0e-3)
     parser.add_argument("--router-weight-decay", type=float, default=1.0e-4)
     parser.add_argument(
+        "--router-objective",
+        choices=("ce", "utility_regression"),
+        default="ce",
+        help=(
+            "ce keeps the closed scalar best-source classification contract. "
+            "utility_regression trains the router to predict each source mode's "
+            "per-sample metric utility before choosing the best predicted source."
+        ),
+    )
+    parser.add_argument(
         "--feature-mode",
         choices=("output_stats", "dense_aligned", "line_profile", "lane_topology", "raster_cnn"),
         default="output_stats",
@@ -603,6 +613,29 @@ def _label_for_sample(
             ranked.append((f1, tp, -fp, index))
     ranked.sort(reverse=True)
     return int(ranked[0][3])
+
+
+def _utility_for_sample(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+    gt_sample: dict[str, Any],
+) -> list[float]:
+    gt_count = len(gt_sample.get("stop_lines", []))
+    utilities: list[float] = []
+    for index, mode in enumerate(ROUTER_MODES):
+        prediction = _source_prediction(primary_sample, specialist_sample, mode)
+        metrics = _sample_stopline_metrics(prediction, gt_sample)
+        tp = float(metrics.get("tp", 0.0))
+        fp = float(metrics.get("fp", 0.0))
+        fn = float(metrics.get("fn", 0.0))
+        f1 = float(metrics.get("f1", 0.0))
+        if gt_count <= 0:
+            utility = -fp
+        else:
+            utility = 2.0 * tp - 0.75 * fp - fn + f1
+        utility += 1.0e-4 * float(index)
+        utilities.append(0.0 if not math.isfinite(float(utility)) else float(utility))
+    return utilities
 
 
 def _features_for_sample(primary_sample: dict[str, Any], specialist_sample: dict[str, Any]) -> list[float]:
@@ -1129,11 +1162,19 @@ def _build_predictions_for_loader(
     dense_feature_samples: int,
     dense_feature_side_offset: float,
     raster_size: tuple[int, int],
-) -> tuple[list[dict[str, Any]], list[list[float]], list[np.ndarray], list[int], dict[str, list[dict[str, Any]]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[list[float]],
+    list[np.ndarray],
+    list[int],
+    list[list[float]],
+    dict[str, list[dict[str, Any]]],
+]:
     raw_batches: list[dict[str, Any]] = []
     features: list[list[float]] = []
     rasters: list[np.ndarray] = []
     labels: list[int] = []
+    utilities: list[list[float]] = []
     predictions_by_mode: dict[str, list[dict[str, Any]]] = {mode: [] for mode in ROUTER_MODES}
 
     with torch.no_grad():
@@ -1255,10 +1296,11 @@ def _build_predictions_for_loader(
                     )
                 features.append(sample_features)
                 labels.append(_label_for_sample(primary_sample, specialist_sample, gt_sample))
+                utilities.append(_utility_for_sample(primary_sample, specialist_sample, gt_sample))
                 for mode in ROUTER_MODES:
                     predictions_by_mode[mode].append(_source_prediction(primary_sample, specialist_sample, mode))
 
-    return raw_batches, features, rasters, labels, predictions_by_mode
+    return raw_batches, features, rasters, labels, utilities, predictions_by_mode
 
 
 def _train_router(
@@ -1303,6 +1345,67 @@ def _train_router(
         "label_counts": {mode: int(counts[index].item()) for index, mode in enumerate(ROUTER_MODES)},
         "class_weights": {mode: float(weights[index].item()) for index, mode in enumerate(ROUTER_MODES)},
         "train_accuracy": train_accuracy,
+        "loss_first": losses[0] if losses else None,
+        "loss_last": losses[-1] if losses else None,
+    }
+    return model, mean, std, diagnostics
+
+
+def _train_utility_router(
+    features: list[list[float]],
+    utilities: list[list[float]],
+    *,
+    hidden_dim: int,
+    epochs: int,
+    lr: float,
+    weight_decay: float,
+    seed: int,
+) -> tuple[SourceRouterMLP, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    if not features:
+        raise ValueError("no router training features were collected")
+    if len(features) != len(utilities):
+        raise ValueError(f"feature/utility length mismatch: {len(features)} != {len(utilities)}")
+    torch.manual_seed(int(seed))
+    random.seed(int(seed))
+    np.random.seed(int(seed) % (2**32 - 1))
+    x = torch.tensor(features, dtype=torch.float32)
+    target = torch.tensor(utilities, dtype=torch.float32)
+    if target.ndim != 2 or int(target.shape[1]) != len(ROUTER_MODES):
+        raise ValueError(f"utility target shape must be Nx{len(ROUTER_MODES)}, got {tuple(target.shape)}")
+    mean = x.mean(dim=0)
+    std = x.std(dim=0).clamp_min(1.0e-6)
+    x_norm = (x - mean) / std
+    model = SourceRouterMLP(x_norm.shape[1], int(hidden_dim), len(ROUTER_MODES))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+    target_choices = target.argmax(dim=1)
+    counts = torch.bincount(target_choices, minlength=len(ROUTER_MODES)).to(dtype=torch.float32)
+    losses: list[float] = []
+    for _ in range(int(epochs)):
+        optimizer.zero_grad(set_to_none=True)
+        predicted = model(x_norm)
+        point_loss = F.smooth_l1_loss(predicted, target)
+        target_delta = target.unsqueeze(2) - target.unsqueeze(1)
+        predicted_delta = predicted.unsqueeze(2) - predicted.unsqueeze(1)
+        pair_mask = target_delta > 1.0e-4
+        if bool(pair_mask.any()):
+            rank_loss = F.softplus(-predicted_delta[pair_mask]).mean()
+            loss = point_loss + 0.25 * rank_loss
+        else:
+            loss = point_loss
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach().cpu()))
+    with torch.no_grad():
+        train_pred = model(x_norm).argmax(dim=1)
+        train_top1_accuracy = float((train_pred == target_choices).float().mean().item())
+    diagnostics = {
+        "feature_count": int(x.shape[0]),
+        "feature_dim": int(x.shape[1]),
+        "utility_choice_counts": {mode: int(counts[index].item()) for index, mode in enumerate(ROUTER_MODES)},
+        "utility_mean_by_mode": {
+            mode: float(target[:, index].mean().item()) for index, mode in enumerate(ROUTER_MODES)
+        },
+        "train_top1_accuracy": train_top1_accuracy,
         "loss_first": losses[0] if losses else None,
         "loss_last": losses[-1] if losses else None,
     }
@@ -1380,6 +1483,15 @@ def _predict_router_modes(
         x = torch.tensor(features, dtype=torch.float32)
         logits = model((x - mean) / std)
         return [int(value) for value in logits.argmax(dim=1).tolist()]
+
+
+def _predict_utility_router_modes(
+    model: SourceRouterMLP,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    features: list[list[float]],
+) -> list[int]:
+    return _predict_router_modes(model, mean, std, features)
 
 
 def _predict_raster_router_modes(
@@ -1498,6 +1610,10 @@ def _postprocess_brief(config: Any) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
+    router_objective = str(args.router_objective).strip().lower()
+    feature_mode = str(args.feature_mode).strip().lower()
+    if feature_mode == "raster_cnn" and router_objective != "ce":
+        raise ValueError("utility_regression is currently supported only for non-raster MLP router features")
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     stop_line_checkpoint = Path(args.stop_line_checkpoint).expanduser().resolve()
     if not checkpoint.is_file():
@@ -1567,7 +1683,14 @@ def main() -> int:
     )
 
     raster_size = (int(args.raster_height), int(args.raster_width))
-    train_raw_batches, train_features, train_rasters, train_labels, _train_predictions = _build_predictions_for_loader(
+    (
+        train_raw_batches,
+        train_features,
+        train_rasters,
+        train_labels,
+        train_utilities,
+        _train_predictions,
+    ) = _build_predictions_for_loader(
         loader=train_loader,
         max_batches=int(args.router_train_batches),
         evaluator=evaluator,
@@ -1580,7 +1703,7 @@ def main() -> int:
         dense_feature_side_offset=float(args.dense_feature_side_offset),
         raster_size=raster_size,
     )
-    if str(args.feature_mode).strip().lower() == "raster_cnn":
+    if feature_mode == "raster_cnn":
         router, feature_mean, feature_std, router_diagnostics = _train_raster_router(
             train_rasters,
             train_labels,
@@ -1590,6 +1713,16 @@ def main() -> int:
             weight_decay=float(args.router_weight_decay),
             seed=int(args.seed),
             device=train_config.device,
+        )
+    elif router_objective == "utility_regression":
+        router, feature_mean, feature_std, router_diagnostics = _train_utility_router(
+            train_features,
+            train_utilities,
+            hidden_dim=int(args.router_hidden_dim),
+            epochs=int(args.router_epochs),
+            lr=float(args.router_lr),
+            weight_decay=float(args.router_weight_decay),
+            seed=int(args.seed),
         )
     else:
         router, feature_mean, feature_std, router_diagnostics = _train_router(
@@ -1601,7 +1734,14 @@ def main() -> int:
             weight_decay=float(args.router_weight_decay),
             seed=int(args.seed),
         )
-    val_raw_batches, val_features, val_rasters, val_labels, val_predictions_by_mode = _build_predictions_for_loader(
+    (
+        val_raw_batches,
+        val_features,
+        val_rasters,
+        val_labels,
+        val_utilities,
+        val_predictions_by_mode,
+    ) = _build_predictions_for_loader(
         loader=val_loader,
         max_batches=int(args.max_val_batches),
         evaluator=evaluator,
@@ -1614,18 +1754,27 @@ def main() -> int:
         dense_feature_side_offset=float(args.dense_feature_side_offset),
         raster_size=raster_size,
     )
-    if str(args.feature_mode).strip().lower() == "raster_cnn":
+    if feature_mode == "raster_cnn":
         val_choices = _predict_raster_router_modes(router, feature_mean, feature_std, val_rasters)
+    elif router_objective == "utility_regression":
+        val_choices = _predict_utility_router_modes(router, feature_mean, feature_std, val_features)
     else:
         val_choices = _predict_router_modes(router, feature_mean, feature_std, val_features)
     val_oracle_choices = [int(value) for value in val_labels]
+    val_utility_choices = [int(np.argmax(values)) for values in val_utilities]
 
     merged_raw = _merge_raw_batches(val_raw_batches)
     predictions_by_variant: dict[str, list[dict[str, Any]]] = {
         mode: val_predictions_by_mode[mode] for mode in ROUTER_MODES
     }
-    predictions_by_variant["learned_router"] = _prediction_rows_from_choices(val_predictions_by_mode, val_choices)
+    learned_variant_name = "learned_utility_router" if router_objective == "utility_regression" else "learned_router"
+    predictions_by_variant[learned_variant_name] = _prediction_rows_from_choices(val_predictions_by_mode, val_choices)
     predictions_by_variant["oracle_router"] = _prediction_rows_from_choices(val_predictions_by_mode, val_oracle_choices)
+    if router_objective == "utility_regression":
+        predictions_by_variant["oracle_utility_router"] = _prediction_rows_from_choices(
+            val_predictions_by_mode,
+            val_utility_choices,
+        )
     metrics_by_variant = {
         name: augment_lane_family_metrics(summarize_pv26_metrics(predictions, merged_raw))
         for name, predictions in predictions_by_variant.items()
@@ -1664,6 +1813,7 @@ def main() -> int:
         "router_train_batches": int(args.router_train_batches),
         "max_val_batches": int(args.max_val_batches),
         "feature_mode": str(args.feature_mode),
+        "router_objective": router_objective,
         "router_kind": "raster_cnn" if isinstance(router, SourceRouterRasterCNN) else "mlp",
         "dense_feature_samples": int(args.dense_feature_samples),
         "dense_feature_side_offset": float(args.dense_feature_side_offset),
@@ -1675,6 +1825,7 @@ def main() -> int:
         "router_modes": list(ROUTER_MODES),
         "router_diagnostics": router_diagnostics,
         "val_label_counts": _choice_counts(val_oracle_choices),
+        "val_utility_choice_counts": _choice_counts(val_utility_choices),
         "val_router_choice_counts": _choice_counts(val_choices),
         "train_config": _config_brief(train_config),
         "stop_line_train_config": _config_brief(stop_line_train_config),
