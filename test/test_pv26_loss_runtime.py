@@ -184,6 +184,33 @@ class _FakeSingleMatchTaskAlignedAssigner(nn.Module):
 
 
 class PV26LossRuntimeTests(unittest.TestCase):
+    def test_current_family_denoise_vectors_contribute_to_task_losses(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=4)
+        predictions = _zero_predictions(batch_size=1, q_det=4)
+        predictions["lane_denoise"] = encoded["lane"].clone().requires_grad_(True)
+        predictions["lane_denoise_target"] = encoded["lane"].clone()
+        predictions["lane_denoise_valid"] = encoded["mask"]["lane_valid"].clone()
+        predictions["stop_line_denoise"] = encoded["stop_line"].clone().requires_grad_(True)
+        predictions["stop_line_denoise_target"] = encoded["stop_line"].clone()
+        predictions["stop_line_denoise_valid"] = encoded["mask"]["stop_line_valid"].clone()
+        predictions["crosswalk_denoise"] = encoded["crosswalk"].clone().requires_grad_(True)
+        predictions["crosswalk_denoise_target"] = encoded["crosswalk"].clone()
+        predictions["crosswalk_denoise_valid"] = encoded["mask"]["crosswalk_valid"].clone()
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"lane": 1.0, "stop_line": 1.0, "crosswalk": 1.0},
+        )
+
+        losses = criterion(predictions, encoded)
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        losses["total"].backward()
+        self.assertIsNotNone(predictions["lane_denoise"].grad)
+        self.assertIsNotNone(predictions["stop_line_denoise"].grad)
+        self.assertIsNotNone(predictions["crosswalk_denoise"].grad)
+
     def test_task_loss_ema_normalizer_scales_ready_task_losses(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

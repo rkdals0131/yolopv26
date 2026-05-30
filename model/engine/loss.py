@@ -2396,6 +2396,103 @@ def _crosswalk_match_quality(pred_rows: torch.Tensor, target_rows: torch.Tensor)
     return quality
 
 
+def _query_denoise_source_mask(
+    encoded: dict[str, Any],
+    task_name: str,
+    *,
+    device: torch.device,
+    shape: torch.Size,
+) -> torch.Tensor:
+    mask = encoded.get("mask")
+    if not isinstance(mask, dict):
+        return torch.zeros(shape, device=device, dtype=torch.bool)
+    source = mask.get(f"{task_name}_source")
+    if not isinstance(source, torch.Tensor):
+        return torch.zeros(shape, device=device, dtype=torch.bool)
+    return source.to(device=device, dtype=torch.bool)[:, None].expand(shape)
+
+
+def _lane_query_denoise_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> torch.Tensor:
+    pred = predictions.get("lane_denoise")
+    target = predictions.get("lane_denoise_target")
+    valid = predictions.get("lane_denoise_valid")
+    if not isinstance(pred, torch.Tensor) or not isinstance(target, torch.Tensor) or not isinstance(valid, torch.Tensor):
+        return _zero_graph(_prediction_reference_tensor(predictions))
+    valid = valid.to(device=pred.device, dtype=torch.bool)
+    target = target.to(device=pred.device, dtype=pred.dtype)
+    obj_mask = _query_denoise_source_mask(encoded, "lane", device=pred.device, shape=valid.shape)
+    obj_loss = _objectness_loss(pred[..., 0], valid.to(dtype=pred.dtype), obj_mask)
+    if not bool(valid.any()):
+        return obj_loss
+    matched_pred = pred[valid]
+    matched_target = target[valid]
+    visible = matched_target[:, LANE_VIS_SLICE] > 0.5
+    if bool(visible.any()):
+        x_loss = F.smooth_l1_loss(
+            matched_pred[:, LANE_X_SLICE][visible],
+            matched_target[:, LANE_X_SLICE][visible],
+            reduction="mean",
+        )
+    else:
+        x_loss = _zero_graph(matched_pred)
+    vis_loss = F.binary_cross_entropy_with_logits(
+        matched_pred[:, LANE_VIS_SLICE],
+        matched_target[:, LANE_VIS_SLICE],
+        reduction="mean",
+    )
+    color_loss = F.cross_entropy(
+        matched_pred[:, LANE_COLOR_SLICE],
+        matched_target[:, LANE_COLOR_SLICE].argmax(dim=-1),
+        reduction="mean",
+    )
+    type_loss = F.cross_entropy(
+        matched_pred[:, LANE_TYPE_SLICE],
+        matched_target[:, LANE_TYPE_SLICE].argmax(dim=-1),
+        reduction="mean",
+    )
+    return obj_loss + 3.0 * x_loss + vis_loss + color_loss + 0.5 * type_loss
+
+
+def _stop_line_query_denoise_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> torch.Tensor:
+    pred = predictions.get("stop_line_denoise")
+    target = predictions.get("stop_line_denoise_target")
+    valid = predictions.get("stop_line_denoise_valid")
+    if not isinstance(pred, torch.Tensor) or not isinstance(target, torch.Tensor) or not isinstance(valid, torch.Tensor):
+        return _zero_graph(_prediction_reference_tensor(predictions))
+    valid = valid.to(device=pred.device, dtype=torch.bool)
+    target = target.to(device=pred.device, dtype=pred.dtype)
+    obj_mask = _query_denoise_source_mask(encoded, "stop_line", device=pred.device, shape=valid.shape)
+    obj_loss = _objectness_loss(pred[..., 0], valid.to(dtype=pred.dtype), obj_mask)
+    if not bool(valid.any()):
+        return obj_loss
+    pred_points = pred[..., 1:][valid].view(-1, STOP_LINE_POINT_COUNT, 2)
+    target_points = target[..., 1:][valid].view(-1, STOP_LINE_POINT_COUNT, 2)
+    points_loss = F.smooth_l1_loss(pred_points, target_points, reduction="mean")
+    angle_length = _batched_angle_length_cost(pred_points, target_points).mean()
+    return obj_loss + 6.0 * points_loss + 0.5 * angle_length
+
+
+def _crosswalk_query_denoise_loss(predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> torch.Tensor:
+    pred = predictions.get("crosswalk_denoise")
+    target = predictions.get("crosswalk_denoise_target")
+    valid = predictions.get("crosswalk_denoise_valid")
+    if not isinstance(pred, torch.Tensor) or not isinstance(target, torch.Tensor) or not isinstance(valid, torch.Tensor):
+        return _zero_graph(_prediction_reference_tensor(predictions))
+    valid = valid.to(device=pred.device, dtype=torch.bool)
+    target = target.to(device=pred.device, dtype=pred.dtype)
+    obj_mask = _query_denoise_source_mask(encoded, "crosswalk", device=pred.device, shape=valid.shape)
+    obj_loss = _objectness_loss(pred[..., 0], valid.to(dtype=pred.dtype), obj_mask)
+    if not bool(valid.any()):
+        return obj_loss
+    pred_points = pred[..., 1:][valid].view(-1, CROSSWALK_POINT_COUNT, 2)
+    target_points = target[..., 1:][valid].view(-1, CROSSWALK_POINT_COUNT, 2)
+    points_loss = _cyclic_contour_loss(pred_points, target_points)
+    shape = _polygon_shape_loss(pred_points, target_points)
+    area = _polygon_area_loss(pred_points, target_points)
+    overlap = _soft_polygon_iou_loss(pred_points, target_points)
+    return obj_loss + 3.0 * points_loss + 0.5 * shape + 0.5 * area + overlap
+
+
 class PV26MultiTaskLoss(nn.Module):
     def __init__(
         self,
@@ -3582,10 +3679,11 @@ class PV26MultiTaskLoss(nn.Module):
         source_mask = lane_source[:, None].expand_as(lane_pred[..., 0])
         obj_loss = _objectness_loss(lane_pred[..., 0], assignment["obj_target"], source_mask)
         aux_loss = _lane_v2_auxiliary_loss(prediction_dict, encoded)
+        denoise_loss = _lane_query_denoise_loss(prediction_dict, encoded)
 
         valid = assignment["fg_mask"]
         if not bool(valid.any()):
-            return obj_loss + aux_loss
+            return obj_loss + aux_loss + 0.5 * denoise_loss
 
         assigned_target = assignment["assigned_target"]
         color_target = assigned_target[..., LANE_COLOR_SLICE].argmax(dim=-1)
@@ -3620,6 +3718,7 @@ class PV26MultiTaskLoss(nn.Module):
             + 0.25 * smoothness
             + 0.1 * visibility_tv
             + aux_loss
+            + 0.5 * denoise_loss
         )
 
     def _stop_line_loss(self, predictions: dict[str, torch.Tensor] | torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
@@ -3708,17 +3807,18 @@ class PV26MultiTaskLoss(nn.Module):
         source_mask = stop_source[:, None].expand_as(stop_pred[..., 0])
         obj_loss = _objectness_loss(stop_pred[..., 0], assignment["obj_target"], source_mask)
         aux_loss = _stop_line_v2_auxiliary_loss(prediction_dict, encoded)
+        denoise_loss = _stop_line_query_denoise_loss(prediction_dict, encoded)
 
         valid = assignment["fg_mask"]
         if not bool(valid.any()):
-            return obj_loss + aux_loss
+            return obj_loss + aux_loss + 0.5 * denoise_loss
 
         assigned_target = assignment["assigned_target"]
         points_pred = stop_pred[..., 1:][valid].view(-1, STOP_LINE_POINT_COUNT, 2)
         points_target = assigned_target[..., 1:][valid].view(-1, STOP_LINE_POINT_COUNT, 2)
         points_loss = F.smooth_l1_loss(points_pred, points_target, reduction="mean")
         angle_length = _batched_angle_length_cost(points_pred, points_target).mean()
-        return obj_loss + 6.0 * points_loss + 0.5 * angle_length + aux_loss
+        return obj_loss + 6.0 * points_loss + 0.5 * angle_length + aux_loss + 0.5 * denoise_loss
 
     def _crosswalk_loss(self, predictions: dict[str, torch.Tensor] | torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
         prediction_dict = predictions if isinstance(predictions, dict) else {"crosswalk": predictions}
@@ -3736,6 +3836,7 @@ class PV26MultiTaskLoss(nn.Module):
         cross_target = encoded["crosswalk"].to(device=cross_pred.device, dtype=torch.float32)
         cross_source = encoded["mask"]["crosswalk_source"].to(device=cross_pred.device, dtype=torch.bool)
         cross_valid = encoded["mask"]["crosswalk_valid"].to(device=cross_pred.device, dtype=torch.bool)
+        denoise_loss = _crosswalk_query_denoise_loss(prediction_dict, encoded)
         assignment = self._build_query_assignment(
             cross_pred,
             cross_target,
@@ -3751,7 +3852,7 @@ class PV26MultiTaskLoss(nn.Module):
 
         valid = assignment["fg_mask"]
         if not bool(valid.any()):
-            return obj_loss + aux_loss
+            return obj_loss + aux_loss + 0.5 * denoise_loss
 
         assigned_target = assignment["assigned_target"]
         points_pred = cross_pred[..., 1:][valid].view(-1, CROSSWALK_POINT_COUNT, 2)
@@ -3760,7 +3861,7 @@ class PV26MultiTaskLoss(nn.Module):
         shape = _polygon_shape_loss(points_pred, points_target)
         area = _polygon_area_loss(points_pred, points_target)
         overlap = _soft_polygon_iou_loss(points_pred, points_target)
-        return obj_loss + 3.0 * points_loss + 0.5 * shape + 0.5 * area + overlap + aux_loss
+        return obj_loss + 3.0 * points_loss + 0.5 * shape + 0.5 * area + overlap + aux_loss + 0.5 * denoise_loss
 
     def _build_query_assignment(
         self,

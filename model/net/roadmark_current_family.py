@@ -190,6 +190,11 @@ class _LaneRowAnchorHead(nn.Module):
 
     def forward(self, fused_feature: torch.Tensor) -> torch.Tensor:
         lane_memory = self.memory(fused_feature)
+        batch_size = int(lane_memory.shape[0])
+        query = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        return self.forward_with_query(lane_memory, query)
+
+    def forward_with_query(self, lane_memory: torch.Tensor, query: torch.Tensor) -> torch.Tensor:
         batch_size, channels, height, width = lane_memory.shape
         memory_tokens = lane_memory.flatten(2).transpose(1, 2).contiguous()
         memory_pos = _build_2d_sincos_position_encoding(
@@ -199,7 +204,6 @@ class _LaneRowAnchorHead(nn.Module):
             device=lane_memory.device,
             dtype=lane_memory.dtype,
         ).unsqueeze(0).expand(batch_size, -1, -1)
-        query = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
         for decoder_layer in self.decoder_layers:
             query = decoder_layer(query, memory_tokens, memory_pos=memory_pos)
         return self.predictor(query)
@@ -224,7 +228,7 @@ class _SpatialQueryDecoderHead(nn.Module):
         )
         self.predictor = nn.Linear(hidden_dim, vector_dim)
 
-    def forward(self, memory_feature: torch.Tensor) -> torch.Tensor:
+    def forward(self, memory_feature: torch.Tensor, query_seed: torch.Tensor | None = None) -> torch.Tensor:
         if not self.force_float32:
             batch_size, channels, height, width = memory_feature.shape
             memory_tokens = memory_feature.flatten(2).transpose(1, 2).contiguous()
@@ -235,7 +239,11 @@ class _SpatialQueryDecoderHead(nn.Module):
                 device=memory_feature.device,
                 dtype=memory_feature.dtype,
             ).unsqueeze(0).expand(batch_size, -1, -1)
-            query = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+            query = (
+                query_seed.to(device=memory_feature.device, dtype=memory_feature.dtype)
+                if isinstance(query_seed, torch.Tensor)
+                else self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+            )
             for decoder_layer in self.decoder_layers:
                 query = decoder_layer(query, memory_tokens, memory_pos=memory_pos)
             return self.predictor(query)
@@ -256,7 +264,11 @@ class _SpatialQueryDecoderHead(nn.Module):
                 device=stable_memory.device,
                 dtype=stable_memory.dtype,
             ).unsqueeze(0).expand(batch_size, -1, -1)
-            query = self.query_embed.weight.to(dtype=torch.float32).unsqueeze(0).expand(batch_size, -1, -1)
+            query = (
+                query_seed.to(device=stable_memory.device, dtype=torch.float32)
+                if isinstance(query_seed, torch.Tensor)
+                else self.query_embed.weight.to(dtype=torch.float32).unsqueeze(0).expand(batch_size, -1, -1)
+            )
             for decoder_layer in self.decoder_layers:
                 query = decoder_layer(query, memory_tokens, memory_pos=memory_pos)
             return self.predictor(query)
@@ -270,12 +282,14 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         *,
         coordinate_mode: str = "raw",
         anchor_template_enabled: bool = False,
+        denoise_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
         if self.coordinate_mode not in {"raw", "sigmoid_network"}:
             raise ValueError("CurrentFamilyRoadMarkHeads coordinate_mode must be one of: raw, sigmoid_network")
         self.anchor_template_enabled = bool(anchor_template_enabled)
+        self.denoise_enabled = bool(denoise_enabled)
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -329,16 +343,45 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             self.register_parameter("lane_anchor_template", None)
             self.register_parameter("stop_line_anchor_template", None)
             self.register_parameter("crosswalk_anchor_template", None)
+        if self.denoise_enabled:
+            if self.coordinate_mode != "sigmoid_network":
+                raise ValueError("current-family denoising requires sigmoid_network coordinate mode")
+            self.lane_denoise_input = nn.Sequential(
+                nn.Linear(LANE_VECTOR_DIM, LANE_HIDDEN_DIM),
+                nn.LayerNorm(LANE_HIDDEN_DIM),
+                nn.SiLU(inplace=True),
+                nn.Linear(LANE_HIDDEN_DIM, LANE_HIDDEN_DIM),
+            )
+            self.stop_line_denoise_input = nn.Sequential(
+                nn.Linear(STOP_LINE_VECTOR_DIM, LANE_HIDDEN_DIM),
+                nn.LayerNorm(LANE_HIDDEN_DIM),
+                nn.SiLU(inplace=True),
+                nn.Linear(LANE_HIDDEN_DIM, LANE_HIDDEN_DIM),
+            )
+            self.crosswalk_denoise_input = nn.Sequential(
+                nn.Linear(CROSSWALK_VECTOR_DIM, LANE_HIDDEN_DIM),
+                nn.LayerNorm(LANE_HIDDEN_DIM),
+                nn.SiLU(inplace=True),
+                nn.Linear(LANE_HIDDEN_DIM, LANE_HIDDEN_DIM),
+            )
+        else:
+            self.lane_denoise_input = None
+            self.stop_line_denoise_input = None
+            self.crosswalk_denoise_input = None
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
-        return (
+        modules: list[nn.Module] = [
             self.spatial_fusion_stem,
             self.lane_head,
             self.stop_line_memory,
             self.crosswalk_memory,
             self.stop_line_head,
             self.crosswalk_head,
-        )
+        ]
+        for module in (self.lane_denoise_input, self.stop_line_denoise_input, self.crosswalk_denoise_input):
+            if isinstance(module, nn.Module):
+                modules.append(module)
+        return tuple(modules)
 
     def describe(self) -> dict[str, object]:
         return {
@@ -350,6 +393,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "roadmark_architecture": "current_family",
             "coordinate_mode": self.coordinate_mode,
             "anchor_template": "network_geometry_prior" if self.anchor_template_enabled else "disabled",
+            "denoise": "gt_noised_query_aux" if self.denoise_enabled else "disabled",
         }
 
     def _add_template(self, rows: torch.Tensor, template: torch.Tensor | None) -> torch.Tensor:
@@ -378,6 +422,71 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         scaled[..., 1:] = (points.sigmoid() * scale).reshape_as(scaled[..., 1:])
         return scaled
 
+    def _denoise_targets(
+        self,
+        encoded: dict[str, torch.Tensor] | None,
+        *,
+        task_name: str,
+        query_count: int,
+        vector_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        targets = torch.zeros((0, query_count, vector_dim), device=device, dtype=dtype)
+        valid = torch.zeros((0, query_count), device=device, dtype=torch.bool)
+        if not isinstance(encoded, dict):
+            return targets, valid
+        raw_targets = encoded.get(task_name)
+        mask = encoded.get("mask")
+        if not isinstance(raw_targets, torch.Tensor) or not isinstance(mask, dict):
+            return targets, valid
+        source = mask.get(f"{task_name}_source")
+        valid_rows = mask.get(f"{task_name}_valid")
+        if not isinstance(source, torch.Tensor) or not isinstance(valid_rows, torch.Tensor):
+            return targets, valid
+        batch_size = int(raw_targets.shape[0])
+        targets = torch.zeros((batch_size, query_count, vector_dim), device=device, dtype=dtype)
+        valid = torch.zeros((batch_size, query_count), device=device, dtype=torch.bool)
+        raw_targets = raw_targets.to(device=device, dtype=dtype)
+        source = source.to(device=device, dtype=torch.bool)
+        valid_rows = valid_rows.to(device=device, dtype=torch.bool)
+        for batch_index in range(batch_size):
+            if not bool(source[batch_index]):
+                continue
+            indices = torch.nonzero(valid_rows[batch_index], as_tuple=False).flatten()[:query_count]
+            if int(indices.numel()) == 0:
+                continue
+            count = int(indices.numel())
+            targets[batch_index, :count] = raw_targets[batch_index, indices]
+            targets[batch_index, :count, 0] = 1.0
+            valid[batch_index, :count] = True
+        return targets, valid
+
+    def _lane_denoise_query_input(self, targets: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        normalized = targets.clone()
+        normalized[..., 0] = valid.to(dtype=normalized.dtype)
+        normalized[..., LANE_X_SLICE] = normalized[..., LANE_X_SLICE] / max(float(NETWORK_HW[1] - 1), 1.0)
+        normalized[..., LANE_X_SLICE] = normalized[..., LANE_X_SLICE].clamp(0.0, 1.0)
+        normalized[..., LANE_VIS_SLICE] = normalized[..., LANE_VIS_SLICE].clamp(0.0, 1.0)
+        if self.training and bool(valid.any()):
+            noise = torch.zeros_like(normalized)
+            noise[..., LANE_X_SLICE] = torch.randn_like(normalized[..., LANE_X_SLICE]) * 0.03
+            normalized = normalized + noise * valid[:, :, None].to(dtype=normalized.dtype)
+            normalized[..., LANE_X_SLICE] = normalized[..., LANE_X_SLICE].clamp(0.0, 1.0)
+        return normalized
+
+    def _point_denoise_query_input(self, targets: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        normalized = targets.clone()
+        normalized[..., 0] = valid.to(dtype=normalized.dtype)
+        point_shape = normalized[..., 1:].shape
+        points = normalized[..., 1:].reshape(*point_shape[:-1], -1, 2)
+        scale = targets.new_tensor([max(float(NETWORK_HW[1] - 1), 1.0), max(float(NETWORK_HW[0] - 1), 1.0)])
+        points = (points / scale).clamp(0.0, 1.0)
+        if self.training and bool(valid.any()):
+            points = (points + torch.randn_like(points) * 0.025 * valid[:, :, None, None].to(dtype=points.dtype)).clamp(0.0, 1.0)
+        normalized[..., 1:] = points.reshape_as(normalized[..., 1:])
+        return normalized
+
     def forward(
         self,
         features: list[torch.Tensor] | tuple[torch.Tensor, ...],
@@ -396,7 +505,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         fused_feature = self.spatial_fusion_stem(features)
         stop_line_memory = self.stop_line_memory(fused_feature)
         crosswalk_memory = self.crosswalk_memory(fused_feature)
-        return {
+        outputs = {
             "lane": self._scale_lane_rows(self._add_template(self.lane_head(fused_feature), self.lane_anchor_template)),
             "stop_line": self._scale_point_rows(
                 self._add_template(self.stop_line_head(stop_line_memory), self.stop_line_anchor_template)
@@ -405,6 +514,54 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
                 self._add_template(self.crosswalk_head(crosswalk_memory), self.crosswalk_anchor_template)
             ),
         }
+        if self.denoise_enabled and self.training:
+            lane_targets, lane_valid = self._denoise_targets(
+                encoded,
+                task_name="lane",
+                query_count=LANE_QUERY_COUNT,
+                vector_dim=LANE_VECTOR_DIM,
+                device=fused_feature.device,
+                dtype=fused_feature.dtype,
+            )
+            stop_targets, stop_valid = self._denoise_targets(
+                encoded,
+                task_name="stop_line",
+                query_count=STOP_LINE_QUERY_COUNT,
+                vector_dim=STOP_LINE_VECTOR_DIM,
+                device=fused_feature.device,
+                dtype=fused_feature.dtype,
+            )
+            cross_targets, cross_valid = self._denoise_targets(
+                encoded,
+                task_name="crosswalk",
+                query_count=CROSSWALK_QUERY_COUNT,
+                vector_dim=CROSSWALK_VECTOR_DIM,
+                device=fused_feature.device,
+                dtype=fused_feature.dtype,
+            )
+            if isinstance(self.lane_denoise_input, nn.Module) and lane_targets.numel() > 0:
+                lane_memory = self.lane_head.memory(fused_feature)
+                lane_query = self.lane_denoise_input(self._lane_denoise_query_input(lane_targets, lane_valid))
+                outputs["lane_denoise"] = self._scale_lane_rows(
+                    self.lane_head.forward_with_query(lane_memory, lane_query)
+                )
+                outputs["lane_denoise_target"] = lane_targets
+                outputs["lane_denoise_valid"] = lane_valid
+            if isinstance(self.stop_line_denoise_input, nn.Module) and stop_targets.numel() > 0:
+                stop_query = self.stop_line_denoise_input(self._point_denoise_query_input(stop_targets, stop_valid))
+                outputs["stop_line_denoise"] = self._scale_point_rows(
+                    self.stop_line_head(stop_line_memory, query_seed=stop_query)
+                )
+                outputs["stop_line_denoise_target"] = stop_targets
+                outputs["stop_line_denoise_valid"] = stop_valid
+            if isinstance(self.crosswalk_denoise_input, nn.Module) and cross_targets.numel() > 0:
+                cross_query = self.crosswalk_denoise_input(self._point_denoise_query_input(cross_targets, cross_valid))
+                outputs["crosswalk_denoise"] = self._scale_point_rows(
+                    self.crosswalk_head(crosswalk_memory, query_seed=cross_query)
+                )
+                outputs["crosswalk_denoise_target"] = cross_targets
+                outputs["crosswalk_denoise_valid"] = cross_valid
+        return outputs
 
 
 __all__ = [
