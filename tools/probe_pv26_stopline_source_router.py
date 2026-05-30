@@ -132,12 +132,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--router-weight-decay", type=float, default=1.0e-4)
     parser.add_argument(
         "--feature-mode",
-        choices=("output_stats", "dense_aligned", "line_profile", "raster_cnn"),
+        choices=("output_stats", "dense_aligned", "line_profile", "lane_topology", "raster_cnn"),
         default="output_stats",
         help=(
             "output_stats reproduces the closed scalar source-router premise. "
             "dense_aligned appends no-GT line-aligned dense-map/raw-image quality features. "
             "line_profile appends fixed along-axis source line profiles without spatial CNN pooling. "
+            "lane_topology appends no-GT source-line geometry relative to retained lane predictions. "
             "raster_cnn trains a tiny router over raw-image, dense-map, and source prediction rasters."
         ),
     )
@@ -259,6 +260,200 @@ def _pair_stats(primary_lines: list[dict[str, Any]], specialist_lines: list[dict
         float(specialist_best - primary_best),
         float(specialist_len - primary_len),
     ]
+
+
+def _points_to_segment_distance(points: np.ndarray, start: np.ndarray, end: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] != 2:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    vector = end.astype(np.float32) - start.astype(np.float32)
+    denom = float(np.dot(vector, vector))
+    if denom <= 1.0e-6 or not math.isfinite(denom):
+        distances = np.linalg.norm(points.astype(np.float32) - start.astype(np.float32)[None, :], axis=1)
+        return distances.astype(np.float32), np.zeros_like(distances, dtype=np.float32)
+    rel = points.astype(np.float32) - start.astype(np.float32)[None, :]
+    t = np.clip((rel @ vector) / denom, 0.0, 1.0).astype(np.float32)
+    closest = start.astype(np.float32)[None, :] + t[:, None] * vector[None, :]
+    distances = np.linalg.norm(points.astype(np.float32) - closest, axis=1)
+    return distances.astype(np.float32), t.astype(np.float32)
+
+
+def _lane_points(lane: dict[str, Any]) -> np.ndarray | None:
+    points = np.asarray(lane.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 2 or not bool(np.isfinite(points).all()):
+        return None
+    dense_segments: list[np.ndarray] = []
+    for start, end in zip(points[:-1], points[1:]):
+        delta = end - start
+        steps = max(2, int(np.ceil(float(np.linalg.norm(delta)) / 16.0)) + 1)
+        weights = np.linspace(0.0, 1.0, num=steps, dtype=np.float32)
+        segment = start[None, :] * (1.0 - weights[:, None]) + end[None, :] * weights[:, None]
+        if dense_segments:
+            segment = segment[1:]
+        dense_segments.append(segment.astype(np.float32))
+    dense = np.concatenate(dense_segments, axis=0) if dense_segments else points
+    if dense.shape[0] < 2 or not bool(np.isfinite(dense).all()):
+        return points
+    return dense
+
+
+def _safe_distance(value: float, cap: float = 512.0) -> float:
+    if not math.isfinite(float(value)):
+        return float(cap)
+    return float(np.clip(float(value), 0.0, float(cap)))
+
+
+def _single_line_lane_topology_features(line: dict[str, Any], lanes: list[dict[str, Any]]) -> list[float]:
+    raw_points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    lane_points = [_lane_points(lane) for lane in lanes]
+    valid_lanes = [points for points in lane_points if points is not None]
+    # Keep a fixed finite contract even for absent source lines; source line count is
+    # still supplied by the enclosing source feature.
+    missing = [
+        0.0,
+        float(len(valid_lanes)),
+        512.0,
+        512.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        512.0,
+        512.0,
+        0.0,
+        512.0,
+    ]
+    if raw_points.shape[0] < 2 or not bool(np.isfinite(raw_points).all()) or not valid_lanes:
+        return missing
+
+    start = raw_points[0].astype(np.float32)
+    end = raw_points[-1].astype(np.float32)
+    line_vector = end - start
+    line_norm = float(np.linalg.norm(line_vector))
+    if line_norm <= 1.0e-6 or not math.isfinite(line_norm):
+        return missing
+    axis = line_vector / line_norm
+    midpoint = 0.5 * (start + end)
+
+    closest_distances: list[float] = []
+    closest_t: list[float] = []
+    abs_dots: list[float] = []
+    start_distances: list[float] = []
+    end_distances: list[float] = []
+    mid_distances: list[float] = []
+
+    for points in valid_lanes:
+        distances, t_values = _points_to_segment_distance(points, start, end)
+        if distances.size == 0:
+            continue
+        closest_index = int(np.argmin(distances))
+        closest_distances.append(float(distances[closest_index]))
+        closest_t.append(float(t_values[closest_index]))
+        prev_index = max(0, closest_index - 1)
+        next_index = min(points.shape[0] - 1, closest_index + 1)
+        tangent = points[next_index] - points[prev_index]
+        tangent_norm = float(np.linalg.norm(tangent))
+        if tangent_norm <= 1.0e-6 or not math.isfinite(tangent_norm):
+            abs_dots.append(1.0)
+        else:
+            abs_dots.append(float(abs(np.dot(axis, tangent / tangent_norm))))
+        start_distances.append(float(np.linalg.norm(points - start[None, :], axis=1).min()))
+        end_distances.append(float(np.linalg.norm(points - end[None, :], axis=1).min()))
+        mid_distances.append(float(np.linalg.norm(points - midpoint[None, :], axis=1).min()))
+
+    if not closest_distances:
+        return missing
+
+    distances_array = np.asarray(closest_distances, dtype=np.float32)
+    t_array = np.asarray(closest_t, dtype=np.float32)
+    dot_array = np.asarray(abs_dots, dtype=np.float32)
+    start_array = np.asarray(start_distances, dtype=np.float32)
+    end_array = np.asarray(end_distances, dtype=np.float32)
+    mid_array = np.asarray(mid_distances, dtype=np.float32)
+
+    close_mask = distances_array <= 64.0
+    close_t = t_array[close_mask]
+    close_dot = dot_array[close_mask]
+    sorted_distances = np.sort(distances_array)
+    top3 = sorted_distances[: min(3, sorted_distances.size)]
+    t_min = float(close_t.min()) if close_t.size else 0.0
+    t_max = float(close_t.max()) if close_t.size else 0.0
+    t_span = max(0.0, t_max - t_min) if close_t.size else 0.0
+    t_center_error = float(abs(float(close_t.mean()) - 0.5)) if close_t.size else 0.0
+    crossness = 1.0 - close_dot if close_dot.size else np.zeros((0,), dtype=np.float32)
+    start_min = float(start_array.min(initial=512.0))
+    end_min = float(end_array.min(initial=512.0))
+    return [
+        1.0,
+        float(len(valid_lanes)),
+        _safe_distance(float(distances_array.min(initial=512.0))),
+        _safe_distance(float(top3.mean()) if top3.size else 512.0),
+        float((distances_array <= 16.0).sum()),
+        float((distances_array <= 32.0).sum()),
+        float((distances_array <= 48.0).sum()),
+        float((distances_array <= 64.0).sum()),
+        float((distances_array <= 96.0).sum()),
+        float(t_min),
+        float(t_max),
+        float(t_span),
+        float(t_center_error),
+        float(crossness.mean()) if crossness.size else 0.0,
+        float(crossness.max(initial=0.0)) if crossness.size else 0.0,
+        float(dot_array.min(initial=1.0)),
+        _safe_distance(start_min),
+        _safe_distance(end_min),
+        _safe_distance(abs(start_min - end_min)),
+        _safe_distance(float(mid_array.min(initial=512.0))),
+    ]
+
+
+def _source_lane_topology_features(lines: list[dict[str, Any]], lanes: list[dict[str, Any]]) -> list[float]:
+    single_dim = 20
+    if not lines:
+        empty_line = _single_line_lane_topology_features({}, lanes)
+        return [0.0, float(len(lanes)), *empty_line, *empty_line, *empty_line]
+    per_line = np.asarray(
+        [_single_line_lane_topology_features(line, lanes) for line in lines],
+        dtype=np.float32,
+    )
+    if per_line.ndim != 2 or per_line.shape[1] != single_dim or not bool(np.isfinite(per_line).all()):
+        empty_line = _single_line_lane_topology_features({}, lanes)
+        return [float(len(lines)), float(len(lanes)), *empty_line, *empty_line, *empty_line]
+    best_index = int(np.argmin(per_line[:, 2]))
+    mean_values = per_line.mean(axis=0)
+    max_values = per_line.max(axis=0)
+    best_values = per_line[best_index]
+    output = [
+        float(len(lines)),
+        float(len(lanes)),
+        *[float(value) for value in mean_values.tolist()],
+        *[float(value) for value in max_values.tolist()],
+        *[float(value) for value in best_values.tolist()],
+    ]
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in output]
+
+
+def _lane_topology_features_for_sample(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+) -> list[float]:
+    primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
+    specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
+    agreement_lines = _source_prediction(primary_sample, specialist_sample, "agreement").get("stop_lines", [])
+    lanes = [dict(lane) for lane in primary_sample.get("lanes", [])]
+    source_groups = (primary_lines, specialist_lines, union_lines, [dict(line) for line in agreement_lines])
+    features: list[float] = []
+    for lines in source_groups:
+        features.extend(_source_lane_topology_features(lines, lanes))
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
 
 
 def _source_prediction(
@@ -948,6 +1143,8 @@ def _build_predictions_for_loader(
                             side_offset=float(dense_feature_side_offset),
                         )
                     )
+                elif normalized_feature_mode == "lane_topology":
+                    sample_features.extend(_lane_topology_features_for_sample(primary_sample, specialist_sample))
                 elif normalized_feature_mode == "raster_cnn":
                     sample_meta = (
                         encoded_meta[sample_index]

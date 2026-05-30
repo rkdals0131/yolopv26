@@ -10,6 +10,7 @@ from tools.probe_pv26_stopline_source_router import (
     LINE_PROFILE_MAP_KEYS,
     ROUTER_MODES,
     _draw_stopline_raster,
+    _lane_topology_features_for_sample,
     _line_profile_features_for_sample,
     _source_raster_for_sample,
     _train_raster_router,
@@ -92,6 +93,30 @@ class StoplineSourceRouterTests(unittest.TestCase):
         self.assertEqual(len(features), expected_dim)
         self.assertTrue(np.isfinite(np.asarray(features, dtype=np.float32)).all())
         self.assertGreater(max(features), 0.0)
+
+    def test_lane_topology_features_capture_crossing_lane_support(self) -> None:
+        primary = {
+            "lanes": [
+                {"points_xy": [[300.0, 100.0], [300.0, 500.0]]},
+                {"points_xy": [[500.0, 100.0], [500.0, 500.0]]},
+            ],
+            "stop_lines": [{"points_xy": [[240.0, 300.0], [560.0, 300.0]], "score": 0.8}],
+        }
+        specialist = {
+            "stop_lines": [{"points_xy": [[40.0, 40.0], [180.0, 40.0]], "score": 0.9}],
+        }
+
+        features = _lane_topology_features_for_sample(primary, specialist)
+
+        source_dim = 2 + 3 * 20
+        self.assertEqual(len(features), 4 * source_dim)
+        self.assertTrue(np.isfinite(np.asarray(features, dtype=np.float32)).all())
+        primary_topology = features[:source_dim]
+        specialist_topology = features[source_dim : 2 * source_dim]
+        primary_mean = primary_topology[2 : 2 + 20]
+        specialist_mean = specialist_topology[2 : 2 + 20]
+        self.assertGreater(primary_mean[7], specialist_mean[7])
+        self.assertLess(primary_mean[2], specialist_mean[2])
 
     def test_train_raster_router_can_fit_tiny_contract(self) -> None:
         rasters: list[np.ndarray] = []
