@@ -18328,3 +18328,80 @@ Verification:
 - Broader-val512 was skipped because the exact gate did not improve the retained area-ROI frontier and remained FP-limited.
 - Do not repeat this as side-offset, side-band statistic, quality threshold, hidden-size, train-batch, duplicate-distance, or max-append tuning.
 - Reopen dropped-candidate rescue only with a materially different instance-quality/alignment or geometry-repair contract that improves exact TP/FP/FN ratio before broader integration.
+
+## 333. Current-family anchor query-seed decoder: shared geometry query input still emits zero matched objects
+
+Context:
+
+- The previous current-family vector-query branches tested raw vectors, sigmoid-network coordinates, output-side anchor priors, and training-only denoise queries.
+- Those branches were architecture-level, but all failed the same first gate: no matched lane-family objects.
+- This branch tested the remaining warm-start premise explicitly left open in `00C`: feed the anchor geometry into the decoder query input itself, not only as an output bias.
+- To avoid making this just another prior, the runtime anchor query seed shares the same geometry-query MLP used by the denoise auxiliary path.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-anchor-query-seed`.
+- Added `roadmark_architecture="current_family_anchor_query_seed_denoise_sigmoid"`.
+- `model/net/roadmark_current_family.py` now supports `anchor_query_seed_enabled`.
+  - Lane, stop-line, and crosswalk anchor templates are converted to normalized geometry features.
+  - Those features pass through the shared geometry-query MLPs.
+  - The resulting query seeds drive the normal runtime decoder queries.
+  - The same MLPs still serve the GT-noised denoise auxiliary during training.
+- `model/net/heads.py`, `tools/pv26_train/config.py`, and `tools/run_pv26_lane60_probe.py` route the new architecture.
+- `test/test_pv26_heads.py` covers finite runtime outputs, denoise outputs, and the describe contract.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_163252`.
+- CUDA training:
+  - epochs: `2`;
+  - train batches per epoch: `64`;
+  - validation batches: `4`;
+  - batch size: `4`;
+  - device: `cuda:0`;
+  - skipped steps: `0`.
+- Best internal phase objective: `0.2334973569` at epoch `1`.
+
+Fixed val4 epoch-2 best:
+
+| Task | F1 | TP/FP/FN |
+| --- | ---: | --- |
+| lane | `0.0000` | `0 / 0 / 86` |
+| stop-line | `0.0000` | `0 / 0 / 2` |
+| crosswalk | `0.0000` | `0 / 127 / 7` |
+
+Artifacts:
+
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_163252/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_163252/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_seed_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_163252/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned.
+- Retained run size after cleanup is about `7.8M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/heads.py model/net/roadmark_current_family.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_anchor_query_seed_current_family_vector_decoder test_pv26_heads.PV26HeadsTests.test_heads_can_use_anchor_denoise_current_family_vector_decoder`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "current_family_anchor_query_seed"`.
+- CUDA current-family anchor-query-seed smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+Decision:
+
+- This was a real architecture/warm-start contract change, not a postprocess threshold sweep.
+- It is still strongly negative: fixed val4 recovered zero matched TP for lane, stop-line, and crosswalk.
+- Exact-val128, broader-val512, and larger training were skipped because the first fixed gate failed on the strongest rejection condition.
+- Do not repeat this as query-seed MLP depth, denoise noise scale, denoise loss weight, object threshold, head LR, epoch-count, or train-batch scaling.
+- Reopen current-family vector-query work only with a materially different proposal-supervision or dense-seeded decoder contract that first emits matched objects on fixed validation.

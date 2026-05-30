@@ -283,6 +283,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         coordinate_mode: str = "raw",
         anchor_template_enabled: bool = False,
         denoise_enabled: bool = False,
+        anchor_query_seed_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
@@ -290,6 +291,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             raise ValueError("CurrentFamilyRoadMarkHeads coordinate_mode must be one of: raw, sigmoid_network")
         self.anchor_template_enabled = bool(anchor_template_enabled)
         self.denoise_enabled = bool(denoise_enabled)
+        self.anchor_query_seed_enabled = bool(anchor_query_seed_enabled)
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -343,31 +345,35 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             self.register_parameter("lane_anchor_template", None)
             self.register_parameter("stop_line_anchor_template", None)
             self.register_parameter("crosswalk_anchor_template", None)
-        if self.denoise_enabled:
+        if self.anchor_query_seed_enabled:
+            if not self.anchor_template_enabled or self.coordinate_mode != "sigmoid_network":
+                raise ValueError("current-family anchor query seeds require sigmoid_network anchor templates")
+        geometry_query_input_enabled = self.denoise_enabled or self.anchor_query_seed_enabled
+        if geometry_query_input_enabled:
             if self.coordinate_mode != "sigmoid_network":
-                raise ValueError("current-family denoising requires sigmoid_network coordinate mode")
-            self.lane_denoise_input = nn.Sequential(
+                raise ValueError("current-family geometry query inputs require sigmoid_network coordinate mode")
+            self.lane_geometry_query_input = nn.Sequential(
                 nn.Linear(LANE_VECTOR_DIM, LANE_HIDDEN_DIM),
                 nn.LayerNorm(LANE_HIDDEN_DIM),
                 nn.SiLU(inplace=True),
                 nn.Linear(LANE_HIDDEN_DIM, LANE_HIDDEN_DIM),
             )
-            self.stop_line_denoise_input = nn.Sequential(
+            self.stop_line_geometry_query_input = nn.Sequential(
                 nn.Linear(STOP_LINE_VECTOR_DIM, LANE_HIDDEN_DIM),
                 nn.LayerNorm(LANE_HIDDEN_DIM),
                 nn.SiLU(inplace=True),
                 nn.Linear(LANE_HIDDEN_DIM, LANE_HIDDEN_DIM),
             )
-            self.crosswalk_denoise_input = nn.Sequential(
+            self.crosswalk_geometry_query_input = nn.Sequential(
                 nn.Linear(CROSSWALK_VECTOR_DIM, LANE_HIDDEN_DIM),
                 nn.LayerNorm(LANE_HIDDEN_DIM),
                 nn.SiLU(inplace=True),
                 nn.Linear(LANE_HIDDEN_DIM, LANE_HIDDEN_DIM),
             )
         else:
-            self.lane_denoise_input = None
-            self.stop_line_denoise_input = None
-            self.crosswalk_denoise_input = None
+            self.lane_geometry_query_input = None
+            self.stop_line_geometry_query_input = None
+            self.crosswalk_geometry_query_input = None
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
         modules: list[nn.Module] = [
@@ -378,7 +384,11 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             self.stop_line_head,
             self.crosswalk_head,
         ]
-        for module in (self.lane_denoise_input, self.stop_line_denoise_input, self.crosswalk_denoise_input):
+        for module in (
+            self.lane_geometry_query_input,
+            self.stop_line_geometry_query_input,
+            self.crosswalk_geometry_query_input,
+        ):
             if isinstance(module, nn.Module):
                 modules.append(module)
         return tuple(modules)
@@ -394,6 +404,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "coordinate_mode": self.coordinate_mode,
             "anchor_template": "network_geometry_prior" if self.anchor_template_enabled else "disabled",
             "denoise": "gt_noised_query_aux" if self.denoise_enabled else "disabled",
+            "anchor_query_seed": "shared_geometry_query_input" if self.anchor_query_seed_enabled else "disabled",
         }
 
     def _add_template(self, rows: torch.Tensor, template: torch.Tensor | None) -> torch.Tensor:
@@ -462,30 +473,81 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             valid[batch_index, :count] = True
         return targets, valid
 
-    def _lane_denoise_query_input(self, targets: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    def _lane_geometry_query_features(
+        self,
+        targets: torch.Tensor,
+        valid: torch.Tensor,
+        *,
+        noise_std: float = 0.0,
+    ) -> torch.Tensor:
         normalized = targets.clone()
         normalized[..., 0] = valid.to(dtype=normalized.dtype)
         normalized[..., LANE_X_SLICE] = normalized[..., LANE_X_SLICE] / max(float(NETWORK_HW[1] - 1), 1.0)
         normalized[..., LANE_X_SLICE] = normalized[..., LANE_X_SLICE].clamp(0.0, 1.0)
         normalized[..., LANE_VIS_SLICE] = normalized[..., LANE_VIS_SLICE].clamp(0.0, 1.0)
-        if self.training and bool(valid.any()):
+        if self.training and float(noise_std) > 0.0 and bool(valid.any()):
             noise = torch.zeros_like(normalized)
-            noise[..., LANE_X_SLICE] = torch.randn_like(normalized[..., LANE_X_SLICE]) * 0.03
+            noise[..., LANE_X_SLICE] = torch.randn_like(normalized[..., LANE_X_SLICE]) * float(noise_std)
             normalized = normalized + noise * valid[:, :, None].to(dtype=normalized.dtype)
             normalized[..., LANE_X_SLICE] = normalized[..., LANE_X_SLICE].clamp(0.0, 1.0)
         return normalized
 
-    def _point_denoise_query_input(self, targets: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    def _lane_denoise_query_input(self, targets: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        return self._lane_geometry_query_features(targets, valid, noise_std=0.03)
+
+    def _point_geometry_query_features(
+        self,
+        targets: torch.Tensor,
+        valid: torch.Tensor,
+        *,
+        noise_std: float = 0.0,
+    ) -> torch.Tensor:
         normalized = targets.clone()
         normalized[..., 0] = valid.to(dtype=normalized.dtype)
         point_shape = normalized[..., 1:].shape
         points = normalized[..., 1:].reshape(*point_shape[:-1], -1, 2)
         scale = targets.new_tensor([max(float(NETWORK_HW[1] - 1), 1.0), max(float(NETWORK_HW[0] - 1), 1.0)])
         points = (points / scale).clamp(0.0, 1.0)
-        if self.training and bool(valid.any()):
-            points = (points + torch.randn_like(points) * 0.025 * valid[:, :, None, None].to(dtype=points.dtype)).clamp(0.0, 1.0)
+        if self.training and float(noise_std) > 0.0 and bool(valid.any()):
+            points = (
+                points + torch.randn_like(points) * float(noise_std) * valid[:, :, None, None].to(dtype=points.dtype)
+            ).clamp(0.0, 1.0)
         normalized[..., 1:] = points.reshape_as(normalized[..., 1:])
         return normalized
+
+    def _point_denoise_query_input(self, targets: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        return self._point_geometry_query_features(targets, valid, noise_std=0.025)
+
+    def _lane_anchor_query_seed(self, batch_size: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor | None:
+        if not self.anchor_query_seed_enabled or not isinstance(self.lane_geometry_query_input, nn.Module):
+            return None
+        if not isinstance(self.lane_anchor_template, torch.Tensor):
+            return None
+        anchors = self._scale_lane_rows(
+            self.lane_anchor_template.to(device=device, dtype=dtype).unsqueeze(0).expand(int(batch_size), -1, -1)
+        )
+        valid = torch.ones((int(batch_size), LANE_QUERY_COUNT), device=device, dtype=torch.bool)
+        return self.lane_geometry_query_input(self._lane_geometry_query_features(anchors, valid, noise_std=0.0))
+
+    def _point_anchor_query_seed(
+        self,
+        template: torch.Tensor | None,
+        query_count: int,
+        query_input: nn.Module | None,
+        batch_size: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if not self.anchor_query_seed_enabled or not isinstance(query_input, nn.Module):
+            return None
+        if not isinstance(template, torch.Tensor):
+            return None
+        anchors = self._scale_point_rows(
+            template.to(device=device, dtype=dtype).unsqueeze(0).expand(int(batch_size), -1, -1)
+        )
+        valid = torch.ones((int(batch_size), int(query_count)), device=device, dtype=torch.bool)
+        return query_input(self._point_geometry_query_features(anchors, valid, noise_std=0.0))
 
     def forward(
         self,
@@ -505,13 +567,47 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         fused_feature = self.spatial_fusion_stem(features)
         stop_line_memory = self.stop_line_memory(fused_feature)
         crosswalk_memory = self.crosswalk_memory(fused_feature)
+        batch_size = int(fused_feature.shape[0])
+        lane_memory = None
+        lane_query_seed = self._lane_anchor_query_seed(
+            batch_size,
+            device=fused_feature.device,
+            dtype=fused_feature.dtype,
+        )
+        if isinstance(lane_query_seed, torch.Tensor):
+            lane_memory = self.lane_head.memory(fused_feature)
+            lane_rows = self.lane_head.forward_with_query(lane_memory, lane_query_seed)
+        else:
+            lane_rows = self.lane_head(fused_feature)
+        stop_line_query_seed = self._point_anchor_query_seed(
+            self.stop_line_anchor_template,
+            STOP_LINE_QUERY_COUNT,
+            self.stop_line_geometry_query_input,
+            batch_size,
+            device=fused_feature.device,
+            dtype=fused_feature.dtype,
+        )
+        crosswalk_query_seed = self._point_anchor_query_seed(
+            self.crosswalk_anchor_template,
+            CROSSWALK_QUERY_COUNT,
+            self.crosswalk_geometry_query_input,
+            batch_size,
+            device=fused_feature.device,
+            dtype=fused_feature.dtype,
+        )
         outputs = {
-            "lane": self._scale_lane_rows(self._add_template(self.lane_head(fused_feature), self.lane_anchor_template)),
+            "lane": self._scale_lane_rows(self._add_template(lane_rows, self.lane_anchor_template)),
             "stop_line": self._scale_point_rows(
-                self._add_template(self.stop_line_head(stop_line_memory), self.stop_line_anchor_template)
+                self._add_template(
+                    self.stop_line_head(stop_line_memory, query_seed=stop_line_query_seed),
+                    self.stop_line_anchor_template,
+                )
             ),
             "crosswalk": self._scale_point_rows(
-                self._add_template(self.crosswalk_head(crosswalk_memory), self.crosswalk_anchor_template)
+                self._add_template(
+                    self.crosswalk_head(crosswalk_memory, query_seed=crosswalk_query_seed),
+                    self.crosswalk_anchor_template,
+                )
             ),
         }
         if self.denoise_enabled and self.training:
@@ -539,23 +635,28 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
                 device=fused_feature.device,
                 dtype=fused_feature.dtype,
             )
-            if isinstance(self.lane_denoise_input, nn.Module) and lane_targets.numel() > 0:
-                lane_memory = self.lane_head.memory(fused_feature)
-                lane_query = self.lane_denoise_input(self._lane_denoise_query_input(lane_targets, lane_valid))
+            if isinstance(self.lane_geometry_query_input, nn.Module) and lane_targets.numel() > 0:
+                if lane_memory is None:
+                    lane_memory = self.lane_head.memory(fused_feature)
+                lane_query = self.lane_geometry_query_input(self._lane_denoise_query_input(lane_targets, lane_valid))
                 outputs["lane_denoise"] = self._scale_lane_rows(
                     self.lane_head.forward_with_query(lane_memory, lane_query)
                 )
                 outputs["lane_denoise_target"] = lane_targets
                 outputs["lane_denoise_valid"] = lane_valid
-            if isinstance(self.stop_line_denoise_input, nn.Module) and stop_targets.numel() > 0:
-                stop_query = self.stop_line_denoise_input(self._point_denoise_query_input(stop_targets, stop_valid))
+            if isinstance(self.stop_line_geometry_query_input, nn.Module) and stop_targets.numel() > 0:
+                stop_query = self.stop_line_geometry_query_input(
+                    self._point_denoise_query_input(stop_targets, stop_valid)
+                )
                 outputs["stop_line_denoise"] = self._scale_point_rows(
                     self.stop_line_head(stop_line_memory, query_seed=stop_query)
                 )
                 outputs["stop_line_denoise_target"] = stop_targets
                 outputs["stop_line_denoise_valid"] = stop_valid
-            if isinstance(self.crosswalk_denoise_input, nn.Module) and cross_targets.numel() > 0:
-                cross_query = self.crosswalk_denoise_input(self._point_denoise_query_input(cross_targets, cross_valid))
+            if isinstance(self.crosswalk_geometry_query_input, nn.Module) and cross_targets.numel() > 0:
+                cross_query = self.crosswalk_geometry_query_input(
+                    self._point_denoise_query_input(cross_targets, cross_valid)
+                )
                 outputs["crosswalk_denoise"] = self._scale_point_rows(
                     self.crosswalk_head(crosswalk_memory, query_seed=cross_query)
                 )

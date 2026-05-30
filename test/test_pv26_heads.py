@@ -382,6 +382,73 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertGreaterEqual(float(stop_points[..., 0].min().item()), 0.0)
         self.assertLessEqual(float(stop_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
 
+    def test_heads_can_use_anchor_query_seed_current_family_vector_decoder(self) -> None:
+        from model.data.transform import NETWORK_HW
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            roadmark_architecture="current_family_anchor_query_seed_denoise_sigmoid",
+        )
+        heads.train()
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+        lane = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+        stop_line = torch.zeros((1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32)
+        crosswalk = torch.zeros((1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32)
+        lane[0, 0, 0] = 1.0
+        lane[0, 0, 1] = 1.0
+        lane[0, 0, 4] = 1.0
+        lane[0, 0, LANE_X_SLICE] = torch.linspace(120.0, 300.0, LANE_ANCHOR_COUNT)
+        lane[0, 0, LANE_VIS_SLICE] = 1.0
+        stop_line[0, 0, 0] = 1.0
+        stop_line[0, 0, 1:] = torch.tensor([120.0, 500.0, 200.0, 500.0, 280.0, 500.0, 360.0, 500.0])
+        crosswalk[0, 0, 0] = 1.0
+        crosswalk[0, 0, 1:] = torch.linspace(180.0, 420.0, CROSSWALK_VECTOR_DIM - 1)
+        encoded = {
+            "lane": lane,
+            "stop_line": stop_line,
+            "crosswalk": crosswalk,
+            "mask": {
+                "lane_source": torch.ones(1, dtype=torch.bool),
+                "stop_line_source": torch.ones(1, dtype=torch.bool),
+                "crosswalk_source": torch.ones(1, dtype=torch.bool),
+                "lane_valid": torch.zeros((1, LANE_QUERY_COUNT), dtype=torch.bool),
+                "stop_line_valid": torch.zeros((1, STOP_LINE_QUERY_COUNT), dtype=torch.bool),
+                "crosswalk_valid": torch.zeros((1, CROSSWALK_QUERY_COUNT), dtype=torch.bool),
+            },
+        }
+        encoded["mask"]["lane_valid"][0, 0] = True
+        encoded["mask"]["stop_line_valid"][0, 0] = True
+        encoded["mask"]["crosswalk_valid"][0, 0] = True
+
+        outputs = heads(features, encoded=encoded)
+        summary = heads.describe()
+        lane_x = outputs["lane"][..., LANE_X_SLICE]
+        stop_points = outputs["stop_line"][..., 1:].view(1, STOP_LINE_QUERY_COUNT, -1, 2)
+        cross_points = outputs["crosswalk"][..., 1:].view(1, CROSSWALK_QUERY_COUNT, -1, 2)
+
+        self.assertEqual(summary["roadmark_architecture"], "current_family_anchor_query_seed_denoise_sigmoid")
+        self.assertEqual(summary["roadmark"]["anchor_template"], "network_geometry_prior")
+        self.assertEqual(summary["roadmark"]["denoise"], "gt_noised_query_aux")
+        self.assertEqual(summary["roadmark"]["anchor_query_seed"], "shared_geometry_query_input")
+        self.assertIn("lane_denoise", outputs)
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
+        self.assertGreaterEqual(float(lane_x.min().item()), 0.0)
+        self.assertLessEqual(float(lane_x.max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(stop_points[..., 0].min().item()), 0.0)
+        self.assertLessEqual(float(stop_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(stop_points[..., 1].min().item()), 0.0)
+        self.assertLessEqual(float(stop_points[..., 1].max().item()), float(NETWORK_HW[0] - 1))
+        self.assertGreaterEqual(float(cross_points[..., 0].min().item()), 0.0)
+        self.assertLessEqual(float(cross_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
+
     def test_heads_can_use_lane_only_segfirst_architecture(self) -> None:
         from model.net import PV26Heads
 
