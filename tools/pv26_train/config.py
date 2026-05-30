@@ -184,6 +184,8 @@ class TrainDefaultsConfig:
     lane_family_shared_adapter_enabled: bool = False
     lane_family_task_adapter_enabled: bool = False
     lane_family_cross_stitch_enabled: bool = False
+    stopline_lane_context_fusion_enabled: bool = False
+    stopline_lane_context_detach: bool = True
     lane_segfirst_track_mode: str = "component"
     lane_segfirst_max_row_gap: int = 12
     lane_segfirst_max_link_dx: float = 8.0
@@ -1073,6 +1075,17 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_family_cross_stitch_enabled=_coerce_bool(
             data.get("lane_family_cross_stitch_enabled", defaults.lane_family_cross_stitch_enabled),
             field_name="train_defaults.lane_family_cross_stitch_enabled",
+        ),
+        stopline_lane_context_fusion_enabled=_coerce_bool(
+            data.get(
+                "stopline_lane_context_fusion_enabled",
+                defaults.stopline_lane_context_fusion_enabled,
+            ),
+            field_name="train_defaults.stopline_lane_context_fusion_enabled",
+        ),
+        stopline_lane_context_detach=_coerce_bool(
+            data.get("stopline_lane_context_detach", defaults.stopline_lane_context_detach),
+            field_name="train_defaults.stopline_lane_context_detach",
         ),
         lane_segfirst_track_mode=_coerce_str(
             data.get("lane_segfirst_track_mode", defaults.lane_segfirst_track_mode),

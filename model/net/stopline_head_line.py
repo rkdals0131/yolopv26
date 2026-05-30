@@ -34,15 +34,29 @@ class StopLineDenseLocalHead(nn.Module):
         *,
         hidden_dim: int = 128,
         output_queries: int = STOP_LINE_QUERY_COUNT,
+        lane_context_fusion_enabled: bool = False,
+        lane_context_detach: bool = True,
     ) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
         self.output_queries = int(output_queries)
+        self.lane_context_fusion_enabled = bool(lane_context_fusion_enabled)
+        self.lane_context_detach = bool(lane_context_detach)
         self.fusion = MultiScaleFusion(in_channels, self.hidden_dim, target_level=0, depth=2)
         self.mask_stem = nn.Sequential(
             ConvNormAct(self.hidden_dim, self.hidden_dim),
             ConvNormAct(self.hidden_dim, self.hidden_dim),
         )
+        if self.lane_context_fusion_enabled:
+            self.lane_context_gate_logit = nn.Parameter(torch.tensor(-2.0, dtype=torch.float32))
+            self.lane_context_project = nn.Sequential(
+                ConvNormAct(self.hidden_dim + 2, self.hidden_dim),
+                nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=1, bias=False),
+            )
+            nn.init.zeros_(self.lane_context_project[-1].weight)
+        else:
+            self.lane_context_gate_logit = None
+            self.lane_context_project = None
         self.center_stem = nn.Sequential(
             ConvNormAct(self.hidden_dim, self.hidden_dim),
             ConvNormAct(self.hidden_dim, self.hidden_dim),
@@ -159,9 +173,11 @@ class StopLineDenseLocalHead(nn.Module):
         features: tuple[torch.Tensor, torch.Tensor],
         *,
         encoded: dict[str, Any] | None = None,
+        lane_context: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         line_feat = self.fusion(features)
         dense_feat = self.mask_stem(line_feat)
+        dense_feat = self._apply_lane_context_fusion(dense_feat, lane_context)
         row_source = line_feat
         row_mean = row_source.mean(dim=-1, keepdim=True)
         row_max = row_source.amax(dim=-1, keepdim=True)
@@ -285,6 +301,47 @@ class StopLineDenseLocalHead(nn.Module):
             "stop_line_segment_denoise_valid": denoise_valid,
             "stop_line_feature": line_feat,
         }
+
+    def _apply_lane_context_fusion(
+        self,
+        dense_feat: torch.Tensor,
+        lane_context: dict[str, torch.Tensor] | None,
+    ) -> torch.Tensor:
+        if (
+            not self.lane_context_fusion_enabled
+            or not isinstance(lane_context, dict)
+            or self.lane_context_project is None
+            or self.lane_context_gate_logit is None
+        ):
+            return dense_feat
+        center_logits = lane_context.get("lane_seg_centerline_logits")
+        support_logits = lane_context.get("lane_seg_support_logits")
+        if not isinstance(center_logits, torch.Tensor) or not isinstance(support_logits, torch.Tensor):
+            return dense_feat
+        center_prob = torch.sigmoid(center_logits)
+        support_prob = torch.sigmoid(support_logits)
+        if self.lane_context_detach:
+            center_prob = center_prob.detach()
+            support_prob = support_prob.detach()
+        if center_prob.shape[-2:] != dense_feat.shape[-2:]:
+            center_prob = F.interpolate(
+                center_prob,
+                size=dense_feat.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        if support_prob.shape[-2:] != dense_feat.shape[-2:]:
+            support_prob = F.interpolate(
+                support_prob,
+                size=dense_feat.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        center_prob = center_prob.to(device=dense_feat.device, dtype=dense_feat.dtype)
+        support_prob = support_prob.to(device=dense_feat.device, dtype=dense_feat.dtype)
+        context_delta = self.lane_context_project(torch.cat([dense_feat, center_prob, support_prob], dim=1))
+        gate = torch.sigmoid(self.lane_context_gate_logit).to(device=dense_feat.device, dtype=dense_feat.dtype)
+        return dense_feat + gate.view(1, 1, 1, 1) * context_delta
 
     def _decode_seeded_segment_set(
         self,

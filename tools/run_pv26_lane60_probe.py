@@ -2447,6 +2447,15 @@ EXPERIMENTS["stopline_static_only_specialist"] = {
     },
 }
 
+EXPERIMENTS["stopline_lane_context_fusion_static"] = {
+    **EXPERIMENTS["stopline_static_only_specialist"],
+    "overrides": {
+        **EXPERIMENTS["stopline_static_only_specialist"]["overrides"],
+        "stopline_lane_context_fusion_enabled": True,
+        "stopline_lane_context_detach": True,
+    },
+}
+
 EXPERIMENTS["stopline_v3_isolated_neck"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stopline_only",

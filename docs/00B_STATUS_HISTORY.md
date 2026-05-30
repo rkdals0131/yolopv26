@@ -20057,3 +20057,88 @@ Decision:
 - The implementation is valid and trainable, but the changed training signal is runtime-flat.
 - Close this as conditional denoise hard-negative count/offset, denoise jitter, denoise aux weight, row-aux weight, seed-aux weight, head LR, epoch-count, train-batch scaling, dense-gate threshold, or append/replace tuning on the same conditional-row runtime contract.
 - Reopen conditional instance work only with a materially different runtime instance-existence/quality or matching contract that improves fixed smoke TP/FP/FN.
+
+## 353. 2026-05-30 Stop-line lane-context fusion: layer-level lane evidence does not beat projection-comp exact
+
+Context:
+
+- The user explicitly asked not to stay only in postprocess/safe territory; layer composition, training exposure, and head/neck signal allocation can be the real bottleneck.
+- This branch tested a model-side cross-task feature contract, not another projection-comp threshold: stop-line dense features receive an opt-in residual from lane dense centerline/support probabilities.
+- The lane context is detached and the run uses a static stop-line-only freeze policy, so frozen trunk, lane head, and crosswalk head remain in eval mode while only the stop-line head learns the new fusion path.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. No dataset copy was created.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Model:
+  - `model/net/stopline_head_line.py` adds optional `lane_context_fusion_enabled` and `lane_context_detach`.
+  - The fusion path concatenates stop-line dense features with sigmoid lane centerline/support maps, applies a zero-initialized residual projection, and gates it with a learned scalar.
+- Config/runtime plumbing:
+  - `model/net/roadmark_v2_heads.py`;
+  - `model/net/roadmark_joint_native.py`;
+  - `model/net/heads.py`;
+  - `tools/pv26_train/config.py`;
+  - `tools/pv26_train/cli.py`;
+  - `tools/run_pv26_lane60_probe.py`.
+- New lane60 probe experiment: `stopline_lane_context_fusion_static`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_lane_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_231705`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Freeze policy: `lane_family_stopline_static_trunk`.
+- Loss weights: lane `0.0`, stop-line `4.0`, crosswalk `0.0`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6408025211` at epoch 1. This is not success evidence because exact stop-line stayed below the projection-comp reference.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Fixed exact-val128 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed exact-val128 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5888` | `1202 / 491 / 1188` | `0.4590` | `28 / 34 / 32` | `0.5988` | `50 / 36 / 31` |
+
+Reference:
+
+- Projection-competition exact reference: stop-line F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
+- Primary projection-comp exact reference used in router audits: stop-line F1 `0.5333`, TP/FP/FN `32 / 28 / 28`.
+- The lane-context fusion exact stop-line result is below both references and crosswalk remains just under `0.60`.
+- Broader-val512 and larger training are skipped because the exact gate failed.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_lane_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_231705/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_lane_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_231705/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+- Fixed exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_lane_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_231705/analysis_exports/fixed_exact_val128_epoch2_best/metrics.csv`.
+- Fixed exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_lane_context_fusion_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_231705/analysis_exports/fixed_exact_val128_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26n.pt` / `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `1.3M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m compileall model/net/stopline_head_line.py model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py model/net/heads.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- CUDA `stopline_lane_context_fusion_static` smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+- CUDA fixed exact-val128 evaluation with `flip_centerline_avg_lane_cross_comp050`.
+
+Decision:
+
+- The implementation is valid and trainable, and it preserves the retained lane/crosswalk fixed val4 path.
+- The learned lane-context residual does not create enough stop-line candidate/geometry recovery: exact stop-line remains `0.4590`, below projection-comp exact `0.5167`.
+- Close this as lane-context fusion gate/detach/head-LR/epoch-count/train-batch scaling on the same projection-comp stop-line runtime path.
+- Reopen model-side lane-conditioned stop-line work only with a materially different candidate-coverage or along-axis geometry signal that first improves fixed exact TP/FP/FN over projection-comp.
