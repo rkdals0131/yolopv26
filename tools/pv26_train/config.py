@@ -140,6 +140,7 @@ class TrainDefaultsConfig:
     task_positive_task: str | None = "multi:lane,stopline,crosswalk"
     task_positive_fraction: float | None = 0.75
     lane_family_unlabeled_negative_mode: str = "none"
+    lane_family_include_det_source_distill_only: bool = False
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
     lane_obj_threshold: float = 0.45
@@ -841,6 +842,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         lane_family_unlabeled_negative_mode=_coerce_str(
             data.get("lane_family_unlabeled_negative_mode", defaults.lane_family_unlabeled_negative_mode),
             field_name="train_defaults.lane_family_unlabeled_negative_mode",
+        ),
+        lane_family_include_det_source_distill_only=_coerce_bool(
+            data.get(
+                "lane_family_include_det_source_distill_only",
+                defaults.lane_family_include_det_source_distill_only,
+            ),
+            field_name="train_defaults.lane_family_include_det_source_distill_only",
         ),
         det_conf_threshold=_coerce_float(
             data.get("det_conf_threshold", defaults.det_conf_threshold),
@@ -2034,6 +2042,18 @@ def validate_meta_train_scenario(
                 f"{index} lane_family_query_target_source='teacher_runtime' requires distill_enabled and "
                 "distill_teacher_runtime_targets_enabled"
             )
+        if phase_train.lane_family_include_det_source_distill_only:
+            if not phase_train.distill_enabled:
+                raise ValueError(
+                    "phase "
+                    f"{index} lane_family_include_det_source_distill_only requires distill_enabled"
+                )
+            if str(phase_train.lane_family_unlabeled_negative_mode).strip().lower() != "none":
+                raise ValueError(
+                    "phase "
+                    f"{index} lane_family_include_det_source_distill_only is incompatible with "
+                    "lane_family_unlabeled_negative_mode"
+                )
         if not 0.0 <= float(phase_train.lane_objectness_quality_min) < 1.0:
             raise ValueError(f"phase {index} lane_objectness_quality_min must be in [0, 1)")
         if float(phase_train.lane_objectness_quality_tau) <= 0.0:

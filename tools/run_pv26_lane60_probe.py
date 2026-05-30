@@ -2870,6 +2870,45 @@ EXPERIMENTS["stopline_det_negative_feeding"] = {
 }
 
 
+EXPERIMENTS["lane_family_det_source_distill_only"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_family_heads_static_trunk",
+    "trunk_lr": 0.0,
+    "head_lr": 1.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 1.50,
+        "stop_line": 2.50,
+        "crosswalk": 1.50,
+    },
+    "train_defaults_overrides": {
+        "distill_enabled": True,
+        "distill_teacher_checkpoint": "__seed_checkpoint__",
+        "distill_loss_weights": {
+            "lane": 0.15,
+            "stop_line": 0.25,
+            "crosswalk": 0.15,
+        },
+        "distill_normalize_mode": "ema",
+        "distill_ema_decay": 0.95,
+        "distill_ema_warmup_steps": 4,
+        "lane_family_include_det_source_distill_only": True,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:lane,stopline,crosswalk",
+        "task_positive_fraction": 0.75,
+        "sampler_ratios": {
+            "bdd100k": 0.05,
+            "aihub_traffic": 0.10,
+            "aihub_lane": 0.75,
+            "aihub_obstacle": 0.10,
+        },
+    },
+}
+
+
 EXPERIMENTS["lane_row_link_offset_field"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_row_link_only",

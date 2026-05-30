@@ -22440,3 +22440,108 @@ Decision:
 - Lane-topology utility-regression source routing is trainable but exact-negative.
 - Close this as router objective, utility formula, hidden-size, epoch/LR, train-batch scaling, and same source-choice/candidate surface safety-threshold tuning.
 - Reopen source routing only with a materially different candidate-generation/geometry or true source-quality signal that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 376. 2026-05-31 Lane-family det-source distill-only exposure: full-root unlabeled rows still regress fixed lane
+
+Context:
+
+- The user explicitly asked to keep doing real training/evaluation, to use larger dataset exposure where useful, and to avoid dataset copies.
+- Prior `stopline_det_negative_feeding` proved that det-source-only BDD/traffic/obstacle records can enter the lane-family train loader, but treating them as stop-line empty negatives collapsed fixed lane and recovered no stop-line TP.
+- This run tested a different data-feeding contract:
+  - det-source-only records enter the train view;
+  - they are not marked as empty lane/stop-line/crosswalk negatives;
+  - they contribute lane-family signal only through dense teacher distillation from the retained merged checkpoint.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Code changes:
+  - `tools/pv26_train/config.py` adds `lane_family_include_det_source_distill_only`;
+  - `tools/pv26_train/cli.py` includes det-source-only records in lane-family train view when that flag is enabled;
+  - validation view remains lane-family-only;
+  - config validation requires `distill_enabled=True` and rejects combining this flag with `lane_family_unlabeled_negative_mode`;
+  - `tools/run_pv26_lane60_probe.py` adds `lane_family_det_source_distill_only`.
+- Preset:
+  - `freeze_policy=lane_family_heads_static_trunk`;
+  - `trunk_lr=0.0`;
+  - `head_lr=1.0e-4`;
+  - distill teacher: seed `merged_lane_head.pt`;
+  - distill weights lane/stop/cross `0.15 / 0.25 / 0.15`;
+  - sampler ratios BDD/traffic/lane/obstacle `0.05 / 0.10 / 0.75 / 0.10`;
+  - `task_positive_task=multi:lane,stopline,crosswalk`;
+  - `task_positive_fraction=0.75`;
+  - retained runtime decode uses row-scan/tangent lane, projection-comp stop-line, and hull crosswalk.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train/val/test `326709 / 82641 / 20000`;
+  - source keys included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`;
+  - no dataset copy was created.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_080304`.
+- CUDA train:
+  - epochs `2`;
+  - train batches `64`;
+  - validation batches `4`;
+  - batch size `4`;
+  - device `cuda:0`;
+  - skipped steps `0`.
+- Logged train source counts confirmed full-root exposure:
+  - sampled step examples had `det_source_samples=1`;
+  - `lane_source_samples=3`;
+  - `stop_line_source_samples=3`;
+  - `crosswalk_source_samples=3`.
+- Internal best phase objective:
+  - `0.6450877373` at epoch `1`.
+  - This is not success evidence.
+
+Fixed val4 result:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| flip_centerline_avg_lane_cross_comp050 | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| baseline | `0.5152` | `34 / 12 / 52` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference:
+  - lane `0.5839`, TP/FP/FN `40 / 11 / 46`;
+  - stop-line `0.0000`, TP/FP/FN `0 / 3 / 2`;
+  - crosswalk `0.5455`, TP/FP/FN `3 / 1 / 4`.
+- This branch loses `4` lane TP, adds `1` lane FP, and recovers no stop-line TP.
+
+Artifacts:
+
+- Run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_080304/summary.json`.
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_080304/phase_4/history/epochs.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_080304/phase_4/history/train_steps.jsonl`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_080304/analysis_exports/fixed_val4_epoch1_best/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_080304/analysis_exports/fixed_val4_epoch1_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `836K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_run_pv26_train.RunPV26TrainScenarioTests.test_lane_family_phase_can_include_det_records_for_distill_only_train_view test_run_pv26_train.RunPV26TrainScenarioTests.test_lane_family_phase_keeps_det_records_only_for_unlabeled_negative_train_view test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "lane_family_det_source_distill_only|experiment"`.
+- Real CUDA `2x64` train on the existing canonical root.
+- Fixed val4 `probe_pv26_lane_flip_tta.py` replay with `baseline` and `flip_centerline_avg_lane_cross_comp050`.
+
+Decision:
+
+- Full-root det-source exposure through teacher distill is wired and trainable, but it is fixed-gate negative.
+- Exact-val128, broader-val512, and larger training are skipped because the first fixed gate regresses lane and does not move stop-line.
+- Close this as det-source distill-only exposure, sampler ratio, distill weight, teacher checkpoint, head LR, epoch-count, train-batch scaling, and same static/head freeze-policy tuning.
+- Reopen full-root unlabeled exposure only with a materially different pseudo-label quality/selection, confidence mask, or emit/candidate geometry signal that first protects fixed smoke lane TP/FP/FN and moves stop-line TP.

@@ -270,6 +270,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                                 "stop_line": 0.5,
                                 "crosswalk": 0.0,
                             },
+                            "lane_family_include_det_source_distill_only": True,
                             "distill_normalize_mode": "ema",
                             "distill_ema_decay": 0.9,
                             "distill_ema_warmup_steps": 2,
@@ -505,6 +506,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["lane"], 0.0)
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["stop_line"], 0.5)
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["crosswalk"], 0.0)
+        self.assertTrue(scenario.train_defaults.lane_family_include_det_source_distill_only)
         self.assertEqual(scenario.train_defaults.distill_normalize_mode, "ema")
         self.assertAlmostEqual(scenario.train_defaults.distill_ema_decay, 0.9)
         self.assertEqual(scenario.train_defaults.distill_ema_warmup_steps, 2)
@@ -619,6 +621,52 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             "aihub_lane_seoul",
             "pv26_exhaustive_aihub_traffic_seoul",
             "pv26_exhaustive_aihub_obstacle_seoul",
+        ])
+        self.assertEqual([record.dataset_key for record in val_view.records], ["aihub_lane_seoul"])
+
+    def test_lane_family_phase_can_include_det_records_for_distill_only_train_view(self) -> None:
+        class FakeDataset:
+            def __init__(self) -> None:
+                self.records = [
+                    SimpleNamespace(dataset_key="aihub_lane_seoul"),
+                    SimpleNamespace(dataset_key="pv26_exhaustive_bdd100k_det_100k"),
+                    SimpleNamespace(dataset_key="pv26_exhaustive_aihub_traffic_seoul"),
+                ]
+
+            def __getitem__(self, index: int) -> object:
+                return self.records[index]
+
+        phase = PhaseConfig(
+            name="lane_family",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=1,
+            max_epochs=1,
+            patience=1,
+            freeze_policy="lane_family_heads_static_trunk",
+        )
+        dataset = FakeDataset()
+        train_config = TrainDefaultsConfig(
+            distill_enabled=True,
+            lane_family_include_det_source_distill_only=True,
+        )
+
+        train_view = _dataset_for_phase(
+            dataset,
+            phase=phase,
+            train_config=train_config,
+            include_unlabeled_negatives=True,
+        )
+        val_view = _dataset_for_phase(
+            dataset,
+            phase=phase,
+            train_config=train_config,
+            include_unlabeled_negatives=False,
+        )
+
+        self.assertEqual([record.dataset_key for record in train_view.records], [
+            "aihub_lane_seoul",
+            "pv26_exhaustive_bdd100k_det_100k",
+            "pv26_exhaustive_aihub_traffic_seoul",
         ])
         self.assertEqual([record.dataset_key for record in val_view.records], ["aihub_lane_seoul"])
 

@@ -652,7 +652,17 @@ def _dataset_for_phase(
         if train_config is not None
         else "none"
     )
-    if include_unlabeled_negatives and negative_mode.startswith("det_source_") and negative_mode != "none":
+    include_det_source_distill_only = bool(
+        getattr(train_config, "lane_family_include_det_source_distill_only", False)
+    )
+    include_det_only = (
+        include_unlabeled_negatives
+        and (
+            (negative_mode.startswith("det_source_") and negative_mode != "none")
+            or include_det_source_distill_only
+        )
+    )
+    if include_det_only:
         allowed_dataset_keys.update(
             dataset_key
             for dataset_key, source_mask in SOURCE_MASK_BY_DATASET.items()
