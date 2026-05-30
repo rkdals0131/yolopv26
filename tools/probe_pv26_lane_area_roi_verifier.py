@@ -162,6 +162,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verifier-batch-size", type=int, default=256)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
     parser.add_argument(
+        "--verifier-model-kind",
+        choices=("mlp", "set_context"),
+        default="mlp",
+        help=(
+            "mlp scores each lane candidate independently. set_context scores "
+            "all candidates from the same sample jointly with a small "
+            "permutation-equivariant transformer encoder."
+        ),
+    )
+    parser.add_argument("--set-context-layers", type=int, default=2)
+    parser.add_argument("--set-context-heads", type=int, default=4)
+    parser.add_argument(
         "--verifier-loss-mode",
         choices=("bce", "sample_pairwise_rank"),
         default="bce",
@@ -229,6 +241,57 @@ class LaneAreaRoiVerifierNet(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features).squeeze(-1)
+
+
+class LaneAreaRoiSetContextVerifierNet(nn.Module):
+    is_set_context_verifier = True
+
+    def __init__(self, input_dim: int, *, hidden_dim: int, layer_count: int = 2, head_count: int = 4) -> None:
+        super().__init__()
+        hidden_dim = int(hidden_dim)
+        head_count = max(1, int(head_count))
+        while hidden_dim % head_count != 0 and head_count > 1:
+            head_count -= 1
+        self.input_proj = nn.Sequential(
+            nn.Linear(int(input_dim), hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.LayerNorm(hidden_dim),
+        )
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=head_count,
+            dim_feedforward=hidden_dim * 2,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=max(1, int(layer_count)))
+        self.output = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.hidden_dim = hidden_dim
+        self.layer_count = max(1, int(layer_count))
+        self.head_count = head_count
+
+    def forward(self, features: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        squeeze_batch = False
+        if features.ndim == 2:
+            features = features.unsqueeze(0)
+            squeeze_batch = True
+        if features.ndim != 3:
+            raise ValueError("set-context verifier expects [N, D] or [B, N, D] features")
+        tokens = self.input_proj(features)
+        encoded = self.encoder(tokens, src_key_padding_mask=key_padding_mask)
+        logits = self.output(encoded).squeeze(-1)
+        return logits.squeeze(0) if squeeze_batch else logits
+
+
+def _is_set_context_verifier(model: nn.Module) -> bool:
+    return bool(getattr(model, "is_set_context_verifier", False))
 
 
 def _lane_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
@@ -1048,7 +1111,7 @@ def _train_verifier(
     args: argparse.Namespace,
     device: str,
     seed: int | None = None,
-) -> tuple[LaneAreaRoiVerifierNet, dict[str, Any]]:
+) -> tuple[LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet, dict[str, Any]]:
     if not examples:
         raise ValueError("no area-ROI verifier training examples collected")
     effective_seed = int(args.seed) if seed is None else int(seed)
@@ -1060,7 +1123,18 @@ def _train_verifier(
     mean = features.mean(dim=0)
     std = features.std(dim=0).clamp(min=1.0e-6)
     features = (features - mean) / std
-    model = LaneAreaRoiVerifierNet(int(features.shape[1]), hidden_dim=int(args.hidden_dim)).to(device)
+    model_kind = str(getattr(args, "verifier_model_kind", "mlp"))
+    if model_kind == "set_context":
+        model: LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet = LaneAreaRoiSetContextVerifierNet(
+            int(features.shape[1]),
+            hidden_dim=int(args.hidden_dim),
+            layer_count=int(getattr(args, "set_context_layers", 2)),
+            head_count=int(getattr(args, "set_context_heads", 4)),
+        ).to(device)
+    elif model_kind == "mlp":
+        model = LaneAreaRoiVerifierNet(int(features.shape[1]), hidden_dim=int(args.hidden_dim)).to(device)
+    else:
+        raise ValueError(f"unsupported verifier_model_kind: {model_kind}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.verifier_lr), weight_decay=1.0e-4)
     features = features.to(device)
     labels = labels.to(device)
@@ -1077,6 +1151,12 @@ def _train_verifier(
     batch_size = max(1, int(args.verifier_batch_size))
     history: list[dict[str, float]] = []
     loss_mode = str(getattr(args, "verifier_loss_mode", "bce"))
+    all_grouped_indices: list[torch.Tensor] = []
+    if _is_set_context_verifier(model):
+        for sample_index in sorted({int(value) for value in sample_indices.detach().cpu().tolist()}):
+            group = torch.nonzero(sample_indices == int(sample_index), as_tuple=False).reshape(-1)
+            if int(group.numel()) > 0:
+                all_grouped_indices.append(group)
     if loss_mode == "sample_pairwise_rank":
         grouped_indices: list[torch.Tensor] = []
         for sample_index in sorted({int(value) for value in sample_indices.detach().cpu().tolist()}):
@@ -1114,19 +1194,36 @@ def _train_verifier(
             if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
                 history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
     else:
-        for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
-            order = torch.randperm(int(labels.numel()), generator=generator)
-            losses: list[float] = []
-            for start in range(0, int(order.numel()), batch_size):
-                index = order[start : start + batch_size].to(device)
-                logits = model(features[index])
-                loss = F.binary_cross_entropy_with_logits(logits, labels[index], pos_weight=pos_weight)
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
-                losses.append(float(loss.detach().cpu()))
-            if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
-                history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
+        if _is_set_context_verifier(model):
+            if not all_grouped_indices:
+                raise ValueError("set_context verifier requires at least one sample group")
+            for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
+                order = torch.randperm(len(all_grouped_indices), generator=generator).tolist()
+                losses: list[float] = []
+                for group_order_index in order:
+                    group = all_grouped_indices[int(group_order_index)]
+                    logits = model(features[group])
+                    loss = F.binary_cross_entropy_with_logits(logits, labels[group], pos_weight=pos_weight)
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    optimizer.step()
+                    losses.append(float(loss.detach().cpu()))
+                if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
+                    history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
+        else:
+            for epoch in range(1, max(1, int(args.verifier_epochs)) + 1):
+                order = torch.randperm(int(labels.numel()), generator=generator)
+                losses: list[float] = []
+                for start in range(0, int(order.numel()), batch_size):
+                    index = order[start : start + batch_size].to(device)
+                    logits = model(features[index])
+                    loss = F.binary_cross_entropy_with_logits(logits, labels[index], pos_weight=pos_weight)
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    optimizer.step()
+                    losses.append(float(loss.detach().cpu()))
+                if epoch == 1 or epoch == int(args.verifier_epochs) or epoch % 10 == 0:
+                    history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
     model.register_buffer("feature_mean", mean.to(device), persistent=True)
     model.register_buffer("feature_std", std.to(device), persistent=True)
     summary = {
@@ -1134,6 +1231,9 @@ def _train_verifier(
         "positive_count": positive_count,
         "negative_count": negative_count,
         "input_dim": int(features.shape[1]),
+        "model_kind": model_kind,
+        "set_context_layers": int(getattr(args, "set_context_layers", 2)),
+        "set_context_heads": int(getattr(args, "set_context_heads", 4)),
         "loss_mode": loss_mode,
         "pairwise_margin": float(getattr(args, "pairwise_margin", 0.20)),
         "pairwise_bce_weight": float(getattr(args, "pairwise_bce_weight", 0.35)),
@@ -1148,11 +1248,16 @@ def _train_verifier_or_ensemble(
     *,
     args: argparse.Namespace,
     device: str,
-) -> tuple[LaneAreaRoiVerifierNet | list[LaneAreaRoiVerifierNet], dict[str, Any]]:
+) -> tuple[
+    LaneAreaRoiVerifierNet
+    | LaneAreaRoiSetContextVerifierNet
+    | list[LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet],
+    dict[str, Any],
+]:
     ensemble_size = max(1, int(getattr(args, "verifier_ensemble_size", 1)))
     if ensemble_size == 1:
         return _train_verifier(examples, args=args, device=device)
-    models: list[LaneAreaRoiVerifierNet] = []
+    models: list[LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet] = []
     members: list[dict[str, Any]] = []
     for member_index in range(ensemble_size):
         model, member_summary = _train_verifier(
@@ -1173,6 +1278,7 @@ def _train_verifier_or_ensemble(
         "positive_count": int(first.get("positive_count", 0)),
         "negative_count": int(first.get("negative_count", 0)),
         "input_dim": int(first.get("input_dim", 0)),
+        "model_kind": str(first.get("model_kind", getattr(args, "verifier_model_kind", "mlp"))),
         "members": members,
     }
     return models, summary
@@ -1181,7 +1287,9 @@ def _train_verifier_or_ensemble(
 def _save_verifier_model(
     path: str,
     *,
-    model: LaneAreaRoiVerifierNet | list[LaneAreaRoiVerifierNet],
+    model: LaneAreaRoiVerifierNet
+    | LaneAreaRoiSetContextVerifierNet
+    | list[LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet],
     train_summary: dict[str, Any],
     args: argparse.Namespace,
 ) -> None:
@@ -1196,13 +1304,21 @@ def _save_verifier_model(
             "state_dict": model.state_dict(),
             "input_dim": int(train_summary["input_dim"]),
             "hidden_dim": int(args.hidden_dim),
+            "model_kind": str(train_summary.get("model_kind", getattr(args, "verifier_model_kind", "mlp"))),
+            "set_context_layers": int(train_summary.get("set_context_layers", getattr(args, "set_context_layers", 2))),
+            "set_context_heads": int(train_summary.get("set_context_heads", getattr(args, "set_context_heads", 4))),
             "train_summary": train_summary,
         },
         output_path,
     )
 
 
-def _load_verifier_model(path: str, *, args: argparse.Namespace, device: str) -> tuple[LaneAreaRoiVerifierNet, dict[str, Any]]:
+def _load_verifier_model(
+    path: str,
+    *,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet, dict[str, Any]]:
     input_path = Path(path).expanduser().resolve()
     if not input_path.is_file():
         raise FileNotFoundError(input_path)
@@ -1212,7 +1328,18 @@ def _load_verifier_model(path: str, *, args: argparse.Namespace, device: str) ->
     if input_dim <= 0:
         raise ValueError(f"verifier checkpoint is missing input_dim: {input_path}")
     hidden_dim = int(payload.get("hidden_dim", int(args.hidden_dim)))
-    model = LaneAreaRoiVerifierNet(input_dim, hidden_dim=hidden_dim).to(device)
+    model_kind = str(payload.get("model_kind", train_summary.get("model_kind", "mlp")))
+    if model_kind == "set_context":
+        model: LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet = LaneAreaRoiSetContextVerifierNet(
+            input_dim,
+            hidden_dim=hidden_dim,
+            layer_count=int(payload.get("set_context_layers", train_summary.get("set_context_layers", 2))),
+            head_count=int(payload.get("set_context_heads", train_summary.get("set_context_heads", 4))),
+        ).to(device)
+    elif model_kind == "mlp":
+        model = LaneAreaRoiVerifierNet(input_dim, hidden_dim=hidden_dim).to(device)
+    else:
+        raise ValueError(f"unsupported verifier checkpoint model_kind: {model_kind}")
     state_dict = dict(payload["state_dict"])
     feature_mean = state_dict.pop("feature_mean", None)
     feature_std = state_dict.pop("feature_std", None)
@@ -1223,17 +1350,44 @@ def _load_verifier_model(path: str, *, args: argparse.Namespace, device: str) ->
     model.register_buffer("feature_std", feature_std.to(device), persistent=True)
     model.eval()
     if not train_summary:
-        train_summary = {"input_dim": input_dim, "loaded_from": str(input_path)}
+        train_summary = {"input_dim": input_dim, "model_kind": model_kind, "loaded_from": str(input_path)}
     else:
+        train_summary["model_kind"] = model_kind
         train_summary["loaded_from"] = str(input_path)
     return model, train_summary
+
+
+def _predict_verifier_probabilities(
+    *,
+    examples: list[dict[str, Any]],
+    features: torch.Tensor,
+    model: nn.Module,
+) -> np.ndarray:
+    normalized = (features - model.feature_mean) / model.feature_std
+    if not _is_set_context_verifier(model):
+        return torch.sigmoid(model(normalized)).detach().cpu().numpy().astype(np.float32)
+    probabilities = np.zeros((len(examples),), dtype=np.float32)
+    by_sample: dict[int, list[int]] = {}
+    for index, example in enumerate(examples):
+        by_sample.setdefault(int(example.get("sample_index", -1)), []).append(int(index))
+    for indices in by_sample.values():
+        if not indices:
+            continue
+        index_tensor = torch.tensor(indices, dtype=torch.long, device=features.device)
+        logits = model(normalized[index_tensor])
+        probabilities[np.asarray(indices, dtype=np.int64)] = (
+            torch.sigmoid(logits).detach().cpu().numpy().astype(np.float32)
+        )
+    return probabilities
 
 
 def _apply_verifier(
     *,
     examples: list[dict[str, Any]],
     predictions_all: list[dict[str, Any]],
-    model: LaneAreaRoiVerifierNet | list[LaneAreaRoiVerifierNet],
+    model: LaneAreaRoiVerifierNet
+    | LaneAreaRoiSetContextVerifierNet
+    | list[LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet],
     args: argparse.Namespace,
     device: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1245,8 +1399,9 @@ def _apply_verifier(
     member_probabilities: list[np.ndarray] = []
     with torch.no_grad():
         for member in models:
-            normalized = (features - member.feature_mean) / member.feature_std
-            member_probabilities.append(torch.sigmoid(member(normalized)).detach().cpu().numpy().astype(np.float32))
+            member_probabilities.append(
+                _predict_verifier_probabilities(examples=examples, features=features, model=member)
+            )
     stacked_probabilities = np.stack(member_probabilities, axis=0)
     if len(models) == 1:
         probabilities = stacked_probabilities[0]
@@ -1443,7 +1598,7 @@ def _evaluate_verifier_streaming(
     val_loader: Any,
     evaluator: Any,
     postprocess_config: Any,
-    model: LaneAreaRoiVerifierNet,
+    model: LaneAreaRoiVerifierNet | LaneAreaRoiSetContextVerifierNet,
     args: argparse.Namespace,
     device: str,
 ) -> dict[str, Any]:
@@ -1594,6 +1749,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "side_contrast_features": bool(args.side_contrast_features),
         "raw_image_line_features": bool(args.raw_image_line_features),
         "cross_task_conflict_features": bool(args.cross_task_conflict_features),
+        "verifier_model_kind": str(args.verifier_model_kind),
+        "set_context_layers": int(args.set_context_layers),
+        "set_context_heads": int(args.set_context_heads),
         "verifier_loss_mode": str(args.verifier_loss_mode),
         "pairwise_margin": float(args.pairwise_margin),
         "pairwise_bce_weight": float(args.pairwise_bce_weight),

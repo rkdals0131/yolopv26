@@ -21417,3 +21417,97 @@ Decision:
 - Exact-val128, broader-val512, and larger train exposure are skipped because fixed val4 has zero TP/FP/FN movement.
 - Close this as verifier loss mode, pairwise margin, BCE stabilizer weight, same union geometry replay, and train-batch scaling on the current line-ROI union-pool verifier surface.
 - Reopen lane candidate-pool selection only with a materially different model-side instance-emission or TP-preserving instance-quality signal that actually selects dropped oracle-positive candidates without losing retained TP at the first fixed gate.
+
+## 367. 2026-05-31 Lane set-context union-pool verifier: joint candidate scoring is still fixed-gate flat
+
+Context:
+
+- The previous pairwise union-pool ranker showed that changing independent BCE to sample-local ranking was trainable, but it still selected only retained lanes.
+- This branch tested a stronger set-selection premise: score retained+dropped candidates jointly within each sample, so candidate probabilities can depend on neighboring lane candidates instead of only per-candidate line-ROI features.
+- This is not another threshold, candidate-count, side-feature, hidden-dim, or train-batch sweep. The changed axis is the verifier architecture: independent MLP -> sample-local set-context transformer encoder.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_area_roi_verifier.py` now exposes:
+  - `--verifier-model-kind {mlp,set_context}`;
+  - `--set-context-layers`;
+  - `--set-context-heads`.
+- `set_context` uses a small permutation-equivariant transformer encoder over all candidates in the same sample group, then emits one logit per candidate.
+- Existing `sample_pairwise_rank` loss works with the set-context verifier by forwarding each sample's candidate group together.
+- `test/test_lane_area_roi_verifier.py` covers set-context forward, grouped apply, and pairwise training summary.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA train64/fixed-val4 verifier replay:
+  - output `runs/pv26_exhaustive_od_lane_train/lane_area_roi_set_context_union_train64_val4_20260531`;
+  - verifier train batches `64`;
+  - validation batches `4`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - candidate source `union_pool`;
+  - integration `select_topk_union_geometry`;
+  - `max_appends_per_sample=0`;
+  - `verifier_model_kind=set_context`;
+  - set-context layers/heads `2 / 4`;
+  - `verifier_loss_mode=sample_pairwise_rank`;
+  - pairwise margin `0.20`;
+  - BCE stabilizer weight `0.35`.
+
+Fixed val4 result:
+
+| Metric | Baseline | Set-context replay |
+| --- | ---: | ---: |
+| lane F1 | `0.5839` | `0.5839` |
+| lane TP/FP/FN | `40 / 11 / 46` | `40 / 11 / 46` |
+| stop-line F1 | `0.0000` | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` | `3 / 1 / 4` |
+
+Verifier details:
+
+- Train examples: `1166`.
+- Train positives/negatives: `525 / 641`.
+- Feature dim: `361`.
+- Validation candidates: `81`.
+- Selected candidates: `51`.
+- Selected oracle-positive candidates: `40`.
+- Selected sources: retained `51`, dropped-area `0`.
+- Unselected dropped-area oracle-positive candidates: `5`.
+
+Artifacts:
+
+- Summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_set_context_union_train64_val4_20260531/summary.json`.
+- Train candidates: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_set_context_union_train64_val4_20260531/train_candidates.csv`.
+- Validation candidates: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_set_context_union_train64_val4_20260531/val_candidates.csv`.
+- Replay rows: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_set_context_union_train64_val4_20260531/verifier_replay_rows.csv`.
+
+Storage:
+
+- Output artifact size is about `96K`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` was pruned after the run.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- Real CUDA train64/fixed-val4 set-context union-pool verifier replay on the existing canonical dataset root.
+
+Decision:
+
+- The set-context verifier implementation is valid and trainable.
+- It does not move the first fixed gate at all: lane TP/FP/FN remains `40 / 11 / 46`.
+- Like pairwise MLP ranking, it fails to use dropped-area headroom: all selected candidates are retained lanes, while `5` dropped-area oracle-positive candidates remain unselected.
+- Exact-val128, broader-val512, and larger train exposure are skipped because fixed val4 has zero TP/FP/FN movement.
+- Close this as set-context layer/head count, same pairwise loss, same fixed-count union geometry replay, and train-batch scaling on the current line-ROI union-pool verifier surface.
+- Reopen lane candidate-pool selection only with a materially different model-side instance-emission or TP-preserving instance-quality signal that actually selects dropped oracle-positive candidates without losing retained TP at the first fixed gate.

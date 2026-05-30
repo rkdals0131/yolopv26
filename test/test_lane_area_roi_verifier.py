@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from tools.probe_pv26_lane_area_roi_verifier import (
+    LaneAreaRoiSetContextVerifierNet,
     _accumulate_task_counts,
     _alignment_context_features,
     _apply_verifier,
@@ -419,6 +420,113 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(summary["positive_count"], 2)
         self.assertEqual(summary["negative_count"], 2)
         self.assertEqual(summary["input_dim"], 2)
+        self.assertTrue(summary["history"])
+
+    def test_set_context_verifier_forward_scores_candidate_sets(self) -> None:
+        model = LaneAreaRoiSetContextVerifierNet(3, hidden_dim=8, layer_count=1, head_count=2)
+        logits = model(torch.zeros((2, 4, 3), dtype=torch.float32))
+
+        self.assertEqual(tuple(logits.shape), (2, 4))
+        self.assertTrue(torch.isfinite(logits).all())
+
+    def test_set_context_apply_groups_candidates_by_sample(self) -> None:
+        class SampleSetVerifier(torch.nn.Module):
+            is_set_context_verifier = True
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                self.seen_shape = tuple(features.shape)
+                return features[:, 0]
+
+        examples = [
+            {
+                "features": np.asarray([9.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate": _lane(75.0),
+            },
+            {
+                "features": np.asarray([-9.0], dtype=np.float32),
+                "positive": 0.0,
+                "negative": 1.0,
+                "nearest_gt_index": -1,
+                "nearest_gt_distance": 90.0,
+                "sample_index": 1,
+                "candidate_index": 0,
+                "candidate": _lane(150.0),
+            },
+        ]
+        verifier = SampleSetVerifier()
+        _repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=[{"lanes": []}, {"lanes": []}],
+            model=verifier,
+            args=SimpleNamespace(
+                quality_threshold=0.8,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=1,
+                candidate_integration_mode="append",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(rows[0]["selected"], 1)
+        self.assertEqual(rows[1]["selected"], 0)
+        self.assertEqual(verifier.seen_shape, (1, 1))
+
+    def test_set_context_pairwise_training_reports_model_kind(self) -> None:
+        examples = [
+            {
+                "features": np.asarray([1.0, 0.0], dtype=np.float32),
+                "positive": 1.0,
+                "sample_index": 0,
+            },
+            {
+                "features": np.asarray([0.0, 1.0], dtype=np.float32),
+                "positive": 0.0,
+                "sample_index": 0,
+            },
+            {
+                "features": np.asarray([0.8, 0.2], dtype=np.float32),
+                "positive": 1.0,
+                "sample_index": 1,
+            },
+            {
+                "features": np.asarray([0.2, 0.8], dtype=np.float32),
+                "positive": 0.0,
+                "sample_index": 1,
+            },
+        ]
+
+        _model, summary = _train_verifier(
+            examples,
+            args=SimpleNamespace(
+                seed=7,
+                hidden_dim=8,
+                verifier_lr=1.0e-2,
+                verifier_batch_size=4,
+                verifier_epochs=2,
+                verifier_model_kind="set_context",
+                set_context_layers=1,
+                set_context_heads=2,
+                verifier_loss_mode="sample_pairwise_rank",
+                pairwise_margin=0.2,
+                pairwise_bce_weight=0.35,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(summary["model_kind"], "set_context")
+        self.assertEqual(summary["loss_mode"], "sample_pairwise_rank")
         self.assertTrue(summary["history"])
 
     def test_alignment_context_features_describe_nearest_retained_lane(self) -> None:
