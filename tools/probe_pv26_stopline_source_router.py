@@ -59,6 +59,7 @@ DEFAULT_STOP_LINE_CHECKPOINT = (
     / "best.pt"
 )
 ROUTER_MODES = ("primary", "specialist", "union_dedupe", "agreement", "empty")
+DEFAULT_ROUTER_RASTER_SIZE = (64, 96)
 
 
 class SourceRouterMLP(nn.Module):
@@ -72,6 +73,28 @@ class SourceRouterMLP(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features)
+
+
+class SourceRouterRasterCNN(nn.Module):
+    def __init__(self, input_channels: int, output_dim: int, *, base_channels: int = 16) -> None:
+        super().__init__()
+        channels = max(4, int(base_channels))
+        self.net = nn.Sequential(
+            nn.Conv2d(int(input_channels), channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(channels, channels * 2, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(channels * 2, channels * 4, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels * 4, int(output_dim)),
+        )
+
+    def forward(self, rasters: torch.Tensor) -> torch.Tensor:
+        return self.net(rasters)
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,15 +126,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--router-weight-decay", type=float, default=1.0e-4)
     parser.add_argument(
         "--feature-mode",
-        choices=("output_stats", "dense_aligned"),
+        choices=("output_stats", "dense_aligned", "raster_cnn"),
         default="output_stats",
         help=(
             "output_stats reproduces the closed scalar source-router premise. "
-            "dense_aligned appends no-GT line-aligned dense-map/raw-image quality features."
+            "dense_aligned appends no-GT line-aligned dense-map/raw-image quality features. "
+            "raster_cnn trains a tiny router over raw-image, dense-map, and source prediction rasters."
         ),
     )
     parser.add_argument("--dense-feature-samples", type=int, default=25)
     parser.add_argument("--dense-feature-side-offset", type=float, default=3.0)
+    parser.add_argument("--raster-height", type=int, default=DEFAULT_ROUTER_RASTER_SIZE[0])
+    parser.add_argument("--raster-width", type=int, default=DEFAULT_ROUTER_RASTER_SIZE[1])
+    parser.add_argument("--raster-base-channels", type=int, default=16)
     parser.add_argument("--seed", type=int, default=20260530)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--stop-line-mask-binary-threshold", type=float, default=None)
@@ -337,6 +364,84 @@ def _as_gray_image(image: torch.Tensor | None, sample_index: int) -> np.ndarray 
     if not bool(np.isfinite(array).all()):
         return None
     return array
+
+
+def _resize_array(array: np.ndarray | None, *, size: tuple[int, int]) -> np.ndarray:
+    height, width = int(size[0]), int(size[1])
+    if array is None or array.size == 0:
+        return np.zeros((height, width), dtype=np.float32)
+    tensor = torch.as_tensor(array, dtype=torch.float32).reshape(1, 1, int(array.shape[0]), int(array.shape[1]))
+    resized = F.interpolate(tensor, size=(height, width), mode="bilinear", align_corners=False)
+    output = resized[0, 0].detach().cpu().numpy().astype(np.float32)
+    if not bool(np.isfinite(output).all()):
+        return np.zeros((height, width), dtype=np.float32)
+    return output
+
+
+def _draw_stopline_raster(
+    lines: list[dict[str, Any]],
+    meta: dict[str, Any],
+    *,
+    size: tuple[int, int],
+    thickness: int = 1,
+) -> np.ndarray:
+    height, width = int(size[0]), int(size[1])
+    raster = np.zeros((height, width), dtype=np.float32)
+    transform = transform_from_meta(meta)
+    network_h, network_w = int(transform.network_hw[0]), int(transform.network_hw[1])
+    radius = max(0, int(thickness))
+    for line in lines:
+        raw_points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+        if raw_points.shape[0] < 2 or not bool(np.isfinite(raw_points).all()):
+            continue
+        network_points = np.asarray(transform_points(raw_points.tolist(), transform), dtype=np.float32)
+        for start, end in zip(network_points[:-1], network_points[1:]):
+            delta = end - start
+            steps = max(2, int(np.ceil(float(np.linalg.norm(delta)) / 2.0)))
+            weights = np.linspace(0.0, 1.0, num=steps, dtype=np.float32)
+            points = start[None, :] * (1.0 - weights[:, None]) + end[None, :] * weights[:, None]
+            x = np.rint(points[:, 0] * float(width - 1) / max(float(network_w - 1), 1.0)).astype(np.int64)
+            y = np.rint(points[:, 1] * float(height - 1) / max(float(network_h - 1), 1.0)).astype(np.int64)
+            x = np.clip(x, 0, width - 1)
+            y = np.clip(y, 0, height - 1)
+            for dy in range(-radius, radius + 1):
+                yy = np.clip(y + dy, 0, height - 1)
+                for dx in range(-radius, radius + 1):
+                    xx = np.clip(x + dx, 0, width - 1)
+                    raster[yy, xx] = 1.0
+    return raster
+
+
+def _source_raster_for_sample(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+    *,
+    primary_outputs: dict[str, torch.Tensor],
+    specialist_outputs: dict[str, torch.Tensor],
+    image: torch.Tensor | None,
+    sample_index: int,
+    meta: dict[str, Any],
+    size: tuple[int, int],
+) -> np.ndarray:
+    primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
+    specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
+    channels = [
+        _resize_array(_as_gray_image(image, sample_index), size=size),
+        _draw_stopline_raster(primary_lines, meta, size=size, thickness=1),
+        _draw_stopline_raster(specialist_lines, meta, size=size, thickness=1),
+        _draw_stopline_raster(union_lines, meta, size=size, thickness=1),
+        _resize_array(_as_2d_prob(primary_outputs, "stop_line_mask_logits", sample_index), size=size),
+        _resize_array(_as_2d_prob(specialist_outputs, "stop_line_mask_logits", sample_index), size=size),
+        _resize_array(_as_2d_prob(primary_outputs, "stop_line_center_logits", sample_index), size=size),
+        _resize_array(_as_2d_prob(specialist_outputs, "stop_line_center_logits", sample_index), size=size),
+        _resize_array(_as_2d_prob(primary_outputs, "stop_line_selector_map_logits", sample_index), size=size),
+        _resize_array(_as_2d_prob(specialist_outputs, "stop_line_selector_map_logits", sample_index), size=size),
+    ]
+    raster = np.stack(channels, axis=0).astype(np.float32)
+    if not bool(np.isfinite(raster).all()):
+        return np.zeros((len(channels), int(size[0]), int(size[1])), dtype=np.float32)
+    return raster
 
 
 def _bilinear_values(map_array: np.ndarray | None, xy: np.ndarray) -> np.ndarray:
@@ -590,9 +695,11 @@ def _build_predictions_for_loader(
     feature_mode: str,
     dense_feature_samples: int,
     dense_feature_side_offset: float,
-) -> tuple[list[dict[str, Any]], list[list[float]], list[int], dict[str, list[dict[str, Any]]]]:
+    raster_size: tuple[int, int],
+) -> tuple[list[dict[str, Any]], list[list[float]], list[np.ndarray], list[int], dict[str, list[dict[str, Any]]]]:
     raw_batches: list[dict[str, Any]] = []
     features: list[list[float]] = []
+    rasters: list[np.ndarray] = []
     labels: list[int] = []
     predictions_by_mode: dict[str, list[dict[str, Any]]] = {mode: [] for mode in ROUTER_MODES}
 
@@ -642,7 +749,8 @@ def _build_predictions_for_loader(
                 )
             ):
                 sample_features = _features_for_sample(primary_sample, specialist_sample)
-                if str(feature_mode).strip().lower() == "dense_aligned":
+                normalized_feature_mode = str(feature_mode).strip().lower()
+                if normalized_feature_mode == "dense_aligned":
                     sample_meta = (
                         encoded_meta[sample_index]
                         if isinstance(encoded_meta, list)
@@ -665,12 +773,34 @@ def _build_predictions_for_loader(
                             side_offset=float(dense_feature_side_offset),
                         )
                     )
+                elif normalized_feature_mode == "raster_cnn":
+                    sample_meta = (
+                        encoded_meta[sample_index]
+                        if isinstance(encoded_meta, list)
+                        and sample_index < len(encoded_meta)
+                        and isinstance(encoded_meta[sample_index], dict)
+                        else primary_sample.get("meta", {})
+                    )
+                    if not isinstance(sample_meta, dict):
+                        sample_meta = {}
+                    rasters.append(
+                        _source_raster_for_sample(
+                            primary_sample,
+                            specialist_sample,
+                            primary_outputs=lane_outputs,
+                            specialist_outputs=stop_line_outputs,
+                            image=encoded.get("image") if isinstance(encoded, dict) else None,
+                            sample_index=int(sample_index),
+                            meta=sample_meta,
+                            size=raster_size,
+                        )
+                    )
                 features.append(sample_features)
                 labels.append(_label_for_sample(primary_sample, specialist_sample, gt_sample))
                 for mode in ROUTER_MODES:
                     predictions_by_mode[mode].append(_source_prediction(primary_sample, specialist_sample, mode))
 
-    return raw_batches, features, labels, predictions_by_mode
+    return raw_batches, features, rasters, labels, predictions_by_mode
 
 
 def _train_router(
@@ -721,6 +851,65 @@ def _train_router(
     return model, mean, std, diagnostics
 
 
+def _train_raster_router(
+    rasters: list[np.ndarray],
+    labels: list[int],
+    *,
+    base_channels: int,
+    epochs: int,
+    lr: float,
+    weight_decay: float,
+    seed: int,
+    device: str,
+) -> tuple[SourceRouterRasterCNN, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    if not rasters:
+        raise ValueError("no raster router training inputs were collected")
+    if len(rasters) != len(labels):
+        raise ValueError(f"raster/label length mismatch: {len(rasters)} != {len(labels)}")
+    torch.manual_seed(int(seed))
+    random.seed(int(seed))
+    np.random.seed(int(seed) % (2**32 - 1))
+    x_cpu = torch.tensor(np.stack(rasters, axis=0), dtype=torch.float32)
+    y = torch.tensor(labels, dtype=torch.long)
+    mean = x_cpu.mean(dim=(0, 2, 3), keepdim=True)
+    std = x_cpu.std(dim=(0, 2, 3), keepdim=True).clamp_min(1.0e-6)
+    target_device = torch.device(device if str(device).startswith("cuda") and torch.cuda.is_available() else "cpu")
+    x = ((x_cpu - mean) / std).to(target_device)
+    y_device = y.to(target_device)
+    model = SourceRouterRasterCNN(
+        input_channels=int(x.shape[1]),
+        output_dim=len(ROUTER_MODES),
+        base_channels=int(base_channels),
+    ).to(target_device)
+    counts = torch.bincount(y, minlength=len(ROUTER_MODES)).to(dtype=torch.float32)
+    weights = torch.where(counts > 0.0, float(y.numel()) / (counts * len(ROUTER_MODES)), torch.zeros_like(counts))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+    losses: list[float] = []
+    for _ in range(int(epochs)):
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(x)
+        loss = F.cross_entropy(logits, y_device, weight=weights.to(target_device))
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach().cpu()))
+    with torch.no_grad():
+        train_logits = model(x)
+        train_pred = train_logits.argmax(dim=1).detach().cpu()
+        train_accuracy = float((train_pred == y).float().mean().item())
+    diagnostics = {
+        "feature_count": int(x_cpu.shape[0]),
+        "input_channels": int(x_cpu.shape[1]),
+        "raster_height": int(x_cpu.shape[2]),
+        "raster_width": int(x_cpu.shape[3]),
+        "label_counts": {mode: int(counts[index].item()) for index, mode in enumerate(ROUTER_MODES)},
+        "class_weights": {mode: float(weights[index].item()) for index, mode in enumerate(ROUTER_MODES)},
+        "train_accuracy": train_accuracy,
+        "loss_first": losses[0] if losses else None,
+        "loss_last": losses[-1] if losses else None,
+    }
+    return model, mean.cpu(), std.cpu(), diagnostics
+
+
 def _predict_router_modes(
     model: SourceRouterMLP,
     mean: torch.Tensor,
@@ -733,6 +922,22 @@ def _predict_router_modes(
         x = torch.tensor(features, dtype=torch.float32)
         logits = model((x - mean) / std)
         return [int(value) for value in logits.argmax(dim=1).tolist()]
+
+
+def _predict_raster_router_modes(
+    model: SourceRouterRasterCNN,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    rasters: list[np.ndarray],
+) -> list[int]:
+    if not rasters:
+        return []
+    target_device = next(model.parameters()).device
+    with torch.no_grad():
+        x = torch.tensor(np.stack(rasters, axis=0), dtype=torch.float32)
+        x = ((x - mean.cpu()) / std.cpu()).to(target_device)
+        logits = model(x)
+        return [int(value) for value in logits.argmax(dim=1).detach().cpu().tolist()]
 
 
 def _prediction_rows_from_choices(
@@ -903,7 +1108,8 @@ def main() -> int:
         or train_cli._build_postprocess_config(stop_line_train_config)
     )
 
-    train_raw_batches, train_features, train_labels, _train_predictions = _build_predictions_for_loader(
+    raster_size = (int(args.raster_height), int(args.raster_width))
+    train_raw_batches, train_features, train_rasters, train_labels, _train_predictions = _build_predictions_for_loader(
         loader=train_loader,
         max_batches=int(args.router_train_batches),
         evaluator=evaluator,
@@ -914,17 +1120,30 @@ def main() -> int:
         feature_mode=str(args.feature_mode),
         dense_feature_samples=int(args.dense_feature_samples),
         dense_feature_side_offset=float(args.dense_feature_side_offset),
+        raster_size=raster_size,
     )
-    router, feature_mean, feature_std, router_diagnostics = _train_router(
-        train_features,
-        train_labels,
-        hidden_dim=int(args.router_hidden_dim),
-        epochs=int(args.router_epochs),
-        lr=float(args.router_lr),
-        weight_decay=float(args.router_weight_decay),
-        seed=int(args.seed),
-    )
-    val_raw_batches, val_features, val_labels, val_predictions_by_mode = _build_predictions_for_loader(
+    if str(args.feature_mode).strip().lower() == "raster_cnn":
+        router, feature_mean, feature_std, router_diagnostics = _train_raster_router(
+            train_rasters,
+            train_labels,
+            base_channels=int(args.raster_base_channels),
+            epochs=int(args.router_epochs),
+            lr=float(args.router_lr),
+            weight_decay=float(args.router_weight_decay),
+            seed=int(args.seed),
+            device=train_config.device,
+        )
+    else:
+        router, feature_mean, feature_std, router_diagnostics = _train_router(
+            train_features,
+            train_labels,
+            hidden_dim=int(args.router_hidden_dim),
+            epochs=int(args.router_epochs),
+            lr=float(args.router_lr),
+            weight_decay=float(args.router_weight_decay),
+            seed=int(args.seed),
+        )
+    val_raw_batches, val_features, val_rasters, val_labels, val_predictions_by_mode = _build_predictions_for_loader(
         loader=val_loader,
         max_batches=int(args.max_val_batches),
         evaluator=evaluator,
@@ -935,8 +1154,12 @@ def main() -> int:
         feature_mode=str(args.feature_mode),
         dense_feature_samples=int(args.dense_feature_samples),
         dense_feature_side_offset=float(args.dense_feature_side_offset),
+        raster_size=raster_size,
     )
-    val_choices = _predict_router_modes(router, feature_mean, feature_std, val_features)
+    if str(args.feature_mode).strip().lower() == "raster_cnn":
+        val_choices = _predict_raster_router_modes(router, feature_mean, feature_std, val_rasters)
+    else:
+        val_choices = _predict_router_modes(router, feature_mean, feature_std, val_features)
     val_oracle_choices = [int(value) for value in val_labels]
 
     merged_raw = _merge_raw_batches(val_raw_batches)
@@ -960,12 +1183,14 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(output_dir / "metrics.csv", rows)
     if str(args.save_router_model).strip():
+        router_state_kind = "raster_cnn" if isinstance(router, SourceRouterRasterCNN) else "mlp"
         torch.save(
             {
                 "state_dict": router.state_dict(),
                 "feature_mean": feature_mean,
                 "feature_std": feature_std,
                 "router_modes": ROUTER_MODES,
+                "router_kind": router_state_kind,
                 "diagnostics": router_diagnostics,
             },
             Path(args.save_router_model).expanduser().resolve(),
@@ -981,8 +1206,12 @@ def main() -> int:
         "router_train_batches": int(args.router_train_batches),
         "max_val_batches": int(args.max_val_batches),
         "feature_mode": str(args.feature_mode),
+        "router_kind": "raster_cnn" if isinstance(router, SourceRouterRasterCNN) else "mlp",
         "dense_feature_samples": int(args.dense_feature_samples),
         "dense_feature_side_offset": float(args.dense_feature_side_offset),
+        "raster_height": int(args.raster_height),
+        "raster_width": int(args.raster_width),
+        "raster_base_channels": int(args.raster_base_channels),
         "processed_train_batches": int(len(train_raw_batches)),
         "processed_val_batches": int(len(val_raw_batches)),
         "router_modes": list(ROUTER_MODES),

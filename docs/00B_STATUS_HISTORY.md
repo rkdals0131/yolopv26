@@ -18147,3 +18147,90 @@ Verification:
 - Exact-val128, broader-val512, and larger training were skipped because fixed val4 lost F1 and FP grew faster than TP.
 - Do not repeat nearest-retained-lane distance/center/overlap/angle/length context as a feature, threshold, cap, train-batch, or hidden-size sweep.
 - Reopen dropped-candidate rescue only with an actually different instance/geometry contract that improves fixed smoke TP/FP/FN before exact or broader expansion.
+
+## 331. Stop-line raster source-router: spatial quality signal still exact-negative
+
+맥락:
+
+- Previous output-stat and dense-aligned source routers left a clear diagnostic split: oracle source routing can reach exact stop-line `34 / 2 / 26`, F1 `0.7083`, but learned no-GT routing stayed below the primary projection-comp exact reference.
+- This branch tested whether the missing quality signal was spatial rather than scalar: a small CNN sees the raw frame, source prediction rasters, and dense stop-line logits before choosing `primary`, `specialist`, `union_dedupe`, `agreement`, or `empty`.
+- This is still a source-selection experiment, not a new checkpoint or production single-model success.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raster-source-router`.
+- Updated `tools/probe_pv26_stopline_source_router.py`.
+- Added opt-in `--feature-mode raster_cnn`.
+- Added a tiny `SourceRouterRasterCNN` over 10 channels:
+  - grayscale encoded image;
+  - primary stop-line prediction raster;
+  - specialist stop-line prediction raster;
+  - union-dedupe stop-line raster;
+  - primary/specialist stop-line mask probability maps;
+  - primary/specialist stop-line center probability maps;
+  - primary/specialist stop-line selector probability maps.
+- Added `--raster-height`, `--raster-width`, and `--raster-base-channels`.
+- Added `test/test_stopline_source_router.py` coverage for raster drawing, raster stack creation, and the raster CNN train path.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Smoke run:
+  - router train batches: `64`;
+  - val batches: `4`;
+  - batch size `4`;
+  - raster size `64x96`;
+  - device `cuda:0`.
+- Exact run 1:
+  - router train batches: `64`;
+  - exact val batches: `128`.
+- Larger-train exact run:
+  - router train batches: `256`;
+  - exact val batches: `128`;
+  - train examples: `1024`;
+  - class labels on train: primary/specialist/union/agreement/empty `7 / 7 / 11 / 319 / 680`.
+
+Smoke val4:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| primary | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| learned raster router | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+
+Exact val128:
+
+| Train batches | Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| ---: | --- | ---: | --- | ---: | ---: |
+| `64` | learned raster router | `0.4630` | `25 / 23 / 35` | `0.5888` | `0.5988` |
+| `64` | primary | `0.4918` | `30 / 32 / 30` | `0.5888` | `0.5988` |
+| `64` | oracle router | `0.7083` | `34 / 2 / 26` | `0.5888` | `0.5988` |
+| `256` | learned raster router | `0.5043` | `29 / 26 / 31` | `0.5888` | `0.5988` |
+| `256` | primary | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| `256` | oracle router | `0.7083` | `34 / 2 / 26` | `0.5888` | `0.5988` |
+
+Storage:
+
+- Smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_raster_source_router_train64_smoke_val4_20260530/summary.json`.
+- Exact train64 summary: `runs/pv26_exhaustive_od_lane_train/stopline_raster_source_router_train64_exact_val128_20260530/summary.json`.
+- Exact train256 summary: `runs/pv26_exhaustive_od_lane_train/stopline_raster_source_router_train256_exact_val128_20260530/summary.json`.
+- Retained sizes are about `48K`, `52K`, and `52K`.
+- The probe writes CSV/summary only; no checkpoint artifact or copied dataset was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py test/test_stopline_source_router.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_stopline_source_router`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_docs_sync`.
+- `git diff --check`.
+- CUDA train64/val4 smoke, train64 exact-val128, and train256 exact-val128 raster-router runs.
+
+판단:
+
+- The larger train256 run improved over train64 but still stayed below the primary projection-comp exact reference.
+- The oracle row confirms source headroom remains, but the no-GT raster quality signal does not separate the rare useful source choices from agreement/empty.
+- Broader-val512 was skipped because the larger exact gate failed.
+- Do not repeat this as raster size, CNN width, router epoch/LR, class-weight, or train-batch scaling.
+- Reopen source routing only with a materially different runtime verifier/candidate-generation signal that first improves exact TP/FP/FN over primary projection-comp.
