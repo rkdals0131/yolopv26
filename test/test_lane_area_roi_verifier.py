@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+import torch
+
 from tools.probe_pv26_lane_area_roi_verifier import (
     _accumulate_task_counts,
     _alignment_context_features,
@@ -9,6 +12,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _candidate_label,
     _empty_task_count_payload,
     _finalize_task_counts,
+    _lane_side_contrast_features,
     _near_any_lane,
 )
 
@@ -65,6 +69,33 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(features.shape, (10,))
         self.assertEqual(float(features[0]), 0.0)
         self.assertEqual(float(features[5]), 0.0)
+
+    def test_lane_side_contrast_features_describe_thin_dense_ridge(self) -> None:
+        centerline = torch.zeros((1, 32, 32), dtype=torch.float32)
+        support = torch.zeros((1, 32, 32), dtype=torch.float32)
+        centerline[:, :, 16] = 1.0
+        support[:, :, 16] = 0.8
+        tangent_axis = torch.zeros((2, 32, 32), dtype=torch.float32)
+        tangent_axis[1, :, :] = 1.0
+        sampled = np.stack(
+            [np.full(20, 16.0, dtype=np.float32), np.linspace(4.0, 28.0, 20, dtype=np.float32)],
+            axis=1,
+        )
+
+        features = _lane_side_contrast_features(
+            sampled,
+            maps={
+                "centerline_core": centerline,
+                "support": support,
+                "tangent_axis": tangent_axis,
+            },
+        )
+
+        self.assertEqual(features.shape, (52,))
+        self.assertTrue(np.isfinite(features).all())
+        self.assertGreater(float(features[0]), 0.9)
+        self.assertLess(float(features[6]), 0.1)
+        self.assertGreater(float(features[-4]), 0.9)
 
     def test_task_count_accumulator_sums_chunked_metrics(self) -> None:
         counts = _empty_task_count_payload()

@@ -18234,3 +18234,97 @@ Verification:
 - Broader-val512 was skipped because the larger exact gate failed.
 - Do not repeat this as raster size, CNN width, router epoch/LR, class-weight, or train-batch scaling.
 - Reopen source routing only with a materially different runtime verifier/candidate-generation signal that first improves exact TP/FP/FN over primary projection-comp.
+
+## 332. Lane area-ROI side-contrast verifier: dense side-band signal is exact-positive but still FP-limited
+
+맥락:
+
+- Sections 326 and 329 showed that dropped raw row-scan/tangent lane candidates contain real recall headroom, but the learned area-ROI verifier adds FP faster than TP.
+- Section 330 tested nearest-retained-lane geometry context and failed the fixed smoke gate.
+- This branch tested a different no-GT instance-quality signal: whether a dropped candidate lies on a thin dense center/support ridge with lower side-band evidence, rather than on broad lane-like noise.
+- This is not a threshold/cap/hidden-size sweep; the changed axis is the verifier feature contract.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/lane-area-roi-side-contrast`.
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added opt-in `--side-contrast-features`.
+- Added `_lane_side_contrast_features()`:
+  - center/support stats sampled on the candidate polyline;
+  - center/support stats sampled at side offsets `4/8/16` map pixels;
+  - center-minus-side contrast and left/right asymmetry;
+  - dense tangent-axis alignment with the candidate direction.
+- Added `test/test_lane_area_roi_verifier.py` coverage for thin dense ridge side-contrast features.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Smoke run:
+  - verifier train batches: `64`;
+  - val batches: `4`;
+  - batch size `4`;
+  - validation epoch `2`;
+  - device `cuda:0`.
+- Exact run:
+  - verifier train batches: `256`;
+  - exact val batches: `128`;
+  - train examples: `1568`;
+  - positives / negatives: `253 / 1315`;
+  - feature dimension: `410`.
+
+Smoke val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| side-contrast verifier append | `0.5874` | `42 / 15 / 44` | `0.0000` | `0.5455` |
+
+Smoke candidate stats:
+
+- val candidates: `29`;
+- selected candidates: `6`;
+- selected oracle-positive candidates: `2`.
+
+Exact val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `0.5988` |
+| side-contrast verifier append | `0.5950` | `1243 / 545 / 1147` | `0.5333` | `0.5988` |
+
+Exact candidate stats:
+
+- val candidates: `749`;
+- selected candidates: `95`;
+- selected oracle-positive candidates: `47`.
+
+Comparison to previous area-ROI variants:
+
+- Plain train256 exact: lane `0.5931`, TP/FP/FN `1253 / 582 / 1137`.
+- Plain train384 exact: lane `0.5956`, TP/FP/FN `1249 / 555 / 1141`.
+- Side-contrast train256 exact reduces FP versus plain train256, but also loses TP and stays below plain train384 F1.
+
+Storage:
+
+- Smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_side_contrast_train64_smoke_val4_20260530/summary.json`.
+- Exact summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_side_contrast_train256_exact_val128_20260530/summary.json`.
+- Retained sizes are about `36K` and `152K`.
+- The probe writes CSV/summary only; no checkpoint artifact or copied dataset was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64 val4 and train256 exact-val128 side-contrast verifier runs.
+
+판단:
+
+- The side-band feature is a weak positive signal: exact lane F1 rises to `0.5950`.
+- It is not a breakthrough: exact still misses `0.60`, FP rises faster than TP (`+41` TP, `+54` FP), and it does not beat the prior train384 plain area-ROI exact `0.5956`.
+- Stop-line and crosswalk do not move because this is lane-only append replay.
+- Broader-val512 was skipped because the exact gate did not improve the retained area-ROI frontier and remained FP-limited.
+- Do not repeat this as side-offset, side-band statistic, quality threshold, hidden-size, train-batch, duplicate-distance, or max-append tuning.
+- Reopen dropped-candidate rescue only with a materially different instance-quality/alignment or geometry-repair contract that improves exact TP/FP/FN ratio before broader integration.

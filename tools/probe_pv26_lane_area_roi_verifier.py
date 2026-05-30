@@ -29,12 +29,14 @@ from tools.probe_pv26_lane_feature_roi_repair import (
     DEFAULT_CHECKPOINT,
     LANE_MATCH_THRESHOLD,
     SOURCE_RUN,
+    _as_channel,
     _build_scenario,
     _forward_predictions,
     _json_ready,
     _lane_features,
     _nearest_gt,
     _task_delta,
+    _values_at_points,
 )
 from tools.probe_pv26_lane_flip_tta import _detach_to_cpu
 from tools.probe_pv26_lane_instance_evidence import _resolve_device, _write_csv
@@ -78,6 +80,15 @@ def parse_args() -> argparse.Namespace:
             "Append no-GT geometry context between each dropped candidate and "
             "the retained baseline lane predictions. This tests an "
             "instance-alignment FP-control signal, not a verifier threshold sweep."
+        ),
+    )
+    parser.add_argument(
+        "--side-contrast-features",
+        action="store_true",
+        help=(
+            "Append no-GT center-vs-side-band dense evidence features for each "
+            "dropped candidate. This tests whether raw candidates lie on a thin "
+            "lane ridge rather than broad support/noise."
         ),
     )
     parser.add_argument("--verifier-epochs", type=int, default=40)
@@ -241,6 +252,92 @@ def _alignment_context_features(candidate: dict[str, Any], baseline_lanes: list[
     )
 
 
+def _finite_feature_array(values: list[float]) -> np.ndarray:
+    return np.asarray([0.0 if not np.isfinite(float(value)) else float(value) for value in values], dtype=np.float32)
+
+
+def _summary_stats(values: np.ndarray) -> list[float]:
+    finite = np.asarray(values, dtype=np.float32).reshape(-1)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    return [
+        float(finite.mean()),
+        float(finite.max(initial=0.0)),
+        float(finite.std()),
+        float((finite >= 0.25).mean()),
+        float((finite >= 0.50).mean()),
+        float((finite >= 0.75).mean()),
+    ]
+
+
+def _sample_tangent_and_normal(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    sampled = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    if sampled.shape[0] == 0:
+        tangent = np.zeros((0, 2), dtype=np.float32)
+        normal = np.zeros((0, 2), dtype=np.float32)
+        return tangent, normal
+    if sampled.shape[0] == 1:
+        tangent = np.tile(np.asarray([[0.0, -1.0]], dtype=np.float32), (1, 1))
+    else:
+        previous_points = np.vstack([sampled[:1], sampled[:-1]])
+        next_points = np.vstack([sampled[1:], sampled[-1:]])
+        tangent = next_points - previous_points
+        norms = np.linalg.norm(tangent, axis=1, keepdims=True)
+        tangent = tangent / np.maximum(norms, 1.0e-6)
+    normal = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1).astype(np.float32)
+    return tangent.astype(np.float32), normal
+
+
+def _lane_side_contrast_features(
+    sampled_map_points: np.ndarray,
+    *,
+    maps: dict[str, torch.Tensor],
+    offsets_px: tuple[float, ...] = (4.0, 8.0, 16.0),
+) -> np.ndarray:
+    """No-GT ridge-vs-side evidence around a raw lane candidate."""
+
+    sampled = np.asarray(sampled_map_points, dtype=np.float32).reshape(-1, 2)
+    if sampled.shape[0] == 0:
+        return np.zeros(52, dtype=np.float32)
+    centerline = _as_channel(maps["centerline_core"])
+    support = _as_channel(maps["support"])
+    tangent_axis = maps["tangent_axis"].detach().cpu().numpy().astype(np.float32)
+    candidate_tangent, candidate_normal = _sample_tangent_and_normal(sampled)
+    features: list[float] = []
+    for dense_map in (centerline, support):
+        center_values = _values_at_points(dense_map, sampled).astype(np.float32).reshape(-1)
+        center_stats = _summary_stats(center_values)
+        features.extend(center_stats)
+        for offset_px in offsets_px:
+            offset = candidate_normal * float(offset_px)
+            left_values = _values_at_points(dense_map, sampled + offset).astype(np.float32).reshape(-1)
+            right_values = _values_at_points(dense_map, sampled - offset).astype(np.float32).reshape(-1)
+            side_values = np.concatenate([left_values, right_values], axis=0)
+            side_stats = _summary_stats(side_values)
+            features.extend(
+                [
+                    side_stats[0],
+                    side_stats[1],
+                    side_stats[2],
+                    float(center_stats[0] - side_stats[0]),
+                    float(center_stats[1] - side_stats[1]),
+                    float(abs(float(left_values.mean()) - float(right_values.mean())))
+                    if left_values.size and right_values.size
+                    else 0.0,
+                ]
+            )
+    tangent_values = _values_at_points(tangent_axis, sampled).astype(np.float32).reshape(-1, 2)
+    if tangent_values.shape[0] == candidate_tangent.shape[0] and tangent_values.size:
+        tangent_norm = np.linalg.norm(tangent_values, axis=1, keepdims=True)
+        normalized_tangent = tangent_values / np.maximum(tangent_norm, 1.0e-6)
+        alignment = np.abs(np.sum(normalized_tangent * candidate_tangent, axis=1))
+        features.extend(_summary_stats(alignment)[:4])
+    else:
+        features.extend([0.0, 0.0, 0.0, 0.0])
+    return _finite_feature_array(features)
+
+
 def _baseline_matched_gt_indices(
     baseline_lanes: list[dict[str, Any]],
     gt_lanes: list[dict[str, Any]],
@@ -393,7 +490,7 @@ def _collect_examples(
                     )
                     if training and not positive and not negative:
                         continue
-                    features, _, _ = _lane_features(
+                    features, sampled_map_points, _ = _lane_features(
                         candidate,
                         predictions=sample_prediction_tensors,
                         maps=maps,
@@ -402,6 +499,10 @@ def _collect_examples(
                     if bool(args.alignment_context_features):
                         features = np.concatenate(
                             [features, _alignment_context_features(candidate, baseline_lanes)]
+                        ).astype(np.float32)
+                    if bool(args.side_contrast_features):
+                        features = np.concatenate(
+                            [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
                         ).astype(np.float32)
                     example = {
                         "features": features.astype(np.float32),
@@ -792,6 +893,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "quality_threshold": float(args.quality_threshold),
         "max_appends_per_sample": int(args.max_appends_per_sample),
         "alignment_context_features": bool(args.alignment_context_features),
+        "side_contrast_features": bool(args.side_contrast_features),
         "train_summary": train_summary,
         "val_candidate_count": int(eval_payload["val_candidate_count"]),
         "selected_candidate_count": int(eval_payload["selected_candidate_count"]),
