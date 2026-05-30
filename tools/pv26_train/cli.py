@@ -162,6 +162,12 @@ def _build_single_distill_teacher(train_config: TrainDefaultsConfig, checkpoint_
         lane_head_mode=train_config.lane_head_mode,
         lane_conditional_row_coordinate_mode=train_config.lane_conditional_row_coordinate_mode,
         lane_conditional_row_max_delta_px=train_config.lane_conditional_row_max_delta_px,
+        lane_conditional_denoise_hard_negative_count=(
+            train_config.lane_conditional_denoise_hard_negative_count
+        ),
+        lane_conditional_denoise_hard_negative_offset_px=(
+            train_config.lane_conditional_denoise_hard_negative_offset_px
+        ),
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
         lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
         lane_family_cross_stitch_enabled=train_config.lane_family_cross_stitch_enabled,
@@ -722,6 +728,12 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_head_mode=train_config.lane_head_mode,
         lane_conditional_row_coordinate_mode=train_config.lane_conditional_row_coordinate_mode,
         lane_conditional_row_max_delta_px=train_config.lane_conditional_row_max_delta_px,
+        lane_conditional_denoise_hard_negative_count=(
+            train_config.lane_conditional_denoise_hard_negative_count
+        ),
+        lane_conditional_denoise_hard_negative_offset_px=(
+            train_config.lane_conditional_denoise_hard_negative_offset_px
+        ),
         lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
         lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
         lane_family_cross_stitch_enabled=train_config.lane_family_cross_stitch_enabled,

@@ -171,6 +171,45 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertLessEqual(float(lane_x.max().item()), float(NETWORK_HW[1] - 1))
         self.assertLessEqual(float((lane_x - seed_x.unsqueeze(-1)).abs().max().item()), max_delta + 1.0e-4)
 
+    def test_heads_can_add_train_only_conditional_denoise_hard_negatives(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            lane_conditional_row_coordinate_mode="seed_relative",
+            lane_conditional_denoise_hard_negative_count=1,
+            lane_conditional_denoise_hard_negative_offset_px=80.0,
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+        lane = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
+        lane[:, 0, LANE_X_SLICE] = 320.0
+        lane[:, 0, LANE_VIS_SLICE] = 1.0
+        lane_valid = torch.zeros((1, LANE_QUERY_COUNT), dtype=torch.bool)
+        lane_valid[0, 0] = True
+        encoded = {
+            "lane": lane,
+            "mask": {
+                "lane_valid": lane_valid,
+                "lane_source": torch.tensor([True]),
+            },
+        }
+
+        outputs = heads(features, encoded=encoded)
+        summary = heads.describe()["roadmark"]
+        valid = outputs["lane_conditional_denoise_valid"]
+        hard_negative = outputs["lane_conditional_denoise_hard_negative"]
+
+        self.assertEqual(summary["lane_conditional_denoise_hard_negative_count"], 1)
+        self.assertAlmostEqual(summary["lane_conditional_denoise_hard_negative_offset_px"], 80.0)
+        self.assertEqual(int(valid.sum().item()), 1)
+        self.assertEqual(int(hard_negative.sum().item()), 1)
+        self.assertFalse(bool((valid & hard_negative).any()))
+
     def test_heads_can_use_v3_stopline_isolated_architecture(self) -> None:
         from model.net import PV26Heads
 

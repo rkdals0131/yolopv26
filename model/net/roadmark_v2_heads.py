@@ -146,6 +146,8 @@ class RoadMarkV2Heads(nn.Module):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
         lane_conditional_row_max_delta_px: float = 160.0,
+        lane_conditional_denoise_hard_negative_count: int = 0,
+        lane_conditional_denoise_hard_negative_offset_px: float = 80.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -156,6 +158,12 @@ class RoadMarkV2Heads(nn.Module):
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
         self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
         self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
+        self.lane_conditional_denoise_hard_negative_count = int(
+            lane_conditional_denoise_hard_negative_count
+        )
+        self.lane_conditional_denoise_hard_negative_offset_px = float(
+            lane_conditional_denoise_hard_negative_offset_px
+        )
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
@@ -170,6 +178,12 @@ class RoadMarkV2Heads(nn.Module):
                 (p2, p3, p4),
                 conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
                 conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
+                conditional_denoise_hard_negative_count=(
+                    self.lane_conditional_denoise_hard_negative_count
+                ),
+                conditional_denoise_hard_negative_offset_px=(
+                    self.lane_conditional_denoise_hard_negative_offset_px
+                ),
             )
         else:
             self.lane_head = LaneDenseRowSeedHead((p2, p3, p4))
@@ -207,6 +221,12 @@ class RoadMarkV2Heads(nn.Module):
             ),
             "lane_conditional_row_max_delta_px": float(
                 getattr(self.lane_head, "conditional_row_max_delta_px", 0.0)
+            ),
+            "lane_conditional_denoise_hard_negative_count": int(
+                getattr(self.lane_head, "conditional_denoise_hard_negative_count", 0)
+            ),
+            "lane_conditional_denoise_hard_negative_offset_px": float(
+                getattr(self.lane_head, "conditional_denoise_hard_negative_offset_px", 0.0)
             ),
             "stop_line_head": "mask_first_line_decode",
             "crosswalk_head": "mask_first",
@@ -267,6 +287,8 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
         lane_conditional_row_max_delta_px: float = 160.0,
+        lane_conditional_denoise_hard_negative_count: int = 0,
+        lane_conditional_denoise_hard_negative_offset_px: float = 80.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -277,6 +299,12 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
         self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
         self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
+        self.lane_conditional_denoise_hard_negative_count = int(
+            lane_conditional_denoise_hard_negative_count
+        )
+        self.lane_conditional_denoise_hard_negative_offset_px = float(
+            lane_conditional_denoise_hard_negative_offset_px
+        )
         self.lane_family_shared_adapter_enabled = bool(lane_family_shared_adapter_enabled)
         self.lane_family_task_adapter_enabled = bool(lane_family_task_adapter_enabled)
         self.lane_family_cross_stitch_enabled = bool(lane_family_cross_stitch_enabled)
@@ -290,6 +318,12 @@ class PV26RoadMarkV2LaneFamilyHeads(nn.Module):
             lane_head_mode=self.lane_head_mode,
             lane_conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
             lane_conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
+            lane_conditional_denoise_hard_negative_count=(
+                self.lane_conditional_denoise_hard_negative_count
+            ),
+            lane_conditional_denoise_hard_negative_offset_px=(
+                self.lane_conditional_denoise_hard_negative_offset_px
+            ),
             lane_family_shared_adapter_enabled=self.lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=self.lane_family_task_adapter_enabled,
             lane_family_cross_stitch_enabled=self.lane_family_cross_stitch_enabled,
@@ -357,6 +391,8 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
         lane_conditional_row_max_delta_px: float = 160.0,
+        lane_conditional_denoise_hard_negative_count: int = 0,
+        lane_conditional_denoise_hard_negative_offset_px: float = 80.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -367,6 +403,12 @@ class PV26RoadMarkV3JointHeads(PV26RoadMarkV2LaneFamilyHeads):
             lane_head_mode=lane_head_mode,
             lane_conditional_row_coordinate_mode=lane_conditional_row_coordinate_mode,
             lane_conditional_row_max_delta_px=lane_conditional_row_max_delta_px,
+            lane_conditional_denoise_hard_negative_count=(
+                lane_conditional_denoise_hard_negative_count
+            ),
+            lane_conditional_denoise_hard_negative_offset_px=(
+                lane_conditional_denoise_hard_negative_offset_px
+            ),
             lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=lane_family_task_adapter_enabled,
             lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
@@ -463,6 +505,8 @@ class PV26LaneOnlyHeads(nn.Module):
         lane_head_mode: str = LANE_HEAD_ROW_NATIVE,
         lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
         lane_conditional_row_max_delta_px: float = 160.0,
+        lane_conditional_denoise_hard_negative_count: int = 0,
+        lane_conditional_denoise_hard_negative_offset_px: float = 80.0,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -470,6 +514,12 @@ class PV26LaneOnlyHeads(nn.Module):
         self.lane_head_mode = _normalize_lane_head_mode(lane_head_mode)
         self.lane_conditional_row_coordinate_mode = str(lane_conditional_row_coordinate_mode).strip().lower()
         self.lane_conditional_row_max_delta_px = float(lane_conditional_row_max_delta_px)
+        self.lane_conditional_denoise_hard_negative_count = int(
+            lane_conditional_denoise_hard_negative_count
+        )
+        self.lane_conditional_denoise_hard_negative_offset_px = float(
+            lane_conditional_denoise_hard_negative_offset_px
+        )
         if len(self.in_channels) != 4:
             raise ValueError("PV26LaneOnlyHeads expects exactly 4 pyramid levels.")
         if len(self.feature_strides) != 4:
@@ -480,6 +530,12 @@ class PV26LaneOnlyHeads(nn.Module):
                 (p2, p3, p4),
                 conditional_row_coordinate_mode=self.lane_conditional_row_coordinate_mode,
                 conditional_row_max_delta_px=self.lane_conditional_row_max_delta_px,
+                conditional_denoise_hard_negative_count=(
+                    self.lane_conditional_denoise_hard_negative_count
+                ),
+                conditional_denoise_hard_negative_offset_px=(
+                    self.lane_conditional_denoise_hard_negative_offset_px
+                ),
             )
         else:
             self.lane_head = LaneDenseRowSeedHead((p2, p3, p4))
@@ -507,6 +563,12 @@ class PV26LaneOnlyHeads(nn.Module):
             ),
             "lane_conditional_row_max_delta_px": float(
                 getattr(self.lane_head, "conditional_row_max_delta_px", 0.0)
+            ),
+            "lane_conditional_denoise_hard_negative_count": int(
+                getattr(self.lane_head, "conditional_denoise_hard_negative_count", 0)
+            ),
+            "lane_conditional_denoise_hard_negative_offset_px": float(
+                getattr(self.lane_head, "conditional_denoise_hard_negative_offset_px", 0.0)
             ),
             "lane_supervised_row_slots": 8,
             "lane_dense_candidate_queries": 16,

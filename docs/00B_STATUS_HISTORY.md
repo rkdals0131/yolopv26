@@ -19984,3 +19984,76 @@ Decision:
 - Exact-val128 and broader-val512 are skipped.
 - Close this as fixed lateral duplicate append on top of the retained flip/cross-mask runtime path.
 - Do not repeat it as offset, radius, max-added, dense-threshold, duplicate-distance, or candidate-score tuning. Reopen lane nearby-track recovery only with a materially different no-GT geometry repair or model-side instance-emission signal that first moves TP/FP/FN at fixed smoke.
+
+## 352. 2026-05-30 Lane conditional denoise hard-negative row smoke: learned off-lane negatives do not move runtime TP/FP/FN
+
+Context:
+
+- The previous conditional denoise-row branch used train-only GT-centered denoise queries, but invalid denoise slots were zero-feature negatives.
+- This follow-up tested a materially different instance-existence training signal: for each positive GT bottom-anchor seed, add a nearby feature-backed off-lane seed as a denoise objectness negative.
+- Runtime decode stayed no-GT and unchanged: retained row-scan/tangent lane decode plus conditional row append/dense gate, projection-comp stop-line, and hull crosswalk.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place. No dataset copy was created.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Model:
+  - `model/net/lane_head_segfirst.py` adds `conditional_denoise_hard_negative_count` and `conditional_denoise_hard_negative_offset_px`.
+  - `_decode_denoised_conditional_rows()` now emits feature-backed off-lane hard-negative denoise seeds and `lane_conditional_denoise_hard_negative` diagnostics.
+- Config/runtime plumbing:
+  - `tools/pv26_train/config.py`;
+  - `tools/pv26_train/cli.py`;
+  - `model/net/heads.py`;
+  - `model/net/roadmark_v2_heads.py`;
+  - `model/net/roadmark_joint_native.py`;
+  - `tools/run_pv26_lane60_probe.py`.
+- New lane60 probe experiment: `lane_conditional_denoise_hardneg_row`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_denoise_hardneg_row_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_225804`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6408025211` at epoch 1. This is not success evidence because fixed task metrics did not improve.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- The hard-negative denoise signal exactly matches the retained fixed reference on the strongest lane variant and recovers no stop-line TP.
+- Exact-val128, broader-val512, and larger training are skipped because runtime TP/FP/FN did not move.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_denoise_hardneg_row_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_225804/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_denoise_hardneg_row_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_225804/analysis_exports/fixed_val4_epoch2_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26n.pt` / `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `772K`.
+- No dataset copy was created.
+
+Verification:
+
+- `python -m compileall model/net/lane_head_segfirst.py model/net/heads.py model/net/roadmark_v2_heads.py model/net/roadmark_joint_native.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `python -m unittest discover -s test -p 'test_pv26_heads.py'`.
+- `python -m unittest discover -s test -p 'test_run_pv26_train.py'`.
+- `python -m unittest discover -s test -p 'test_pv26_loss_runtime.py'`.
+- CUDA `lane_conditional_denoise_hardneg_row` smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050` variants.
+
+Decision:
+
+- The implementation is valid and trainable, but the changed training signal is runtime-flat.
+- Close this as conditional denoise hard-negative count/offset, denoise jitter, denoise aux weight, row-aux weight, seed-aux weight, head LR, epoch-count, train-batch scaling, dense-gate threshold, or append/replace tuning on the same conditional-row runtime contract.
+- Reopen conditional instance work only with a materially different runtime instance-existence/quality or matching contract that improves fixed smoke TP/FP/FN.

@@ -44,6 +44,8 @@ class LaneSegFirstHead(nn.Module):
         hidden_dim: int = 128,
         conditional_row_coordinate_mode: str = "absolute_sigmoid",
         conditional_row_max_delta_px: float = 160.0,
+        conditional_denoise_hard_negative_count: int = 0,
+        conditional_denoise_hard_negative_offset_px: float = 80.0,
     ) -> None:
         super().__init__()
         self.in_channels = tuple(int(channel) for channel in in_channels)
@@ -56,6 +58,12 @@ class LaneSegFirstHead(nn.Module):
         self.conditional_row_max_delta_px = float(conditional_row_max_delta_px)
         if self.conditional_row_max_delta_px <= 0.0:
             raise ValueError("conditional_row_max_delta_px must be positive")
+        self.conditional_denoise_hard_negative_count = int(conditional_denoise_hard_negative_count)
+        if self.conditional_denoise_hard_negative_count < 0:
+            raise ValueError("conditional_denoise_hard_negative_count must be >= 0")
+        self.conditional_denoise_hard_negative_offset_px = float(conditional_denoise_hard_negative_offset_px)
+        if self.conditional_denoise_hard_negative_offset_px <= 0.0:
+            raise ValueError("conditional_denoise_hard_negative_offset_px must be positive")
         self.output_hw = ROADMARK_DENSE_OUTPUT_HW
         self.fusion = MultiScaleFusion(self.in_channels, self.hidden_dim, target_level=0, depth=2)
         self.stem = nn.Sequential(
@@ -98,7 +106,7 @@ class LaneSegFirstHead(nn.Module):
         lane_placeholder = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), device=device, dtype=dtype)
         conditional_seed_logits = self.conditional_seed_logits(lane_feature)
         conditional_rows = self._decode_conditional_rows(lane_feature, conditional_seed_logits)
-        denoise_rows, denoise_targets, denoise_valid = self._decode_denoised_conditional_rows(
+        denoise_rows, denoise_targets, denoise_valid, denoise_hard_negative = self._decode_denoised_conditional_rows(
             lane_feature,
             encoded=encoded,
         )
@@ -116,6 +124,7 @@ class LaneSegFirstHead(nn.Module):
             "lane_conditional_denoise_rows": denoise_rows,
             "lane_conditional_denoise_targets": denoise_targets,
             "lane_conditional_denoise_valid": denoise_valid,
+            "lane_conditional_denoise_hard_negative": denoise_hard_negative,
             "lane_feature": lane_feature,
         }
 
@@ -174,22 +183,23 @@ class LaneSegFirstHead(nn.Module):
         feature_map: torch.Tensor,
         *,
         encoded: dict[str, torch.Tensor] | None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, channels, height, width = feature_map.shape
         rows = feature_map.new_zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
         rows[..., 0] = -10.0
         targets = rows.new_zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
         valid = torch.zeros((batch_size, LANE_QUERY_COUNT), device=feature_map.device, dtype=torch.bool)
+        hard_negative = torch.zeros((batch_size, LANE_QUERY_COUNT), device=feature_map.device, dtype=torch.bool)
         if not isinstance(encoded, dict):
-            return rows, targets, valid
+            return rows, targets, valid, hard_negative
         lane_target = encoded.get("lane")
         mask_payload = encoded.get("mask")
         if not isinstance(lane_target, torch.Tensor) or not isinstance(mask_payload, dict):
-            return rows, targets, valid
+            return rows, targets, valid, hard_negative
         lane_valid = mask_payload.get("lane_valid")
         lane_source = mask_payload.get("lane_source")
         if not isinstance(lane_valid, torch.Tensor) or not isinstance(lane_source, torch.Tensor):
-            return rows, targets, valid
+            return rows, targets, valid, hard_negative
 
         lane_target = lane_target.to(device=feature_map.device, dtype=feature_map.dtype)
         lane_valid = lane_valid.to(device=feature_map.device, dtype=torch.bool)
@@ -208,33 +218,83 @@ class LaneSegFirstHead(nn.Module):
         y_scale = float(height - 1) / max(float(NETWORK_HW[0] - 1), 1.0)
         denom_x = max(float(width - 1), 1.0)
         denom_y = max(float(height - 1), 1.0)
+
+        def _write_seed(
+            batch_index: int,
+            query_index: int,
+            x_value: torch.Tensor,
+            y_value: torch.Tensor,
+            *,
+            col_jitter: float = 0.0,
+            row_jitter: float = 0.0,
+        ) -> None:
+            col_value = (x_value * x_scale + float(col_jitter)).clamp(0.0, float(width - 1))
+            row_value = (y_value * y_scale + float(row_jitter)).clamp(0.0, float(height - 1))
+            row_index = int(torch.round(row_value).clamp(0, height - 1).item())
+            col_index = int(torch.round(col_value).clamp(0, width - 1).item())
+            seed_features[batch_index, query_index] = feature_map[batch_index, :, row_index, col_index]
+            seed_xy[batch_index, query_index, 0] = col_value / denom_x
+            seed_xy[batch_index, query_index, 1] = row_value / denom_y
+            seed_cols[batch_index, query_index] = col_value
+
         for batch_index in range(batch_size):
             if not bool(lane_source[batch_index]):
                 continue
             gt_rows = lane_target[batch_index, lane_valid[batch_index]]
-            for query_index, gt_row in enumerate(gt_rows[:LANE_QUERY_COUNT]):
+            query_index = 0
+            positive_anchors: list[tuple[torch.Tensor, torch.Tensor]] = []
+            bottom_x_values: list[torch.Tensor] = []
+            for gt_index, gt_row in enumerate(gt_rows[:LANE_QUERY_COUNT]):
                 visible = gt_row[LANE_VIS_SLICE] > 0.5
                 visible_indices = torch.nonzero(visible, as_tuple=False).flatten()
                 if int(visible_indices.numel()) == 0:
                     continue
+                if query_index >= LANE_QUERY_COUNT:
+                    break
                 bottom_index = int(visible_indices[0].item())
                 x_value = gt_row[LANE_X_SLICE][bottom_index].clamp(0.0, float(NETWORK_HW[1] - 1))
                 y_value = anchor_rows[bottom_index].clamp(0.0, float(NETWORK_HW[0] - 1))
-                col_value = x_value * x_scale
-                row_value = y_value * y_scale
                 # Fixed sub-grid jitter makes the train-only query robust to imperfect runtime seeds.
-                col_value = (col_value + float((query_index % 3) - 1) * 1.5).clamp(0.0, float(width - 1))
-                row_value = (row_value + float(((query_index // 3) % 3) - 1) * 1.0).clamp(0.0, float(height - 1))
-                row_index = int(torch.round(row_value).clamp(0, height - 1).item())
-                col_index = int(torch.round(col_value).clamp(0, width - 1).item())
-                seed_features[batch_index, query_index] = feature_map[batch_index, :, row_index, col_index]
-                seed_xy[batch_index, query_index, 0] = col_value / denom_x
-                seed_xy[batch_index, query_index, 1] = row_value / denom_y
-                seed_cols[batch_index, query_index] = col_value
+                _write_seed(
+                    batch_index,
+                    query_index,
+                    x_value,
+                    y_value,
+                    col_jitter=float((gt_index % 3) - 1) * 1.5,
+                    row_jitter=float(((gt_index // 3) % 3) - 1) * 1.0,
+                )
                 targets[batch_index, query_index] = gt_row
                 valid[batch_index, query_index] = True
+                positive_anchors.append((x_value.detach(), y_value.detach()))
+                bottom_x_values.append(x_value.detach())
+                query_index += 1
+
+            if self.conditional_denoise_hard_negative_count <= 0 or not positive_anchors:
+                continue
+            bottom_x_tensor = torch.stack(bottom_x_values) if bottom_x_values else None
+            min_lane_gap = max(24.0, 0.35 * self.conditional_denoise_hard_negative_offset_px)
+            min_boundary_shift = min(32.0, 0.5 * self.conditional_denoise_hard_negative_offset_px)
+            for positive_index, (x_value, y_value) in enumerate(positive_anchors):
+                if query_index >= LANE_QUERY_COUNT:
+                    break
+                for negative_index in range(self.conditional_denoise_hard_negative_count):
+                    if query_index >= LANE_QUERY_COUNT:
+                        break
+                    direction = -1.0 if (positive_index + negative_index) % 2 == 0 else 1.0
+                    multiplier = 1 + negative_index // 2
+                    offset = direction * float(multiplier) * self.conditional_denoise_hard_negative_offset_px
+                    neg_x = (x_value + offset).clamp(0.0, float(NETWORK_HW[1] - 1))
+                    if abs(float((neg_x - x_value).item())) < min_boundary_shift:
+                        continue
+                    if bottom_x_tensor is not None:
+                        nearest_lane_gap = float(torch.min(torch.abs(bottom_x_tensor - neg_x)).item())
+                        if nearest_lane_gap < min_lane_gap:
+                            continue
+                    _write_seed(batch_index, query_index, neg_x, y_value)
+                    hard_negative[batch_index, query_index] = True
+                    query_index += 1
         rows = self._rows_from_seed_inputs(seed_features, seed_xy, seed_cols)
-        return rows, targets, valid
+        return rows, targets, valid, hard_negative
 
 
 __all__ = ["LaneSegFirstHead"]

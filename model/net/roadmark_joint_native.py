@@ -19,6 +19,8 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
         lane_head_mode: str = "seg_first",
         lane_conditional_row_coordinate_mode: str = "absolute_sigmoid",
         lane_conditional_row_max_delta_px: float = 160.0,
+        lane_conditional_denoise_hard_negative_count: int = 0,
+        lane_conditional_denoise_hard_negative_offset_px: float = 80.0,
         lane_family_shared_adapter_enabled: bool = False,
         lane_family_task_adapter_enabled: bool = False,
         lane_family_cross_stitch_enabled: bool = False,
@@ -29,6 +31,10 @@ class PV26RoadMarkNativeJointHeads(PV26RoadMarkV2LaneFamilyHeads):
             lane_head_mode=lane_head_mode,
             lane_conditional_row_coordinate_mode=lane_conditional_row_coordinate_mode,
             lane_conditional_row_max_delta_px=lane_conditional_row_max_delta_px,
+            lane_conditional_denoise_hard_negative_count=lane_conditional_denoise_hard_negative_count,
+            lane_conditional_denoise_hard_negative_offset_px=(
+                lane_conditional_denoise_hard_negative_offset_px
+            ),
             lane_family_shared_adapter_enabled=lane_family_shared_adapter_enabled,
             lane_family_task_adapter_enabled=lane_family_task_adapter_enabled,
             lane_family_cross_stitch_enabled=lane_family_cross_stitch_enabled,
