@@ -97,6 +97,8 @@ Latest raw-image Hough stop-line candidate-generation probe generated Canny/Houg
 
 Latest raw-image LSD stop-line candidate-generation probe changed the raw candidate generator from Canny/Hough to OpenCV LSD line segments while keeping the same dense-map feature scoring and train-split MLP verifier replay. It reused the existing canonical dataset root, indexed `429350` records, and created no checkpoint or dataset copy. It is negative at both fixed gates. Val4 had `128` LSD candidates with `0` oracle positives, and raw-LSD replay only increased stop-line FP `3 -> 6`. Exact-val128 did contain `33` oracle-positive LSD candidates out of `4096`, but baseline-plus-raw-LSD kept TP fixed at `32` while FP jumped `28 -> 108`, dropping stop-line F1 `0.5333 -> 0.3200`. Broader-val512 was skipped. Retained artifact sizes are about `3.7M` smoke and `11M` exact.
 
+Latest dense-support raw stop-line candidate-generation probe changed the raw candidate contract again: instead of free Canny/Hough or LSD lines, it restricted raw brightness/edge evidence by predicted stop-line mask/proposal support, fitted connected components with PCA, and trained the same train-split MLP verifier. It reused the existing canonical dataset root directly, indexed `429350` records, and created no checkpoint or dataset copy. The branch is exact-negative. Val4 had only `5` validation candidates with `0` oracle positives. Exact-val128 had `126` validation candidates with only `4` oracle positives; raw-support-PCA-only emitted `0 / 16 / 60`, and baseline-plus-raw-support-PCA kept TP fixed at `32` while FP rose `28 -> 41`, dropping stop-line F1 `0.5333 -> 0.4812`. Broader-val512 was skipped. Retained artifact sizes are about `256K` smoke and `368K` exact.
+
 Active goal:
 
 - broader validation에서 lane / stop-line / crosswalk F1이 모두 `>= 0.60`인 checkpoint + postprocess/preprocess/runtime contract를 만든다.
@@ -189,6 +191,8 @@ Run:
 - latest stop-line raw-Hough candidate-generation smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_raw_hough_candidates_train64_smoke_val4_20260530/summary.json`
 - latest stop-line raw-LSD candidate-generation smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_smoke_val4_20260530/summary.json`
 - latest stop-line raw-LSD candidate-generation exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_raw_lsd_candidates_train64_exact_val128_20260530/summary.json`
+- latest stop-line raw-support-PCA candidate-generation smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_smoke_val4_20260530/summary.json`
+- latest stop-line raw-support-PCA candidate-generation exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_exact_val128_20260530/summary.json`
 - latest stop-line learned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_source_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/metrics.csv`
 - latest stop-line dense-aligned source-router exact summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/stopline_dense_quality_router_exact_val128_epoch2/summary.json`
@@ -890,6 +894,26 @@ Latest stop-line raw-LSD candidate-generation probe result:
   - raw-LSD-only `0.0663`, TP/FP/FN `6 / 115 / 54`;
   - baseline-plus-raw-LSD `0.3200`, TP/FP/FN `32 / 108 / 28`.
 - 판단: raw-LSD has some exact candidate coverage but cannot select it with the fixed no-GT verifier; the baseline-plus replay preserves TP but adds `+80` FP. Broader-val512 is intentionally skipped. Do not repeat this as LSD refine mode, blur/Canny edge support, LSD top-k, MLP epoch/LR, dense-score weight, or train-threshold tuning.
+
+Latest stop-line raw-support-PCA candidate-generation probe result:
+
+- branch/worktree: `exp/lane-family-f1/stopline-raw-support-pca-candidates`.
+- smoke artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_smoke_val4_20260530/summary.json`.
+- exact artifact: `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_exact_val128_20260530/summary.json`.
+- changed axis: restrict raw-image brightness/edge evidence by predicted stop-line mask/proposal support, connected-component it, and fit each component with weighted PCA endpoints. This tests dense-support-limited raw candidate generation, not Hough/LSD threshold tuning.
+- storage contract: the probe reused the existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root, wrote only CSV/summary artifacts, and created no checkpoint or dataset copy. Retained output sizes are about `256K` for smoke and `368K` for exact.
+- setup: `64` train batches, validation epoch `2`, max support-PCA candidates `16`, verifier top-k `8`, verifier epochs `60`, device `cuda:0`.
+- smoke candidate stats: train candidates `258`, train oracle-positive `7`, val candidates `5`, val oracle-positive `0`.
+- smoke val4 result:
+  - baseline stop-line `0.0000`, TP/FP/FN `0 / 3 / 2`;
+  - raw-support-PCA-only `0.0000`, TP/FP/FN `0 / 0 / 2`;
+  - baseline-plus-raw-support-PCA `0.0000`, TP/FP/FN `0 / 3 / 2`.
+- exact-val128 candidate stats: val candidates `126`, val oracle-positive `4`.
+- exact-val128 result:
+  - baseline stop-line `0.5333`, TP/FP/FN `32 / 28 / 28`;
+  - raw-support-PCA-only `0.0000`, TP/FP/FN `0 / 16 / 60`;
+  - baseline-plus-raw-support-PCA `0.4812`, TP/FP/FN `32 / 41 / 28`.
+- 판단: support-PCA is too conservative to cover validation GT and the no-GT verifier does not convert any exact-val128 TP. Baseline union only adds FP, so broader-val512 is intentionally skipped. Do not repeat this as support threshold, morphology, PCA percentile, verifier epoch/LR, top-k, or score-threshold tuning.
 
 Latest lane task-mask context gate:
 

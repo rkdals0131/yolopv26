@@ -18,6 +18,7 @@ from tools.probe_pv26_stopline_raw_hough_candidates import (
     SCORE_KEY,
     _attach_scores,
     _detect_raw_line_segments,
+    _generate_raw_hough_candidates,
     _line_points,
     _scenario_with_dataset_root,
     _select_hough_stop_lines,
@@ -40,6 +41,43 @@ class StopLineRawHoughCandidateTests(unittest.TestCase):
         self.assertEqual(lines.shape[1], 4)
         self.assertEqual(edge.shape, image.shape)
         self.assertGreater(lines.shape[0], 0)
+
+    def test_support_pca_generator_uses_dense_and_raw_support(self) -> None:
+        image = np.zeros((64, 96), dtype=np.float32)
+        image[30:33, 12:84] = 1.0
+        mask = np.zeros((64, 96), dtype=np.float32)
+        center = np.zeros((64, 96), dtype=np.float32)
+        selector = np.zeros((64, 96), dtype=np.float32)
+        mask[29:34, 10:86] = 0.8
+        center[30:33, 12:84] = 0.7
+        selector[30:33, 12:84] = 0.65
+        meta = {
+            "raw_hw": (64, 96),
+            "network_hw": (64, 96),
+            "transform": {
+                "scale": 1.0,
+                "pad_left": 0,
+                "pad_top": 0,
+                "pad_right": 0,
+                "pad_bottom": 0,
+                "resized_hw": (64, 96),
+            },
+        }
+
+        candidates = _generate_raw_hough_candidates(
+            image=image,
+            meta=meta,
+            mask_probs=mask,
+            center_probs=center,
+            selector_probs=selector,
+            gt_stop_lines=[],
+            max_candidates=4,
+            candidate_generator="support_pca",
+        )
+
+        self.assertGreaterEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["proposal_source"], "raw_support_pca")
+        self.assertGreater(float(candidates[0]["length"]), 12.0)
 
     def test_scenario_with_dataset_root_updates_dataset_config(self) -> None:
         scenario = MetaTrainScenario(

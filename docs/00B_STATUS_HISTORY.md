@@ -18511,3 +18511,111 @@ Decision:
 - Broader-val512 was skipped because exact-val128 is far below the baseline/projection-comp reference and FP-heavy.
 - Do not repeat this as LSD refine mode, blur/Canny edge support, LSD top-k, MLP epoch/LR, dense-score weight, or threshold tuning.
 - Reopen raw-image candidate generation only with a materially different candidate-quality/geometry contract that first creates oracle-positive validation candidates and improves fixed smoke TP/FP/FN.
+
+## 335. Stop-line raw-support-PCA candidates: dense support makes coverage too sparse
+
+Context:
+
+- Section 334 showed that free raw-image LSD candidates can create some exact-val128 oracle-positive rows, but the no-GT verifier is FP-heavy and cannot improve baseline TP/FP/FN.
+- This branch tested a stricter candidate-generation contract rather than another line-detector threshold: raw brightness/edge evidence must agree with predicted stop-line mask/proposal support before a segment is emitted.
+- The expectation was better FP control from dense support, while still allowing new raw-image-derived stop-line candidates.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-raw-support-pca-candidates`.
+- Updated `tools/probe_pv26_stopline_raw_hough_candidates.py`.
+- Added `--candidate-generator support_pca` alongside the existing `hough` and `lsd` modes.
+- New path:
+  - samples raw brightness and Canny edge evidence onto the model output grid;
+  - multiplies raw support by dense stop-line mask and proposal support;
+  - thresholds the support map, closes connected components, and fits each component with weighted PCA;
+  - converts PCA endpoints back through the network letterbox metadata into raw-image coordinates;
+  - reuses the existing raw-candidate feature schema and train-split MLP verifier.
+- Added `test/test_stopline_raw_hough_candidates.py` coverage for synthetic dense/raw support-PCA candidate generation.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Probe setup:
+  - candidate generator: `support_pca`;
+  - train record batches: `64`;
+  - validation epoch: `2`;
+  - max candidates: `16`;
+  - verifier top-k: `8`;
+  - verifier epochs: `60`;
+  - device: `cuda:0`.
+- Smoke candidate stats:
+  - train candidates: `258`;
+  - train oracle-positive candidates: `7`;
+  - val candidates: `5`;
+  - val oracle-positive candidates: `0`.
+- Exact candidate stats:
+  - train candidates: `258`;
+  - train oracle-positive candidates: `7`;
+  - val candidates: `126`;
+  - val oracle-positive candidates: `4`.
+
+Fixed val4 replay:
+
+| Split | Variant | Stop-line F1 | Stop-line TP/FP/FN |
+| --- | --- | ---: | --- |
+| train | baseline | `0.6617` | `88 / 27 / 63` |
+| train | raw-support-PCA MLP | `0.0791` | `7 / 19 / 144` |
+| train | baseline + raw-support-PCA MLP | `0.6345` | `92 / 47 / 59` |
+| val | baseline | `0.0000` | `0 / 3 / 2` |
+| val | raw-support-PCA MLP | `0.0000` | `0 / 0 / 2` |
+| val | baseline + raw-support-PCA MLP | `0.0000` | `0 / 3 / 2` |
+
+Fixed exact-val128 replay:
+
+| Split | Variant | Stop-line F1 | Stop-line TP/FP/FN |
+| --- | --- | ---: | --- |
+| train | baseline | `0.6617` | `88 / 27 / 63` |
+| train | raw-support-PCA MLP | `0.0791` | `7 / 19 / 144` |
+| train | baseline + raw-support-PCA MLP | `0.6345` | `92 / 47 / 59` |
+| val | baseline | `0.5333` | `32 / 28 / 28` |
+| val | raw-support-PCA MLP | `0.0000` | `0 / 16 / 60` |
+| val | baseline + raw-support-PCA MLP | `0.4812` | `32 / 41 / 28` |
+
+Artifacts:
+
+- Summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_smoke_val4_20260530/summary.json`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_exact_val128_20260530/summary.json`.
+- Replay variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_smoke_val4_20260530/raw_support_pca_variants.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_exact_val128_20260530/raw_support_pca_variants.csv`.
+- Candidate rows:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_smoke_val4_20260530/train_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_smoke_val4_20260530/val_candidate_features.csv`.
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_exact_val128_20260530/train_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_raw_support_pca_candidates_train64_exact_val128_20260530/val_candidate_features.csv`.
+
+Storage:
+
+- Retained smoke artifact size is about `256K`.
+- Retained exact artifact size is about `368K`.
+- No checkpoint artifact was created.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_raw_hough_candidates.py test/test_stopline_raw_hough_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_stopline_raw_hough_candidates`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/probe_pv26_stopline_raw_hough_candidates.py --help | rg "support_pca|candidate-generator"`.
+- CUDA train64/val4 raw-support-PCA candidate verifier training/replay.
+- CUDA train64/exact-val128 raw-support-PCA candidate verifier training/replay.
+
+Decision:
+
+- Dense-support-limited raw candidate generation is a materially different candidate-generation contract from Hough/LSD, but it is too sparse on validation.
+- Exact-val128 has only `4 / 126` oracle-positive support-PCA validation candidates.
+- The verifier emits no exact-val128 TP (`0 / 16 / 60`), and baseline-plus-support-PCA keeps TP fixed at `32` while adding `+13` FP.
+- Broader-val512 was skipped because the exact gate is below baseline and far below the projection-competition reference.
+- Do not repeat this as support threshold, morphology kernel, PCA percentile, verifier epoch/LR, top-k, or score-threshold tuning.
+- Reopen dense/raw stop-line candidate generation only with a segment-emission contract that first increases exact candidate-bearing GT coverage and improves TP/FP/FN over the retained exact baseline.
