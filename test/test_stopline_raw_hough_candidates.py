@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 
+from tools.pv26_train.config import (
+    DatasetConfig,
+    MetaTrainScenario,
+    PhaseConfig,
+    PreviewConfig,
+    RunConfig,
+    SelectionConfig,
+    TrainDefaultsConfig,
+)
 from tools.probe_pv26_stopline_raw_hough_candidates import (
     SCORE_KEY,
     _attach_scores,
+    _detect_raw_line_segments,
     _line_points,
+    _scenario_with_dataset_root,
     _select_hough_stop_lines,
 )
 
@@ -18,6 +30,41 @@ class StopLineRawHoughCandidateTests(unittest.TestCase):
         self.assertEqual(points.shape, (5, 2))
         np.testing.assert_allclose(points[0], np.asarray([0.0, 2.0], dtype=np.float32))
         np.testing.assert_allclose(points[-1], np.asarray([10.0, 12.0], dtype=np.float32))
+
+    def test_lsd_generator_detects_synthetic_line(self) -> None:
+        image = np.zeros((64, 96), dtype=np.uint8)
+        image[30:33, 12:84] = 255
+        lines, edge = _detect_raw_line_segments(image, candidate_generator="lsd")
+
+        self.assertEqual(lines.ndim, 2)
+        self.assertEqual(lines.shape[1], 4)
+        self.assertEqual(edge.shape, image.shape)
+        self.assertGreater(lines.shape[0], 0)
+
+    def test_scenario_with_dataset_root_updates_dataset_config(self) -> None:
+        scenario = MetaTrainScenario(
+            dataset=DatasetConfig(root=Path("/old/root"), additional_roots=(Path("/extra/root"),)),
+            run=RunConfig(),
+            train_defaults=TrainDefaultsConfig(),
+            selection=SelectionConfig(),
+            preview=PreviewConfig(enabled=False),
+            phases=(
+                PhaseConfig(
+                    name="phase",
+                    stage="stage_4_lane_family_finetune",
+                    min_epochs=1,
+                    max_epochs=1,
+                    patience=1,
+                ),
+            ),
+        )
+
+        updated = _scenario_with_dataset_root(scenario, "/new/root")
+
+        self.assertEqual(updated.dataset.root, Path("/new/root").resolve())
+        self.assertEqual(updated.dataset.additional_roots, ())
+        self.assertEqual(updated.run, scenario.run)
+        self.assertEqual(updated.phases, scenario.phases)
 
     def test_attach_scores_skips_candidates_outside_top_k(self) -> None:
         row_a: dict[str, float] = {}

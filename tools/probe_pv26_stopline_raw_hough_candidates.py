@@ -72,7 +72,7 @@ HOUGH_FEATURES = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate stop-line candidates from raw-image Canny/Hough segments, train a small "
+            "Generate stop-line candidates from raw-image line segments, train a small "
             "candidate verifier on canonical train batches, and replay it on validation."
         )
     )
@@ -84,6 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-epoch", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dataset-root", default="", help="Override dataset root for detached worktrees.")
+    parser.add_argument(
+        "--candidate-generator",
+        choices=("hough", "lsd"),
+        default="hough",
+        help="Raw-image line segment generator. Defaults to the original Canny/Hough path.",
+    )
     parser.add_argument("--hough-max-candidates", type=int, default=16)
     parser.add_argument("--hough-top-k", type=int, default=8)
     parser.add_argument("--threshold-grid", type=int, default=101)
@@ -106,7 +112,8 @@ def _scenario_with_dataset_root(scenario: Any, dataset_root: str) -> Any:
     dataset_root = str(dataset_root or "").strip()
     if not dataset_root:
         return scenario
-    return replace(scenario, dataset_roots=(dataset_root,))
+    dataset = train_config_api.DatasetConfig(root=Path(dataset_root).expanduser().resolve())
+    return replace(scenario, dataset=dataset)
 
 
 def _train_config_with_runtime_defaults(train_config: Any, *, device: str, max_val_batches: int) -> Any:
@@ -201,6 +208,27 @@ def _candidate_row(candidate: dict[str, Any], *, batch_index: int, sample_index:
     }
 
 
+def _detect_raw_line_segments(raw_uint8: np.ndarray, *, candidate_generator: str) -> tuple[np.ndarray, np.ndarray]:
+    generator = str(candidate_generator or "hough").strip().lower()
+    if generator == "hough":
+        blurred = cv2.GaussianBlur(raw_uint8, (5, 5), 0)
+        edges = cv2.Canny(blurred, 60, 160)
+        lines = cv2.HoughLinesP(edges, 1.0, np.pi / 180.0, threshold=36, minLineLength=24, maxLineGap=12)
+        if lines is None:
+            return np.zeros((0, 4), dtype=np.float32), edges.astype(np.float32) / 255.0
+        return lines.reshape(-1, 4).astype(np.float32), edges.astype(np.float32) / 255.0
+    if generator == "lsd":
+        blurred = cv2.GaussianBlur(raw_uint8, (3, 3), 0)
+        detector = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+        detected = detector.detect(blurred)
+        lines = detected[0] if detected else None
+        edges = cv2.Canny(blurred, 50, 140)
+        if lines is None:
+            return np.zeros((0, 4), dtype=np.float32), edges.astype(np.float32) / 255.0
+        return lines.reshape(-1, 4).astype(np.float32), edges.astype(np.float32) / 255.0
+    raise ValueError(f"unsupported candidate generator: {candidate_generator}")
+
+
 def _generate_raw_hough_candidates(
     *,
     image: np.ndarray | None,
@@ -210,6 +238,7 @@ def _generate_raw_hough_candidates(
     selector_probs: np.ndarray | None,
     gt_stop_lines: list[dict[str, Any]],
     max_candidates: int,
+    candidate_generator: str = "hough",
 ) -> list[dict[str, Any]]:
     if image is None or image.ndim != 2:
         return []
@@ -225,13 +254,11 @@ def _generate_raw_hough_candidates(
     output_hw = (int(mask_probs.shape[0]), int(mask_probs.shape[1]))
     raw_h, raw_w = int(image.shape[0]), int(image.shape[1])
     raw_uint8 = np.clip(image * 255.0, 0.0, 255.0).astype(np.uint8)
-    blurred = cv2.GaussianBlur(raw_uint8, (5, 5), 0)
-    edges = cv2.Canny(blurred, 60, 160)
-    lines = cv2.HoughLinesP(edges, 1.0, np.pi / 180.0, threshold=36, minLineLength=24, maxLineGap=12)
-    if lines is None:
+    lines, edge_float = _detect_raw_line_segments(raw_uint8, candidate_generator=str(candidate_generator))
+    if lines.shape[0] == 0:
         return []
-    edge_float = edges.astype(np.float32) / 255.0
     candidates: list[dict[str, Any]] = []
+    proposal_source = "raw_lsd" if str(candidate_generator).strip().lower() == "lsd" else "raw_hough"
     for line in lines.reshape(-1, 4).tolist():
         x1, y1, x2, y2 = [float(value) for value in line]
         start = np.asarray([x1, y1], dtype=np.float32)
@@ -273,7 +300,7 @@ def _generate_raw_hough_candidates(
             "center_score": float(score),
             "length": float(length),
             "points_xy": [[float(x), float(y)] for x, y in raw_points.tolist()],
-            "proposal_source": "raw_hough",
+            "proposal_source": proposal_source,
             "raw_hough_score": float(score),
             "raw_hough_length": float(length),
             "raw_hough_length_norm": float(length_norm),
@@ -319,6 +346,7 @@ def _collect_records(
     postprocess_config: Any,
     max_batches: int,
     hough_max_candidates: int,
+    candidate_generator: str,
     split: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
@@ -357,6 +385,7 @@ def _collect_records(
                     selector_probs=selector_probs,
                     gt_stop_lines=gt_stop_lines,
                     max_candidates=int(hough_max_candidates),
+                    candidate_generator=str(candidate_generator),
                 )
                 candidate_rows = [
                     _candidate_row(candidate, batch_index=batch_index, sample_index=sample_index, meta=meta)
@@ -562,6 +591,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         postprocess_config=postprocess_config,
         max_batches=int(args.train_record_batches),
         hough_max_candidates=int(args.hough_max_candidates),
+        candidate_generator=str(args.candidate_generator),
         split="train",
     )
     val_records, val_rows = _collect_records(
@@ -570,6 +600,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         postprocess_config=postprocess_config,
         max_batches=int(args.max_val_batches),
         hough_max_candidates=int(args.hough_max_candidates),
+        candidate_generator=str(args.candidate_generator),
         split="val",
     )
     score_summary = _score_records(
@@ -592,7 +623,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         _metrics_row(val_records, name="baseline", split="val"),
         _metrics_row(
             train_records,
-            name="raw_hough_mlp",
+            name=f"raw_{args.candidate_generator}_mlp",
             split="train",
             score_key=SCORE_KEY,
             threshold=threshold,
@@ -601,7 +632,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         ),
         _metrics_row(
             val_records,
-            name="raw_hough_mlp",
+            name=f"raw_{args.candidate_generator}_mlp",
             split="val",
             score_key=SCORE_KEY,
             threshold=threshold,
@@ -610,7 +641,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         ),
         _metrics_row(
             train_records,
-            name="baseline_plus_raw_hough_mlp",
+            name=f"baseline_plus_raw_{args.candidate_generator}_mlp",
             split="train",
             score_key=SCORE_KEY,
             threshold=threshold,
@@ -620,7 +651,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         ),
         _metrics_row(
             val_records,
-            name="baseline_plus_raw_hough_mlp",
+            name=f"baseline_plus_raw_{args.candidate_generator}_mlp",
             split="val",
             score_key=SCORE_KEY,
             threshold=threshold,
@@ -636,6 +667,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "train_record_batches": int(args.train_record_batches),
         "max_val_batches": int(args.max_val_batches),
         "validation_epoch": int(args.validation_epoch),
+        "candidate_generator": str(args.candidate_generator),
         "hough_max_candidates": int(args.hough_max_candidates),
         "hough_top_k": int(args.hough_top_k),
         "threshold_grid": int(args.threshold_grid),
@@ -645,7 +677,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "score_summary": score_summary,
         "rows": rows,
         "interpretation": (
-            "Raw-image Hough stop-line candidate-generation probe. Hough candidates are generated "
+            "Raw-image line stop-line candidate-generation probe. Line candidates are generated "
             "from existing images and scored with dense stop-line maps, then a train-split MLP "
             "verifier is replayed on validation. Runtime selection uses no GT; GT labels are used "
             "only for verifier training and audit metrics."
@@ -659,7 +691,7 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = run_probe(args)
-    _write_csv(output_dir / "raw_hough_variants.csv", payload["rows"])
+    _write_csv(output_dir / f"raw_{args.candidate_generator}_variants.csv", payload["rows"])
     _write_candidate_features_csv(output_dir / "train_candidate_features.csv", payload["train_rows"])
     _write_candidate_features_csv(output_dir / "val_candidate_features.csv", payload["val_rows"])
     (output_dir / "summary.json").write_text(json.dumps(payload["summary"], ensure_ascii=False, indent=2), encoding="utf-8")
