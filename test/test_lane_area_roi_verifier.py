@@ -16,6 +16,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _finalize_task_counts,
     _lane_cross_task_conflict_features,
     _lane_raw_image_line_features,
+    _lane_set_geometry_support,
     _lane_side_contrast_features,
     _matched_lane_prediction_indices,
     _near_any_lane,
@@ -25,6 +26,10 @@ from tools.probe_pv26_lane_area_roi_verifier import (
 
 def _lane(x: float) -> dict[str, object]:
     return {"points_xy": [[x, 0.0], [x, 100.0]], "class_name": "white", "lane_type": "solid"}
+
+
+def _horizontal_lane(y: float) -> dict[str, object]:
+    return {"points_xy": [[0.0, y], [100.0, y]], "class_name": "white", "lane_type": "solid"}
 
 
 class LaneAreaRoiVerifierTests(unittest.TestCase):
@@ -240,6 +245,87 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual([lane["points_xy"][0][0] for lane in repaired[0]["lanes"]], [75.0, 220.0])
         selected_sources = [row["candidate_source_kind"] for row in rows if row["selected"]]
         self.assertEqual(selected_sources, ["retained", "dropped_area"])
+
+    def test_lane_set_geometry_support_prefers_parallel_set_context(self) -> None:
+        retained = [_lane(10.0), _lane(100.0)]
+
+        supported = _lane_set_geometry_support(_lane(70.0), retained)
+        unsupported = _lane_set_geometry_support(_horizontal_lane(50.0), retained)
+
+        self.assertGreater(supported, 0.8)
+        self.assertLess(unsupported, 0.45)
+
+    def test_select_topk_union_geometry_keeps_retained_over_unsupported_drop(self) -> None:
+        class FeatureLogitVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return features[:, 0]
+
+        predictions = [{"lanes": [_lane(0.0), _lane(220.0)]}]
+        examples = [
+            {
+                "features": np.asarray([7.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "candidate": _lane(0.0),
+            },
+            {
+                "features": np.asarray([6.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 1,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 1,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "candidate": _lane(220.0),
+            },
+            {
+                "features": np.asarray([10.0], dtype=np.float32),
+                "positive": 0.0,
+                "negative": 1.0,
+                "nearest_gt_index": -1,
+                "nearest_gt_distance": 120.0,
+                "sample_index": 0,
+                "candidate_index": 2,
+                "candidate_source_kind": "dropped_area",
+                "baseline_lane_count": 2,
+                "candidate": _horizontal_lane(50.0),
+            },
+        ]
+
+        repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=FeatureLogitVerifier(),
+            args=SimpleNamespace(
+                quality_threshold=0.5,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=0,
+                max_suppressions_per_sample=0,
+                candidate_integration_mode="select_topk_union_geometry",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(len(repaired[0]["lanes"]), 2)
+        self.assertEqual([lane["points_xy"][0][0] for lane in repaired[0]["lanes"]], [0.0, 220.0])
+        selected_sources = [row["candidate_source_kind"] for row in rows if row["selected"]]
+        self.assertEqual(selected_sources, ["retained", "retained"])
+        unsupported_rows = [row for row in rows if row["candidate_index"] == 2]
+        self.assertEqual(unsupported_rows[0]["selected"], 0)
 
     def test_ensemble_probability_mode_can_require_member_agreement(self) -> None:
         class ConstantVerifier(torch.nn.Module):

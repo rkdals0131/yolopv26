@@ -88,7 +88,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--candidate-integration-mode",
-        choices=("append", "replace_nearest", "suppress_low_quality", "select_topk_union"),
+        choices=(
+            "append",
+            "replace_nearest",
+            "suppress_low_quality",
+            "select_topk_union",
+            "select_topk_union_geometry",
+        ),
         default="append",
         help=(
             "How verifier-scored candidates are integrated. "
@@ -98,7 +104,10 @@ def parse_args() -> argparse.Namespace:
             "falls below --quality-threshold. select_topk_union discards the "
             "original retained/dropped boundary and greedily keeps the top scored "
             "non-duplicate candidates up to the original retained lane count plus "
-            "--max-appends-per-sample."
+            "--max-appends-per-sample. select_topk_union_geometry keeps the same "
+            "fixed-count contract but applies a retained-lane safety bias plus "
+            "a set-level lane geometry support gate before dropped candidates "
+            "can enter the set."
         ),
     )
     parser.add_argument("--replace-nearest-max-distance-px", type=float, default=120.0)
@@ -569,6 +578,47 @@ def _union_pool_source_features(
         ],
         dtype=np.float32,
     )
+
+
+def _lane_set_geometry_support(candidate: dict[str, Any], retained_lanes: list[dict[str, Any]]) -> float:
+    """No-GT support that a candidate belongs to the same lane set.
+
+    This is deliberately set-level and runtime-only: it uses retained lane
+    geometry as context, not GT, and it does not expose threshold knobs.
+    """
+
+    candidate_points = _polyline_array(candidate)
+    if candidate_points.shape[0] < 2 or not retained_lanes:
+        return 0.0
+    scores: list[float] = []
+    for lane in retained_lanes:
+        lane_points = _polyline_array(lane)
+        if lane_points.shape[0] < 2:
+            continue
+        y_overlap = _y_overlap_fraction(candidate_points, lane_points)
+        angle_score = 1.0 - min(_angle_error_degrees(candidate_points, lane_points), 90.0) / 90.0
+        distance = _lane_distance(candidate, lane)
+        # Far lanes can still be valid parallel lanes; the distance term only
+        # weakly discounts candidates with no nearby set context.
+        distance_score = 1.0 - min(float(distance), 240.0) / 240.0
+        scores.append(float(0.55 * y_overlap + 0.35 * angle_score + 0.10 * distance_score))
+    if not scores:
+        return 0.0
+    return float(np.clip(max(scores), 0.0, 1.0))
+
+
+def _union_geometry_rank_score(
+    *,
+    probability: float,
+    candidate: dict[str, Any],
+    source_kind: str,
+    retained_lanes: list[dict[str, Any]],
+) -> tuple[float, float]:
+    geometry_support = _lane_set_geometry_support(candidate, retained_lanes)
+    if str(source_kind) == "retained":
+        return float(probability) + 0.08, geometry_support
+    penalty = 0.20 if geometry_support < 0.45 else 0.0
+    return float(probability) + (0.08 * geometry_support) - penalty, geometry_support
 
 
 def _baseline_matched_gt_indices(
@@ -1155,20 +1205,43 @@ def _apply_verifier(
         by_sample.setdefault(int(example["sample_index"]), []).append((float(probability), int(index)))
     selected_records: dict[int, dict[str, Any]] = {}
     integration_mode = str(getattr(args, "candidate_integration_mode", "append"))
-    if integration_mode == "select_topk_union":
+    if integration_mode in {"select_topk_union", "select_topk_union_geometry"}:
         for sample_index, candidates in by_sample.items():
-            candidates.sort(reverse=True)
             if sample_index < 0 or sample_index >= len(repaired):
                 continue
             original_lanes = list(repaired[sample_index].get("lanes", []))
             target_count = max(0, int(len(original_lanes)) + int(getattr(args, "max_appends_per_sample", 0)))
             if target_count <= 0:
                 continue
+            if integration_mode == "select_topk_union_geometry":
+                ranked_candidates = []
+                for probability, index in candidates:
+                    source_kind = str(examples[index].get("candidate_source_kind", ""))
+                    rank_score, geometry_support = _union_geometry_rank_score(
+                        probability=float(probability),
+                        candidate=examples[index]["candidate"],
+                        source_kind=source_kind,
+                        retained_lanes=original_lanes,
+                    )
+                    ranked_candidates.append((float(rank_score), float(probability), int(index), float(geometry_support)))
+                ranked_candidates.sort(reverse=True)
+            else:
+                candidates.sort(reverse=True)
+                ranked_candidates = [
+                    (float(probability), float(probability), int(index), float("nan"))
+                    for probability, index in candidates
+                ]
             selected_lanes: list[dict[str, Any]] = []
-            for probability, index in candidates:
+            for _rank_score, probability, index, geometry_support in ranked_candidates:
                 if len(selected_lanes) >= target_count:
                     break
                 candidate = dict(examples[index]["candidate"])
+                if (
+                    integration_mode == "select_topk_union_geometry"
+                    and str(examples[index].get("candidate_source_kind", "")) != "retained"
+                    and float(geometry_support) < 0.45
+                ):
+                    continue
                 if _near_any_lane(
                     candidate,
                     selected_lanes,
@@ -1178,11 +1251,14 @@ def _apply_verifier(
                 candidate["area_roi_verifier_score"] = float(probability)
                 candidate["area_roi_verifier_integration"] = integration_mode
                 candidate["area_roi_source_kind"] = str(examples[index].get("candidate_source_kind", ""))
+                if np.isfinite(float(geometry_support)):
+                    candidate["area_roi_set_geometry_support"] = float(geometry_support)
                 selected_lanes.append(candidate)
                 selected_records[int(index)] = {
-                    "action": "select_topk_union",
+                    "action": integration_mode,
                     "replaced_lane_index": -1,
                     "replaced_lane_distance": float("nan"),
+                    "set_geometry_support": float(geometry_support),
                 }
             if selected_lanes:
                 repaired[sample_index]["lanes"] = selected_lanes
@@ -1295,6 +1371,7 @@ def _apply_verifier(
                 "baseline_lane_count": int(example.get("baseline_lane_count", -1)),
                 "replaced_lane_index": int(selected_record.get("replaced_lane_index", -1)),
                 "replaced_lane_distance": float(selected_record.get("replaced_lane_distance", float("nan"))),
+                "set_geometry_support": float(selected_record.get("set_geometry_support", float("nan"))),
             }
         )
     return repaired, rows

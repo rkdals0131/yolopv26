@@ -20574,3 +20574,82 @@ Decision:
 - Broader-val512 is skipped because exact failed.
 - Close lane-topology source routing as lane distance/crossing/projection feature set, lane densification, MLP hidden-size/epoch/LR, train-batch scaling, and the same primary/specialist/union/agreement source-choice contract.
 - Reopen source routing only with a materially different candidate-generation or source-quality signal that first beats primary projection-comp exact TP/FP/FN.
+
+## 359. 2026-05-31 Lane union-pool geometry selection: smoke-positive, exact FP blow-up
+
+Hypothesis:
+
+- The plain union-pool ranker failed because dropped raw lane candidates could outrank retained runtime lanes without enough set-level context.
+- This branch tested a materially different no-GT FP-control signal before broadening: retained row-scan lanes get a safety bias, while dropped area candidates need lane-set geometry support from existing retained lanes.
+- This is still learned runtime replay, not a production checkpoint success.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_area_roi_verifier.py` adds `--candidate-integration-mode select_topk_union_geometry`.
+- The mode keeps the fixed-count union contract, but ranks candidates by verifier probability plus:
+  - retained-lane safety bias for already emitted lanes;
+  - no-GT set-geometry support for dropped candidates using y-overlap, tangent-angle agreement, and weak lane-distance context against retained lanes;
+  - a fixed low-support penalty/gate before dropped candidates can enter.
+- `test/test_lane_area_roi_verifier.py` covers the geometry-support helper and verifies that a high-scoring unsupported dropped lane does not replace retained lanes.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Runtime/eval contract:
+  - checkpoint `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`;
+  - lane variant `flip_centerline_avg_lane_cross_comp050`;
+  - primary projection-comp stop-line;
+  - hull crosswalk.
+- Smoke:
+  - verifier train batches `64`;
+  - fixed val4;
+  - train examples `1166`.
+- Exact train64:
+  - verifier train batches `64`;
+  - exact val128.
+- Larger train exact audit:
+  - verifier train batches `256`;
+  - exact val128;
+  - train examples `4427`.
+
+Results:
+
+| Run | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| train64 smoke val4 | baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 smoke val4 | union_geometry | `0.5957` | `42 / 13 / 44` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| train64 exact val128 | baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train64 exact val128 | union_geometry | `0.5769` | `1214 / 605 / 1176` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+| train256 exact val128 | union_geometry | `0.5769` | `1214 / 605 / 1176` | `0.5333` | `32 / 28 / 28` | `0.5988` | `50 / 36 / 31` |
+
+Artifacts:
+
+- Smoke summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_union_geometry_train64_smoke_val4_20260531/summary.json`.
+- Exact train64 summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_union_geometry_train64_exact_val128_20260531/summary.json`.
+- Exact train256 summary: `runs/pv26_exhaustive_od_lane_train/lane_area_roi_union_geometry_train256_exact_val128_20260531/summary.json`.
+- Retained sizes are about `92K`, `448K`, and `628K`.
+- The probe writes CSV/summary only; no verifier checkpoint or copied dataset was created.
+- Temporary root `yolo26s.pt` was pruned after evaluation.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/fixed-val4 union-geometry verifier run.
+- CUDA train64/exact-val128 union-geometry verifier run.
+- CUDA train256/exact-val128 union-geometry verifier scale audit.
+
+Decision:
+
+- The implementation is valid and trainable.
+- Smoke showed real recall movement, but FP rose with TP (`+2 TP`, `+2 FP`).
+- Exact train64 and larger train256 both failed identically: `+12 TP` came with `+114 FP`, dropping lane F1 from `0.5888` to `0.5769`.
+- Stop-line and crosswalk were preserved because only lane integration changed.
+- Broader-val512 is skipped because exact failed and FP growth was too large.
+- Close union-pool geometry selection as retained bias, set-geometry support, geometry-support gate, train-batch scaling, hidden-size/LR/epoch retuning, duplicate-distance, and fixed-count union selection.
+- Reopen lane candidate-pool selection only with a materially different TP-preserving instance-quality or model-side instance-emission signal that first improves exact TP/FP/FN.
