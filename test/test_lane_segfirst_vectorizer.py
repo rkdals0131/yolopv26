@@ -123,6 +123,39 @@ class LaneSegFirstVectorizerTests(unittest.TestCase):
         self.assertEqual(len(predictions), 1)
         self.assertEqual(len(predictions[0]["points_xy"]), 3)
 
+    def test_row_scan_anchor_vote_uses_bottom_anchor_offsets(self) -> None:
+        centerline = torch.zeros((1, 12, 12), dtype=torch.float32)
+        centerline[0, 11, 2] = 0.9
+        centerline[0, 11, 8] = 0.9
+        centerline[0, 10, 4] = 0.9
+        centerline[0, 10, 7] = 0.9
+        anchor_offset = torch.zeros((1, 12, 12), dtype=torch.float32)
+        anchor_offset[0, 11, 2] = 0.0
+        anchor_offset[0, 11, 8] = 0.0
+        anchor_offset[0, 10, 4] = 4.0
+        anchor_offset[0, 10, 7] = -5.0
+        predictions = vectorize_lane_segfirst_maps(
+            {
+                "centerline_core": centerline,
+                "anchor_offset": anchor_offset,
+                "color_map": torch.zeros((len(LANE_CLASSES), 12, 12), dtype=torch.float32),
+                "lane_type_map": torch.zeros((len(LANE_TYPES), 12, 12), dtype=torch.float32),
+            },
+            config=LaneSegFirstVectorizerConfig(
+                track_mode="row_scan_anchor_vote",
+                centerline_threshold=0.5,
+                row_stride=1,
+                max_row_gap=2,
+                max_link_dx=10.0,
+                anchor_vote_max_anchor_gap_px=1.0,
+            ),
+        )
+
+        self.assertEqual(len(predictions), 2)
+        by_bottom = sorted(predictions, key=lambda item: item["points_xy"][0][0])
+        self.assertEqual([point[0] for point in by_bottom[0]["points_xy"]], [2.0, 7.0])
+        self.assertEqual([point[0] for point in by_bottom[1]["points_xy"]], [8.0, 4.0])
+
     def test_center_offset_field_can_recenter_row_scan_output(self) -> None:
         maps = _maps_with_vertical_gap()
         center_offset = torch.zeros((2, 12, 12), dtype=torch.float32)

@@ -766,6 +766,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         lane_segfirst_residual_risk_ring_weight=train_config.lane_segfirst_residual_risk_ring_weight,
         lane_segfirst_residual_risk_ring_margin=train_config.lane_segfirst_residual_risk_ring_margin,
         lane_segfirst_center_offset_aux_weight=train_config.lane_segfirst_center_offset_aux_weight,
+        lane_segfirst_anchor_offset_aux_weight=train_config.lane_segfirst_anchor_offset_aux_weight,
         lane_segfirst_task_conflict_negative_mode=train_config.lane_segfirst_task_conflict_negative_mode,
         lane_segfirst_task_conflict_negative_weight=train_config.lane_segfirst_task_conflict_negative_weight,
         lane_segfirst_task_conflict_negative_margin=train_config.lane_segfirst_task_conflict_negative_margin,

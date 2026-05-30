@@ -78,6 +78,7 @@ class LaneSegFirstHead(nn.Module):
         self.centerline_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.support_logits = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.center_offset = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
+        self.anchor_offset = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.row_link_delta = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
         self.tangent_axis = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
         self.instance_embedding = nn.Conv2d(self.hidden_dim, 2, kernel_size=1)
@@ -116,6 +117,7 @@ class LaneSegFirstHead(nn.Module):
             "lane_seg_centerline_logits": self.centerline_logits(centerline_feature),
             "lane_seg_support_logits": self.support_logits(lane_feature),
             "lane_seg_center_offset": self.center_offset(lane_feature),
+            "lane_seg_anchor_offset": self.anchor_offset(lane_feature),
             "lane_seg_row_link_delta": self.row_link_delta(lane_feature),
             "lane_seg_tangent_axis": self.tangent_axis(lane_feature),
             "lane_seg_instance_embedding": self.instance_embedding(lane_feature),

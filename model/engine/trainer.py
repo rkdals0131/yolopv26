@@ -279,6 +279,17 @@ def _lane_row_link_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
     return [row_link_delta] if isinstance(row_link_delta, torch.nn.Module) else []
 
 
+def _lane_anchor_offset_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
+    lane_head = getattr(heads, "lane_head", None)
+    if not isinstance(lane_head, torch.nn.Module):
+        roadmark_heads = getattr(heads, "roadmark_heads", None)
+        lane_head = getattr(roadmark_heads, "lane_head", None)
+    if not isinstance(lane_head, torch.nn.Module):
+        return []
+    anchor_offset = getattr(lane_head, "anchor_offset", None)
+    return [anchor_offset] if isinstance(anchor_offset, torch.nn.Module) else []
+
+
 def _parameter_ids_from_modules(modules: list[torch.nn.Module]) -> set[int]:
     parameter_ids: set[int] = set()
     for module in modules:
@@ -340,6 +351,13 @@ def _require_lane_row_link_modules(heads: torch.nn.Module, *, policy: str) -> li
     modules = _lane_row_link_modules(heads)
     if not modules:
         raise RuntimeError(f"{policy} requires a seg-first lane_head with row_link_delta")
+    return modules
+
+
+def _require_lane_anchor_offset_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
+    modules = _lane_anchor_offset_modules(heads)
+    if not modules:
+        raise RuntimeError(f"{policy} requires a seg-first lane_head with anchor_offset")
     return modules
 
 
@@ -502,6 +520,12 @@ def configure_pv26_train_stage(
         for module in _require_lane_row_link_modules(heads, policy=policy):
             _set_module_requires_grad(module, True)
         head_policy = "lane_row_link_only"
+    elif policy == "lane_anchor_offset_only":
+        adapter.freeze_trunk()
+        _set_module_requires_grad(heads, False)
+        for module in _require_lane_anchor_offset_modules(heads, policy=policy):
+            _set_module_requires_grad(module, True)
+        head_policy = "lane_anchor_offset_only"
     elif policy == "none":
         adapter.unfreeze_trunk()
     else:
@@ -541,6 +565,7 @@ def configure_pv26_train_stage(
         "lane_conditional_seed_only",
         "lane_conditional_row_only",
         "lane_row_link_only",
+        "lane_anchor_offset_only",
     }:
         stage_summary["head_training_policy"] = head_policy
     return stage_summary
@@ -726,6 +751,11 @@ class PV26Trainer:
             self.adapter.raw_model.eval()
             self.heads.eval()
             for module in _require_lane_row_link_modules(self.heads, policy=policy):
+                module.train()
+        if policy == "lane_anchor_offset_only":
+            self.adapter.raw_model.eval()
+            self.heads.eval()
+            for module in _require_lane_anchor_offset_modules(self.heads, policy=policy):
                 module.train()
 
     def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:

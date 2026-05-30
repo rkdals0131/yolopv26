@@ -21103,3 +21103,113 @@ Decision:
 - Exact-val128 and broader-val512 are skipped because the first fixed gate failed twice.
 - Close this as row-link aux weight, head-LR, freeze policy, track-mode threshold, epoch-count, and train-batch scaling on the same learned row-link offset contract.
 - Reopen learned lane assignment only with a materially different instance-emission or metric-quality contract that first improves fixed smoke TP/FP/FN over retained `40 / 11 / 46`.
+
+## 364. 2026-05-31 Lane anchor-vote instance grouping: bottom-anchor vote grouping is trainable but smoke-negative
+
+Context:
+
+- The prior lane bottom-anchor offset auxiliary-only family was closed because the offset was not a runtime grouping contract.
+- The row-link offset field changed row-to-row assignment but regressed fixed val4 even after a `4x512` scale audit.
+- This branch tests a different instance grouping signal: each lane centerline pixel predicts its bottom-anchor x offset, and runtime row grouping uses predicted anchor agreement to link rows into lane instances.
+- This is not a postprocess threshold sweep and not the old bottom-anchor aux-only branch. It changes target encoding, lane head outputs, loss, freeze policy, and vectorizer track mode, then trains/evaluates a real checkpoint.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `model/engine/lane_segfirst_vectorizer.py` now renders `anchor_offset` and `anchor_offset_valid` targets and exposes `row_scan_anchor_vote` / `anchor_vote` track modes.
+- `model/data/roadmark_v2_targets.py` and `model/data/target_encoder.py` now emit:
+  - `lane_seg_anchor_offset`;
+  - `lane_seg_anchor_offset_valid`.
+- `model/net/lane_head_segfirst.py` now emits `lane_seg_anchor_offset`.
+- `model/engine/loss.py` adds opt-in SmoothL1 supervision through `lane_segfirst_anchor_offset_aux_weight`.
+- `model/engine/trainer.py` adds `lane_anchor_offset_only`, freezing the rest of the lane-family stack while training only the anchor-offset module in static-trunk mode.
+- `tools/pv26_train/config.py`, `tools/pv26_train/cli.py`, and `tools/run_pv26_lane60_probe.py` expose the `lane_anchor_vote_instance_grouping` experiment preset.
+- `test/test_lane_segfirst_vectorizer.py` adds a crossed-row unit case proving that the anchor map can drive row assignment.
+- `test/test_pv26_heads.py`, `test/test_run_pv26_train.py`, and `test/test_pv26_loss_runtime.py` cover output shape, config parsing, and anchor aux loss backprop.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - split counts were train `326709`, val `82641`, test `20000`;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke:
+  - run `runs/pv26_exhaustive_od_lane_train/lane60_lane_anchor_vote_instance_grouping_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_032301`;
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - freeze policy `lane_anchor_offset_only`;
+  - lane anchor-offset aux weight `1.0`;
+  - skipped steps `0`;
+  - best internal phase objective `0.5956651658` at epoch `1`.
+- Fixed evaluator replay used `tools/evaluate_pv26_lane60_checkpoint.py` with:
+  - `--validation-epoch 2`;
+  - `--train-batches 64`;
+  - `--batch-size 4`;
+  - `--device cuda:0`;
+  - source run `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512`;
+  - experiment preset `lane_anchor_vote_instance_grouping`.
+
+Fixed val4 result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.5783391744` |
+| lane F1 | `0.4000` |
+| lane TP/FP/FN | `28 / 26 / 58` |
+| stop-line F1 | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` |
+| support lane/stop/cross | `86 / 2 / 7` |
+
+Gate comparison:
+
+- Retained fixed val4 lane reference:
+  - lane `40 / 11 / 46`, F1 `0.5839`;
+  - stop-line `0 / 3 / 2`, F1 `0.0000`;
+  - crosswalk `3 / 1 / 4`, F1 `0.5455`.
+- Anchor-vote grouping lost `12` lane TP and added `15` lane FP versus the retained fixed lane reference.
+- Stop-line and crosswalk stayed unchanged because this was a lane-only anchor-offset training slice.
+- Internal phase objective did not reflect the fixed task TP/FP/FN regression.
+
+Artifacts:
+
+- Retained run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_anchor_vote_instance_grouping_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_032301`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_anchor_vote_instance_grouping_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_032301/analysis_exports/fixed_val4_epoch1_best/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_anchor_vote_instance_grouping_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_032301/analysis_exports/fixed_val4_epoch1_best/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned after metric export.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run size after cleanup is about `6.6M`.
+- The retained anchor-vote run has no `*.pt` files.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/lane_head_segfirst.py model/engine/lane_segfirst_vectorizer.py model/data/roadmark_v2_targets.py model/data/target_encoder.py model/engine/loss.py model/engine/trainer.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_segfirst_vectorizer.LaneSegFirstVectorizerTests.test_row_scan_anchor_vote_uses_bottom_anchor_offsets test_pv26_heads.PV26HeadsTests.test_heads_produce_documented_output_shapes test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides test_pv26_loss_runtime.PV26LossRuntimeTests.test_lane_anchor_offset_aux_loss_backprops_when_enabled test_roadmark_native_contract.RoadmarkNativeContractTest.test_target_encoder_emits_native_and_dense_roadmark_payloads`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python tools/run_pv26_lane60_probe.py --help | rg "lane_anchor_vote_instance_grouping|lane_row_link_offset_field"`.
+- Real CUDA `2x64` train smoke on the existing canonical dataset root.
+- Fixed val4 epoch-2 replay for the trained checkpoint.
+- Full `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest discover -s test -p 'test_*.py'` was also attempted after docs update, but it failed in unrelated pre-existing broad-suite paths:
+  - `test_pv26_tiny_overfit` and `test_pv26_trunk_features` construct `PV26Heads` with 3 pyramid levels while current heads require P2/P3/P4/P5;
+  - `test_pv26_runtime_sanity` expects an older balanced-sampler error message;
+  - `test_pv26_train_infer_e2e` still gets `lane_family_count=0`.
+
+Decision:
+
+- The anchor-vote implementation is valid and trainable.
+- It does not improve the fixed lane gate; it sharply loses TP and adds FP relative to retained row-scan/tangent-link.
+- Exact-val128, broader-val512, and larger training are skipped because the first fixed gate failed by a wide margin.
+- Close this as anchor-offset aux weight, head-LR, freeze policy, anchor-gap threshold, track-mode threshold, epoch-count, and train-batch scaling on the same bottom-anchor vote contract.
+- Reopen anchor-based lane grouping only with a materially different TP-preserving instance-quality or assignment contract that first improves fixed smoke TP/FP/FN over retained `40 / 11 / 46`.

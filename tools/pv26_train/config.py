@@ -162,6 +162,7 @@ class TrainDefaultsConfig:
     lane_segfirst_residual_risk_ring_weight: float = 0.0
     lane_segfirst_residual_risk_ring_margin: float = 0.20
     lane_segfirst_center_offset_aux_weight: float = 0.0
+    lane_segfirst_anchor_offset_aux_weight: float = 0.0
     lane_segfirst_task_conflict_negative_mode: str = "none"
     lane_segfirst_task_conflict_negative_weight: float = 0.0
     lane_segfirst_task_conflict_negative_margin: float = 0.15
@@ -967,6 +968,13 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
                 defaults.lane_segfirst_center_offset_aux_weight,
             ),
             field_name="train_defaults.lane_segfirst_center_offset_aux_weight",
+        ),
+        lane_segfirst_anchor_offset_aux_weight=_coerce_float(
+            data.get(
+                "lane_segfirst_anchor_offset_aux_weight",
+                defaults.lane_segfirst_anchor_offset_aux_weight,
+            ),
+            field_name="train_defaults.lane_segfirst_anchor_offset_aux_weight",
         ),
         lane_conditional_row_aux_weight=_coerce_float(
             data.get("lane_conditional_row_aux_weight", defaults.lane_conditional_row_aux_weight),
@@ -2036,6 +2044,8 @@ def validate_meta_train_scenario(
             )
         if float(phase_train.lane_conditional_denoise_aux_weight) < 0.0:
             raise ValueError(f"phase {index} lane_conditional_denoise_aux_weight must be >= 0")
+        if float(phase_train.lane_segfirst_anchor_offset_aux_weight) < 0.0:
+            raise ValueError(f"phase {index} lane_segfirst_anchor_offset_aux_weight must be >= 0")
         if float(phase_train.lane_segfirst_row_link_aux_weight) < 0.0:
             raise ValueError(f"phase {index} lane_segfirst_row_link_aux_weight must be >= 0")
         if int(phase_train.lane_conditional_denoise_hard_negative_count) < 0:

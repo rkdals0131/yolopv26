@@ -382,6 +382,8 @@ def encode_pv26_batch(
             "lane_seg_support": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
             "lane_seg_center_offset": torch.zeros((batch_size, 2, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
             "lane_seg_center_offset_valid": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
+            "lane_seg_anchor_offset": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
+            "lane_seg_anchor_offset_valid": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
             "lane_seg_row_link_delta": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
             "lane_seg_row_link_valid": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),
             "lane_seg_residual_risk_core": torch.zeros((batch_size, 1, *ROADMARK_DENSE_OUTPUT_HW), dtype=torch.float32),

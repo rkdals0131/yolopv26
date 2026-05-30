@@ -480,6 +480,7 @@ def _lane_segfirst_loss(
     residual_risk_ring_weight: float = 0.0,
     residual_risk_ring_margin: float = 0.20,
     center_offset_aux_weight: float = 0.0,
+    anchor_offset_aux_weight: float = 0.0,
     row_link_aux_weight: float = 0.0,
     task_conflict_negative_mode: str = "none",
     task_conflict_negative_weight: float = 0.0,
@@ -500,6 +501,7 @@ def _lane_segfirst_loss(
     centerline_logits = predictions.get("lane_seg_centerline_logits")
     support_logits = predictions.get("lane_seg_support_logits")
     center_offset = predictions.get("lane_seg_center_offset")
+    anchor_offset = predictions.get("lane_seg_anchor_offset")
     row_link_delta = predictions.get("lane_seg_row_link_delta")
     tangent_axis = predictions.get("lane_seg_tangent_axis")
     color_logits = predictions.get("lane_seg_color_logits")
@@ -579,6 +581,7 @@ def _lane_segfirst_loss(
     residual_risk_core_loss = _zero_graph(centerline_logits)
     residual_risk_ring_loss = _zero_graph(centerline_logits)
     center_offset_loss = _zero_graph(centerline_logits)
+    anchor_offset_loss = _zero_graph(centerline_logits)
     row_link_loss = _zero_graph(centerline_logits)
     task_conflict_negative_loss = _zero_graph(centerline_logits)
     conditional_row_loss = _zero_graph(centerline_logits)
@@ -623,6 +626,28 @@ def _lane_segfirst_loss(
                 center_offset_loss = F.smooth_l1_loss(
                     center_offset[offset_mask],
                     offset_target[offset_mask],
+                    reduction="mean",
+                    beta=1.0,
+                )
+    if float(anchor_offset_aux_weight) > 0.0:
+        anchor_target = aux.get("lane_seg_anchor_offset")
+        anchor_valid = aux.get("lane_seg_anchor_offset_valid")
+        if not isinstance(anchor_offset, torch.Tensor):
+            raise KeyError("anchor-offset aux loss requires lane_seg_anchor_offset prediction")
+        if isinstance(anchor_target, torch.Tensor) and isinstance(anchor_valid, torch.Tensor):
+            anchor_target = anchor_target.to(device=anchor_offset.device, dtype=anchor_offset.dtype)
+            anchor_valid = anchor_valid.to(device=anchor_offset.device, dtype=torch.bool)
+            anchor_ignore = ignore.to(device=anchor_offset.device, dtype=torch.bool)
+            anchor_mask = (
+                source.to(device=anchor_offset.device, dtype=torch.bool)[:, None, None, None]
+                & anchor_valid
+                & (~anchor_ignore)
+            )
+            anchor_mask = anchor_mask.expand_as(anchor_offset)
+            if bool(anchor_mask.any()):
+                anchor_offset_loss = F.smooth_l1_loss(
+                    anchor_offset[anchor_mask],
+                    anchor_target[anchor_mask],
                     reduction="mean",
                     beta=1.0,
                 )
@@ -706,6 +731,7 @@ def _lane_segfirst_loss(
         + float(residual_risk_core_weight) * residual_risk_core_loss
         + float(residual_risk_ring_weight) * residual_risk_ring_loss
         + float(center_offset_aux_weight) * center_offset_loss
+        + float(anchor_offset_aux_weight) * anchor_offset_loss
         + float(row_link_aux_weight) * row_link_loss
         + float(task_conflict_negative_weight) * task_conflict_negative_loss
         + float(conditional_row_aux_weight) * conditional_row_loss
@@ -725,6 +751,7 @@ def _lane_segfirst_loss(
                 "seg_residual_risk_core": residual_risk_core_loss,
                 "seg_residual_risk_ring": residual_risk_ring_loss,
                 "seg_center_offset": center_offset_loss,
+                "seg_anchor_offset": anchor_offset_loss,
                 "seg_row_link": row_link_loss,
                 "seg_task_conflict_negative": task_conflict_negative_loss,
                 "seg_conditional_row": conditional_row_loss,
@@ -2743,6 +2770,7 @@ class PV26MultiTaskLoss(nn.Module):
         lane_segfirst_residual_risk_ring_weight: float = 0.0,
         lane_segfirst_residual_risk_ring_margin: float = 0.20,
         lane_segfirst_center_offset_aux_weight: float = 0.0,
+        lane_segfirst_anchor_offset_aux_weight: float = 0.0,
         lane_segfirst_row_link_aux_weight: float = 0.0,
         lane_segfirst_task_conflict_negative_mode: str = "none",
         lane_segfirst_task_conflict_negative_weight: float = 0.0,
@@ -2836,6 +2864,9 @@ class PV26MultiTaskLoss(nn.Module):
         self.lane_segfirst_residual_risk_ring_weight = float(lane_segfirst_residual_risk_ring_weight)
         self.lane_segfirst_residual_risk_ring_margin = float(lane_segfirst_residual_risk_ring_margin)
         self.lane_segfirst_center_offset_aux_weight = float(lane_segfirst_center_offset_aux_weight)
+        self.lane_segfirst_anchor_offset_aux_weight = float(lane_segfirst_anchor_offset_aux_weight)
+        if self.lane_segfirst_anchor_offset_aux_weight < 0.0:
+            raise ValueError("lane_segfirst_anchor_offset_aux_weight must be >= 0")
         self.lane_segfirst_row_link_aux_weight = float(lane_segfirst_row_link_aux_weight)
         if self.lane_segfirst_row_link_aux_weight < 0.0:
             raise ValueError("lane_segfirst_row_link_aux_weight must be >= 0")
@@ -3063,6 +3094,7 @@ class PV26MultiTaskLoss(nn.Module):
             "lane_segfirst_residual_risk_ring_weight": float(self.lane_segfirst_residual_risk_ring_weight),
             "lane_segfirst_residual_risk_ring_margin": float(self.lane_segfirst_residual_risk_ring_margin),
             "lane_segfirst_center_offset_aux_weight": float(self.lane_segfirst_center_offset_aux_weight),
+            "lane_segfirst_anchor_offset_aux_weight": float(self.lane_segfirst_anchor_offset_aux_weight),
             "lane_segfirst_row_link_aux_weight": float(self.lane_segfirst_row_link_aux_weight),
             "lane_segfirst_task_conflict_negative_mode": self.lane_segfirst_task_conflict_negative_mode,
             "lane_segfirst_task_conflict_negative_weight": float(self.lane_segfirst_task_conflict_negative_weight),
@@ -3883,6 +3915,7 @@ class PV26MultiTaskLoss(nn.Module):
                 residual_risk_ring_weight=self.lane_segfirst_residual_risk_ring_weight,
                 residual_risk_ring_margin=self.lane_segfirst_residual_risk_ring_margin,
                 center_offset_aux_weight=self.lane_segfirst_center_offset_aux_weight,
+                anchor_offset_aux_weight=self.lane_segfirst_anchor_offset_aux_weight,
                 row_link_aux_weight=self.lane_segfirst_row_link_aux_weight,
                 task_conflict_negative_mode=self.lane_segfirst_task_conflict_negative_mode,
                 task_conflict_negative_weight=self.lane_segfirst_task_conflict_negative_weight,

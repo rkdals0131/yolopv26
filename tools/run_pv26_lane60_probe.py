@@ -2870,6 +2870,38 @@ EXPERIMENTS["lane_row_link_offset_field"] = {
 }
 
 
+EXPERIMENTS["lane_anchor_vote_instance_grouping"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "freeze_policy": "lane_anchor_offset_only",
+    "trunk_lr": 0.0,
+    "head_lr": 5.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 2.25,
+        "stop_line": 0.0,
+        "crosswalk": 0.0,
+    },
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "lane",
+        "task_positive_fraction": 1.0,
+        "lane_segfirst_track_mode": "row_scan_anchor_vote",
+        "lane_segfirst_anchor_offset_aux_weight": 1.0,
+        "lane_segfirst_loss_weights": {
+            "centerline_bce": 0.0,
+            "centerline_dice": 0.0,
+            "support_bce": 0.0,
+            "tangent": 0.0,
+            "color": 0.0,
+            "type": 0.0,
+        },
+        "stop_line_projection_comp_enabled": True,
+        "crosswalk_polygon_mode": "hull",
+    },
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(

@@ -36,6 +36,7 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(tuple(outputs["tl_attr"].shape), (2, 9975, 4))
         self.assertEqual(tuple(outputs["lane"].shape), (2, LANE_QUERY_COUNT, LANE_VECTOR_DIM))
         self.assertEqual(tuple(outputs["lane_seg_instance_embedding"].shape), (2, 2, 152, 200))
+        self.assertEqual(tuple(outputs["lane_seg_anchor_offset"].shape), (2, 1, 152, 200))
         self.assertEqual(tuple(outputs["lane_seg_row_link_delta"].shape), (2, 1, 152, 200))
         self.assertEqual(tuple(outputs["stop_line"].shape), (2, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM))
         self.assertEqual(tuple(outputs["crosswalk"].shape), (2, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM))

@@ -124,6 +124,8 @@ def _with_zero_segfirst_targets(encoded: dict) -> dict:
             "lane_seg_support": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "lane_seg_center_offset": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
             "lane_seg_center_offset_valid": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_anchor_offset": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
+            "lane_seg_anchor_offset_valid": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
             "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), dtype=torch.float32),
             "lane_seg_instance_id": torch.zeros((batch_size, h, w), dtype=torch.long),
             "lane_seg_instance_ignore": torch.zeros((batch_size, 1, h, w), dtype=torch.float32),
@@ -922,6 +924,49 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(losses["lane"]))
         self.assertAlmostEqual(criterion.export_config()["lane_segfirst_center_offset_aux_weight"], 1.0)
         self.assertIsNotNone(predictions["lane_seg_center_offset"].grad)
+
+    def test_lane_anchor_offset_aux_loss_backprops_when_enabled(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        encoded["roadmark_v2"]["lane_seg_anchor_offset_valid"][:, :, 20, 20] = 1.0
+        encoded["roadmark_v2"]["lane_seg_anchor_offset"][:, :, 20, 20] = 12.0
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "lane_seg_centerline_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_support_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_anchor_offset": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "lane_seg_color_logits": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), requires_grad=True),
+                "lane_seg_type_logits": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), requires_grad=True),
+                "stop_line_mask_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_center_offset": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_angle": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "stop_line_half_length": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "stop_line_feature": torch.zeros((batch_size, 4, h, w), requires_grad=True),
+                "crosswalk_mask_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "crosswalk_boundary_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "crosswalk_center_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "crosswalk_feature": torch.zeros((batch_size, 4, h, w), requires_grad=True),
+            }
+        )
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            loss_weights={"det": 0.0, "tl_attr": 0.0, "lane": 1.0, "stop_line": 0.0, "crosswalk": 0.0},
+            task_mode="roadmark_joint",
+            lane_segfirst_anchor_offset_aux_weight=1.0,
+        )
+        losses = criterion(predictions, encoded)
+        losses["total"].backward()
+
+        self.assertTrue(torch.isfinite(losses["lane"]))
+        self.assertAlmostEqual(criterion.export_config()["lane_segfirst_anchor_offset_aux_weight"], 1.0)
+        self.assertIsNotNone(predictions["lane_seg_anchor_offset"].grad)
 
     def test_lane_instance_embedding_aux_loss_backprops_when_enabled(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss

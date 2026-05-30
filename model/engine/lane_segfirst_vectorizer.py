@@ -23,6 +23,7 @@ class LaneSegFirstTargetConfig:
     support_width: int = 9
     residual_risk_ring_width: int = 17
     tangent_width: int = 5
+    anchor_offset_max_delta_px: float = 200.0
     row_link_max_delta_px: float = 8.0
     stopline_ignore_width: int = 11
     crosswalk_boundary_width: int = 3
@@ -43,6 +44,7 @@ class LaneSegFirstVectorizerConfig:
     row_stride: int = 2
     max_row_gap: int = 12
     max_link_dx: float = 8.0
+    anchor_vote_max_anchor_gap_px: float = 16.0
     max_turn_degrees: float = 0.0
     seed_threshold: float = 0.50
     seed_trace_max_seeds: int | None = 24
@@ -264,6 +266,45 @@ def _render_row_link_targets(
     return row_link_delta, row_link_valid
 
 
+def _render_anchor_offset_targets(
+    lane_rows: list[dict[str, Any]],
+    valid_mask: torch.BoolTensor | list[bool] | tuple[bool, ...],
+    *,
+    output_hw: tuple[int, int],
+    max_delta_px: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    h, w = int(output_hw[0]), int(output_hw[1])
+    anchor_offset = np.zeros((1, h, w), dtype=np.float32)
+    anchor_valid = np.zeros((1, h, w), dtype=np.float32)
+    anchor_written = np.zeros((h, w), dtype=bool)
+    max_delta = max(0.0, float(max_delta_px))
+    for lane_index, row in enumerate(lane_rows):
+        if not _valid_mask_value(valid_mask, lane_index):
+            continue
+        points = _scale_points(
+            _visible_lane_points(row),
+            source_hw=NETWORK_HW,
+            target_hw=output_hw,
+        )
+        lookup = _lane_row_x_lookup(points, output_hw=output_hw)
+        if len(lookup) < 2:
+            continue
+        bottom_row = max(lookup)
+        bottom_x = float(lookup[bottom_row])
+        for row_index, x_value in lookup.items():
+            col_index = int(np.clip(round(float(x_value)), 0, w - 1))
+            offset = bottom_x - float(x_value)
+            if max_delta > 0.0:
+                offset = float(np.clip(offset, -max_delta, max_delta))
+            if anchor_written[row_index, col_index] and abs(float(anchor_offset[0, row_index, col_index]) - offset) > 2.0:
+                anchor_valid[0, row_index, col_index] = 0.0
+                continue
+            anchor_offset[0, row_index, col_index] = offset
+            anchor_valid[0, row_index, col_index] = 1.0
+            anchor_written[row_index, col_index] = True
+    return anchor_offset, anchor_valid
+
+
 def _binary_polyline_mask(
     rows: list[dict[str, Any]],
     valid_mask: torch.BoolTensor | list[bool] | tuple[bool, ...],
@@ -380,6 +421,15 @@ def render_lane_segfirst_targets(
         np.zeros((1, h, w), dtype=np.float32),
         np.zeros((1, h, w), dtype=np.float32),
     )
+    anchor_offset, anchor_offset_valid = _render_anchor_offset_targets(
+        lane_rows,
+        lane_valid_mask,
+        output_hw=cfg.output_hw,
+        max_delta_px=cfg.anchor_offset_max_delta_px,
+    ) if source_enabled else (
+        np.zeros((1, h, w), dtype=np.float32),
+        np.zeros((1, h, w), dtype=np.float32),
+    )
 
     color_den = np.maximum(color_map.sum(axis=0, keepdims=True), 1.0)
     color_map = color_map / color_den
@@ -421,6 +471,8 @@ def render_lane_segfirst_targets(
         "residual_risk_core": torch.from_numpy(residual_risk_core.astype(np.float32)).unsqueeze(0),
         "residual_risk_ring_negative": torch.from_numpy(residual_risk_ring_negative).unsqueeze(0),
         "tangent_axis": torch.from_numpy(tangent_axis.astype(np.float32)),
+        "anchor_offset": torch.from_numpy(anchor_offset.astype(np.float32)),
+        "anchor_offset_valid": torch.from_numpy(anchor_offset_valid.astype(np.float32)),
         "row_link_delta": torch.from_numpy(row_link_delta.astype(np.float32)),
         "row_link_valid": torch.from_numpy(row_link_valid.astype(np.float32)),
         "instance_id": torch.from_numpy(instance_id),
@@ -608,6 +660,18 @@ def _row_link_at(row_link_delta: np.ndarray, *, row: int, col: float) -> float:
     return value if np.isfinite(value) else 0.0
 
 
+def _anchor_vote_at(anchor_offset: np.ndarray, *, row: int, col: float) -> float:
+    if anchor_offset.ndim != 2:
+        return float(col)
+    h, w = int(anchor_offset.shape[0]), int(anchor_offset.shape[1])
+    row_index = min(max(int(row), 0), h - 1)
+    col_index = min(max(int(round(float(col))), 0), w - 1)
+    value = float(anchor_offset[row_index, col_index])
+    if not np.isfinite(value):
+        value = 0.0
+    return float(col) + value
+
+
 def _component_to_polylines_row_link(
     component_mask: np.ndarray,
     row_link_delta: np.ndarray,
@@ -659,6 +723,67 @@ def _component_to_polylines_row_link(
                 tracks[best_track].append([float(x), float(y)])
                 last_y_by_track[best_track] = int(y)
                 last_x_by_track[best_track] = float(x)
+                assigned_tracks.add(best_track)
+    stride = max(1, int(row_stride))
+    downsampled = [track[::stride] if len(track) > stride else track for track in tracks]
+    return [track for track in downsampled if len(track) >= 2]
+
+
+def _component_to_polylines_anchor_vote(
+    component_mask: np.ndarray,
+    anchor_offset: np.ndarray,
+    *,
+    row_stride: int,
+    max_row_gap: int,
+    max_link_dx: float,
+    max_anchor_gap: float,
+) -> list[list[list[float]]]:
+    ys, _ = np.nonzero(component_mask)
+    if ys.size == 0:
+        return []
+    tracks: list[list[list[float]]] = []
+    last_y_by_track: list[int] = []
+    last_x_by_track: list[float] = []
+    anchor_by_track: list[float] = []
+
+    for y in sorted(np.unique(ys).tolist(), reverse=True):
+        clusters = _row_clusters(component_mask[int(y)])
+        if not clusters:
+            continue
+        assigned_tracks: set[int] = set()
+        for x in sorted(clusters):
+            anchor_x = _anchor_vote_at(anchor_offset, row=int(y), col=float(x))
+            best_track: int | None = None
+            best_cost = float("inf")
+            for track_index, (last_y, last_x, track_anchor) in enumerate(
+                zip(last_y_by_track, last_x_by_track, anchor_by_track)
+            ):
+                if track_index in assigned_tracks:
+                    continue
+                y_gap = int(last_y) - int(y)
+                if y_gap < 0 or y_gap > int(max_row_gap):
+                    continue
+                dx = abs(float(x) - float(last_x))
+                if dx > float(max_link_dx):
+                    continue
+                anchor_gap = abs(float(anchor_x) - float(track_anchor))
+                if anchor_gap > float(max_anchor_gap):
+                    continue
+                cost = 0.70 * anchor_gap + 0.20 * dx + 0.10 * float(y_gap)
+                if cost < best_cost:
+                    best_track = track_index
+                    best_cost = cost
+            if best_track is None:
+                tracks.append([[float(x), float(y)]])
+                last_y_by_track.append(int(y))
+                last_x_by_track.append(float(x))
+                anchor_by_track.append(float(anchor_x))
+                assigned_tracks.add(len(tracks) - 1)
+            else:
+                tracks[best_track].append([float(x), float(y)])
+                last_y_by_track[best_track] = int(y)
+                last_x_by_track[best_track] = float(x)
+                anchor_by_track[best_track] = 0.80 * float(anchor_by_track[best_track]) + 0.20 * float(anchor_x)
                 assigned_tracks.add(best_track)
     stride = max(1, int(row_stride))
     downsampled = [track[::stride] if len(track) > stride else track for track in tracks]
@@ -977,6 +1102,7 @@ def vectorize_lane_segfirst_maps(
     color_map = _as_numpy_chw(maps.get("color_map", np.zeros((len(LANE_CLASSES), *binary.shape), dtype=np.float32)), channels=len(LANE_CLASSES))
     type_map = _as_numpy_chw(maps.get("lane_type_map", np.zeros((len(LANE_TYPES), *binary.shape), dtype=np.float32)), channels=len(LANE_TYPES))
     tangent_axis = _as_numpy_chw(maps.get("tangent_axis", np.zeros((2, *binary.shape), dtype=np.float32)), channels=2)
+    anchor_offset = _as_numpy_channel(maps.get("anchor_offset", np.zeros_like(centerline, dtype=np.float32)))
     row_link_delta = _as_numpy_channel(maps.get("row_link_delta", np.zeros_like(centerline, dtype=np.float32)))
     center_offset = None
     if "center_offset" in maps:
@@ -987,6 +1113,7 @@ def vectorize_lane_segfirst_maps(
     predictions: list[dict[str, Any]] = []
     track_mode = str(cfg.track_mode).strip().lower()
     row_tangent_modes = {"row_scan_tangent", "rowscan_tangent", "row_tangent", "tangent_row_scan"}
+    row_anchor_vote_modes = {"row_scan_anchor_vote", "rowscan_anchor_vote", "anchor_vote", "anchor_vote_row_scan"}
     row_link_modes = {"row_scan_row_link", "rowscan_row_link", "row_link", "link_row_scan"}
     seed_trace_only_modes = {"seed_trace", "seeded_trace"}
     bidirectional_seed_trace_only_modes = {"bidirectional_seed_trace", "bidir_seed_trace"}
@@ -1119,6 +1246,7 @@ def vectorize_lane_segfirst_maps(
         "rowscan",
         "row",
         *row_tangent_modes,
+        *row_anchor_vote_modes,
         *row_link_modes,
         *row_seed_trace_modes,
         *row_bidirectional_seed_trace_modes,
@@ -1142,6 +1270,15 @@ def vectorize_lane_segfirst_maps(
                 row_stride=max(1, int(cfg.row_stride)),
                 max_row_gap=max(1, int(cfg.max_row_gap)),
                 max_link_dx=float(cfg.max_link_dx),
+            )
+        elif track_mode in row_anchor_vote_modes:
+            map_polylines = _component_to_polylines_anchor_vote(
+                binary,
+                anchor_offset,
+                row_stride=max(1, int(cfg.row_stride)),
+                max_row_gap=max(1, int(cfg.max_row_gap)),
+                max_link_dx=float(cfg.max_link_dx),
+                max_anchor_gap=float(cfg.anchor_vote_max_anchor_gap_px),
             )
         else:
             map_polylines = _component_to_polylines(
@@ -1339,7 +1476,8 @@ def vectorize_lane_segfirst_maps(
         return predictions
     if track_mode != "component":
         raise ValueError(
-            "track_mode must be one of: component, row_scan, row_scan_tangent, row_scan_row_link, "
+            "track_mode must be one of: component, row_scan, row_scan_tangent, "
+            "row_scan_anchor_vote, row_scan_row_link, "
             "seed_trace, bidirectional_seed_trace, row_scan_seed_trace, "
             "row_scan_tangent_seed_trace, row_scan_bidirectional_seed_trace, "
             "row_scan_tangent_bidirectional_seed_trace"
@@ -1440,6 +1578,7 @@ def lane_segfirst_prediction_maps(
     support_logits = predictions["lane_seg_support_logits"][batch_index].detach().cpu()
     tangent_axis = predictions["lane_seg_tangent_axis"][batch_index].detach().cpu()
     center_offset = predictions.get("lane_seg_center_offset")
+    anchor_offset = predictions.get("lane_seg_anchor_offset")
     row_link_delta = predictions.get("lane_seg_row_link_delta")
     color_logits = predictions["lane_seg_color_logits"][batch_index].detach().cpu()
     type_logits = predictions["lane_seg_type_logits"][batch_index].detach().cpu()
@@ -1458,6 +1597,7 @@ def lane_segfirst_prediction_maps(
         "centerline_soft": centerline_prob,
         "support": support_prob,
         "center_offset": center_offset[batch_index].detach().cpu() if isinstance(center_offset, torch.Tensor) else torch.zeros((2, h, w), dtype=torch.float32),
+        "anchor_offset": anchor_offset[batch_index].detach().cpu() if isinstance(anchor_offset, torch.Tensor) else torch.zeros((1, h, w), dtype=torch.float32),
         "row_link_delta": row_link_delta[batch_index].detach().cpu() if isinstance(row_link_delta, torch.Tensor) else torch.zeros((1, h, w), dtype=torch.float32),
         "seed_map": seed_prob,
         "tangent_axis": tangent_axis,
