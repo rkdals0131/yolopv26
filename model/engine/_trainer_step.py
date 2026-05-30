@@ -53,6 +53,57 @@ def _source_counts(encoded: dict[str, Any], *, od_classes: tuple[str, ...]) -> d
     }
 
 
+_UNLABELED_NEGATIVE_TASKS_BY_MODE = {
+    "none": (),
+    "det_source_stop_line": ("stop_line",),
+    "det_source_stop_cross": ("stop_line", "crosswalk"),
+    "det_source_lane_family": ("lane", "stop_line", "crosswalk"),
+}
+
+
+def _apply_lane_family_unlabeled_negative_mode(encoded: dict[str, Any], *, mode: str) -> dict[str, int | str]:
+    normalized_mode = str(mode or "none").strip().lower()
+    try:
+        task_names = _UNLABELED_NEGATIVE_TASKS_BY_MODE[normalized_mode]
+    except KeyError as exc:
+        raise ValueError(f"unsupported lane_family_unlabeled_negative_mode: {normalized_mode}") from exc
+    summary: dict[str, int | str] = {
+        "mode": normalized_mode,
+        "eligible_samples": 0,
+        "lane_source_added": 0,
+        "stop_line_source_added": 0,
+        "crosswalk_source_added": 0,
+    }
+    if not task_names:
+        return summary
+    mask = encoded.get("mask")
+    if not isinstance(mask, dict):
+        return summary
+    required_keys = ("det_source", "lane_source", "stop_line_source", "crosswalk_source")
+    if not all(key in mask for key in required_keys):
+        return summary
+    det_source = mask["det_source"].to(dtype=torch.bool)
+    lane_source = mask["lane_source"].to(device=det_source.device, dtype=torch.bool)
+    stop_source = mask["stop_line_source"].to(device=det_source.device, dtype=torch.bool)
+    cross_source = mask["crosswalk_source"].to(device=det_source.device, dtype=torch.bool)
+    lane_family_source = lane_source | stop_source | cross_source
+    eligible = det_source & (~lane_family_source)
+    eligible_count = _true_count(eligible)
+    summary["eligible_samples"] = eligible_count
+    if eligible_count <= 0:
+        return summary
+    for task_name in task_names:
+        key = f"{task_name}_source"
+        before = mask[key].to(dtype=torch.bool)
+        after = before.clone()
+        after = after.to(device=eligible.device)
+        added = eligible & (~after)
+        after[eligible] = True
+        mask[key] = after
+        summary[f"{task_name}_source_added"] = _true_count(added)
+    return summary
+
+
 def _det_supervision_summary(encoded: dict[str, Any], *, od_classes: tuple[str, ...]) -> dict[str, Any]:
     det_source = encoded["mask"]["det_source"].to(dtype=torch.bool)
     allow_objectness = encoded["mask"].get("det_allow_objectness_negatives")
@@ -173,6 +224,10 @@ def run_train_step(
         apply_freeze_policy_train_modes()
     load_started_at = time.perf_counter()
     encoded = trainer.prepare_batch(batch)
+    unlabeled_negative_summary = _apply_lane_family_unlabeled_negative_mode(
+        encoded,
+        mode=str(getattr(trainer.criterion, "lane_family_unlabeled_negative_mode", "none")),
+    )
     if bool(getattr(trainer.criterion, "distill_enabled", False)):
         encoded = trainer.attach_teacher_cache(encoded, phase="train")
     sync_timing_device(trainer.device, profile_device_sync)
@@ -337,6 +392,7 @@ def run_train_step(
         "multitask_conflict": multitask_conflict_snapshot,
         "timing": timing,
         "source_counts": _source_counts(encoded, od_classes=od_classes),
+        "lane_family_unlabeled_negative": unlabeled_negative_summary,
         "det_supervision": _det_supervision_summary(encoded, od_classes=od_classes),
     }
     trainer.train_step_count = int(getattr(trainer, "train_step_count", len(trainer.history))) + 1

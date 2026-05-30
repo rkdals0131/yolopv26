@@ -23,6 +23,7 @@ from tools.run_pv26_train import (
     _build_phase_train_loaders,
     _build_arg_parser,
     _build_postprocess_config,
+    _dataset_for_phase,
     _phase_manifest_extra,
     _configure_torch_multiprocessing,
     _phase_entry_is_completed,
@@ -521,6 +522,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertFalse(scenario.train_defaults.amp)
         self.assertEqual(scenario.train_defaults.task_positive_task, "multi:lane,stopline,crosswalk")
         self.assertAlmostEqual(scenario.train_defaults.task_positive_fraction, 0.75)
+        self.assertEqual(scenario.train_defaults.lane_family_unlabeled_negative_mode, "none")
         self.assertEqual(scenario.train_defaults.backbone_variant, "s")
         self.assertEqual(scenario.train_defaults.lane_head_mode, "seg_first")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.25)
@@ -550,6 +552,49 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             "stage_3_end_to_end_finetune",
             "stage_4_lane_family_finetune",
         ))
+
+    def test_lane_family_phase_keeps_det_records_only_for_unlabeled_negative_train_view(self) -> None:
+        class FakeDataset:
+            def __init__(self) -> None:
+                self.records = [
+                    SimpleNamespace(dataset_key="aihub_lane_seoul"),
+                    SimpleNamespace(dataset_key="pv26_exhaustive_aihub_traffic_seoul"),
+                    SimpleNamespace(dataset_key="pv26_exhaustive_aihub_obstacle_seoul"),
+                ]
+
+            def __getitem__(self, index: int) -> object:
+                return self.records[index]
+
+        phase = PhaseConfig(
+            name="lane_family",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=1,
+            max_epochs=1,
+            patience=1,
+            freeze_policy="lane_family_heads_only",
+        )
+        dataset = FakeDataset()
+        train_config = TrainDefaultsConfig(lane_family_unlabeled_negative_mode="det_source_stop_line")
+
+        train_view = _dataset_for_phase(
+            dataset,
+            phase=phase,
+            train_config=train_config,
+            include_unlabeled_negatives=True,
+        )
+        val_view = _dataset_for_phase(
+            dataset,
+            phase=phase,
+            train_config=train_config,
+            include_unlabeled_negatives=False,
+        )
+
+        self.assertEqual([record.dataset_key for record in train_view.records], [
+            "aihub_lane_seoul",
+            "pv26_exhaustive_aihub_traffic_seoul",
+            "pv26_exhaustive_aihub_obstacle_seoul",
+        ])
+        self.assertEqual([record.dataset_key for record in val_view.records], ["aihub_lane_seoul"])
 
     def test_default_preset_uses_exhaustive_dataset_and_stage_order(self) -> None:
         with patch("tools.run_pv26_train.load_user_paths_config", return_value={}):

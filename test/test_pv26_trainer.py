@@ -302,6 +302,26 @@ class _FakeSummaryWriter:
 
 
 class PV26TrainerTests(unittest.TestCase):
+    def test_lane_family_unlabeled_negative_mode_marks_det_only_stopline_source(self) -> None:
+        from model.engine._trainer_step import _apply_lane_family_unlabeled_negative_mode
+
+        encoded = {
+            "mask": {
+                "det_source": torch.tensor([True, True, False, True], dtype=torch.bool),
+                "lane_source": torch.tensor([False, True, False, False], dtype=torch.bool),
+                "stop_line_source": torch.tensor([False, False, False, False], dtype=torch.bool),
+                "crosswalk_source": torch.tensor([False, False, False, True], dtype=torch.bool),
+            }
+        }
+
+        summary = _apply_lane_family_unlabeled_negative_mode(encoded, mode="det_source_stop_line")
+
+        self.assertEqual(summary["mode"], "det_source_stop_line")
+        self.assertEqual(summary["eligible_samples"], 1)
+        self.assertEqual(summary["stop_line_source_added"], 1)
+        self.assertEqual(encoded["mask"]["stop_line_source"].tolist(), [True, False, False, False])
+        self.assertEqual(encoded["mask"]["lane_source"].tolist(), [False, True, False, False])
+
     def test_trainer_io_reuses_common_helper_aliases(self) -> None:
         self.assertIs(_trainer_io._now_iso, common_now_iso)
         self.assertIs(_trainer_io._write_json, common_write_json)

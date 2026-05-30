@@ -2549,6 +2549,7 @@ class PV26MultiTaskLoss(nn.Module):
         stopline_segment_verifier_target_mode: str = "matched_objectness",
         stopline_segment_verifier_quality_tau_px: float = 24.0,
         stopline_empty_sample_mode: str = "full",
+        lane_family_unlabeled_negative_mode: str = "none",
         stopline_task_conflict_negative_mode: str = "none",
         stopline_task_conflict_negative_weight: float = 0.0,
         stopline_task_conflict_negative_margin: float = 0.15,
@@ -2653,6 +2654,17 @@ class PV26MultiTaskLoss(nn.Module):
         self.stopline_empty_sample_mode = str(stopline_empty_sample_mode).strip().lower()
         if self.stopline_empty_sample_mode not in {"full", "positive_only"}:
             raise ValueError(f"unsupported stopline_empty_sample_mode: {self.stopline_empty_sample_mode}")
+        self.lane_family_unlabeled_negative_mode = str(lane_family_unlabeled_negative_mode).strip().lower()
+        if self.lane_family_unlabeled_negative_mode not in {
+            "none",
+            "det_source_stop_line",
+            "det_source_stop_cross",
+            "det_source_lane_family",
+        }:
+            raise ValueError(
+                "unsupported lane_family_unlabeled_negative_mode: "
+                f"{self.lane_family_unlabeled_negative_mode}"
+            )
         self.stopline_task_conflict_negative_mode = str(stopline_task_conflict_negative_mode)
         self.stopline_task_conflict_negative_weight = float(stopline_task_conflict_negative_weight)
         self.stopline_task_conflict_negative_margin = float(stopline_task_conflict_negative_margin)
@@ -2836,6 +2848,7 @@ class PV26MultiTaskLoss(nn.Module):
             "stopline_segment_verifier_target_mode": self.stopline_segment_verifier_target_mode,
             "stopline_segment_verifier_quality_tau_px": float(self.stopline_segment_verifier_quality_tau_px),
             "stopline_empty_sample_mode": self.stopline_empty_sample_mode,
+            "lane_family_unlabeled_negative_mode": self.lane_family_unlabeled_negative_mode,
             "stopline_task_conflict_negative_mode": self.stopline_task_conflict_negative_mode,
             "stopline_task_conflict_negative_weight": float(self.stopline_task_conflict_negative_weight),
             "stopline_task_conflict_negative_margin": float(self.stopline_task_conflict_negative_margin),

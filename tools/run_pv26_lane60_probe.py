@@ -2566,6 +2566,23 @@ EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
 }
 
 
+EXPERIMENTS["stopline_det_negative_feeding"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": "multi:lane,stopline,crosswalk",
+        "task_positive_fraction": 0.75,
+        "sampler_ratios": {
+            "bdd100k": 0.05,
+            "aihub_traffic": 0.10,
+            "aihub_lane": 0.75,
+            "aihub_obstacle": 0.10,
+        },
+        "lane_family_unlabeled_negative_mode": "det_source_stop_line",
+    },
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(

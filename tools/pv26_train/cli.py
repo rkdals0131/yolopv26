@@ -617,7 +617,13 @@ def _is_lane_family_only_phase(phase: PhaseConfig | None) -> bool:
     return str(phase.stage) == "stage_4_lane_family_finetune"
 
 
-def _dataset_for_phase(dataset: PV26CanonicalDataset, *, phase: PhaseConfig | None) -> PV26CanonicalDataset:
+def _dataset_for_phase(
+    dataset: PV26CanonicalDataset,
+    *,
+    phase: PhaseConfig | None,
+    train_config: TrainDefaultsConfig | None = None,
+    include_unlabeled_negatives: bool = False,
+) -> PV26CanonicalDataset:
     if not _is_lane_family_only_phase(phase):
         return dataset
     allowed_dataset_keys = {
@@ -625,6 +631,18 @@ def _dataset_for_phase(dataset: PV26CanonicalDataset, *, phase: PhaseConfig | No
         for dataset_key, source_mask in SOURCE_MASK_BY_DATASET.items()
         if any(bool(source_mask.get(task_name, False)) for task_name in ("lane", "stop_line", "crosswalk"))
     }
+    negative_mode = (
+        str(getattr(train_config, "lane_family_unlabeled_negative_mode", "none") or "none").strip().lower()
+        if train_config is not None
+        else "none"
+    )
+    if include_unlabeled_negatives and negative_mode.startswith("det_source_") and negative_mode != "none":
+        allowed_dataset_keys.update(
+            dataset_key
+            for dataset_key, source_mask in SOURCE_MASK_BY_DATASET.items()
+            if bool(source_mask.get("det", False))
+            and not any(bool(source_mask.get(task_name, False)) for task_name in ("lane", "stop_line", "crosswalk"))
+        )
     selected_indices = [
         index
         for index, record in enumerate(dataset.records)
@@ -643,11 +661,22 @@ def _build_phase_train_loaders(
     train_config: TrainDefaultsConfig,
     phase: PhaseConfig | None = None,
 ) -> tuple[Any, Any]:
-    loader_dataset = _dataset_for_phase(dataset, phase=phase)
+    train_dataset = _dataset_for_phase(
+        dataset,
+        phase=phase,
+        train_config=train_config,
+        include_unlabeled_negatives=True,
+    )
+    val_dataset = _dataset_for_phase(
+        dataset,
+        phase=phase,
+        train_config=train_config,
+        include_unlabeled_negatives=False,
+    )
     train_batches = train_config_api.resolve_train_batch_limit(train_config.train_batches)
     val_batches = train_config_api.resolve_val_batch_limit(train_config.val_batches)
     train_loader = build_pv26_train_dataloader(
-        loader_dataset,
+        train_dataset,
         batch_size=train_config.batch_size,
         num_batches=train_batches,
         ratios=train_config.sampler_ratios,
@@ -664,7 +693,7 @@ def _build_phase_train_loaders(
     val_loader = None
     if val_batches != 0:
         val_loader = build_pv26_eval_dataloader(
-            loader_dataset,
+            val_dataset,
             batch_size=train_config.batch_size,
             num_batches=val_batches,
             split="val",
@@ -740,6 +769,7 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         stopline_segment_verifier_target_mode=train_config.stopline_segment_verifier_target_mode,
         stopline_segment_verifier_quality_tau_px=train_config.stopline_segment_verifier_quality_tau_px,
         stopline_empty_sample_mode=train_config.stopline_empty_sample_mode,
+        lane_family_unlabeled_negative_mode=train_config.lane_family_unlabeled_negative_mode,
         stopline_task_conflict_negative_mode=train_config.stopline_task_conflict_negative_mode,
         stopline_task_conflict_negative_weight=train_config.stopline_task_conflict_negative_weight,
         stopline_task_conflict_negative_margin=train_config.stopline_task_conflict_negative_margin,

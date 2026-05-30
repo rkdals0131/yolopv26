@@ -17595,3 +17595,93 @@ Verification:
 - Broader-val512 and larger training were skipped because the exact held-out/all-split gate failed.
 - Do not repeat this as CNN depth/channel, raw/gradient patch size, numeric feature set, epoch/LR, top-k, threshold-grid, or same train-threshold replay sweep.
 - Reopen raw-image verifier work only with a materially different candidate-generation or verification contract that first improves fixed exact TP/FP/FN.
+
+## 325. Stop-line det-source hard-negative feeding: larger train data exposure does not create stop-line TP
+
+맥락:
+
+- The user explicitly asked that the next attempt actually train and evaluate, and also try a broader dataset range without copying the dataset.
+- The stage-4 lane-family probe normally narrows the dataset view to lane-family source records. That makes sampler ratios for BDD/traffic/obstacle ineffective in phase 4.
+- This branch tested a data-feeding/FP-control premise rather than another postprocess sweep: include det-source-only BDD/traffic/obstacle records in the train loader and make only those train samples stop-line source-empty hard negatives.
+- Validation remained lane-family-only so fixed val4/exact/broader metrics are not diluted by det-source records without lane-family labels.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/stopline-det-negative-feeding`.
+- Added train default `lane_family_unlabeled_negative_mode`.
+- New mode used here: `det_source_stop_line`.
+- `tools/pv26_train/cli.py` now lets lane-family phase training include det-source-only records only when this opt-in mode is enabled; validation still uses the previous lane-family-only view.
+- `model/engine/_trainer_step.py` applies the source-mask override only inside `run_train_step()`, after encoding and before loss/teacher cache:
+  - eligible sample: `det_source=True` and no lane/stop-line/crosswalk source;
+  - only `stop_line_source` is set true for this experiment;
+  - lane/crosswalk source masks stay unchanged.
+- `tools/run_pv26_lane60_probe.py` experiment: `stopline_det_negative_feeding`.
+- Sampler config:
+  - `task_positive_task="multi:lane,stopline,crosswalk"`;
+  - `task_positive_fraction=0.75`;
+  - sampler ratios `bdd100k=0.05`, `aihub_traffic=0.10`, `aihub_lane=0.75`, `aihub_obstacle=0.10`.
+
+Training:
+
+- Real CUDA heads-only smoke train:
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - seed checkpoint `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- The existing full canonical dataset root was reused in place.
+- Dataset index:
+  - `429350` total records;
+  - train split `326709`;
+  - val split `82641`;
+  - dataset keys: `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Logged train source counts confirmed the intended exposure on sampled batches:
+  - `det_source_samples=1`;
+  - `lane_source_samples=3`;
+  - `crosswalk_source_samples=3`;
+  - `stop_line_source_samples=4`.
+- Skipped steps: `0`.
+
+Fixed val4 evaluation:
+
+- Evaluation command used `tools/evaluate_pv26_lane60_checkpoint.py`.
+- Checkpoint: epoch-1 best from the smoke run.
+- Validation epoch: `2`.
+- Output: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_det_negative_feeding_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_113604/analysis_exports/fixed_val4_epoch2_best/metrics.csv`.
+
+| Task | F1 | TP/FP/FN | Support |
+| --- | ---: | --- | ---: |
+| lane | `0.4885` | `32 / 13 / 54` | `86` |
+| stop_line | `0.0000` | `0 / 3 / 2` | `2` |
+| crosswalk | `0.5455` | `3 / 1 / 4` | `7` |
+
+Other fixed val4 metrics:
+
+- `phase_objective=0.6213089776341747`.
+- lane score `0.652536854203364`.
+- stop-line score `0.45`.
+- crosswalk score `0.6173536352830318`.
+
+Storage:
+
+- Negative checkpoints were pruned after fixed val4 evaluation.
+- Retained run size after cleanup is about `7.9M`.
+- The root `yolo26s.pt` cache is about `20M` and was left in place to avoid repeated downloads.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/_trainer_step.py model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_trainer.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_trainer.PV26TrainerTests.test_lane_family_unlabeled_negative_mode_marks_det_only_stopline_source test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_preserves_defaults_without_user_yaml test_run_pv26_train.RunPV26TrainScenarioTests.test_lane_family_phase_keeps_det_records_only_for_unlabeled_negative_train_view`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_det_negative_feeding|experiment"`.
+- `git diff --check`.
+- CUDA `stopline_det_negative_feeding` smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+판단:
+
+- This did what it was meant to test: larger canonical det-source data reached the train loop without copying the dataset, and validation stayed on the lane-family contract.
+- It is smoke-negative. Stop-line recovered zero TP, and lane regressed sharply versus the retained fixed reference (`40 / 11 / 46`, F1 `0.5839`).
+- Exact-val128, broader-val512, and larger training were skipped because the fixed val4 rejection gate failed.
+- Do not repeat this as sampler-ratio, positive-fraction, negative-mode scope, epoch-count, train-batch, or head-LR scaling.
+- Larger-data exposure alone is not enough; reopen only with a materially different label-quality, candidate-generation, or stop-line geometry signal that first moves fixed smoke TP/FP/FN without lane collapse.

@@ -134,6 +134,7 @@ class TrainDefaultsConfig:
     sampler_ratios: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SAMPLER_RATIOS))
     task_positive_task: str | None = "multi:lane,stopline,crosswalk"
     task_positive_fraction: float | None = 0.75
+    lane_family_unlabeled_negative_mode: str = "none"
     det_conf_threshold: float = 0.25
     det_iou_threshold: float = 0.70
     lane_obj_threshold: float = 0.45
@@ -814,6 +815,10 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         task_positive_fraction=_coerce_optional_float(
             data.get("task_positive_fraction", defaults.task_positive_fraction),
             field_name="train_defaults.task_positive_fraction",
+        ),
+        lane_family_unlabeled_negative_mode=_coerce_str(
+            data.get("lane_family_unlabeled_negative_mode", defaults.lane_family_unlabeled_negative_mode),
+            field_name="train_defaults.lane_family_unlabeled_negative_mode",
         ),
         det_conf_threshold=_coerce_float(
             data.get("det_conf_threshold", defaults.det_conf_threshold),
