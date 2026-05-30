@@ -18788,3 +18788,108 @@ Decision:
 - The stronger saved train384 verifier did not move TP/FP/FN under the same replacement contract.
 - Exact-val128 and broader-val512 were skipped because fixed val4 failed before broadening.
 - Do not repeat area-ROI dropped-candidate rescue as replace-nearest distance, max-replacement, or saved-verifier replay tuning. Reopen only with a materially stronger no-GT instance-quality/alignment signal that first improves fixed smoke TP/FP/FN.
+
+## 338. Lane repair hypothesis selector: deterministic repair bank has exact headroom but learned selection is negative
+
+Context:
+
+- Earlier lane repair branches closed single-mode translation, local snap, affine snap, component projection, row-profile projection, feature-ROI residual repair, and area-ROI replacement because they either moved geometry without moving TP/FP/FN or added FP faster than TP.
+- This slice tested a different repair contract: generate a fixed bank of deterministic no-GT repair hypotheses per decoded lane, then train a learned selector to pick only hypotheses that convert an unmatched/distant lane into a matched lane.
+- The branch is still a runtime replay/probe, not a new checkpoint architecture, but it trains a real selector from collected candidate examples and evaluates the actual lane TP/FP/FN after replace-only repairs.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/lane-repair-hypothesis-selector`.
+- Added `tools/probe_pv26_lane_repair_hypothesis_selector.py`.
+- Added `test/test_lane_repair_hypothesis_selector.py`.
+- Repair hypothesis bank:
+  - `translate_x`;
+  - `local_2d_snap`;
+  - `affine_2d_snap`;
+  - `component_row_project`;
+  - `row_profile_softargmax`.
+- Selector input combines:
+  - original lane dense-feature vector;
+  - repaired lane dense-feature vector;
+  - repaired-minus-original feature delta;
+  - repair geometry statistics;
+  - one-hot repair mode.
+- Exact run input dimension was `1092`.
+- Positive selector label:
+  - original decoded lane is outside the lane metric threshold;
+  - repaired lane maps to the same nearest GT lane;
+  - repaired distance is inside the lane metric threshold.
+- Runtime validation uses no GT; GT is used only for training labels and audit rows.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime lane variant:
+  - `flip_centerline_avg_lane_cross_comp050`.
+- Selector train slice:
+  - `64` train batches;
+  - `3630` training hypotheses;
+  - positives / negatives: `46 / 3584`;
+  - checkpoint/model weights were not saved.
+
+Fixed val4 smoke:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop F1 | Cross F1 | Val hypotheses | Selected / oracle-positive |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` | - | - |
+| hypothesis selector | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` | `255` | `4 / 0` |
+
+Fixed exact-val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop F1 | Cross F1 | Val hypotheses | Oracle-positive hypotheses | Selected / oracle-positive |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `0.5988` | - | - | - |
+| hypothesis selector | `0.5873` | `1199 / 494 / 1191` | `0.5333` | `0.5988` | `8465` | `60` | `31 / 1` |
+
+Exact oracle-positive hypothesis distribution:
+
+| Repair mode | Oracle-positive hypotheses |
+| --- | ---: |
+| `component_row_project` | `22` |
+| `affine_2d_snap` | `18` |
+| `local_2d_snap` | `17` |
+| `row_profile_softargmax` | `2` |
+| `translate_x` | `1` |
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_hypothesis_selector_train64_smoke_val4_20260530/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_repair_hypothesis_selector_train64_exact_val128_20260530/summary.json`.
+- Candidate/replay rows:
+  - `train_candidates.csv`;
+  - `val_candidates.csv`;
+  - `selector_replay_rows.csv`.
+
+Storage:
+
+- Retained smoke artifact size is about `392K`.
+- Retained exact artifact size is about `2.0M`.
+- No selector checkpoint was written.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_repair_hypothesis_selector.py test/test_lane_repair_hypothesis_selector.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_lane_repair_hypothesis_selector`.
+- CUDA train64/fixed-val4 selector training and runtime replay.
+- CUDA train64/fixed-exact-val128 selector training and runtime replay.
+
+Decision:
+
+- The deterministic repair bank has some exact candidate headroom (`60 / 8465` oracle-positive hypotheses), but the learned no-GT selector does not separate usable repairs.
+- Exact-val128 selected `31` hypotheses with only `1` oracle-positive and worsened lane TP/FP/FN by `-3 / +3 / +3`.
+- Broader-val512 was skipped because exact lost lane TP and added FP.
+- Do not repeat this as repair-mode subset, selector threshold, hidden-dim, epoch/LR, train-batch count, mean-move gate, or same deterministic repair-bank tuning.
+- Reopen lane repair only with a materially new no-GT alignment/instance-quality signal or a model-side instance emitter that first improves TP/FP/FN.
