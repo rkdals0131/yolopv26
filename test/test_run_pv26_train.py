@@ -148,6 +148,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             "train_aug_stopline_copy_paste_prob": 0.3,
                             "train_aug_stopline_copy_paste_margin_px": 12.0,
                             "train_aug_stopline_copy_paste_alpha": 0.75,
+                            "roadmark_architecture": "current_family",
                             "lane_head_mode": "row_native",
                             "det_conf_threshold": 0.33,
                             "lane_obj_threshold": 0.61,
@@ -376,6 +377,7 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_copy_paste_prob, 0.3)
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_copy_paste_margin_px, 12.0)
         self.assertAlmostEqual(scenario.train_defaults.train_aug_stopline_copy_paste_alpha, 0.75)
+        self.assertEqual(scenario.train_defaults.roadmark_architecture, "current_family")
         self.assertEqual(scenario.train_defaults.lane_head_mode, "row_native")
         self.assertAlmostEqual(scenario.train_defaults.det_conf_threshold, 0.33)
         self.assertAlmostEqual(scenario.train_defaults.lane_obj_threshold, 0.61)

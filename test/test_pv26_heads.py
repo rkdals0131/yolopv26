@@ -182,6 +182,31 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertTrue(torch.equal(outputs["lane"], torch.zeros_like(outputs["lane"])))
         self.assertTrue(torch.equal(outputs["crosswalk"], torch.zeros_like(outputs["crosswalk"])))
 
+    def test_heads_can_use_current_family_vector_decoder_architecture(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            roadmark_architecture="current_family",
+        )
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()
+
+        self.assertEqual(summary["roadmark_architecture"], "current_family")
+        self.assertEqual(summary["roadmark"]["roadmark_architecture"], "current_family")
+        self.assertEqual(summary["roadmark"]["feature_strides"], [8, 16, 32])
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
+        self.assertNotIn("lane_seg_centerline_logits", outputs)
+
     def test_heads_can_use_lane_only_segfirst_architecture(self) -> None:
         from model.net import PV26Heads
 

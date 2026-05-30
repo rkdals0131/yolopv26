@@ -451,6 +451,34 @@ class PV26LossRuntimeTests(unittest.TestCase):
 
         self.assertGreater(float(full_loss.detach().cpu()), float(positive_only_loss.detach().cpu()) + 1.0)
 
+    def test_roadmark_joint_accepts_vector_only_lane_family_outputs(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        batch_size = 2
+        predictions = {
+            "lane": torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32, requires_grad=True),
+            "stop_line": torch.zeros(
+                (batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM), dtype=torch.float32, requires_grad=True
+            ),
+            "crosswalk": torch.zeros(
+                (batch_size, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM), dtype=torch.float32, requires_grad=True
+            ),
+        }
+        encoded = _make_encoded_batch(batch_size=batch_size, q_det=2)
+        criterion = PV26MultiTaskLoss(
+            stage="stage_4_lane_family_finetune",
+            task_mode="roadmark_joint",
+            loss_weights={"det": 0.0, "tl_attr": 0.0},
+        )
+
+        loss = criterion(predictions, encoded)["total"]
+        loss.backward()
+
+        self.assertTrue(torch.isfinite(loss.detach()).item())
+        self.assertIsNotNone(predictions["lane"].grad)
+        self.assertIsNotNone(predictions["stop_line"].grad)
+        self.assertIsNotNone(predictions["crosswalk"].grad)
+
     def test_stopline_segment_set_aux_loss_backprops_when_enabled(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
         from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW

@@ -246,7 +246,13 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "roadmark_architecture": "current_family",
         }
 
-    def forward(self, features: list[torch.Tensor] | tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        features: list[torch.Tensor] | tuple[torch.Tensor, ...],
+        *,
+        encoded: dict[str, torch.Tensor] | None = None,
+    ) -> dict[str, torch.Tensor]:
+        _ = encoded
         if len(features) != 3:
             raise ValueError("CurrentFamilyRoadMarkHeads expects 3 feature maps from the trunk pyramid.")
         for feature, channel_count in zip(features, self.in_channels):

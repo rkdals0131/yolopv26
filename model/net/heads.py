@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from .roadmark_joint_native import ROADMARK_JOINT_NATIVE_NAME, PV26RoadMarkNativeJointHeads
+from .roadmark_current_family import CurrentFamilyRoadMarkHeads
 from .roadmark_v2_heads import (
     LANE_ONLY_ROW_CLASSIFIER_NAME,
     ROADMARK_V2_FEATURE_STRIDES,
@@ -27,6 +28,7 @@ CROSSWALK_VECTOR_DIM = 33
 FEATURE_STRIDES = ROADMARK_V2_FEATURE_STRIDES
 DETECT_FEATURE_STRIDES = (8, 16, 32)
 STOPLINE_ONLY_MASK_FIRST_NAME = "stopline_only_mask_first"
+CURRENT_FAMILY_NAME = "current_family"
 
 
 def _normalize_roadmark_architecture(value: str) -> str:
@@ -39,10 +41,13 @@ def _normalize_roadmark_architecture(value: str) -> str:
         return LANE_ONLY_ROW_CLASSIFIER_NAME
     if architecture in {"stopline_only", "stop_line_only", STOPLINE_ONLY_MASK_FIRST_NAME}:
         return STOPLINE_ONLY_MASK_FIRST_NAME
+    if architecture in {"current", CURRENT_FAMILY_NAME}:
+        return CURRENT_FAMILY_NAME
     raise ValueError(
         "roadmark_architecture must be one of: "
         f"{ROADMARK_JOINT_NATIVE_NAME}, {ROADMARK_V3_JOINT_NAME}, "
-        f"v3_stopline_isolated, {LANE_ONLY_ROW_CLASSIFIER_NAME}, {STOPLINE_ONLY_MASK_FIRST_NAME}"
+        f"v3_stopline_isolated, {LANE_ONLY_ROW_CLASSIFIER_NAME}, {STOPLINE_ONLY_MASK_FIRST_NAME}, "
+        f"{CURRENT_FAMILY_NAME}"
     )
 
 
@@ -106,10 +111,14 @@ class PV26Heads(nn.Module):
             roadmark_head_cls = PV26LaneOnlyHeads
         elif self.roadmark_architecture == STOPLINE_ONLY_MASK_FIRST_NAME:
             roadmark_head_cls = PV26StopLineOnlyHeads
+        elif self.roadmark_architecture == CURRENT_FAMILY_NAME:
+            roadmark_head_cls = CurrentFamilyRoadMarkHeads
         else:
             roadmark_head_cls = PV26RoadMarkNativeJointHeads
         if roadmark_head_cls is PV26StopLineOnlyHeads:
             self.roadmark_heads = roadmark_head_cls(self.in_channels, self.feature_strides)
+        elif roadmark_head_cls is CurrentFamilyRoadMarkHeads:
+            self.roadmark_heads = roadmark_head_cls(self.det_in_channels, self.det_feature_strides)
         elif roadmark_head_cls is PV26LaneOnlyHeads:
             self.roadmark_heads = roadmark_head_cls(
                 self.in_channels,
@@ -179,7 +188,8 @@ class PV26Heads(nn.Module):
             det_outputs.append(det_head(feature))
             tl_attr_outputs.append(tl_attr_head(feature))
 
-        roadmark_outputs = self.roadmark_heads(features, encoded=encoded)
+        roadmark_features = features[1:] if self.roadmark_architecture == CURRENT_FAMILY_NAME else features
+        roadmark_outputs = self.roadmark_heads(roadmark_features, encoded=encoded)
         return {
             **roadmark_outputs,
             "det": torch.cat(det_outputs, dim=1),

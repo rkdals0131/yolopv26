@@ -16864,3 +16864,74 @@ Verification:
 - Exact-val128 and broader-val512 were skipped because fixed val4 recovered no stop-line TP, still regressed retained lane TP, and regressed fixed smoke crosswalk.
 - Do not repeat this as `stopline_empty_sample_mode`, source-valid empty-sample filtering, head LR, loss weight, epoch-count, or the same projection-comp-runtime training sweep.
 - Reopen stop-line loss masking/allocation only with a materially different shared representation, candidate/geometry signal, or retention contract that first moves fixed smoke TP/FP/FN.
+
+## 316. 2026-05-30 Current-family vector decoder scale train: architecture reconnects and trains, but emits no matched objects
+
+맥락:
+
+- The user explicitly pushed against only-safe postprocess/loss tweaks and asked to try architecture-level changes with real training and larger dataset exposure.
+- This branch reopened a more radical architecture premise already present in the repo but not selectable by the current training config: `CurrentFamilyRoadMarkHeads`, a P3-P5 query-vector decoder that emits lane, stop-line, and crosswalk vectors directly instead of using the current dense seg-first lane / dense stop-line / mask-first crosswalk contracts.
+- The experiment reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+구현:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-vector-decoder`.
+- Architecture plumbing:
+  - `model/net/heads.py` now accepts `roadmark_architecture="current_family"` and routes P3/P4/P5 features into `CurrentFamilyRoadMarkHeads`.
+  - `model/net/roadmark_current_family.py` accepts the same `encoded=` call signature as the other roadmark heads.
+- Loss contract:
+  - `model/engine/loss.py` now allows vector-only lane / stop-line / crosswalk outputs under `roadmark_joint` instead of requiring dense row/mask logits.
+- Config/runtime:
+  - `tools/pv26_train/config.py` allows `current_family`.
+  - `tools/run_pv26_lane60_probe.py` adds `current_family_vector_decoder`.
+- Tests:
+  - `test/test_pv26_heads.py`, current-family architecture forward contract.
+  - `test/test_pv26_loss_runtime.py`, vector-only roadmark joint loss fallback.
+  - `test/test_run_pv26_train.py`, config override coverage for `roadmark_architecture`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_090008`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `3` epochs, `512` train batches per epoch, `128` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Best internal phase objective was only `0.2676717957` at epoch 2.
+
+Val128-style internal evaluation:
+
+| Eval | Epoch | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | ---: | --- | ---: | --- | ---: | --- |
+| train validation | 1 | `0.0000` | `0 / 0 / 2335` | `0.0000` | `0 / 0 / 55` | `0.0000` | `0 / 0 / 83` |
+| train validation | 2 | `0.0000` | `0 / 0 / 2390` | `0.0000` | `0 / 0 / 60` | `0.0000` | `0 / 0 / 81` |
+| train validation | 3 | `0.0000` | `0 / 0 / 2283` | `0.0000` | `0 / 0 / 53` | `0.0000` | `0 / 0 / 106` |
+
+Artifacts:
+
+- Phase history: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_090008/phase_4/history/epochs.jsonl`.
+- Phase summary: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_090008/phase_4/summary.json`.
+- Run summary: `runs/pv26_exhaustive_od_lane_train/lane60_current_family_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_090008/summary.json`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `2.6M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py model/net/heads.py model/net/roadmark_current_family.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py test/test_pv26_loss_runtime.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_roadmark_joint_accepts_vector_only_lane_family_outputs test_pv26_heads.PV26HeadsTests.test_heads_can_use_current_family_vector_decoder_architecture test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test python -m unittest test_docs_sync`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "current_family_vector_decoder|stopline_positive_only_loss"`.
+- `git diff --check`.
+- CUDA current-family vector decoder `3x512` train-batch scale run.
+
+판단:
+
+- This is a real architecture-level experiment, not a threshold or postprocess sweep.
+- The architecture is now mechanically trainable in the current codebase, but the current target normalization / warm-start / direct vector decode contract emits no matched lane-family objects after a larger `3x512` run.
+- Fixed exact-val128 and broader-val512 were skipped because the val128-style internal gate already had lane/stop/cross F1 all `0.0000`.
+- Do not repeat this as current-family head LR, object threshold, query count, epoch-count, train-batch scaling, or vector-loss fallback tuning.
+- Reopen vector-query architecture only with a materially different target normalization, warm-start, or decoder contract that first emits matched objects on fixed validation.

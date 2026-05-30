@@ -2317,6 +2317,30 @@ EXPERIMENTS["lane_row_native_primary"] = {
     },
 }
 
+EXPERIMENTS["current_family_vector_decoder"] = {
+    "freeze_policy": "lane_family_heads_only",
+    "trunk_lr": 0.0,
+    "head_lr": 2.0e-4,
+    "loss_weights": {
+        "det": 0.0,
+        "tl_attr": 0.0,
+        "lane": 2.25,
+        "stop_line": 2.25,
+        "crosswalk": 1.75,
+    },
+    "train_defaults_overrides": {
+        "roadmark_architecture": "current_family",
+        "lane_head_mode": "seg_first",
+    },
+    "overrides": {
+        "task_positive_task": "multi:lane,stopline,crosswalk",
+        "task_positive_fraction": 1.0,
+        "lane_obj_threshold": 0.45,
+        "stop_line_obj_threshold": 0.50,
+        "crosswalk_obj_threshold": 0.50,
+    },
+}
+
 EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {

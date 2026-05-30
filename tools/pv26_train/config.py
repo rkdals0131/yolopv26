@@ -25,6 +25,7 @@ ROADMARK_ARCHITECTURES = (
     "v3_stopline_isolated",
     "lane_only_row_classifier",
     "stopline_only_mask_first",
+    "current_family",
 )
 LANE_HEAD_MODES = ("seg_first", "row_native")
 LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")

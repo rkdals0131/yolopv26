@@ -3539,8 +3539,8 @@ class PV26MultiTaskLoss(nn.Module):
                 if isinstance(value, torch.Tensor)
             }
             return lane_loss
-        if self.task_mode == ROADMARK_JOINT_TASK_MODE and "lane_row_logits" not in prediction_dict:
-            raise KeyError("roadmark_joint requires lane_row_logits for native lane loss dispatch")
+        if self.task_mode == ROADMARK_JOINT_TASK_MODE and "lane_row_logits" not in prediction_dict and "lane" not in prediction_dict:
+            raise KeyError("roadmark_joint requires lane_row_logits or lane vector outputs for lane loss dispatch")
         if self.task_mode in {LANE_ONLY_TASK_MODE, ROADMARK_JOINT_TASK_MODE} and "lane_row_logits" in prediction_dict:
             assignment_mode = self.lane_assignment_mode
             if assignment_mode == "dynamic_match_phase2":
@@ -3624,8 +3624,12 @@ class PV26MultiTaskLoss(nn.Module):
 
     def _stop_line_loss(self, predictions: dict[str, torch.Tensor] | torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
         prediction_dict = predictions if isinstance(predictions, dict) else {"stop_line": predictions}
-        if self.task_mode == ROADMARK_JOINT_TASK_MODE and "stop_line_mask_logits" not in prediction_dict:
-            raise KeyError("roadmark_joint requires stop_line_mask_logits for native stop-line loss dispatch")
+        if (
+            self.task_mode == ROADMARK_JOINT_TASK_MODE
+            and "stop_line_mask_logits" not in prediction_dict
+            and "stop_line" not in prediction_dict
+        ):
+            raise KeyError("roadmark_joint requires stop_line_mask_logits or stop_line vector outputs for stop-line loss dispatch")
         if self.task_mode in {STOPLINE_ONLY_TASK_MODE, ROADMARK_JOINT_TASK_MODE} and "stop_line_mask_logits" in prediction_dict:
             self.last_lane_assignment_modes["stop_line"] = "dense_mask_only"
             if (
@@ -3718,8 +3722,12 @@ class PV26MultiTaskLoss(nn.Module):
 
     def _crosswalk_loss(self, predictions: dict[str, torch.Tensor] | torch.Tensor, encoded: dict[str, Any]) -> torch.Tensor:
         prediction_dict = predictions if isinstance(predictions, dict) else {"crosswalk": predictions}
-        if self.task_mode == ROADMARK_JOINT_TASK_MODE and "crosswalk_mask_logits" not in prediction_dict:
-            raise KeyError("roadmark_joint requires crosswalk_mask_logits for native crosswalk loss dispatch")
+        if (
+            self.task_mode == ROADMARK_JOINT_TASK_MODE
+            and "crosswalk_mask_logits" not in prediction_dict
+            and "crosswalk" not in prediction_dict
+        ):
+            raise KeyError("roadmark_joint requires crosswalk_mask_logits or crosswalk vector outputs for crosswalk loss dispatch")
         cross_pred = prediction_dict["crosswalk"]
         aux_loss = _crosswalk_v2_auxiliary_loss(prediction_dict, encoded)
         if self.task_mode in {CROSSWALK_ONLY_TASK_MODE, ROADMARK_JOINT_TASK_MODE} and "crosswalk_mask_logits" in prediction_dict:
