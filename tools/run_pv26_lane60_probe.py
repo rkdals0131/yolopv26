@@ -2502,6 +2502,16 @@ EXPERIMENTS["stopline_hardmine_static_sampler"] = {
     },
 }
 
+EXPERIMENTS["stopline_hardmine_distance_heatmap_static"] = {
+    **EXPERIMENTS["stopline_hardmine_static_sampler"],
+    "overrides": {
+        **EXPERIMENTS["stopline_hardmine_static_sampler"]["overrides"],
+        "stopline_center_target_mode": "distance_heatmap",
+        "stopline_selector_target_mode": "distance_heatmap",
+        "stopline_selector_aux_weight": 0.75,
+    },
+}
+
 EXPERIMENTS["stopline_v3_isolated_neck"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "freeze_policy": "lane_family_stopline_only",

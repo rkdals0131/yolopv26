@@ -22248,3 +22248,101 @@ Decision:
 - Broader-val512 is skipped because exact failed.
 - Close this as sparse optical-flow affine image-plane temporal alignment, current-frame dense-map MLP verifier, temporal top-k/cap defaults, threshold-grid, and train scaling to `256` batches.
 - Reopen temporal stop-line only with a materially different motion/candidate contract such as ego-motion/BEV-warped aggregation or a learned temporal segment proposal that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 374. 2026-05-31 Stop-line hard-mined distance-heatmap static: focused heatmap training creates FP-heavy exact failure
+
+Context:
+
+- The user explicitly asked to continue with real training/evaluation, to use larger data exposure only when gates justify it, and to avoid dataset copies.
+- The train-split hard-mined sample-id sampler alone was exact-negative at stop-line `27 / 31 / 33`, F1 `0.4576`.
+- The distance-heatmap stop-line target alone was also exact-negative and became FP-heavy at stop-line `29 / 59 / 31`, F1 `0.3919`, with larger training worsening to `28 / 71 / 32`, F1 `0.3522`.
+- This branch tested the combination, not either axis alone: focus training on hard train stop-line frames while supervising stop-line center and selector maps with segment-distance heatmaps.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/run_pv26_lane60_probe.py` adds `stopline_hardmine_distance_heatmap_static`.
+- The preset inherits `stopline_hardmine_static_sampler` and changes one training-signal axis:
+  - `stopline_center_target_mode="distance_heatmap"`;
+  - `stopline_selector_target_mode="distance_heatmap"`;
+  - `stopline_selector_aux_weight=0.75`.
+- Runtime decode stayed fixed:
+  - row-scan/tangent lane decode;
+  - projection-competition stop-line decode;
+  - `crosswalk_polygon_mode=hull`.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_hardmine_distance_heatmap_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_072853`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Freeze policy: `lane_family_stopline_static_trunk`.
+- Loss weights: lane `0.0`, stop-line `4.0`, crosswalk `0.0`.
+- Hard-mine manifest: `docs/manifests/stopline_hardmine_train256_20260530_sample_ids.txt`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Skipped steps: `0`.
+- Internal best phase objective reached `0.6477029221` at epoch `1`. This is not success evidence because the fixed exact gate failed.
+
+Training-slice val4 history:
+
+| Epoch | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| 1 | `0.5547` | `38 / 20 / 41` | `0.4000` | `1 / 2 / 1` | `0.7273` | `4 / 2 / 1` |
+| 2 | `0.5507` | `38 / 14 / 48` | `0.2500` | `1 / 5 / 1` | `0.5455` | `3 / 1 / 4` |
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-2 best | `flip_centerline_avg` | `0.5899` | `41 / 12 / 45` | `0.2500` | `1 / 5 / 1` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.2500` | `1 / 5 / 1` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-2 best | `baseline` | `0.5507` | `38 / 14 / 48` | `0.2500` | `1 / 5 / 1` | `0.5455` | `3 / 1 / 4` |
+
+Fixed exact-val128 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed exact-val128 epoch-2 best | `flip_centerline_avg_lane_cross_comp050` | `0.5888` | `1202 / 491 / 1188` | `0.2825` | `25 / 92 / 35` | `0.5988` | `50 / 36 / 31` |
+
+Reference:
+
+- Baseline exact stop-line reference: F1 `0.4483`, TP/FP/FN `26 / 30 / 34`.
+- Projection-competition exact reference: F1 `0.5167`, TP/FP/FN `31 / 29 / 29`.
+- Primary projection-comp exact reference used in router audits: F1 `0.5333`, TP/FP/FN `32 / 28 / 28`.
+
+Diagnosis:
+
+- Fixed val4 did move one stop-line TP versus the retained tiny reference, but it also increased FP from `3` to `5`.
+- On exact-val128 the same target/sampler combination became strongly FP-heavy:
+  - TP fell below baseline/projection-comp (`25` vs `26`/`31`/`32`);
+  - FP rose to `92`, far above the exact references (`30`/`29`/`28`);
+  - F1 collapsed to `0.2825`.
+- Broader-val512 and larger training are skipped because the fixed exact gate failed by both losing TP and adding FP. Scaling this contract would repeat the already closed distance-heatmap/sampler failure modes.
+
+Artifacts:
+
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_hardmine_distance_heatmap_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_072853/analysis_exports/flip_tta_val4_epoch2/metrics.csv`.
+- Fixed exact metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_hardmine_distance_heatmap_static_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_072853/analysis_exports/flip_tta_val128_epoch2/metrics.csv`.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and temporary root `yolo26s.pt` were pruned.
+- Retained run size after cleanup is about `1.3M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_hardmine_distance_heatmap_static"`.
+- CUDA `stopline_hardmine_distance_heatmap_static` training with `2x64` train batches on the existing canonical dataset root.
+- CUDA fixed val4 evaluation with `baseline`, `flip_centerline_avg`, and `flip_centerline_avg_lane_cross_comp050` variants.
+- CUDA fixed exact-val128 evaluation with the same variants.
+
+Decision:
+
+- The preset is implemented and trainable.
+- It does not beat any stop-line exact reference; it is much worse than both projection-comp exact and primary exact.
+- Close this as hard-mined manifest plus distance-heatmap center/selector target combination, including selector-weight, head-LR, epoch-count, train-batch scaling, and same static-trunk projection-comp runtime tuning.
+- Reopen only with a materially different candidate-generation/geometry or verifier signal that first improves fixed exact TP/FP/FN over primary projection-comp.
