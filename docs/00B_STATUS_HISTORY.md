@@ -22107,3 +22107,144 @@ Decision:
 - Close predicted crosswalk-hull edge stop-line candidates as a stop-line breakthrough path.
 - Do not repeat this as offset/top-k/max-candidate/threshold/verifier-epoch/train-batch scaling.
 - Reopen crosswalk-derived stop-line geometry only if the candidate source first shows materially higher oracle coverage on fixed exact validation, not merely a different verifier over the same hull-edge lines.
+
+## 373. 2026-05-31 Stop-line sparse-affine temporal alignment: stronger image-plane motion still exact-negative
+
+Context:
+
+- Section 371 closed phase-correlation temporal alignment because the translated neighbor-frame stop-line candidates still added FP faster than TP.
+- The user explicitly asked to keep actually training/evaluating, to use larger data exposure when needed, and to avoid dataset copies.
+- This branch reopened temporal stop-line under a stronger no-GT image-plane alignment contract:
+  - sparse optical flow tracks neighbor-frame image features into the current frame;
+  - RANSAC estimates a partial affine transform from neighbor to current;
+  - neighbor-frame stop-line candidates are warped by that affine before current-frame dense features are sampled;
+  - the same train-split MLP verifier is then trained/evaluated.
+- This is distinct from the closed phase-correlation translation contract, but it is still image-plane temporal warping rather than ego-motion/BEV aggregation.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Extended `tools/probe_pv26_stopline_temporal_candidates.py`.
+- Extended `test/test_stopline_temporal_candidates.py`.
+- New CLI mode:
+  - `--temporal-alignment-mode sparse_affine`.
+- Added sparse-affine helpers:
+  - `_sparse_affine_alignment_from_arrays`;
+  - `_raw_affine_from_small`;
+  - `_corner_max_displacement`;
+  - `_warp_stop_line_points`.
+- The affine path uses unwindowed grayscale alignment images, `goodFeaturesToTrack`, `calcOpticalFlowPyrLK`, `estimateAffinePartial2D`, an inlier/error response, and a raw-image corner displacement gate.
+- Default behavior remains unchanged for `none` and `phase_corr`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Primary checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `--lane60-experiment stopline_projection_comp_runtime`;
+  - `--crosswalk-polygon-mode hull`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - temporal offsets `-1,+1`;
+  - temporal top-k `8`;
+  - max temporal candidates `16`;
+  - max emitted stop-lines `2`;
+  - temporal alignment `sparse_affine`.
+
+Smoke train64 / val4:
+
+- Train samples `256`; train temporal candidates `204`; train oracle-positive temporal candidates `72`.
+- Val samples `16`; val temporal candidates `6`; val temporal oracle-positive candidates `0`.
+- Sparse-affine alignment was applied to `193` train candidates and `6` val candidates.
+- Smoke validation was not decision-useful because the tiny val slice had no temporal oracle-positive candidates.
+- Validation baseline-plus-temporal MLP was stop-line `0 / 6 / 2`, F1 `0.0000`.
+
+Exact train64 / val128:
+
+- Train samples `256`; train temporal candidates `204`; train oracle-positive candidates `72`.
+- Val samples `512`; val temporal candidates `98`; val oracle-positive candidates `21`.
+- Sparse-affine alignment was applied to `193` train candidates and `95` val candidates.
+- Selected verifier threshold `0.54`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2921` | `13 / 16 / 47` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.5000` | `34 / 42 / 26` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.4000` | `15 / 0 / 45` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5512` | `35 / 32 / 25` | `0.5988` |
+
+Exact train256 / val128:
+
+- The larger train exposure reused the same existing root, not a copied dataset.
+- Train samples `1024`; train temporal candidates `844`; train oracle-positive candidates `264`.
+- Val samples `512`; val temporal candidates `98`; val oracle-positive candidates `20`.
+- Sparse-affine alignment was applied to `773` train candidates and `95` val candidates.
+- Selected verifier threshold `0.42`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2637` | `12 / 19 / 48` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4818` | `33 / 44 / 27` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.3784` | `14 / 0 / 46` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5556` | `35 / 31 / 25` | `0.5988` |
+
+Diagnosis:
+
+- Sparse-affine improves oracle candidate headroom versus phase-corr:
+  - phase-corr oracle union `34 / 33 / 26`, F1 `0.5354`;
+  - sparse-affine train256 oracle union `35 / 31 / 25`, F1 `0.5556`.
+- The deployable verifier still fails:
+  - train64 runtime union recovers `+2` TP but adds `+14` FP;
+  - train256 runtime union recovers only `+1` TP and adds `+16` FP.
+- Larger train exposure does not fix the no-GT selection problem.
+- Broader-val512 is skipped because the exact deployable runtime path is below primary projection-comp after both train exposures.
+
+Artifacts:
+
+- Sparse-affine smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_sparse_affine_train64_smoke_val4_20260531/summary.json`.
+- Sparse-affine smoke variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_sparse_affine_train64_smoke_val4_20260531/temporal_variants.csv`.
+- Sparse-affine train64 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_sparse_affine_train64_exact_val128_20260531/summary.json`.
+- Sparse-affine train64 exact variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_sparse_affine_train64_exact_val128_20260531/temporal_variants.csv`.
+- Sparse-affine train256 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_sparse_affine_train256_exact_val128_20260531/summary.json`.
+- Sparse-affine train256 exact variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_sparse_affine_train256_exact_val128_20260531/temporal_variants.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `264K`;
+  - train64 exact export about `428K`;
+  - train256 exact export about `1.2M`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/smoke-val4 sparse-affine temporal verifier run on the existing canonical dataset root.
+- CUDA train64/exact-val128 sparse-affine temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 larger-exposure sparse-affine temporal verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Sparse-affine temporal alignment is implemented and trainable.
+- It does not beat the exact primary projection-comp stop-line gate:
+  - train64 temporal union F1 `0.5000`;
+  - train256 temporal union F1 `0.4818`;
+  - primary projection-comp F1 `0.5333`.
+- Broader-val512 is skipped because exact failed.
+- Close this as sparse optical-flow affine image-plane temporal alignment, current-frame dense-map MLP verifier, temporal top-k/cap defaults, threshold-grid, and train scaling to `256` batches.
+- Reopen temporal stop-line only with a materially different motion/candidate contract such as ego-motion/BEV-warped aggregation or a learned temporal segment proposal that first improves fixed exact TP/FP/FN over primary projection-comp.

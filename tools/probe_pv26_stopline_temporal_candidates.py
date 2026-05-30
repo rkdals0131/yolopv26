@@ -120,7 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dataset-root", default="")
     parser.add_argument("--neighbor-offsets", default="-1,1")
-    parser.add_argument("--temporal-alignment-mode", choices=("none", "phase_corr"), default="none")
+    parser.add_argument("--temporal-alignment-mode", choices=("none", "phase_corr", "sparse_affine"), default="none")
     parser.add_argument("--temporal-alignment-size", default="160x120")
     parser.add_argument("--temporal-alignment-max-shift-frac", type=float, default=0.15)
     parser.add_argument("--temporal-top-k", type=int, default=8)
@@ -153,11 +153,13 @@ def _parse_alignment_size(value: str) -> tuple[int, int]:
     return width, height
 
 
-def _read_alignment_gray(path: str | Path, *, size: tuple[int, int]) -> np.ndarray:
+def _read_alignment_gray(path: str | Path, *, size: tuple[int, int], windowed: bool = True) -> np.ndarray:
     resampling = getattr(Image, "Resampling", Image).BILINEAR
     with Image.open(path) as image:
         gray = image.convert("L").resize(size, resampling)
     array = np.asarray(gray, dtype=np.float32) / 255.0
+    if not bool(windowed):
+        return array
     array -= float(array.mean())
     window_y = np.hanning(array.shape[0]).astype(np.float32)
     window_x = np.hanning(array.shape[1]).astype(np.float32)
@@ -186,6 +188,139 @@ def _phase_correlation_shift(reference: np.ndarray, moving: np.ndarray) -> tuple
     return float(peak_x), float(peak_y), response
 
 
+def _raw_affine_from_small(
+    matrix: np.ndarray,
+    *,
+    raw_hw: tuple[int, int],
+    size: tuple[int, int],
+) -> tuple[float, float, float, float, float, float]:
+    small = np.asarray(matrix, dtype=np.float32).reshape(2, 3)
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    width, height = int(size[0]), int(size[1])
+    scale_x = float(raw_w) / max(float(width), 1.0)
+    scale_y = float(raw_h) / max(float(height), 1.0)
+    a, b, c = (float(value) for value in small[0])
+    d, e, f = (float(value) for value in small[1])
+    return (
+        a,
+        b * scale_x / max(scale_y, 1.0e-6),
+        c * scale_x,
+        d * scale_y / max(scale_x, 1.0e-6),
+        e,
+        f * scale_y,
+    )
+
+
+def _corner_max_displacement(
+    matrix: tuple[float, float, float, float, float, float],
+    *,
+    raw_hw: tuple[int, int],
+) -> float:
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    corners = np.asarray(
+        [
+            [0.0, 0.0],
+            [max(float(raw_w - 1), 0.0), 0.0],
+            [0.0, max(float(raw_h - 1), 0.0)],
+            [max(float(raw_w - 1), 0.0), max(float(raw_h - 1), 0.0)],
+        ],
+        dtype=np.float32,
+    )
+    a, b, c, d, e, f = matrix
+    warped = np.stack(
+        [
+            a * corners[:, 0] + b * corners[:, 1] + c,
+            d * corners[:, 0] + e * corners[:, 1] + f,
+        ],
+        axis=1,
+    )
+    return float(np.linalg.norm(warped - corners, axis=1).max())
+
+
+def _sparse_affine_alignment_from_arrays(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    *,
+    raw_hw: tuple[int, int],
+    size: tuple[int, int],
+    max_shift_frac: float,
+) -> dict[str, float]:
+    try:
+        import cv2
+    except ImportError:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    ref = np.asarray(reference, dtype=np.float32)
+    mov = np.asarray(moving, dtype=np.float32)
+    if ref.shape != mov.shape or ref.ndim != 2 or ref.size == 0:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    ref_u8 = np.clip(ref * 255.0, 0.0, 255.0).astype(np.uint8)
+    mov_u8 = np.clip(mov * 255.0, 0.0, 255.0).astype(np.uint8)
+    points = cv2.goodFeaturesToTrack(
+        mov_u8,
+        maxCorners=240,
+        qualityLevel=0.01,
+        minDistance=5,
+        blockSize=5,
+    )
+    if points is None or int(points.shape[0]) < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    next_points, status, _ = cv2.calcOpticalFlowPyrLK(
+        mov_u8,
+        ref_u8,
+        points,
+        None,
+        winSize=(21, 21),
+        maxLevel=3,
+        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+    )
+    if next_points is None or status is None:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    valid = status.reshape(-1).astype(bool)
+    src = points.reshape(-1, 2)[valid]
+    dst = next_points.reshape(-1, 2)[valid]
+    if int(src.shape[0]) < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    matrix, inliers = cv2.estimateAffinePartial2D(
+        src,
+        dst,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=3.0,
+        maxIters=500,
+        confidence=0.99,
+        refineIters=10,
+    )
+    if matrix is None or inliers is None:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    inlier_mask = inliers.reshape(-1).astype(bool)
+    inlier_count = int(inlier_mask.sum())
+    if inlier_count < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    transformed = (src @ matrix[:, :2].T) + matrix[:, 2][None, :]
+    errors = np.linalg.norm(transformed - dst, axis=1)
+    median_error = float(np.median(errors[inlier_mask])) if inlier_count else float("inf")
+    inlier_fraction = float(inlier_count) / max(float(src.shape[0]), 1.0)
+    response = float(np.clip(inlier_fraction / (1.0 + median_error / 4.0), 0.0, 1.0))
+    raw_matrix = _raw_affine_from_small(matrix, raw_hw=raw_hw, size=size)
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    max_displacement = _corner_max_displacement(raw_matrix, raw_hw=raw_hw)
+    max_allowed = float(max(max(raw_w, raw_h), 1)) * float(max_shift_frac)
+    if max_displacement > max_allowed:
+        return {"dx": 0.0, "dy": 0.0, "response": response, "applied": 0.0}
+    a, b, c, d, e, f = raw_matrix
+    return {
+        "dx": float(c),
+        "dy": float(f),
+        "response": response,
+        "applied": 1.0,
+        "m00": float(a),
+        "m01": float(b),
+        "m02": float(c),
+        "m10": float(d),
+        "m11": float(e),
+        "m12": float(f),
+    }
+
+
 def _temporal_alignment(
     *,
     current_meta: dict[str, Any],
@@ -196,13 +331,24 @@ def _temporal_alignment(
 ) -> dict[str, float]:
     if str(mode) == "none":
         return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
-    if str(mode) != "phase_corr":
+    if str(mode) not in {"phase_corr", "sparse_affine"}:
         raise ValueError(f"unknown temporal alignment mode: {mode}")
     current_path = str(current_meta.get("image_path", ""))
     neighbor_path = str(neighbor_meta.get("image_path", ""))
     if not current_path or not neighbor_path:
         return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
     try:
+        if str(mode) == "sparse_affine":
+            current_gray = _read_alignment_gray(current_path, size=size, windowed=False)
+            neighbor_gray = _read_alignment_gray(neighbor_path, size=size, windowed=False)
+            raw_h, raw_w = int(current_meta.get("raw_hw", (1, 1))[0]), int(current_meta.get("raw_hw", (1, 1))[1])
+            return _sparse_affine_alignment_from_arrays(
+                current_gray,
+                neighbor_gray,
+                raw_hw=(raw_h, raw_w),
+                size=size,
+                max_shift_frac=float(max_shift_frac),
+            )
         current_gray = _read_alignment_gray(current_path, size=size)
         neighbor_gray = _read_alignment_gray(neighbor_path, size=size)
         dx_small, dy_small, response = _phase_correlation_shift(current_gray, neighbor_gray)
@@ -217,6 +363,32 @@ def _temporal_alignment(
     if abs(dx) > max_dx or abs(dy) > max_dy:
         return {"dx": 0.0, "dy": 0.0, "response": float(response), "applied": 0.0}
     return {"dx": float(dx), "dy": float(dy), "response": float(response), "applied": 1.0}
+
+
+def _warp_stop_line_points(line: dict[str, Any], *, alignment: dict[str, float], meta: dict[str, Any]) -> list[list[float]]:
+    points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] == 0:
+        return []
+    required = ("m00", "m01", "m02", "m10", "m11", "m12")
+    if not all(key in alignment for key in required):
+        return _translate_stop_line_points(
+            line,
+            dx=float(alignment.get("dx", 0.0)),
+            dy=float(alignment.get("dy", 0.0)),
+            meta=meta,
+        )
+    a, b, c, d, e, f = (float(alignment[key]) for key in required)
+    warped = np.stack(
+        [
+            a * points[:, 0] + b * points[:, 1] + c,
+            d * points[:, 0] + e * points[:, 1] + f,
+        ],
+        axis=1,
+    )
+    raw_h, raw_w = int(meta.get("raw_hw", (1, 1))[0]), int(meta.get("raw_hw", (1, 1))[1])
+    warped[:, 0] = np.clip(warped[:, 0], 0.0, max(float(raw_w - 1), 0.0))
+    warped[:, 1] = np.clip(warped[:, 1], 0.0, max(float(raw_h - 1), 0.0))
+    return [[float(point[0]), float(point[1])] for point in warped.tolist()]
 
 
 def _translate_stop_line_points(line: dict[str, Any], *, dx: float, dy: float, meta: dict[str, Any]) -> list[list[float]]:
@@ -385,10 +557,9 @@ def _build_temporal_candidates(
         for neighbor_rank, line in enumerate(neighbor_lines, start=1):
             candidate = _copy_stop_line(line, score=_line_score(line), source="temporal_neighbor")
             if float(alignment.get("applied", 0.0)) > 0.0:
-                candidate["points_xy"] = _translate_stop_line_points(
+                candidate["points_xy"] = _warp_stop_line_points(
                     candidate,
-                    dx=float(alignment.get("dx", 0.0)),
-                    dy=float(alignment.get("dy", 0.0)),
+                    alignment=alignment,
                     meta=meta,
                 )
             candidate["neighbor_offset"] = int(offset)

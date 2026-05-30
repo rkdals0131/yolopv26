@@ -10,8 +10,10 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     _build_temporal_candidates,
     _phase_correlation_shift,
     _select_temporal_stop_lines,
+    _sparse_affine_alignment_from_arrays,
     _stopline_temporal_features,
     _translate_stop_line_points,
+    _warp_stop_line_points,
 )
 
 
@@ -74,6 +76,46 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
 
         self.assertEqual(translated[0], [0.0, 30.0])
         self.assertEqual(translated[1], [784.0, 607.0])
+
+    def test_sparse_affine_alignment_maps_moving_to_reference(self) -> None:
+        cv2 = __import__("cv2")
+        reference = np.zeros((96, 128), dtype=np.float32)
+        for y in range(16, 80, 16):
+            for x in range(16, 112, 16):
+                reference[y - 2 : y + 3, x - 2 : x + 3] = 1.0
+        matrix = np.asarray([[1.0, 0.0, 7.0], [0.0, 1.0, -5.0]], dtype=np.float32)
+        moving = cv2.warpAffine(reference, matrix, (128, 96))
+
+        alignment = _sparse_affine_alignment_from_arrays(
+            reference,
+            moving,
+            raw_hw=(96, 128),
+            size=(128, 96),
+            max_shift_frac=0.25,
+        )
+
+        self.assertEqual(float(alignment["applied"]), 1.0)
+        self.assertAlmostEqual(float(alignment["dx"]), -7.0, delta=1.5)
+        self.assertAlmostEqual(float(alignment["dy"]), 5.0, delta=1.5)
+        self.assertGreater(float(alignment["response"]), 0.1)
+
+    def test_warp_stop_line_points_applies_affine_matrix(self) -> None:
+        warped = _warp_stop_line_points(
+            {"points_xy": [[10.0, 20.0], [30.0, 20.0]]},
+            alignment={
+                "applied": 1.0,
+                "m00": 1.0,
+                "m01": 0.0,
+                "m02": 5.0,
+                "m10": 0.0,
+                "m11": 1.0,
+                "m12": -3.0,
+            },
+            meta=_meta(),
+        )
+
+        self.assertEqual(warped[0], [15.0, 17.0])
+        self.assertEqual(warped[1], [35.0, 17.0])
 
     def test_build_candidates_marks_oracle_positive_neighbor_line(self) -> None:
         mask = np.ones((76, 100), dtype=np.float32) * 0.5
