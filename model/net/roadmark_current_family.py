@@ -25,6 +25,8 @@ STOP_LINE_DECODER_LAYERS = 2
 STOP_LINE_DECODER_HEADS = 8
 CROSSWALK_DECODER_LAYERS = 2
 CROSSWALK_DECODER_HEADS = 8
+STOP_LINE_POINT_COUNT = (STOP_LINE_VECTOR_DIM - 1) // 2
+CROSSWALK_POINT_COUNT = (CROSSWALK_VECTOR_DIM - 1) // 2
 LANE_ANCHOR_COUNT = (LANE_VECTOR_DIM - (1 + 3 + 2)) // 2
 LANE_X_SLICE = slice(1 + 3 + 2, 1 + 3 + 2 + LANE_ANCHOR_COUNT)
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
@@ -33,6 +35,10 @@ LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 def _logit(value: float) -> float:
     clipped = min(max(float(value), 1.0e-4), 1.0 - 1.0e-4)
     return float(math.log(clipped / (1.0 - clipped)))
+
+
+def _logit_tensor(value: torch.Tensor) -> torch.Tensor:
+    return torch.logit(value.clamp(1.0e-4, 1.0 - 1.0e-4))
 
 
 def _network_point_logit(x: float, y: float) -> tuple[float, float]:
@@ -288,7 +294,7 @@ class _DenseSeedQueryHead(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-    def forward(self, memory_feature: torch.Tensor, *, query_count: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, memory_feature: torch.Tensor, *, query_count: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = self.seed_logits(memory_feature)
         batch_size, channels, height, width = memory_feature.shape
         flat_logits = logits.flatten(2).squeeze(1)
@@ -312,7 +318,7 @@ class _DenseSeedQueryHead(nn.Module):
             dim=-1,
         )
         query = selected + self.position_mlp(coords.to(dtype=memory_feature.dtype))
-        return query, logits
+        return query, logits, coords.to(dtype=memory_feature.dtype)
 
 
 class CurrentFamilyRoadMarkHeads(nn.Module):
@@ -326,6 +332,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         denoise_enabled: bool = False,
         anchor_query_seed_enabled: bool = False,
         dense_query_seed_enabled: bool = False,
+        dense_seed_geometry_prior_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
@@ -335,6 +342,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         self.denoise_enabled = bool(denoise_enabled)
         self.anchor_query_seed_enabled = bool(anchor_query_seed_enabled)
         self.dense_query_seed_enabled = bool(dense_query_seed_enabled)
+        self.dense_seed_geometry_prior_enabled = bool(dense_seed_geometry_prior_enabled)
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -388,6 +396,8 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             self.lane_dense_query = None
             self.stop_line_dense_query = None
             self.crosswalk_dense_query = None
+        if self.dense_seed_geometry_prior_enabled and not self.dense_query_seed_enabled:
+            raise ValueError("current-family dense seed geometry priors require dense query seeds")
         if self.anchor_template_enabled:
             if self.coordinate_mode != "sigmoid_network":
                 raise ValueError("current-family anchor templates require sigmoid_network coordinate mode")
@@ -462,12 +472,85 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "denoise": "gt_noised_query_aux" if self.denoise_enabled else "disabled",
             "anchor_query_seed": "shared_geometry_query_input" if self.anchor_query_seed_enabled else "disabled",
             "dense_query_seed": "topk_seed_heatmap" if self.dense_query_seed_enabled else "disabled",
+            "dense_seed_geometry_prior": "seed_centered_shape_template"
+            if self.dense_seed_geometry_prior_enabled
+            else "disabled",
         }
 
     def _add_template(self, rows: torch.Tensor, template: torch.Tensor | None) -> torch.Tensor:
         if template is None:
             return rows
         return rows + template.to(device=rows.device, dtype=rows.dtype).unsqueeze(0)
+
+    def _add_dynamic_template(self, rows: torch.Tensor, template: torch.Tensor | None) -> torch.Tensor:
+        if template is None:
+            return rows
+        return rows + template.to(device=rows.device, dtype=rows.dtype)
+
+    def _lane_dense_seed_template(self, seed_coords: torch.Tensor | None) -> torch.Tensor | None:
+        if not self.dense_seed_geometry_prior_enabled or not isinstance(seed_coords, torch.Tensor):
+            return None
+        template = torch.zeros(
+            (*seed_coords.shape[:2], LANE_VECTOR_DIM),
+            device=seed_coords.device,
+            dtype=seed_coords.dtype,
+        )
+        x_logits = _logit_tensor(seed_coords[..., 0])
+        template[..., LANE_X_SLICE] = x_logits.unsqueeze(-1).expand(*seed_coords.shape[:2], LANE_ANCHOR_COUNT)
+        template[..., LANE_VIS_SLICE] = 1.5
+        return template
+
+    def _stop_line_dense_seed_template(self, seed_coords: torch.Tensor | None) -> torch.Tensor | None:
+        if not self.dense_seed_geometry_prior_enabled or not isinstance(seed_coords, torch.Tensor):
+            return None
+        template = torch.zeros(
+            (*seed_coords.shape[:2], STOP_LINE_VECTOR_DIM),
+            device=seed_coords.device,
+            dtype=seed_coords.dtype,
+        )
+        offsets = torch.linspace(
+            -0.28,
+            0.28,
+            STOP_LINE_POINT_COUNT,
+            device=seed_coords.device,
+            dtype=seed_coords.dtype,
+        )
+        x = (seed_coords[..., 0:1] + offsets).clamp(0.0, 1.0)
+        y = seed_coords[..., 1:2].expand_as(x).clamp(0.0, 1.0)
+        points = torch.stack((x, y), dim=-1)
+        template[..., 1:] = _logit_tensor(points).reshape(*seed_coords.shape[:2], STOP_LINE_VECTOR_DIM - 1)
+        return template
+
+    def _crosswalk_dense_seed_template(self, seed_coords: torch.Tensor | None) -> torch.Tensor | None:
+        if not self.dense_seed_geometry_prior_enabled or not isinstance(seed_coords, torch.Tensor):
+            return None
+        template = torch.zeros(
+            (*seed_coords.shape[:2], CROSSWALK_VECTOR_DIM),
+            device=seed_coords.device,
+            dtype=seed_coords.dtype,
+        )
+        corners = [
+            (-0.18, -0.035),
+            (0.18, -0.035),
+            (0.18, 0.035),
+            (-0.18, 0.035),
+        ]
+        offsets: list[tuple[float, float]] = []
+        for start, end in zip(corners, corners[1:] + corners[:1]):
+            for step in range(4):
+                alpha = float(step) / 4.0
+                offsets.append(
+                    (
+                        (1.0 - alpha) * start[0] + alpha * end[0],
+                        (1.0 - alpha) * start[1] + alpha * end[1],
+                    )
+                )
+        offset_tensor = torch.tensor(offsets, device=seed_coords.device, dtype=seed_coords.dtype)
+        x = (seed_coords[..., 0:1] + offset_tensor[:, 0]).clamp(0.0, 1.0)
+        y = (seed_coords[..., 1:2] + offset_tensor[:, 1]).clamp(0.0, 1.0)
+        points = torch.stack((x, y), dim=-1)
+        template[..., 1:] = _logit_tensor(points).reshape(*seed_coords.shape[:2], CROSSWALK_VECTOR_DIM - 1)
+        return template
 
     def _scale_lane_rows(self, rows: torch.Tensor) -> torch.Tensor:
         if self.coordinate_mode != "sigmoid_network":
@@ -627,9 +710,13 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         batch_size = int(fused_feature.shape[0])
         lane_memory = None
         lane_seed_logits = None
+        lane_seed_coords = None
         if isinstance(self.lane_dense_query, _DenseSeedQueryHead):
             lane_memory = self.lane_head.memory(fused_feature)
-            lane_query_seed, lane_seed_logits = self.lane_dense_query(lane_memory, query_count=LANE_QUERY_COUNT)
+            lane_query_seed, lane_seed_logits, lane_seed_coords = self.lane_dense_query(
+                lane_memory,
+                query_count=LANE_QUERY_COUNT,
+            )
         else:
             lane_query_seed = self._lane_anchor_query_seed(
                 batch_size,
@@ -643,8 +730,9 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         else:
             lane_rows = self.lane_head(fused_feature)
         stop_seed_logits = None
+        stop_seed_coords = None
         if isinstance(self.stop_line_dense_query, _DenseSeedQueryHead):
-            stop_line_query_seed, stop_seed_logits = self.stop_line_dense_query(
+            stop_line_query_seed, stop_seed_logits, stop_seed_coords = self.stop_line_dense_query(
                 stop_line_memory,
                 query_count=STOP_LINE_QUERY_COUNT,
             )
@@ -658,8 +746,9 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
                 dtype=fused_feature.dtype,
             )
         cross_seed_logits = None
+        cross_seed_coords = None
         if isinstance(self.crosswalk_dense_query, _DenseSeedQueryHead):
-            crosswalk_query_seed, cross_seed_logits = self.crosswalk_dense_query(
+            crosswalk_query_seed, cross_seed_logits, cross_seed_coords = self.crosswalk_dense_query(
                 crosswalk_memory,
                 query_count=CROSSWALK_QUERY_COUNT,
             )
@@ -672,17 +761,26 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
                 device=fused_feature.device,
                 dtype=fused_feature.dtype,
             )
+        lane_rows = self._add_dynamic_template(lane_rows, self._lane_dense_seed_template(lane_seed_coords))
+        stop_rows = self._add_dynamic_template(
+            self.stop_line_head(stop_line_memory, query_seed=stop_line_query_seed),
+            self._stop_line_dense_seed_template(stop_seed_coords),
+        )
+        cross_rows = self._add_dynamic_template(
+            self.crosswalk_head(crosswalk_memory, query_seed=crosswalk_query_seed),
+            self._crosswalk_dense_seed_template(cross_seed_coords),
+        )
         outputs = {
             "lane": self._scale_lane_rows(self._add_template(lane_rows, self.lane_anchor_template)),
             "stop_line": self._scale_point_rows(
                 self._add_template(
-                    self.stop_line_head(stop_line_memory, query_seed=stop_line_query_seed),
+                    stop_rows,
                     self.stop_line_anchor_template,
                 )
             ),
             "crosswalk": self._scale_point_rows(
                 self._add_template(
-                    self.crosswalk_head(crosswalk_memory, query_seed=crosswalk_query_seed),
+                    cross_rows,
                     self.crosswalk_anchor_template,
                 )
             ),

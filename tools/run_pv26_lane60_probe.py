@@ -2684,6 +2684,14 @@ EXPERIMENTS["current_family_teacher_runtime_vector_decoder"] = {
     },
 }
 
+EXPERIMENTS["current_family_dense_seed_geometry_vector_decoder"] = {
+    **EXPERIMENTS["current_family_dense_denoise_vector_decoder"],
+    "train_defaults_overrides": {
+        **EXPERIMENTS["current_family_dense_denoise_vector_decoder"]["train_defaults_overrides"],
+        "roadmark_architecture": "current_family_dense_seed_geometry_denoise_sigmoid",
+    },
+}
+
 EXPERIMENTS["cooccur_lane_stop_cross_sampler"] = {
     **EXPERIMENTS["stopline_projection_comp_runtime"],
     "overrides": {

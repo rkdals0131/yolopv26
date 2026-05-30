@@ -32,6 +32,7 @@ ROADMARK_ARCHITECTURES = (
     "current_family_anchor_query_seed_denoise_sigmoid",
     "current_family_dense_seed_sigmoid",
     "current_family_dense_seed_denoise_sigmoid",
+    "current_family_dense_seed_geometry_denoise_sigmoid",
 )
 LANE_HEAD_MODES = ("seg_first", "row_native")
 LOSS_WEIGHT_NAMES = ("det", "tl_attr", "lane", "stop_line", "crosswalk")

@@ -19828,3 +19828,90 @@ Decision:
 - Larger train exposure did not improve the retained area-ROI exact frontier: train512 exact TP gain `+38` came with FP `+51` and F1 stayed below `0.60`.
 - Broader-val512 is skipped because exact did not beat the area-ROI frontier and remains below target.
 - Close this as cross-task conflict feature / stop-cross dense-map feature / saved-verifier replay / larger train-batch tuning on the same dropped-candidate area-ROI verifier surface. Reopen dropped-candidate rescue only with a materially different instance-quality or model-side instance-emission signal that first improves TP/FP/FN.
+
+## 350. Current-family dense-seed geometry prior: seed-centered templates still do not create matched objects
+
+Context:
+
+- Previous current-family vector-query branches tested raw vectors, sigmoid-normalized network coordinates, anchor priors, anchor-query seeding, dense-seeded queries, metric-quality objectness, dense-seed plus denoise, and teacher-runtime targets.
+- The remaining plausible architecture premise was that dense seed features alone were too indirect: the vector decoder might need its output geometry initialized around the runtime seed itself.
+- This branch is therefore not another threshold, objectness, top-K, or head-LR sweep. It adds a per-image geometry prior from the selected dense seed coordinates into the vector outputs before sigmoid coordinate scaling.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Added `roadmark_architecture="current_family_dense_seed_geometry_denoise_sigmoid"`.
+- `model/net/roadmark_current_family.py` now lets `_DenseSeedQueryHead` return top-K normalized seed coordinates and adds opt-in dynamic templates:
+  - lane row-x logits are centered on seed x with visible-row prior logits;
+  - stop-line points are initialized as a horizontal seed-centered segment;
+  - crosswalk points are initialized as a seed-centered rectangle-like contour.
+- `model/net/heads.py`, `tools/pv26_train/config.py`, and `tools/run_pv26_lane60_probe.py` expose the new architecture/preset.
+- `test/test_pv26_heads.py` verifies finite outputs, bounded sigmoid-network coordinates, dense-seed logits, and the `describe()` contract.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA smoke:
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - stage 4 heads-only lane-family fine-tune;
+  - skipped steps `0`.
+- Training validation best phase objective was only `0.2334973569`; task-best lane/stop-line/crosswalk F1 were all `0.0000`.
+- Fixed evaluator replay:
+  - command used `tools/evaluate_pv26_lane60_checkpoint.py`;
+  - `--max-val-batches 4`;
+  - `--validation-epoch 2`;
+  - `--train-batches 64`;
+  - same existing dataset root and explicit local backbone weights.
+
+Fixed val4 result:
+
+| Metric | Value |
+| --- | ---: |
+| phase_objective | `0.2316818087` |
+| lane F1 | `0.0000` |
+| lane TP/FP/FN | `0 / 1 / 86` |
+| stop-line F1 | `0.0000` |
+| stop-line TP/FP/FN | `0 / 0 / 2` |
+| crosswalk F1 | `0.0000` |
+| crosswalk TP/FP/FN | `0 / 44 / 7` |
+
+Artifacts:
+
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_222945`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_222945/analysis_exports/fixed_val4_epoch2/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_222945/analysis_exports/fixed_val4_epoch2/summary.json`.
+- Training history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_dense_seed_geometry_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260530_222945/phase_4/history/epochs.jsonl`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned after fixed metric export.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run size after cleanup is about `8.8M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/roadmark_current_family.py model/net/heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_dense_seed_geometry_current_family_vector_decoder`.
+- Real CUDA `2x64` train smoke on the existing canonical dataset root.
+- Fixed val4 epoch-2 replay through `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+Decision:
+
+- The dynamic seed-centered geometry prior is validly wired and trainable, but it still recovered zero matched lane, stop-line, or crosswalk TP at the first fixed gate.
+- It suppresses most lane/stop-line FP compared with earlier sigmoid/vector branches, but crosswalk FP explodes and no task gets a match.
+- Exact-val128, broader-val512, and larger training are skipped because the fixed smoke gate has all task TP at `0`.
+- Close this as seed-template width/height, visibility prior, object threshold, dense seed top-K/radius, denoise weight, head-LR, epoch-count, and train-batch scaling on the same vector-query contract.
+- Reopen current-family vector work only with a materially different set-matching/pretraining/quality contract that first creates nonzero matched TP on fixed validation.
