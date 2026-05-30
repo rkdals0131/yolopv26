@@ -22346,3 +22346,97 @@ Decision:
 - It does not beat any stop-line exact reference; it is much worse than both projection-comp exact and primary exact.
 - Close this as hard-mined manifest plus distance-heatmap center/selector target combination, including selector-weight, head-LR, epoch-count, train-batch scaling, and same static-trunk projection-comp runtime tuning.
 - Reopen only with a materially different candidate-generation/geometry or verifier signal that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 375. 2026-05-31 Stop-line lane-topology utility router: utility objective still cannot select source headroom
+
+Context:
+
+- The user explicitly asked to keep doing real training/evaluation, to use larger data exposure where useful, and to avoid dataset copies.
+- Prior source-router evidence had two separate negatives:
+  - `lane_topology` features with CE labels recovered primary TP at train256 exact, but added one FP (`32 / 29 / 28`, F1 `0.5289`) and stayed below primary exact `32 / 28 / 28`, F1 `0.5333`;
+  - utility-regression source routing on output-stat features stayed below primary at train64/train128 exact.
+- This run tested the combination rather than either axis alone: retain the lane-topology no-GT source-quality features, but train the router to predict each source mode's metric utility.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Existing tool reused without new code:
+  - `tools/probe_pv26_stopline_source_router.py`.
+- Runtime/source contract:
+  - primary checkpoint `merged_lane_head.pt`;
+  - stop-line specialist checkpoint from `stopline_priority_positive_sampler`;
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `stop_line_lane60_experiment=stopline_projection_comp_runtime`;
+  - `feature_mode=lane_topology`;
+  - `router_objective=utility_regression`;
+  - `crosswalk_polygon_mode=hull`.
+- The router trains a small MLP over `293`-dim no-GT source/lane-topology features.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- CUDA train/eval:
+  - router train batches `256`;
+  - exact-val128 validation batches `128`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - device `cuda:0`.
+- Router diagnostics:
+  - train feature count `1024`;
+  - feature dim `293`;
+  - train top-1 utility-choice accuracy `0.7705`;
+  - utility choice counts: primary `5`, specialist `6`, endpoint_fusion `4`, union_dedupe `9`, agreement `319`, empty `681`.
+
+Exact-val128 result:
+
+| Variant | Lane F1 | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| oracle_router | `0.5888` | `0.6947` | `33 / 2 / 27` | `0.5988` |
+| oracle_utility_router | `0.5888` | `0.6947` | `33 / 2 / 27` | `0.5988` |
+| primary | `0.5888` | `0.5167` | `31 / 29 / 29` | `0.5988` |
+| endpoint_fusion | `0.5888` | `0.5167` | `31 / 29 / 29` | `0.5988` |
+| learned_utility_router | `0.5888` | `0.5082` | `31 / 31 / 29` | `0.5988` |
+| union_dedupe | `0.5888` | `0.5041` | `31 / 32 / 29` | `0.5988` |
+| specialist | `0.5888` | `0.4918` | `30 / 32 / 30` | `0.5988` |
+| agreement | `0.5888` | `0.4874` | `29 / 30 / 31` | `0.5988` |
+| empty | `0.5888` | `0.0000` | `0 / 0 / 60` | `0.5988` |
+
+Diagnosis:
+
+- The oracle gap remains large:
+  - oracle utility source routing reaches stop-line F1 `0.6947`;
+  - learned utility routing reaches only `0.5082`.
+- The learned router selects too many extra non-primary sources:
+  - learned utility `31 / 31 / 29`;
+  - primary/projection-comp in the same run `31 / 29 / 29`.
+- Compared with the stronger primary exact reference used in prior router audits (`32 / 28 / 28`, F1 `0.5333`), this is clearly exact-negative.
+- The failure is not dataset exposure or output-stat objective alone; lane-topology features plus utility regression still do not learn the no-GT source selector needed to convert oracle source headroom into runtime TP/FP/FN.
+- Broader-val512 is skipped because exact failed.
+
+Artifacts:
+
+- Summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_lane_topology_utility_router_train256_exact_val128_20260531/summary.json`.
+- Metrics:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_lane_topology_utility_router_train256_exact_val128_20260531/metrics.csv`.
+
+Storage:
+
+- Output artifact size is about `64K`.
+- No verifier checkpoint was saved.
+- Temporary root `yolo26s.pt` was pruned after the run.
+- No dataset copy was created.
+
+Verification:
+
+- CUDA train256/exact-val128 lane-topology utility-regression source-router run on the existing canonical dataset root.
+- Summary and metrics were read back after the run.
+
+Decision:
+
+- Lane-topology utility-regression source routing is trainable but exact-negative.
+- Close this as router objective, utility formula, hidden-size, epoch/LR, train-batch scaling, and same source-choice/candidate surface safety-threshold tuning.
+- Reopen source routing only with a materially different candidate-generation/geometry or true source-quality signal that first improves fixed exact TP/FP/FN over primary projection-comp.
