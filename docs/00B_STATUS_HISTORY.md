@@ -21213,3 +21213,115 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because the first fixed gate failed by a wide margin.
 - Close this as anchor-offset aux weight, head-LR, freeze policy, anchor-gap threshold, track-mode threshold, epoch-count, and train-batch scaling on the same bottom-anchor vote contract.
 - Reopen anchor-based lane grouping only with a materially different TP-preserving instance-quality or assignment contract that first improves fixed smoke TP/FP/FN over retained `40 / 11 / 46`.
+
+## 365. 2026-05-31 Lane hard-FN sample-id sampler: train-split failure-evidence feeding is smoke-negative
+
+Context:
+
+- The user explicitly asked for real training/evaluation and larger-data feeding without copying datasets.
+- This branch tests whether train-split lane FN evidence can improve the current row-scan/tangent runtime by changing only sample feeding.
+- This is not the closed generic lane positive sampler or residual risk-bucket sampler. The manifest is built from actual model forward evidence: samples with missed GT lanes that have predicted centerline evidence or nearby unmatched row-scan tracks.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- `tools/probe_pv26_lane_fn_recovery_audit.py` now supports:
+  - `--split train`;
+  - sample identity columns (`dataset_key`, `sample_id`, `split`, `image_path`);
+  - optional `--hard-sample-manifest` CSV export.
+- `tools/run_pv26_lane60_probe.py` adds `lane_hard_fn_sample_id_sampler`.
+- Tracked manifest:
+  - `docs/manifests/lane_hard_fn_train64_20260531_sample_ids.csv`;
+  - `41` hard train samples.
+- The sampler uses `sample_ids:<manifest>` with hard-positive fraction `0.75`, keeping the existing canonical dataset root rather than copying data.
+
+Train-split audit:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Audit command used `merged_lane_head.pt`, train split, `64` batches, batch size `4`, and `flip_centerline_avg`.
+- Audit sample count: `256`.
+- Train-split audit baseline lane:
+  - F1 `0.2498`;
+  - TP/FP/FN `125 / 590 / 161`.
+- Hard-sample manifest rows: `41`.
+- FN evidence:
+  - `46` FN lanes had `gt_center_point_mean >= 0.50`;
+  - `56` FN lanes had nearest unmatched prediction distance `<=120px`;
+  - the combined `center>=0.50 or unmatched<=120px` no-new-FP upper-bound on that audit slice was lane F1 `0.3672`.
+
+Training and evaluation:
+
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA train:
+  - run `runs/pv26_exhaustive_od_lane_train/lane60_lane_hard_fn_sample_id_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_034353`;
+  - `2` epochs;
+  - `64` train batches per epoch;
+  - `4` validation batches;
+  - batch size `4`;
+  - freeze policy `lane_family_heads_only`;
+  - loss weights unchanged from `stopline_projection_comp_runtime`;
+  - skipped steps `0`;
+  - best internal phase objective `0.6479142951` at epoch `1`.
+- Fixed evaluator replay used `tools/evaluate_pv26_lane60_checkpoint.py` with:
+  - `--validation-epoch 2`;
+  - `--train-batches 64`;
+  - `--batch-size 4`;
+  - `--device cuda:0`;
+  - experiment preset `lane_hard_fn_sample_id_sampler`.
+
+Fixed val4 comparison:
+
+| Checkpoint | phase_objective | lane F1 | lane TP/FP/FN | stop-line F1 | stop-line TP/FP/FN | crosswalk F1 | crosswalk TP/FP/FN |
+| --- | ---: | ---: | --- | ---: | --- | ---: | --- |
+| seed `merged_lane_head.pt` | `0.6395153929` | `0.5507` | `38 / 14 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| trained objective-best `best.pt` | `0.6207466918` | `0.5263` | `35 / 12 / 51` | `0.0000` | `0 / 3 / 2` | `0.4000` | `2 / 1 / 5` |
+| trained lane-best `best_lane.pt` | `0.6291915725` | `0.5455` | `36 / 10 / 50` | `0.0000` | `0 / 3 / 2` | `0.4000` | `2 / 1 / 5` |
+
+Gate comparison:
+
+- Same-config seed replay is the fair local baseline for this data-feeding axis:
+  - lane `38 / 14 / 48`, F1 `0.5507`;
+  - crosswalk `3 / 1 / 4`, F1 `0.5455`.
+- Trained `best_lane.pt` lost `2` lane TP, reduced FP by `4`, and added `2` lane FN.
+- Crosswalk lost `1` TP and failed the smoke retention expectation.
+- Stop-line remained `0` TP on the fixed val4 subset.
+- The retained fixed lane reference `40 / 11 / 46`, F1 `0.5839`, is still higher than all same-turn variants.
+
+Artifacts:
+
+- Tracked manifest:
+  - `docs/manifests/lane_hard_fn_train64_20260531_sample_ids.csv`.
+- Train-split audit:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_fn_recovery_audit_train64_epoch2/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_fn_recovery_audit_train64_epoch2/lane_fn_recovery_rows.csv`.
+- Seed fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_hard_fn_sampler_seed_fixed_val4_epoch2/metrics.csv`.
+- Trained fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_hard_fn_sample_id_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_034353/analysis_exports/fixed_val4_epoch2_best/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_hard_fn_sample_id_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_034353/analysis_exports/fixed_val4_epoch2_best_lane/metrics.csv`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained negative train run size after cleanup is about `16M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_fn_recovery_audit.py tools/run_pv26_lane60_probe.py`.
+- Real CUDA train-split audit on the existing canonical dataset root.
+- Real CUDA `2x64` training on the existing canonical dataset root.
+- Fixed val4 epoch-2 replay for seed, objective-best, and lane-best checkpoints.
+
+Decision:
+
+- The train-split lane hard-FN manifest path is valid and trainable.
+- This exact data-feeding contract does not improve fixed TP/FP/FN; it trades away lane recall and crosswalk TP.
+- Exact-val128, broader-val512, and larger training are skipped because the first fixed gate failed against both same-config seed and retained fixed lane references.
+- Close this as hard-FN manifest threshold, manifest size, positive fraction, head-LR, epoch-count, and train-batch scaling on the same `sample_ids` lane-FN feeding contract.
+- Reopen lane failure-evidence feeding only with a materially different training signal, for example an instance-quality/emit loss that uses the hard samples to change candidate generation rather than only resampling the same heads.

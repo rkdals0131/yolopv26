@@ -23,6 +23,12 @@ DEFAULT_STOPLINE_HARDMINE_MANIFEST = (
     / "manifests"
     / "stopline_hardmine_train256_20260530_sample_ids.txt"
 )
+DEFAULT_LANE_HARD_FN_MANIFEST = (
+    REPO_ROOT
+    / "docs"
+    / "manifests"
+    / "lane_hard_fn_train64_20260531_sample_ids.csv"
+)
 EXPERIMENTS = {
     "upper_trunk_rebalance": {
         "freeze_policy": "lane_family_plus_upper_trunk",
@@ -2897,6 +2903,16 @@ EXPERIMENTS["lane_anchor_vote_instance_grouping"] = {
             "type": 0.0,
         },
         "stop_line_projection_comp_enabled": True,
+        "crosswalk_polygon_mode": "hull",
+    },
+}
+
+EXPERIMENTS["lane_hard_fn_sample_id_sampler"] = {
+    **EXPERIMENTS["stopline_projection_comp_runtime"],
+    "overrides": {
+        **EXPERIMENTS["stopline_projection_comp_runtime"]["overrides"],
+        "task_positive_task": f"sample_ids:{DEFAULT_LANE_HARD_FN_MANIFEST}",
+        "task_positive_fraction": 0.75,
         "crosswalk_polygon_mode": "hull",
     },
 }

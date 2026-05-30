@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", default="default")
     parser.add_argument("--phase-index", type=int, default=4)
     parser.add_argument("--max-val-batches", type=int, default=128)
+    parser.add_argument(
+        "--split",
+        choices=("val", "train"),
+        default="val",
+        help="Dataset split to audit. Use train to emit sample-id manifests for hard-sample training.",
+    )
     parser.add_argument("--validation-epoch", type=int, default=2)
     parser.add_argument("--train-batches", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -103,6 +109,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crosswalk-min-bbox-aspect", type=float, default=None)
     parser.add_argument("--crosswalk-polygon-mode", choices=("rect", "hull"), default="hull")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--hard-sample-manifest",
+        default="",
+        help="Optional CSV path for a train-sampler sample_id manifest built from audited lane FN evidence.",
+    )
+    parser.add_argument("--hard-sample-min-fn-count", type=int, default=1)
+    parser.add_argument("--hard-sample-min-center-mean", type=float, default=0.50)
+    parser.add_argument("--hard-sample-max-unmatched-distance", type=float, default=120.0)
+    parser.add_argument("--hard-sample-max-rows", type=int, default=0)
     return parser.parse_args()
 
 
@@ -621,6 +636,77 @@ def _upper_bound_rows(
     return rows
 
 
+def _sample_identity(meta: Any) -> dict[str, str]:
+    if not isinstance(meta, dict):
+        meta = {}
+    return {
+        "sample_id": str(meta.get("sample_id", "")),
+        "dataset_key": str(meta.get("dataset_key", "")),
+        "split": str(meta.get("split", "")),
+        "image_path": str(meta.get("image_path", "")),
+    }
+
+
+def _hard_sample_manifest_rows(
+    sample_rows: list[dict[str, Any]],
+    fn_rows: list[dict[str, Any]],
+    *,
+    min_fn_count: int,
+    min_center_mean: float,
+    max_unmatched_distance: float,
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    by_sample: dict[int, list[dict[str, Any]]] = {}
+    for row in fn_rows:
+        by_sample.setdefault(int(row.get("sample_index", -1)), []).append(row)
+
+    manifest_rows: list[dict[str, Any]] = []
+    for sample in sample_rows:
+        sample_index = int(sample.get("sample_index", -1))
+        sample_fn_rows = by_sample.get(sample_index, [])
+        fn_count = int(sample.get("fn_lane_count", 0))
+        if fn_count < int(min_fn_count):
+            continue
+        center_supported = sum(
+            1
+            for row in sample_fn_rows
+            if float(row.get("gt_center_point_mean", 0.0)) >= float(min_center_mean)
+        )
+        near_unmatched = sum(
+            1
+            for row in sample_fn_rows
+            if float(row.get("nearest_unmatched_pred_distance", math.inf)) <= float(max_unmatched_distance)
+        )
+        if center_supported <= 0 and near_unmatched <= 0:
+            continue
+        score = (2.0 * float(center_supported)) + float(near_unmatched) + (0.25 * float(fn_count))
+        manifest_rows.append(
+            {
+                "dataset_key": str(sample.get("dataset_key", "")),
+                "sample_id": str(sample.get("sample_id", "")),
+                "split": str(sample.get("split", "")),
+                "image_path": str(sample.get("image_path", "")),
+                "fn_lane_count": int(fn_count),
+                "fp_lane_count": int(sample.get("fp_lane_count", 0)),
+                "matched_lane_count": int(sample.get("matched_lane_count", 0)),
+                "hard_fn_count": int(len(sample_fn_rows)),
+                "center_supported_fn_count": int(center_supported),
+                "near_unmatched_fn_count": int(near_unmatched),
+                "hard_sample_score": float(score),
+            }
+        )
+    manifest_rows.sort(
+        key=lambda row: (
+            -float(row.get("hard_sample_score", 0.0)),
+            str(row.get("dataset_key", "")),
+            str(row.get("sample_id", "")),
+        )
+    )
+    if int(max_rows) > 0:
+        manifest_rows = manifest_rows[: int(max_rows)]
+    return manifest_rows
+
+
 def _metric(metrics: dict[str, Any], task: str, key: str) -> float:
     payload = metrics.get(task, {}) if isinstance(metrics.get(task), dict) else {}
     value = payload.get(key, 0.0)
@@ -673,7 +759,9 @@ def main() -> int:
     output_dir = (
         Path(args.output_dir).expanduser().resolve()
         if str(args.output_dir).strip()
-        else source_run / "analysis_exports" / f"lane_fn_recovery_audit_val{int(args.max_val_batches)}_epoch{int(args.validation_epoch)}"
+        else source_run
+        / "analysis_exports"
+        / f"lane_fn_recovery_audit_{str(args.split)}{int(args.max_val_batches)}_epoch{int(args.validation_epoch)}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -684,9 +772,25 @@ def main() -> int:
         progress_callback=lambda message: print(f"[lane_fn_recovery] {message}", flush=True),
     )
     _, val_loader = train_cli._build_phase_train_loaders(dataset, train_config=train_config, phase=phase)
-    if val_loader is None:
-        raise ValueError("lane FN recovery audit requires validation batches")
-    _advance_validation_sampler(val_loader, validation_epoch=int(args.validation_epoch))
+    if str(args.split) == "train":
+        audit_loader = train_cli.build_pv26_eval_dataloader(
+            dataset,
+            batch_size=train_config.batch_size,
+            num_batches=int(args.max_val_batches),
+            split="train",
+            seed=26,
+            num_workers=train_config.num_workers,
+            pin_memory=train_config.pin_memory,
+            encode_batches=False,
+            persistent_workers=train_config.persistent_workers,
+            prefetch_factor=train_config.prefetch_factor,
+        )
+    else:
+        audit_loader = val_loader
+    if audit_loader is None:
+        raise ValueError("lane FN recovery audit requires batches")
+    if str(args.split) == "val":
+        _advance_validation_sampler(audit_loader, validation_epoch=int(args.validation_epoch))
 
     trainer = train_cli._build_phase_trainer(phase, train_config)
     trainer.load_model_weights(checkpoint, map_location=train_config.device)
@@ -702,7 +806,7 @@ def main() -> int:
     unmatched_prediction_rows: list[dict[str, Any]] = []
     global_sample_index = 0
     with torch.no_grad():
-        for batch_index, batch in enumerate(val_loader, start=1):
+        for batch_index, batch in enumerate(audit_loader, start=1):
             if batch_index > int(args.max_val_batches):
                 break
             if batch_index == 1 or batch_index % 20 == 0:
@@ -736,6 +840,7 @@ def main() -> int:
             for sample_batch_index, (sample_pred, sample_gt, sample_meta) in enumerate(
                 zip(batch_predictions, batch_gt, meta)
             ):
+                sample_identity = _sample_identity(sample_meta)
                 maps = lane_segfirst_prediction_maps(postprocess_predictions, batch_index=sample_batch_index)
                 pred_lanes = list(sample_pred.get("lanes", []))
                 gt_lanes = list(sample_gt.get("lanes", []))
@@ -751,6 +856,7 @@ def main() -> int:
                         "batch_index": int(batch_index),
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
+                        **sample_identity,
                         "gt_lane_count": int(len(gt_lanes)),
                         "pred_lane_count": int(len(pred_lanes)),
                         "matched_lane_count": int(len(matched_gt_indices)),
@@ -773,6 +879,7 @@ def main() -> int:
                         "batch_index": int(batch_index),
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
+                        **sample_identity,
                         "gt_index": int(gt_index),
                         "sample_gt_lane_count": int(len(gt_lanes)),
                         "sample_pred_lane_count": int(len(pred_lanes)),
@@ -826,6 +933,7 @@ def main() -> int:
                         "batch_index": int(batch_index),
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
+                        **sample_identity,
                         "pred_index": int(pred_index),
                         "sample_gt_lane_count": int(len(gt_lanes)),
                         "sample_pred_lane_count": int(len(pred_lanes)),
@@ -882,12 +990,26 @@ def main() -> int:
     _write_csv(output_dir / "lane_fn_recovery_samples.csv", sample_rows)
     _write_csv(output_dir / "lane_fn_recovery_upper_bounds.csv", upper_bounds)
     _write_csv(output_dir / "lane_unmatched_prediction_repair_rows.csv", unmatched_prediction_rows)
+    manifest_rows: list[dict[str, Any]] = []
+    if str(args.hard_sample_manifest).strip():
+        manifest_path = Path(str(args.hard_sample_manifest)).expanduser().resolve()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_rows = _hard_sample_manifest_rows(
+            sample_rows,
+            fn_rows,
+            min_fn_count=int(args.hard_sample_min_fn_count),
+            min_center_mean=float(args.hard_sample_min_center_mean),
+            max_unmatched_distance=float(args.hard_sample_max_unmatched_distance),
+            max_rows=int(args.hard_sample_max_rows),
+        )
+        _write_csv(manifest_path, manifest_rows)
 
     summary = {
         "checkpoint": str(checkpoint),
         "source_run": str(source_run),
         "scenario_path": str(scenario_path),
         "lane60_experiment": str(args.lane60_experiment),
+        "split": str(args.split),
         "phase_index": int(phase_index),
         "max_val_batches": int(args.max_val_batches),
         "validation_epoch": int(args.validation_epoch),
@@ -914,6 +1036,10 @@ def main() -> int:
         "best_upper_bounds": upper_bounds[:8],
         "nearest_unmatched_geometry": _geometry_summaries(fn_rows),
         "unmatched_prediction_count": int(len(unmatched_prediction_rows)),
+        "hard_sample_manifest": str(Path(str(args.hard_sample_manifest)).expanduser().resolve())
+        if str(args.hard_sample_manifest).strip()
+        else "",
+        "hard_sample_manifest_count": int(len(manifest_rows)),
         "repairable_unmatched_predictions_le80_center050": int(
             sum(1 for row in unmatched_prediction_rows if bool(row.get("repairable_le80_center050")))
         ),
