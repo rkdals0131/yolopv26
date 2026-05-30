@@ -19915,3 +19915,72 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because the fixed smoke gate has all task TP at `0`.
 - Close this as seed-template width/height, visibility prior, object threshold, dense seed top-K/radius, denoise weight, head-LR, epoch-count, and train-batch scaling on the same vector-query contract.
 - Reopen current-family vector work only with a materially different set-matching/pretraining/quality contract that first creates nonzero matched TP on fixed validation.
+
+## 351. 2026-05-30 Lane lateral duplicate runtime smoke: one dense-supported shifted copy adds FP without TP recovery
+
+Context:
+
+- Section 178 showed lateral/nearby-track oracle budget is not mathematically impossible, but only if a duplicate-style readout recovers real FN rows while keeping added FP controlled.
+- Section 179 had already closed a simple centerline-translation duplicate mode. This follow-up tested a narrower current-runtime form: start from the retained `flip_centerline_avg_lane_cross_comp050` path, then append at most one shifted copy only when the shifted geometry is supported by the current dense lane maps and is not already an evaluator-distance duplicate.
+- This is a runtime/probe check, not a training win and not a threshold/offset sweep.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Tool changed:
+  - `tools/probe_pv26_lane_flip_tta.py`.
+- Test changed:
+  - `test/test_lane_flip_tta_probe.py`.
+- Added opt-in variant:
+  - `flip_centerline_avg_lane_cross_comp050_lateral_dup`.
+- Fixed contract:
+  - base dense/postprocess path: `flip_centerline_avg_lane_cross_comp050`;
+  - offsets: `-52px`, `+52px` in network x;
+  - max added lanes: `1` per sample;
+  - dense gate: shifted mean centerline `>=0.50`, shifted mean support `>=0.35`;
+  - reject if the shifted candidate is within `40px` mean point distance of an existing lane.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m py_compile tools/probe_pv26_lane_flip_tta.py test/test_lane_flip_tta_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_flip_tta_probe`.
+- Fixed CUDA val4 replay using the existing dataset root:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+
+Fixed val4 result:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| `flip_centerline_avg_lane_cross_comp050` | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| `flip_centerline_avg_lane_cross_comp050_lateral_dup` | `0.5797` | `40 / 12 / 46` | `0.0000` | `0.5455` |
+
+Lateral duplicate diagnostics:
+
+- samples: `16`;
+- source lanes: `51`;
+- candidate duplicates passing gates: `1`;
+- added duplicates: `1`;
+- recovered lane TP: `0`;
+- added lane FP: `1`.
+
+Artifacts:
+
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_lateral_duplicate_smoke_val4_epoch2/metrics.csv`.
+- Fixed val4 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_lateral_duplicate_smoke_val4_epoch2/summary.json`.
+
+Storage:
+
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after evaluation.
+- Retained artifact size is about `388K`.
+
+Decision:
+
+- The dense-supported fixed lateral duplicate recovered no lane TP and added one lane FP.
+- Exact-val128 and broader-val512 are skipped.
+- Close this as fixed lateral duplicate append on top of the retained flip/cross-mask runtime path.
+- Do not repeat it as offset, radius, max-added, dense-threshold, duplicate-distance, or candidate-score tuning. Reopen lane nearby-track recovery only with a materially different no-GT geometry repair or model-side instance-emission signal that first moves TP/FP/FN at fixed smoke.

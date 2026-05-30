@@ -22,6 +22,7 @@ from model.engine._trainer_epochs import _merge_raw_batches
 from model.engine.batch import augment_lane_family_metrics, raw_batch_for_metrics
 from model.engine.metrics import STOP_LINE_POINT_COUNT, _mean_point_distance, summarize_pv26_metrics
 from model.engine.postprocess import postprocess_pv26_batch
+from model.data.transform import clip_points, inverse_transform_points, transform_from_meta, transform_points, unique_point_count
 from tools.evaluate_pv26_lane60_checkpoint import (
     _advance_validation_sampler,
     _postprocess_override_config,
@@ -54,6 +55,18 @@ DEFAULT_VARIANTS = (
     "flip_centerline_avg",
     "flip_centerline_avg_lane_cross_comp050",
 )
+LANE_LATERAL_DUPLICATE_VARIANTS: dict[str, dict[str, Any]] = {
+    "flip_centerline_avg_lane_cross_comp050_lateral_dup": {
+        "base_variant": "flip_centerline_avg_lane_cross_comp050",
+        "offsets_px": (-52.0, 52.0),
+        "max_added_per_sample": 1,
+        "min_points": 4,
+        "min_mean_centerline": 0.50,
+        "min_mean_support": 0.35,
+        "existing_distance_threshold": 40.0,
+    },
+}
+AVAILABLE_VARIANTS = (*DEFAULT_VARIANTS, *tuple(LANE_LATERAL_DUPLICATE_VARIANTS))
 STOP_LINE_OUTPUT_KEY = "stop_line"
 STOP_LINE_OUTPUT_PREFIX = "stop_line_"
 STOP_LINE_SOURCE_MODES = (
@@ -134,7 +147,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--variants",
         default=",".join(DEFAULT_VARIANTS),
-        help=f"Comma-separated variants. Available: {', '.join(DEFAULT_VARIANTS)}",
+        help=f"Comma-separated variants. Available: {', '.join(AVAILABLE_VARIANTS)}",
     )
     parser.add_argument(
         "--lane-semantic-vote-modes",
@@ -297,6 +310,13 @@ def _merge_lane_dense_predictions(
     variant: str,
 ) -> dict[str, Any]:
     normalized = str(variant).strip()
+    lateral_duplicate_spec = LANE_LATERAL_DUPLICATE_VARIANTS.get(normalized)
+    if lateral_duplicate_spec is not None:
+        return _merge_lane_dense_predictions(
+            base,
+            flipped_unflipped,
+            variant=str(lateral_duplicate_spec["base_variant"]),
+        )
     task_mask_spec = TASK_MASK_COMPETITION_VARIANTS.get(normalized)
     if task_mask_spec is not None:
         base_variant, mask_keys, strength = task_mask_spec
@@ -316,10 +336,134 @@ def _variant_names(raw: str) -> tuple[str, ...]:
     names = tuple(name.strip() for name in str(raw).split(",") if name.strip())
     if not names:
         raise ValueError("at least one variant is required")
-    unknown = sorted(set(names) - set(DEFAULT_VARIANTS))
+    unknown = sorted(set(names) - set(AVAILABLE_VARIANTS))
     if unknown:
         raise ValueError(f"unknown flip TTA variants: {', '.join(unknown)}")
     return names
+
+
+def _single_channel_probability_map(outputs: dict[str, Any], key: str, batch_index: int) -> np.ndarray:
+    value = outputs.get(key)
+    if not isinstance(value, torch.Tensor):
+        raise KeyError(f"lateral duplicate lane variant requires tensor key: {key}")
+    item = value[batch_index].detach().cpu()
+    if item.ndim == 3 and int(item.shape[0]) == 1:
+        item = item[0]
+    if item.ndim != 2:
+        raise ValueError(f"expected BCHW single-channel tensor for {key}, got {tuple(value.shape)}")
+    return item.sigmoid().numpy().astype(np.float32)
+
+
+def _sample_map_nearest(
+    probability_map: np.ndarray,
+    network_points: np.ndarray,
+    *,
+    network_hw: tuple[int, int],
+) -> np.ndarray:
+    points = np.asarray(network_points, dtype=np.float32).reshape(-1, 2)
+    if points.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    map_h, map_w = int(probability_map.shape[0]), int(probability_map.shape[1])
+    network_h, network_w = int(network_hw[0]), int(network_hw[1])
+    xs = np.rint(points[:, 0] * float(map_w) / max(float(network_w), 1.0)).astype(np.int64)
+    ys = np.rint(points[:, 1] * float(map_h) / max(float(network_h), 1.0)).astype(np.int64)
+    xs = np.clip(xs, 0, max(map_w - 1, 0))
+    ys = np.clip(ys, 0, max(map_h - 1, 0))
+    return probability_map[ys, xs]
+
+
+def _lane_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
+    try:
+        return float(_mean_point_distance(a.get("points_xy", []), b.get("points_xy", []), target_count=20))
+    except Exception:
+        return float("inf")
+
+
+def _apply_lane_lateral_duplicate_variant(
+    batch_predictions: list[dict[str, Any]],
+    outputs: dict[str, Any],
+    meta_rows: list[dict[str, Any]],
+    *,
+    variant: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    spec = LANE_LATERAL_DUPLICATE_VARIANTS.get(str(variant).strip())
+    stats = {
+        "samples": 0,
+        "source_lanes": 0,
+        "candidate_duplicates": 0,
+        "added_duplicates": 0,
+    }
+    if spec is None:
+        return [dict(sample) for sample in batch_predictions], stats
+    output_samples: list[dict[str, Any]] = []
+    max_added = int(spec["max_added_per_sample"])
+    min_points = int(spec["min_points"])
+    min_centerline = float(spec["min_mean_centerline"])
+    min_support = float(spec["min_mean_support"])
+    existing_distance_threshold = float(spec["existing_distance_threshold"])
+    offsets = tuple(float(value) for value in spec["offsets_px"])
+    for batch_index, sample in enumerate(batch_predictions):
+        stats["samples"] += 1
+        lanes = [dict(lane) for lane in sample.get("lanes", [])]
+        stats["source_lanes"] += len(lanes)
+        if max_added <= 0 or not lanes:
+            copied = dict(sample)
+            copied["lanes"] = lanes
+            output_samples.append(copied)
+            continue
+        transform = transform_from_meta(meta_rows[batch_index])
+        centerline_map = _single_channel_probability_map(outputs, "lane_seg_centerline_logits", batch_index)
+        support_map = _single_channel_probability_map(outputs, "lane_seg_support_logits", batch_index)
+        best_lane: dict[str, Any] | None = None
+        best_score = -1.0
+        for lane in lanes:
+            points_xy = lane.get("points_xy", [])
+            if len(points_xy) < min_points:
+                continue
+            network_points = np.asarray(transform_points(points_xy, transform), dtype=np.float32).reshape(-1, 2)
+            if network_points.shape[0] < min_points:
+                continue
+            for dx in offsets:
+                shifted = network_points.copy()
+                shifted[:, 0] += float(dx)
+                valid = (
+                    (shifted[:, 0] >= 0.0)
+                    & (shifted[:, 0] <= float(transform.network_hw[1] - 1))
+                    & (shifted[:, 1] >= 0.0)
+                    & (shifted[:, 1] <= float(transform.network_hw[0] - 1))
+                )
+                if not bool(valid.all()):
+                    continue
+                center_values = _sample_map_nearest(centerline_map, shifted, network_hw=transform.network_hw)
+                support_values = _sample_map_nearest(support_map, shifted, network_hw=transform.network_hw)
+                mean_centerline = float(center_values.mean()) if center_values.size else 0.0
+                mean_support = float(support_values.mean()) if support_values.size else 0.0
+                if mean_centerline < min_centerline or mean_support < min_support:
+                    continue
+                raw_points = inverse_transform_points(clip_points(shifted.tolist(), transform.network_hw), transform)
+                if unique_point_count(raw_points) < min_points:
+                    continue
+                candidate = dict(lane)
+                candidate["points_xy"] = [[float(x), float(y)] for x, y in raw_points]
+                candidate["score"] = float(min(float(lane.get("score", 1.0)), 0.70 * mean_centerline + 0.30 * mean_support))
+                candidate["lateral_duplicate"] = True
+                candidate["lateral_duplicate_dx"] = float(dx)
+                candidate["lateral_duplicate_mean_centerline"] = mean_centerline
+                candidate["lateral_duplicate_mean_support"] = mean_support
+                if any(_lane_distance(candidate, existing) <= existing_distance_threshold for existing in lanes):
+                    continue
+                stats["candidate_duplicates"] += 1
+                score = 0.70 * mean_centerline + 0.30 * mean_support
+                if score > best_score:
+                    best_score = score
+                    best_lane = candidate
+        copied = dict(sample)
+        if best_lane is not None:
+            lanes.append(best_lane)
+            stats["added_duplicates"] += 1
+        copied["lanes"] = lanes
+        output_samples.append(copied)
+    return output_samples, stats
 
 
 def _semantic_vote_modes(raw: str) -> tuple[str, ...]:
@@ -711,6 +855,15 @@ def main() -> int:
     evaluator.heads.eval()
 
     predictions_by_variant: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _, _ in variant_matrix}
+    lateral_duplicate_stats_by_variant: dict[str, dict[str, int]] = {
+        label: {
+            "samples": 0,
+            "source_lanes": 0,
+            "candidate_duplicates": 0,
+            "added_duplicates": 0,
+        }
+        for label, _, _, _ in variant_matrix
+    }
     raw_batches: list[dict[str, Any]] = []
     processed_batches = 0
     with torch.no_grad():
@@ -789,13 +942,20 @@ def main() -> int:
                             config=specialist_postprocess_config,
                         )
                     specialist_predictions = postprocessed_cache[specialist_key]
-                predictions_by_variant[label].extend(
-                    _apply_stop_line_source_mode(
-                        postprocessed_cache[primary_key],
-                        specialist_predictions,
-                        mode=stop_line_source_mode,
-                    )
+                routed_predictions = _apply_stop_line_source_mode(
+                    postprocessed_cache[primary_key],
+                    specialist_predictions,
+                    mode=stop_line_source_mode,
                 )
+                routed_predictions, lateral_stats = _apply_lane_lateral_duplicate_variant(
+                    routed_predictions,
+                    primary_outputs_by_variant[variant],
+                    meta_rows,
+                    variant=variant,
+                )
+                for key, value in lateral_stats.items():
+                    lateral_duplicate_stats_by_variant[label][key] += int(value)
+                predictions_by_variant[label].extend(routed_predictions)
             processed_batches += 1
 
     merged_raw = _merge_raw_batches(raw_batches)
@@ -863,6 +1023,7 @@ def main() -> int:
         "rows": rows,
         "metrics_by_variant": _json_ready(metrics_by_variant),
         "selection_by_variant": _json_ready(selection_by_variant),
+        "lateral_duplicate_stats_by_variant": lateral_duplicate_stats_by_variant,
     }
     (output_dir / "summary.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(rows, ensure_ascii=False, indent=2, sort_keys=True), flush=True)

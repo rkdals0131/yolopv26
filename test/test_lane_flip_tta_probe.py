@@ -2,7 +2,9 @@ import unittest
 
 import torch
 
+from model.data.transform import compute_letterbox_transform
 from tools.probe_pv26_lane_flip_tta import (
+    _apply_lane_lateral_duplicate_variant,
     _apply_stop_line_source_mode,
     _merge_lane_outputs,
     _merge_lane_dense_predictions,
@@ -10,6 +12,15 @@ from tools.probe_pv26_lane_flip_tta import (
     _unflip_lane_dense_outputs,
     _unflip_lane_tangent_axis,
 )
+
+
+def _identity_meta() -> dict[str, object]:
+    transform = compute_letterbox_transform((608, 800), network_hw=(608, 800))
+    return {
+        "raw_hw": (608, 800),
+        "network_hw": (608, 800),
+        "transform": transform.as_meta(),
+    }
 
 
 class LaneFlipTTAProbeTest(unittest.TestCase):
@@ -64,6 +75,73 @@ class LaneFlipTTAProbeTest(unittest.TestCase):
         self.assertLess(float(suppressed["lane_seg_centerline_logits"][0, 0, 0, 1]), -0.65)
         self.assertIs(suppressed["crosswalk_mask_logits"], base["crosswalk_mask_logits"])
         self.assertIs(suppressed["stop_line_mask_logits"], base["stop_line_mask_logits"])
+
+    def test_lateral_duplicate_variant_adds_one_dense_supported_shifted_lane(self) -> None:
+        centerline = torch.full((1, 1, 608, 800), -8.0)
+        support = torch.full((1, 1, 608, 800), -8.0)
+        for y in (120, 180, 240, 300):
+            centerline[0, 0, y, 152] = 8.0
+            support[0, 0, y, 152] = 8.0
+        predictions = [
+            {
+                "lanes": [
+                    {
+                        "score": 0.9,
+                        "class_name": "white_lane",
+                        "lane_type": "solid",
+                        "points_xy": [[100.0, 120.0], [100.0, 180.0], [100.0, 240.0], [100.0, 300.0]],
+                    }
+                ],
+                "stop_lines": [],
+                "crosswalks": [],
+            }
+        ]
+
+        augmented, stats = _apply_lane_lateral_duplicate_variant(
+            predictions,
+            {
+                "lane_seg_centerline_logits": centerline,
+                "lane_seg_support_logits": support,
+            },
+            [_identity_meta()],
+            variant="flip_centerline_avg_lane_cross_comp050_lateral_dup",
+        )
+
+        self.assertEqual(stats["added_duplicates"], 1)
+        self.assertEqual(len(augmented[0]["lanes"]), 2)
+        duplicate = augmented[0]["lanes"][1]
+        self.assertTrue(duplicate["lateral_duplicate"])
+        self.assertEqual([round(point[0]) for point in duplicate["points_xy"]], [152, 152, 152, 152])
+
+    def test_lateral_duplicate_variant_rejects_low_dense_support(self) -> None:
+        logits = torch.full((1, 1, 608, 800), -8.0)
+        predictions = [
+            {
+                "lanes": [
+                    {
+                        "score": 0.9,
+                        "class_name": "white_lane",
+                        "lane_type": "solid",
+                        "points_xy": [[100.0, 120.0], [100.0, 180.0], [100.0, 240.0], [100.0, 300.0]],
+                    }
+                ],
+                "stop_lines": [],
+                "crosswalks": [],
+            }
+        ]
+
+        augmented, stats = _apply_lane_lateral_duplicate_variant(
+            predictions,
+            {
+                "lane_seg_centerline_logits": logits,
+                "lane_seg_support_logits": logits,
+            },
+            [_identity_meta()],
+            variant="flip_centerline_avg_lane_cross_comp050_lateral_dup",
+        )
+
+        self.assertEqual(stats["added_duplicates"], 0)
+        self.assertEqual(len(augmented[0]["lanes"]), 1)
 
     def test_merge_stop_line_outputs_replaces_only_stop_line_keys(self) -> None:
         base = {
