@@ -2767,6 +2767,14 @@ EXPERIMENTS["current_family_anchor_query_seed_vector_decoder"] = {
     },
 }
 
+EXPERIMENTS["current_family_anchor_query_zerores_vector_decoder"] = {
+    **EXPERIMENTS["current_family_anchor_query_seed_vector_decoder"],
+    "train_defaults_overrides": {
+        **EXPERIMENTS["current_family_anchor_query_seed_vector_decoder"]["train_defaults_overrides"],
+        "roadmark_architecture": "current_family_anchor_query_seed_zerores_denoise_sigmoid",
+    },
+}
+
 EXPERIMENTS["current_family_dense_seed_vector_decoder"] = {
     **EXPERIMENTS["current_family_vector_decoder"],
     "train_defaults_overrides": {

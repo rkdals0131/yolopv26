@@ -22638,3 +22638,92 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because the first fixed gate still loses lane TP versus retained and moves no stop-line TP.
 - Close this as `distill_sample_mode`, det-source sampler ratio, distill weight, teacher checkpoint, head LR, epoch-count, train-batch scaling, and same static/head freeze-policy tuning.
 - Reopen full-root unlabeled exposure only with stronger pseudo-label quality/confidence or a new emit/candidate geometry signal that first improves fixed TP/FP/FN.
+
+## 378. 2026-05-31 Current-family anchor-query zero-residual vector decoder still emits no matched objects
+
+Context:
+
+- Previous current-family vector-query attempts closed raw vectors, sigmoid coordinates, anchor query priors, anchor denoise, anchor query-seed, dense seed, metric objectness, dense-denoise, teacher-runtime targets, dense-seed geometry templates, and self-conditioned geometry refinement.
+- This run tested the remaining warm-start/pretraining premise: keep the anchor-query-seed + denoise decoder, but zero-initialize the vector predictor residual layers so lane/stop-line/crosswalk outputs initially equal anchor geometry templates instead of random residual offsets.
+- This is an architecture initialization/decoder contract change, not a postprocess threshold, head-LR, epoch-count, or same vector-loss sweep.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Code changes:
+  - `model/net/roadmark_current_family.py` adds opt-in `zero_init_output_residual_enabled` and zero-initializes lane, stop-line, and crosswalk predictor weights/biases after module construction;
+  - `model/net/heads.py` adds `current_family_anchor_query_seed_zerores_denoise_sigmoid` aliases/routing and passes the opt-in flag only for this architecture;
+  - `tools/pv26_train/config.py` admits the new architecture string;
+  - `tools/run_pv26_lane60_probe.py` adds `current_family_anchor_query_zerores_vector_decoder`;
+  - `test/test_pv26_heads.py` verifies the architecture builds, reports zero-residual mode, has zeroed predictor parameters, and produces finite bounded outputs.
+- No new dependency was added.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train/val/test `326709 / 82641 / 20000`;
+  - no dataset copy was created.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405`.
+- CUDA train:
+  - epochs `2`;
+  - train batches `64`;
+  - validation batches `4`;
+  - batch size `4`;
+  - device `cuda:0`;
+  - skipped steps `0`;
+  - best internal phase objective `0.2334973569` at epoch `1`.
+- Epoch source counts confirmed lane-family full-root task exposure, not dataset copying:
+  - epoch 1: lane/stop-line/crosswalk source samples `256 / 256 / 256`;
+  - epoch 2: lane/stop-line/crosswalk source samples `256 / 256 / 256`.
+
+Fixed val4 result:
+
+| Checkpoint | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| epoch-1 best | `0.0000` | `0 / 107 / 86` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 7` | `0.2316818087` |
+| epoch-2 last | `0.0000` | `0 / 314 / 86` | `0.0000` | `0 / 0 / 2` | `0.0000` | `0 / 0 / 7` | `0.2316818087` |
+
+Reference:
+
+- The retained current fixed val4 lane/cross-mask reference remains lane `0.5839`, TP/FP/FN `40 / 11 / 46`, stop-line `0.0000`, TP/FP/FN `0 / 3 / 2`, crosswalk `0.5455`, TP/FP/FN `3 / 1 / 4`.
+- This zero-residual decoder did not recover any matched object in any lane-family task.
+- The epoch-2 checkpoint increases lane FP from `107` to `314` without TP, so longer training on this exact contract is not justified.
+
+Artifacts:
+
+- Run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/summary.json`.
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/phase_4/history/epochs.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/phase_4/history/train_steps.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/phase_4/history/pcgrad_diagnostics.jsonl`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/analysis_exports/fixed_val4_epoch1_best/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/analysis_exports/fixed_val4_epoch1_best/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/analysis_exports/fixed_val4_epoch2_last/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_current_family_anchor_query_zerores_vector_decoder_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_084405/analysis_exports/fixed_val4_epoch2_last/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `16M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/roadmark_current_family.py model/net/heads.py tools/pv26_train/config.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_can_use_zerores_anchor_query_current_family_vector_decoder`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "current_family_anchor_query_zerores_vector_decoder|experiment"`.
+- Real CUDA `2x64` train on the existing canonical root.
+- Fixed val4 `tools/evaluate_pv26_lane60_checkpoint.py` replay for both epoch-1 best and epoch-2 last.
+
+Decision:
+
+- The zero-residual anchor-template warm start is wired and trainable, but it is fixed-gate negative.
+- Exact-val128, broader-val512, and larger training are skipped because both evaluated checkpoints have `0` TP for lane, stop-line, and crosswalk on fixed val4.
+- Close this as predictor residual zero-init, anchor-query seed, denoise warm-start, vector object threshold, head-LR, epoch-count, train-batch scaling, and same current-family vector-query warm-start tuning.
+- Reopen current-family vector-query work only with a materially different set-query pretraining, assignment target, or dense proposal contract that first creates nonzero matched TP on fixed validation.

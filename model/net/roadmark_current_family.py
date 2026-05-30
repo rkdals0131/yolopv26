@@ -334,6 +334,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         dense_query_seed_enabled: bool = False,
         dense_seed_geometry_prior_enabled: bool = False,
         iterative_refinement_enabled: bool = False,
+        zero_init_output_residual_enabled: bool = False,
     ) -> None:
         super().__init__()
         self.coordinate_mode = str(coordinate_mode or "raw").strip().lower()
@@ -345,6 +346,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
         self.dense_query_seed_enabled = bool(dense_query_seed_enabled)
         self.dense_seed_geometry_prior_enabled = bool(dense_seed_geometry_prior_enabled)
         self.iterative_refinement_enabled = bool(iterative_refinement_enabled)
+        self.zero_init_output_residual_enabled = bool(zero_init_output_residual_enabled)
         self.in_channels = tuple(int(channel) for channel in in_channels)
         self.feature_strides = tuple(int(stride) for stride in feature_strides)
         if len(self.in_channels) != 3:
@@ -445,6 +447,18 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             self.lane_geometry_query_input = None
             self.stop_line_geometry_query_input = None
             self.crosswalk_geometry_query_input = None
+        if self.zero_init_output_residual_enabled:
+            self._zero_init_output_residuals()
+
+    def _zero_init_output_residuals(self) -> None:
+        for predictor in (
+            self.lane_head.predictor,
+            self.stop_line_head.predictor,
+            self.crosswalk_head.predictor,
+        ):
+            nn.init.zeros_(predictor.weight)
+            if predictor.bias is not None:
+                nn.init.zeros_(predictor.bias)
 
     def lane_family_modules(self) -> tuple[nn.Module, ...]:
         modules: list[nn.Module] = [
@@ -486,6 +500,7 @@ class CurrentFamilyRoadMarkHeads(nn.Module):
             "iterative_refinement": "self_conditioned_geometry_query"
             if self.iterative_refinement_enabled
             else "disabled",
+            "zero_init_output_residual": "enabled" if self.zero_init_output_residual_enabled else "disabled",
         }
 
     def _add_template(self, rows: torch.Tensor, template: torch.Tensor | None) -> torch.Tensor:

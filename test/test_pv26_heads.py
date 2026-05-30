@@ -540,6 +540,56 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertGreaterEqual(float(cross_points[..., 0].min().item()), 0.0)
         self.assertLessEqual(float(cross_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
 
+    def test_heads_can_use_zerores_anchor_query_current_family_vector_decoder(self) -> None:
+        from model.data.transform import NETWORK_HW
+        from model.net import PV26Heads
+
+        heads = PV26Heads(
+            in_channels=(64, 64, 128, 256),
+            roadmark_architecture="current_family_anchor_query_seed_zerores_denoise_sigmoid",
+        )
+        heads.eval()
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features, encoded={})
+        summary = heads.describe()
+        lane_x = outputs["lane"][..., LANE_X_SLICE]
+        stop_points = outputs["stop_line"][..., 1:].view(1, STOP_LINE_QUERY_COUNT, -1, 2)
+        cross_points = outputs["crosswalk"][..., 1:].view(1, CROSSWALK_QUERY_COUNT, -1, 2)
+
+        self.assertEqual(
+            summary["roadmark_architecture"],
+            "current_family_anchor_query_seed_zerores_denoise_sigmoid",
+        )
+        self.assertEqual(summary["roadmark"]["anchor_query_seed"], "shared_geometry_query_input")
+        self.assertEqual(summary["roadmark"]["zero_init_output_residual"], "enabled")
+        self.assertTrue(
+            torch.allclose(
+                heads.roadmark_heads.lane_head.predictor.weight,
+                torch.zeros_like(heads.roadmark_heads.lane_head.predictor.weight),
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                heads.roadmark_heads.stop_line_head.predictor.bias,
+                torch.zeros_like(heads.roadmark_heads.stop_line_head.predictor.bias),
+            )
+        )
+        self.assertTrue(torch.isfinite(outputs["lane"]).all())
+        self.assertTrue(torch.isfinite(outputs["stop_line"]).all())
+        self.assertTrue(torch.isfinite(outputs["crosswalk"]).all())
+        self.assertGreaterEqual(float(lane_x.min().item()), 0.0)
+        self.assertLessEqual(float(lane_x.max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(stop_points[..., 0].min().item()), 0.0)
+        self.assertLessEqual(float(stop_points[..., 0].max().item()), float(NETWORK_HW[1] - 1))
+        self.assertGreaterEqual(float(cross_points[..., 1].min().item()), 0.0)
+        self.assertLessEqual(float(cross_points[..., 1].max().item()), float(NETWORK_HW[0] - 1))
+
     def test_heads_can_use_dense_seed_current_family_vector_decoder(self) -> None:
         from model.data.transform import NETWORK_HW
         from model.net import PV26Heads

@@ -30,6 +30,7 @@ ROADMARK_ARCHITECTURES = (
     "current_family_anchor_sigmoid",
     "current_family_anchor_denoise_sigmoid",
     "current_family_anchor_query_seed_denoise_sigmoid",
+    "current_family_anchor_query_seed_zerores_denoise_sigmoid",
     "current_family_dense_seed_sigmoid",
     "current_family_dense_seed_denoise_sigmoid",
     "current_family_dense_seed_geometry_denoise_sigmoid",
