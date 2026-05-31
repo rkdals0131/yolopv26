@@ -38,6 +38,13 @@ from tools.probe_pv26_stopline_candidate_pool import (
     _standardize_from_train,
     _write_candidate_features_csv,
 )
+from tools.probe_pv26_stopline_retained_suppressor import (
+    _apply_suppressor as _apply_retained_suppressor,
+    _assign_stopline_labels as _assign_retained_stopline_labels,
+    _decision_audit as _retained_suppressor_decision_audit,
+    _line_feature_vector as _retained_line_feature_vector,
+    _train_suppressor as _train_retained_suppressor,
+)
 from tools.probe_pv26_stopline_raw_hough_candidates import (
     _endpoint_proposal_mean,
     _line_points,
@@ -179,6 +186,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-components", type=int, default=2)
     parser.add_argument("--union-selector-enabled", type=int, choices=(0, 1), default=0)
     parser.add_argument("--union-top-k", type=int, default=12)
+    parser.add_argument("--retained-suppressor-enabled", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--retained-suppressor-hidden-dim", type=int, default=64)
+    parser.add_argument("--retained-suppressor-epochs", type=int, default=80)
+    parser.add_argument("--retained-suppressor-batch-size", type=int, default=128)
+    parser.add_argument("--retained-suppressor-lr", type=float, default=1.0e-3)
+    parser.add_argument("--retained-suppressor-weight-decay", type=float, default=1.0e-4)
+    parser.add_argument("--retained-suppressor-keep-threshold", type=float, default=0.50)
     parser.add_argument("--threshold-grid", type=int, default=101)
     parser.add_argument("--verifier-epochs", type=int, default=60)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
@@ -1181,6 +1195,52 @@ def _build_union_candidates(
     return candidates
 
 
+def _retained_suppressor_args(args: argparse.Namespace) -> argparse.Namespace:
+    return argparse.Namespace(
+        hidden_dim=int(args.retained_suppressor_hidden_dim),
+        suppressor_epochs=int(args.retained_suppressor_epochs),
+        suppressor_batch_size=int(args.retained_suppressor_batch_size),
+        suppressor_lr=float(args.retained_suppressor_lr),
+        suppressor_weight_decay=float(args.retained_suppressor_weight_decay),
+        keep_threshold=float(args.retained_suppressor_keep_threshold),
+        seed=20260531,
+    )
+
+
+def _retained_suppressor_examples(
+    *,
+    baseline_prediction: dict[str, Any],
+    gt_stop_lines: list[dict[str, Any]],
+    outputs: dict[str, Any],
+    sample_index: int,
+    global_sample_index: int,
+    meta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    lines = [dict(line) for line in baseline_prediction.get("stop_lines", [])]
+    labels = _assign_retained_stopline_labels(lines, gt_stop_lines)
+    examples: list[dict[str, Any]] = []
+    for line_index, line in enumerate(lines):
+        label = int(labels[line_index]) if line_index < len(labels) else 0
+        feature = _retained_line_feature_vector(
+            line,
+            predictions=outputs,
+            sample_index=int(sample_index),
+            meta=meta,
+            rank=int(line_index),
+            candidate_count=len(lines),
+        )
+        examples.append(
+            {
+                "features": feature,
+                "label": int(label),
+                "sample_index": int(global_sample_index),
+                "sample_batch_index": int(sample_index),
+                "line_index": int(line_index),
+            }
+        )
+    return examples
+
+
 def _union_candidate_row(
     candidate: dict[str, Any],
     *,
@@ -1444,6 +1504,15 @@ def _collect_records(
                     temporal_candidates=candidates,
                     gt_stop_lines=list(gt_sample.get("stop_lines", [])),
                 )
+                global_sample_index = int(len(records))
+                retained_suppressor_examples = _retained_suppressor_examples(
+                    baseline_prediction=baseline_prediction,
+                    gt_stop_lines=list(gt_sample.get("stop_lines", [])),
+                    outputs=outputs,
+                    sample_index=int(sample_index),
+                    global_sample_index=global_sample_index,
+                    meta=meta,
+                )
                 candidate_rows = [
                     _candidate_row(candidate, batch_index=batch_index, sample_index=sample_index, meta=meta)
                     for candidate in candidates
@@ -1477,6 +1546,7 @@ def _collect_records(
                         "union_candidates": union_candidates,
                         "candidate_feature_rows": candidate_rows,
                         "union_candidate_rows": sample_union_rows,
+                        "retained_suppressor_examples": retained_suppressor_examples,
                     }
                 )
                 sample_rows.append(
@@ -1816,6 +1886,78 @@ def _union_metrics_row(
     return row
 
 
+def _merge_stop_lines_with_extra(
+    base_stop_lines: list[dict[str, Any]],
+    extra_stop_lines: list[dict[str, Any]],
+    *,
+    max_components: int,
+) -> list[dict[str, Any]]:
+    stop_lines = [dict(line) for line in base_stop_lines] + [dict(line) for line in extra_stop_lines]
+    stop_lines.sort(key=_stopline_prediction_sort_key, reverse=True)
+    stop_lines = _dedupe_stop_line_predictions(stop_lines)
+    return stop_lines[: max(1, int(max_components))]
+
+
+def _metrics_row_with_base_predictions(
+    records: list[dict[str, Any]],
+    base_predictions: list[dict[str, Any]],
+    *,
+    name: str,
+    split: str,
+    score_key: str = "",
+    threshold: float = 0.0,
+    top_k: int = 0,
+    max_components: int = 2,
+) -> dict[str, Any]:
+    if len(records) != len(base_predictions):
+        raise ValueError("base prediction count must match record count")
+    predictions: list[dict[str, Any]] = []
+    raw_batches: list[dict[str, Any]] = []
+    for record, base_prediction in zip(records, base_predictions):
+        raw_batches.append(record["raw_batch"])
+        stop_lines = list(base_prediction.get("stop_lines", []))
+        if score_key:
+            extra_stop_lines = _select_temporal_stop_lines(
+                list(record.get("candidates", [])),
+                score_key=score_key,
+                threshold=float(threshold),
+                top_k=int(top_k),
+                max_components=int(max_components),
+            )
+            stop_lines = _merge_stop_lines_with_extra(
+                stop_lines,
+                extra_stop_lines,
+                max_components=int(max_components),
+            )
+        predictions.append({**record["baseline_prediction"], "stop_lines": stop_lines})
+    merged_raw = _merge_raw_batches(raw_batches)
+    metrics = augment_lane_family_metrics(summarize_pv26_metrics(predictions, merged_raw))
+    prediction_count = sum(len(sample.get("stop_lines", [])) for sample in predictions)
+    row = _row_from_metrics(name, metrics, prediction_count=prediction_count, stats={})
+    row.update(
+        {
+            "split": str(split),
+            "score_key": str(score_key),
+            "threshold": "" if not score_key else float(threshold),
+            "top_k": "" if not score_key else int(top_k),
+            "union_baseline": 1,
+            "sample_count": int(len(records)),
+        }
+    )
+    return row
+
+
+def _flatten_retained_suppressor_examples(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    examples: list[dict[str, Any]] = []
+    for record in records:
+        examples.extend(dict(example) for example in record.get("retained_suppressor_examples", []))
+    return examples
+
+
+def _baseline_prediction_list(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(record["baseline_prediction"]) for record in records]
+
+
 def _best_threshold(
     records: list[dict[str, Any]],
     *,
@@ -2005,6 +2147,29 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             top_k=int(args.union_top_k),
             grid_size=int(args.threshold_grid),
         )
+    retained_suppressor_summary: dict[str, Any] = {}
+    retained_suppressor_decision_audit: dict[str, int] = {}
+    retained_suppressed_val_predictions: list[dict[str, Any]] = []
+    retained_suppressor_decision_rows: list[dict[str, Any]] = []
+    if int(args.retained_suppressor_enabled) == 1:
+        suppressor_args = _retained_suppressor_args(args)
+        train_retained_examples = _flatten_retained_suppressor_examples(train_records)
+        val_retained_examples = _flatten_retained_suppressor_examples(val_records)
+        retained_suppressor_model, retained_suppressor_summary = _train_retained_suppressor(
+            train_retained_examples,
+            args=suppressor_args,
+            device=str(train_config.device),
+        )
+        retained_suppressed_val_predictions, retained_suppressor_decision_rows = _apply_retained_suppressor(
+            examples=val_retained_examples,
+            baseline_predictions=_baseline_prediction_list(val_records),
+            model=retained_suppressor_model,
+            args=suppressor_args,
+            device=str(train_config.device),
+        )
+        for row in retained_suppressor_decision_rows:
+            row["split"] = "val"
+        retained_suppressor_decision_audit = _retained_suppressor_decision_audit(retained_suppressor_decision_rows)
     rows = [
         _metrics_row(train_records, name="baseline", split="train"),
         _metrics_row(val_records, name="baseline", split="val"),
@@ -2066,6 +2231,38 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             union_baseline=True,
         ),
     ]
+    if int(args.retained_suppressor_enabled) == 1:
+        rows.extend(
+            [
+                _metrics_row_with_base_predictions(
+                    val_records,
+                    retained_suppressed_val_predictions,
+                    name="retained_suppressed_baseline",
+                    split="val",
+                    max_components=int(args.max_components),
+                ),
+                _metrics_row_with_base_predictions(
+                    val_records,
+                    retained_suppressed_val_predictions,
+                    name="retained_suppressed_plus_temporal_mlp",
+                    split="val",
+                    score_key=SCORE_KEY,
+                    threshold=float(threshold),
+                    top_k=int(args.temporal_top_k),
+                    max_components=int(args.max_components),
+                ),
+                _metrics_row_with_base_predictions(
+                    val_records,
+                    retained_suppressed_val_predictions,
+                    name="retained_suppressed_plus_oracle_temporal",
+                    split="val",
+                    score_key="is_oracle_positive",
+                    threshold=0.5,
+                    top_k=int(args.temporal_top_k),
+                    max_components=int(args.max_components),
+                ),
+            ]
+        )
     if int(args.union_selector_enabled) == 1 and union_threshold is not None:
         rows.extend(
             [
@@ -2108,6 +2305,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "max_components": int(args.max_components),
         "union_selector_enabled": int(args.union_selector_enabled),
         "union_top_k": int(args.union_top_k),
+        "retained_suppressor_enabled": int(args.retained_suppressor_enabled),
+        "retained_suppressor_keep_threshold": float(args.retained_suppressor_keep_threshold),
+        "retained_suppressor_summary": retained_suppressor_summary,
+        "retained_suppressor_decision_audit": retained_suppressor_decision_audit,
         "threshold": float(threshold),
         "threshold_selection": "train_candidate_oracle_label_f1",
         "union_threshold": None if union_threshold is None else float(union_threshold),
@@ -2195,6 +2396,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "val_candidate_rows": val_candidate_rows,
         "train_union_candidate_rows": train_union_candidate_rows,
         "val_union_candidate_rows": val_union_candidate_rows,
+        "retained_suppressor_decision_rows": retained_suppressor_decision_rows,
         "sample_rows": [*train_sample_rows, *val_sample_rows],
     }
 
@@ -2210,6 +2412,8 @@ def main() -> int:
     if payload.get("train_union_candidate_rows") or payload.get("val_union_candidate_rows"):
         _write_candidate_features_csv(output_dir / "train_union_candidate_features.csv", payload["train_union_candidate_rows"])
         _write_candidate_features_csv(output_dir / "val_union_candidate_features.csv", payload["val_union_candidate_rows"])
+    if payload.get("retained_suppressor_decision_rows"):
+        _write_csv(output_dir / "retained_suppressor_decisions.csv", payload["retained_suppressor_decision_rows"])
     _write_csv(output_dir / "temporal_samples.csv", payload["sample_rows"])
     (output_dir / "summary.json").write_text(
         json.dumps(payload["summary"], ensure_ascii=False, indent=2),

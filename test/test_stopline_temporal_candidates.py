@@ -13,6 +13,7 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     _build_temporal_endpoint_envelopes,
     _build_temporal_candidates,
     _build_union_candidates,
+    _merge_stop_lines_with_extra,
     _orb_homography_alignment_from_arrays,
     _phase_correlation_shift,
     _select_union_stop_lines,
@@ -363,6 +364,22 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 1)
         self.assertAlmostEqual(float(selected[0]["score"]), 0.9)
+
+    def test_merge_stop_lines_with_extra_dedupes_and_caps(self) -> None:
+        base = [
+            {"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.9},
+            {"points_xy": [[100.0, 360.0], [700.0, 360.0]], "score": 0.8},
+        ]
+        extra = [
+            {"points_xy": [[101.0, 301.0], [701.0, 301.0]], "score": 0.95},
+            {"points_xy": [[100.0, 430.0], [700.0, 430.0]], "score": 0.7},
+        ]
+
+        merged = _merge_stop_lines_with_extra(base, extra, max_components=2)
+
+        self.assertEqual(len(merged), 2)
+        self.assertAlmostEqual(float(merged[0]["score"]), 0.95)
+        self.assertNotIn([[100.0, 430.0], [700.0, 430.0]], [line["points_xy"] for line in merged])
 
 
 if __name__ == "__main__":

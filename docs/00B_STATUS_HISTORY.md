@@ -25492,3 +25492,122 @@ Decision:
 - Close this as image-plane ORB/RANSAC homography temporal alignment plus learned MLP/union FP-control.
 - Do not repeat it as ORB feature count/threshold, match ratio, RANSAC reprojection threshold, alignment size, max-shift fraction, dense/envelope source toggles, MLP epoch/LR/hidden size, top-k/cap, threshold-grid, or train-batch scaling.
 - Reopen temporal stop-line only with ego/BEV alignment or a learned temporal segment emitter whose exact learned TP/FP/FN beats primary projection-comp.
+
+## 406. 2026-05-31 Stop-line suppressor + temporal endpoint-envelope: FP-control and TP-recovery do not compose
+
+Situation:
+
+- The prior retained-output suppressor was exact F1-positive but recall-negative:
+  stop-line `32 / 28 / 28`, F1 `0.5333`, became `27 / 13 / 33`, F1 `0.5400`.
+- The prior sparse-affine endpoint-envelope temporal probe had oracle recovery headroom but learned selectors added too many FP:
+  baseline-plus-oracle temporal reached `35 / 32 / 25`, F1 `0.5512`, while baseline-plus-temporal MLP was only `33 / 43 / 27`, F1 `0.4853`.
+- This experiment explicitly paired those two premises:
+  first suppress retained projection-comp candidates for FP-control, then add sparse-affine endpoint-envelope temporal candidates for TP recovery.
+- The existing `seg_dataset/pv26_exhaustive_od_lane_dataset` root was reused in place; no dataset copy was created.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_temporal_candidates.py`
+  - adds opt-in `--retained-suppressor-enabled`;
+  - builds retained stop-line candidate examples during temporal record collection;
+  - reuses the line-support feature vector, train-split labels, MLP trainer, and application path from `tools/probe_pv26_stopline_retained_suppressor.py`;
+  - evaluates `retained_suppressed_baseline`, `retained_suppressed_plus_temporal_mlp`, and `retained_suppressed_plus_oracle_temporal`;
+  - writes `retained_suppressor_decisions.csv` for retained candidate keep/drop audit.
+- `test/test_stopline_temporal_candidates.py`
+  - covers `_merge_stop_lines_with_extra()` dedupe/cap behavior used by suppressed-baseline plus temporal merge.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| retained_suppressed_baseline | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| retained_suppressed_plus_temporal_mlp | `0.5507` | `0.0000` | `0 / 6 / 2` | `0.5455` |
+| retained_suppressed_plus_oracle_temporal | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+
+Smoke accounting:
+
+- validation temporal oracle positives: `0`;
+- suppressor audit: kept negative `3`, no positives present.
+
+Exact train256 / val128:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4889` | `33 / 42 / 27` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5512` | `35 / 32 / 25` | `0.5988` |
+| retained_suppressed_baseline | `0.5660` | `0.5524` | `29 / 16 / 31` | `0.5988` |
+| retained_suppressed_plus_temporal_mlp | `0.5660` | `0.4918` | `30 / 32 / 30` | `0.5988` |
+| retained_suppressed_plus_oracle_temporal | `0.5660` | `0.5841` | `33 / 20 / 27` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.5310` | `30 / 23 / 30` | `0.5988` |
+
+Exact accounting:
+
+- train temporal candidates `1223`, positives `437`;
+- validation temporal candidates `134`, positives `29`;
+- validation endpoint-envelope candidates `36`, positives `8`;
+- suppressor audit: kept positives `29`, kept negatives `16`, dropped positives `3`, dropped negatives `12`.
+
+Broader train512 / val512:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5480` | `0.5133` | `125 / 91 / 146` | `0.6187` |
+| baseline_plus_temporal_mlp | `0.5480` | `0.4657` | `129 / 154 / 142` | `0.6187` |
+| baseline_plus_oracle_temporal | `0.5480` | `0.5535` | `150 / 121 / 121` | `0.6187` |
+| retained_suppressed_baseline | `0.5480` | `0.4942` | `107 / 55 / 164` | `0.6187` |
+| retained_suppressed_plus_temporal_mlp | `0.5480` | `0.4639` | `119 / 123 / 152` | `0.6187` |
+| retained_suppressed_plus_oracle_temporal | `0.5480` | `0.5714` | `142 / 84 / 129` | `0.6187` |
+| temporal_union_selector | `0.5480` | `0.4860` | `113 / 81 / 158` | `0.6187` |
+
+Broader accounting:
+
+- train temporal candidates `2479`, positives `893`;
+- validation temporal candidates `532`, positives `152`;
+- validation endpoint-envelope candidates `139`, positives `51`;
+- validation union candidates `748`, positives `151`;
+- suppressor audit: kept positives `107`, kept negatives `55`, dropped positives `18`, dropped negatives `36`.
+
+Diagnosis:
+
+- The exact suppressor-only row looked better by F1 because FP dropped sharply, but it still lost TP and did not survive broader scaling.
+- The learned temporal MLP does not compose with the suppressor:
+  exact `retained_suppressed_plus_temporal_mlp` is below both baseline and suppress-only, and broader is far below baseline.
+- Oracle suppress+temporal remains useful evidence (`0.5841` exact, `0.5714` broader), but it is still planning evidence only.
+- The missing production signal is still no-GT temporal/geometry quality: current train-split MLP features cannot select the right temporal positives without adding too many FP or dropping retained TP.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_suppressor_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_suppressor_train256_exact_val128_20260531/summary.json`.
+- Broader summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_suppressor_train512_broader_val512_20260531/summary.json`.
+- Each run also keeps CSV feature/variant exports, including `retained_suppressor_decisions.csv`.
+
+Storage:
+
+- Retained outputs are compact:
+  - smoke export about `884K`;
+  - exact export about `3.8M`;
+  - broader export about `8.4M`.
+- No verifier checkpoint was saved.
+- No TensorBoard artifact was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 retained-suppressor + temporal endpoint-envelope run on the existing canonical dataset root.
+- CUDA train256/exact-val128 retained-suppressor + temporal endpoint-envelope run on the existing canonical dataset root.
+- CUDA train512/broader-val512 retained-suppressor + temporal endpoint-envelope run on the existing canonical dataset root.
+
+Decision:
+
+- Close this as same retained-output line-support suppressor plus sparse-affine endpoint-envelope temporal selector.
+- Do not repeat it as keep-threshold, suppressor hidden size/epoch/LR, temporal MLP hidden size/epoch/LR, top-k, max-components, threshold-grid, or train-batch scaling on the same candidate surface.
+- Reopen temporal stop-line only with a materially different no-GT temporal segment emitter or geometry-quality signal whose exact learned TP/FP/FN beats primary projection-comp before broader scaling.
