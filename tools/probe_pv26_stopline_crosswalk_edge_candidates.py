@@ -22,8 +22,8 @@ from model.engine.batch import augment_lane_family_metrics, raw_batch_for_metric
 from model.engine.metrics import _extract_gt_samples, summarize_pv26_metrics
 from model.engine.postprocess import _dedupe_stop_line_predictions, _stopline_prediction_sort_key, postprocess_pv26_batch
 from tools.evaluate_pv26_lane60_checkpoint import _advance_validation_sampler, _postprocess_override_config
-from tools.probe_pv26_lane60_postprocess_thresholds import _detach_to_cpu
 from tools.probe_pv26_lane_temporal_neighbor_union import _build_scenario
+from tools.probe_pv26_lane60_postprocess_thresholds import _detach_to_cpu
 from tools.probe_pv26_stopline_angle_mask_extent import _as_2d_array, _row_from_metrics, _sample_tensor, _write_csv
 from tools.probe_pv26_stopline_candidate_pool import (
     _fit_raw_patch_mlp,
@@ -32,12 +32,7 @@ from tools.probe_pv26_stopline_candidate_pool import (
     _standardize_from_train,
     _write_candidate_features_csv,
 )
-from tools.probe_pv26_stopline_raw_hough_candidates import (
-    _endpoint_proposal_mean,
-    _line_stats,
-    _raw_points_to_output,
-    _slice_raw_batch_sample,
-)
+from tools.probe_pv26_stopline_raw_hough_candidates import _line_stats, _raw_points_to_output, _slice_raw_batch_sample
 from tools.probe_pv26_stopline_temporal_candidates import _copy_stop_line, _line_length, _nearest_current_distance
 from tools.pv26_train import cli as train_cli
 
@@ -46,12 +41,14 @@ SCORE_KEY = "crosswalk_edge_mlp_score"
 CROSSWALK_EDGE_FEATURES = (
     "crosswalk_edge_score",
     "crosswalk_edge_rank_norm",
-    "crosswalk_edge_side_y_rank",
-    "crosswalk_edge_signed_side",
+    "crosswalk_edge_crosswalk_rank_norm",
+    "crosswalk_edge_side",
     "crosswalk_edge_offset_norm",
+    "crosswalk_edge_length_scale",
     "crosswalk_edge_length_norm",
-    "crosswalk_edge_area_norm",
-    "crosswalk_edge_aspect",
+    "crosswalk_edge_crosswalk_length_norm",
+    "crosswalk_edge_crosswalk_width_norm",
+    "crosswalk_edge_crosswalk_aspect",
     "crosswalk_edge_current_stopline_count",
     "crosswalk_edge_nearest_current_distance_norm",
     "crosswalk_edge_stop_mask_mean",
@@ -62,7 +59,6 @@ CROSSWALK_EDGE_FEATURES = (
     "crosswalk_edge_stop_selector_max",
     "crosswalk_edge_stop_proposal_mean",
     "crosswalk_edge_stop_proposal_max",
-    "crosswalk_edge_endpoint_proposal_mean",
     "crosswalk_edge_crosswalk_mask_mean",
     "crosswalk_edge_crosswalk_mask_max",
     "crosswalk_edge_crosswalk_center_mean",
@@ -77,9 +73,8 @@ CROSSWALK_EDGE_FEATURES = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train a no-GT verifier over stop-line candidates generated from predicted "
-            "crosswalk hull edges. This changes candidate generation rather than only "
-            "re-ranking current stop-line candidates."
+            "Generate stop-line candidates from predicted crosswalk hull long-edges, "
+            "train a small no-GT verifier on canonical train batches, and replay it on validation."
         )
     )
     parser.add_argument("--checkpoint", default="")
@@ -94,9 +89,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dataset-root", default="")
-    parser.add_argument("--crosswalk-edge-offsets", default="0,16,32")
-    parser.add_argument("--crosswalk-edge-top-k", type=int, default=8)
-    parser.add_argument("--max-crosswalk-edge-candidates", type=int, default=16)
+    parser.add_argument("--crosswalk-edge-offsets", default="0,8,16,24,32,48")
+    parser.add_argument("--crosswalk-edge-length-scales", default="0.85,1.0,1.15")
+    parser.add_argument("--max-crosswalks", type=int, default=3)
+    parser.add_argument("--crosswalk-edge-top-k", type=int, default=12)
+    parser.add_argument("--max-crosswalk-edge-candidates", type=int, default=24)
     parser.add_argument("--max-components", type=int, default=2)
     parser.add_argument("--threshold-grid", type=int, default=101)
     parser.add_argument("--verifier-epochs", type=int, default=60)
@@ -109,25 +106,38 @@ def parse_args() -> argparse.Namespace:
         choices=("center", "selector", "max", "validator", "max_validator", "product_validator"),
         default=None,
     )
+    parser.add_argument("--crosswalk-obj-threshold", type=float, default=None)
+    parser.add_argument("--crosswalk-mask-binary-threshold", type=float, default=None)
+    parser.add_argument("--crosswalk-min-component-pixels", type=int, default=None)
+    parser.add_argument("--crosswalk-max-components", type=int, default=None)
+    parser.add_argument("--crosswalk-min-polygon-area-px", type=float, default=None)
+    parser.add_argument("--crosswalk-min-bbox-aspect", type=float, default=None)
     parser.add_argument("--crosswalk-polygon-mode", choices=("rect", "hull"), default="hull")
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
 
 
-def _parse_offsets(value: str) -> tuple[float, ...]:
-    offsets = tuple(float(part.strip()) for part in str(value).split(",") if part.strip())
-    if not offsets:
-        raise ValueError("crosswalk edge offsets must contain at least one value")
-    return offsets
+def _parse_float_list(value: str, *, name: str, min_value: float = 0.0) -> tuple[float, ...]:
+    parsed = tuple(float(part.strip()) for part in str(value).split(",") if part.strip())
+    if not parsed:
+        raise ValueError(f"{name} must contain at least one value")
+    for item in parsed:
+        if not math.isfinite(float(item)) or float(item) < float(min_value):
+            raise ValueError(f"{name} values must be finite and >= {min_value}, got {item}")
+    return parsed
 
 
-def _polygon_area(points_xy: np.ndarray) -> float:
-    points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
+def _crosswalk_points_array(crosswalk: dict[str, Any]) -> np.ndarray:
+    points = np.asarray(crosswalk.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
     if points.shape[0] < 3 or not bool(np.isfinite(points).all()):
-        return 0.0
-    x = points[:, 0]
-    y = points[:, 1]
-    return float(0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))))
+        return np.zeros((0, 2), dtype=np.float32)
+    keep = np.ones((points.shape[0],), dtype=bool)
+    if points.shape[0] > 1:
+        keep[1:] = np.linalg.norm(points[1:] - points[:-1], axis=1) > 1.0e-4
+    points = points[keep]
+    if points.shape[0] < 3:
+        return np.zeros((0, 2), dtype=np.float32)
+    return points.astype(np.float32)
 
 
 def _clip_points(points: np.ndarray, meta: dict[str, Any]) -> np.ndarray:
@@ -135,88 +145,76 @@ def _clip_points(points: np.ndarray, meta: dict[str, Any]) -> np.ndarray:
     clipped = np.asarray(points, dtype=np.float32).reshape(-1, 2).copy()
     clipped[:, 0] = np.clip(clipped[:, 0], 0.0, max(float(raw_w - 1), 0.0))
     clipped[:, 1] = np.clip(clipped[:, 1], 0.0, max(float(raw_h - 1), 0.0))
-    return clipped
+    return clipped.astype(np.float32)
 
 
-def _crosswalk_edge_candidates_from_polygon(
-    crosswalk: dict[str, Any],
+def _crosswalk_axes(points: np.ndarray) -> dict[str, Any] | None:
+    points = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 3:
+        return None
+    center = points.mean(axis=0)
+    centered = points - center
+    cov = np.cov(centered.T)
+    if np.asarray(cov).shape != (2, 2) or not bool(np.isfinite(cov).all()):
+        return None
+    values, vectors = np.linalg.eigh(cov.astype(np.float64))
+    order = np.argsort(values)[::-1]
+    major = vectors[:, order[0]].astype(np.float32)
+    norm = float(np.linalg.norm(major))
+    if norm <= 1.0e-6:
+        return None
+    major = major / norm
+    if float(major[0]) < 0.0:
+        major = -major
+    minor = np.asarray([-major[1], major[0]], dtype=np.float32)
+    major_coord = centered @ major
+    minor_coord = centered @ minor
+    major_min, major_max = float(major_coord.min()), float(major_coord.max())
+    minor_min, minor_max = float(minor_coord.min()), float(minor_coord.max())
+    half_length = 0.5 * (major_max - major_min)
+    half_width = 0.5 * (minor_max - minor_min)
+    if half_length < 8.0 or half_width < 1.0:
+        return None
+    return {
+        "center": center.astype(np.float32),
+        "axis": major.astype(np.float32),
+        "normal": minor.astype(np.float32),
+        "major_min": major_min,
+        "major_max": major_max,
+        "minor_min": minor_min,
+        "minor_max": minor_max,
+        "half_length": float(half_length),
+        "half_width": float(half_width),
+    }
+
+
+def _proposal_map(
+    stop_center_probs: np.ndarray | None,
+    stop_selector_probs: np.ndarray | None,
+) -> np.ndarray | None:
+    if stop_center_probs is not None and stop_selector_probs is not None:
+        return np.maximum(stop_center_probs, stop_selector_probs)
+    if stop_center_probs is not None:
+        return stop_center_probs
+    return stop_selector_probs
+
+
+def _edge_line_stats(
+    points_raw: np.ndarray,
     *,
     meta: dict[str, Any],
-    offsets: tuple[float, ...],
-) -> list[dict[str, Any]]:
-    points = np.asarray(crosswalk.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
-    if points.shape[0] < 3 or not bool(np.isfinite(points).all()):
-        return []
-    center = points.mean(axis=0)
-    centered = points - center[None, :]
-    cov = centered.T @ centered / max(float(points.shape[0]), 1.0)
-    try:
-        eigvals, eigvecs = np.linalg.eigh(cov)
-    except np.linalg.LinAlgError:
-        return []
-    order = np.argsort(eigvals)[::-1]
-    long_axis = eigvecs[:, order[0]].astype(np.float32)
-    short_axis = eigvecs[:, order[1]].astype(np.float32)
-    if float(np.linalg.norm(long_axis)) <= 1.0e-6 or float(np.linalg.norm(short_axis)) <= 1.0e-6:
-        return []
-    long_axis = long_axis / max(float(np.linalg.norm(long_axis)), 1.0e-6)
-    short_axis = short_axis / max(float(np.linalg.norm(short_axis)), 1.0e-6)
-    long_proj = centered @ long_axis
-    short_proj = centered @ short_axis
-    long_min, long_max = float(long_proj.min()), float(long_proj.max())
-    short_min, short_max = float(short_proj.min()), float(short_proj.max())
-    length = max(0.0, long_max - long_min)
-    thickness = max(1.0, short_max - short_min)
-    if length < 8.0:
-        return []
-    sides = [(-1.0, short_min), (1.0, short_max)]
-    base_rows: list[tuple[float, float, float]] = []
-    for signed_side, side_value in sides:
-        side_center = center + short_axis * float(side_value)
-        base_rows.append((float(side_center[1]), float(signed_side), float(side_value)))
-    sorted_by_y = sorted(base_rows, key=lambda item: item[0], reverse=True)
-    y_rank_by_side = {item[1]: rank + 1 for rank, item in enumerate(sorted_by_y)}
-    area = _polygon_area(points)
-    candidates: list[dict[str, Any]] = []
-    for signed_side, side_value in sides:
-        side_y_rank = int(y_rank_by_side[float(signed_side)])
-        for offset_index, offset in enumerate(offsets):
-            edge_center = center + short_axis * (float(side_value) + float(signed_side) * float(offset))
-            start = edge_center + long_axis * long_min
-            end = edge_center + long_axis * long_max
-            clipped = _clip_points(np.stack([start, end], axis=0), meta)
-            if float(np.linalg.norm(clipped[-1] - clipped[0])) < 8.0:
-                continue
-            score = float(crosswalk.get("score", crosswalk.get("instance_score", 0.0)) or 0.0)
-            candidate = {
-                "points_xy": [[float(x), float(y)] for x, y in clipped.tolist()],
-                "score": score,
-                "center_score": score,
-                "source": "crosswalk_edge",
-                "proposal_source": "crosswalk_edge",
-                "crosswalk_edge_offset_px": float(offset),
-                "crosswalk_edge_offset_index": int(offset_index),
-                "crosswalk_edge_signed_side": float(signed_side),
-                "crosswalk_edge_side_y_rank": int(side_y_rank),
-                "crosswalk_edge_area": float(area),
-                "crosswalk_edge_length": float(length),
-                "crosswalk_edge_thickness": float(thickness),
-                "crosswalk_edge_aspect": float(length / max(thickness, 1.0)),
-            }
-            candidates.append(candidate)
-    candidates.sort(
-        key=lambda item: (
-            float(item.get("score", 0.0)),
-            -float(item.get("crosswalk_edge_side_y_rank", 9)),
-            -abs(float(item.get("crosswalk_edge_offset_px", 0.0))),
-            float(item.get("crosswalk_edge_length", 0.0)),
-        ),
-        reverse=True,
-    )
-    return candidates
+    map_array: np.ndarray | None,
+) -> tuple[float, float]:
+    if map_array is None:
+        return 0.0, 0.0
+    points = np.asarray(points_raw, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 2:
+        return 0.0, 0.0
+    output_points = _raw_points_to_output(points, meta, (int(map_array.shape[0]), int(map_array.shape[1])))
+    return _line_stats(map_array, output_points)
 
 
-def _edge_features(
+def _crosswalk_edge_features(
     candidate: dict[str, Any],
     *,
     meta: dict[str, Any],
@@ -229,38 +227,15 @@ def _edge_features(
     candidate_rank: int,
 ) -> dict[str, float]:
     points_raw = np.asarray(candidate.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
-    reference_map = next(
-        (
-            array
-            for array in (
-                stop_mask_probs,
-                stop_center_probs,
-                stop_selector_probs,
-                crosswalk_mask_probs,
-                crosswalk_center_probs,
-            )
-            if isinstance(array, np.ndarray)
-        ),
-        None,
-    )
-    if points_raw.shape[0] < 2 or reference_map is None:
+    if points_raw.shape[0] < 2:
         return {name: 0.0 for name in CROSSWALK_EDGE_FEATURES}
-    output_hw = (int(reference_map.shape[0]), int(reference_map.shape[1]))
-    output_points = _raw_points_to_output(points_raw, meta, output_hw)
-    proposal_map = None
-    if stop_center_probs is not None and stop_selector_probs is not None:
-        proposal_map = np.maximum(stop_center_probs, stop_selector_probs)
-    elif stop_center_probs is not None:
-        proposal_map = stop_center_probs
-    elif stop_selector_probs is not None:
-        proposal_map = stop_selector_probs
-    stop_mask_mean, stop_mask_max = _line_stats(stop_mask_probs, output_points)
-    stop_center_mean, stop_center_max = _line_stats(stop_center_probs, output_points)
-    stop_selector_mean, stop_selector_max = _line_stats(stop_selector_probs, output_points)
-    proposal_mean, proposal_max = _line_stats(proposal_map, output_points)
-    endpoint_mean = _endpoint_proposal_mean(proposal_map, output_points)
-    cross_mask_mean, cross_mask_max = _line_stats(crosswalk_mask_probs, output_points)
-    cross_center_mean, cross_center_max = _line_stats(crosswalk_center_probs, output_points)
+    proposal = _proposal_map(stop_center_probs, stop_selector_probs)
+    stop_mask_mean, stop_mask_max = _edge_line_stats(points_raw, meta=meta, map_array=stop_mask_probs)
+    stop_center_mean, stop_center_max = _edge_line_stats(points_raw, meta=meta, map_array=stop_center_probs)
+    stop_selector_mean, stop_selector_max = _edge_line_stats(points_raw, meta=meta, map_array=stop_selector_probs)
+    proposal_mean, proposal_max = _edge_line_stats(points_raw, meta=meta, map_array=proposal)
+    cross_mask_mean, cross_mask_max = _edge_line_stats(points_raw, meta=meta, map_array=crosswalk_mask_probs)
+    cross_center_mean, cross_center_max = _edge_line_stats(points_raw, meta=meta, map_array=crosswalk_center_probs)
     raw_h, raw_w = int(meta.get("raw_hw", (1, 1))[0]), int(meta.get("raw_hw", (1, 1))[1])
     length = _line_length(candidate)
     center = points_raw.mean(axis=0)
@@ -268,19 +243,23 @@ def _edge_features(
     norm = float(np.linalg.norm(delta))
     axis = delta / max(norm, 1.0e-6)
     nearest_distance = _nearest_current_distance(candidate, current_stop_lines)
+    crosswalk_length = float(candidate.get("crosswalk_edge_crosswalk_length_px", 0.0))
+    crosswalk_width = float(candidate.get("crosswalk_edge_crosswalk_width_px", 0.0))
     features = {
         "crosswalk_edge_score": float(candidate.get("score", 0.0)),
         "crosswalk_edge_rank_norm": float(1.0 / max(int(candidate_rank), 1)),
-        "crosswalk_edge_side_y_rank": float(1.0 / max(int(candidate.get("crosswalk_edge_side_y_rank", 9)), 1)),
-        "crosswalk_edge_signed_side": float(candidate.get("crosswalk_edge_signed_side", 0.0)),
-        "crosswalk_edge_offset_norm": float(
-            np.clip(float(candidate.get("crosswalk_edge_offset_px", 0.0)) / max(float(raw_h), 1.0), -1.0, 1.0)
+        "crosswalk_edge_crosswalk_rank_norm": float(
+            1.0 / max(int(candidate.get("crosswalk_edge_crosswalk_rank", 999)), 1)
         ),
+        "crosswalk_edge_side": float(candidate.get("crosswalk_edge_side", 0.0)),
+        "crosswalk_edge_offset_norm": float(min(float(candidate.get("crosswalk_edge_offset_px", 0.0)) / 96.0, 2.0)),
+        "crosswalk_edge_length_scale": float(candidate.get("crosswalk_edge_length_scale", 1.0)),
         "crosswalk_edge_length_norm": float(min(length / max(float(raw_w), 1.0), 1.0)),
-        "crosswalk_edge_area_norm": float(
-            min(float(candidate.get("crosswalk_edge_area", 0.0)) / max(float(raw_w * raw_h), 1.0), 1.0)
+        "crosswalk_edge_crosswalk_length_norm": float(min(crosswalk_length / max(float(raw_w), 1.0), 1.0)),
+        "crosswalk_edge_crosswalk_width_norm": float(min(crosswalk_width / max(float(raw_h), 1.0), 1.0)),
+        "crosswalk_edge_crosswalk_aspect": float(
+            min(crosswalk_length / max(crosswalk_width, 1.0e-6), 16.0)
         ),
-        "crosswalk_edge_aspect": float(min(float(candidate.get("crosswalk_edge_aspect", 0.0)) / 20.0, 4.0)),
         "crosswalk_edge_current_stopline_count": float(len(current_stop_lines)),
         "crosswalk_edge_nearest_current_distance_norm": float(min(nearest_distance / max(float(raw_w), 1.0), 4.0)),
         "crosswalk_edge_stop_mask_mean": float(stop_mask_mean),
@@ -291,7 +270,6 @@ def _edge_features(
         "crosswalk_edge_stop_selector_max": float(stop_selector_max),
         "crosswalk_edge_stop_proposal_mean": float(proposal_mean),
         "crosswalk_edge_stop_proposal_max": float(proposal_max),
-        "crosswalk_edge_endpoint_proposal_mean": float(endpoint_mean),
         "crosswalk_edge_crosswalk_mask_mean": float(cross_mask_mean),
         "crosswalk_edge_crosswalk_mask_max": float(cross_mask_max),
         "crosswalk_edge_crosswalk_center_mean": float(cross_center_mean),
@@ -302,6 +280,65 @@ def _edge_features(
         "crosswalk_edge_abs_sin": float(abs(float(axis[1]))),
     }
     return {key: 0.0 if not math.isfinite(float(value)) else float(value) for key, value in features.items()}
+
+
+def _crosswalk_edge_candidates_from_crosswalks(
+    crosswalks: list[dict[str, Any]],
+    *,
+    meta: dict[str, Any],
+    offsets: tuple[float, ...],
+    length_scales: tuple[float, ...],
+    max_crosswalks: int,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for crosswalk_rank, crosswalk in enumerate(crosswalks[: max(1, int(max_crosswalks))], start=1):
+        points = _crosswalk_points_array(crosswalk)
+        axes = _crosswalk_axes(points)
+        if axes is None:
+            continue
+        axis = np.asarray(axes["axis"], dtype=np.float32)
+        normal = np.asarray(axes["normal"], dtype=np.float32)
+        center = np.asarray(axes["center"], dtype=np.float32)
+        half_length = float(axes["half_length"])
+        minor_min = float(axes["minor_min"])
+        minor_max = float(axes["minor_max"])
+        crosswalk_width = float(axes["half_width"]) * 2.0
+        crosswalk_length = half_length * 2.0
+        for side in (-1.0, 1.0):
+            edge_minor = minor_min if side < 0.0 else minor_max
+            for offset in offsets:
+                line_center = center + normal * float(edge_minor + side * float(offset))
+                for length_scale in length_scales:
+                    half = half_length * float(length_scale)
+                    raw_points = np.stack([line_center - axis * half, line_center + axis * half], axis=0)
+                    raw_points = _clip_points(raw_points, meta)
+                    if float(np.linalg.norm(raw_points[1] - raw_points[0])) < 12.0:
+                        continue
+                    score = float(crosswalk.get("score", 0.0))
+                    candidates.append(
+                        {
+                            "points_xy": [[float(x), float(y)] for x, y in raw_points.tolist()],
+                            "score": score,
+                            "crosswalk_edge_crosswalk_rank": int(crosswalk_rank),
+                            "crosswalk_edge_side": float(side),
+                            "crosswalk_edge_offset_px": float(offset),
+                            "crosswalk_edge_length_scale": float(length_scale),
+                            "crosswalk_edge_crosswalk_score": score,
+                            "crosswalk_edge_crosswalk_length_px": crosswalk_length,
+                            "crosswalk_edge_crosswalk_width_px": crosswalk_width,
+                        }
+                    )
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("score", 0.0)),
+            -float(item.get("crosswalk_edge_offset_px", 0.0)),
+            -abs(float(item.get("crosswalk_edge_length_scale", 1.0)) - 1.0),
+            float(item.get("crosswalk_edge_crosswalk_length_px", 0.0)),
+        ),
+        reverse=True,
+    )
+    return candidates[: max(1, int(max_candidates))]
 
 
 def _build_crosswalk_edge_candidates(
@@ -315,27 +352,21 @@ def _build_crosswalk_edge_candidates(
     crosswalk_mask_probs: np.ndarray | None,
     crosswalk_center_probs: np.ndarray | None,
     offsets: tuple[float, ...],
+    length_scales: tuple[float, ...],
+    max_crosswalks: int,
     max_candidates: int,
 ) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
     current_stop_lines = list(baseline_prediction.get("stop_lines", []))
-    crosswalks = list(baseline_prediction.get("crosswalks", []))
-    crosswalks.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
-    for crosswalk_rank, crosswalk in enumerate(crosswalks, start=1):
-        for candidate in _crosswalk_edge_candidates_from_polygon(crosswalk, meta=meta, offsets=offsets):
-            candidate["crosswalk_rank"] = int(crosswalk_rank)
-            candidates.append(candidate)
-    candidates.sort(
-        key=lambda item: (
-            float(item.get("score", 0.0)),
-            float(item.get("crosswalk_edge_side_y_rank", 0.0)),
-            -abs(float(item.get("crosswalk_edge_offset_px", 0.0))),
-            float(item.get("crosswalk_edge_length", 0.0)),
-        ),
-        reverse=True,
+    candidates = _crosswalk_edge_candidates_from_crosswalks(
+        list(baseline_prediction.get("crosswalks", [])),
+        meta=meta,
+        offsets=offsets,
+        length_scales=length_scales,
+        max_crosswalks=int(max_crosswalks),
+        max_candidates=int(max_candidates),
     )
     output: list[dict[str, Any]] = []
-    for rank, candidate in enumerate(candidates[: max(1, int(max_candidates))], start=1):
+    for rank, candidate in enumerate(candidates, start=1):
         distance, angle_error, gt_index = _nearest_gt(candidate, gt_stop_lines)
         candidate["nearest_gt_distance"] = float(distance)
         candidate["nearest_gt_angle_error"] = float(angle_error)
@@ -343,7 +374,7 @@ def _build_crosswalk_edge_candidates(
         candidate["is_oracle_positive"] = bool(float(distance) <= 40.0)
         candidate["crosswalk_edge_rank_score"] = float(1.0 / max(rank, 1))
         candidate.update(
-            _edge_features(
+            _crosswalk_edge_features(
                 candidate,
                 meta=meta,
                 stop_mask_probs=stop_mask_probs,
@@ -360,8 +391,8 @@ def _build_crosswalk_edge_candidates(
         key=lambda item: (
             float(item.get("crosswalk_edge_stop_proposal_max", 0.0)),
             float(item.get("crosswalk_edge_rank_score", 0.0)),
-            float(item.get("score", 0.0)),
-            float(item.get("crosswalk_edge_length", _line_length(item))),
+            float(item.get("crosswalk_edge_score", 0.0)),
+            -float(item.get("crosswalk_edge_offset_px", 0.0)),
         ),
         reverse=True,
     )
@@ -379,10 +410,10 @@ def _candidate_row(candidate: dict[str, Any], *, batch_index: int, sample_index:
         "candidate_points_json": json.dumps([[float(x), float(y)] for x, y in points.tolist()], separators=(",", ":")),
         "score": float(candidate.get("score", 0.0)),
         "length": float(_line_length(candidate)),
-        "crosswalk_rank": int(candidate.get("crosswalk_rank", 0)),
+        "crosswalk_edge_crosswalk_rank": int(candidate.get("crosswalk_edge_crosswalk_rank", 0)),
+        "crosswalk_edge_side": float(candidate.get("crosswalk_edge_side", 0.0)),
         "crosswalk_edge_offset_px": float(candidate.get("crosswalk_edge_offset_px", 0.0)),
-        "crosswalk_edge_signed_side": float(candidate.get("crosswalk_edge_signed_side", 0.0)),
-        "crosswalk_edge_side_y_rank": int(candidate.get("crosswalk_edge_side_y_rank", 0)),
+        "crosswalk_edge_length_scale": float(candidate.get("crosswalk_edge_length_scale", 1.0)),
         "nearest_gt_distance": float(candidate.get("nearest_gt_distance", float("inf"))),
         "nearest_gt_angle_error": float(candidate.get("nearest_gt_angle_error", 180.0)),
         "nearest_gt_index": int(candidate.get("nearest_gt_index", -1)),
@@ -390,6 +421,8 @@ def _candidate_row(candidate: dict[str, Any], *, batch_index: int, sample_index:
     }
     for name in CROSSWALK_EDGE_FEATURES:
         row[name] = float(candidate.get(name, 0.0))
+    if SCORE_KEY in candidate:
+        row[SCORE_KEY] = float(candidate.get(SCORE_KEY, 0.0))
     return row
 
 
@@ -400,6 +433,8 @@ def _collect_records(
     postprocess_config: Any,
     max_batches: int,
     offsets: tuple[float, ...],
+    length_scales: tuple[float, ...],
+    max_crosswalks: int,
     max_candidates: int,
     split_name: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -450,6 +485,8 @@ def _collect_records(
                     crosswalk_mask_probs=crosswalk_mask_probs,
                     crosswalk_center_probs=crosswalk_center_probs,
                     offsets=offsets,
+                    length_scales=length_scales,
+                    max_crosswalks=int(max_crosswalks),
                     max_candidates=int(max_candidates),
                 )
                 candidate_rows = [
@@ -572,8 +609,8 @@ def _select_crosswalk_edge_stop_lines(
         key=lambda item: (
             float(item.get(score_key, 0.0)),
             float(item.get("crosswalk_edge_stop_proposal_max", 0.0)),
-            float(item.get("crosswalk_edge_rank_score", 0.0)),
-            float(item.get("crosswalk_edge_length", 0.0)),
+            float(item.get("crosswalk_edge_score", 0.0)),
+            -float(item.get("crosswalk_edge_offset_px", 0.0)),
         ),
         reverse=True,
     )
@@ -582,8 +619,7 @@ def _select_crosswalk_edge_stop_lines(
         for candidate in selected
     ]
     predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
-    predictions = _dedupe_stop_line_predictions(predictions)
-    return predictions[: max(1, int(max_components))]
+    return _dedupe_stop_line_predictions(predictions)[: max(1, int(max_components))]
 
 
 def _metrics_row(
@@ -641,22 +677,36 @@ def _best_threshold(
     max_components: int,
     grid_size: int,
 ) -> float:
+    del max_components
+    candidate_rows: list[tuple[float, int]] = []
+    for record in records:
+        for rank, candidate in enumerate(record.get("candidates", []), start=1):
+            if rank > int(top_k):
+                continue
+            candidate_rows.append((float(candidate.get(score_key, 0.0)), int(bool(candidate.get("is_oracle_positive", False)))))
+    if not candidate_rows:
+        return 0.5
+    total_positive = int(sum(label for _score, label in candidate_rows))
+    if total_positive <= 0:
+        return 1.0
     best_threshold = 0.5
-    best_key: tuple[float, float, float] = (-1.0, -1.0, 0.0)
+    best_key: tuple[float, int, int] = (-1.0, -1, 0)
     for threshold in np.linspace(0.0, 1.0, max(2, int(grid_size))).tolist():
-        row = _metrics_row(
-            records,
-            name="threshold_search",
-            split="train",
-            score_key=score_key,
-            threshold=float(threshold),
-            top_k=int(top_k),
-            max_components=int(max_components),
-        )
+        tp = 0
+        fp = 0
+        for score, label in candidate_rows:
+            if float(score) < float(threshold):
+                continue
+            if label:
+                tp += 1
+            else:
+                fp += 1
+        fn = max(0, total_positive - tp)
+        f1 = 0.0 if tp <= 0 else (2.0 * float(tp)) / (2.0 * float(tp) + float(fp) + float(fn))
         key = (
-            float(row.get("stop_line_f1", 0.0)),
-            float(row.get("stop_line_tp", 0.0)),
-            -float(row.get("stop_line_fp", 0.0)),
+            float(f1),
+            int(tp),
+            -int(fp),
         )
         if key > best_key:
             best_key = key
@@ -673,7 +723,12 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         from tools.probe_pv26_lane_flip_tta import SOURCE_RUN
 
         args.source_run = str(SOURCE_RUN)
-    offsets = _parse_offsets(str(args.crosswalk_edge_offsets))
+    offsets = _parse_float_list(str(args.crosswalk_edge_offsets), name="crosswalk-edge-offsets", min_value=0.0)
+    length_scales = _parse_float_list(
+        str(args.crosswalk_edge_length_scales),
+        name="crosswalk-edge-length-scales",
+        min_value=0.1,
+    )
     scenario, scenario_path, options, phase, train_config = _build_scenario(args)
     train_config = replace(
         train_config,
@@ -707,6 +762,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         postprocess_config=postprocess_config,
         max_batches=int(args.train_record_batches),
         offsets=offsets,
+        length_scales=length_scales,
+        max_crosswalks=int(args.max_crosswalks),
         max_candidates=int(args.max_crosswalk_edge_candidates),
         split_name="train",
     )
@@ -716,6 +773,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         postprocess_config=postprocess_config,
         max_batches=int(args.max_val_batches),
         offsets=offsets,
+        length_scales=length_scales,
+        max_crosswalks=int(args.max_crosswalks),
         max_candidates=int(args.max_crosswalk_edge_candidates),
         split_name="val",
     )
@@ -804,10 +863,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "max_val_batches": int(args.max_val_batches),
         "validation_epoch": int(args.validation_epoch),
         "crosswalk_edge_offsets": [float(value) for value in offsets],
+        "crosswalk_edge_length_scales": [float(value) for value in length_scales],
+        "max_crosswalks": int(args.max_crosswalks),
         "crosswalk_edge_top_k": int(args.crosswalk_edge_top_k),
         "max_crosswalk_edge_candidates": int(args.max_crosswalk_edge_candidates),
         "max_components": int(args.max_components),
         "threshold": float(threshold),
+        "threshold_selection": "train_candidate_oracle_label_f1",
         "score_summary": score_summary,
         "train_sample_count": int(len(train_records)),
         "val_sample_count": int(len(val_records)),
@@ -821,9 +883,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "rows": rows,
         "interpretation": (
-            "Crosswalk-edge stop-line candidate probe. Runtime candidates come from predicted crosswalk hull "
-            "edge geometry and current-frame dense maps; GT is used for train labels, oracle diagnostics, "
-            "and final metrics only."
+            "Crosswalk-edge stop-line candidate probe. Runtime candidates are generated from "
+            "predicted crosswalk hull long-edges and current-frame dense maps; GT is used for train labels, "
+            "oracle diagnostics, and final metrics only. This tests crosswalk-conditioned candidate generation, "
+            "not layer-level crosswalk context fusion or another projection-comp threshold."
         ),
     }
     return {

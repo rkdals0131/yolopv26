@@ -24280,3 +24280,118 @@ Decision:
 - Broader-val512 is skipped because exact falls far below primary projection-comp `32 / 28 / 28`, F1 `0.5333`.
 - Close this as source-flag features, verifier threshold/hidden-size, decoder query count, max-output cap, epoch/LR, and train-batch scaling over the same retained projection-comp + dense-map decoder candidate surface.
 - Reopen only with a materially different candidate generator or segment-quality target that first improves exact TP/FP/FN over primary projection-comp.
+
+## 395. 2026-05-31 Stop-line crosswalk long-edge expansion: coverage improves but exact FP-control fails
+
+Context:
+
+- Section 372 closed the first predicted crosswalk-hull edge candidate surface because it had almost no train or validation oracle-positive coverage.
+- This branch reopened only the materially different geometry premise:
+  - fit each predicted crosswalk hull with PCA long/short axes;
+  - emit both long-edge sides rather than polygon edges;
+  - expand offsets to `0,8,16,24,32,48`;
+  - expand length scales to `0.85,1.0,1.15`;
+  - consider up to `3` predicted crosswalks and `24` candidates per sample.
+- It still reuses the retained projection-competition runtime for baseline lane/crosswalk/stop-line predictions and trains only a small no-GT MLP verifier from train split labels.
+
+Implementation:
+
+- Updated `tools/probe_pv26_stopline_crosswalk_edge_candidates.py`.
+- Replaced the polygon-edge candidate generator with:
+  - `_crosswalk_points_array`;
+  - `_crosswalk_axes`;
+  - `_crosswalk_edge_candidates_from_crosswalks`;
+  - `_crosswalk_edge_features`.
+- Added CLI controls:
+  - `--crosswalk-edge-length-scales`;
+  - `--max-crosswalks`;
+  - crosswalk postprocess override controls for object/mask/component/polygon filters.
+- Threshold selection now uses train candidate oracle-label F1, not repeated full metric evaluation, so exact-val128 does not spend most time sweeping the evaluator.
+- Updated `test/test_stopline_crosswalk_edge_candidates.py` for the long-edge geometry and candidate-label contract.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `crosswalk_polygon_mode=hull`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - max emitted edge candidates `12`;
+  - max emitted stop-lines `2`.
+
+Smoke train64 / fixed-val4:
+
+- Train samples `256`; train scored candidates `1524`; train scored oracle positives `141`.
+- Raw train crosswalk-edge candidates `3048`; raw train oracle positives `207`.
+- Validation samples `16`; val scored candidates `36`; val scored oracle positives `0`.
+- Baseline fixed-val4 stop-line stayed `0 / 3 / 2`, F1 `0.0000`.
+- Baseline-plus-crosswalk-edge MLP added FP and stayed `0 / 5 / 2`, F1 `0.0000`.
+- The smoke gate was not sufficient to reject because train coverage existed but this tiny validation slice had no positive crosswalk-edge candidates.
+
+Exact train256 / val128:
+
+- Train samples `1024`; train scored candidates `5580`; train scored oracle positives `459`.
+- Raw train crosswalk-edge candidates `11160`; raw train oracle positives `676`.
+- Validation samples `512`; val scored candidates `672`; val scored oracle positives `77`.
+- Raw validation crosswalk-edge candidates `1344`; raw val oracle positives `119`.
+- Selected threshold: `0.67`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| crosswalk_edge_mlp | `0.5660` | `0.1188` | `6 / 35 / 54` | `0.5988` |
+| baseline_plus_crosswalk_edge_mlp | `0.5660` | `0.4648` | `33 / 49 / 27` | `0.5988` |
+| oracle_crosswalk_edge | `0.5660` | `0.2105` | `8 / 8 / 52` | `0.5988` |
+| baseline_plus_oracle_crosswalk_edge | `0.5660` | `0.5313` | `34 / 34 / 26` | `0.5988` |
+
+Diagnosis:
+
+- The long-edge expansion did fix the original coverage-only failure:
+  - exact validation has `77` scored oracle-positive candidates and `119` raw oracle-positive candidates.
+- But the deployable verifier is still FP-negative:
+  - baseline-plus MLP adds `+1` TP but `+21` FP against primary;
+  - F1 falls from `0.5333` to `0.4648`.
+- Oracle union also does not beat primary:
+  - it adds `+2` TP but `+6` FP;
+  - F1 is `0.5313`, still lower than `0.5333`.
+- That means the current crosswalk-derived candidate geometry is not only a verifier problem; even perfect candidate labels on this candidate surface do not improve fixed exact TP/FP/FN.
+- Broader-val512 is skipped.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train64_smoke_val4_20260531/summary.json`.
+- Smoke variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train64_smoke_val4_20260531/crosswalk_edge_variants.csv`.
+- Exact train256 summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train256_exact_val128_20260531/summary.json`.
+- Exact train256 variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_crosswalk_edge_candidates_train256_exact_val128_20260531/crosswalk_edge_variants.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `2.9M`;
+  - exact export about `12M`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_crosswalk_edge_candidates.py test/test_stopline_crosswalk_edge_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_crosswalk_edge_candidates`.
+- CUDA train64/smoke-val4 crosswalk long-edge verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 crosswalk long-edge verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it.
+- Do not repeat crosswalk-derived stop-line generation as offset/length-scale/top-k/max-candidate/verifier-threshold/train-scale tuning.
+- Reopen only if the candidate geometry itself changes enough that fixed exact oracle union beats primary `32 / 28 / 28`, F1 `0.5333`, before training another selector.
