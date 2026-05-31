@@ -23080,3 +23080,96 @@ Decision:
 - Broader-val512 is skipped because exact precision collapses.
 - Close dense-map set decoder metric-quality objectness as a standalone FP-control target on the same frozen dense-map feature surface.
 - Reopen dense-map set decoding only with a materially different candidate generator, calibrated verifier, or baseline-preserving merge contract that first improves exact TP/FP/FN over projection-comp.
+
+## 383. 2026-05-31 Stop-line retained-output suppressor: FP drops but recall loss makes it non-breakthrough
+
+Hypothesis:
+
+- Recent learned stop-line decoders created extra candidates but repeatedly failed FP control.
+- This branch tests the opposite runtime contract: keep the retained projection-competition candidate generator, train a small no-GT verifier on train-split candidate labels, and suppress existing stop-line outputs only.
+- This is not another new-candidate decoder and not a threshold-only replay. It changes the learned quality signal while preserving the runtime candidate set.
+
+Implementation:
+
+- Added `tools/probe_pv26_stopline_retained_suppressor.py`.
+- Added `test/test_stopline_retained_suppressor.py`.
+- Candidate features:
+  - retained stop-line candidate geometry and score fields;
+  - line-aligned dense-map support from frozen `stop_line_mask_logits`, `stop_line_center_logits`, `stop_line_selector_map_logits`, `stop_line_axis_valid_logits`, `stop_line_row_logits`, and `stop_line_x_logits`.
+- Labels:
+  - train-split candidate is positive only if greedy one-to-one stop-line metric matching places it within the evaluator threshold.
+  - validation uses labels only for audit; runtime keep/drop uses no GT.
+- Runtime:
+  - keep probability threshold fixed at `0.50`;
+  - suppress-only, no new stop-line segments are emitted.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| suppressed | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+
+Smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train candidates: `115`.
+- Positive/negative train labels: `88 / 27`.
+- Validation candidate audit:
+  - kept positive: `0`;
+  - kept negative: `3`;
+  - dropped positive: `0`;
+  - dropped negative: `0`.
+
+Exact train256 / fixed val128:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| suppressed | `0.5400` | `27 / 13 / 33` | `0.5888` | `0.5988` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train candidates: `509`.
+- Positive/negative train labels: `348 / 161`.
+- Validation candidate audit:
+  - kept positive: `27`;
+  - kept negative: `13`;
+  - dropped positive: `5`;
+  - dropped negative: `15`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_retained_suppressor_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_retained_suppressor_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No suppressor checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `28K`;
+  - exact directory about `68K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_retained_suppressor.py test/test_stopline_retained_suppressor.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_retained_suppressor`.
+- CUDA train64/fixed-val4 retained-output suppressor run.
+- CUDA train256/exact-val128 retained-output suppressor run.
+
+Decision:
+
+- The suppressor gives a real FP-control signal on exact val128: FP drops `28 -> 13`.
+- It also loses too much recall for a standalone stop-line breakthrough: TP drops `32 -> 27`, FN rises `28 -> 33`.
+- Exact F1 rises only `0.5333 -> 0.5400`, which is far from the `0.60` stop-line target and does not solve missing candidate/geometry recovery.
+- Broader-val512 is skipped because this suppress-only contract cannot add the missing TP needed for final success, and the exact movement is recall-negative.
+- Close retained-output suppressor as a standalone path.
+- Reopen suppressor work only as a fixed auxiliary FP-control stage paired with a materially different stop-line candidate/geometry generator that first recovers no-GT positives.
