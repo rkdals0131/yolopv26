@@ -23268,3 +23268,131 @@ Decision:
 - Broader-val512 is skipped because exact precision collapses.
 - Close dense-map set decoder + candidate-verifier as the current calibrated-verifier/baseline-preserving merge contract.
 - Reopen dense-map decoding only if the decoder candidate generator itself changes materially; do not repeat this as verifier threshold, hidden size, LR, epoch count, or train-batch scaling.
+
+## 385. 2026-05-31 Stop-line endpoint-envelope source-router: extent-preserving fusion is exact-negative
+
+Hypothesis:
+
+- The prior endpoint-fusion source-router averaged aligned primary and specialist endpoints and was exact-negative.
+- The remaining source-router oracle headroom still suggested geometry-source choice could matter.
+- This branch tests a distinct source geometry: preserve the union of paired primary/specialist along-axis endpoint extent instead of averaging endpoints.
+- If the specialist has the right far endpoint but the primary has better center/normal placement, an envelope segment might recover length/extent without a new learned checkpoint.
+
+Implementation:
+
+- Extended `tools/probe_pv26_stopline_source_router.py`.
+- Added `endpoint_envelope` to `ROUTER_MODES`.
+- Added `_envelope_endpoint_pair()`:
+  - aligns primary/specialist endpoints with the existing endpoint alignment helper;
+  - builds a common axis from both source vectors;
+  - projects all four endpoints onto that axis;
+  - emits the min/max along-axis extent through the averaged normal/midpoint.
+- Added `_endpoint_envelope_lines()`:
+  - greedily pairs primary and specialist predictions by endpoint-pair distance;
+  - defaults to `max_pair_distance=240`;
+  - dedupes with the existing stop-line distance dedupe.
+- Updated source-router feature surfaces so `endpoint_envelope` participates in:
+  - scalar line stats;
+  - dense-aligned feature groups;
+  - lane-topology source groups;
+  - raw/raster source channels;
+  - line-profile source groups.
+- Added unit coverage in `test/test_stopline_source_router.py` for envelope extent preservation and source prediction dispatch.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| primary | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| endpoint_fusion | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| endpoint_envelope | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| learned_router | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| oracle_router | `0.0000` | `0 / 0 / 2` | `0.5839` | `0.5455` |
+
+Smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Validation labels were uninformative: all `16` validation samples labeled `empty`, and all fixed non-empty sources had `0` TP.
+- Train router feature count/dim: `256 / 71`.
+- Train label counts:
+  - primary `1`;
+  - endpoint_envelope `2`;
+  - union_dedupe `3`;
+  - agreement `83`;
+  - empty `167`.
+
+Exact train256 / fixed val128:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| oracle_router | `0.7216` | `35 / 2 / 25` | `0.5888` | `0.5988` |
+| primary | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| learned_router | `0.5289` | `32 / 29 / 28` | `0.5888` | `0.5988` |
+| union_dedupe | `0.5203` | `32 / 31 / 28` | `0.5888` | `0.5988` |
+| endpoint_fusion | `0.5167` | `31 / 29 / 29` | `0.5888` | `0.5988` |
+| agreement | `0.5042` | `30 / 29 / 30` | `0.5888` | `0.5988` |
+| endpoint_envelope | `0.5000` | `30 / 30 / 30` | `0.5888` | `0.5988` |
+| specialist | `0.4918` | `30 / 32 / 30` | `0.5888` | `0.5988` |
+| empty | `0.0000` | `0 / 0 / 60` | `0.5888` | `0.5988` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train router feature count/dim: `1024 / 71`.
+- Train label counts:
+  - primary `6`;
+  - specialist `4`;
+  - endpoint_fusion `3`;
+  - endpoint_envelope `3`;
+  - union_dedupe `9`;
+  - agreement `319`;
+  - empty `680`.
+- Validation source labels:
+  - endpoint_fusion `3`;
+  - endpoint_envelope `1`;
+  - union_dedupe `1`;
+  - agreement `30`;
+  - empty `477`.
+- Learned-router validation choices:
+  - primary `1`;
+  - specialist `1`;
+  - endpoint_fusion `7`;
+  - endpoint_envelope `0`;
+  - union_dedupe `1`;
+  - agreement `49`;
+  - empty `453`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_endpoint_envelope_source_router_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_endpoint_envelope_source_router_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `60K`;
+  - exact directory about `64K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py test/test_stopline_source_router.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_source_router`.
+- CUDA train64/fixed-val4 endpoint-envelope source-router run.
+- CUDA train256/exact-val128 endpoint-envelope source-router run.
+
+Decision:
+
+- Fixed `endpoint_envelope` is worse than both primary and endpoint-fusion on exact val128.
+- The learned router recovers the same TP as primary but adds one FP, so it still fails the exact gate.
+- The oracle router remains high, but that is source-choice planning evidence only.
+- Broader-val512 is skipped because neither fixed envelope geometry nor learned routing beats primary/projection-comp exact TP/FP/FN.
+- Close endpoint-envelope source-router as a no-GT geometry-source contract.
+- Do not repeat this as pair-distance, envelope extent rule, source-mode order, feature-group inclusion, MLP hidden size, class weight, epoch/LR, or train-batch scaling unless the source-quality signal or candidate-generation contract changes materially.

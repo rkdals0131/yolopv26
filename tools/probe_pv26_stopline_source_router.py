@@ -58,7 +58,15 @@ DEFAULT_STOP_LINE_CHECKPOINT = (
     / "checkpoints"
     / "best.pt"
 )
-ROUTER_MODES = ("primary", "specialist", "endpoint_fusion", "union_dedupe", "agreement", "empty")
+ROUTER_MODES = (
+    "primary",
+    "specialist",
+    "endpoint_fusion",
+    "endpoint_envelope",
+    "union_dedupe",
+    "agreement",
+    "empty",
+)
 DEFAULT_ROUTER_RASTER_SIZE = (64, 96)
 LINE_PROFILE_MAP_KEYS = (
     "stop_line_mask_logits",
@@ -316,6 +324,42 @@ def _fuse_endpoint_pair(primary_line: dict[str, Any], specialist_line: dict[str,
     return fused
 
 
+def _envelope_endpoint_pair(primary_line: dict[str, Any], specialist_line: dict[str, Any]) -> dict[str, Any] | None:
+    aligned = _aligned_endpoint_arrays(primary_line, specialist_line)
+    if aligned is None:
+        return None
+    primary_points, specialist_points = aligned
+    primary_vector = primary_points[1] - primary_points[0]
+    specialist_vector = specialist_points[1] - specialist_points[0]
+    axis_vector = primary_vector + specialist_vector
+    if float(np.linalg.norm(axis_vector)) <= 1.0e-6 or not bool(np.isfinite(axis_vector).all()):
+        axis_vector = primary_vector
+    axis_norm = float(np.linalg.norm(axis_vector))
+    if axis_norm <= 1.0e-6 or not math.isfinite(axis_norm):
+        return None
+    axis = axis_vector.astype(np.float32) / axis_norm
+    normal = np.asarray([-axis[1], axis[0]], dtype=np.float32)
+    all_points = np.concatenate([primary_points, specialist_points], axis=0).astype(np.float32)
+    origin = all_points.mean(axis=0)
+    relative = all_points - origin[None, :]
+    along = relative @ axis
+    normal_offset = float((relative @ normal).mean())
+    start = origin + axis * float(along.min(initial=0.0)) + normal * normal_offset
+    end = origin + axis * float(along.max(initial=0.0)) + normal * normal_offset
+    envelope_points = np.stack([start, end], axis=0)
+    if not bool(np.isfinite(envelope_points).all()):
+        return None
+    fused = dict(primary_line)
+    fused["points_xy"] = envelope_points.astype(float).tolist()
+    fused["score"] = max(_line_score(primary_line), _line_score(specialist_line))
+    fused["source"] = "endpoint_envelope"
+    fused["primary_source_score"] = _line_score(primary_line)
+    fused["specialist_source_score"] = _line_score(specialist_line)
+    fused["source_pair_distance"] = _endpoint_pair_distance(primary_line, specialist_line)
+    fused["endpoint_envelope_length"] = float(np.linalg.norm(end - start))
+    return fused
+
+
 def _endpoint_pair_distance(primary_line: dict[str, Any], specialist_line: dict[str, Any]) -> float:
     aligned = _aligned_endpoint_arrays(primary_line, specialist_line)
     if aligned is None:
@@ -351,6 +395,33 @@ def _endpoint_fusion_lines(
             continue
         unused_specialists.remove(best_index)
         fused_line = _fuse_endpoint_pair(primary_line, specialist_lines[best_index])
+        if fused_line is not None:
+            fused.append(fused_line)
+    return _dedupe_stop_lines_by_distance(fused)
+
+
+def _endpoint_envelope_lines(
+    primary_lines: list[dict[str, Any]],
+    specialist_lines: list[dict[str, Any]],
+    *,
+    max_pair_distance: float = 240.0,
+) -> list[dict[str, Any]]:
+    """Preserve primary/specialist source extent instead of endpoint averaging."""
+
+    unused_specialists = set(range(len(specialist_lines)))
+    fused: list[dict[str, Any]] = []
+    for primary_line in sorted(primary_lines, key=_line_score, reverse=True):
+        best_index = -1
+        best_distance = float("inf")
+        for specialist_index in list(unused_specialists):
+            distance = _endpoint_pair_distance(primary_line, specialist_lines[specialist_index])
+            if distance < best_distance:
+                best_distance = float(distance)
+                best_index = int(specialist_index)
+        if best_index < 0 or best_distance > float(max_pair_distance):
+            continue
+        unused_specialists.remove(best_index)
+        fused_line = _envelope_endpoint_pair(primary_line, specialist_lines[best_index])
         if fused_line is not None:
             fused.append(fused_line)
     return _dedupe_stop_lines_by_distance(fused)
@@ -540,10 +611,19 @@ def _lane_topology_features_for_sample(
 ) -> list[float]:
     primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
     specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    endpoint_fusion_lines = _endpoint_fusion_lines(primary_lines, specialist_lines)
+    endpoint_envelope_lines = _endpoint_envelope_lines(primary_lines, specialist_lines)
     union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
     agreement_lines = _source_prediction(primary_sample, specialist_sample, "agreement").get("stop_lines", [])
     lanes = [dict(lane) for lane in primary_sample.get("lanes", [])]
-    source_groups = (primary_lines, specialist_lines, union_lines, [dict(line) for line in agreement_lines])
+    source_groups = (
+        primary_lines,
+        specialist_lines,
+        endpoint_fusion_lines,
+        endpoint_envelope_lines,
+        union_lines,
+        [dict(line) for line in agreement_lines],
+    )
     features: list[float] = []
     for lines in source_groups:
         features.extend(_source_lane_topology_features(lines, lanes))
@@ -563,6 +643,8 @@ def _source_prediction(
         chosen = specialist_lines
     elif mode == "endpoint_fusion":
         chosen = _endpoint_fusion_lines(primary_lines, specialist_lines)
+    elif mode == "endpoint_envelope":
+        chosen = _endpoint_envelope_lines(primary_lines, specialist_lines)
     elif mode == "union_dedupe":
         chosen = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
     elif mode == "agreement":
@@ -641,10 +723,14 @@ def _utility_for_sample(
 def _features_for_sample(primary_sample: dict[str, Any], specialist_sample: dict[str, Any]) -> list[float]:
     primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
     specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    endpoint_fusion_lines = _endpoint_fusion_lines(primary_lines, specialist_lines)
+    endpoint_envelope_lines = _endpoint_envelope_lines(primary_lines, specialist_lines)
     union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
     features = [
         *_line_stats(primary_lines),
         *_line_stats(specialist_lines),
+        *_line_stats(endpoint_fusion_lines),
+        *_line_stats(endpoint_envelope_lines),
         *_line_stats(union_lines),
         *_pair_stats(primary_lines, specialist_lines),
     ]
@@ -746,11 +832,15 @@ def _source_raster_for_sample(
 ) -> np.ndarray:
     primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
     specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    endpoint_fusion_lines = _endpoint_fusion_lines(primary_lines, specialist_lines)
+    endpoint_envelope_lines = _endpoint_envelope_lines(primary_lines, specialist_lines)
     union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
     channels = [
         _resize_array(_as_gray_image(image, sample_index), size=size),
         _draw_stopline_raster(primary_lines, meta, size=size, thickness=1),
         _draw_stopline_raster(specialist_lines, meta, size=size, thickness=1),
+        _draw_stopline_raster(endpoint_fusion_lines, meta, size=size, thickness=1),
+        _draw_stopline_raster(endpoint_envelope_lines, meta, size=size, thickness=1),
         _draw_stopline_raster(union_lines, meta, size=size, thickness=1),
         _resize_array(_as_2d_prob(primary_outputs, "stop_line_mask_logits", sample_index), size=size),
         _resize_array(_as_2d_prob(specialist_outputs, "stop_line_mask_logits", sample_index), size=size),
@@ -959,48 +1049,24 @@ def _dense_aligned_features_for_sample(
 ) -> list[float]:
     primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
     specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
-    primary_on_primary = _source_dense_features(
-        primary_lines,
-        outputs=primary_outputs,
-        image=image,
-        sample_index=int(sample_index),
-        meta=meta,
-        sample_count=int(sample_count),
-        side_offset=float(side_offset),
-    )
-    primary_on_specialist = _source_dense_features(
-        primary_lines,
-        outputs=specialist_outputs,
-        image=image,
-        sample_index=int(sample_index),
-        meta=meta,
-        sample_count=int(sample_count),
-        side_offset=float(side_offset),
-    )
-    specialist_on_primary = _source_dense_features(
-        specialist_lines,
-        outputs=primary_outputs,
-        image=image,
-        sample_index=int(sample_index),
-        meta=meta,
-        sample_count=int(sample_count),
-        side_offset=float(side_offset),
-    )
-    specialist_on_specialist = _source_dense_features(
-        specialist_lines,
-        outputs=specialist_outputs,
-        image=image,
-        sample_index=int(sample_index),
-        meta=meta,
-        sample_count=int(sample_count),
-        side_offset=float(side_offset),
-    )
-    dense_values = [
-        *primary_on_primary,
-        *primary_on_specialist,
-        *specialist_on_primary,
-        *specialist_on_specialist,
-    ]
+    endpoint_fusion_lines = _endpoint_fusion_lines(primary_lines, specialist_lines)
+    endpoint_envelope_lines = _endpoint_envelope_lines(primary_lines, specialist_lines)
+    source_groups = (primary_lines, specialist_lines, endpoint_fusion_lines, endpoint_envelope_lines)
+    output_groups = (primary_outputs, specialist_outputs)
+    dense_values: list[float] = []
+    for lines in source_groups:
+        for outputs in output_groups:
+            dense_values.extend(
+                _source_dense_features(
+                    lines,
+                    outputs=outputs,
+                    image=image,
+                    sample_index=int(sample_index),
+                    meta=meta,
+                    sample_count=int(sample_count),
+                    side_offset=float(side_offset),
+                )
+            )
     return [0.0 if not math.isfinite(float(value)) else float(value) for value in dense_values]
 
 
@@ -1126,9 +1192,18 @@ def _line_profile_features_for_sample(
 ) -> list[float]:
     primary_lines = [dict(line) for line in primary_sample.get("stop_lines", [])]
     specialist_lines = [dict(line) for line in specialist_sample.get("stop_lines", [])]
+    endpoint_fusion_lines = _endpoint_fusion_lines(primary_lines, specialist_lines)
+    endpoint_envelope_lines = _endpoint_envelope_lines(primary_lines, specialist_lines)
     union_lines = _dedupe_stop_lines_by_distance([*primary_lines, *specialist_lines])
     agreement_lines = _source_prediction(primary_sample, specialist_sample, "agreement").get("stop_lines", [])
-    source_groups = (primary_lines, specialist_lines, union_lines, [dict(line) for line in agreement_lines])
+    source_groups = (
+        primary_lines,
+        specialist_lines,
+        endpoint_fusion_lines,
+        endpoint_envelope_lines,
+        union_lines,
+        [dict(line) for line in agreement_lines],
+    )
     output_groups = (primary_outputs, specialist_outputs)
     features: list[float] = []
     for lines in source_groups:

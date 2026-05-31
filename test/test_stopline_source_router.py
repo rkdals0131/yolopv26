@@ -10,6 +10,7 @@ from tools.probe_pv26_stopline_source_router import (
     LINE_PROFILE_MAP_KEYS,
     ROUTER_MODES,
     _draw_stopline_raster,
+    _endpoint_envelope_lines,
     _endpoint_fusion_lines,
     _lane_topology_features_for_sample,
     _line_profile_features_for_sample,
@@ -64,11 +65,11 @@ class StoplineSourceRouterTests(unittest.TestCase):
             size=(16, 24),
         )
 
-        self.assertEqual(raster.shape, (10, 16, 24))
+        self.assertEqual(raster.shape, (12, 16, 24))
         self.assertTrue(np.isfinite(raster).all())
         self.assertGreater(float(raster[1].sum()), 0.0)
         self.assertGreater(float(raster[2].sum()), 0.0)
-        self.assertGreater(float(raster[6].mean()), float(raster[4].mean()))
+        self.assertGreater(float(raster[8].mean()), float(raster[6].mean()))
 
     def test_line_profile_features_keep_fixed_along_axis_shape(self) -> None:
         outputs = {
@@ -94,7 +95,7 @@ class StoplineSourceRouterTests(unittest.TestCase):
         )
 
         single_profile_dim = 4 + (len(LINE_PROFILE_MAP_KEYS) + 1) * 2 * 5
-        expected_dim = 4 * (13 + 2 * single_profile_dim)
+        expected_dim = 6 * (13 + 2 * single_profile_dim)
         self.assertEqual(len(features), expected_dim)
         self.assertTrue(np.isfinite(np.asarray(features, dtype=np.float32)).all())
         self.assertGreater(max(features), 0.0)
@@ -114,7 +115,7 @@ class StoplineSourceRouterTests(unittest.TestCase):
         features = _lane_topology_features_for_sample(primary, specialist)
 
         source_dim = 2 + 3 * 20
-        self.assertEqual(len(features), 4 * source_dim)
+        self.assertEqual(len(features), 6 * source_dim)
         self.assertTrue(np.isfinite(np.asarray(features, dtype=np.float32)).all())
         primary_topology = features[:source_dim]
         specialist_topology = features[source_dim : 2 * source_dim]
@@ -135,6 +136,18 @@ class StoplineSourceRouterTests(unittest.TestCase):
         self.assertEqual(fused[0]["source"], "endpoint_fusion")
         self.assertAlmostEqual(float(fused[0]["score"]), 0.9)
 
+    def test_endpoint_envelope_preserves_source_extent(self) -> None:
+        primary = {"points_xy": [[300.0, 300.0], [500.0, 300.0]], "score": 0.7}
+        specialist = {"points_xy": [[700.0, 320.0], [100.0, 320.0]], "score": 0.9}
+
+        fused = _endpoint_envelope_lines([primary], [specialist], max_pair_distance=240.0)
+
+        self.assertEqual(len(fused), 1)
+        points = np.asarray(fused[0]["points_xy"], dtype=np.float32)
+        np.testing.assert_allclose(points, np.asarray([[100.0, 310.0], [700.0, 310.0]], dtype=np.float32))
+        self.assertEqual(fused[0]["source"], "endpoint_envelope")
+        self.assertGreater(float(fused[0]["endpoint_envelope_length"]), 500.0)
+
     def test_source_prediction_can_emit_endpoint_fusion_mode(self) -> None:
         primary = {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}]}
         specialist = {"stop_lines": [{"points_xy": [[110.0, 320.0], [690.0, 320.0]], "score": 0.9}]}
@@ -144,6 +157,16 @@ class StoplineSourceRouterTests(unittest.TestCase):
         self.assertIn("endpoint_fusion", ROUTER_MODES)
         self.assertEqual(len(prediction["stop_lines"]), 1)
         self.assertEqual(prediction["stop_lines"][0]["source"], "endpoint_fusion")
+
+    def test_source_prediction_can_emit_endpoint_envelope_mode(self) -> None:
+        primary = {"lanes": [], "stop_lines": [{"points_xy": [[300.0, 300.0], [500.0, 300.0]], "score": 0.7}]}
+        specialist = {"stop_lines": [{"points_xy": [[100.0, 320.0], [700.0, 320.0]], "score": 0.9}]}
+
+        prediction = _source_prediction(primary, specialist, "endpoint_envelope")
+
+        self.assertIn("endpoint_envelope", ROUTER_MODES)
+        self.assertEqual(len(prediction["stop_lines"]), 1)
+        self.assertEqual(prediction["stop_lines"][0]["source"], "endpoint_envelope")
 
     def test_utility_prefers_empty_for_negative_fp_only_sample(self) -> None:
         primary = {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}]}
