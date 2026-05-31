@@ -23932,3 +23932,131 @@ Decision:
 - Broader-val512 is skipped because exact is negative.
 - Close this branch as `ranked_ridge_path_dp` over the current retained lane candidate surface.
 - Do not repeat this as ridge radius, smoothness weight, repair topK, ranker-label, train64/train256 exposure, or exact/broader budget scaling unless the candidate generator or learned geometry signal changes materially.
+
+## 391. 2026-05-31 Stop-line lane-pair topology candidate probe: predicted-lane spans do not recover enough stop-line TP
+
+Premise:
+
+- Prior stop-line candidate/verifier families mostly reranked or refined dense stop-line candidate surfaces.
+- This branch tests a materially different runtime candidate-generation premise:
+  - use predicted lane polylines, not GT lanes;
+  - connect lane pairs at plausible shared y-anchors to emit stop-line segment candidates;
+  - train a no-GT MLP verifier on train-split oracle labels;
+  - preserve the retained projection-comp baseline when evaluating baseline-plus candidates.
+- A naive fixed-y version was tried first, then upgraded within the same axis to dense stop-line proposal-map y-anchor selection because fixed fractions had almost no candidate coverage.
+
+Code changes:
+
+- Added `tools/probe_pv26_stopline_lane_pair_candidates.py`.
+  - Builds stop-line candidates from predicted lane-pair topology.
+  - Adds dense-anchor generation from current-frame stop-line `center/selector` proposal maps.
+  - Trains a small train-split MLP verifier.
+  - Reports baseline, candidate-only, baseline-plus-candidate, oracle-candidate, and baseline-plus-oracle variants.
+- Added `test/test_stopline_lane_pair_candidates.py`.
+  - Covers y-fraction parsing, lane interpolation, candidate generation, fixed finite feature shape, oracle-label-free runtime sorting, and score/cap selection.
+
+Naive fixed-y smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+| baseline_plus_lane_pair_mlp | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+| baseline_plus_oracle_lane_pair | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+
+Naive fixed-y stats:
+
+- Train candidate rows: `2032`.
+- Train oracle-positive rows: `2`.
+- Val candidate rows: `148`.
+- Val oracle-positive rows: `0`.
+- Verdict: candidate coverage too weak, so this exact generator is not worth broadening.
+
+Dense-anchor smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+| baseline_plus_lane_pair_mlp | `0.0000` | `0 / 4 / 2` | `0.5507` | `0.5455` |
+| baseline_plus_oracle_lane_pair | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+
+Dense-anchor smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train candidate rows: `2684`.
+- Train oracle-positive rows: `45`.
+- Val candidate rows: `196`.
+- Val oracle-positive rows: `0`.
+- Verdict: train coverage improved, but val4 is still too small/uninformative, so exact val128 was required.
+
+Dense-anchor train256 / fixed exact val128:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5333` | `32 / 28 / 28` | `0.5660` | `0.5988` |
+| lane_pair_mlp | `0.0986` | `7 / 75 / 53` | `0.5660` | `0.5988` |
+| baseline_plus_lane_pair_mlp | `0.3758` | `31 / 74 / 29` | `0.5660` | `0.5988` |
+| oracle_lane_pair | `0.3095` | `13 / 11 / 47` | `0.5660` | `0.5988` |
+| baseline_plus_oracle_lane_pair | `0.5414` | `36 / 37 / 24` | `0.5660` | `0.5988` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Verifier train batches: `256`.
+- Validation batches: `128`.
+- Train candidate rows: `10938`.
+- Train oracle-positive rows: `189`.
+- Verifier train feature rows / positives: `6201 / 162`.
+- Validation candidate rows: `6472`.
+- Validation oracle-positive rows: `36`.
+- Verifier val feature rows / positives: `3540 / 30`.
+- Selected threshold from train replay: `0.63`.
+- Baseline-plus learned verifier delta vs baseline:
+  - TP `-1`;
+  - FP `+46`;
+  - FN `+1`;
+  - F1 `-0.1576`.
+- Baseline-plus oracle lane-pair delta vs baseline:
+  - TP `+4`;
+  - FP `+9`;
+  - FN `-4`;
+  - F1 `+0.0080`.
+
+Artifacts:
+
+- Naive fixed-y smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_lane_pair_candidates_train64_smoke_val4_20260531/summary.json`.
+- Dense-anchor smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_lane_pair_dense_anchor_train64_smoke_val4_20260531/summary.json`.
+- Dense-anchor exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_lane_pair_dense_anchor_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No verifier checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - naive smoke about `2.1M`;
+  - dense-anchor smoke about `2.8M`;
+  - exact about `17M`.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after evaluation.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_lane_pair_candidates.py test/test_stopline_lane_pair_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_lane_pair_candidates`.
+- CUDA train64/fixed-val4 naive lane-pair verifier run.
+- CUDA train64/fixed-val4 dense-anchor lane-pair verifier run.
+- CUDA train256/exact-val128 dense-anchor lane-pair verifier run.
+
+Decision:
+
+- Dense stop-line y-anchors improve train candidate coverage, but the runtime verifier cannot separate TP from FP.
+- The exact learned merge is worse than baseline and worse than primary projection-comp.
+- Even the oracle merge has weak headroom: only `+4` TP for `+9` FP over baseline.
+- Broader-val512 is skipped because exact does not improve TP/FP/FN over projection-comp.
+- Close this lane-pair topology candidate surface as a standalone stop-line breakthrough path.
+- Do not repeat this as lane-pair y-fraction, dense-anchor count/stride, verifier threshold, hidden size, train-batch scaling, or baseline merge sweep unless the lane-derived candidate geometry changes materially.
