@@ -25611,3 +25611,116 @@ Decision:
 - Close this as same retained-output line-support suppressor plus sparse-affine endpoint-envelope temporal selector.
 - Do not repeat it as keep-threshold, suppressor hidden size/epoch/LR, temporal MLP hidden size/epoch/LR, top-k, max-components, threshold-grid, or train-batch scaling on the same candidate surface.
 - Reopen temporal stop-line only with a materially different no-GT temporal segment emitter or geometry-quality signal whose exact learned TP/FP/FN beats primary projection-comp before broader scaling.
+
+## 407. 2026-05-31 Stop-line lane-affine temporal alignment: predicted-lane motion does not improve temporal candidate quality
+
+Situation:
+
+- The user asked to keep real train/eval in the loop but stop after this turn's cleanup/docs/commit/push.
+- Prior temporal stop-line branches closed no-alignment neighbor replay, phase-correlation translation, sparse optical-flow affine, ORB homography, endpoint-envelope, dense-component sources, and retained-suppressor composition.
+- This branch changed the motion premise again:
+  current/neighbor predicted lane polylines are matched, an affine transform is estimated from lane-track correspondence, then neighbor stop-line, endpoint-envelope, and dense-component temporal candidates are warped before the existing train-split MLP and union selector.
+- This is distinct from image-feature affine/homography because the transform source is predicted lane geometry, not image keypoints or phase correlation.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_temporal_candidates.py`
+  - adds `--temporal-alignment-mode lane_affine`;
+  - estimates a small affine from current/neighbor predicted lane tracks sampled at shared y rows;
+  - reuses the existing stop-line temporal candidate, endpoint-envelope, dense-component, MLP, and union-selector paths.
+- `test/test_stopline_temporal_candidates.py`
+  - adds a regression test for lane-affine alignment from synthetic shifted lane tracks.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `temporal_alignment_mode=lane_affine`;
+  - `temporal_envelope_enabled=1`;
+  - `temporal_dense_component_enabled=1`;
+  - `union_selector_enabled=1`;
+  - `crosswalk_polygon_mode=hull`.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| temporal_mlp | `0.5507` | `0.0000` | `0 / 6 / 2` | `0.5455` |
+| baseline_plus_temporal_mlp | `0.5507` | `0.0000` | `0 / 7 / 2` | `0.5455` |
+| temporal_union_selector | `0.5507` | `0.0000` | `0 / 4 / 2` | `0.5455` |
+
+Smoke accounting:
+
+- train temporal candidates `691`, positives `227`;
+- validation temporal candidates `27`, positives `0`;
+- validation endpoint-envelope candidates `7`, positives `0`;
+- validation dense-component candidates `14`, positives `0`;
+- lane-affine alignment applied to `450` train and `23` validation neighbor rows.
+
+Exact train256 / val128:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2927` | `18 / 45 / 42` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4231` | `33 / 63 / 27` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.4889` | `22 / 8 / 38` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5294` | `36 / 40 / 24` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.4706` | `28 / 31 / 32` | `0.5988` |
+
+Exact accounting:
+
+- train temporal candidates `2895`, positives `832`;
+- validation temporal candidates `386`, positives `64`;
+- validation endpoint-envelope candidates `71`, positives `24`;
+- validation dense-component candidates `217`, positives `21`;
+- validation union candidates `446`, positives `36`;
+- lane-affine alignment applied to `1809` train and `282` validation neighbor rows.
+
+Diagnosis:
+
+- Lane-affine alignment is not a no-op:
+  it applies to many train/validation neighbor rows and creates validation temporal oracle positives.
+- The candidate quality is still too FP-heavy:
+  baseline-plus-oracle temporal reaches `+4` TP but adds `+12` FP versus primary, so F1 is below baseline.
+- The deployable learned paths are clearly negative:
+  baseline-plus-temporal MLP adds one TP but adds `+35` FP, and union selection loses four retained TP while adding FP.
+- Broader-val512 is skipped because exact learned TP/FP/FN is below primary projection-comp.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_lane_affine_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_lane_affine_train256_exact_val128_20260531/summary.json`.
+- Each run also keeps compact CSV feature/variant/sample exports.
+
+Storage:
+
+- Retained outputs are compact:
+  - smoke export about `1.9M`;
+  - exact export about `8.5M`.
+- No verifier checkpoint was saved.
+- No TensorBoard artifact was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 lane-affine temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 lane-affine temporal verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Close this as predicted-lane-affine temporal alignment plus endpoint-envelope/dense-component temporal candidates and learned MLP/union FP-control.
+- Do not repeat it as lane-pair matching, affine max-shift, temporal top-k/cap, envelope/dense toggles, MLP epoch/LR/hidden size, threshold-grid, or train-batch scaling.
+- Reopen temporal stop-line only with a true ego/BEV alignment signal or learned temporal segment emitter whose fixed exact oracle and learned TP/FP/FN both beat primary projection-comp.

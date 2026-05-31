@@ -13,6 +13,7 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     _build_temporal_endpoint_envelopes,
     _build_temporal_candidates,
     _build_union_candidates,
+    _lane_affine_alignment_from_predictions,
     _merge_stop_lines_with_extra,
     _orb_homography_alignment_from_arrays,
     _phase_correlation_shift,
@@ -155,6 +156,32 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertAlmostEqual(float(alignment["dx"]), -7.0, delta=3.0)
         self.assertAlmostEqual(float(alignment["dy"]), 5.0, delta=3.0)
         self.assertGreater(float(alignment["response"]), 0.05)
+
+    def test_lane_affine_alignment_uses_predicted_lane_tracks(self) -> None:
+        neighbor_prediction = {
+            "lanes": [
+                {"points_xy": [[120.0, 120.0], [150.0, 280.0], [190.0, 520.0]]},
+                {"points_xy": [[610.0, 120.0], [570.0, 280.0], [520.0, 520.0]]},
+            ]
+        }
+        current_prediction = {
+            "lanes": [
+                {"points_xy": [[132.0, 120.0], [162.0, 280.0], [202.0, 520.0]]},
+                {"points_xy": [[622.0, 120.0], [582.0, 280.0], [532.0, 520.0]]},
+            ]
+        }
+
+        alignment = _lane_affine_alignment_from_predictions(
+            current_prediction,
+            neighbor_prediction,
+            raw_hw=(608, 800),
+            max_shift_frac=0.25,
+        )
+
+        self.assertEqual(float(alignment["applied"]), 1.0)
+        self.assertAlmostEqual(float(alignment["dx"]), 12.0, delta=1.0)
+        self.assertAlmostEqual(float(alignment["dy"]), 0.0, delta=1.0)
+        self.assertGreater(float(alignment["response"]), 0.1)
 
     def test_warp_stop_line_points_applies_affine_matrix(self) -> None:
         warped = _warp_stop_line_points(
