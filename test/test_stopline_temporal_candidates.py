@@ -9,6 +9,7 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     TEMPORAL_FEATURES,
     UNION_SCORE_KEY,
     _build_baseline_union_candidates,
+    _build_dense_component_stop_lines,
     _build_temporal_endpoint_envelopes,
     _build_temporal_candidates,
     _build_union_candidates,
@@ -59,9 +60,31 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertGreater(features["temporal_proposal_mean"], 0.0)
         self.assertEqual(features["temporal_source_neighbor"], 0.0)
         self.assertEqual(features["temporal_source_envelope"], 0.0)
+        self.assertEqual(features["temporal_source_dense_component"], 0.0)
         self.assertLess(features["temporal_alignment_dx_norm"], 0.0)
         self.assertGreater(features["temporal_alignment_dy_norm"], 0.0)
         self.assertAlmostEqual(features["temporal_alignment_response"], 0.5)
+
+    def test_dense_component_stop_lines_extracts_segment_from_maps(self) -> None:
+        mask = np.zeros((76, 100), dtype=np.float32)
+        center = np.zeros((76, 100), dtype=np.float32)
+        selector = np.zeros((76, 100), dtype=np.float32)
+        mask[38:43, 20:81] = 0.9
+        center[40, 20:81] = 0.8
+        selector[39:42, 24:77] = 0.75
+
+        candidates = _build_dense_component_stop_lines(
+            meta=_meta(),
+            mask_probs=mask,
+            center_probs=center,
+            selector_probs=selector,
+            max_candidates=2,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["source"], "temporal_dense_component")
+        self.assertGreater(candidates[0]["length"], 300.0)
+        self.assertGreater(candidates[0]["temporal_dense_component_support_sum"], 1.0)
 
     def test_phase_correlation_returns_shift_to_apply_to_moving(self) -> None:
         reference = np.zeros((32, 32), dtype=np.float32)
@@ -147,6 +170,49 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertTrue(candidates[0]["is_oracle_positive"])
         self.assertEqual(candidates[0]["neighbor_dataset_index"], 12)
+
+    def test_build_candidates_adds_dense_component_temporal_source(self) -> None:
+        mask = np.ones((76, 100), dtype=np.float32) * 0.5
+        center = np.ones((76, 100), dtype=np.float32) * 0.4
+        selector = np.ones((76, 100), dtype=np.float32) * 0.3
+        neighbor_mask = np.zeros((76, 100), dtype=np.float32)
+        neighbor_center = np.zeros((76, 100), dtype=np.float32)
+        neighbor_selector = np.zeros((76, 100), dtype=np.float32)
+        neighbor_mask[38:43, 20:81] = 0.9
+        neighbor_center[40, 20:81] = 0.8
+        neighbor_selector[39:42, 24:77] = 0.75
+        gt = [{"points_xy": [[160.0, 320.0], [640.0, 320.0]]}]
+
+        candidates = _build_temporal_candidates(
+            meta=_meta(),
+            mask_probs=mask,
+            center_probs=center,
+            selector_probs=selector,
+            current_stop_lines=[],
+            gt_stop_lines=gt,
+            neighbor_predictions=[
+                (
+                    -1,
+                    12,
+                    {"stop_lines": []},
+                    {},
+                    {
+                        "meta": _meta(),
+                        "mask_probs": neighbor_mask,
+                        "center_probs": neighbor_center,
+                        "selector_probs": neighbor_selector,
+                    },
+                )
+            ],
+            max_candidates=4,
+            temporal_dense_component_enabled=True,
+            max_temporal_dense_components=2,
+        )
+
+        dense_candidates = [candidate for candidate in candidates if candidate["source"] == "temporal_dense_component"]
+        self.assertEqual(len(dense_candidates), 1)
+        self.assertTrue(dense_candidates[0]["is_oracle_positive"])
+        self.assertEqual(dense_candidates[0]["temporal_source_dense_component"], 1.0)
 
     def test_build_temporal_endpoint_envelope_extends_supported_axis(self) -> None:
         mask = np.ones((76, 100), dtype=np.float32) * 0.5

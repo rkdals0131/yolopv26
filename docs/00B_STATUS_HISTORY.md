@@ -25205,3 +25205,111 @@ Decision:
 - Close this as sparse-affine temporal endpoint-envelope over retained+neighbor stop-line candidates.
 - Do not repeat it as envelope axis/normal gates, union top-k, MLP epoch/LR/hidden size, threshold-grid, or train-batch scaling.
 - Reopen temporal stop-line only with a materially different motion model or learned temporal segment emitter whose exact learned TP/FP/FN improves over primary projection-comp, not just oracle coverage.
+
+## 403. 2026-05-31 Stop-line temporal dense-component source: candidate coverage exists, learned FP-control still fails
+
+Situation:
+
+- The prior sparse-affine endpoint-envelope axis improved oracle headroom but did not learn a deployable selector.
+- This reopened temporal stop-line only by changing candidate source:
+  neighbor-frame stop-line dense `mask / center / selector` maps are converted into PCA component line segments, then sparse-affine aligned into the current raw frame before train-split MLP and union-selector scoring.
+- The dataset was reused in place from `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+- The first implementation wrote dense-component own-support/geometry fields to CSV, then a second run correctly added those fields to the learned feature vector.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_temporal_candidates.py`
+  - adds opt-in `--temporal-dense-component-enabled`;
+  - caches neighbor stop-line dense maps, not full tensors;
+  - extracts dense components with fixed support/proposal gates and PCA endpoints;
+  - orients dense component endpoints consistently before metric matching;
+  - adds dense-component source and own-support features to temporal and union MLP inputs.
+- `test/test_stopline_temporal_candidates.py`
+  - covers dense component extraction and `_build_temporal_candidates` integration.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| baseline_plus_temporal_mlp | `0.5507` | `0.0000` | `0 / 7 / 2` | `0.5455` |
+| temporal_union_selector | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+
+Smoke candidate accounting:
+
+- train temporal candidates `509`, positives `164`;
+- train dense-component candidates `305`, positives `92`;
+- val temporal candidates `20`, positives `0`;
+- val dense-component candidates `14`, positives `0`.
+
+Exact train256 / val128, source flag only:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5000` | `30 / 30 / 30` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4430` | `33 / 56 / 27` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5373` | `36 / 38 / 24` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.4655` | `27 / 29 / 33` | `0.5988` |
+
+Exact train256 / val128, dense own-support features:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4490` | `33 / 54 / 27` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5414` | `36 / 37 / 24` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.4878` | `30 / 33 / 30` | `0.5988` |
+
+Exact dense-feature candidate accounting:
+
+- train temporal candidates `2131`, positives `636`;
+- train dense-component candidates `1290`, positives `373`;
+- validation temporal candidates `315`, positives `44`;
+- validation dense-component candidates `217`, positives `23`;
+- validation union positives `36`;
+- temporal MLP feature dimension `47`, union feature dimension `51`.
+
+Diagnosis:
+
+- The new dense-component temporal source has real exact oracle coverage:
+  validation dense components contain `23` oracle-positive rows, and baseline-plus-oracle temporal reaches `36 / 37 / 24`, F1 `0.5414`.
+- That headroom is too small and too FP-heavy for the current learned selector:
+  baseline-plus-temporal MLP adds `+1` TP but `+26` FP versus primary exact;
+  temporal union selector loses retained TP and adds FP, ending at `30 / 33 / 30`.
+- Dense own-support features improved bookkeeping and feature contract, but did not solve no-GT FP-control.
+- Broader-val512 and further train-batch scaling are skipped because exact learned TP/FP/FN is below primary projection-comp.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_dense_component_train64_smoke_val4_20260531/summary.json`.
+- Source-flag-only exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_dense_component_train256_exact_val128_20260531/summary.json`.
+- Dense-feature exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_dense_component_features_train256_exact_val128_20260531/summary.json`.
+- Each retained run keeps only CSV/summary artifacts.
+
+Storage:
+
+- Retained outputs are compact:
+  - smoke export about `1.5M`;
+  - source-flag exact export about `6.8M`;
+  - dense-feature exact export about `6.8M`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 dense-component temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 source-flag-only dense-component temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 dense-feature temporal verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data.
+- Close this as image-space sparse-affine temporal dense-component candidate generation plus learned MLP/union FP-control.
+- Do not repeat it as dense mask/proposal threshold, component area, PCA quantile, source flag, dense feature subset, MLP epoch/LR/hidden size, top-k/cap, threshold-grid, or train-batch scaling.
+- Reopen temporal stop-line only with a materially different motion model, ego/BEV alignment, or learned temporal segment emitter whose exact learned TP/FP/FN beats primary projection-comp.
