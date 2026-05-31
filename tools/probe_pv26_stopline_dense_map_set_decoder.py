@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 from pathlib import Path
 import site
 import sys
@@ -34,6 +35,7 @@ from tools.probe_pv26_lane_feature_roi_repair import (
     _metric_payload,
     _task_delta,
 )
+from tools.probe_pv26_lane_flip_tta import _stop_line_distance
 from tools.probe_pv26_lane_instance_evidence import _write_csv
 from tools.pv26_train import cli as train_cli
 
@@ -89,6 +91,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--object-threshold", type=float, default=0.55)
     parser.add_argument("--max-output-segments", type=int, default=2)
+    parser.add_argument(
+        "--candidate-verifier-enabled",
+        action="store_true",
+        help=(
+            "Train a second-stage verifier on decoder-generated candidates, then "
+            "add only verifier-kept decoder candidates to the preserved runtime baseline."
+        ),
+    )
+    parser.add_argument("--candidate-verifier-hidden-dim", type=int, default=128)
+    parser.add_argument("--candidate-verifier-epochs", type=int, default=80)
+    parser.add_argument("--candidate-verifier-batch-size", type=int, default=128)
+    parser.add_argument("--candidate-verifier-lr", type=float, default=1.0e-3)
+    parser.add_argument("--candidate-verifier-threshold", type=float, default=0.50)
     parser.add_argument("--seed", type=int, default=26)
     parser.add_argument("--backbone-weights", default="")
     parser.add_argument("--lane-flip-variant", default="baseline")
@@ -134,6 +149,21 @@ class StoplineDenseMapSetDecoder(nn.Module):
         logits = self.logits(hidden)
         points = torch.sigmoid(self.points(hidden)).view(-1, self.queries, 2, 2)
         return logits, points
+
+
+class StoplineDecoderCandidateVerifier(nn.Module):
+    def __init__(self, input_dim: int, *, hidden_dim: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.ReLU(inplace=True),
+            nn.Linear(int(hidden_dim), int(hidden_dim)),
+            nn.ReLU(inplace=True),
+            nn.Linear(int(hidden_dim), 1),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.net(features).squeeze(-1)
 
 
 def _finite_array(values: np.ndarray | list[float]) -> np.ndarray:
@@ -407,6 +437,7 @@ def _collect_examples(
                     {
                         "features": features,
                         "targets": targets,
+                        "gt_stop_lines": [dict(item) for item in sample_gt.get("stop_lines", [])],
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
                         "meta": sample_meta,
@@ -436,6 +467,244 @@ def _network_norm_segment_to_raw(segment: np.ndarray, meta: dict[str, Any]) -> l
         target_count=STOP_LINE_POINT_COUNT,
     ).tolist()
     return [[float(x), float(y)] for x, y in raw_points]
+
+
+def _decoder_candidate_feature(
+    sample_features: np.ndarray,
+    *,
+    segment: np.ndarray,
+    probability: float,
+) -> np.ndarray:
+    points = _canonical_segment(segment).reshape(2, 2)
+    vector = points[1] - points[0]
+    length = float(np.linalg.norm(vector))
+    if length <= 1.0e-6 or not math.isfinite(length):
+        cos_angle = 1.0
+        sin_angle = 0.0
+    else:
+        cos_angle = float(vector[0] / length)
+        sin_angle = float(vector[1] / length)
+    center = points.mean(axis=0)
+    candidate_values = np.asarray(
+        [
+            float(probability),
+            float(length),
+            cos_angle,
+            sin_angle,
+            float(center[0]),
+            float(center[1]),
+            float(abs(vector[0])),
+            float(abs(vector[1])),
+            float(points[0, 0]),
+            float(points[0, 1]),
+            float(points[1, 0]),
+            float(points[1, 1]),
+        ],
+        dtype=np.float32,
+    )
+    return _finite_array(np.concatenate([np.asarray(sample_features, dtype=np.float32).reshape(-1), candidate_values]))
+
+
+def _decoder_candidate_rows(
+    *,
+    examples: list[dict[str, Any]],
+    model: StoplineDenseMapSetDecoder,
+    device: str,
+) -> list[list[dict[str, Any]]]:
+    if not examples:
+        return []
+    features = torch.tensor(np.stack([row["features"] for row in examples]), dtype=torch.float32, device=device)
+    features = (features - model.feature_mean) / model.feature_std
+    with torch.no_grad():
+        logits, points = model(features)
+        probabilities = logits.sigmoid().detach().cpu().numpy().astype(np.float32)
+        segments = points.detach().cpu().numpy().astype(np.float32)
+    grouped: list[list[dict[str, Any]]] = []
+    for sample_index, example in enumerate(examples):
+        rows: list[dict[str, Any]] = []
+        for query_index in range(int(probabilities.shape[1])):
+            probability = float(probabilities[sample_index, query_index])
+            segment = _canonical_segment(segments[sample_index, query_index])
+            rows.append(
+                {
+                    "sample_index": int(example["sample_index"]),
+                    "query_index": int(query_index),
+                    "probability": probability,
+                    "segment": segment,
+                    "features": _decoder_candidate_feature(
+                        example["features"],
+                        segment=segment,
+                        probability=probability,
+                    ),
+                    "line": {
+                        "points_xy": _network_norm_segment_to_raw(segment, example["meta"]),
+                        "score": probability,
+                        "dense_map_set_decoder_score": probability,
+                        "dense_map_set_decoder_query_index": int(query_index),
+                        "proposal_source": "dense_map_set_decoder",
+                        "allowed": True,
+                    },
+                }
+            )
+        grouped.append(rows)
+    return grouped
+
+
+def _assign_candidate_labels(
+    candidates: list[dict[str, Any]],
+    gt_lines: list[dict[str, Any]],
+    *,
+    match_threshold: float = 40.0,
+) -> list[int]:
+    labels = [0 for _ in candidates]
+    if not candidates or not gt_lines:
+        return labels
+    pairs: list[tuple[float, int, int]] = []
+    for candidate_index, candidate in enumerate(candidates):
+        line = candidate.get("line", {})
+        for gt_index, gt_line in enumerate(gt_lines):
+            distance = _stop_line_distance(line, gt_line)
+            if math.isfinite(distance) and float(distance) <= float(match_threshold):
+                pairs.append((float(distance), int(candidate_index), int(gt_index)))
+    pairs.sort(key=lambda item: item[0])
+    used_candidates: set[int] = set()
+    used_gt: set[int] = set()
+    for _distance, candidate_index, gt_index in pairs:
+        if candidate_index in used_candidates or gt_index in used_gt:
+            continue
+        labels[candidate_index] = 1
+        used_candidates.add(candidate_index)
+        used_gt.add(gt_index)
+    return labels
+
+
+def _train_candidate_verifier(
+    examples: list[dict[str, Any]],
+    grouped_candidates: list[list[dict[str, Any]]],
+    *,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[StoplineDecoderCandidateVerifier, dict[str, Any], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    feature_rows: list[np.ndarray] = []
+    labels: list[float] = []
+    for example, candidates in zip(examples, grouped_candidates):
+        candidate_labels = _assign_candidate_labels(candidates, list(example.get("gt_stop_lines", [])))
+        for candidate, label in zip(candidates, candidate_labels):
+            feature_rows.append(np.asarray(candidate["features"], dtype=np.float32).reshape(-1))
+            labels.append(float(label))
+            rows.append(
+                {
+                    "split": "train",
+                    "sample_index": int(candidate["sample_index"]),
+                    "query_index": int(candidate["query_index"]),
+                    "probability": float(candidate["probability"]),
+                    "label": int(label),
+                    "target_count": int(np.asarray(example.get("targets", [])).shape[0]),
+                }
+            )
+    if not feature_rows:
+        raise ValueError("candidate verifier requires non-empty decoder candidates")
+    features = torch.tensor(np.stack(feature_rows), dtype=torch.float32)
+    target = torch.tensor(labels, dtype=torch.float32)
+    positive_count = int(target.sum().item())
+    negative_count = int(target.numel() - positive_count)
+    mean = features.mean(dim=0)
+    std = features.std(dim=0).clamp(min=1.0e-6)
+    features = (features - mean) / std
+    model = StoplineDecoderCandidateVerifier(
+        int(features.shape[1]),
+        hidden_dim=int(args.candidate_verifier_hidden_dim),
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.candidate_verifier_lr), weight_decay=1.0e-4)
+    pos_weight = max(float(negative_count) / max(float(positive_count), 1.0), 1.0)
+    pos_weight_tensor = torch.tensor([pos_weight], dtype=torch.float32, device=device)
+    features = features.to(device)
+    target = target.to(device)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(args.seed) + 911)
+    batch_size = max(1, int(args.candidate_verifier_batch_size))
+    history: list[dict[str, float]] = []
+    for epoch in range(1, max(1, int(args.candidate_verifier_epochs)) + 1):
+        order = torch.randperm(int(features.shape[0]), generator=generator)
+        losses: list[float] = []
+        for start in range(0, int(order.numel()), batch_size):
+            index = order[start : start + batch_size].to(device)
+            logits = model(features[index])
+            loss = F.binary_cross_entropy_with_logits(logits, target[index], pos_weight=pos_weight_tensor)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            losses.append(float(loss.detach().cpu()))
+        if epoch == 1 or epoch == int(args.candidate_verifier_epochs) or epoch % 10 == 0:
+            history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
+    model.register_buffer("feature_mean", mean.to(device), persistent=True)
+    model.register_buffer("feature_std", std.to(device), persistent=True)
+    summary = {
+        "candidate_count": int(target.numel()),
+        "positive_count": int(positive_count),
+        "negative_count": int(negative_count),
+        "input_dim": int(features.shape[1]),
+        "pos_weight": float(pos_weight),
+        "threshold": float(args.candidate_verifier_threshold),
+        "history": history,
+    }
+    return model, summary, rows
+
+
+def _apply_candidate_verifier(
+    *,
+    examples: list[dict[str, Any]],
+    baseline_predictions: list[dict[str, Any]],
+    grouped_candidates: list[list[dict[str, Any]]],
+    verifier: StoplineDecoderCandidateVerifier,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not examples:
+        return baseline_predictions, []
+    feature_rows: list[np.ndarray] = []
+    candidate_refs: list[tuple[int, dict[str, Any], int]] = []
+    for sample_index, candidates in enumerate(grouped_candidates):
+        labels = _assign_candidate_labels(candidates, list(examples[sample_index].get("gt_stop_lines", [])))
+        for candidate, label in zip(candidates, labels):
+            feature_rows.append(np.asarray(candidate["features"], dtype=np.float32).reshape(-1))
+            candidate_refs.append((int(sample_index), candidate, int(label)))
+    if not feature_rows:
+        return baseline_predictions, []
+    features = torch.tensor(np.stack(feature_rows), dtype=torch.float32, device=device)
+    features = (features - verifier.feature_mean) / verifier.feature_std
+    with torch.no_grad():
+        keep_probabilities = verifier(features).sigmoid().detach().cpu().numpy().astype(np.float32)
+    selected_by_sample: dict[int, list[dict[str, Any]]] = {}
+    rows: list[dict[str, Any]] = []
+    threshold = float(args.candidate_verifier_threshold)
+    for probability, (sample_index, candidate, label) in zip(keep_probabilities, candidate_refs):
+        selected = bool(float(probability) >= threshold)
+        rows.append(
+            {
+                "sample_index": int(sample_index),
+                "query_index": int(candidate["query_index"]),
+                "decoder_probability": float(candidate["probability"]),
+                "verifier_probability": float(probability),
+                "selected": int(selected),
+                "label": int(label),
+            }
+        )
+        if selected:
+            selected_by_sample.setdefault(int(sample_index), []).append(dict(candidate["line"]))
+    merged_predictions = [
+        dict(sample, stop_lines=[dict(line) for line in sample.get("stop_lines", [])])
+        for sample in baseline_predictions
+    ]
+    max_segments = max(0, int(args.max_output_segments))
+    for sample_index, selected_lines in selected_by_sample.items():
+        if not (0 <= sample_index < len(merged_predictions)):
+            continue
+        merged = [dict(line) for line in merged_predictions[sample_index].get("stop_lines", [])] + selected_lines
+        merged.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        merged_predictions[sample_index]["stop_lines"] = _dedupe_stop_line_predictions(merged)[:max_segments]
+    return merged_predictions, rows
 
 
 def _apply_decoder(
@@ -531,6 +800,21 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         training=True,
     )
     model, train_summary = _train_decoder(train_examples, args=args, device=device)
+    verifier_model: StoplineDecoderCandidateVerifier | None = None
+    verifier_summary: dict[str, Any] | None = None
+    verifier_train_rows: list[dict[str, Any]] = []
+    if bool(args.candidate_verifier_enabled):
+        train_decoder_candidates = _decoder_candidate_rows(
+            examples=train_examples,
+            model=model,
+            device=device,
+        )
+        verifier_model, verifier_summary, verifier_train_rows = _train_candidate_verifier(
+            train_examples,
+            train_decoder_candidates,
+            args=args,
+            device=device,
+        )
     val_examples, baseline_predictions, raw_batches, val_rows = _collect_examples(
         loader=val_loader,
         evaluator=evaluator,
@@ -546,13 +830,39 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         args=args,
         device=device,
     )
+    verified_plus_predictions: list[dict[str, Any]] | None = None
+    verifier_decision_rows: list[dict[str, Any]] = []
+    if verifier_model is not None:
+        val_decoder_candidates = _decoder_candidate_rows(
+            examples=val_examples,
+            model=model,
+            device=device,
+        )
+        verified_plus_predictions, verifier_decision_rows = _apply_candidate_verifier(
+            examples=val_examples,
+            baseline_predictions=baseline_predictions,
+            grouped_candidates=val_decoder_candidates,
+            verifier=verifier_model,
+            args=args,
+            device=device,
+        )
     merged_raw = _merge_raw_batches(raw_batches)
     baseline_metrics = augment_lane_family_metrics(summarize_pv26_metrics(baseline_predictions, merged_raw))
     decoder_only_metrics = augment_lane_family_metrics(summarize_pv26_metrics(decoder_only_predictions, merged_raw))
     baseline_plus_metrics = augment_lane_family_metrics(summarize_pv26_metrics(baseline_plus_predictions, merged_raw))
+    verified_plus_metrics = (
+        augment_lane_family_metrics(summarize_pv26_metrics(verified_plus_predictions, merged_raw))
+        if verified_plus_predictions is not None
+        else None
+    )
     baseline_tasks = {task: _metric_payload(baseline_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
     decoder_only_tasks = {task: _metric_payload(decoder_only_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
     baseline_plus_tasks = {task: _metric_payload(baseline_plus_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
+    verified_plus_tasks = (
+        {task: _metric_payload(verified_plus_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
+        if verified_plus_metrics is not None
+        else None
+    )
     summary = {
         "checkpoint": str(checkpoint),
         "source_run": str(source_run),
@@ -566,22 +876,34 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "object_threshold": float(args.object_threshold),
         "metric_quality_objectness": bool(args.metric_quality_objectness),
         "metric_quality_tau": float(args.metric_quality_tau),
+        "candidate_verifier_enabled": bool(args.candidate_verifier_enabled),
+        "candidate_verifier_threshold": float(args.candidate_verifier_threshold),
         "max_output_segments": int(args.max_output_segments),
         "pool_hw": [int(args.pool_height), int(args.pool_width)],
         "train_summary": train_summary,
+        "candidate_verifier_summary": verifier_summary,
         "selected_prediction_count": int(sum(int(row["selected"]) for row in decision_rows)),
+        "verified_selected_prediction_count": int(sum(int(row["selected"]) for row in verifier_decision_rows)),
         "baseline": baseline_tasks,
         "decoder_only": decoder_only_tasks,
         "baseline_plus_decoder": baseline_plus_tasks,
+        "baseline_plus_verified_decoder": verified_plus_tasks,
         "delta": {
             "decoder_only": {task: _task_delta(decoder_only_tasks[task], baseline_tasks[task]) for task in baseline_tasks},
             "baseline_plus_decoder": {
                 task: _task_delta(baseline_plus_tasks[task], baseline_tasks[task]) for task in baseline_tasks
             },
+            "baseline_plus_verified_decoder": (
+                {task: _task_delta(verified_plus_tasks[task], baseline_tasks[task]) for task in baseline_tasks}
+                if verified_plus_tasks is not None
+                else None
+            ),
         },
         "interpretation": (
             "No-GT learned structured decoder over frozen dense stop-line maps. "
-            "GT is used only to train the decoder on the train split and to audit validation metrics."
+            "If candidate_verifier_enabled is true, a second train-split verifier filters "
+            "decoder candidates before adding them to the preserved runtime baseline. "
+            "GT is used only to train the decoder/verifier on the train split and to audit validation metrics."
         ),
     }
     return {
@@ -589,6 +911,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "train_rows": train_rows,
         "val_rows": val_rows,
         "decision_rows": decision_rows,
+        "verifier_train_rows": verifier_train_rows,
+        "verifier_decision_rows": verifier_decision_rows,
     }
 
 
@@ -602,6 +926,8 @@ def main() -> int:
     _write_csv(output_dir / "train_samples.csv", payload["train_rows"])
     _write_csv(output_dir / "val_samples.csv", payload["val_rows"])
     _write_csv(output_dir / "decoder_decisions.csv", payload["decision_rows"])
+    _write_csv(output_dir / "candidate_verifier_train.csv", payload["verifier_train_rows"])
+    _write_csv(output_dir / "candidate_verifier_decisions.csv", payload["verifier_decision_rows"])
     print(json.dumps(_json_ready(summary), indent=2, sort_keys=True))
     return 0
 

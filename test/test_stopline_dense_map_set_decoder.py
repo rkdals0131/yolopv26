@@ -6,8 +6,10 @@ import numpy as np
 import torch
 
 from tools.probe_pv26_stopline_dense_map_set_decoder import (
+    _assign_candidate_labels,
     _best_assignment,
     _canonical_segment,
+    _decoder_candidate_feature,
     _set_decoder_loss,
 )
 
@@ -74,6 +76,28 @@ class StoplineDenseMapSetDecoderTests(unittest.TestCase):
         )
 
         self.assertGreater(float(bad_loss), float(good_loss))
+
+    def test_decoder_candidate_feature_appends_candidate_geometry(self) -> None:
+        sample_features = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+        segment = np.asarray([[0.1, 0.2], [0.9, 0.2]], dtype=np.float32)
+
+        feature = _decoder_candidate_feature(sample_features, segment=segment, probability=0.75)
+
+        self.assertEqual(feature.shape, (15,))
+        self.assertTrue(np.isfinite(feature).all())
+        self.assertAlmostEqual(float(feature[3]), 0.75)
+
+    def test_assign_candidate_labels_is_one_to_one(self) -> None:
+        gt_lines = [{"points_xy": [[10.0, 20.0], [90.0, 20.0]]}]
+        candidates = [
+            {"line": {"points_xy": [[10.0, 20.0], [90.0, 20.0]]}},
+            {"line": {"points_xy": [[12.0, 20.0], [92.0, 20.0]]}},
+            {"line": {"points_xy": [[10.0, 80.0], [90.0, 80.0]]}},
+        ]
+
+        labels = _assign_candidate_labels(candidates, gt_lines)
+
+        self.assertEqual(labels, [1, 0, 0])
 
 
 if __name__ == "__main__":

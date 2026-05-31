@@ -23173,3 +23173,98 @@ Decision:
 - Broader-val512 is skipped because this suppress-only contract cannot add the missing TP needed for final success, and the exact movement is recall-negative.
 - Close retained-output suppressor as a standalone path.
 - Reopen suppressor work only as a fixed auxiliary FP-control stage paired with a materially different stop-line candidate/geometry generator that first recovers no-GT positives.
+
+## 384. 2026-05-31 Stop-line dense-map decoder candidate-verifier: calibrated merge still FP-heavy
+
+Hypothesis:
+
+- Section 380/382 closed the dense-map set decoder as a standalone candidate generator because it added a small amount of stop-line TP but far too much FP.
+- Section 383 showed a retained-output suppressor can reduce FP, but it cannot add missing TP.
+- This branch tests the permitted combined premise: keep the learned dense-map decoder as a candidate generator, train a second MLP verifier over decoder-generated queries, and preserve the retained projection-comp baseline while adding only verified decoder candidates.
+
+Implementation:
+
+- Extended `tools/probe_pv26_stopline_dense_map_set_decoder.py`.
+- Added CLI flags:
+  - `--candidate-verifier-enabled`;
+  - `--candidate-verifier-hidden-dim`;
+  - `--candidate-verifier-epochs`;
+  - `--candidate-verifier-batch-size`;
+  - `--candidate-verifier-lr`;
+  - `--candidate-verifier-threshold`.
+- Added `StoplineDecoderCandidateVerifier`.
+- Candidate verifier features concatenate:
+  - pooled frozen dense-map sample features already used by the dense-map set decoder;
+  - decoder query endpoint coordinates;
+  - decoder probability;
+  - normalized segment length, direction, center, and endpoint deltas.
+- Runtime:
+  - retained projection-comp baseline is preserved;
+  - decoder candidates are added only if verifier probability `>= 0.50`;
+  - existing stop-line dedupe and `max_output_segments=2` still apply.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| decoder-only | `0.0000` | `0 / 4 / 2` | `0.5839` | `0.5455` |
+| baseline-plus-decoder | `0.0000` | `0 / 7 / 2` | `0.5839` | `0.5455` |
+| baseline-plus-verified | `0.0000` | `0 / 7 / 2` | `0.5839` | `0.5455` |
+
+Smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Decoder train examples / targets: `256 / 142`.
+- Verifier train candidates / positives / negatives: `512 / 124 / 388`.
+- Decoder selected predictions / verifier selected predictions: `4 / 4`.
+
+Exact train256 / fixed val128:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| decoder-only | `0.1395` | `9 / 60 / 51` | `0.5888` | `0.5988` |
+| baseline-plus-decoder | `0.3696` | `34 / 90 / 26` | `0.5888` | `0.5988` |
+| baseline-plus-verified | `0.3778` | `34 / 86 / 26` | `0.5888` | `0.5988` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Decoder train examples / targets: `1024 / 599`.
+- Verifier train candidates / positives / negatives: `2048 / 422 / 1626`.
+- Decoder selected predictions / verifier selected predictions: `69 / 81`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_decoder_verifier_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_decoder_verifier_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No decoder or verifier checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `52K`;
+  - exact directory about `212K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_dense_map_set_decoder.py test/test_stopline_dense_map_set_decoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_dense_map_set_decoder`.
+- CUDA train64/fixed-val4 dense-map decoder verifier run.
+- CUDA train256/exact-val128 dense-map decoder verifier run.
+
+Decision:
+
+- The verifier slightly reduces FP compared with raw baseline-plus-decoder (`90 -> 86`) but not nearly enough.
+- Exact TP increases only `+2` while FP increases `+58`, moving stop-line F1 `0.5333 -> 0.3778`.
+- Broader-val512 is skipped because exact precision collapses.
+- Close dense-map set decoder + candidate-verifier as the current calibrated-verifier/baseline-preserving merge contract.
+- Reopen dense-map decoding only if the decoder candidate generator itself changes materially; do not repeat this as verifier threshold, hidden size, LR, epoch count, or train-batch scaling.
