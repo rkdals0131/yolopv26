@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import argparse
 import unittest
 
 import numpy as np
 import torch
 
 from tools.probe_pv26_stopline_dense_map_set_decoder import (
+    _apply_grouped_candidate_lines,
     _assign_candidate_labels,
     _best_assignment,
     _canonical_segment,
     _decoder_candidate_feature,
+    _haf_candidate_feature,
+    _haf_candidate_rows,
     _set_decoder_loss,
     _slot_examples_for_sample,
     _slot_feature,
@@ -116,6 +120,85 @@ class StoplineDenseMapSetDecoderTests(unittest.TestCase):
         labels = _assign_candidate_labels(candidates, gt_lines)
 
         self.assertEqual(labels, [1, 0, 0])
+
+    def test_haf_candidate_feature_appends_vote_quality(self) -> None:
+        sample_features = np.asarray([1.0, 2.0], dtype=np.float32)
+        segment = np.asarray([[0.1, 0.2], [0.9, 0.2]], dtype=np.float32)
+        line = {
+            "score": 0.7,
+            "center_score": 0.8,
+            "orientation_score": 0.9,
+            "length": 25.0,
+            "haf_vote_count": 5,
+            "haf_endpoint_covariance": 4.0,
+        }
+
+        feature = _haf_candidate_feature(sample_features, segment=segment, line=line)
+
+        self.assertEqual(feature.shape, (21,))
+        self.assertTrue(np.isfinite(feature).all())
+        self.assertAlmostEqual(float(feature[-7]), 0.8)
+        self.assertAlmostEqual(float(feature[-3]), np.log1p(5.0))
+        self.assertAlmostEqual(float(feature[-1]), 0.2)
+
+    def test_haf_candidate_rows_convert_raw_lines_to_features(self) -> None:
+        examples = [
+            {
+                "sample_index": 3,
+                "features": np.asarray([0.5, 0.25], dtype=np.float32),
+                "meta": _identity_meta(),
+                "haf_candidates": [
+                    {
+                        "points_xy": [[10.0, 20.0], [90.0, 20.0]],
+                        "score": 0.75,
+                        "haf_vote_count": 6,
+                        "haf_endpoint_covariance": 3.0,
+                    }
+                ],
+            }
+        ]
+
+        grouped = _haf_candidate_rows(examples=examples)
+
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(len(grouped[0]), 1)
+        self.assertEqual(grouped[0][0]["sample_index"], 3)
+        self.assertEqual(grouped[0][0]["query_index"], 0)
+        self.assertEqual(grouped[0][0]["line"]["proposal_source"], "haf_consensus_candidate")
+        self.assertTrue(np.isfinite(grouped[0][0]["features"]).all())
+
+    def test_apply_grouped_candidate_lines_preserves_baseline_and_caps_candidates(self) -> None:
+        baseline_predictions = [
+            {"stop_lines": [{"points_xy": [[0.0, 0.0], [10.0, 0.0]], "score": 0.4}]}
+        ]
+        examples = [{"targets": np.zeros((1, 2, 2), dtype=np.float32)}]
+        grouped = [
+            [
+                {
+                    "query_index": 0,
+                    "probability": 0.3,
+                    "line": {"points_xy": [[10.0, 10.0], [20.0, 10.0]], "score": 0.3},
+                },
+                {
+                    "query_index": 1,
+                    "probability": 0.9,
+                    "line": {"points_xy": [[10.0, 20.0], [20.0, 20.0]], "score": 0.9},
+                },
+            ]
+        ]
+
+        candidate_only, baseline_plus, rows = _apply_grouped_candidate_lines(
+            examples=examples,
+            baseline_predictions=baseline_predictions,
+            grouped_candidates=grouped,
+            args=argparse.Namespace(max_output_segments=1),
+        )
+
+        self.assertEqual(len(candidate_only[0]["stop_lines"]), 1)
+        self.assertEqual(candidate_only[0]["stop_lines"][0]["score"], 0.9)
+        self.assertEqual(len(baseline_plus[0]["stop_lines"]), 1)
+        self.assertEqual(baseline_plus[0]["stop_lines"][0]["score"], 0.9)
+        self.assertEqual([row["selected"] for row in rows], [0, 1])
 
     def test_slot_feature_appends_kind_flags(self) -> None:
         feature = _slot_feature(

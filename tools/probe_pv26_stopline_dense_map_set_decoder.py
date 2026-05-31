@@ -24,7 +24,11 @@ from model.data.transform import inverse_transform_points, transform_from_meta, 
 from model.engine._trainer_epochs import _merge_raw_batches
 from model.engine.batch import augment_lane_family_metrics, raw_batch_for_metrics
 from model.engine.metrics import STOP_LINE_POINT_COUNT, _extract_gt_samples, summarize_pv26_metrics
-from model.engine.postprocess import _dedupe_stop_line_predictions, postprocess_pv26_batch
+from model.engine.postprocess import (
+    _decode_stopline_haf_consensus_segments,
+    _dedupe_stop_line_predictions,
+    postprocess_pv26_batch,
+)
 from tools.evaluate_pv26_lane60_checkpoint import _advance_validation_sampler, _postprocess_override_config
 from tools.probe_pv26_lane_feature_roi_repair import (
     DEFAULT_CHECKPOINT,
@@ -104,6 +108,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-verifier-batch-size", type=int, default=128)
     parser.add_argument("--candidate-verifier-lr", type=float, default=1.0e-3)
     parser.add_argument("--candidate-verifier-threshold", type=float, default=0.50)
+    parser.add_argument(
+        "--haf-candidate-verifier-enabled",
+        action="store_true",
+        help=(
+            "Use decoded stop-line HAF consensus segments as the candidate generator, "
+            "train the second-stage verifier on train split labels, and add only "
+            "verified HAF candidates to the preserved projection-comp baseline."
+        ),
+    )
+    parser.add_argument("--haf-candidate-valid-threshold", type=float, default=0.95)
+    parser.add_argument("--haf-candidate-min-votes", type=int, default=4)
+    parser.add_argument("--haf-candidate-cluster-endpoint-tolerance", type=float, default=3.0)
+    parser.add_argument("--haf-candidate-max-endpoint-covariance", type=float, default=9.0)
+    parser.add_argument("--haf-candidate-max-segments", type=int, default=8)
     parser.add_argument(
         "--baseline-slot-refiner-enabled",
         action="store_true",
@@ -778,6 +796,16 @@ def _collect_examples(
                     max_count=int(args.slot_refiner_fallback_slots),
                     fallback_length=float(args.slot_refiner_fallback_length),
                 )
+                haf_candidates = (
+                    _decode_haf_candidates_for_sample(
+                        predictions,
+                        sample_index=sample_batch_index,
+                        meta=sample_meta,
+                        args=args,
+                    )
+                    if bool(args.haf_candidate_verifier_enabled)
+                    else []
+                )
                 slot_examples = _slot_examples_for_sample(
                     sample_features=features,
                     baseline_lines=baseline_lines,
@@ -795,6 +823,7 @@ def _collect_examples(
                         "baseline_lines": baseline_lines,
                         "baseline_anchors": baseline_anchors,
                         "fallback_anchors": fallback_anchors,
+                        "haf_candidates": haf_candidates,
                         "slot_examples": slot_examples,
                         "gt_stop_lines": [dict(item) for item in sample_gt.get("stop_lines", [])],
                         "sample_index": int(global_sample_index),
@@ -811,6 +840,7 @@ def _collect_examples(
                         "target_count": int(targets.shape[0]),
                         "baseline_slot_count": int(len(baseline_anchors)),
                         "fallback_slot_count": int(len(fallback_anchors)),
+                        "haf_candidate_count": int(len(haf_candidates)),
                         "slot_count": int(len(slot_examples)),
                         "positive_slot_count": int(sum(int(row["positive"]) for row in slot_examples)),
                     }
@@ -868,6 +898,65 @@ def _decoder_candidate_feature(
     return _finite_array(np.concatenate([np.asarray(sample_features, dtype=np.float32).reshape(-1), candidate_values]))
 
 
+def _haf_candidate_feature(
+    sample_features: np.ndarray,
+    *,
+    segment: np.ndarray,
+    line: dict[str, Any],
+) -> np.ndarray:
+    score = float(line.get("score", 0.0))
+    base = _decoder_candidate_feature(sample_features, segment=segment, probability=score)
+    vote_count = float(line.get("haf_vote_count", 0.0))
+    covariance = float(line.get("haf_endpoint_covariance", 0.0))
+    values = np.asarray(
+        [
+            float(line.get("center_score", score)),
+            float(line.get("orientation_score", 0.0)),
+            float(line.get("length", 0.0)),
+            vote_count,
+            math.log1p(max(vote_count, 0.0)),
+            covariance,
+            1.0 / (1.0 + max(covariance, 0.0)),
+        ],
+        dtype=np.float32,
+    )
+    return _finite_array(np.concatenate([base, values], axis=0))
+
+
+def _decode_haf_candidates_for_sample(
+    predictions: dict[str, Any],
+    *,
+    sample_index: int,
+    meta: dict[str, Any],
+    args: argparse.Namespace,
+) -> list[dict[str, Any]]:
+    haf_endpoint = predictions.get("stop_line_haf_endpoint")
+    haf_valid_logits = predictions.get("stop_line_haf_valid_logits")
+    if not isinstance(haf_endpoint, torch.Tensor) or not isinstance(haf_valid_logits, torch.Tensor):
+        return []
+    if not (0 <= int(sample_index) < int(haf_endpoint.shape[0])) or not (
+        0 <= int(sample_index) < int(haf_valid_logits.shape[0])
+    ):
+        return []
+    lines = _decode_stopline_haf_consensus_segments(
+        haf_endpoint=haf_endpoint[int(sample_index)],
+        haf_valid_logits=haf_valid_logits[int(sample_index)],
+        meta=meta,
+        valid_threshold=float(args.haf_candidate_valid_threshold),
+        min_votes=int(args.haf_candidate_min_votes),
+        cluster_endpoint_tolerance=float(args.haf_candidate_cluster_endpoint_tolerance),
+        max_endpoint_covariance=float(args.haf_candidate_max_endpoint_covariance),
+        max_segments=int(args.haf_candidate_max_segments),
+    )
+    output: list[dict[str, Any]] = []
+    for rank, line in enumerate(lines):
+        payload = dict(line)
+        payload["proposal_source"] = "haf_consensus_candidate"
+        payload["haf_candidate_rank"] = int(rank)
+        output.append(payload)
+    return output
+
+
 def _decoder_candidate_rows(
     *,
     examples: list[dict[str, Any]],
@@ -907,6 +996,36 @@ def _decoder_candidate_rows(
                         "proposal_source": "dense_map_set_decoder",
                         "allowed": True,
                     },
+                }
+            )
+        grouped.append(rows)
+    return grouped
+
+
+def _haf_candidate_rows(*, examples: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    grouped: list[list[dict[str, Any]]] = []
+    for example in examples:
+        rows: list[dict[str, Any]] = []
+        for query_index, line in enumerate(example.get("haf_candidates", [])):
+            segment = _raw_stopline_segment_norm(line, example["meta"])
+            if segment is None:
+                continue
+            probability = float(line.get("score", 0.0))
+            payload = dict(line)
+            payload["allowed"] = True
+            payload["proposal_source"] = "haf_consensus_candidate"
+            rows.append(
+                {
+                    "sample_index": int(example["sample_index"]),
+                    "query_index": int(query_index),
+                    "probability": probability,
+                    "segment": segment,
+                    "features": _haf_candidate_feature(
+                        example["features"],
+                        segment=segment,
+                        line=payload,
+                    ),
+                    "line": payload,
                 }
             )
         grouped.append(rows)
@@ -1068,6 +1187,52 @@ def _apply_candidate_verifier(
         merged.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
         merged_predictions[sample_index]["stop_lines"] = _dedupe_stop_line_predictions(merged)[:max_segments]
     return merged_predictions, rows
+
+
+def _apply_grouped_candidate_lines(
+    *,
+    examples: list[dict[str, Any]],
+    baseline_predictions: list[dict[str, Any]],
+    grouped_candidates: list[list[dict[str, Any]]],
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    candidate_only = [dict(sample, stop_lines=[]) for sample in baseline_predictions]
+    baseline_plus = [
+        dict(sample, stop_lines=[dict(item) for item in sample.get("stop_lines", [])])
+        for sample in baseline_predictions
+    ]
+    max_segments = max(0, int(args.max_output_segments))
+    rows: list[dict[str, Any]] = []
+    for sample_index, candidates in enumerate(grouped_candidates):
+        if not (0 <= int(sample_index) < len(examples)):
+            continue
+        ranked = sorted(
+            [(candidate_index, candidate) for candidate_index, candidate in enumerate(candidates)],
+            key=lambda item: float(item[1].get("line", {}).get("score", item[1].get("probability", 0.0))),
+            reverse=True,
+        )
+        selected_indices = {int(candidate_index) for candidate_index, _candidate in ranked[:max_segments]}
+        sample_lines = [dict(candidate["line"]) for _candidate_index, candidate in ranked[:max_segments]]
+        for query_index, candidate in enumerate(candidates):
+            rows.append(
+                {
+                    "sample_index": int(sample_index),
+                    "query_index": int(candidate["query_index"]),
+                    "probability": float(candidate["probability"]),
+                    "selected": int(query_index in selected_indices),
+                    "target_count": int(np.asarray(examples[sample_index].get("targets", [])).shape[0]),
+                    "proposal_source": str(candidate.get("line", {}).get("proposal_source", "")),
+                }
+            )
+        if 0 <= sample_index < len(candidate_only):
+            candidate_only[sample_index]["stop_lines"] = [dict(item) for item in sample_lines]
+        if 0 <= sample_index < len(baseline_plus):
+            merged = [dict(item) for item in baseline_plus[sample_index].get("stop_lines", [])] + [
+                dict(item) for item in sample_lines
+            ]
+            merged.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+            baseline_plus[sample_index]["stop_lines"] = _dedupe_stop_line_predictions(merged)[:max_segments]
+    return candidate_only, baseline_plus, rows
 
 
 def _apply_decoder(
@@ -1241,10 +1406,28 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_batches=int(args.decoder_train_batches),
         training=True,
     )
+    candidate_generator = "dense_map_set_decoder"
     slot_refiner_model: StoplineBaselineSlotRefiner | None = None
     slot_refiner_summary: dict[str, Any] | None = None
     model: StoplineDenseMapSetDecoder | None = None
-    if bool(args.baseline_slot_refiner_enabled):
+    train_summary: dict[str, Any]
+    if bool(args.haf_candidate_verifier_enabled):
+        if bool(args.baseline_slot_refiner_enabled) or bool(args.candidate_verifier_enabled):
+            raise ValueError(
+                "haf-candidate-verifier-enabled is a standalone candidate-generator mode; "
+                "do not combine it with baseline-slot-refiner-enabled or candidate-verifier-enabled"
+            )
+        candidate_generator = "haf_consensus_candidate"
+        train_haf_candidates = _haf_candidate_rows(examples=train_examples)
+        train_candidate_count = sum(len(row) for row in train_haf_candidates)
+        if train_candidate_count <= 0:
+            raise ValueError("HAF candidate verifier requires non-empty train HAF candidates")
+        train_summary = {
+            "candidate_generator": candidate_generator,
+            "train_haf_candidate_count": int(train_candidate_count),
+            "train_haf_candidate_samples": int(sum(1 for row in train_haf_candidates if row)),
+        }
+    elif bool(args.baseline_slot_refiner_enabled):
         slot_refiner_model, slot_refiner_summary = _train_slot_refiner(
             _flat_slot_examples(train_examples),
             args=args,
@@ -1256,7 +1439,16 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     verifier_model: StoplineDecoderCandidateVerifier | None = None
     verifier_summary: dict[str, Any] | None = None
     verifier_train_rows: list[dict[str, Any]] = []
-    if bool(args.candidate_verifier_enabled) and model is not None:
+    if bool(args.haf_candidate_verifier_enabled):
+        train_haf_candidates = _haf_candidate_rows(examples=train_examples)
+        verifier_model, verifier_summary, verifier_train_rows = _train_candidate_verifier(
+            train_examples,
+            train_haf_candidates,
+            args=args,
+            device=device,
+        )
+        train_summary["candidate_verifier"] = verifier_summary
+    elif bool(args.candidate_verifier_enabled) and model is not None:
         train_decoder_candidates = _decoder_candidate_rows(
             examples=train_examples,
             model=model,
@@ -1276,7 +1468,16 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_batches=int(args.max_val_batches),
         training=False,
     )
-    if slot_refiner_model is not None:
+    val_haf_candidates: list[list[dict[str, Any]]] | None = None
+    if bool(args.haf_candidate_verifier_enabled):
+        val_haf_candidates = _haf_candidate_rows(examples=val_examples)
+        decoder_only_predictions, baseline_plus_predictions, decision_rows = _apply_grouped_candidate_lines(
+            examples=val_examples,
+            baseline_predictions=baseline_predictions,
+            grouped_candidates=val_haf_candidates,
+            args=args,
+        )
+    elif slot_refiner_model is not None:
         decoder_only_predictions, baseline_plus_predictions, decision_rows = _apply_slot_refiner(
             examples=val_examples,
             baseline_predictions=baseline_predictions,
@@ -1295,7 +1496,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         )
     verified_plus_predictions: list[dict[str, Any]] | None = None
     verifier_decision_rows: list[dict[str, Any]] = []
-    if verifier_model is not None:
+    if bool(args.haf_candidate_verifier_enabled) and verifier_model is not None:
+        assert val_haf_candidates is not None
+        verified_plus_predictions, verifier_decision_rows = _apply_candidate_verifier(
+            examples=val_examples,
+            baseline_predictions=baseline_predictions,
+            grouped_candidates=val_haf_candidates,
+            verifier=verifier_model,
+            args=args,
+            device=device,
+        )
+    elif verifier_model is not None:
         val_decoder_candidates = _decoder_candidate_rows(
             examples=val_examples,
             model=model,
@@ -1337,9 +1548,16 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "validation_epoch": int(args.validation_epoch),
         "decoder_queries": int(args.decoder_queries),
         "object_threshold": float(args.object_threshold),
+        "candidate_generator": candidate_generator,
         "metric_quality_objectness": bool(args.metric_quality_objectness),
         "metric_quality_tau": float(args.metric_quality_tau),
         "candidate_verifier_enabled": bool(args.candidate_verifier_enabled),
+        "haf_candidate_verifier_enabled": bool(args.haf_candidate_verifier_enabled),
+        "haf_candidate_valid_threshold": float(args.haf_candidate_valid_threshold),
+        "haf_candidate_min_votes": int(args.haf_candidate_min_votes),
+        "haf_candidate_cluster_endpoint_tolerance": float(args.haf_candidate_cluster_endpoint_tolerance),
+        "haf_candidate_max_endpoint_covariance": float(args.haf_candidate_max_endpoint_covariance),
+        "haf_candidate_max_segments": int(args.haf_candidate_max_segments),
         "candidate_verifier_threshold": float(args.candidate_verifier_threshold),
         "baseline_slot_refiner_enabled": bool(args.baseline_slot_refiner_enabled),
         "slot_refiner_baseline_slots": int(args.slot_refiner_baseline_slots),
@@ -1357,15 +1575,25 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "baseline_plus_decoder": baseline_plus_tasks,
         "slot_refiner_only": decoder_only_tasks if bool(args.baseline_slot_refiner_enabled) else None,
         "baseline_plus_slot_refiner": baseline_plus_tasks if bool(args.baseline_slot_refiner_enabled) else None,
-        "baseline_plus_verified_decoder": verified_plus_tasks,
+        "haf_only": decoder_only_tasks if bool(args.haf_candidate_verifier_enabled) else None,
+        "baseline_plus_haf": baseline_plus_tasks if bool(args.haf_candidate_verifier_enabled) else None,
+        "baseline_plus_verified_haf": verified_plus_tasks if bool(args.haf_candidate_verifier_enabled) else None,
+        "baseline_plus_verified_decoder": (
+            verified_plus_tasks if verified_plus_tasks is not None and not bool(args.haf_candidate_verifier_enabled) else None
+        ),
         "delta": {
             "decoder_only": {task: _task_delta(decoder_only_tasks[task], baseline_tasks[task]) for task in baseline_tasks},
             "baseline_plus_decoder": {
                 task: _task_delta(baseline_plus_tasks[task], baseline_tasks[task]) for task in baseline_tasks
             },
+            "baseline_plus_verified_haf": (
+                {task: _task_delta(verified_plus_tasks[task], baseline_tasks[task]) for task in baseline_tasks}
+                if verified_plus_tasks is not None and bool(args.haf_candidate_verifier_enabled)
+                else None
+            ),
             "baseline_plus_verified_decoder": (
                 {task: _task_delta(verified_plus_tasks[task], baseline_tasks[task]) for task in baseline_tasks}
-                if verified_plus_tasks is not None
+                if verified_plus_tasks is not None and not bool(args.haf_candidate_verifier_enabled)
                 else None
             ),
         },
@@ -1376,6 +1604,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "learns slot objectness plus endpoint refinement. If candidate_verifier_enabled "
             "is true, a second train-split verifier filters decoder candidates before "
             "adding them to the preserved runtime baseline. "
+            "If haf_candidate_verifier_enabled is true, decoded HAF consensus segments "
+            "replace the dense-map decoder as the candidate generator and are filtered "
+            "by the same train-split no-GT verifier before being added to baseline. "
             "GT is used only to train the decoder/verifier on the train split and to audit validation metrics."
         ),
     }

@@ -23585,3 +23585,118 @@ Decision:
 - Broader-val512 is skipped because exact TP falls and FP rises.
 - Close conditional-row union verifier as a standalone no-GT instance-quality/matching contract.
 - Do not repeat this as BCE/pairwise loss tuning, pairwise margin/BCE weight, conditional source feature retuning, geometry-support threshold, hidden dim, train-batch scaling, or max-append tuning unless the conditional candidate generator or instance-quality signal changes materially.
+
+## 388. 2026-05-31 Stop-line HAF candidate-verifier: different HAF candidate surface is still FP-heavy
+
+Premise:
+
+- Simple HAF threshold/quality sweeps are already closed, but `00C_NEXT_GATES.md` allowed reopening HAF only with a materially different emit/verification contract.
+- This branch used decoded HAF consensus segments as a different candidate surface, then trained a train-split no-GT verifier before adding candidates to the projection-comp baseline.
+- It is not another HAF valid-threshold sweep:
+  - HAF candidates are decoded first;
+  - candidate features include dense-map summary, segment geometry, HAF vote count, HAF endpoint covariance, and HAF score fields;
+  - validation keeps baseline stop-lines and adds only verifier-selected HAF candidates.
+
+Code change:
+
+- `tools/probe_pv26_stopline_dense_map_set_decoder.py`
+  - added `--haf-candidate-verifier-enabled`;
+  - added fixed HAF candidate decode knobs:
+    - `--haf-candidate-valid-threshold`;
+    - `--haf-candidate-min-votes`;
+    - `--haf-candidate-cluster-endpoint-tolerance`;
+    - `--haf-candidate-max-endpoint-covariance`;
+    - `--haf-candidate-max-segments`;
+  - records `haf_only`, `baseline_plus_haf`, and `baseline_plus_verified_haf` metrics.
+- `test/test_stopline_dense_map_set_decoder.py`
+  - covers HAF candidate feature construction;
+  - covers raw HAF line to verifier candidate conversion;
+  - covers grouped candidate merge/capping.
+
+Fixed candidate contract:
+
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_haf_consensus_segment_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260528_202306/phase_4/checkpoints/best.pt`.
+- HAF decode:
+  - valid threshold `0.95`;
+  - min votes `4`;
+  - endpoint tolerance `3.0`;
+  - max endpoint covariance `9.0`;
+  - max HAF segments `8`.
+- Verifier:
+  - epochs `80`;
+  - threshold `0.50`.
+- Runtime retention:
+  - `flip_centerline_avg_lane_cross_comp050`;
+  - `crosswalk_polygon_mode=hull`;
+  - projection-comp baseline preserved before adding verified HAF candidates.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5000` | `0.5455` |
+| HAF-only | `0.0000` | `0 / 5 / 2` | `0.5000` | `0.5455` |
+| baseline + all HAF | `0.0000` | `0 / 7 / 2` | `0.5000` | `0.5455` |
+| baseline + verified HAF | `0.0000` | `0 / 5 / 2` | `0.5000` | `0.5455` |
+
+Smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train HAF candidates / positives / negatives: `514 / 48 / 466`.
+- Verified selected validation predictions: `9`.
+
+Exact train256 / fixed val128:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| HAF checkpoint baseline | `0.4538` | `27 / 32 / 33` | `0.5640` | `0.5868` |
+| HAF-only | `0.1077` | `7 / 63 / 53` | `0.5640` | `0.5868` |
+| baseline + all HAF | `0.3846` | `30 / 66 / 30` | `0.5640` | `0.5868` |
+| baseline + verified HAF | `0.4203` | `29 / 49 / 31` | `0.5640` | `0.5868` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train HAF candidates / positives / negatives: `2243 / 191 / 2052`.
+- Validation HAF selected / verified-selected:
+  - raw selected `70`;
+  - verifier selected `45`.
+- Delta versus HAF checkpoint baseline:
+  - raw baseline-plus-HAF: TP `+3`, FP `+34`, FN `-3`, F1 `-0.0692`;
+  - verified baseline-plus-HAF: TP `+2`, FP `+17`, FN `-2`, F1 `-0.0335`.
+- Primary projection-comp exact reference remains stronger:
+  - `32 / 28 / 28`, F1 `0.5333`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_haf_candidate_verifier_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_haf_candidate_verifier_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No verifier checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `56K`;
+  - exact directory about `168K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_dense_map_set_decoder.py test/test_stopline_dense_map_set_decoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_dense_map_set_decoder`.
+- CUDA train64/fixed-val4 HAF candidate-verifier run.
+- CUDA train256/exact-val128 HAF candidate-verifier run.
+
+Decision:
+
+- HAF candidates have some exact TP coverage, but precision remains the blocker: the verifier cuts FP from raw HAF merge but still adds FP far faster than TP.
+- The exact gate is below the HAF checkpoint baseline and far below primary projection-comp exact, so broader-val512 is skipped.
+- Close this HAF candidate-verifier contract as same HAF consensus candidate source plus MLP verifier.
+- Reopen HAF only with materially different candidate coverage or source-quality signal that first improves fixed exact TP/FP/FN over primary projection-comp.
