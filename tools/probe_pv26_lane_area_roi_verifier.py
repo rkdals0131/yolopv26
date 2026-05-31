@@ -147,6 +147,16 @@ def parse_args() -> argparse.Namespace:
             "are actually explained by another lane-family task."
         ),
     )
+    parser.add_argument(
+        "--tta-consistency-features",
+        action="store_true",
+        help=(
+            "Append no-GT candidate consistency against an alternate lane decode "
+            "of the same sample. This tests whether a retained/dropped lane is "
+            "geometrically stable under the current flip-TTA contract rather "
+            "than only scoring its local dense evidence."
+        ),
+    )
     parser.add_argument("--verifier-epochs", type=int, default=40)
     parser.add_argument("--verifier-ensemble-size", type=int, default=1)
     parser.add_argument(
@@ -643,6 +653,47 @@ def _lane_cross_task_conflict_features(
     return _finite_feature_array(features)
 
 
+def _consistency_block(candidate: dict[str, Any], lanes: list[dict[str, Any]]) -> list[float]:
+    if not lanes:
+        return [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    best_lane = min(lanes, key=lambda lane: _lane_distance(candidate, lane))
+    candidate_points = _polyline_array(candidate)
+    best_points = _polyline_array(best_lane)
+    distance = _lane_distance(candidate, best_lane)
+    angle_score = 1.0 - min(_angle_error_degrees(candidate_points, best_points), 90.0) / 90.0
+    candidate_length = _polyline_length(candidate)
+    best_length = _polyline_length(best_lane)
+    length_den = max(candidate_length, best_length, 1.0e-6)
+    return [
+        1.0,
+        min(float(distance), 240.0) / 240.0,
+        1.0 if float(distance) <= 40.0 else 0.0,
+        1.0 if float(distance) <= 80.0 else 0.0,
+        _y_overlap_fraction(candidate_points, best_points),
+        float(angle_score),
+        min(candidate_length / length_den, 2.0) / 2.0,
+        min(float(len(lanes)), 24.0) / 24.0,
+    ]
+
+
+def _lane_tta_consistency_features(
+    candidate: dict[str, Any],
+    *,
+    alternate_lanes: list[dict[str, Any]],
+    alternate_raw_candidates: list[dict[str, Any]],
+) -> np.ndarray:
+    """No-GT stability features from an alternate decode of the same sample."""
+
+    features = []
+    features.extend(_consistency_block(candidate, alternate_lanes))
+    features.extend(_consistency_block(candidate, alternate_raw_candidates))
+    return _finite_feature_array(features)
+
+
+def _alternate_lane_flip_variant(current: str) -> str:
+    return "baseline" if str(current) != "baseline" else "flip_centerline_avg"
+
+
 def _union_pool_source_features(
     *,
     source_kind: str,
@@ -839,6 +890,19 @@ def _collect_examples(
             predictions = _forward_predictions(evaluator, encoded, lane_flip_variant=str(args.lane_flip_variant))
             meta = _detach_to_cpu(encoded["meta"])
             batch_predictions = postprocess_pv26_batch(predictions, meta, config=postprocess_config)
+            consistency_predictions = None
+            consistency_batch_predictions: list[dict[str, Any]] = []
+            if bool(getattr(args, "tta_consistency_features", False)):
+                consistency_predictions = _forward_predictions(
+                    evaluator,
+                    encoded,
+                    lane_flip_variant=_alternate_lane_flip_variant(str(args.lane_flip_variant)),
+                )
+                consistency_batch_predictions = postprocess_pv26_batch(
+                    consistency_predictions,
+                    meta,
+                    config=postprocess_config,
+                )
             batch_gt = _extract_gt_samples(raw_batch)
             predictions_all.extend(batch_predictions)
             raw_batches.append(raw_batch)
@@ -846,6 +910,22 @@ def _collect_examples(
                 zip(batch_predictions, batch_gt, meta)
             ):
                 maps = lane_segfirst_prediction_maps(predictions, batch_index=sample_batch_index)
+                consistency_lanes: list[dict[str, Any]] = []
+                consistency_raw_candidates: list[dict[str, Any]] = []
+                if bool(getattr(args, "tta_consistency_features", False)) and isinstance(
+                    consistency_predictions, dict
+                ):
+                    if sample_batch_index < len(consistency_batch_predictions):
+                        consistency_lanes = list(consistency_batch_predictions[sample_batch_index].get("lanes", []))
+                    consistency_maps = lane_segfirst_prediction_maps(
+                        consistency_predictions,
+                        batch_index=sample_batch_index,
+                    )
+                    consistency_raw_candidates = _raw_lane_candidates(
+                        maps=consistency_maps,
+                        meta=sample_meta,
+                        postprocess_config=postprocess_config,
+                    )
                 sample_prediction_tensors = {
                     key: value[sample_batch_index]
                     for key, value in predictions.items()
@@ -915,6 +995,17 @@ def _collect_examples(
                                         sampled_map_points,
                                         predictions=sample_prediction_tensors,
                                         map_hw=map_hw,
+                                    ),
+                                ]
+                            ).astype(np.float32)
+                        if bool(getattr(args, "tta_consistency_features", False)):
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _lane_tta_consistency_features(
+                                        candidate,
+                                        alternate_lanes=consistency_lanes,
+                                        alternate_raw_candidates=consistency_raw_candidates,
                                     ),
                                 ]
                             ).astype(np.float32)
@@ -1022,6 +1113,17 @@ def _collect_examples(
                                     sampled_map_points,
                                     predictions=sample_prediction_tensors,
                                     map_hw=map_hw,
+                                ),
+                            ]
+                        ).astype(np.float32)
+                    if bool(getattr(args, "tta_consistency_features", False)):
+                        features = np.concatenate(
+                            [
+                                features,
+                                _lane_tta_consistency_features(
+                                    candidate,
+                                    alternate_lanes=consistency_lanes,
+                                    alternate_raw_candidates=consistency_raw_candidates,
                                 ),
                             ]
                         ).astype(np.float32)
@@ -1749,6 +1851,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "side_contrast_features": bool(args.side_contrast_features),
         "raw_image_line_features": bool(args.raw_image_line_features),
         "cross_task_conflict_features": bool(args.cross_task_conflict_features),
+        "tta_consistency_features": bool(getattr(args, "tta_consistency_features", False)),
+        "tta_consistency_alternate_variant": _alternate_lane_flip_variant(str(args.lane_flip_variant)),
         "verifier_model_kind": str(args.verifier_model_kind),
         "set_context_layers": int(args.set_context_layers),
         "set_context_heads": int(args.set_context_heads),

@@ -22886,3 +22886,106 @@ Decision:
 - Close pooled dense-map learned set decoding as MLP hidden-size, query-count, object-threshold, max-output cap, decoder epoch/LR, or train-batch scaling on the same frozen dense-map feature surface.
 - Broader-val512 is skipped because exact-val128 regresses stop-line F1 `0.5333 -> 0.3696`.
 - Reopen this family only with a materially stronger segment-quality target, calibrated FP-control signal, or model-side candidate generator that first beats projection-comp exact TP/FP/FN.
+
+## 381. 2026-05-31 Lane TTA-consistency union-pool verifier: smoke-positive, exact FP-heavy
+
+Premise:
+
+- Previous lane area-ROI and union-pool verifier runs showed real dropped-candidate recall headroom, but FP control failed.
+- This branch tested a different no-GT instance-quality signal: a candidate should be more trustworthy if the same sample's alternate lane decode also reproduces nearby retained/raw lane geometry.
+- This is distinct from verifier ensemble stability. The signal is candidate/decode stability under the current flip-TTA contract, not disagreement between verifier model seeds.
+
+Implementation:
+
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added `--tta-consistency-features`.
+- Added `_lane_tta_consistency_features()`:
+  - compares each retained/dropped candidate against alternate retained lanes;
+  - compares the same candidate against alternate raw lane candidates;
+  - appends distance, near-40/near-80 flags, y-overlap, angle, length-ratio, and count features.
+- The runtime remains no-GT:
+  - GT is used only for train labels and final metric audit;
+  - validation candidate selection uses learned verifier scores and no-GT consistency features.
+- Added focused unit coverage in `test/test_lane_area_roi_verifier.py`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Retained checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime settings:
+  - `candidate_source=union_pool`;
+  - `candidate_integration_mode=select_topk_union_geometry`;
+  - `lane_flip_variant=flip_centerline_avg_lane_cross_comp050`;
+  - alternate consistency decode: `baseline`;
+  - `crosswalk_polygon_mode=hull`;
+  - projection-competition stop-line route retained.
+
+Smoke train64 / fixed val4:
+
+| Metric | Baseline | TTA-consistency union verifier |
+| --- | ---: | ---: |
+| lane F1 | `0.5839` | `0.5957` |
+| lane TP/FP/FN | `40 / 11 / 46` | `42 / 13 / 44` |
+| stop-line F1 | `0.0000` | `0.0000` |
+| stop-line TP/FP/FN | `0 / 3 / 2` | `0 / 3 / 2` |
+| crosswalk F1 | `0.5455` | `0.5455` |
+| crosswalk TP/FP/FN | `3 / 1 / 4` | `3 / 1 / 4` |
+
+Smoke candidate stats:
+
+- Train examples: `1166`, positives `525`, negatives `641`.
+- Val candidates: `81`.
+- Selected candidates: `55`.
+- Selected oracle-positive candidates: `42`.
+
+Exact train256 / fixed val128:
+
+| Metric | Baseline | TTA-consistency union verifier |
+| --- | ---: | ---: |
+| lane F1 | `0.5888` | `0.5764` |
+| lane TP/FP/FN | `1202 / 491 / 1188` | `1213 / 606 / 1177` |
+| stop-line F1 | `0.5333` | `0.5333` |
+| stop-line TP/FP/FN | `32 / 28 / 28` | `32 / 28 / 28` |
+| crosswalk F1 | `0.5988` | `0.5988` |
+| crosswalk TP/FP/FN | `50 / 36 / 31` | `50 / 36 / 31` |
+
+Exact candidate stats:
+
+- Train examples: `4427`, positives `2095`, negatives `2332`.
+- Val candidates: `2445`.
+- Selected candidates: `1819`.
+- Selected oracle-positive candidates: `1221`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_tta_consistency_union_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_tta_consistency_union_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No verifier checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `96K`;
+  - exact directory about `632K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/fixed-val4 TTA-consistency union verifier replay.
+- CUDA train256/exact-val128 TTA-consistency union verifier replay.
+
+Decision:
+
+- The smoke movement was real but did not scale to exact.
+- Exact-val128 shows the same fundamental failure as previous lane candidate-pool selectors: TP rises slightly, but FP rises much faster.
+- Broader-val512 is skipped because exact lane F1 regresses `0.5888 -> 0.5764`.
+- Close this as alternate-decode choice, consistency feature block, fixed-count union-geometry integration, hidden-dim, BCE loss, train-batch count, or exact threshold/cap tuning on this candidate surface.
+- Reopen lane candidate-pool selection only with a materially stronger TP-preserving instance-quality signal or model-side instance emitter that first improves exact TP/FP/FN.

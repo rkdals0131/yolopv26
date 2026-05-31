@@ -19,6 +19,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _lane_raw_image_line_features,
     _lane_set_geometry_support,
     _lane_side_contrast_features,
+    _lane_tta_consistency_features,
     _matched_lane_prediction_indices,
     _near_any_lane,
     _nearest_lane_index,
@@ -610,6 +611,20 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertTrue(np.isfinite(features).all())
         self.assertGreater(float(features[0]), 0.99)
         self.assertLess(float(features[24]), 0.01)
+
+    def test_lane_tta_consistency_features_describe_alternate_decode_support(self) -> None:
+        features = _lane_tta_consistency_features(
+            _lane(70.0),
+            alternate_lanes=[_lane(72.0), _horizontal_lane(40.0)],
+            alternate_raw_candidates=[_lane(180.0)],
+        )
+
+        self.assertEqual(features.shape, (16,))
+        self.assertTrue(np.isfinite(features).all())
+        self.assertEqual(float(features[0]), 1.0)
+        self.assertLess(float(features[1]), 0.05)
+        self.assertEqual(float(features[2]), 1.0)
+        self.assertEqual(float(features[10]), 0.0)
 
     def test_task_count_accumulator_sums_chunked_metrics(self) -> None:
         counts = _empty_task_count_payload()
