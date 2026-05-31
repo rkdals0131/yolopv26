@@ -104,6 +104,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-verifier-batch-size", type=int, default=128)
     parser.add_argument("--candidate-verifier-lr", type=float, default=1.0e-3)
     parser.add_argument("--candidate-verifier-threshold", type=float, default=0.50)
+    parser.add_argument(
+        "--baseline-slot-refiner-enabled",
+        action="store_true",
+        help=(
+            "Train a baseline-aware slot refiner instead of the global set decoder. "
+            "Slots are projection-comp baseline stop-lines plus dense top-support fallback "
+            "anchors, so the candidate generator can replace retained geometry or add "
+            "missing dense-supported lines without blindly appending every decoder query."
+        ),
+    )
+    parser.add_argument("--slot-refiner-baseline-slots", type=int, default=2)
+    parser.add_argument("--slot-refiner-fallback-slots", type=int, default=1)
+    parser.add_argument("--slot-refiner-loose-positive-distance", type=float, default=120.0)
+    parser.add_argument("--slot-refiner-fallback-length", type=float, default=0.62)
     parser.add_argument("--seed", type=int, default=26)
     parser.add_argument("--backbone-weights", default="")
     parser.add_argument("--lane-flip-variant", default="baseline")
@@ -164,6 +178,25 @@ class StoplineDecoderCandidateVerifier(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features).squeeze(-1)
+
+
+class StoplineBaselineSlotRefiner(nn.Module):
+    def __init__(self, input_dim: int, *, hidden_dim: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.SiLU(inplace=True),
+            nn.Linear(int(hidden_dim), int(hidden_dim)),
+            nn.SiLU(inplace=True),
+        )
+        self.logit = nn.Linear(int(hidden_dim), 1)
+        self.points = nn.Linear(int(hidden_dim), 4)
+
+    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.net(features)
+        logits = self.logit(hidden).squeeze(-1)
+        points = torch.sigmoid(self.points(hidden)).view(-1, 2, 2)
+        return logits, points
 
 
 def _finite_array(values: np.ndarray | list[float]) -> np.ndarray:
@@ -260,6 +293,204 @@ def _gt_stopline_segments_norm(sample_gt: dict[str, Any], meta: dict[str, Any], 
         return np.zeros((0, 2, 2), dtype=np.float32)
     segments.sort(key=lambda item: (float(item[:, 1].mean()), float(item[:, 0].mean())))
     return np.stack(segments[: max(1, int(max_count))]).astype(np.float32)
+
+
+def _raw_stopline_segment_norm(line: dict[str, Any], meta: dict[str, Any]) -> np.ndarray | None:
+    points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 2:
+        return None
+    transform = transform_from_meta(meta)
+    network_h, network_w = int(transform.network_hw[0]), int(transform.network_hw[1])
+    endpoints_raw = np.stack([points[0], points[-1]], axis=0)
+    endpoints_network = np.asarray(transform_points(endpoints_raw.tolist(), transform), dtype=np.float32).reshape(2, 2)
+    endpoints_network[:, 0] /= max(float(network_w - 1), 1.0)
+    endpoints_network[:, 1] /= max(float(network_h - 1), 1.0)
+    return _canonical_segment(endpoints_network)
+
+
+def _dense_anchor_segments_norm(
+    predictions: dict[str, Any],
+    *,
+    sample_index: int,
+    max_count: int,
+    fallback_length: float,
+) -> list[np.ndarray]:
+    center = _sigmoid_prediction_map(predictions, "stop_line_center_logits", sample_index)
+    selector = _sigmoid_prediction_map(predictions, "stop_line_selector_map_logits", sample_index)
+    if center.ndim != 3 or selector.ndim != 3:
+        return []
+    if tuple(selector.shape[-2:]) != tuple(center.shape[-2:]):
+        selector = F.interpolate(
+            selector.unsqueeze(0),
+            size=tuple(center.shape[-2:]),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+    support = (center[0] * torch.clamp(selector[0], min=0.0, max=1.0)).reshape(-1)
+    if support.numel() == 0:
+        return []
+    count = min(max(0, int(max_count)), int(support.numel()))
+    if count <= 0:
+        return []
+    values, indices = torch.topk(support, k=count)
+    angle = predictions.get("stop_line_angle")
+    angle_sample: torch.Tensor | None = None
+    if isinstance(angle, torch.Tensor) and int(angle.ndim) == 4 and 0 <= int(sample_index) < int(angle.shape[0]):
+        angle_sample = angle[sample_index].detach().float().cpu()
+        if tuple(angle_sample.shape[-2:]) != tuple(center.shape[-2:]):
+            angle_sample = F.interpolate(
+                angle_sample.unsqueeze(0),
+                size=tuple(center.shape[-2:]),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+    height, width = int(center.shape[-2]), int(center.shape[-1])
+    anchors: list[np.ndarray] = []
+    used: list[tuple[float, float]] = []
+    for value, flat_index in zip(values.tolist(), indices.tolist()):
+        if float(value) <= 0.0:
+            continue
+        row = int(flat_index) // max(width, 1)
+        col = int(flat_index) % max(width, 1)
+        center_xy = np.asarray(
+            [
+                float(col) / max(float(width - 1), 1.0),
+                float(row) / max(float(height - 1), 1.0),
+            ],
+            dtype=np.float32,
+        )
+        if any(float(np.linalg.norm(center_xy - np.asarray(prev, dtype=np.float32))) < 0.04 for prev in used):
+            continue
+        used.append((float(center_xy[0]), float(center_xy[1])))
+        axis = np.asarray([1.0, 0.0], dtype=np.float32)
+        if angle_sample is not None and int(angle_sample.shape[0]) >= 2:
+            raw_axis = angle_sample[:2, row, col].numpy().astype(np.float32)
+            norm = float(np.linalg.norm(raw_axis))
+            if norm > 1.0e-6 and math.isfinite(norm):
+                axis = raw_axis / norm
+        half_length = 0.5 * max(float(fallback_length), 1.0e-3)
+        segment = np.stack([center_xy - axis * half_length, center_xy + axis * half_length], axis=0)
+        anchors.append(_canonical_segment(segment))
+        if len(anchors) >= int(max_count):
+            break
+    return anchors
+
+
+def _slot_feature(sample_features: np.ndarray, *, anchor: np.ndarray, slot_kind: str, slot_rank: int) -> np.ndarray:
+    kind_values = np.asarray(
+        [
+            1.0 if slot_kind == "baseline" else 0.0,
+            1.0 if slot_kind == "fallback" else 0.0,
+            1.0 / max(float(int(slot_rank) + 1), 1.0),
+        ],
+        dtype=np.float32,
+    )
+    return _finite_array(
+        np.concatenate(
+            [
+                _decoder_candidate_feature(sample_features, segment=anchor, probability=1.0),
+                kind_values,
+            ],
+            axis=0,
+        )
+    )
+
+
+def _assign_baseline_slots_to_gt(
+    baseline_lines: list[dict[str, Any]],
+    gt_lines: list[dict[str, Any]],
+    *,
+    max_distance: float,
+) -> dict[int, int]:
+    pairs: list[tuple[float, int, int]] = []
+    for baseline_index, line in enumerate(baseline_lines):
+        for gt_index, gt_line in enumerate(gt_lines):
+            distance = _stop_line_distance(line, gt_line)
+            if math.isfinite(distance) and float(distance) <= float(max_distance):
+                pairs.append((float(distance), int(baseline_index), int(gt_index)))
+    pairs.sort(key=lambda item: item[0])
+    assignments: dict[int, int] = {}
+    used_gt: set[int] = set()
+    for _distance, baseline_index, gt_index in pairs:
+        if baseline_index in assignments or gt_index in used_gt:
+            continue
+        assignments[int(baseline_index)] = int(gt_index)
+        used_gt.add(int(gt_index))
+    return assignments
+
+
+def _slot_examples_for_sample(
+    *,
+    sample_features: np.ndarray,
+    baseline_lines: list[dict[str, Any]],
+    gt_lines: list[dict[str, Any]],
+    gt_segments: np.ndarray,
+    baseline_anchors: list[np.ndarray],
+    fallback_anchors: list[np.ndarray],
+    loose_positive_distance: float,
+    sample_meta: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    assignments = _assign_baseline_slots_to_gt(
+        baseline_lines[: len(baseline_anchors)],
+        gt_lines,
+        max_distance=float(loose_positive_distance),
+    )
+    used_gt = set(assignments.values())
+    for slot_index, anchor in enumerate(baseline_anchors):
+        gt_index = assignments.get(int(slot_index))
+        positive = gt_index is not None and 0 <= int(gt_index) < int(gt_segments.shape[0])
+        target = gt_segments[int(gt_index)] if positive else anchor
+        slots.append(
+            {
+                "features": _slot_feature(sample_features, anchor=anchor, slot_kind="baseline", slot_rank=slot_index),
+                "anchor": _canonical_segment(anchor),
+                "target": _canonical_segment(target),
+                "positive": int(positive),
+                "slot_kind": "baseline",
+                "slot_rank": int(slot_index),
+                "assigned_gt_index": -1 if gt_index is None else int(gt_index),
+            }
+        )
+    remaining_gt = [gt_index for gt_index in range(int(gt_segments.shape[0])) if gt_index not in used_gt]
+    for fallback_index, anchor in enumerate(fallback_anchors):
+        gt_index: int | None = None
+        if remaining_gt:
+            pairs: list[tuple[float, int]] = []
+            if sample_meta is not None and gt_lines:
+                anchor_line = {"points_xy": _network_norm_segment_to_raw(anchor, sample_meta)}
+                for candidate_gt_index in remaining_gt:
+                    if 0 <= int(candidate_gt_index) < len(gt_lines):
+                        distance = _stop_line_distance(anchor_line, gt_lines[int(candidate_gt_index)])
+                        if math.isfinite(distance) and float(distance) <= float(loose_positive_distance):
+                            pairs.append((float(distance), int(candidate_gt_index)))
+            else:
+                threshold = min(max(float(loose_positive_distance), 0.0), 1.0)
+                for candidate_gt_index in remaining_gt:
+                    target_segment = gt_segments[int(candidate_gt_index)]
+                    direct = float(np.abs(_canonical_segment(anchor) - _canonical_segment(target_segment)).mean())
+                    flipped = float(np.abs(_canonical_segment(anchor)[::-1] - _canonical_segment(target_segment)).mean())
+                    distance = min(direct, flipped)
+                    if math.isfinite(distance) and distance <= threshold:
+                        pairs.append((distance, int(candidate_gt_index)))
+            if pairs:
+                pairs.sort(key=lambda item: item[0])
+                gt_index = int(pairs[0][1])
+                remaining_gt = [candidate for candidate in remaining_gt if int(candidate) != gt_index]
+        positive = gt_index is not None and 0 <= int(gt_index) < int(gt_segments.shape[0])
+        target = gt_segments[int(gt_index)] if positive else anchor
+        slots.append(
+            {
+                "features": _slot_feature(sample_features, anchor=anchor, slot_kind="fallback", slot_rank=fallback_index),
+                "anchor": _canonical_segment(anchor),
+                "target": _canonical_segment(target),
+                "positive": int(positive),
+                "slot_kind": "fallback",
+                "slot_rank": int(fallback_index),
+                "assigned_gt_index": -1 if gt_index is None else int(gt_index),
+            }
+        )
+    return slots
 
 
 def _segment_cost(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -398,6 +629,100 @@ def _train_decoder(
     return model, summary
 
 
+def _slot_refiner_loss(
+    logits: torch.Tensor,
+    points: torch.Tensor,
+    targets: torch.Tensor,
+    anchors: torch.Tensor,
+    positive: torch.Tensor,
+    *,
+    pos_weight: float,
+) -> torch.Tensor:
+    pos_weight_tensor = torch.tensor([max(float(pos_weight), 1.0)], dtype=logits.dtype, device=logits.device)
+    object_loss = F.binary_cross_entropy_with_logits(logits, positive, pos_weight=pos_weight_tensor)
+    if bool((positive > 0.5).any()):
+        pos_mask = positive > 0.5
+        direct = F.smooth_l1_loss(points[pos_mask], targets[pos_mask], reduction="none").mean(dim=(1, 2))
+        flipped = F.smooth_l1_loss(points[pos_mask].flip(dims=(1,)), targets[pos_mask], reduction="none").mean(dim=(1, 2))
+        positive_point_loss = torch.minimum(direct, flipped).mean()
+    else:
+        positive_point_loss = points.sum() * 0.0
+    if bool((positive <= 0.5).any()):
+        neg_mask = positive <= 0.5
+        negative_identity_loss = F.smooth_l1_loss(points[neg_mask], anchors[neg_mask], reduction="none").mean()
+    else:
+        negative_identity_loss = points.sum() * 0.0
+    return object_loss + 8.0 * positive_point_loss + 0.5 * negative_identity_loss
+
+
+def _train_slot_refiner(
+    slot_examples: list[dict[str, Any]],
+    *,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[StoplineBaselineSlotRefiner, dict[str, Any]]:
+    if not slot_examples:
+        raise ValueError("baseline-slot refiner requires non-empty slot examples")
+    features = torch.tensor(np.stack([row["features"] for row in slot_examples]), dtype=torch.float32)
+    targets = torch.tensor(np.stack([row["target"] for row in slot_examples]), dtype=torch.float32)
+    anchors = torch.tensor(np.stack([row["anchor"] for row in slot_examples]), dtype=torch.float32)
+    positive = torch.tensor([float(row["positive"]) for row in slot_examples], dtype=torch.float32)
+    positive_count = int(positive.sum().item())
+    negative_count = int(positive.numel() - positive_count)
+    mean = features.mean(dim=0)
+    std = features.std(dim=0).clamp(min=1.0e-6)
+    features = (features - mean) / std
+    model = StoplineBaselineSlotRefiner(
+        int(features.shape[1]),
+        hidden_dim=int(args.hidden_dim),
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.decoder_lr), weight_decay=1.0e-4)
+    features = features.to(device)
+    targets = targets.to(device)
+    anchors = anchors.to(device)
+    positive = positive.to(device)
+    pos_weight = max(float(negative_count) / max(float(positive_count), 1.0), 1.0)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(args.seed) + 1703)
+    batch_size = max(1, int(args.decoder_batch_size))
+    history: list[dict[str, float]] = []
+    for epoch in range(1, max(1, int(args.decoder_epochs)) + 1):
+        order = torch.randperm(int(features.shape[0]), generator=generator)
+        losses: list[float] = []
+        for start in range(0, int(order.numel()), batch_size):
+            index = order[start : start + batch_size].to(device)
+            logits, points = model(features[index])
+            loss = _slot_refiner_loss(
+                logits,
+                points,
+                targets[index],
+                anchors[index],
+                positive[index],
+                pos_weight=pos_weight,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            losses.append(float(loss.detach().cpu()))
+        if epoch == 1 or epoch == int(args.decoder_epochs) or epoch % 10 == 0:
+            history.append({"epoch": float(epoch), "loss": float(np.mean(losses) if losses else 0.0)})
+    model.register_buffer("feature_mean", mean.to(device), persistent=True)
+    model.register_buffer("feature_std", std.to(device), persistent=True)
+    summary = {
+        "slot_count": int(len(slot_examples)),
+        "positive_count": int(positive_count),
+        "negative_count": int(negative_count),
+        "input_dim": int(features.shape[1]),
+        "pos_weight": float(pos_weight),
+        "baseline_slots": int(args.slot_refiner_baseline_slots),
+        "fallback_slots": int(args.slot_refiner_fallback_slots),
+        "loose_positive_distance": float(args.slot_refiner_loose_positive_distance),
+        "fallback_length": float(args.slot_refiner_fallback_length),
+        "history": history,
+    }
+    return model, summary
+
+
 def _collect_examples(
     *,
     loader: Any,
@@ -432,11 +757,45 @@ def _collect_examples(
             raw_batches.append(raw_batch)
             for sample_batch_index, (sample_gt, sample_meta) in enumerate(zip(batch_gt, meta)):
                 features = _dense_feature_vector(predictions, sample_index=sample_batch_index, pool_hw=pool_hw)
-                targets = _gt_stopline_segments_norm(sample_gt, sample_meta, max_count=int(args.decoder_queries))
+                target_max_count = max(
+                    int(args.decoder_queries),
+                    int(args.slot_refiner_baseline_slots) + int(args.slot_refiner_fallback_slots),
+                )
+                targets = _gt_stopline_segments_norm(sample_gt, sample_meta, max_count=target_max_count)
+                baseline_lines = [
+                    dict(item)
+                    for item in batch_predictions[sample_batch_index].get("stop_lines", [])
+                    if isinstance(item, dict)
+                ][: max(0, int(args.slot_refiner_baseline_slots))]
+                baseline_anchors = [
+                    segment
+                    for segment in (_raw_stopline_segment_norm(line, sample_meta) for line in baseline_lines)
+                    if segment is not None
+                ]
+                fallback_anchors = _dense_anchor_segments_norm(
+                    predictions,
+                    sample_index=sample_batch_index,
+                    max_count=int(args.slot_refiner_fallback_slots),
+                    fallback_length=float(args.slot_refiner_fallback_length),
+                )
+                slot_examples = _slot_examples_for_sample(
+                    sample_features=features,
+                    baseline_lines=baseline_lines,
+                    gt_lines=[dict(item) for item in sample_gt.get("stop_lines", [])],
+                    gt_segments=targets,
+                    baseline_anchors=baseline_anchors,
+                    fallback_anchors=fallback_anchors,
+                    loose_positive_distance=float(args.slot_refiner_loose_positive_distance),
+                    sample_meta=sample_meta,
+                )
                 examples.append(
                     {
                         "features": features,
                         "targets": targets,
+                        "baseline_lines": baseline_lines,
+                        "baseline_anchors": baseline_anchors,
+                        "fallback_anchors": fallback_anchors,
+                        "slot_examples": slot_examples,
                         "gt_stop_lines": [dict(item) for item in sample_gt.get("stop_lines", [])],
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
@@ -450,6 +809,10 @@ def _collect_examples(
                         "sample_index": int(global_sample_index),
                         "sample_batch_index": int(sample_batch_index),
                         "target_count": int(targets.shape[0]),
+                        "baseline_slot_count": int(len(baseline_anchors)),
+                        "fallback_slot_count": int(len(fallback_anchors)),
+                        "slot_count": int(len(slot_examples)),
+                        "positive_slot_count": int(sum(int(row["positive"]) for row in slot_examples)),
                     }
                 )
                 global_sample_index += 1
@@ -766,6 +1129,85 @@ def _apply_decoder(
     return decoder_only, baseline_plus, rows
 
 
+def _flat_slot_examples(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    for sample in examples:
+        sample_index = int(sample.get("sample_index", len(slots)))
+        for slot in sample.get("slot_examples", []):
+            payload = dict(slot)
+            payload["sample_index"] = sample_index
+            slots.append(payload)
+    return slots
+
+
+def _apply_slot_refiner(
+    *,
+    examples: list[dict[str, Any]],
+    baseline_predictions: list[dict[str, Any]],
+    model: StoplineBaselineSlotRefiner,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    slot_examples = _flat_slot_examples(examples)
+    if not slot_examples:
+        return [dict(sample, stop_lines=[]) for sample in baseline_predictions], baseline_predictions, []
+    features = torch.tensor(np.stack([row["features"] for row in slot_examples]), dtype=torch.float32, device=device)
+    features = (features - model.feature_mean) / model.feature_std
+    with torch.no_grad():
+        logits, points = model(features)
+        probabilities = logits.sigmoid().detach().cpu().numpy().astype(np.float32)
+        segments = points.detach().cpu().numpy().astype(np.float32)
+    threshold = float(args.object_threshold)
+    max_segments = max(0, int(args.max_output_segments))
+    selected_by_sample: dict[int, list[dict[str, Any]]] = {}
+    rows: list[dict[str, Any]] = []
+    for row_index, (slot, probability) in enumerate(zip(slot_examples, probabilities.tolist())):
+        selected = bool(float(probability) >= threshold)
+        sample_index = int(slot.get("sample_index", -1))
+        segment = _canonical_segment(segments[row_index])
+        raw_points = _network_norm_segment_to_raw(segment, examples[sample_index]["meta"]) if 0 <= sample_index < len(examples) else []
+        rows.append(
+            {
+                "sample_index": sample_index,
+                "slot_kind": str(slot.get("slot_kind", "")),
+                "slot_rank": int(slot.get("slot_rank", -1)),
+                "probability": float(probability),
+                "selected": int(selected),
+                "train_label": int(slot.get("positive", 0)),
+                "assigned_gt_index": int(slot.get("assigned_gt_index", -1)),
+            }
+        )
+        if not selected or not raw_points:
+            continue
+        selected_by_sample.setdefault(sample_index, []).append(
+            {
+                "points_xy": raw_points,
+                "score": float(probability),
+                "baseline_slot_refiner_score": float(probability),
+                "baseline_slot_kind": str(slot.get("slot_kind", "")),
+                "baseline_slot_rank": int(slot.get("slot_rank", -1)),
+                "proposal_source": "baseline_slot_refiner",
+                "allowed": True,
+            }
+        )
+    refiner_only = [dict(sample, stop_lines=[]) for sample in baseline_predictions]
+    baseline_plus = [
+        dict(sample, stop_lines=[dict(item) for item in sample.get("stop_lines", [])])
+        for sample in baseline_predictions
+    ]
+    for sample_index, lines in selected_by_sample.items():
+        if not (0 <= sample_index < len(baseline_plus)):
+            continue
+        lines = sorted(lines, key=lambda item: float(item.get("score", 0.0)), reverse=True)[:max_segments]
+        refiner_only[sample_index]["stop_lines"] = [dict(item) for item in lines]
+        merged = [dict(item) for item in baseline_plus[sample_index].get("stop_lines", [])] + [
+            dict(item) for item in lines
+        ]
+        merged.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+        baseline_plus[sample_index]["stop_lines"] = _dedupe_stop_line_predictions(merged)[:max_segments]
+    return refiner_only, baseline_plus, rows
+
+
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
@@ -799,11 +1241,22 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_batches=int(args.decoder_train_batches),
         training=True,
     )
-    model, train_summary = _train_decoder(train_examples, args=args, device=device)
+    slot_refiner_model: StoplineBaselineSlotRefiner | None = None
+    slot_refiner_summary: dict[str, Any] | None = None
+    model: StoplineDenseMapSetDecoder | None = None
+    if bool(args.baseline_slot_refiner_enabled):
+        slot_refiner_model, slot_refiner_summary = _train_slot_refiner(
+            _flat_slot_examples(train_examples),
+            args=args,
+            device=device,
+        )
+        train_summary = {"baseline_slot_refiner": slot_refiner_summary}
+    else:
+        model, train_summary = _train_decoder(train_examples, args=args, device=device)
     verifier_model: StoplineDecoderCandidateVerifier | None = None
     verifier_summary: dict[str, Any] | None = None
     verifier_train_rows: list[dict[str, Any]] = []
-    if bool(args.candidate_verifier_enabled):
+    if bool(args.candidate_verifier_enabled) and model is not None:
         train_decoder_candidates = _decoder_candidate_rows(
             examples=train_examples,
             model=model,
@@ -823,13 +1276,23 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_batches=int(args.max_val_batches),
         training=False,
     )
-    decoder_only_predictions, baseline_plus_predictions, decision_rows = _apply_decoder(
-        examples=val_examples,
-        baseline_predictions=baseline_predictions,
-        model=model,
-        args=args,
-        device=device,
-    )
+    if slot_refiner_model is not None:
+        decoder_only_predictions, baseline_plus_predictions, decision_rows = _apply_slot_refiner(
+            examples=val_examples,
+            baseline_predictions=baseline_predictions,
+            model=slot_refiner_model,
+            args=args,
+            device=device,
+        )
+    else:
+        assert model is not None
+        decoder_only_predictions, baseline_plus_predictions, decision_rows = _apply_decoder(
+            examples=val_examples,
+            baseline_predictions=baseline_predictions,
+            model=model,
+            args=args,
+            device=device,
+        )
     verified_plus_predictions: list[dict[str, Any]] | None = None
     verifier_decision_rows: list[dict[str, Any]] = []
     if verifier_model is not None:
@@ -878,15 +1341,22 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "metric_quality_tau": float(args.metric_quality_tau),
         "candidate_verifier_enabled": bool(args.candidate_verifier_enabled),
         "candidate_verifier_threshold": float(args.candidate_verifier_threshold),
+        "baseline_slot_refiner_enabled": bool(args.baseline_slot_refiner_enabled),
+        "slot_refiner_baseline_slots": int(args.slot_refiner_baseline_slots),
+        "slot_refiner_fallback_slots": int(args.slot_refiner_fallback_slots),
+        "slot_refiner_loose_positive_distance": float(args.slot_refiner_loose_positive_distance),
         "max_output_segments": int(args.max_output_segments),
         "pool_hw": [int(args.pool_height), int(args.pool_width)],
         "train_summary": train_summary,
+        "slot_refiner_summary": slot_refiner_summary,
         "candidate_verifier_summary": verifier_summary,
         "selected_prediction_count": int(sum(int(row["selected"]) for row in decision_rows)),
         "verified_selected_prediction_count": int(sum(int(row["selected"]) for row in verifier_decision_rows)),
         "baseline": baseline_tasks,
         "decoder_only": decoder_only_tasks,
         "baseline_plus_decoder": baseline_plus_tasks,
+        "slot_refiner_only": decoder_only_tasks if bool(args.baseline_slot_refiner_enabled) else None,
+        "baseline_plus_slot_refiner": baseline_plus_tasks if bool(args.baseline_slot_refiner_enabled) else None,
         "baseline_plus_verified_decoder": verified_plus_tasks,
         "delta": {
             "decoder_only": {task: _task_delta(decoder_only_tasks[task], baseline_tasks[task]) for task in baseline_tasks},
@@ -901,8 +1371,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         },
         "interpretation": (
             "No-GT learned structured decoder over frozen dense stop-line maps. "
-            "If candidate_verifier_enabled is true, a second train-split verifier filters "
-            "decoder candidates before adding them to the preserved runtime baseline. "
+            "If baseline_slot_refiner_enabled is true, decoder slots are projection-comp "
+            "baseline stop-lines plus dense top-support fallback anchors and the model "
+            "learns slot objectness plus endpoint refinement. If candidate_verifier_enabled "
+            "is true, a second train-split verifier filters decoder candidates before "
+            "adding them to the preserved runtime baseline. "
             "GT is used only to train the decoder/verifier on the train split and to audit validation metrics."
         ),
     }

@@ -23396,3 +23396,94 @@ Decision:
 - Broader-val512 is skipped because neither fixed envelope geometry nor learned routing beats primary/projection-comp exact TP/FP/FN.
 - Close endpoint-envelope source-router as a no-GT geometry-source contract.
 - Do not repeat this as pair-distance, envelope extent rule, source-mode order, feature-group inclusion, MLP hidden size, class weight, epoch/LR, or train-batch scaling unless the source-quality signal or candidate-generation contract changes materially.
+
+## 386. 2026-05-31 Stop-line baseline-slot refiner: baseline-aware candidate generation is exact-negative
+
+Hypothesis:
+
+- Prior dense-map set decoder variants recovered small stop-line TP but added too much FP.
+- Prior retained-output suppressor reduced FP but could not recover missing TP.
+- This branch tests the combined premise without another threshold sweep: preserve the projection-comp baseline, expose its lines as trainable slots, and add a small number of dense top-support fallback anchors as separate trainable slots.
+- The model learns slot objectness plus endpoint refinement on train split only; validation remains no-GT runtime replay.
+
+Implementation:
+
+- Extended `tools/probe_pv26_stopline_dense_map_set_decoder.py`.
+- Added CLI flags:
+  - `--baseline-slot-refiner-enabled`;
+  - `--slot-refiner-baseline-slots`;
+  - `--slot-refiner-fallback-slots`;
+  - `--slot-refiner-loose-positive-distance`;
+  - `--slot-refiner-fallback-length`.
+- Added `StoplineBaselineSlotRefiner`.
+- Added dense fallback anchors from top `stop_line_center_logits * stop_line_selector_map_logits` support, with `stop_line_angle` used for the fallback segment axis when available.
+- Added train-split slot examples:
+  - baseline slots matched to GT with evaluator-style stop-line distance;
+  - dense fallback slots matched to still-unassigned GT within a loose distance.
+- Fallback matching is explicitly distance-gated in raw space, so a fallback anchor is not labeled positive just because some unmatched GT remains.
+- Runtime:
+  - slot-refiner-only emits selected refined slots;
+  - baseline-plus-slot-refiner preserves the retained projection-comp baseline and then adds selected refined slots through the existing dedupe/max-output path.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+| slot-refiner-only | `0.0000` | `0 / 2 / 2` | `0.5507` | `0.5455` |
+| baseline-plus-slot-refiner | `0.0000` | `0 / 5 / 2` | `0.5507` | `0.5455` |
+
+Smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Slot train examples / positives / negatives: `371 / 101 / 270`.
+- Selected slot-refiner predictions: `2`.
+
+Exact train256 / fixed val128:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5333` | `32 / 28 / 28` | `0.5660` | `0.5988` |
+| slot-refiner-only | `0.1552` | `9 / 47 / 51` | `0.5660` | `0.5988` |
+| baseline-plus-slot-refiner | `0.3699` | `32 / 81 / 28` | `0.5660` | `0.5988` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Slot train examples / positives / negatives: `1531 / 447 / 1084`.
+- Selected slot-refiner predictions: `56`.
+- TP stayed flat versus baseline, while FP moved `+53`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_baseline_slot_refiner_strictmatch_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_baseline_slot_refiner_strictmatch_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No decoder/refiner checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `28K`;
+  - exact directory about `84K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_dense_map_set_decoder.py test/test_stopline_dense_map_set_decoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_dense_map_set_decoder`.
+- CUDA train64/fixed-val4 baseline-slot refiner run.
+- CUDA train256/exact-val128 baseline-slot refiner run.
+
+Decision:
+
+- The strict fallback-distance fix reduces positive labels and selected predictions, but the slot refiner still does not learn FP control.
+- Exact stop-line regresses from `32 / 28 / 28`, F1 `0.5333`, to `32 / 81 / 28`, F1 `0.3699`.
+- Broader-val512 is skipped because exact precision collapses and the result is below primary/projection-comp exact.
+- Close baseline-slot dense-map refinement as a no-GT candidate-generation contract unless the candidate source or source-quality signal changes materially.
+- Do not repeat this as baseline slot count, fallback slot count, fallback length, loose-positive distance, object threshold, MLP hidden size, epoch/LR, or train-batch scaling.
