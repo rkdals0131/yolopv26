@@ -24519,3 +24519,134 @@ Decision:
 - The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it as a breakthrough path.
 - Do not repeat sparse-affine temporal union selection as source flag, union top-k, candidate-label threshold, verifier hidden/epoch/LR, or train-batch scaling over the same candidate surface.
 - Reopen temporal stop-line only with a materially stronger motion/candidate source whose exact oracle union has enough TP/FP/FN headroom before training another selector.
+
+## 397. 2026-05-31 Lane temporal-neighbor verifier: trained FP-control still adds too many lane FPs
+
+Context:
+
+- The earlier lane temporal-neighbor union was closed only as a fixed no-training smoke:
+  - immediate `sample_id` neighbors existed for all `16` val4 samples;
+  - fixed current-centerline support plus dedupe selected `6` neighbor lane candidates;
+  - none matched a baseline FN;
+  - lane fell `41 / 12 / 45 -> 41 / 18 / 45`, F1 `0.5899 -> 0.5655`.
+- This branch reopened that family only with a new train-split FP-control signal:
+  - neighboring-frame lane predictions are candidates;
+  - current-frame dense lane evidence and geometry features feed a small no-GT MLP verifier;
+  - train split labels choose the verifier threshold;
+  - validation GT is used only for audit labels and final task metrics.
+- This is distinct from repeating neighbor gap, center-threshold, dedupe-distance, or add-cap sweeps.
+
+Implementation:
+
+- Updated `tools/probe_pv26_lane_temporal_neighbor_union.py`.
+- Added opt-in verifier CLI:
+  - `--verifier-enabled`;
+  - `--train-record-batches`;
+  - `--verifier-epochs`;
+  - `--verifier-lr`;
+  - `--threshold-grid`;
+  - `--verifier-top-k-per-sample`.
+- Added temporal candidate feature extraction:
+  - temporal offset/count features;
+  - current-frame centerline/support line evidence;
+  - baseline-nearest duplicate distance;
+  - candidate shape features.
+- Added train/validation record collection and MLP scoring:
+  - `_collect_temporal_records`;
+  - `_score_temporal_candidate_rows`;
+  - `_best_score_threshold`;
+  - `_select_verified_temporal_lanes`;
+  - `_apply_verifier_to_predictions`.
+- The predictor cache stores only decoded prediction/meta, not raw batches or dense tensors, to avoid cache memory growth.
+- Updated `test/test_lane_temporal_neighbor_union.py` for feature-vector/reconstruction/selection coverage.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `lane_flip_variant=flip_centerline_avg`;
+  - neighbor offsets `-1,1`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - `current_center_mean_min=0.0`;
+  - max added lanes per sample `2`;
+  - verifier top-k per sample `12`;
+  - verifier epochs `60`.
+
+Smoke train64 / fixed-val4:
+
+- Train candidates `1569`; train positives `110`.
+- Validation candidates `105`; validation positives `2`.
+- Verifier threshold `0.68`.
+- The verifier selected `4` validation lanes, but selected `0` baseline-FN positives.
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| temporal_verifier | `0.5734` | `41 / 16 / 45` | `0.0000` | `0.5455` |
+
+Exact train256 / val128:
+
+- Train candidates `5898`; train positives `392`.
+- Validation candidates `3147`; validation positives `221`.
+- Verifier threshold `0.71`.
+- The verifier selected `157` validation lanes, with `47` selected baseline-FN positives.
+- It recovered some recall, but FP rose much faster than TP.
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5854` | `1200 / 510 / 1190` | `0.5333` | `0.5988` |
+| temporal_verifier | `0.5802` | `1235 / 632 / 1155` | `0.5333` | `0.5988` |
+
+Diagnosis:
+
+- The train-split verifier does learn to select some true missing-lane candidates:
+  - exact TP increases by `+35`;
+  - FN decreases by `35`.
+- But the selected set is not clean enough:
+  - exact FP increases by `+122`;
+  - lane F1 drops `0.5854 -> 0.5802`.
+- Smoke already showed the same FP-control failure at smaller scale:
+  - no baseline-FN positives were selected;
+  - F1 dropped `0.5899 -> 0.5734`.
+- Stop-line and crosswalk are preserved, but lane remains below target and below the baseline exact reference.
+- Broader-val512 is skipped because exact validation failed.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_verifier_train64_smoke_val4_20260531/summary.json`.
+- Smoke candidates:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_verifier_train64_smoke_val4_20260531/lane_temporal_neighbor_candidates.csv`.
+- Exact train256 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_verifier_train256_exact_val128_20260531/summary.json`.
+- Exact train256 candidates:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_verifier_train256_exact_val128_20260531/lane_temporal_neighbor_candidates.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `1.7M`;
+  - exact export about `9.2M`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_temporal_neighbor_union.py test/test_lane_temporal_neighbor_union.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m pytest -q test/test_lane_temporal_neighbor_union.py`.
+- CUDA train64/smoke-val4 temporal lane verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 temporal lane verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it as a lane breakthrough path.
+- Do not repeat lane temporal-neighbor verifier as neighbor offset, center support, duplicate distance, verifier threshold, top-k, hidden size, epoch/LR, or train-batch scaling over the same image-space candidate surface.
+- Reopen temporal lane only with materially stronger alignment or candidate generation, such as ego-motion/BEV-aligned propagation or model-side temporal instance emission that first shows clean exact TP/FP/FN headroom.
