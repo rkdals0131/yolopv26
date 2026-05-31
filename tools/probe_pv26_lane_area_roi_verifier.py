@@ -23,7 +23,7 @@ from model.engine import raw_batch_for_metrics
 from model.engine._trainer_epochs import _merge_raw_batches
 from model.engine.lane_segfirst_vectorizer import LaneSegFirstVectorizerConfig, vectorize_lane_segfirst_maps
 from model.engine.metrics import _extract_gt_samples, _mean_point_distance, summarize_pv26_metrics
-from model.engine.postprocess import _filter_lane_predictions, postprocess_pv26_batch
+from model.engine.postprocess import _decode_lane_rows, _filter_lane_predictions, postprocess_pv26_batch
 from tools.evaluate_pv26_lane60_checkpoint import _postprocess_override_config
 from tools.probe_pv26_lane_feature_roi_repair import (
     DEFAULT_CHECKPOINT,
@@ -76,14 +76,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-suppressions-per-sample", type=int, default=2)
     parser.add_argument(
         "--candidate-source",
-        choices=("dropped_area", "retained", "union_pool"),
+        choices=("dropped_area", "retained", "union_pool", "conditional_union"),
         default="dropped_area",
         help=(
             "dropped_area trains the historical rescue verifier over lanes removed "
             "by bbox/area filters. retained trains a suppress-only instance-quality "
             "verifier over lanes emitted by the retained runtime decoder. "
             "union_pool trains one ranker over retained lanes plus dropped raw "
-            "candidates so runtime can reselect a fixed-size lane instance set."
+            "candidates so runtime can reselect a fixed-size lane instance set. "
+            "conditional_union trains the same fixed-size ranker over retained "
+            "lanes plus model-emitted conditional row lanes."
         ),
     )
     parser.add_argument(
@@ -713,6 +715,26 @@ def _union_pool_source_features(
     )
 
 
+def _conditional_union_source_features(
+    *,
+    source_kind: str,
+    baseline_lane_count: int,
+    candidate_score: float,
+) -> np.ndarray:
+    """Source and objectness features for retained-vs-conditional set selection."""
+
+    source = str(source_kind)
+    return np.asarray(
+        [
+            1.0 if source == "retained" else 0.0,
+            1.0 if source == "conditional_row" else 0.0,
+            min(max(float(baseline_lane_count), 0.0), 16.0) / 16.0,
+            float(np.clip(float(candidate_score), 0.0, 1.0)),
+        ],
+        dtype=np.float32,
+    )
+
+
 def _lane_set_geometry_support(candidate: dict[str, Any], retained_lanes: list[dict[str, Any]]) -> float:
     """No-GT support that a candidate belongs to the same lane set.
 
@@ -831,6 +853,27 @@ def _raw_lane_candidates(
     )
 
 
+def _conditional_lane_candidates(
+    *,
+    predictions: dict[str, Any],
+    batch_index: int,
+    meta: dict[str, Any],
+    postprocess_config: Any,
+) -> list[dict[str, Any]]:
+    rows = predictions.get("lane_conditional_rows")
+    if not isinstance(rows, torch.Tensor):
+        return []
+    if batch_index < 0 or batch_index >= int(rows.shape[0]):
+        return []
+    lanes = _decode_lane_rows(
+        rows[batch_index],
+        meta=meta,
+        config=postprocess_config,
+        strip_internal=True,
+    )
+    return [dict(lane) for lane in lanes]
+
+
 def _candidate_label(
     *,
     candidate: dict[str, Any],
@@ -934,7 +977,7 @@ def _collect_examples(
                 gt_lanes = list(sample_gt.get("lanes", []))
                 baseline_lanes = list(sample_pred.get("lanes", []))
                 baseline_matched_gt = _baseline_matched_gt_indices(baseline_lanes, gt_lanes)
-                if candidate_source in {"retained", "union_pool"}:
+                if candidate_source in {"retained", "union_pool", "conditional_union"}:
                     matched_predictions = _matched_lane_prediction_indices(baseline_lanes, gt_lanes)
                     for pred_index, candidate in enumerate(baseline_lanes):
                         match = matched_predictions.get(int(pred_index))
@@ -959,6 +1002,17 @@ def _collect_examples(
                                     _union_pool_source_features(
                                         source_kind="retained",
                                         baseline_lane_count=len(baseline_lanes),
+                                    ),
+                                ]
+                            ).astype(np.float32)
+                        if candidate_source == "conditional_union":
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _conditional_union_source_features(
+                                        source_kind="retained",
+                                        baseline_lane_count=len(baseline_lanes),
+                                        candidate_score=float(candidate.get("score", 0.0)),
                                     ),
                                 ]
                             ).astype(np.float32)
@@ -1043,6 +1097,127 @@ def _collect_examples(
                     if candidate_source == "retained":
                         global_sample_index += 1
                         continue
+                if candidate_source == "conditional_union":
+                    conditional_candidates = _conditional_lane_candidates(
+                        predictions=predictions,
+                        batch_index=sample_batch_index,
+                        meta=sample_meta,
+                        postprocess_config=postprocess_config,
+                    )
+                    sample_candidate_index = 0
+                    for candidate in conditional_candidates:
+                        if _near_any_lane(
+                            candidate,
+                            baseline_lanes,
+                            threshold_px=float(args.baseline_duplicate_distance_px),
+                        ):
+                            positive = False
+                            negative = True
+                            gt_index, distance = _nearest_gt(candidate, gt_lanes)
+                        else:
+                            positive, negative, gt_index, distance = _candidate_label(
+                                candidate=candidate,
+                                gt_lanes=gt_lanes,
+                                baseline_matched_gt=baseline_matched_gt,
+                                positive_distance_px=float(args.positive_distance_px),
+                                negative_distance_px=float(args.negative_distance_px),
+                            )
+                        if training and not positive and not negative:
+                            continue
+                        features, sampled_map_points, map_hw = _lane_features(
+                            candidate,
+                            predictions=sample_prediction_tensors,
+                            maps=maps,
+                            meta=sample_meta,
+                        )
+                        features = np.concatenate(
+                            [
+                                features,
+                                _conditional_union_source_features(
+                                    source_kind="conditional_row",
+                                    baseline_lane_count=len(baseline_lanes),
+                                    candidate_score=float(candidate.get("score", 0.0)),
+                                ),
+                            ]
+                        ).astype(np.float32)
+                        if bool(args.alignment_context_features):
+                            features = np.concatenate(
+                                [features, _alignment_context_features(candidate, baseline_lanes)]
+                            ).astype(np.float32)
+                        if bool(args.side_contrast_features):
+                            features = np.concatenate(
+                                [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
+                            ).astype(np.float32)
+                        if bool(args.raw_image_line_features):
+                            sample_image = None
+                            if isinstance(batch_images, torch.Tensor) and int(batch_images.shape[0]) > sample_batch_index:
+                                sample_image = batch_images[sample_batch_index]
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _lane_raw_image_line_features(
+                                        sampled_map_points,
+                                        map_hw=map_hw,
+                                        image=sample_image,
+                                    ),
+                                ]
+                            ).astype(np.float32)
+                        if bool(args.cross_task_conflict_features):
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _lane_cross_task_conflict_features(
+                                        sampled_map_points,
+                                        predictions=sample_prediction_tensors,
+                                        map_hw=map_hw,
+                                    ),
+                                ]
+                            ).astype(np.float32)
+                        if bool(getattr(args, "tta_consistency_features", False)):
+                            features = np.concatenate(
+                                [
+                                    features,
+                                    _lane_tta_consistency_features(
+                                        candidate,
+                                        alternate_lanes=consistency_lanes,
+                                        alternate_raw_candidates=consistency_raw_candidates,
+                                    ),
+                                ]
+                            ).astype(np.float32)
+                        examples.append(
+                            {
+                                "features": features.astype(np.float32),
+                                "positive": float(1.0 if positive else 0.0),
+                                "negative": float(1.0 if negative else 0.0),
+                                "nearest_gt_index": int(gt_index),
+                                "nearest_gt_distance": float(distance),
+                                "sample_index": int(global_sample_index),
+                                "sample_batch_index": int(sample_batch_index),
+                                "candidate_index": int(sample_candidate_index),
+                                "candidate_source_kind": "conditional_row",
+                                "baseline_lane_count": int(len(baseline_lanes)),
+                                "candidate": dict(candidate),
+                            }
+                        )
+                        rows.append(
+                            {
+                                "split": split,
+                                "batch_index": int(display_batch_index),
+                                "sample_index": int(global_sample_index),
+                                "sample_batch_index": int(sample_batch_index),
+                                "candidate_index": int(sample_candidate_index),
+                                "nearest_gt_index": int(gt_index),
+                                "nearest_gt_distance": float(distance),
+                                "positive": int(positive),
+                                "negative": int(negative),
+                                "baseline_matched_gt_count": int(len(baseline_matched_gt)),
+                                "candidate_source_kind": "conditional_row",
+                                "baseline_lane_count": int(len(baseline_lanes)),
+                            }
+                        )
+                        sample_candidate_index += 1
+                    global_sample_index += 1
+                    continue
                 raw_candidates = _raw_lane_candidates(
                     maps=maps,
                     meta=sample_meta,
@@ -1872,8 +2047,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "the default lane bbox/area filter; candidate_source=retained scores emitted "
             "runtime lanes for suppress-only instance-quality tests; candidate_source=union_pool "
             "scores retained lanes and dropped raw candidates together for fixed-count lane "
-            "instance reselection. GT is used only for train labels and final audit metrics, "
-            "not candidate selection."
+            "instance reselection; candidate_source=conditional_union scores retained lanes "
+            "and model-emitted conditional row lanes together under the same fixed-count "
+            "set-selection contract. GT is used only for train labels and final audit "
+            "metrics, not candidate selection."
         ),
     }
     return {

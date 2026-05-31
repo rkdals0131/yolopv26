@@ -23487,3 +23487,101 @@ Decision:
 - Broader-val512 is skipped because exact precision collapses and the result is below primary/projection-comp exact.
 - Close baseline-slot dense-map refinement as a no-GT candidate-generation contract unless the candidate source or source-quality signal changes materially.
 - Do not repeat this as baseline slot count, fallback slot count, fallback length, loose-positive distance, object threshold, MLP hidden size, epoch/LR, or train-batch scaling.
+
+## 387. 2026-05-31 Lane conditional-union verifier: learned instance-quality matching still loses TP
+
+Hypothesis:
+
+- Prior conditional row decoders either flooded FP or did not move runtime TP/FP/FN.
+- The reopen premise was narrower than another threshold/dense-gate sweep:
+  - keep the retained row-scan/tangent lane path;
+  - expose model-emitted `lane_conditional_rows` as runtime candidates;
+  - train a no-GT line-ROI verifier on train split labels;
+  - select retained and conditional-row lanes together under a fixed-count set contract.
+- The expected win condition was to recover conditional-row oracle positives without increasing lane count or losing retained TPs.
+
+Implementation:
+
+- Extended `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added `--candidate-source conditional_union`.
+- Added `_conditional_lane_candidates()` to decode `lane_conditional_rows` via the existing postprocess row decoder.
+- Added conditional-union source/objectness features:
+  - retained flag;
+  - conditional-row flag;
+  - baseline lane count;
+  - candidate objectness score.
+- Runtime uses the existing `select_topk_union_geometry` fixed-count replay:
+  - retained row-scan lanes and conditional-row lanes are ranked together;
+  - non-retained candidates still require set-geometry support;
+  - `--max-appends-per-sample 0` keeps output lane count fixed.
+- Added unit coverage for conditional source features and supported conditional-row selection.
+
+Smoke train64 / fixed val4:
+
+| Loss | Lane F1 before | Lane TP/FP/FN before | Lane F1 after | Lane TP/FP/FN after | Selected / positive |
+| --- | ---: | --- | ---: | --- | --- |
+| BCE | `0.5037` | `34 / 15 / 52` | `0.4444` | `30 / 19 / 56` | `49 / 32` |
+| sample-pairwise-rank | `0.5037` | `34 / 15 / 52` | `0.4444` | `30 / 19 / 56` | `49 / 32` |
+
+Smoke notes:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train examples / positives / negatives: `3547 / 456 / 3091`.
+- BCE selected conditional rows:
+  - selected retained positives: `32`;
+  - selected retained negatives: `13`;
+  - selected conditional-row positives: `0`;
+  - selected conditional-row negatives: `4`.
+- The verifier assigned low probability to the few conditional oracle-positive rows and replaced retained lanes with conditional negatives.
+
+Exact train256 / fixed val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline conditional checkpoint | `0.5585` | `1090 / 423 / 1300` | `0.5299` | `0.6135` |
+| conditional-union pairwise replay | `0.5570` | `1087 / 426 / 1303` | `0.5299` | `0.6135` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Train examples / positives / negatives: `14227 / 1791 / 12436`.
+- Validation candidates / selected / selected oracle-positive: `8330 / 1513 / 1088`.
+- Delta versus baseline: lane TP `-3`, FP `+3`, FN `+3`.
+
+Artifacts:
+
+- Smoke BCE summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_conditional_union_quality_train64_smoke_val4_20260531/summary.json`.
+- Smoke pairwise summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_conditional_union_rank_train64_smoke_val4_20260531/summary.json`.
+- Exact pairwise summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_conditional_union_rank_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No verifier checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - BCE smoke directory about `264K`;
+  - pairwise smoke directory about `264K`;
+  - pairwise exact directory about `2.1M`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/fixed-val4 conditional-union BCE verifier run.
+- CUDA train64/fixed-val4 conditional-union sample-pairwise verifier run.
+- CUDA train256/exact-val128 conditional-union sample-pairwise verifier run.
+
+Decision:
+
+- The learned fixed-count selector does not recover conditional-row oracle positives reliably.
+- Larger train exposure reduces the failure magnitude but still moves the exact gate in the wrong direction.
+- Broader-val512 is skipped because exact TP falls and FP rises.
+- Close conditional-row union verifier as a standalone no-GT instance-quality/matching contract.
+- Do not repeat this as BCE/pairwise loss tuning, pairwise margin/BCE weight, conditional source feature retuning, geometry-support threshold, hidden dim, train-batch scaling, or max-append tuning unless the conditional candidate generator or instance-quality signal changes materially.

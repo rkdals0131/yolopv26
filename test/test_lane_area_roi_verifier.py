@@ -13,6 +13,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _apply_verifier,
     _baseline_matched_gt_indices,
     _candidate_label,
+    _conditional_union_source_features,
     _empty_task_count_payload,
     _finalize_task_counts,
     _lane_cross_task_conflict_features,
@@ -329,6 +330,85 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(selected_sources, ["retained", "retained"])
         unsupported_rows = [row for row in rows if row["candidate_index"] == 2]
         self.assertEqual(unsupported_rows[0]["selected"], 0)
+
+    def test_conditional_union_source_features_mark_conditional_rows(self) -> None:
+        features = _conditional_union_source_features(
+            source_kind="conditional_row",
+            baseline_lane_count=12,
+            candidate_score=1.7,
+        )
+
+        self.assertEqual(features.tolist(), [0.0, 1.0, 0.75, 1.0])
+
+    def test_select_topk_union_geometry_can_select_supported_conditional_row(self) -> None:
+        class FeatureLogitVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return features[:, 0]
+
+        predictions = [{"lanes": [_lane(0.0), _lane(220.0)]}]
+        examples = [
+            {
+                "features": np.asarray([5.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "candidate": _lane(0.0),
+            },
+            {
+                "features": np.asarray([6.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 1,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 1,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "candidate": _lane(220.0),
+            },
+            {
+                "features": np.asarray([10.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 2,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 2,
+                "candidate_source_kind": "conditional_row",
+                "baseline_lane_count": 2,
+                "candidate": _lane(80.0),
+            },
+        ]
+
+        repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=FeatureLogitVerifier(),
+            args=SimpleNamespace(
+                quality_threshold=0.5,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=0,
+                max_suppressions_per_sample=0,
+                candidate_integration_mode="select_topk_union_geometry",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(len(repaired[0]["lanes"]), 2)
+        selected_sources = [row["candidate_source_kind"] for row in rows if row["selected"]]
+        self.assertEqual(selected_sources, ["retained", "conditional_row"])
+        self.assertIn(80.0, [lane["points_xy"][0][0] for lane in repaired[0]["lanes"]])
 
     def test_ensemble_probability_mode_can_require_member_agreement(self) -> None:
         class ConstantVerifier(torch.nn.Module):
