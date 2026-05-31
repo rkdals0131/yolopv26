@@ -24129,3 +24129,71 @@ Decision:
 - Exact-val128 and broader-val512 are skipped because fixed val4 still loses lane TP versus the retained reference and recovers no stop-line TP.
 - Close this as `distill_confidence_mode`, teacher-positive threshold, det-source sampler ratio, distill weight, teacher checkpoint, head LR, epoch-count, train-batch scaling, and same static-head freeze-policy tuning.
 - Reopen full-root unlabeled exposure only with a materially different pseudo-label source, geometry-emitting contract, or candidate-generation signal that first improves fixed TP/FP/FN.
+
+## 393. 2026-05-31 Stop-line flip-consistency source-router: flip replay quality signal is exact-negative
+
+Context:
+
+- Prior source-router variants kept showing high oracle headroom, but output stats, dense-aligned features, line profiles, lane topology, utility regression, endpoint fusion, and endpoint envelope did not learn a deployable no-GT selector.
+- This branch tested a materially different source-quality signal: compare every stop-line source group against a horizontally flipped replay decoded back into raw coordinates.
+- It is still a learned runtime router audit, not a single-checkpoint production success.
+- It reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_source_router.py` adds `--feature-mode flip_consistency`.
+- The probe now:
+  - runs primary and stop-line specialist forward passes on horizontally flipped inputs only for this feature mode;
+  - decodes those predictions, unflips stop-line raw x coordinates, and canonicalizes endpoint order;
+  - appends per-source count, score, length, endpoint-distance, and close-match coverage features for primary/specialist/endpoint-fusion/endpoint-envelope/union/agreement groups.
+- `test/test_stopline_source_router.py` adds coverage for raw-coordinate unflip and verifies that stable flip replay has better consistency features than an unstable replay.
+
+Evaluation setup:
+
+- Primary checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Stop-line specialist checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`.
+- Feature mode: `flip_consistency`.
+- Router objective: `ce`.
+- Exact validation: validation epoch `2`, `128` val batches, batch size `4`.
+- Train scales: `64` and `256` router train batches.
+- Dataset index: `429350` canonical records from the existing root.
+
+Exact-val128 results:
+
+| Train batches | Variant | Stop-line F1 | TP/FP/FN | Lane F1 | Crosswalk F1 |
+| ---: | --- | ---: | --- | ---: | ---: |
+| 64 | primary | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| 64 | learned_router | `0.5128` | `30 / 27 / 30` | `0.5888` | `0.5988` |
+| 64 | oracle_router | `0.7216` | `35 / 2 / 25` | `0.5888` | `0.5988` |
+| 256 | primary | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| 256 | learned_router | `0.5172` | `30 / 26 / 30` | `0.5888` | `0.5988` |
+| 256 | oracle_router | `0.7216` | `35 / 2 / 25` | `0.5888` | `0.5988` |
+
+Artifacts:
+
+- Train64 exact metrics: `runs/pv26_exhaustive_od_lane_train/stopline_flip_consistency_source_router_train64_exact_val128_20260531/metrics.csv`.
+- Train64 exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_flip_consistency_source_router_train64_exact_val128_20260531/summary.json`.
+- Train256 exact metrics: `runs/pv26_exhaustive_od_lane_train/stopline_flip_consistency_source_router_train256_exact_val128_20260531/metrics.csv`.
+- Train256 exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_flip_consistency_source_router_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- Each retained router export is about `64K`.
+- No router checkpoint was saved.
+- The automatically downloaded root `yolo26s.pt` was pruned.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_source_router.py test/test_stopline_source_router.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_source_router`.
+- CUDA train64/exact-val128 flip-consistency source-router run.
+- CUDA train256/exact-val128 flip-consistency source-router run.
+
+Decision:
+
+- The feature is mechanically valid and trains, but exact validation rejects it.
+- The larger train256 run suppresses two FP versus primary but loses two TP, so it cannot beat primary projection-comp.
+- Broader-val512 is skipped because exact learned-router stays below `32 / 28 / 28`, F1 `0.5333`.
+- Close this as flip-consistency feature engineering, endpoint canonicalization, MLP hidden size, router epoch/LR, class weight, and train-batch scaling on the same source-choice surface.
+- Reopen source routing only with a different candidate-generation/geometry signal or a verifier that first improves fixed exact TP/FP/FN over primary.

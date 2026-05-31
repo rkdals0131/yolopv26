@@ -150,13 +150,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--feature-mode",
-        choices=("output_stats", "dense_aligned", "line_profile", "lane_topology", "raster_cnn"),
+        choices=(
+            "output_stats",
+            "dense_aligned",
+            "line_profile",
+            "lane_topology",
+            "flip_consistency",
+            "raster_cnn",
+        ),
         default="output_stats",
         help=(
             "output_stats reproduces the closed scalar source-router premise. "
             "dense_aligned appends no-GT line-aligned dense-map/raw-image quality features. "
             "line_profile appends fixed along-axis source line profiles without spatial CNN pooling. "
             "lane_topology appends no-GT source-line geometry relative to retained lane predictions. "
+            "flip_consistency appends no-GT source stability under horizontal flip replay. "
             "raster_cnn trains a tiny router over raw-image, dense-map, and source prediction rasters."
         ),
     )
@@ -737,6 +745,191 @@ def _features_for_sample(primary_sample: dict[str, Any], specialist_sample: dict
     return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
 
 
+def _raw_width_from_meta(meta: dict[str, Any]) -> float:
+    raw_hw = meta.get("raw_hw") if isinstance(meta, dict) else None
+    if isinstance(raw_hw, (list, tuple)) and len(raw_hw) >= 2:
+        try:
+            width = float(raw_hw[1])
+            if math.isfinite(width) and width > 1.0:
+                return width
+        except (TypeError, ValueError):
+            pass
+    transform_meta = meta.get("transform") if isinstance(meta, dict) else None
+    if isinstance(transform_meta, dict):
+        raw_hw = transform_meta.get("raw_hw")
+        if isinstance(raw_hw, (list, tuple)) and len(raw_hw) >= 2:
+            try:
+                width = float(raw_hw[1])
+                if math.isfinite(width) and width > 1.0:
+                    return width
+            except (TypeError, ValueError):
+                pass
+    network_hw = meta.get("network_hw") if isinstance(meta, dict) else None
+    if isinstance(network_hw, (list, tuple)) and len(network_hw) >= 2:
+        try:
+            width = float(network_hw[1])
+            if math.isfinite(width) and width > 1.0:
+                return width
+        except (TypeError, ValueError):
+            pass
+    return 1.0
+
+
+def _canonical_endpoint_order(points: np.ndarray) -> np.ndarray:
+    if points.shape[0] < 2:
+        return points
+    start = points[0]
+    end = points[-1]
+    if float(start[0]) > float(end[0]) or (
+        math.isclose(float(start[0]), float(end[0]), abs_tol=1.0e-6) and float(start[1]) > float(end[1])
+    ):
+        return points[::-1].copy()
+    return points
+
+
+def _unflip_stop_line(line: dict[str, Any], *, raw_width: float) -> dict[str, Any]:
+    output = dict(line)
+    points = np.asarray(output.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 2 or not bool(np.isfinite(points).all()):
+        return output
+    unflipped = points.copy()
+    unflipped[:, 0] = max(float(raw_width) - 1.0, 0.0) - unflipped[:, 0]
+    output["points_xy"] = _canonical_endpoint_order(unflipped).astype(float).tolist()
+    return output
+
+
+def _unflip_stopline_sample(sample: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    raw_width = _raw_width_from_meta(meta)
+    output = dict(sample)
+    output["stop_lines"] = [
+        _unflip_stop_line(dict(line), raw_width=raw_width) for line in sample.get("stop_lines", [])
+    ]
+    return output
+
+
+def _source_line_groups(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        mode: [dict(line) for line in _source_prediction(primary_sample, specialist_sample, mode).get("stop_lines", [])]
+        for mode in ROUTER_MODES
+        if mode != "empty"
+    }
+
+
+def _line_mean_length(lines: list[dict[str, Any]]) -> float:
+    if not lines:
+        return 0.0
+    values = np.asarray([_line_length(line) for line in lines], dtype=np.float32)
+    finite = values[np.isfinite(values)]
+    return float(finite.mean()) if finite.size else 0.0
+
+
+def _endpoint_consistency_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
+    value = _endpoint_pair_distance(a, b)
+    if not math.isfinite(float(value)):
+        value = _stop_line_distance(a, b)
+    return float(value) if math.isfinite(float(value)) else 512.0
+
+
+def _source_flip_consistency_stats(
+    original_lines: list[dict[str, Any]],
+    flipped_lines: list[dict[str, Any]],
+) -> list[float]:
+    original_count = len(original_lines)
+    flipped_count = len(flipped_lines)
+    original_best_score = max((_line_score(line) for line in original_lines), default=0.0)
+    flipped_best_score = max((_line_score(line) for line in flipped_lines), default=0.0)
+    original_mean_length = _line_mean_length(original_lines)
+    flipped_mean_length = _line_mean_length(flipped_lines)
+    if not original_lines and not flipped_lines:
+        return [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ]
+    if original_lines and flipped_lines:
+        distances = np.asarray(
+            [
+                [_endpoint_consistency_distance(original_line, flipped_line) for flipped_line in flipped_lines]
+                for original_line in original_lines
+            ],
+            dtype=np.float32,
+        )
+        original_nearest = distances.min(axis=1)
+        flipped_nearest = distances.min(axis=0)
+        min_distance = float(distances.min(initial=512.0))
+        mean_original_nearest = float(original_nearest.mean()) if original_nearest.size else 512.0
+        mean_flipped_nearest = float(flipped_nearest.mean()) if flipped_nearest.size else 512.0
+        original_close40 = float((original_nearest <= 40.0).sum()) / max(float(original_count), 1.0)
+        flipped_close40 = float((flipped_nearest <= 40.0).sum()) / max(float(flipped_count), 1.0)
+        original_close64 = float((original_nearest <= 64.0).sum()) / max(float(original_count), 1.0)
+        flipped_close64 = float((flipped_nearest <= 64.0).sum()) / max(float(flipped_count), 1.0)
+    else:
+        min_distance = 512.0
+        mean_original_nearest = 512.0
+        mean_flipped_nearest = 512.0
+        original_close40 = 0.0
+        flipped_close40 = 0.0
+        original_close64 = 0.0
+        flipped_close64 = 0.0
+    return [
+        float(original_count),
+        float(flipped_count),
+        abs(float(original_count - flipped_count)),
+        float(original_best_score),
+        float(flipped_best_score),
+        abs(float(original_best_score - flipped_best_score)),
+        float(original_mean_length),
+        float(flipped_mean_length),
+        abs(float(original_mean_length - flipped_mean_length)),
+        min_distance,
+        mean_original_nearest,
+        mean_flipped_nearest,
+        original_close40,
+        flipped_close40,
+        original_close64,
+        flipped_close64,
+        0.0,
+    ]
+
+
+def _flip_consistency_features_for_sample(
+    primary_sample: dict[str, Any],
+    specialist_sample: dict[str, Any],
+    primary_flip_sample: dict[str, Any],
+    specialist_flip_sample: dict[str, Any],
+) -> list[float]:
+    original_groups = _source_line_groups(primary_sample, specialist_sample)
+    flipped_groups = _source_line_groups(primary_flip_sample, specialist_flip_sample)
+    features: list[float] = []
+    for mode in ROUTER_MODES:
+        if mode == "empty":
+            continue
+        features.extend(
+            _source_flip_consistency_stats(
+                original_groups.get(mode, []),
+                flipped_groups.get(mode, []),
+            )
+        )
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in features]
+
+
 def _as_2d_prob(outputs: dict[str, torch.Tensor], key: str, sample_index: int) -> np.ndarray | None:
     tensor = outputs.get(key)
     if not isinstance(tensor, torch.Tensor):
@@ -1251,6 +1444,7 @@ def _build_predictions_for_loader(
     labels: list[int] = []
     utilities: list[list[float]] = []
     predictions_by_mode: dict[str, list[dict[str, Any]]] = {mode: [] for mode in ROUTER_MODES}
+    normalized_feature_mode = str(feature_mode).strip().lower()
 
     with torch.no_grad():
         for batch_index, batch in enumerate(loader, start=1):
@@ -1282,14 +1476,44 @@ def _build_predictions_for_loader(
             )
             primary_predictions = postprocess_pv26_batch(
                 lane_outputs,
-                _detach_to_cpu(encoded["meta"]),
+                encoded_meta,
                 config=postprocess_config,
             )
             specialist_predictions = postprocess_pv26_batch(
                 _merge_stop_line_outputs(lane_outputs, stop_line_outputs),
-                _detach_to_cpu(encoded["meta"]),
+                encoded_meta,
                 config=stop_line_postprocess_config,
             )
+            primary_flip_predictions: list[dict[str, Any]] | None = None
+            specialist_flip_predictions: list[dict[str, Any]] | None = None
+            if normalized_feature_mode == "flip_consistency":
+                primary_flip_raw_predictions = postprocess_pv26_batch(
+                    flipped_outputs,
+                    encoded_meta,
+                    config=postprocess_config,
+                )
+                stop_line_flipped_outputs = _detach_to_cpu(stop_line_evaluator.forward_encoded_batch(flipped_encoded))
+                specialist_flip_raw_predictions = postprocess_pv26_batch(
+                    _merge_stop_line_outputs(flipped_outputs, stop_line_flipped_outputs),
+                    encoded_meta,
+                    config=stop_line_postprocess_config,
+                )
+                primary_flip_predictions = []
+                specialist_flip_predictions = []
+                for sample_index, (primary_flip_sample, specialist_flip_sample) in enumerate(
+                    zip(primary_flip_raw_predictions, specialist_flip_raw_predictions)
+                ):
+                    sample_meta = (
+                        encoded_meta[sample_index]
+                        if isinstance(encoded_meta, list)
+                        and sample_index < len(encoded_meta)
+                        and isinstance(encoded_meta[sample_index], dict)
+                        else primary_flip_sample.get("meta", {})
+                    )
+                    if not isinstance(sample_meta, dict):
+                        sample_meta = {}
+                    primary_flip_predictions.append(_unflip_stopline_sample(primary_flip_sample, sample_meta))
+                    specialist_flip_predictions.append(_unflip_stopline_sample(specialist_flip_sample, sample_meta))
             for sample_index, (primary_sample, specialist_sample, gt_sample) in enumerate(
                 zip(
                     primary_predictions,
@@ -1298,7 +1522,6 @@ def _build_predictions_for_loader(
                 )
             ):
                 sample_features = _features_for_sample(primary_sample, specialist_sample)
-                normalized_feature_mode = str(feature_mode).strip().lower()
                 if normalized_feature_mode == "dense_aligned":
                     sample_meta = (
                         encoded_meta[sample_index]
@@ -1347,6 +1570,17 @@ def _build_predictions_for_loader(
                     )
                 elif normalized_feature_mode == "lane_topology":
                     sample_features.extend(_lane_topology_features_for_sample(primary_sample, specialist_sample))
+                elif normalized_feature_mode == "flip_consistency":
+                    if primary_flip_predictions is None or specialist_flip_predictions is None:
+                        raise RuntimeError("flip_consistency feature mode requires flipped source predictions")
+                    sample_features.extend(
+                        _flip_consistency_features_for_sample(
+                            primary_sample,
+                            specialist_sample,
+                            primary_flip_predictions[sample_index],
+                            specialist_flip_predictions[sample_index],
+                        )
+                    )
                 elif normalized_feature_mode == "raster_cnn":
                     sample_meta = (
                         encoded_meta[sample_index]

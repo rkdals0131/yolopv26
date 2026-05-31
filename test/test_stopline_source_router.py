@@ -12,6 +12,7 @@ from tools.probe_pv26_stopline_source_router import (
     _draw_stopline_raster,
     _endpoint_envelope_lines,
     _endpoint_fusion_lines,
+    _flip_consistency_features_for_sample,
     _lane_topology_features_for_sample,
     _line_profile_features_for_sample,
     _source_prediction,
@@ -19,6 +20,7 @@ from tools.probe_pv26_stopline_source_router import (
     _train_raster_router,
     _predict_utility_router_modes,
     _train_utility_router,
+    _unflip_stopline_sample,
     _utility_for_sample,
 )
 
@@ -167,6 +169,46 @@ class StoplineSourceRouterTests(unittest.TestCase):
         self.assertIn("endpoint_envelope", ROUTER_MODES)
         self.assertEqual(len(prediction["stop_lines"]), 1)
         self.assertEqual(prediction["stop_lines"][0]["source"], "endpoint_envelope")
+
+    def test_unflip_stopline_sample_restores_raw_x_coordinates(self) -> None:
+        sample = {"stop_lines": [{"points_xy": [[699.0, 300.0], [99.0, 300.0]], "score": 0.7}]}
+
+        unflipped = _unflip_stopline_sample(sample, _meta())
+
+        points = np.asarray(unflipped["stop_lines"][0]["points_xy"], dtype=np.float32)
+        np.testing.assert_allclose(points, np.asarray([[100.0, 300.0], [700.0, 300.0]], dtype=np.float32))
+
+    def test_flip_consistency_features_reward_replayed_stability(self) -> None:
+        primary = {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}]}
+        specialist = {"stop_lines": [{"points_xy": [[110.0, 320.0], [690.0, 320.0]], "score": 0.9}]}
+        stable_primary_flip = {
+            "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.65}]
+        }
+        stable_specialist_flip = {
+            "stop_lines": [{"points_xy": [[110.0, 320.0], [690.0, 320.0]], "score": 0.85}]
+        }
+        unstable_primary_flip = {
+            "stop_lines": [{"points_xy": [[220.0, 420.0], [760.0, 420.0]], "score": 0.65}]
+        }
+
+        stable_features = _flip_consistency_features_for_sample(
+            primary,
+            specialist,
+            stable_primary_flip,
+            stable_specialist_flip,
+        )
+        unstable_features = _flip_consistency_features_for_sample(
+            primary,
+            specialist,
+            unstable_primary_flip,
+            stable_specialist_flip,
+        )
+
+        source_dim = 17
+        self.assertEqual(len(stable_features), 6 * source_dim)
+        self.assertEqual(len(unstable_features), 6 * source_dim)
+        self.assertLess(stable_features[9], unstable_features[9])
+        self.assertGreater(stable_features[12], unstable_features[12])
 
     def test_utility_prefers_empty_for_negative_fp_only_sample(self) -> None:
         primary = {"lanes": [], "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7}]}
