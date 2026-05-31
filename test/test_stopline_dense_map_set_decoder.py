@@ -8,7 +8,9 @@ import torch
 
 from tools.probe_pv26_stopline_dense_map_set_decoder import (
     _apply_grouped_candidate_lines,
+    _apply_union_selector,
     _assign_candidate_labels,
+    _baseline_candidate_rows,
     _best_assignment,
     _canonical_segment,
     _decoder_candidate_feature,
@@ -18,6 +20,7 @@ from tools.probe_pv26_stopline_dense_map_set_decoder import (
     _slot_examples_for_sample,
     _slot_feature,
     _slot_refiner_loss,
+    _union_candidate_rows,
 )
 
 
@@ -166,6 +169,93 @@ class StoplineDenseMapSetDecoderTests(unittest.TestCase):
         self.assertEqual(grouped[0][0]["query_index"], 0)
         self.assertEqual(grouped[0][0]["line"]["proposal_source"], "haf_consensus_candidate")
         self.assertTrue(np.isfinite(grouped[0][0]["features"]).all())
+
+    def test_union_candidate_rows_add_source_flags_for_baseline_and_decoder(self) -> None:
+        examples = [
+            {
+                "sample_index": 3,
+                "features": np.asarray([0.5, 0.25], dtype=np.float32),
+                "meta": _identity_meta(),
+                "baseline_lines": [
+                    {"points_xy": [[10.0, 20.0], [90.0, 20.0]], "score": 0.8}
+                ],
+            }
+        ]
+        decoder_candidates = [
+            [
+                {
+                    "sample_index": 3,
+                    "query_index": 0,
+                    "probability": 0.7,
+                    "segment": np.asarray([[0.1, 0.4], [0.9, 0.4]], dtype=np.float32),
+                    "features": np.zeros(14, dtype=np.float32),
+                    "line": {
+                        "points_xy": [[10.0, 40.0], [90.0, 40.0]],
+                        "score": 0.7,
+                        "proposal_source": "dense_map_set_decoder",
+                    },
+                }
+            ]
+        ]
+
+        baseline_grouped = _baseline_candidate_rows(examples=examples)
+        union_grouped = _union_candidate_rows(examples=examples, decoder_candidates=decoder_candidates)
+
+        self.assertEqual(len(baseline_grouped[0]), 1)
+        self.assertEqual(len(union_grouped[0]), 2)
+        self.assertEqual(union_grouped[0][0]["line"]["proposal_source"], "retained_projection_comp")
+        self.assertEqual(union_grouped[0][1]["line"]["proposal_source"], "dense_map_set_decoder")
+        self.assertEqual(union_grouped[0][0]["features"].shape, union_grouped[0][1]["features"].shape)
+        np.testing.assert_allclose(union_grouped[0][0]["features"][-5:-2], np.asarray([1.0, 0.0, 0.0]))
+        np.testing.assert_allclose(union_grouped[0][1]["features"][-5:-2], np.asarray([0.0, 1.0, 0.0]))
+        self.assertTrue(np.isfinite(union_grouped[0][0]["features"]).all())
+
+    def test_apply_union_selector_preserves_detector_prediction_contract(self) -> None:
+        class ConstantVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(2), persistent=True)
+                self.register_buffer("feature_std", torch.ones(2), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return torch.full((features.shape[0],), 10.0, dtype=features.dtype, device=features.device)
+
+        baseline_predictions = [
+            {
+                "detections": [{"class_id": 2, "score": 0.1}],
+                "stop_lines": [{"points_xy": [[0.0, 0.0], [10.0, 0.0]], "score": 0.4}],
+            }
+        ]
+        examples = [{"gt_stop_lines": []}]
+        grouped = [
+            [
+                {
+                    "query_index": 0,
+                    "probability": 0.8,
+                    "features": np.asarray([0.3, 0.7], dtype=np.float32),
+                    "line": {
+                        "points_xy": [[10.0, 10.0], [20.0, 10.0]],
+                        "score": 0.8,
+                        "proposal_source": "dense_map_set_decoder",
+                    },
+                }
+            ]
+        ]
+        args = argparse.Namespace(candidate_verifier_threshold=0.5, max_output_segments=2)
+
+        predictions, rows = _apply_union_selector(
+            examples=examples,
+            baseline_predictions=baseline_predictions,
+            grouped_candidates=grouped,
+            verifier=ConstantVerifier(),
+            args=args,
+            device="cpu",
+        )
+
+        self.assertEqual(predictions[0]["detections"], baseline_predictions[0]["detections"])
+        self.assertEqual(len(predictions[0]["stop_lines"]), 1)
+        self.assertEqual(predictions[0]["stop_lines"][0]["proposal_source"], "dense_map_set_decoder")
+        self.assertEqual(rows[0]["selected"], 1)
 
     def test_apply_grouped_candidate_lines_preserves_baseline_and_caps_candidates(self) -> None:
         baseline_predictions = [

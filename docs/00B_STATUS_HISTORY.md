@@ -24197,3 +24197,86 @@ Decision:
 - Broader-val512 is skipped because exact learned-router stays below `32 / 28 / 28`, F1 `0.5333`.
 - Close this as flip-consistency feature engineering, endpoint canonicalization, MLP hidden size, router epoch/LR, class weight, and train-batch scaling on the same source-choice surface.
 - Reopen source routing only with a different candidate-generation/geometry signal or a verifier that first improves fixed exact TP/FP/FN over primary.
+
+## 394. 2026-05-31 Stop-line dense-map union selector: learned candidate set selection rejects retained TP and keeps FP
+
+Context:
+
+- The dense-map set decoder could create extra stop-line candidates, but repeated baseline-plus merges failed by adding too many FP.
+- The prior candidate-verifier path preserved retained projection-comp lines and only filtered newly decoded dense-map candidates; it still added `+58` FP for `+2` TP on exact-val128.
+- This branch tested a stricter set-selection contract: retained projection-comp stop-lines and dense-map decoder candidates are placed in one train-split verifier pool, then validation emits only the selected fixed-size set.
+- It reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place, indexed `429350` records, and created no dataset copy.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_dense_map_set_decoder.py` adds `--union-selector-enabled`.
+- New helper path:
+  - builds retained projection-comp baseline candidate rows;
+  - builds dense-map decoder candidate rows;
+  - appends source flags and source-local query metadata to a shared feature vector;
+  - trains the existing MLP verifier on the union pool;
+  - emits only selected candidates via `_apply_union_selector`.
+- The first smoke execution exposed an evaluator contract bug: union-selector predictions were initialized from examples and did not preserve detector-level `detections`. `_apply_union_selector` now initializes from `baseline_predictions`, so lane/crosswalk and detector fields stay evaluator-compatible while stop-lines are replaced.
+- `test/test_stopline_dense_map_set_decoder.py` adds coverage for source flags and detector-contract preservation.
+
+Training and evaluation:
+
+- Checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Scenario: `presets/pv26_meta_train/default`.
+- Runtime: `lane60_experiment=stopline_projection_comp_runtime`, validation epoch `2`, batch size `4`, max output stop-line segments `2`.
+- Smoke: `64` decoder train batches, `80` decoder epochs, `80` candidate-verifier epochs, fixed `4` val batches.
+- Exact: user-requested larger `256` decoder train batches, the same `80`/`80` epochs, fixed `128` val batches.
+
+Smoke fixed-val4 results:
+
+| Variant | Stop-line F1 | TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+| decoder-only | `0.0000` | `0 / 4 / 2` | `0.5507` | `0.5455` |
+| baseline-plus-decoder | `0.0000` | `0 / 7 / 2` | `0.5507` | `0.5455` |
+| union-selector | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+
+Exact-val128 results:
+
+| Variant | Stop-line F1 | TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5333` | `32 / 28 / 28` | `0.5660` | `0.5988` |
+| decoder-only | `0.1022` | `7 / 70 / 53` | `0.5660` | `0.5988` |
+| baseline-plus-decoder | `0.3556` | `32 / 88 / 28` | `0.5660` | `0.5988` |
+| union-selector | `0.2537` | `17 / 57 / 43` | `0.5660` | `0.5988` |
+
+Union-selector source audit on exact-val128:
+
+| Source | Selected Positive | Selected Negative | Rejected Positive | Rejected Negative |
+| --- | ---: | ---: | ---: | ---: |
+| dense_map_set_decoder | `2` | `47` | `0` | `975` |
+| retained_projection_comp | `13` | `15` | `18` | `14` |
+
+Artifacts:
+
+- Smoke summary: `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_union_selector_train64_smoke_val4_20260531_rerun/summary.json`.
+- Exact summary: `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_union_selector_train256_exact_val128_20260531/summary.json`.
+- Both runs retain CSV/summary artifacts only.
+
+Storage:
+
+- Retained smoke artifact size: about `76K`.
+- Retained exact artifact size: about `340K`.
+- No decoder/verifier checkpoint was saved.
+- No dataset copy was created.
+- The automatically downloaded root `yolo26s.pt` and the failed first smoke scratch directory were pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_dense_map_set_decoder.py test/test_stopline_dense_map_set_decoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_dense_map_set_decoder`.
+- Train64/fixed-val4 union-selector run.
+- Train256/exact-val128 union-selector run.
+
+Decision:
+
+- The implementation is mechanically valid and trains, but the learned union selector is exact-negative.
+- The selector drops too many retained projection-comp positives (`18` rejected positives) while still selecting many decoder negatives (`47` selected negatives).
+- Broader-val512 is skipped because exact falls far below primary projection-comp `32 / 28 / 28`, F1 `0.5333`.
+- Close this as source-flag features, verifier threshold/hidden-size, decoder query count, max-output cap, epoch/LR, and train-batch scaling over the same retained projection-comp + dense-map decoder candidate surface.
+- Reopen only with a materially different candidate generator or segment-quality target that first improves exact TP/FP/FN over primary projection-comp.

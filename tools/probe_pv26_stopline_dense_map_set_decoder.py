@@ -103,6 +103,15 @@ def parse_args() -> argparse.Namespace:
             "add only verifier-kept decoder candidates to the preserved runtime baseline."
         ),
     )
+    parser.add_argument(
+        "--union-selector-enabled",
+        action="store_true",
+        help=(
+            "Train a verifier over the union of retained projection-comp lines and "
+            "dense-map decoder candidates, then emit only the selected fixed-size set. "
+            "This lets the verifier suppress retained FP and add decoder TP in one contract."
+        ),
+    )
     parser.add_argument("--candidate-verifier-hidden-dim", type=int, default=128)
     parser.add_argument("--candidate-verifier-epochs", type=int, default=80)
     parser.add_argument("--candidate-verifier-batch-size", type=int, default=128)
@@ -923,6 +932,38 @@ def _haf_candidate_feature(
     return _finite_array(np.concatenate([base, values], axis=0))
 
 
+def _source_flags(source: str) -> np.ndarray:
+    normalized = str(source).strip().lower()
+    return np.asarray(
+        [
+            1.0 if normalized == "retained_projection_comp" else 0.0,
+            1.0 if normalized == "dense_map_set_decoder" else 0.0,
+            1.0 if normalized == "haf_consensus_candidate" else 0.0,
+        ],
+        dtype=np.float32,
+    )
+
+
+def _union_candidate_feature(
+    sample_features: np.ndarray,
+    *,
+    segment: np.ndarray,
+    probability: float,
+    source: str,
+    rank: int,
+    candidate_count: int,
+) -> np.ndarray:
+    base = _decoder_candidate_feature(sample_features, segment=segment, probability=probability)
+    rank_features = np.asarray(
+        [
+            float(rank) / max(float(candidate_count - 1), 1.0),
+            float(candidate_count),
+        ],
+        dtype=np.float32,
+    )
+    return _finite_array(np.concatenate([base, _source_flags(source), rank_features], axis=0))
+
+
 def _decode_haf_candidates_for_sample(
     predictions: dict[str, Any],
     *,
@@ -1032,6 +1073,98 @@ def _haf_candidate_rows(*, examples: list[dict[str, Any]]) -> list[list[dict[str
     return grouped
 
 
+def _baseline_candidate_rows(*, examples: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    grouped: list[list[dict[str, Any]]] = []
+    for example in examples:
+        baseline_lines = [dict(item) for item in example.get("baseline_lines", []) if isinstance(item, dict)]
+        rows: list[dict[str, Any]] = []
+        candidate_count = len(baseline_lines)
+        for line_index, line in enumerate(baseline_lines):
+            segment = _raw_stopline_segment_norm(line, example["meta"])
+            if segment is None:
+                continue
+            probability = float(
+                max(
+                    [
+                        float(value)
+                        for value in (
+                            line.get("score", 0.0),
+                            line.get("center_score", 0.0),
+                            line.get("projection_comp_score", 0.0),
+                            line.get("instance_score", 0.0),
+                        )
+                        if isinstance(value, (int, float)) and math.isfinite(float(value))
+                    ],
+                    default=0.0,
+                )
+            )
+            payload = dict(line)
+            payload["allowed"] = True
+            payload["proposal_source"] = "retained_projection_comp"
+            payload["retained_projection_comp_index"] = int(line_index)
+            rows.append(
+                {
+                    "sample_index": int(example["sample_index"]),
+                    "query_index": int(line_index),
+                    "probability": probability,
+                    "segment": segment,
+                    "features": _union_candidate_feature(
+                        example["features"],
+                        segment=segment,
+                        probability=probability,
+                        source="retained_projection_comp",
+                        rank=int(line_index),
+                        candidate_count=candidate_count,
+                    ),
+                    "line": payload,
+                }
+            )
+        grouped.append(rows)
+    return grouped
+
+
+def _union_candidate_rows(
+    *,
+    examples: list[dict[str, Any]],
+    decoder_candidates: list[list[dict[str, Any]]],
+) -> list[list[dict[str, Any]]]:
+    baseline_rows = _baseline_candidate_rows(examples=examples)
+    grouped: list[list[dict[str, Any]]] = []
+    for sample_index, example in enumerate(examples):
+        rows: list[dict[str, Any]] = []
+        source_candidates = [
+            *baseline_rows[sample_index],
+            *(decoder_candidates[sample_index] if sample_index < len(decoder_candidates) else []),
+        ]
+        candidate_count = len(source_candidates)
+        for union_index, candidate in enumerate(source_candidates):
+            line = dict(candidate.get("line", {}))
+            source = str(line.get("proposal_source", ""))
+            segment = np.asarray(candidate.get("segment"), dtype=np.float32).reshape(2, 2)
+            probability = float(candidate.get("probability", line.get("score", 0.0)))
+            line["union_candidate_index"] = int(union_index)
+            line["proposal_source"] = source
+            rows.append(
+                {
+                    **candidate,
+                    "query_index": int(union_index),
+                    "source_query_index": int(candidate.get("query_index", -1)),
+                    "probability": probability,
+                    "features": _union_candidate_feature(
+                        example["features"],
+                        segment=segment,
+                        probability=probability,
+                        source=source,
+                        rank=int(union_index),
+                        candidate_count=candidate_count,
+                    ),
+                    "line": line,
+                }
+            )
+        grouped.append(rows)
+    return grouped
+
+
 def _assign_candidate_labels(
     candidates: list[dict[str, Any]],
     gt_lines: list[dict[str, Any]],
@@ -1080,6 +1213,8 @@ def _train_candidate_verifier(
                     "split": "train",
                     "sample_index": int(candidate["sample_index"]),
                     "query_index": int(candidate["query_index"]),
+                    "source_query_index": int(candidate.get("source_query_index", candidate["query_index"])),
+                    "proposal_source": str(candidate.get("line", {}).get("proposal_source", "")),
                     "probability": float(candidate["probability"]),
                     "label": int(label),
                     "target_count": int(np.asarray(example.get("targets", [])).shape[0]),
@@ -1167,6 +1302,8 @@ def _apply_candidate_verifier(
             {
                 "sample_index": int(sample_index),
                 "query_index": int(candidate["query_index"]),
+                "source_query_index": int(candidate.get("source_query_index", candidate["query_index"])),
+                "proposal_source": str(candidate.get("line", {}).get("proposal_source", "")),
                 "decoder_probability": float(candidate["probability"]),
                 "verifier_probability": float(probability),
                 "selected": int(selected),
@@ -1187,6 +1324,95 @@ def _apply_candidate_verifier(
         merged.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
         merged_predictions[sample_index]["stop_lines"] = _dedupe_stop_line_predictions(merged)[:max_segments]
     return merged_predictions, rows
+
+
+def _apply_union_selector(
+    *,
+    examples: list[dict[str, Any]],
+    baseline_predictions: list[dict[str, Any]],
+    grouped_candidates: list[list[dict[str, Any]]],
+    verifier: StoplineDecoderCandidateVerifier,
+    args: argparse.Namespace,
+    device: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected_predictions = [dict(sample, stop_lines=[]) for sample in baseline_predictions]
+    feature_rows: list[np.ndarray] = []
+    candidate_refs: list[tuple[int, dict[str, Any], int]] = []
+    for sample_index, candidates in enumerate(grouped_candidates):
+        labels = _assign_candidate_labels(candidates, list(examples[sample_index].get("gt_stop_lines", [])))
+        for candidate, label in zip(candidates, labels):
+            feature_rows.append(np.asarray(candidate["features"], dtype=np.float32).reshape(-1))
+            candidate_refs.append((int(sample_index), candidate, int(label)))
+    if not feature_rows:
+        return selected_predictions, []
+
+    features = torch.tensor(np.stack(feature_rows), dtype=torch.float32, device=device)
+    features = (features - verifier.feature_mean) / verifier.feature_std
+    with torch.no_grad():
+        probabilities = verifier(features).sigmoid().detach().cpu().numpy().astype(np.float32)
+
+    threshold = float(args.candidate_verifier_threshold)
+    max_segments = max(0, int(args.max_output_segments))
+    ranked_by_sample: dict[int, list[tuple[float, dict[str, Any], int]]] = {}
+    rows: list[dict[str, Any]] = []
+    for probability, (sample_index, candidate, label) in zip(probabilities, candidate_refs):
+        selected = bool(float(probability) >= threshold)
+        source = str(candidate.get("line", {}).get("proposal_source", ""))
+        rows.append(
+            {
+                "sample_index": int(sample_index),
+                "query_index": int(candidate["query_index"]),
+                "source_query_index": int(candidate.get("source_query_index", candidate["query_index"])),
+                "proposal_source": source,
+                "decoder_probability": float(candidate["probability"]),
+                "verifier_probability": float(probability),
+                "selected": int(selected),
+                "label": int(label),
+            }
+        )
+        if selected:
+            ranked_by_sample.setdefault(int(sample_index), []).append((float(probability), dict(candidate["line"]), int(label)))
+
+    for sample_index, ranked in ranked_by_sample.items():
+        if not (0 <= sample_index < len(selected_predictions)):
+            continue
+        ranked.sort(
+            key=lambda item: (
+                float(item[0]),
+                float(item[1].get("score", 0.0)),
+            ),
+            reverse=True,
+        )
+        selected_predictions[sample_index]["stop_lines"] = _dedupe_stop_line_predictions(
+            [dict(line) for _probability, line, _label in ranked[:max_segments]]
+        )[:max_segments]
+    return selected_predictions, rows
+
+
+def _source_decision_audit(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    audit: dict[str, dict[str, int]] = {}
+    for row in rows:
+        source = str(row.get("proposal_source", ""))
+        payload = audit.setdefault(
+            source,
+            {
+                "selected_positive": 0,
+                "selected_negative": 0,
+                "rejected_positive": 0,
+                "rejected_negative": 0,
+            },
+        )
+        selected = bool(int(row.get("selected", 0)))
+        positive = bool(int(row.get("label", 0)))
+        if selected and positive:
+            payload["selected_positive"] += 1
+        elif selected and not positive:
+            payload["selected_negative"] += 1
+        elif not selected and positive:
+            payload["rejected_positive"] += 1
+        else:
+            payload["rejected_negative"] += 1
+    return audit
 
 
 def _apply_grouped_candidate_lines(
@@ -1412,10 +1638,15 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     model: StoplineDenseMapSetDecoder | None = None
     train_summary: dict[str, Any]
     if bool(args.haf_candidate_verifier_enabled):
-        if bool(args.baseline_slot_refiner_enabled) or bool(args.candidate_verifier_enabled):
+        if (
+            bool(args.baseline_slot_refiner_enabled)
+            or bool(args.candidate_verifier_enabled)
+            or bool(args.union_selector_enabled)
+        ):
             raise ValueError(
                 "haf-candidate-verifier-enabled is a standalone candidate-generator mode; "
-                "do not combine it with baseline-slot-refiner-enabled or candidate-verifier-enabled"
+                "do not combine it with baseline-slot-refiner-enabled, candidate-verifier-enabled, "
+                "or union-selector-enabled"
             )
         candidate_generator = "haf_consensus_candidate"
         train_haf_candidates = _haf_candidate_rows(examples=train_examples)
@@ -1428,6 +1659,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "train_haf_candidate_samples": int(sum(1 for row in train_haf_candidates if row)),
         }
     elif bool(args.baseline_slot_refiner_enabled):
+        if bool(args.union_selector_enabled):
+            raise ValueError("union-selector-enabled currently uses dense-map decoder candidates, not slot refiner candidates")
         slot_refiner_model, slot_refiner_summary = _train_slot_refiner(
             _flat_slot_examples(train_examples),
             args=args,
@@ -1448,6 +1681,23 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             device=device,
         )
         train_summary["candidate_verifier"] = verifier_summary
+    elif bool(args.union_selector_enabled) and model is not None:
+        train_decoder_candidates = _decoder_candidate_rows(
+            examples=train_examples,
+            model=model,
+            device=device,
+        )
+        train_union_candidates = _union_candidate_rows(
+            examples=train_examples,
+            decoder_candidates=train_decoder_candidates,
+        )
+        verifier_model, verifier_summary, verifier_train_rows = _train_candidate_verifier(
+            train_examples,
+            train_union_candidates,
+            args=args,
+            device=device,
+        )
+        candidate_generator = "retained_projection_comp_plus_dense_map_set_decoder"
     elif bool(args.candidate_verifier_enabled) and model is not None:
         train_decoder_candidates = _decoder_candidate_rows(
             examples=train_examples,
@@ -1495,6 +1745,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             device=device,
         )
     verified_plus_predictions: list[dict[str, Any]] | None = None
+    union_selector_predictions: list[dict[str, Any]] | None = None
     verifier_decision_rows: list[dict[str, Any]] = []
     if bool(args.haf_candidate_verifier_enabled) and verifier_model is not None:
         assert val_haf_candidates is not None
@@ -1502,6 +1753,24 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             examples=val_examples,
             baseline_predictions=baseline_predictions,
             grouped_candidates=val_haf_candidates,
+            verifier=verifier_model,
+            args=args,
+            device=device,
+        )
+    elif bool(args.union_selector_enabled) and verifier_model is not None:
+        val_decoder_candidates = _decoder_candidate_rows(
+            examples=val_examples,
+            model=model,
+            device=device,
+        )
+        val_union_candidates = _union_candidate_rows(
+            examples=val_examples,
+            decoder_candidates=val_decoder_candidates,
+        )
+        union_selector_predictions, verifier_decision_rows = _apply_union_selector(
+            examples=val_examples,
+            baseline_predictions=baseline_predictions,
+            grouped_candidates=val_union_candidates,
             verifier=verifier_model,
             args=args,
             device=device,
@@ -1529,12 +1798,22 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         if verified_plus_predictions is not None
         else None
     )
+    union_selector_metrics = (
+        augment_lane_family_metrics(summarize_pv26_metrics(union_selector_predictions, merged_raw))
+        if union_selector_predictions is not None
+        else None
+    )
     baseline_tasks = {task: _metric_payload(baseline_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
     decoder_only_tasks = {task: _metric_payload(decoder_only_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
     baseline_plus_tasks = {task: _metric_payload(baseline_plus_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
     verified_plus_tasks = (
         {task: _metric_payload(verified_plus_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
         if verified_plus_metrics is not None
+        else None
+    )
+    union_selector_tasks = (
+        {task: _metric_payload(union_selector_metrics, task) for task in ("lane", "stop_line", "crosswalk")}
+        if union_selector_metrics is not None
         else None
     )
     summary = {
@@ -1552,6 +1831,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "metric_quality_objectness": bool(args.metric_quality_objectness),
         "metric_quality_tau": float(args.metric_quality_tau),
         "candidate_verifier_enabled": bool(args.candidate_verifier_enabled),
+        "union_selector_enabled": bool(args.union_selector_enabled),
         "haf_candidate_verifier_enabled": bool(args.haf_candidate_verifier_enabled),
         "haf_candidate_valid_threshold": float(args.haf_candidate_valid_threshold),
         "haf_candidate_min_votes": int(args.haf_candidate_min_votes),
@@ -1570,6 +1850,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_verifier_summary": verifier_summary,
         "selected_prediction_count": int(sum(int(row["selected"]) for row in decision_rows)),
         "verified_selected_prediction_count": int(sum(int(row["selected"]) for row in verifier_decision_rows)),
+        "source_decision_audit": _source_decision_audit(verifier_decision_rows),
         "baseline": baseline_tasks,
         "decoder_only": decoder_only_tasks,
         "baseline_plus_decoder": baseline_plus_tasks,
@@ -1579,8 +1860,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "baseline_plus_haf": baseline_plus_tasks if bool(args.haf_candidate_verifier_enabled) else None,
         "baseline_plus_verified_haf": verified_plus_tasks if bool(args.haf_candidate_verifier_enabled) else None,
         "baseline_plus_verified_decoder": (
-            verified_plus_tasks if verified_plus_tasks is not None and not bool(args.haf_candidate_verifier_enabled) else None
+            verified_plus_tasks
+            if verified_plus_tasks is not None
+            and not bool(args.haf_candidate_verifier_enabled)
+            and not bool(args.union_selector_enabled)
+            else None
         ),
+        "union_selector": union_selector_tasks,
         "delta": {
             "decoder_only": {task: _task_delta(decoder_only_tasks[task], baseline_tasks[task]) for task in baseline_tasks},
             "baseline_plus_decoder": {
@@ -1593,7 +1879,14 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "baseline_plus_verified_decoder": (
                 {task: _task_delta(verified_plus_tasks[task], baseline_tasks[task]) for task in baseline_tasks}
-                if verified_plus_tasks is not None and not bool(args.haf_candidate_verifier_enabled)
+                if verified_plus_tasks is not None
+                and not bool(args.haf_candidate_verifier_enabled)
+                and not bool(args.union_selector_enabled)
+                else None
+            ),
+            "union_selector": (
+                {task: _task_delta(union_selector_tasks[task], baseline_tasks[task]) for task in baseline_tasks}
+                if union_selector_tasks is not None
                 else None
             ),
         },
@@ -1604,6 +1897,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "learns slot objectness plus endpoint refinement. If candidate_verifier_enabled "
             "is true, a second train-split verifier filters decoder candidates before "
             "adding them to the preserved runtime baseline. "
+            "If union_selector_enabled is true, retained projection-comp lines and dense decoder candidates "
+            "are scored together and only the selected fixed-size set is emitted. "
             "If haf_candidate_verifier_enabled is true, decoded HAF consensus segments "
             "replace the dense-map decoder as the candidate generator and are filtered "
             "by the same train-split no-GT verifier before being added to baseline. "
