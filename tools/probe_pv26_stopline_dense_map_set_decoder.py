@@ -72,6 +72,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-epochs", type=int, default=80)
     parser.add_argument("--decoder-batch-size", type=int, default=128)
     parser.add_argument("--decoder-lr", type=float, default=1.0e-3)
+    parser.add_argument(
+        "--metric-quality-objectness",
+        action="store_true",
+        help=(
+            "Train matched query objectness from endpoint-distance quality instead of "
+            "hard 1.0 positives. This keeps the dense-map decoder contract but makes "
+            "the confidence target geometry-aware."
+        ),
+    )
+    parser.add_argument(
+        "--metric-quality-tau",
+        type=float,
+        default=0.06,
+        help="Normalized endpoint-distance scale for metric-quality objectness.",
+    )
     parser.add_argument("--object-threshold", type=float, default=0.55)
     parser.add_argument("--max-output-segments", type=int, default=2)
     parser.add_argument("--seed", type=int, default=26)
@@ -246,6 +261,8 @@ def _set_decoder_loss(
     targets: list[torch.Tensor],
     *,
     pos_weight: float,
+    metric_quality_objectness: bool = False,
+    metric_quality_tau: float = 0.06,
 ) -> torch.Tensor:
     batch_losses: list[torch.Tensor] = []
     pos_weight_tensor = torch.tensor([max(float(pos_weight), 1.0)], dtype=logits.dtype, device=logits.device)
@@ -266,14 +283,21 @@ def _set_decoder_loss(
             if pairs:
                 query_indices = torch.tensor([query for query, _ in pairs], dtype=torch.long, device=points.device)
                 target_indices = torch.tensor([target_index for _, target_index in pairs], dtype=torch.long, device=points.device)
-                object_target[query_indices] = 1.0
                 direct = F.smooth_l1_loss(query_points[query_indices], target[target_indices], reduction="none").mean(dim=(1, 2))
                 flipped = F.smooth_l1_loss(
                     query_points[query_indices].flip(dims=(1,)),
                     target[target_indices],
                     reduction="none",
                 ).mean(dim=(1, 2))
-                point_loss = torch.minimum(direct, flipped).mean()
+                matched_point_loss = torch.minimum(direct, flipped)
+                point_loss = matched_point_loss.mean()
+                if bool(metric_quality_objectness):
+                    quality_tau = max(float(metric_quality_tau), 1.0e-6)
+                    object_target[query_indices] = torch.exp(
+                        -matched_point_loss.detach() / quality_tau
+                    ).clamp(min=0.0, max=1.0)
+                else:
+                    object_target[query_indices] = 1.0
         object_loss = F.binary_cross_entropy_with_logits(query_logits, object_target, pos_weight=pos_weight_tensor)
         batch_losses.append(object_loss + 8.0 * point_loss)
     return torch.stack(batch_losses).mean()
@@ -315,7 +339,14 @@ def _train_decoder(
             batch_targets = [targets[int(i)] for i in index.tolist()]
             batch_features = features[index.to(device)]
             logits, points = model(batch_features)
-            loss = _set_decoder_loss(logits, points, batch_targets, pos_weight=pos_weight)
+            loss = _set_decoder_loss(
+                logits,
+                points,
+                batch_targets,
+                pos_weight=pos_weight,
+                metric_quality_objectness=bool(args.metric_quality_objectness),
+                metric_quality_tau=float(args.metric_quality_tau),
+            )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -330,6 +361,8 @@ def _train_decoder(
         "target_segment_count": int(target_count),
         "input_dim": int(features.shape[1]),
         "pos_weight": float(pos_weight),
+        "metric_quality_objectness": bool(args.metric_quality_objectness),
+        "metric_quality_tau": float(args.metric_quality_tau),
         "history": history,
     }
     return model, summary
@@ -531,6 +564,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "validation_epoch": int(args.validation_epoch),
         "decoder_queries": int(args.decoder_queries),
         "object_threshold": float(args.object_threshold),
+        "metric_quality_objectness": bool(args.metric_quality_objectness),
+        "metric_quality_tau": float(args.metric_quality_tau),
         "max_output_segments": int(args.max_output_segments),
         "pool_hw": [int(args.pool_height), int(args.pool_width)],
         "train_summary": train_summary,

@@ -50,6 +50,31 @@ class StoplineDenseMapSetDecoderTests(unittest.TestCase):
         self.assertIsNotNone(logits.grad)
         self.assertIsNotNone(points.grad)
 
+    def test_metric_quality_objectness_penalizes_misaligned_segment_confidence(self) -> None:
+        target = [torch.tensor([[[0.1, 0.2], [0.9, 0.2]]], dtype=torch.float32)]
+        good_points = torch.tensor([[[[0.1, 0.2], [0.9, 0.2]]]], dtype=torch.float32)
+        bad_points = torch.tensor([[[[0.1, 0.8], [0.9, 0.8]]]], dtype=torch.float32)
+        confident_logits = torch.full((1, 1), 3.0, dtype=torch.float32)
+
+        good_loss = _set_decoder_loss(
+            confident_logits,
+            good_points,
+            target,
+            pos_weight=1.0,
+            metric_quality_objectness=True,
+            metric_quality_tau=0.05,
+        )
+        bad_loss = _set_decoder_loss(
+            confident_logits,
+            bad_points,
+            target,
+            pos_weight=1.0,
+            metric_quality_objectness=True,
+            metric_quality_tau=0.05,
+        )
+
+        self.assertGreater(float(bad_loss), float(good_loss))
+
 
 if __name__ == "__main__":
     unittest.main()

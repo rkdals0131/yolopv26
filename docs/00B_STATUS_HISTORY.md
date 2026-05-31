@@ -22989,3 +22989,94 @@ Decision:
 - Broader-val512 is skipped because exact lane F1 regresses `0.5888 -> 0.5764`.
 - Close this as alternate-decode choice, consistency feature block, fixed-count union-geometry integration, hidden-dim, BCE loss, train-batch count, or exact threshold/cap tuning on this candidate surface.
 - Reopen lane candidate-pool selection only with a materially stronger TP-preserving instance-quality signal or model-side instance emitter that first improves exact TP/FP/FN.
+
+## 382. 2026-05-31 Stop-line dense-map metric-quality objectness: stronger confidence target still FP-heavy
+
+Premise:
+
+- Section 380 closed the first dense-map set decoder because it recovered a small amount of exact stop-line TP but added far more FP.
+- This branch reopened only the allowed stronger segment-quality premise:
+  - matched query objectness is not a hard `1.0`;
+  - it is `exp(-endpoint_loss / tau)`, so badly localized segments should receive a lower confidence target.
+- This is not a decoder hidden-size/query-count/threshold/cap sweep; it changes the training target for segment confidence.
+
+Implementation:
+
+- Updated `tools/probe_pv26_stopline_dense_map_set_decoder.py`.
+- Added `--metric-quality-objectness`.
+- Added `--metric-quality-tau`.
+- `_set_decoder_loss()` now supports endpoint-distance quality targets for matched query logits while keeping the endpoint SmoothL1 geometry loss.
+- Added focused unittest coverage in `test/test_stopline_dense_map_set_decoder.py`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Retained checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime settings:
+  - frozen dense stop-line maps;
+  - `decoder_queries=2`;
+  - `object_threshold=0.55`;
+  - `metric_quality_tau=0.06`;
+  - projection-competition baseline retained for comparison.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.0000` | `0 / 3 / 2` | `0.5507` | `0.5455` |
+| decoder-only | `0.0000` | `0 / 4 / 2` | `0.5507` | `0.5455` |
+| baseline-plus-decoder | `0.0000` | `0 / 7 / 2` | `0.5507` | `0.5455` |
+
+Smoke stats:
+
+- Train examples: `256`.
+- Target segment count: `142`.
+- Selected prediction count: `4`.
+
+Exact train256 / fixed val128:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5333` | `32 / 28 / 28` | `0.5660` | `0.5988` |
+| decoder-only | `0.0909` | `6 / 66 / 54` | `0.5660` | `0.5988` |
+| baseline-plus-decoder | `0.3548` | `33 / 93 / 27` | `0.5660` | `0.5988` |
+
+Exact stats:
+
+- Train examples: `1024`.
+- Target segment count: `599`.
+- Selected prediction count: `72`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_metric_quality_decoder_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_metric_quality_decoder_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No decoder checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `28K`;
+  - exact directory about `80K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_dense_map_set_decoder.py test/test_stopline_dense_map_set_decoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_dense_map_set_decoder`.
+- CUDA train64/fixed-val4 metric-quality dense-map decoder run.
+- CUDA train256/exact-val128 metric-quality dense-map decoder run.
+
+Decision:
+
+- Metric-quality objectness did reduce neither val4 nor exact FP enough to make the decoder deployable.
+- Exact-val128 recovered only `+1` TP but added `+65` FP, so stop-line F1 fell `0.5333 -> 0.3548`.
+- Broader-val512 is skipped because exact precision collapses.
+- Close dense-map set decoder metric-quality objectness as a standalone FP-control target on the same frozen dense-map feature surface.
+- Reopen dense-map set decoding only with a materially different candidate generator, calibrated verifier, or baseline-preserving merge contract that first improves exact TP/FP/FN over projection-comp.
