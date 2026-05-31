@@ -160,6 +160,7 @@ class StopLineDenseLocalHead(nn.Module):
             nn.BatchNorm1d(self.hidden_dim),
             nn.SiLU(inplace=True),
         )
+        self.axis_profile_endpoint_logits = nn.Conv1d(self.hidden_dim, 2, kernel_size=1)
         self.axis_segment_query_mlp = nn.Sequential(
             nn.Linear(self.hidden_dim * 3 + 5, self.hidden_dim),
             nn.SiLU(inplace=True),
@@ -609,7 +610,14 @@ class StopLineDenseLocalHead(nn.Module):
             int(self.axis_profile_sample_count),
         )
         encoded_profile = self.axis_profile_encoder(profile)
+        endpoint_profile_logits = self.axis_profile_endpoint_logits(encoded_profile)
         encoded_profile = encoded_profile.view(batch_size, query_count, channels, int(self.axis_profile_sample_count))
+        endpoint_profile_logits = endpoint_profile_logits.view(
+            batch_size,
+            query_count,
+            2,
+            int(self.axis_profile_sample_count),
+        )
         profile_mean = encoded_profile.mean(dim=-1)
         profile_max = encoded_profile.amax(dim=-1)
         query_input = torch.cat(
@@ -617,15 +625,19 @@ class StopLineDenseLocalHead(nn.Module):
             dim=-1,
         )
         query_raw = self.axis_segment_query_mlp(query_input)
-        segment_logits = query_raw[..., 0] + top_scores
-        along_delta_px = torch.tanh(query_raw[..., 1:2]) * float(self.axis_profile_radius_px)
+        endpoint_confidence = endpoint_profile_logits.amax(dim=-1).mean(dim=-1)
+        segment_logits = query_raw[..., 0] + top_scores + 0.5 * endpoint_confidence
         normal_delta_px = torch.tanh(query_raw[..., 2:3]) * float(self.axis_profile_normal_radius_px)
-        half_length_px = F.softplus(query_raw[..., 3:4]) * 160.0 + 8.0
+        endpoint_weights = torch.softmax(endpoint_profile_logits, dim=-1)
+        offset_values = offsets.view(1, 1, 1, int(self.axis_profile_sample_count))
+        endpoint_offsets_px = (endpoint_weights * offset_values).sum(dim=-1)
+        start_offset_px = torch.minimum(endpoint_offsets_px[..., 0:1], endpoint_offsets_px[..., 1:2])
+        end_offset_px = torch.maximum(endpoint_offsets_px[..., 0:1], endpoint_offsets_px[..., 1:2])
         normal_axis = torch.stack([-seed_axis[..., 1], seed_axis[..., 0]], dim=-1)
         network_xy = feature_map.new_tensor([float(NETWORK_HW[1]), float(NETWORK_HW[0])]).view(1, 1, 2)
-        center_xy = seed_xy + (seed_axis * along_delta_px + normal_axis * normal_delta_px) / network_xy
-        start_xy = center_xy - seed_axis * half_length_px / network_xy
-        end_xy = center_xy + seed_axis * half_length_px / network_xy
+        center_xy = seed_xy + normal_axis * normal_delta_px / network_xy
+        start_xy = center_xy + seed_axis * start_offset_px / network_xy
+        end_xy = center_xy + seed_axis * end_offset_px / network_xy
         segment_points = torch.stack([start_xy, end_xy], dim=2).clamp(0.0, 1.0)
         segment_verifier_logits = self._verify_segments(feature_map, seed_features, segment_points)
         if query_count == int(self.output_queries):

@@ -22727,3 +22727,86 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because both evaluated checkpoints have `0` TP for lane, stop-line, and crosswalk on fixed val4.
 - Close this as predictor residual zero-init, anchor-query seed, denoise warm-start, vector object threshold, head-LR, epoch-count, train-batch scaling, and same current-family vector-query warm-start tuning.
 - Reopen current-family vector-query work only with a materially different set-query pretraining, assignment target, or dense proposal contract that first creates nonzero matched TP on fixed validation.
+
+## 379. 2026-05-31 Stop-line axis-bin endpoint profile head: endpoint distributions still recover no smoke TP
+
+Premise:
+
+- The previous scalar axis-profile segment head directly regressed center shift and half-length from sampled features along a predicted stop-line seed axis, but exact stop-line stayed below projection-competition.
+- This run changed the emit contract, not the profile radius/threshold: the axis profile predicts two endpoint-bin distributions, then decodes start/end with softargmax along the sampled axis.
+- The target is the known along-axis midpoint/extent bottleneck without copying data or re-ranking the same exported candidates.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Code changes:
+  - `model/net/stopline_head_line.py` adds `axis_profile_endpoint_logits` and changes the axis segment decoder to produce start/end offsets from learned endpoint-bin distributions;
+  - `tools/run_pv26_lane60_probe.py` adds `stopline_axis_bin_endpoint_profile_head`.
+- The existing axis segment set loss/runtime plumbing was reused; no new dependency was added.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train/val/test `326709 / 82641 / 20000`;
+  - no dataset copy was created.
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206`.
+- CUDA train:
+  - epochs `2`;
+  - train batches `64`;
+  - validation batches `4`;
+  - batch size `4`;
+  - device `cuda:0`;
+  - skipped steps `0`;
+  - best internal phase objective `0.6352254508` at epoch `1`.
+
+Fixed val4 result:
+
+| Checkpoint | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN | Phase objective |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| epoch-1 best | `0.5038` | `33 / 12 / 53` | `0.0000` | `0 / 3 / 2` | `0.4000` | `2 / 1 / 5` | `0.6134999926` |
+| epoch-2 last | `0.4885` | `32 / 13 / 54` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` | `0.6193998727` |
+
+Reference:
+
+- The retained current fixed val4 lane/cross-mask reference remains lane `0.5839`, TP/FP/FN `40 / 11 / 46`, stop-line `0.0000`, TP/FP/FN `0 / 3 / 2`, crosswalk `0.5455`, TP/FP/FN `3 / 1 / 4`.
+- This endpoint-bin profile contract still recovers no stop-line TP and sharply regresses lane.
+- Internal phase objective is not useful here because the fixed TP/FP/FN gate is negative.
+
+Artifacts:
+
+- Run summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/summary.json`.
+- Phase history:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/phase_4/history/epochs.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/phase_4/history/train_steps.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/phase_4/history/pcgrad_diagnostics.jsonl`.
+- Fixed val4 metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/analysis_exports/fixed_val4_epoch1_best/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/analysis_exports/fixed_val4_epoch1_best/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/analysis_exports/fixed_val4_epoch2_last/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_axis_bin_endpoint_profile_head_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_090206/analysis_exports/fixed_val4_epoch2_last/summary.json`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard outputs were pruned.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run size after cleanup is about `16M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/net/stopline_head_line.py tools/run_pv26_lane60_probe.py test/test_pv26_heads.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_heads.PV26HeadsTests.test_heads_produce_documented_output_shapes`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_axis_bin_endpoint_profile_head|experiment"`.
+- Real CUDA `2x64` train on the existing canonical root.
+- Fixed val4 `tools/evaluate_pv26_lane60_checkpoint.py` replay for epoch-1 best and epoch-2 last.
+
+Decision:
+
+- The endpoint-bin axis profile head is wired and trainable, but it is fixed-gate negative.
+- Exact-val128, broader-val512, and larger training are skipped because both evaluated checkpoints recover `0` stop-line TP and regress lane versus the retained fixed reference.
+- Close this as axis-profile endpoint-bin softargmax, endpoint-bin/profile-sample scaling, axis segment aux/verifier weight, score threshold, max-segment, head-LR, epoch-count, and train-batch scaling on the same axis-profile endpoint-distribution contract.
+- Reopen stop-line profile/segment work only with materially different candidate coverage or a true no-GT midpoint/extent signal that first moves fixed TP/FP/FN over the projection-comp reference path.
