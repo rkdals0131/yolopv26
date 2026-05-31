@@ -2496,6 +2496,18 @@ EXPERIMENTS["stopline_static_only_specialist"] = {
     },
 }
 
+EXPERIMENTS["stopline_copypaste_static_trunk"] = {
+    **EXPERIMENTS["stopline_static_only_specialist"],
+    "overrides": {
+        **EXPERIMENTS["stopline_static_only_specialist"]["overrides"],
+        "train_augmentation": True,
+        "train_augmentation_seed": 260531,
+        "train_aug_stopline_copy_paste_prob": 0.45,
+        "train_aug_stopline_copy_paste_margin_px": 14.0,
+        "train_aug_stopline_copy_paste_alpha": 0.85,
+    },
+}
+
 EXPERIMENTS["stopline_lane_context_fusion_static"] = {
     **EXPERIMENTS["stopline_static_only_specialist"],
     "overrides": {

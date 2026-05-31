@@ -24863,3 +24863,100 @@ Decision:
 - The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it as a breakthrough path.
 - Close focal-BCE area-ROI as focal gamma / focal-vs-BCE / quality-threshold / hidden-dim / max-append / train-batch scaling on the same dropped-candidate surface.
 - Reopen dropped-candidate rescue only with a materially stronger instance-quality/alignment signal or a different candidate generator whose exact TP gain is not paid for by larger FP growth.
+
+## 400. 2026-05-31 Stop-line copy-paste static-trunk smoke: augmentation signal still recovers no stop-line TP
+
+Context:
+
+- Prior real stop-line copy-paste feeding was smoke-negative, but it coexisted with ordinary lane-family training drift.
+- This run tests a narrower training/freeze-allocation premise:
+  - train only stop-line modules;
+  - keep the frozen detector trunk and non-stop heads in eval mode;
+  - enable the same real donor stop-line patch copy-paste augmentation;
+  - preserve the retained projection-comp runtime decode and hull crosswalk decode.
+- The goal is not to retune copy-paste probability/margin/alpha, but to isolate whether static-trunk stop-line-only training lets the copied dense signal survive.
+
+Implementation:
+
+- Updated `tools/run_pv26_lane60_probe.py`.
+- Added experiment preset `stopline_copypaste_static_trunk`.
+- It inherits `stopline_static_only_specialist`:
+  - `freeze_policy=lane_family_stopline_static_trunk`;
+  - `loss_weights.det/tl_attr/lane/crosswalk=0`;
+  - `loss_weights.stop_line=4.0`;
+  - `task_positive_task=stopline`;
+  - `task_positive_fraction=1.0`.
+- Added copy-paste overrides:
+  - `train_augmentation=True`;
+  - `train_augmentation_seed=260531`;
+  - `train_aug_stopline_copy_paste_prob=0.45`;
+  - `train_aug_stopline_copy_paste_margin_px=14.0`;
+  - `train_aug_stopline_copy_paste_alpha=0.85`.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - train/val/test split reported `326709 / 82641 / 20000`;
+  - no dataset copy was created.
+- Source run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512`.
+- Seed checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training command used:
+  - experiment `stopline_copypaste_static_trunk`;
+  - epochs `2`;
+  - train batches `64`;
+  - validation batches `4`;
+  - batch size `4`;
+  - device `cuda:0`.
+- Training completed with skipped steps `0`.
+- Internal training validation reached phase objective `0.6408025211` at epoch 1, but internal stop-line metric remained `0.0`; fixed val4 is the gate.
+
+Fixed val4 / epoch-1 best checkpoint:
+
+| Task | F1 | TP/FP/FN | Support |
+| --- | ---: | --- | ---: |
+| lane | `0.5507` | `38 / 14 / 48` | `86` |
+| stop_line | `0.0000` | `0 / 3 / 2` | `2` |
+| crosswalk | `0.5455` | `3 / 1 / 4` | `7` |
+
+Diagnosis:
+
+- Static-trunk isolation does not rescue the real copy-paste stop-line signal.
+- The fixed gate recovers `0` stop-line TP and emits `3` FP.
+- Lane remains below the retained fixed val4 lane reference, and crosswalk does not improve.
+- Exact-val128, broader-val512, and larger-range scaling are skipped because the first fixed gate recovered no stop-line TP.
+
+Artifacts:
+
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_copypaste_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_184751`.
+- Fixed val4 export:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_copypaste_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_184751/analysis_exports/fixed_val4_epoch1_best/metrics.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_copypaste_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_184751/analysis_exports/fixed_val4_epoch1_best/summary.json`.
+- Training history retained:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_copypaste_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_184751/phase_4/history/epochs.jsonl`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_copypaste_static_trunk_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_184751/phase_4/history/train_steps.jsonl`.
+
+Storage:
+
+- The run was about `674M` immediately after training because it contained checkpoints and TensorBoard events.
+- Negative checkpoints and TensorBoard output were pruned after fixed evaluation.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned.
+- Retained run size is about `7.3M`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/run_pv26_lane60_probe.py`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help | rg "stopline_copypaste_static_trunk"`.
+- CUDA `2x64` stop-line copy-paste static-trunk train on the existing canonical dataset root.
+- Fixed val4 replay with `tools/evaluate_pv26_lane60_checkpoint.py`.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data, but fixed val4 rejects it.
+- Close copy-paste static-trunk as freeze-policy / copy-paste probability / margin / alpha / seed / head-LR / epoch-count / train-batch scaling over this same augmentation signal.
+- Reopen augmented stop-line feeding only with a materially different candidate-generation, along-axis geometry, or no-GT quality signal that first improves fixed smoke TP/FP/FN.
