@@ -25078,3 +25078,130 @@ Decision:
 - Close this as a standalone stacked-feature/ensemble path over the same dropped-area append surface.
 - Do not repeat as feature-stack subset/order, ensemble size/mode, quality threshold, max-append cap, hidden dim, member seed, or train-batch scaling on the same candidate surface.
 - Reopen dropped-candidate rescue only with a different candidate generator, a TP-preserving model-side instance emitter, or a genuinely stronger no-GT instance-quality signal whose exact TP gain is not paid for by comparable FP growth.
+
+## 402. 2026-05-31 Stop-line temporal endpoint-envelope: oracle headroom improves, learned selector does not
+
+Context:
+
+- Prior sparse-affine temporal stop-line union selection was exact-negative as a deployable selector:
+  - learned union selector reached only `31 / 25 / 29`, F1 `0.5345`;
+  - oracle temporal union was `35 / 35 / 25`, F1 `0.5385`.
+- The allowed reopen condition was a materially different candidate source, not another selector threshold or train-batch sweep.
+- This probe changes the candidate geometry:
+  - sparse-affine aligned neighbor stop-lines are paired with retained projection-comp stop-lines;
+  - if the pair has compatible axis and normal position, a new `temporal_endpoint_envelope` candidate spans the min/max along-axis endpoint extent.
+
+Implementation:
+
+- Updated `tools/probe_pv26_stopline_temporal_candidates.py`.
+- Added opt-in `--temporal-envelope-enabled`.
+- Added endpoint-envelope construction:
+  - source flag `temporal_endpoint_envelope`;
+  - source-aware temporal features;
+  - envelope partner distance, normal distance, axis error, and length-gain features;
+  - union selector treats both neighbor and envelope rows as temporal-source candidates.
+- Updated `test/test_stopline_temporal_candidates.py`:
+  - covers endpoint-envelope generation;
+  - preserves existing temporal candidate and union-selector tests.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `temporal_alignment_mode=sparse_affine`;
+  - `temporal_envelope_enabled=1`;
+  - `union_selector_enabled=1`;
+  - `crosswalk_polygon_mode=hull`.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| baseline_plus_temporal_mlp | `0.5507` | `0.0000` | `0 / 6 / 2` | `0.5455` |
+| temporal_union_selector | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+
+Smoke candidate accounting:
+
+- train temporal candidates `297`, positives `125`;
+- train endpoint-envelope candidates `93`, positives `53`;
+- val temporal candidates `10`, positives `0`;
+- val endpoint-envelope candidates `4`, positives `0`.
+
+Exact train256 / val128:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4853` | `33 / 43 / 27` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5512` | `35 / 32 / 25` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.5345` | `31 / 25 / 29` | `0.5988` |
+
+Exact candidate accounting:
+
+- train temporal candidates `1223`, positives `437`;
+- train endpoint-envelope candidates `382`, positives `174`;
+- validation temporal candidates `134`, positives `29`;
+- validation endpoint-envelope candidates `36`, positives `8`;
+- validation union positives `35`.
+
+Diagnosis:
+
+- The new endpoint-envelope source did add candidate coverage:
+  - exact oracle baseline-plus-temporal improves from the prior sparse-affine oracle union `35 / 35 / 25`, F1 `0.5385`, to `35 / 32 / 25`, F1 `0.5512`.
+- The deployable learned path did not learn that selection:
+  - baseline-plus-temporal MLP added too many FP;
+  - temporal union selector emitted exactly the same TP/FP/FN shape as the prior sparse-affine temporal union selector, `31 / 25 / 29`.
+- Exact gain over primary projection-comp is not meaningful:
+  - `0.5333 -> 0.5345` by F1;
+  - TP drops `32 -> 31`, FP drops `28 -> 25`, FN rises `28 -> 29`.
+- Broader-val512 and train-batch scaling are skipped because the exact gate does not show a deployable TP recovery path.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train64_smoke_val4_20260531/summary.json`.
+- Smoke CSVs:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train64_smoke_val4_20260531/temporal_variants.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train64_smoke_val4_20260531/train_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train64_smoke_val4_20260531/val_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train64_smoke_val4_20260531/train_union_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train64_smoke_val4_20260531/val_union_candidate_features.csv`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train256_exact_val128_20260531/summary.json`.
+- Exact CSVs:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train256_exact_val128_20260531/temporal_variants.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train256_exact_val128_20260531/train_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train256_exact_val128_20260531/val_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train256_exact_val128_20260531/train_union_candidate_features.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_envelope_sparse_affine_train256_exact_val128_20260531/val_union_candidate_features.csv`.
+
+Storage:
+
+- Retained outputs are CSV/summary only:
+  - smoke export about `820K`;
+  - exact export about `3.6M`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 temporal endpoint-envelope verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 temporal endpoint-envelope verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data.
+- The endpoint-envelope candidate source is useful as oracle evidence, but not deployable under the current no-GT MLP/union selector.
+- Close this as sparse-affine temporal endpoint-envelope over retained+neighbor stop-line candidates.
+- Do not repeat it as envelope axis/normal gates, union top-k, MLP epoch/LR/hidden size, threshold-grid, or train-batch scaling.
+- Reopen temporal stop-line only with a materially different motion model or learned temporal segment emitter whose exact learned TP/FP/FN improves over primary projection-comp, not just oracle coverage.

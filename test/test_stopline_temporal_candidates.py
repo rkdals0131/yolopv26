@@ -9,6 +9,7 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     TEMPORAL_FEATURES,
     UNION_SCORE_KEY,
     _build_baseline_union_candidates,
+    _build_temporal_endpoint_envelopes,
     _build_temporal_candidates,
     _build_union_candidates,
     _phase_correlation_shift,
@@ -56,6 +57,8 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertTrue(np.isfinite(np.asarray(list(features.values()), dtype=np.float32)).all())
         self.assertGreater(features["temporal_neighbor_length"], 0.0)
         self.assertGreater(features["temporal_proposal_mean"], 0.0)
+        self.assertEqual(features["temporal_source_neighbor"], 0.0)
+        self.assertEqual(features["temporal_source_envelope"], 0.0)
         self.assertLess(features["temporal_alignment_dx_norm"], 0.0)
         self.assertGreater(features["temporal_alignment_dy_norm"], 0.0)
         self.assertAlmostEqual(features["temporal_alignment_response"], 0.5)
@@ -144,6 +147,40 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertTrue(candidates[0]["is_oracle_positive"])
         self.assertEqual(candidates[0]["neighbor_dataset_index"], 12)
+
+    def test_build_temporal_endpoint_envelope_extends_supported_axis(self) -> None:
+        mask = np.ones((76, 100), dtype=np.float32) * 0.5
+        center = np.ones((76, 100), dtype=np.float32) * 0.4
+        selector = np.ones((76, 100), dtype=np.float32) * 0.3
+        current = [{"points_xy": [[180.0, 300.0], [520.0, 300.0]], "score": 0.8}]
+        temporal = [
+            {
+                "points_xy": [[120.0, 302.0], [680.0, 302.0]],
+                "score": 0.7,
+                "source": "temporal_neighbor",
+                "neighbor_offset": -1,
+                "neighbor_dataset_index": 12,
+                "neighbor_rank": 1,
+            }
+        ]
+        gt = [{"points_xy": [[120.0, 301.0], [680.0, 301.0]]}]
+
+        envelopes = _build_temporal_endpoint_envelopes(
+            meta=_meta(),
+            temporal_candidates=temporal,
+            current_stop_lines=current,
+            gt_stop_lines=gt,
+            mask_probs=mask,
+            center_probs=center,
+            selector_probs=selector,
+        )
+
+        self.assertEqual(len(envelopes), 1)
+        self.assertEqual(envelopes[0]["source"], "temporal_endpoint_envelope")
+        self.assertGreater(envelopes[0]["length"], 500.0)
+        self.assertGreater(envelopes[0]["temporal_envelope_length_gain"], 0.0)
+        self.assertTrue(envelopes[0]["is_oracle_positive"])
+        self.assertEqual(envelopes[0]["temporal_source_envelope"], 1.0)
 
     def test_build_union_candidates_assigns_single_match_label(self) -> None:
         mask = np.ones((76, 100), dtype=np.float32) * 0.5
