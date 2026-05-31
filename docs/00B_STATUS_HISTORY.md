@@ -25392,3 +25392,103 @@ Decision:
 - Close this as conditional row auxiliary training from teacher-runtime targets.
 - Do not repeat it as `lane_family_query_target_source`, teacher-runtime threshold/variant, row-aux weight, seed-aux weight, dense-gate threshold, head LR, epoch count, train-batch scaling, or enabled/disabled runtime replay on the same conditional-row surface.
 - Reopen conditional row work only if the runtime candidate generator or instance-quality contract changes enough to produce fixed-smoke TP/FP/FN movement over the retained lane reference.
+
+## 405. 2026-05-31 Stop-line ORB homography temporal alignment: real motion model, learned selector still fails
+
+Situation:
+
+- The user asked not to stay over-safe and to include real train/eval rather than only codebase review.
+- Prior temporal stop-line variants closed raw neighbor replay, phase-correlation translation, sparse-affine alignment, endpoint-envelope, and dense-component candidate sources.
+- This reopened temporal stop-line only through a materially different no-GT motion model:
+  ORB feature matching plus RANSAC homography warps neighbor-frame candidates into the current raw frame.
+- The dataset was reused in place from `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_temporal_candidates.py`
+  - adds `--temporal-alignment-mode orb_homography`;
+  - estimates ORB/BFMatcher/RANSAC homography from neighbor image to current image;
+  - converts the small-frame homography to raw-frame coordinates;
+  - rejects large corner displacement by `--temporal-alignment-max-shift-frac`;
+  - applies homography in `_warp_stop_line_points`, with affine/translation fallback preserved.
+- `test/test_stopline_temporal_candidates.py`
+  - covers ORB homography alignment on a synthetic translated image;
+  - covers homography-based stop-line point warping.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5000` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| temporal_mlp | `0.5000` | `0.0000` | `0 / 6 / 2` | `0.5455` |
+| baseline_plus_temporal_mlp | `0.5000` | `0.0000` | `0 / 7 / 2` | `0.5455` |
+| temporal_union_selector | `0.5000` | `0.0000` | `0 / 4 / 2` | `0.5455` |
+
+Smoke candidate accounting:
+
+- train temporal candidates `685`, positives `247`;
+- validation temporal candidates `28`, positives `0`;
+- train dense-component candidates `305`, positives `84`;
+- validation dense-component candidates `14`, positives `0`;
+- ORB homography applied to `387` train candidate rows and `11` validation candidate rows.
+
+Exact train256 / val128:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5633` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5633` | `0.2712` | `16 / 42 / 44` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5633` | `0.4129` | `32 / 63 / 28` | `0.5988` |
+| oracle_temporal | `0.5633` | `0.4819` | `20 / 3 / 40` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5633` | `0.5224` | `35 / 39 / 25` | `0.5988` |
+| temporal_union_selector | `0.5633` | `0.4724` | `30 / 37 / 30` | `0.5988` |
+
+Exact candidate accounting:
+
+- train temporal candidates `2874`, positives `917`;
+- validation temporal candidates `386`, positives `56`;
+- train dense-component candidates `1290`, positives `350`;
+- validation dense-component candidates `217`, positives `19`;
+- train endpoint-envelope candidates `743`, positives `320`;
+- validation endpoint-envelope candidates `71`, positives `18`;
+- ORB homography applied to `1603` train candidate rows and `236` validation candidate rows.
+
+Diagnosis:
+
+- ORB homography is not a no-op. It is applied often enough on both train and validation.
+- Candidate oracle coverage exists, but the oracle upper bound is weaker than expected:
+  baseline-plus-oracle temporal reaches only `35 / 39 / 25`, F1 `0.5224`, which is below the primary projection-comp exact baseline `32 / 28 / 28`, F1 `0.5333`.
+- The deployable learned paths are clearly negative:
+  baseline-plus-temporal keeps TP flat and adds `+35` FP, while union selection loses retained TP and adds FP.
+- Broader-val512 is skipped because exact learned TP/FP/FN is below primary projection-comp.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_orb_homography_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_orb_homography_train256_exact_val128_20260531/summary.json`.
+- Each retained run keeps only CSV/summary artifacts.
+
+Storage:
+
+- Retained outputs are compact:
+  - smoke export about `1.9M`;
+  - exact export about `8.4M`.
+- No verifier checkpoint was saved.
+- No TensorBoard artifact was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 ORB-homography temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 ORB-homography temporal verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Close this as image-plane ORB/RANSAC homography temporal alignment plus learned MLP/union FP-control.
+- Do not repeat it as ORB feature count/threshold, match ratio, RANSAC reprojection threshold, alignment size, max-shift fraction, dense/envelope source toggles, MLP epoch/LR/hidden size, top-k/cap, threshold-grid, or train-batch scaling.
+- Reopen temporal stop-line only with ego/BEV alignment or a learned temporal segment emitter whose exact learned TP/FP/FN beats primary projection-comp.

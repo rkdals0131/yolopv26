@@ -13,6 +13,7 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     _build_temporal_endpoint_envelopes,
     _build_temporal_candidates,
     _build_union_candidates,
+    _orb_homography_alignment_from_arrays,
     _phase_correlation_shift,
     _select_union_stop_lines,
     _select_temporal_stop_lines,
@@ -129,6 +130,31 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertAlmostEqual(float(alignment["dy"]), 5.0, delta=1.5)
         self.assertGreater(float(alignment["response"]), 0.1)
 
+    def test_orb_homography_alignment_maps_moving_to_reference(self) -> None:
+        cv2 = __import__("cv2")
+        reference = np.zeros((96, 128), dtype=np.float32)
+        for y in range(12, 88, 11):
+            for x in range(10, 120, 13):
+                radius = 2 + int((x + y) % 3)
+                intensity = 0.45 + float((x * y) % 5) * 0.1
+                cv2.circle(reference, (x, y), radius, intensity, -1)
+        cv2.putText(reference, "PV26", (17, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 1.0, 2)
+        matrix = np.asarray([[1.0, 0.0, 7.0], [0.0, 1.0, -5.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        moving = cv2.warpPerspective(reference, matrix, (128, 96))
+
+        alignment = _orb_homography_alignment_from_arrays(
+            reference,
+            moving,
+            raw_hw=(96, 128),
+            size=(128, 96),
+            max_shift_frac=0.25,
+        )
+
+        self.assertEqual(float(alignment["applied"]), 1.0)
+        self.assertAlmostEqual(float(alignment["dx"]), -7.0, delta=3.0)
+        self.assertAlmostEqual(float(alignment["dy"]), 5.0, delta=3.0)
+        self.assertGreater(float(alignment["response"]), 0.05)
+
     def test_warp_stop_line_points_applies_affine_matrix(self) -> None:
         warped = _warp_stop_line_points(
             {"points_xy": [[10.0, 20.0], [30.0, 20.0]]},
@@ -140,6 +166,27 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
                 "m10": 0.0,
                 "m11": 1.0,
                 "m12": -3.0,
+            },
+            meta=_meta(),
+        )
+
+        self.assertEqual(warped[0], [15.0, 17.0])
+        self.assertEqual(warped[1], [35.0, 17.0])
+
+    def test_warp_stop_line_points_applies_homography_matrix(self) -> None:
+        warped = _warp_stop_line_points(
+            {"points_xy": [[10.0, 20.0], [30.0, 20.0]]},
+            alignment={
+                "applied": 1.0,
+                "h00": 1.0,
+                "h01": 0.0,
+                "h02": 5.0,
+                "h10": 0.0,
+                "h11": 1.0,
+                "h12": -3.0,
+                "h20": 0.0,
+                "h21": 0.0,
+                "h22": 1.0,
             },
             meta=_meta(),
         )

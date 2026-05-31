@@ -164,7 +164,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dataset-root", default="")
     parser.add_argument("--neighbor-offsets", default="-1,1")
-    parser.add_argument("--temporal-alignment-mode", choices=("none", "phase_corr", "sparse_affine"), default="none")
+    parser.add_argument(
+        "--temporal-alignment-mode",
+        choices=("none", "phase_corr", "sparse_affine", "orb_homography"),
+        default="none",
+    )
     parser.add_argument("--temporal-alignment-size", default="160x120")
     parser.add_argument("--temporal-alignment-max-shift-frac", type=float, default=0.15)
     parser.add_argument("--temporal-top-k", type=int, default=8)
@@ -286,6 +290,57 @@ def _corner_max_displacement(
     return float(np.linalg.norm(warped - corners, axis=1).max())
 
 
+def _raw_homography_from_small(
+    matrix: np.ndarray,
+    *,
+    raw_hw: tuple[int, int],
+    size: tuple[int, int],
+) -> tuple[float, float, float, float, float, float, float, float, float]:
+    small = np.asarray(matrix, dtype=np.float64).reshape(3, 3)
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    width, height = int(size[0]), int(size[1])
+    scale_x = float(raw_w) / max(float(width), 1.0)
+    scale_y = float(raw_h) / max(float(height), 1.0)
+    small_to_raw = np.diag([scale_x, scale_y, 1.0])
+    raw_to_small = np.diag([1.0 / max(scale_x, 1.0e-6), 1.0 / max(scale_y, 1.0e-6), 1.0])
+    raw_matrix = small_to_raw @ small @ raw_to_small
+    if abs(float(raw_matrix[2, 2])) > 1.0e-9:
+        raw_matrix = raw_matrix / float(raw_matrix[2, 2])
+    return tuple(float(value) for value in raw_matrix.reshape(-1))
+
+
+def _corner_max_displacement_homography(
+    matrix: tuple[float, float, float, float, float, float, float, float, float],
+    *,
+    raw_hw: tuple[int, int],
+) -> float:
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    corners = np.asarray(
+        [
+            [0.0, 0.0],
+            [max(float(raw_w - 1), 0.0), 0.0],
+            [0.0, max(float(raw_h - 1), 0.0)],
+            [max(float(raw_w - 1), 0.0), max(float(raw_h - 1), 0.0)],
+        ],
+        dtype=np.float64,
+    )
+    h00, h01, h02, h10, h11, h12, h20, h21, h22 = matrix
+    denom = h20 * corners[:, 0] + h21 * corners[:, 1] + h22
+    valid = np.abs(denom) > 1.0e-9
+    if not bool(valid.all()):
+        return float("inf")
+    warped = np.stack(
+        [
+            (h00 * corners[:, 0] + h01 * corners[:, 1] + h02) / denom,
+            (h10 * corners[:, 0] + h11 * corners[:, 1] + h12) / denom,
+        ],
+        axis=1,
+    )
+    if not bool(np.isfinite(warped).all()):
+        return float("inf")
+    return float(np.linalg.norm(warped - corners, axis=1).max())
+
+
 def _sparse_affine_alignment_from_arrays(
     reference: np.ndarray,
     moving: np.ndarray,
@@ -370,6 +425,105 @@ def _sparse_affine_alignment_from_arrays(
     }
 
 
+def _orb_homography_alignment_from_arrays(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    *,
+    raw_hw: tuple[int, int],
+    size: tuple[int, int],
+    max_shift_frac: float,
+) -> dict[str, float]:
+    try:
+        import cv2
+    except ImportError:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    ref = np.asarray(reference, dtype=np.float32)
+    mov = np.asarray(moving, dtype=np.float32)
+    if ref.shape != mov.shape or ref.ndim != 2 or ref.size == 0:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    ref_u8 = np.clip(ref * 255.0, 0.0, 255.0).astype(np.uint8)
+    mov_u8 = np.clip(mov * 255.0, 0.0, 255.0).astype(np.uint8)
+    orb = cv2.ORB_create(nfeatures=800, fastThreshold=7)
+    ref_keypoints, ref_descriptors = orb.detectAndCompute(ref_u8, None)
+    mov_keypoints, mov_descriptors = orb.detectAndCompute(mov_u8, None)
+    if (
+        ref_descriptors is None
+        or mov_descriptors is None
+        or len(ref_keypoints) < 12
+        or len(mov_keypoints) < 12
+    ):
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    matches = matcher.knnMatch(mov_descriptors, ref_descriptors, k=2)
+    good_matches = []
+    for pair in matches:
+        if len(pair) < 2:
+            continue
+        first, second = pair[0], pair[1]
+        if float(first.distance) <= 0.78 * float(second.distance):
+            good_matches.append(first)
+    if len(good_matches) < 10:
+        matcher_cross = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        good_matches = list(matcher_cross.match(mov_descriptors, ref_descriptors))
+        good_matches.sort(key=lambda item: float(item.distance))
+        good_matches = good_matches[: min(len(good_matches), 120)]
+    if len(good_matches) < 10:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    src = np.asarray([mov_keypoints[match.queryIdx].pt for match in good_matches], dtype=np.float32)
+    dst = np.asarray([ref_keypoints[match.trainIdx].pt for match in good_matches], dtype=np.float32)
+    matrix, inliers = cv2.findHomography(
+        src,
+        dst,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=3.5,
+        maxIters=1000,
+        confidence=0.995,
+    )
+    if matrix is None or inliers is None:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    inlier_mask = inliers.reshape(-1).astype(bool)
+    inlier_count = int(inlier_mask.sum())
+    if inlier_count < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    src_h = np.concatenate([src, np.ones((src.shape[0], 1), dtype=np.float32)], axis=1)
+    projected_h = (np.asarray(matrix, dtype=np.float64) @ src_h.T).T
+    denom = projected_h[:, 2:3]
+    valid = np.abs(denom[:, 0]) > 1.0e-9
+    if not bool(valid.any()):
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    projected = np.full((projected_h.shape[0], 2), np.nan, dtype=np.float64)
+    projected[valid] = projected_h[valid, :2] / denom[valid]
+    valid_inliers = inlier_mask & np.isfinite(projected).all(axis=1)
+    if int(valid_inliers.sum()) < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    errors = np.linalg.norm(projected - dst, axis=1)
+    median_error = float(np.median(errors[valid_inliers]))
+    inlier_fraction = float(inlier_count) / max(float(src.shape[0]), 1.0)
+    response = float(np.clip(inlier_fraction / (1.0 + median_error / 4.0), 0.0, 1.0))
+    raw_matrix = _raw_homography_from_small(matrix, raw_hw=raw_hw, size=size)
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    max_displacement = _corner_max_displacement_homography(raw_matrix, raw_hw=raw_hw)
+    max_allowed = float(max(max(raw_w, raw_h), 1)) * float(max_shift_frac)
+    if max_displacement > max_allowed:
+        return {"dx": 0.0, "dy": 0.0, "response": response, "applied": 0.0}
+    h00, h01, h02, h10, h11, h12, h20, h21, h22 = raw_matrix
+    return {
+        "dx": float(h02),
+        "dy": float(h12),
+        "response": response,
+        "applied": 1.0,
+        "h00": float(h00),
+        "h01": float(h01),
+        "h02": float(h02),
+        "h10": float(h10),
+        "h11": float(h11),
+        "h12": float(h12),
+        "h20": float(h20),
+        "h21": float(h21),
+        "h22": float(h22),
+    }
+
+
 def _temporal_alignment(
     *,
     current_meta: dict[str, Any],
@@ -380,17 +534,25 @@ def _temporal_alignment(
 ) -> dict[str, float]:
     if str(mode) == "none":
         return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
-    if str(mode) not in {"phase_corr", "sparse_affine"}:
+    if str(mode) not in {"phase_corr", "sparse_affine", "orb_homography"}:
         raise ValueError(f"unknown temporal alignment mode: {mode}")
     current_path = str(current_meta.get("image_path", ""))
     neighbor_path = str(neighbor_meta.get("image_path", ""))
     if not current_path or not neighbor_path:
         return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
     try:
-        if str(mode) == "sparse_affine":
+        if str(mode) in {"sparse_affine", "orb_homography"}:
             current_gray = _read_alignment_gray(current_path, size=size, windowed=False)
             neighbor_gray = _read_alignment_gray(neighbor_path, size=size, windowed=False)
             raw_h, raw_w = int(current_meta.get("raw_hw", (1, 1))[0]), int(current_meta.get("raw_hw", (1, 1))[1])
+            if str(mode) == "orb_homography":
+                return _orb_homography_alignment_from_arrays(
+                    current_gray,
+                    neighbor_gray,
+                    raw_hw=(raw_h, raw_w),
+                    size=size,
+                    max_shift_frac=float(max_shift_frac),
+                )
             return _sparse_affine_alignment_from_arrays(
                 current_gray,
                 neighbor_gray,
@@ -418,6 +580,36 @@ def _warp_stop_line_points(line: dict[str, Any], *, alignment: dict[str, float],
     points = np.asarray(line.get("points_xy", []), dtype=np.float32).reshape(-1, 2)
     if points.shape[0] == 0:
         return []
+    homography_required = ("h00", "h01", "h02", "h10", "h11", "h12", "h20", "h21", "h22")
+    if all(key in alignment for key in homography_required):
+        h00, h01, h02, h10, h11, h12, h20, h21, h22 = (float(alignment[key]) for key in homography_required)
+        denom = h20 * points[:, 0] + h21 * points[:, 1] + h22
+        valid = np.abs(denom) > 1.0e-9
+        if not bool(valid.all()):
+            return _translate_stop_line_points(
+                line,
+                dx=float(alignment.get("dx", 0.0)),
+                dy=float(alignment.get("dy", 0.0)),
+                meta=meta,
+            )
+        warped = np.stack(
+            [
+                (h00 * points[:, 0] + h01 * points[:, 1] + h02) / denom,
+                (h10 * points[:, 0] + h11 * points[:, 1] + h12) / denom,
+            ],
+            axis=1,
+        )
+        if not bool(np.isfinite(warped).all()):
+            return _translate_stop_line_points(
+                line,
+                dx=float(alignment.get("dx", 0.0)),
+                dy=float(alignment.get("dy", 0.0)),
+                meta=meta,
+            )
+        raw_h, raw_w = int(meta.get("raw_hw", (1, 1))[0]), int(meta.get("raw_hw", (1, 1))[1])
+        warped[:, 0] = np.clip(warped[:, 0], 0.0, max(float(raw_w - 1), 0.0))
+        warped[:, 1] = np.clip(warped[:, 1], 0.0, max(float(raw_h - 1), 0.0))
+        return [[float(point[0]), float(point[1])] for point in warped.tolist()]
     required = ("m00", "m01", "m02", "m10", "m11", "m12")
     if not all(key in alignment for key in required):
         return _translate_stop_line_points(
