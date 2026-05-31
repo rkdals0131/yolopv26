@@ -87,7 +87,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional canonical dataset root. If omitted, infer from source-run/scenario paths.",
     )
-    parser.add_argument("--lane-flip-variant", choices=("baseline", "flip_centerline_avg"), default="flip_centerline_avg")
+    parser.add_argument(
+        "--lane-flip-variant",
+        choices=("baseline", "flip_centerline_avg", "flip_centerline_avg_lane_cross_comp050"),
+        default="flip_centerline_avg",
+    )
     parser.add_argument("--lane-obj-threshold", type=float, default=None)
     parser.add_argument("--lane-segfirst-track-mode", default=None)
     parser.add_argument("--lane-segfirst-max-row-gap", type=int, default=None)

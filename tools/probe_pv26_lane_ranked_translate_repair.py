@@ -92,7 +92,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repair-topk", type=int, default=0, help="Global repair budget. 0 uses val-size-scaled top500/2048.")
     parser.add_argument(
         "--repair-mode",
-        choices=("translate_x", "local_2d_snap", "affine_2d_snap", "component_row_project", "row_profile_softargmax"),
+        choices=(
+            "translate_x",
+            "local_2d_snap",
+            "affine_2d_snap",
+            "component_row_project",
+            "row_profile_softargmax",
+            "ridge_path_dp",
+        ),
         default="translate_x",
     )
     parser.add_argument("--translation-radius", type=int, default=4)
@@ -434,6 +441,107 @@ def row_profile_project_points_to_centerline(
     return _map_points_to_raw(repaired, meta, map_hw), repair_stats
 
 
+def _project_points_to_ridge_path(
+    map_points: np.ndarray,
+    centerline: np.ndarray,
+    support: np.ndarray,
+    *,
+    radius: int,
+    smoothness_weight: float = 0.35,
+) -> tuple[np.ndarray, dict[str, float]]:
+    center_values = np.nan_to_num(np.asarray(centerline, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    support_values = np.nan_to_num(np.asarray(support, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    points = np.asarray(map_points, dtype=np.float32).reshape(-1, 2)
+    if center_values.ndim != 2 or support_values.shape != center_values.shape or points.shape[0] == 0:
+        return points.copy(), {
+            "moved_points": 0.0,
+            "mean_move": 0.0,
+            "max_move": 0.0,
+            "mean_path_score": 0.0,
+            "mean_center_gain": 0.0,
+        }
+
+    height, width = int(center_values.shape[0]), int(center_values.shape[1])
+    search_radius = max(1, int(radius))
+    candidate_xs: list[np.ndarray] = []
+    unary_scores: list[np.ndarray] = []
+    original_scores: list[float] = []
+    for x_value, y_value in points:
+        row = min(max(int(round(float(y_value))), 0), height - 1)
+        center_x = min(max(int(round(float(x_value))), 0), width - 1)
+        start = max(0, center_x - search_radius)
+        end = min(width, center_x + search_radius + 1)
+        xs = np.arange(start, end, dtype=np.float32)
+        center_profile = center_values[row, start:end].astype(np.float32)
+        support_profile = support_values[row, start:end].astype(np.float32)
+        move_penalty = 0.015 * np.abs(xs - float(center_x)) / max(float(search_radius), 1.0)
+        scores = center_profile + 0.25 * support_profile - move_penalty.astype(np.float32)
+        candidate_xs.append(xs)
+        unary_scores.append(scores.astype(np.float32))
+        original_scores.append(float(center_values[row, center_x] + 0.25 * support_values[row, center_x]))
+
+    dp_scores: list[np.ndarray] = [unary_scores[0].copy()]
+    backpointers: list[np.ndarray] = [np.full(unary_scores[0].shape, -1, dtype=np.int32)]
+    for point_index in range(1, len(points)):
+        previous_xs = candidate_xs[point_index - 1]
+        current_xs = candidate_xs[point_index]
+        original_step = float(points[point_index, 0] - points[point_index - 1, 0])
+        current_scores = np.full(current_xs.shape, -1.0e9, dtype=np.float32)
+        current_back = np.zeros(current_xs.shape, dtype=np.int32)
+        for current_index, current_x in enumerate(current_xs):
+            continuity_error = np.abs((float(current_x) - previous_xs.astype(np.float32)) - original_step)
+            transition = dp_scores[-1] - float(smoothness_weight) * continuity_error / max(float(search_radius), 1.0)
+            best_previous = int(np.argmax(transition))
+            current_scores[current_index] = float(unary_scores[point_index][current_index] + transition[best_previous])
+            current_back[current_index] = best_previous
+        dp_scores.append(current_scores)
+        backpointers.append(current_back)
+
+    selected_indices = [0] * len(points)
+    selected_indices[-1] = int(np.argmax(dp_scores[-1]))
+    for point_index in range(len(points) - 1, 0, -1):
+        selected_indices[point_index - 1] = int(backpointers[point_index][selected_indices[point_index]])
+
+    repaired = points.copy()
+    path_scores: list[float] = []
+    for point_index, selected_index in enumerate(selected_indices):
+        x = float(candidate_xs[point_index][selected_index])
+        repaired[point_index, 0] = x
+        row = min(max(int(round(float(points[point_index, 1]))), 0), height - 1)
+        col = min(max(int(round(x)), 0), width - 1)
+        path_scores.append(float(center_values[row, col] + 0.25 * support_values[row, col]))
+
+    moves = np.linalg.norm(repaired - points, axis=1).astype(np.float32)
+    path_values = np.asarray(path_scores, dtype=np.float32)
+    original_values = np.asarray(original_scores, dtype=np.float32)
+    return repaired, {
+        "moved_points": float((moves > 1.0e-3).sum()),
+        "mean_move": float(moves.mean()) if moves.size else 0.0,
+        "max_move": float(moves.max()) if moves.size else 0.0,
+        "mean_path_score": float(path_values.mean()) if path_values.size else 0.0,
+        "mean_center_gain": float((path_values - original_values).mean()) if path_values.size else 0.0,
+    }
+
+
+def ridge_path_project_points_to_dense_lane(
+    points_xy: list[list[float]],
+    *,
+    centerline: np.ndarray,
+    support: np.ndarray,
+    meta: dict[str, Any],
+    radius: int,
+) -> tuple[list[list[float]], dict[str, float]]:
+    map_hw = (int(centerline.shape[0]), int(centerline.shape[1]))
+    map_points = _raw_points_to_map(points_xy, meta, map_hw)
+    repaired, repair_stats = _project_points_to_ridge_path(
+        map_points,
+        centerline,
+        support,
+        radius=radius,
+    )
+    return _map_points_to_raw(repaired, meta, map_hw), repair_stats
+
+
 def component_project_points_to_centerline(
     points_xy: list[list[float]],
     *,
@@ -701,6 +809,7 @@ def main() -> int:
             for sample_batch_index, (sample_pred, sample_meta) in enumerate(zip(batch_predictions, meta)):
                 maps = lane_segfirst_prediction_maps(postprocess_predictions, batch_index=sample_batch_index)
                 centerline = _as_channel(maps["centerline_core"])
+                support = _as_channel(maps["support"])
                 pred_lanes = list(sample_pred.get("lanes", []))
                 for pred_index, pred_lane in enumerate(pred_lanes):
                     features = _prediction_features(pred_index, pred_lanes, maps=maps, meta=sample_meta)
@@ -729,6 +838,14 @@ def main() -> int:
                         translated_points, repair_stats = row_profile_project_points_to_centerline(
                             list(pred_lane.get("points_xy", [])),
                             centerline=centerline,
+                            meta=sample_meta,
+                            radius=int(args.translation_radius),
+                        )
+                    elif str(args.repair_mode) == "ridge_path_dp":
+                        translated_points, repair_stats = ridge_path_project_points_to_dense_lane(
+                            list(pred_lane.get("points_xy", [])),
+                            centerline=centerline,
+                            support=support,
                             meta=sample_meta,
                             radius=int(args.translation_radius),
                         )

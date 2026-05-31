@@ -9,6 +9,7 @@ from tools.probe_pv26_lane_ranked_translate_repair import (
     _auto_repair_topk,
     _fit_affine_map_points_to_targets,
     _project_points_to_row_profile,
+    _project_points_to_ridge_path,
     _project_points_to_component_rows,
     _snap_map_points_to_local_centerline,
     parse_args,
@@ -83,6 +84,22 @@ class LaneRankedTranslateRepairTests(unittest.TestCase):
         self.assertAlmostEqual(repaired[0, 1], 2.0)
         self.assertEqual(stats["moved_points"], 1.0)
         self.assertGreater(stats["mean_profile_mass"], 0.0)
+
+    def test_ridge_path_dp_prefers_coherent_dense_lane_path(self) -> None:
+        centerline = np.zeros((6, 9), dtype=np.float32)
+        support = np.zeros((6, 9), dtype=np.float32)
+        centerline[1, 4] = 0.8
+        centerline[2, 4] = 0.8
+        centerline[3, 4] = 0.8
+        support[1:4, 4] = 0.8
+        centerline[2, 0] = 1.0
+        points = np.asarray([[2.0, 1.0], [2.0, 2.0], [2.0, 3.0]], dtype=np.float32)
+
+        repaired, stats = _project_points_to_ridge_path(points, centerline, support, radius=4)
+
+        self.assertTrue(np.allclose(repaired[:, 0], np.asarray([4.0, 4.0, 4.0], dtype=np.float32)))
+        self.assertEqual(stats["moved_points"], 3.0)
+        self.assertGreater(stats["mean_center_gain"], 0.0)
 
     def test_task_mask_lane_variant_is_accepted(self) -> None:
         with patch(

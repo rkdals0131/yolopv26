@@ -23797,3 +23797,138 @@ Decision:
 - Broader-val512 is skipped because exact TP gain still comes with more FP than TP.
 - Close this as same dropped-candidate area-ROI verifier plus row-local peak-alignment features.
 - Reopen dropped-candidate rescue only with a materially different candidate generator or TP-preserving instance-quality contract, not row-peak radius, verifier threshold, max-append, hidden-size, or train-batch scaling.
+
+## 390. 2026-05-31 Lane ridge-path DP repair: coherent dense-ridge snapping still damages exact lane metrics
+
+Premise:
+
+- Previous lane repair attempts showed oracle headroom, but pointwise translation/snap/affine/component/row-profile repair families did not move TP/FP/FN safely.
+- This branch tests a materially different no-GT geometry repair:
+  - train a repairability ranker on train-split unmatched row-scan predictions;
+  - select runtime candidate lanes by no-GT dense/shape features;
+  - repair each selected lane by dynamic programming over a local dense centerline/support window, preserving coherent row-to-row x-step instead of snapping each point independently.
+- The goal is FP-to-TP conversion on retained lane predictions, not dropped-candidate append.
+
+Code changes:
+
+- `tools/probe_pv26_lane_ranked_translate_repair.py`:
+  - added `repair_mode=ridge_path_dp`;
+  - added `_project_points_to_ridge_path(...)`;
+  - added `ridge_path_project_points_to_dense_lane(...)`;
+  - uses `centerline_core + 0.25 * support` as unary evidence with a continuity penalty along the polyline.
+- `tools/probe_pv26_lane_fn_recovery_audit.py`:
+  - allows `lane_flip_variant=flip_centerline_avg_lane_cross_comp050` so train-side repairability audit matches the retained lane runtime path.
+- `test/test_lane_ranked_translate_repair.py`:
+  - added coverage that the DP repair prefers a coherent dense ridge over an isolated stronger single-row peak.
+
+Initial train64 ranker / fixed val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| train64 ranked ridge-path repair | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+
+Train64 ranker stats:
+
+- Input artifact:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/analysis_exports/lane_fn_recovery_audit_train64_epoch2/lane_unmatched_prediction_repair_rows.csv`.
+- Broad repair label:
+  - row count `590`;
+  - positive count `47`;
+  - OOF AUC/AP `0.4412 / 0.0679`.
+- Smoke selected `4` candidates, moved `3`, and moved `16` points, but lane TP/FP/FN stayed flat.
+
+Larger train256 comp050 audit/ranker:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Audit split/batches: train split, `256` batches, retained `flip_centerline_avg_lane_cross_comp050` lane path.
+- Audit baseline on the train slice:
+  - lane `625 / 2099 / 766`, F1 `0.3038`;
+  - stop-line F1 `0.1705`;
+  - crosswalk F1 `0.2360`.
+- Unmatched prediction rows:
+  - `2099` total;
+  - `176` `repairable_le120_any_center`;
+  - `66` `repairable_le80_center050`.
+- Broad repair label ranker:
+  - OOF AUC/AP `0.6286 / 0.1506`;
+  - positive-count budget replay selected `26 / 176` repairable candidates;
+  - oracle-like all-row replay would only reach lane F1 `0.5846` under no-new-FP assumptions, still below `0.60`.
+
+Train256 ranker / fixed val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| train256 ranked ridge-path repair | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+
+Smoke stats:
+
+- Candidate count `51`.
+- Selected count `4`.
+- Selected moved count `4`.
+- Selected moved points `27`.
+- Metric movement: none.
+
+Train256 ranker / fixed exact val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.4483` | `0.5988` |
+| ranked ridge-path repair | `0.5883` | `1201 / 492 / 1189` | `0.4483` | `0.5988` |
+
+Exact stats:
+
+- Candidate count `1693`.
+- Selected count `125`.
+- Selected moved count `125`.
+- Selected moved points `754`.
+- Delta:
+  - lane F1 `-0.0005`;
+  - TP `-1`;
+  - FP `+1`;
+  - FN `+1`.
+- Stop-line and crosswalk are unchanged because this replay only modifies lane geometry.
+
+Artifacts:
+
+- Train256 audit summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_fn_recovery_audit_train256_comp050_epoch2_20260531/summary.json`.
+- Train64 ranker summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_ridge_path_repair_ranker_train64_20260531/summary.json`.
+- Train256 ranker summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_ridge_path_repair_ranker_train256_comp050_20260531/summary.json`.
+- Train64 smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_ridge_path_repair_trainrank64_smoke_val4_20260531/summary.json`.
+- Train256 smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_ridge_path_repair_trainrank256_comp050_smoke_val4_20260531/summary.json`.
+- Train256 exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_ridge_path_repair_trainrank256_comp050_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- Retained artifacts are CSV/summary only:
+  - train256 audit about `4.0M`;
+  - each ranker directory about `52K`;
+  - smoke directories about `16K` each;
+  - exact directory about `60K`.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_ranked_translate_repair.py test/test_lane_ranked_translate_repair.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_ranked_translate_repair`.
+- CUDA train256 lane FN/recovery audit.
+- Train256 repairability ranker training.
+- CUDA fixed val4 and exact-val128 ridge-path repair evaluation.
+
+Decision:
+
+- Larger train exposure improves ranker separability versus train64, but the production no-GT repair still does not convert selected lanes into metric matches.
+- Exact selected `125` repaired lanes and moved all of them, yet lost one TP and added one FP.
+- Broader-val512 is skipped because exact is negative.
+- Close this branch as `ranked_ridge_path_dp` over the current retained lane candidate surface.
+- Do not repeat this as ridge radius, smoothness weight, repair topK, ranker-label, train64/train256 exposure, or exact/broader budget scaling unless the candidate generator or learned geometry signal changes materially.
