@@ -22810,3 +22810,79 @@ Decision:
 - Exact-val128, broader-val512, and larger training are skipped because both evaluated checkpoints recover `0` stop-line TP and regress lane versus the retained fixed reference.
 - Close this as axis-profile endpoint-bin softargmax, endpoint-bin/profile-sample scaling, axis segment aux/verifier weight, score threshold, max-segment, head-LR, epoch-count, and train-batch scaling on the same axis-profile endpoint-distribution contract.
 - Reopen stop-line profile/segment work only with materially different candidate coverage or a true no-GT midpoint/extent signal that first moves fixed TP/FP/FN over the projection-comp reference path.
+
+## 380. 2026-05-31 Stop-line dense-map set decoder: candidate coverage appears, FP control collapses
+
+Premise:
+
+- Prior stop-line work repeatedly failed when it only re-ranked current candidates, but dense maps still contain stop-line support signal.
+- This branch tests a different decoder-side contract: freeze the retained checkpoint, read full dense stop-line maps, and train a small structured set decoder to emit stop-line segments directly.
+- This is not a projection-comp selector sweep. The decoder consumes pooled `mask / center / selector / row / x / axis-valid` dense maps and predicts `2` segment queries with objectness and endpoints.
+
+Implementation:
+
+- Added `tools/probe_pv26_stopline_dense_map_set_decoder.py`.
+- Added `test/test_stopline_dense_map_set_decoder.py`.
+- Runtime uses no GT:
+  - GT is used only for train-split set-decoder labels and validation metrics;
+  - validation emits decoder-only and baseline-plus-decoder stop-line variants;
+  - lane and crosswalk stay on the retained runtime path.
+- No new dependency was added.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Smoke run:
+  - output: `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_set_decoder_train64_smoke_val4_20260531`;
+  - train examples `256`;
+  - selected decoder predictions `4`.
+- Exact run:
+  - output: `runs/pv26_exhaustive_od_lane_train/stopline_dense_map_set_decoder_train256_exact_val128_20260531`;
+  - train examples `1024`;
+  - selected decoder predictions `69`.
+
+Fixed val4 result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline projection-comp | `0.0000` | `0 / 3 / 2` | `0.5839` | `0.5455` |
+| decoder-only | `0.0000` | `0 / 4 / 2` | `0.5839` | `0.5455` |
+| baseline + decoder | `0.0000` | `0 / 7 / 2` | `0.5839` | `0.5455` |
+
+Exact-val128 result:
+
+| Variant | Stop-line F1 | Stop TP/FP/FN | Lane F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline projection-comp | `0.5333` | `32 / 28 / 28` | `0.5888` | `0.5988` |
+| decoder-only | `0.1395` | `9 / 60 / 51` | `0.5888` | `0.5988` |
+| baseline + decoder | `0.3696` | `34 / 90 / 26` | `0.5888` | `0.5988` |
+
+Interpretation:
+
+- The larger exact gate confirms the decoder can recover a small amount of new stop-line recall (`+2` TP over baseline).
+- The same gate adds `+62` FP, so precision collapses and F1 falls far below the projection-comp exact reference.
+- This is useful negative evidence: dense-map set decoding without a stronger segment-quality/FP-control target creates candidates, but not deployable candidates.
+
+Storage:
+
+- No checkpoint/model artifact was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `28K`;
+  - exact directory about `80K`.
+- Temporary root `yolo26s.pt` was pruned.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_dense_map_set_decoder.py test/test_stopline_dense_map_set_decoder.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_dense_map_set_decoder`.
+- CUDA train64/fixed-val4 dense-map set decoder run.
+- CUDA train256/exact-val128 dense-map set decoder run.
+
+Decision:
+
+- Close pooled dense-map learned set decoding as MLP hidden-size, query-count, object-threshold, max-output cap, decoder epoch/LR, or train-batch scaling on the same frozen dense-map feature surface.
+- Broader-val512 is skipped because exact-val128 regresses stop-line F1 `0.5333 -> 0.3696`.
+- Reopen this family only with a materially stronger segment-quality target, calibrated FP-control signal, or model-side candidate generator that first beats projection-comp exact TP/FP/FN.
