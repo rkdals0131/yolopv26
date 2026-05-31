@@ -25845,3 +25845,95 @@ Decision:
 - Close this as sparse-affine temporal pair-consensus candidate generation plus learned MLP/union FP-control.
 - Do not repeat it as pair axis/normal gates, pair length-gain threshold, pair cap, source flag/feature inclusion, temporal top-k/cap, MLP epoch/LR/hidden size, threshold-grid, union threshold, or train-batch scaling.
 - Reopen temporal stop-line only with a true ego/BEV alignment signal or a learned temporal segment emitter whose exact oracle and learned TP/FP/FN both materially beat primary projection-comp.
+
+## 409. 2026-05-31 Lane area-ROI gap-fill union selector: set-occupancy support still admits too many FP
+
+Situation:
+
+- The lane area-ROI surface still has real recall headroom, but repeated append/ranker/verifier variants have failed mainly on FP-control.
+- This branch tested a narrower no-GT set-occupancy signal rather than another scalar threshold:
+  preserve retained lanes, then allow a dropped-area candidate only when its row-wise x positions fill a lateral gap in the retained lane set.
+- Stop-line and crosswalk runtime behavior were unchanged, and `crosswalk_polygon_mode=hull` stayed fixed.
+
+Implementation:
+
+- `tools/probe_pv26_lane_area_roi_verifier.py`
+  - adds `--gap-fill-features`;
+  - adds `select_topk_union_gapfill`;
+  - computes 14 no-GT gap-fill features from row-wise candidate x positions versus retained lane x positions;
+  - preserves retained lanes and appends at most `--max-appends-per-sample` gap-supported dropped candidates;
+  - exports `lane_gap_fill_support`, `gap_fill_support`, and `rank_score` for replay auditing.
+- `test/test_lane_area_roi_verifier.py`
+  - verifies centered gap candidates score above duplicate-like candidates;
+  - verifies gap-fill integration keeps retained lanes, appends supported dropped rows, and rejects unsupported high-score rows.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `lane_flip_variant=flip_centerline_avg_lane_cross_comp050`;
+  - `candidate_source=union_pool`;
+  - `candidate_integration_mode=select_topk_union_gapfill`;
+  - `max_appends_per_sample=1`;
+  - `crosswalk_polygon_mode=hull`.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| gap-fill union | `0.5676` | `42 / 20 / 44` | `0.0000` | `0.5455` |
+
+Smoke accounting:
+
+- train examples `1166`:
+  - positives `525`;
+  - negatives `641`.
+- validation candidates `81`.
+- selected candidates `62`.
+- selected oracle-positive candidates `43`.
+- dropped-area selected candidates:
+  - total `11`;
+  - oracle-positive `3`;
+  - negative `8`;
+  - gap support min/mean/max `0.5502 / 0.7358 / 0.9948`.
+
+Diagnosis:
+
+- The new signal is not a no-op: it admitted dropped-area candidates and recovered `+2` lane TP.
+- It is negative as a deployable lane-recall path because FP rose `+9`, reducing lane F1 by `-0.0164`.
+- High gap-fill support did not separate dropped-area TP from FP on the first gate.
+- Exact-val128 and broader-val512 are skipped because smoke failed the FP-control gate.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_gapfill_union_train64_smoke_val4_20260531/summary.json`.
+- The run also keeps compact train/val/replay CSV exports.
+
+Storage:
+
+- Retained output is compact:
+  - smoke export about `108K`.
+- No verifier checkpoint was saved.
+- No TensorBoard artifact was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after the run.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/fixed-val4 gap-fill union verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Close this as lane area-ROI gap-fill set-occupancy union selection.
+- Do not repeat it as gap support threshold, row sample count, edge/exterior weight, max append count, MLP epoch/LR/hidden size, or train-batch scaling on the same dropped-area union-pool surface.
+- Reopen lane area-ROI only with a materially different candidate generator, learned instance emitter, or verifier signal that first improves fixed smoke TP/FP/FN with FP growth below TP gain.

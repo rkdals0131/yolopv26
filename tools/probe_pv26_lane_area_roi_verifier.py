@@ -97,6 +97,7 @@ def parse_args() -> argparse.Namespace:
             "suppress_low_quality",
             "select_topk_union",
             "select_topk_union_geometry",
+            "select_topk_union_gapfill",
         ),
         default="append",
         help=(
@@ -110,7 +111,9 @@ def parse_args() -> argparse.Namespace:
             "--max-appends-per-sample. select_topk_union_geometry keeps the same "
             "fixed-count contract but applies a retained-lane safety bias plus "
             "a set-level lane geometry support gate before dropped candidates "
-            "can enter the set."
+            "can enter the set. select_topk_union_gapfill preserves retained "
+            "lanes while admitting only candidates that fill a lateral gap in "
+            "the retained lane set."
         ),
     )
     parser.add_argument("--replace-nearest-max-distance-px", type=float, default=120.0)
@@ -167,6 +170,15 @@ def parse_args() -> argparse.Namespace:
             "of the same sample. This tests whether a retained/dropped lane is "
             "geometrically stable under the current flip-TTA contract rather "
             "than only scoring its local dense evidence."
+        ),
+    )
+    parser.add_argument(
+        "--gap-fill-features",
+        action="store_true",
+        help=(
+            "Append no-GT set-occupancy features that test whether a candidate "
+            "fills a lateral gap between retained lane instances. This is a "
+            "set-level instance-existence signal, not a score-threshold sweep."
         ),
     )
     parser.add_argument("--verifier-epochs", type=int, default=40)
@@ -857,6 +869,162 @@ def _lane_set_geometry_support(candidate: dict[str, Any], retained_lanes: list[d
     return float(np.clip(max(scores), 0.0, 1.0))
 
 
+def _raw_width_from_meta(meta: Any) -> float:
+    if isinstance(meta, dict):
+        raw_hw = meta.get("raw_hw") or meta.get("network_hw") or ()
+        if isinstance(raw_hw, (list, tuple)) and len(raw_hw) >= 2:
+            try:
+                return max(float(raw_hw[1]), 1.0)
+            except (TypeError, ValueError):
+                pass
+    return 800.0
+
+
+def _lane_x_at_y(points: np.ndarray, y_value: float) -> float | None:
+    points = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] == 0:
+        return None
+    if points.shape[0] == 1:
+        return float(points[0, 0]) if abs(float(points[0, 1]) - float(y_value)) <= 1.0 else None
+    ordered = points[np.argsort(points[:, 1])]
+    y = float(y_value)
+    for start, end in zip(ordered[:-1], ordered[1:]):
+        y0, y1 = float(start[1]), float(end[1])
+        if y < min(y0, y1) - 1.0e-6 or y > max(y0, y1) + 1.0e-6:
+            continue
+        if abs(y1 - y0) <= 1.0e-6:
+            if abs(y - y0) <= 1.0:
+                return float(0.5 * (float(start[0]) + float(end[0])))
+            continue
+        t = (y - y0) / (y1 - y0)
+        return float(float(start[0]) + t * (float(end[0]) - float(start[0])))
+    return None
+
+
+def _lane_gap_fill_features(
+    candidate: dict[str, Any],
+    retained_lanes: list[dict[str, Any]],
+    *,
+    meta: Any | None = None,
+) -> np.ndarray:
+    """Runtime-only set-occupancy features for missing lateral lane slots."""
+
+    candidate_points = _polyline_array(candidate)
+    if candidate_points.shape[0] < 2 or not retained_lanes:
+        return np.asarray(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+            dtype=np.float32,
+        )
+    retained_points = [_polyline_array(lane) for lane in retained_lanes]
+    retained_points = [points for points in retained_points if points.shape[0] >= 2]
+    if not retained_points:
+        return np.asarray(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+            dtype=np.float32,
+        )
+
+    raw_w = _raw_width_from_meta(meta)
+    y_min = float(candidate_points[:, 1].min())
+    y_max = float(candidate_points[:, 1].max())
+    if y_max <= y_min + 1.0e-6:
+        sample_y = np.asarray([0.5 * (y_min + y_max)], dtype=np.float32)
+    else:
+        sample_y = np.linspace(y_min, y_max, num=9, dtype=np.float32)
+
+    row_scores: list[float] = []
+    gap_width_norms: list[float] = []
+    nearest_norms: list[float] = []
+    center_offsets: list[float] = []
+    edge_margins: list[float] = []
+    bracketed_rows = 0
+    exterior_rows = 0
+    valid_rows = 0
+    for y in sample_y.tolist():
+        candidate_x = _lane_x_at_y(candidate_points, float(y))
+        if candidate_x is None:
+            continue
+        retained_x = [
+            x_value
+            for x_value in (_lane_x_at_y(points, float(y)) for points in retained_points)
+            if x_value is not None
+        ]
+        if not retained_x:
+            continue
+        valid_rows += 1
+        retained_x.sort()
+        nearest = min(abs(float(candidate_x) - float(x_value)) for x_value in retained_x)
+        nearest_norms.append(min(nearest / raw_w, 1.0))
+        left = [x_value for x_value in retained_x if float(x_value) < float(candidate_x)]
+        right = [x_value for x_value in retained_x if float(x_value) > float(candidate_x)]
+        if left and right:
+            left_x = float(max(left))
+            right_x = float(min(right))
+            gap_width = max(right_x - left_x, 1.0)
+            gap_width_norm = min(gap_width / raw_w, 1.0)
+            center_offset = abs(float(candidate_x) - 0.5 * (left_x + right_x)) / max(0.5 * gap_width, 1.0)
+            min_sep = min(abs(float(candidate_x) - left_x), abs(right_x - float(candidate_x)))
+            width_score = float(np.clip((gap_width - 55.0) / 185.0, 0.0, 1.0))
+            center_score = 1.0 - min(center_offset, 1.0)
+            separation_score = min(min_sep / 80.0, 1.0)
+            row_score = 0.35 * width_score + 0.40 * center_score + 0.25 * separation_score
+            bracketed_rows += 1
+            gap_width_norms.append(gap_width_norm)
+            center_offsets.append(min(center_offset, 1.0))
+            edge_margins.append(0.0)
+        else:
+            nearest_x = float(min(retained_x)) if right else float(max(retained_x))
+            side_gap = abs(float(candidate_x) - nearest_x)
+            edge_distance = max(min(float(candidate_x), raw_w - float(candidate_x)), 0.0)
+            edge_margin = min(edge_distance / 120.0, 1.0)
+            gap_width_norm = min(side_gap / raw_w, 1.0)
+            separation_score = min(side_gap / 100.0, 1.0)
+            row_score = 0.55 * separation_score + 0.20 * edge_margin
+            exterior_rows += 1
+            gap_width_norms.append(gap_width_norm)
+            center_offsets.append(1.0)
+            edge_margins.append(edge_margin)
+        row_scores.append(float(np.clip(row_score, 0.0, 1.0)))
+
+    if valid_rows <= 0 or not row_scores:
+        return np.asarray(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+            dtype=np.float32,
+        )
+    row_score_array = np.asarray(row_scores, dtype=np.float32)
+    gap_width_array = np.asarray(gap_width_norms, dtype=np.float32)
+    nearest_array = np.asarray(nearest_norms, dtype=np.float32)
+    center_array = np.asarray(center_offsets, dtype=np.float32)
+    edge_array = np.asarray(edge_margins, dtype=np.float32)
+    support = float(row_score_array.max(initial=0.0))
+    return _finite_feature_array(
+        [
+            support,
+            float(row_score_array.mean()),
+            float(row_score_array.max(initial=0.0)),
+            float(valid_rows) / float(max(len(sample_y), 1)),
+            float(bracketed_rows) / float(valid_rows),
+            float(exterior_rows) / float(valid_rows),
+            float(gap_width_array.mean()) if gap_width_array.size else 0.0,
+            float(gap_width_array.max(initial=0.0)) if gap_width_array.size else 0.0,
+            float(nearest_array.mean()) if nearest_array.size else 1.0,
+            float(nearest_array.min(initial=1.0)) if nearest_array.size else 1.0,
+            float(center_array.mean()) if center_array.size else 1.0,
+            float(center_array.min(initial=1.0)) if center_array.size else 1.0,
+            float(edge_array.mean()) if edge_array.size else 0.0,
+            min(float(len(retained_points)), 16.0) / 16.0,
+        ]
+    )
+
+
+def _lane_gap_fill_support(
+    candidate: dict[str, Any],
+    retained_lanes: list[dict[str, Any]],
+    *,
+    meta: Any | None = None,
+) -> float:
+    return float(_lane_gap_fill_features(candidate, retained_lanes, meta=meta)[0])
+
+
 def _union_geometry_rank_score(
     *,
     probability: float,
@@ -869,6 +1037,13 @@ def _union_geometry_rank_score(
         return float(probability) + 0.08, geometry_support
     penalty = 0.20 if geometry_support < 0.45 else 0.0
     return float(probability) + (0.08 * geometry_support) - penalty, geometry_support
+
+
+def _union_gapfill_rank_score(*, probability: float, source_kind: str, gap_fill_support: float) -> float:
+    if str(source_kind) == "retained":
+        return float(probability) + 0.10
+    penalty = 0.30 if float(gap_fill_support) < 0.42 else 0.0
+    return float(probability) + (0.18 * float(gap_fill_support)) - penalty
 
 
 def _baseline_matched_gt_indices(
@@ -1011,6 +1186,9 @@ def _collect_examples(
     global_sample_index = 0
     split = "train" if training else "val"
     candidate_source = str(getattr(args, "candidate_source", "dropped_area"))
+    use_gap_fill_features = bool(getattr(args, "gap_fill_features", False)) or str(
+        getattr(args, "candidate_integration_mode", "")
+    ) == "select_topk_union_gapfill"
     with torch.no_grad():
         for batch_index, batch in enumerate(islice(loader, max(0, int(max_batches))), start=1):
             display_batch_index = int(batch_index_offset) + int(batch_index)
@@ -1111,6 +1289,17 @@ def _collect_examples(
                                     ),
                                 ]
                             ).astype(np.float32)
+                        gap_fill_features = None
+                        if use_gap_fill_features:
+                            gap_fill_context = [
+                                lane for lane_index, lane in enumerate(baseline_lanes) if lane_index != int(pred_index)
+                            ]
+                            gap_fill_features = _lane_gap_fill_features(
+                                candidate,
+                                gap_fill_context,
+                                meta=sample_meta,
+                            )
+                            features = np.concatenate([features, gap_fill_features]).astype(np.float32)
                         if bool(args.alignment_context_features):
                             other_lanes = [
                                 lane for lane_index, lane in enumerate(baseline_lanes) if lane_index != int(pred_index)
@@ -1174,6 +1363,9 @@ def _collect_examples(
                                 "candidate_index": int(pred_index),
                                 "candidate_source_kind": "retained",
                                 "baseline_lane_count": int(len(baseline_lanes)),
+                                "lane_gap_fill_support": float(gap_fill_features[0])
+                                if gap_fill_features is not None
+                                else float("nan"),
                                 "candidate": dict(candidate),
                             }
                         )
@@ -1191,6 +1383,9 @@ def _collect_examples(
                                 "baseline_matched_gt_count": int(len(baseline_matched_gt)),
                                 "candidate_source_kind": "retained",
                                 "baseline_lane_count": int(len(baseline_lanes)),
+                                "lane_gap_fill_support": float(gap_fill_features[0])
+                                if gap_fill_features is not None
+                                else float("nan"),
                             }
                         )
                     if candidate_source == "retained":
@@ -1239,6 +1434,14 @@ def _collect_examples(
                                 ),
                             ]
                         ).astype(np.float32)
+                        gap_fill_features = None
+                        if use_gap_fill_features:
+                            gap_fill_features = _lane_gap_fill_features(
+                                candidate,
+                                baseline_lanes,
+                                meta=sample_meta,
+                            )
+                            features = np.concatenate([features, gap_fill_features]).astype(np.float32)
                         if bool(args.alignment_context_features):
                             features = np.concatenate(
                                 [features, _alignment_context_features(candidate, baseline_lanes)]
@@ -1299,6 +1502,9 @@ def _collect_examples(
                                 "candidate_index": int(sample_candidate_index),
                                 "candidate_source_kind": "conditional_row",
                                 "baseline_lane_count": int(len(baseline_lanes)),
+                                "lane_gap_fill_support": float(gap_fill_features[0])
+                                if gap_fill_features is not None
+                                else float("nan"),
                                 "candidate": dict(candidate),
                             }
                         )
@@ -1316,6 +1522,9 @@ def _collect_examples(
                                 "baseline_matched_gt_count": int(len(baseline_matched_gt)),
                                 "candidate_source_kind": "conditional_row",
                                 "baseline_lane_count": int(len(baseline_lanes)),
+                                "lane_gap_fill_support": float(gap_fill_features[0])
+                                if gap_fill_features is not None
+                                else float("nan"),
                             }
                         )
                         sample_candidate_index += 1
@@ -1361,6 +1570,14 @@ def _collect_examples(
                                 ),
                             ]
                         ).astype(np.float32)
+                    gap_fill_features = None
+                    if use_gap_fill_features:
+                        gap_fill_features = _lane_gap_fill_features(
+                            candidate,
+                            baseline_lanes,
+                            meta=sample_meta,
+                        )
+                        features = np.concatenate([features, gap_fill_features]).astype(np.float32)
                     if bool(args.alignment_context_features):
                         features = np.concatenate(
                             [features, _alignment_context_features(candidate, baseline_lanes)]
@@ -1420,6 +1637,9 @@ def _collect_examples(
                         "candidate_index": int(sample_candidate_index),
                         "candidate_source_kind": "dropped_area",
                         "baseline_lane_count": int(len(baseline_lanes)),
+                        "lane_gap_fill_support": float(gap_fill_features[0])
+                        if gap_fill_features is not None
+                        else float("nan"),
                         "candidate": dict(candidate),
                     }
                     examples.append(example)
@@ -1437,6 +1657,9 @@ def _collect_examples(
                             "baseline_matched_gt_count": int(len(baseline_matched_gt)),
                             "candidate_source_kind": "dropped_area",
                             "baseline_lane_count": int(len(baseline_lanes)),
+                            "lane_gap_fill_support": float(gap_fill_features[0])
+                            if gap_fill_features is not None
+                            else float("nan"),
                         }
                     )
                     sample_candidate_index += 1
@@ -1820,13 +2043,71 @@ def _apply_verifier(
         by_sample.setdefault(int(example["sample_index"]), []).append((float(probability), int(index)))
     selected_records: dict[int, dict[str, Any]] = {}
     integration_mode = str(getattr(args, "candidate_integration_mode", "append"))
-    if integration_mode in {"select_topk_union", "select_topk_union_geometry"}:
+    if integration_mode in {"select_topk_union", "select_topk_union_geometry", "select_topk_union_gapfill"}:
         for sample_index, candidates in by_sample.items():
             if sample_index < 0 or sample_index >= len(repaired):
                 continue
             original_lanes = list(repaired[sample_index].get("lanes", []))
             target_count = max(0, int(len(original_lanes)) + int(getattr(args, "max_appends_per_sample", 0)))
             if target_count <= 0:
+                continue
+            if integration_mode == "select_topk_union_gapfill":
+                selected_lanes = [dict(lane) for lane in original_lanes]
+                ranked_candidates = []
+                for probability, index in candidates:
+                    source_kind = str(examples[index].get("candidate_source_kind", ""))
+                    gap_fill_support = float(examples[index].get("lane_gap_fill_support", float("nan")))
+                    if not np.isfinite(gap_fill_support):
+                        gap_fill_support = (
+                            _lane_gap_fill_support(examples[index]["candidate"], original_lanes)
+                            if source_kind != "retained"
+                            else float("nan")
+                        )
+                    rank_score = _union_gapfill_rank_score(
+                        probability=float(probability),
+                        source_kind=source_kind,
+                        gap_fill_support=0.0 if not np.isfinite(gap_fill_support) else float(gap_fill_support),
+                    )
+                    if source_kind == "retained":
+                        selected_records[int(index)] = {
+                            "action": integration_mode,
+                            "replaced_lane_index": -1,
+                            "replaced_lane_distance": float("nan"),
+                            "set_geometry_support": float("nan"),
+                            "gap_fill_support": float(gap_fill_support),
+                            "rank_score": float(rank_score),
+                        }
+                        continue
+                    ranked_candidates.append(
+                        (float(rank_score), float(probability), int(index), float(gap_fill_support))
+                    )
+                ranked_candidates.sort(reverse=True)
+                for _rank_score, probability, index, gap_fill_support in ranked_candidates:
+                    if len(selected_lanes) >= target_count:
+                        break
+                    if float(gap_fill_support) < 0.42:
+                        continue
+                    candidate = dict(examples[index]["candidate"])
+                    if _near_any_lane(
+                        candidate,
+                        selected_lanes,
+                        threshold_px=float(args.candidate_duplicate_distance_px),
+                    ):
+                        continue
+                    candidate["area_roi_verifier_score"] = float(probability)
+                    candidate["area_roi_verifier_integration"] = integration_mode
+                    candidate["area_roi_source_kind"] = str(examples[index].get("candidate_source_kind", ""))
+                    candidate["area_roi_gap_fill_support"] = float(gap_fill_support)
+                    selected_lanes.append(candidate)
+                    selected_records[int(index)] = {
+                        "action": integration_mode,
+                        "replaced_lane_index": -1,
+                        "replaced_lane_distance": float("nan"),
+                        "set_geometry_support": float("nan"),
+                        "gap_fill_support": float(gap_fill_support),
+                        "rank_score": float(_rank_score),
+                    }
+                repaired[sample_index]["lanes"] = selected_lanes
                 continue
             if integration_mode == "select_topk_union_geometry":
                 ranked_candidates = []
@@ -1874,6 +2155,8 @@ def _apply_verifier(
                     "replaced_lane_index": -1,
                     "replaced_lane_distance": float("nan"),
                     "set_geometry_support": float(geometry_support),
+                    "gap_fill_support": float("nan"),
+                    "rank_score": float(_rank_score),
                 }
             if selected_lanes:
                 repaired[sample_index]["lanes"] = selected_lanes
@@ -1987,6 +2270,8 @@ def _apply_verifier(
                 "replaced_lane_index": int(selected_record.get("replaced_lane_index", -1)),
                 "replaced_lane_distance": float(selected_record.get("replaced_lane_distance", float("nan"))),
                 "set_geometry_support": float(selected_record.get("set_geometry_support", float("nan"))),
+                "gap_fill_support": float(selected_record.get("gap_fill_support", example.get("lane_gap_fill_support", float("nan")))),
+                "rank_score": float(selected_record.get("rank_score", float("nan"))),
             }
         )
     return repaired, rows
@@ -2150,6 +2435,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "cross_task_conflict_features": bool(args.cross_task_conflict_features),
         "tta_consistency_features": bool(getattr(args, "tta_consistency_features", False)),
         "tta_consistency_alternate_variant": _alternate_lane_flip_variant(str(args.lane_flip_variant)),
+        "gap_fill_features": bool(getattr(args, "gap_fill_features", False))
+        or str(args.candidate_integration_mode) == "select_topk_union_gapfill",
         "verifier_model_kind": str(args.verifier_model_kind),
         "set_context_layers": int(args.set_context_layers),
         "set_context_heads": int(args.set_context_heads),

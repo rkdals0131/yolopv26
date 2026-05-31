@@ -18,6 +18,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _empty_task_count_payload,
     _finalize_task_counts,
     _lane_cross_task_conflict_features,
+    _lane_gap_fill_features,
     _lane_raw_image_line_features,
     _lane_row_peak_alignment_features,
     _lane_set_geometry_support,
@@ -261,6 +262,18 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertGreater(supported, 0.8)
         self.assertLess(unsupported, 0.45)
 
+    def test_lane_gap_fill_features_prefer_centered_empty_slot(self) -> None:
+        retained = [_lane(0.0), _lane(220.0)]
+
+        centered = _lane_gap_fill_features(_lane(110.0), retained, meta={"raw_hw": (100, 240)})
+        duplicate_like = _lane_gap_fill_features(_lane(5.0), retained, meta={"raw_hw": (100, 240)})
+
+        self.assertEqual(centered.shape, (14,))
+        self.assertTrue(np.isfinite(centered).all())
+        self.assertGreater(float(centered[0]), 0.75)
+        self.assertGreater(float(centered[0]), float(duplicate_like[0]))
+        self.assertLess(float(duplicate_like[0]), 0.42)
+
     def test_row_peak_alignment_features_score_candidate_on_local_peak(self) -> None:
         centerline = torch.zeros((1, 7, 9), dtype=torch.float32)
         support = torch.zeros((1, 7, 9), dtype=torch.float32)
@@ -429,6 +442,95 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         selected_sources = [row["candidate_source_kind"] for row in rows if row["selected"]]
         self.assertEqual(selected_sources, ["retained", "conditional_row"])
         self.assertIn(80.0, [lane["points_xy"][0][0] for lane in repaired[0]["lanes"]])
+
+    def test_select_topk_union_gapfill_appends_supported_empty_slot_only(self) -> None:
+        class FeatureLogitVerifier(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("feature_mean", torch.zeros(1), persistent=True)
+                self.register_buffer("feature_std", torch.ones(1), persistent=True)
+
+            def forward(self, features: torch.Tensor) -> torch.Tensor:
+                return features[:, 0]
+
+        predictions = [{"lanes": [_lane(0.0), _lane(220.0)]}]
+        examples = [
+            {
+                "features": np.asarray([7.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 0,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 0,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "lane_gap_fill_support": float("nan"),
+                "candidate": _lane(0.0),
+            },
+            {
+                "features": np.asarray([6.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 1,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 1,
+                "candidate_source_kind": "retained",
+                "baseline_lane_count": 2,
+                "lane_gap_fill_support": float("nan"),
+                "candidate": _lane(220.0),
+            },
+            {
+                "features": np.asarray([10.0], dtype=np.float32),
+                "positive": 1.0,
+                "negative": 0.0,
+                "nearest_gt_index": 2,
+                "nearest_gt_distance": 2.0,
+                "sample_index": 0,
+                "candidate_index": 2,
+                "candidate_source_kind": "dropped_area",
+                "baseline_lane_count": 2,
+                "lane_gap_fill_support": 0.90,
+                "candidate": _lane(110.0),
+            },
+            {
+                "features": np.asarray([11.0], dtype=np.float32),
+                "positive": 0.0,
+                "negative": 1.0,
+                "nearest_gt_index": -1,
+                "nearest_gt_distance": 120.0,
+                "sample_index": 0,
+                "candidate_index": 3,
+                "candidate_source_kind": "dropped_area",
+                "baseline_lane_count": 2,
+                "lane_gap_fill_support": 0.10,
+                "candidate": _horizontal_lane(50.0),
+            },
+        ]
+
+        repaired, rows = _apply_verifier(
+            examples=examples,
+            predictions_all=predictions,
+            model=FeatureLogitVerifier(),
+            args=SimpleNamespace(
+                quality_threshold=0.5,
+                candidate_duplicate_distance_px=5.0,
+                max_appends_per_sample=1,
+                max_suppressions_per_sample=0,
+                candidate_integration_mode="select_topk_union_gapfill",
+                replace_nearest_max_distance_px=120.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(len(repaired[0]["lanes"]), 3)
+        self.assertIn(110.0, [lane["points_xy"][0][0] for lane in repaired[0]["lanes"]])
+        selected_indices = [row["candidate_index"] for row in rows if row["selected"]]
+        self.assertEqual(selected_indices, [0, 1, 2])
+        unsupported_rows = [row for row in rows if row["candidate_index"] == 3]
+        self.assertEqual(unsupported_rows[0]["selected"], 0)
+        self.assertAlmostEqual(float(unsupported_rows[0]["gap_fill_support"]), 0.10)
 
     def test_ensemble_probability_mode_can_require_member_agreement(self) -> None:
         class ConstantVerifier(torch.nn.Module):
