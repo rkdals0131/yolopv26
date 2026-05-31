@@ -175,7 +175,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--neighbor-offsets", default="-1,1")
     parser.add_argument(
         "--temporal-alignment-mode",
-        choices=("none", "phase_corr", "sparse_affine", "orb_homography", "lane_affine"),
+        choices=("none", "phase_corr", "sparse_affine", "orb_homography", "lane_affine", "lane_homography"),
         default="none",
     )
     parser.add_argument("--temporal-alignment-size", default="160x120")
@@ -680,6 +680,128 @@ def _lane_affine_alignment_from_predictions(
     }
 
 
+def _lane_homography_alignment_from_predictions(
+    current_prediction: dict[str, Any] | None,
+    neighbor_prediction: dict[str, Any] | None,
+    *,
+    raw_hw: tuple[int, int],
+    max_shift_frac: float,
+) -> dict[str, float]:
+    try:
+        import cv2
+    except ImportError:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    current_lanes = [_lane_points(dict(lane)) for lane in (current_prediction or {}).get("lanes", [])]
+    neighbor_lanes = [_lane_points(dict(lane)) for lane in (neighbor_prediction or {}).get("lanes", [])]
+    current_lanes = [points for points in current_lanes if points.shape[0] >= 2]
+    neighbor_lanes = [points for points in neighbor_lanes if points.shape[0] >= 2]
+    if len(current_lanes) < 2 or len(neighbor_lanes) < 2:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+
+    pair_rows: list[tuple[float, int, int, np.ndarray, np.ndarray]] = []
+    for neighbor_index, neighbor_points in enumerate(neighbor_lanes):
+        n_y0, n_y1 = float(neighbor_points[:, 1].min()), float(neighbor_points[:, 1].max())
+        for current_index, current_points in enumerate(current_lanes):
+            c_y0, c_y1 = float(current_points[:, 1].min()), float(current_points[:, 1].max())
+            y0 = max(n_y0, c_y0)
+            y1 = min(n_y1, c_y1)
+            if y1 - y0 < 80.0:
+                continue
+            ys = np.linspace(y0, y1, 10, dtype=np.float32)
+            neighbor_x = _lane_x_at_y(neighbor_points, ys)
+            current_x = _lane_x_at_y(current_points, ys)
+            if neighbor_x is None or current_x is None:
+                continue
+            source = np.stack([neighbor_x, ys], axis=1).astype(np.float32)
+            target = np.stack([current_x, ys], axis=1).astype(np.float32)
+            median_error = float(np.median(np.linalg.norm(source - target, axis=1)))
+            if not math.isfinite(median_error) or median_error > 120.0:
+                continue
+            overlap_score = float(y1 - y0) / max(median_error + 1.0, 1.0)
+            pair_rows.append((-overlap_score, current_index, neighbor_index, source, target))
+
+    if not pair_rows:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    pair_rows.sort(key=lambda item: item[0])
+    used_current: set[int] = set()
+    used_neighbor: set[int] = set()
+    source_points: list[np.ndarray] = []
+    target_points: list[np.ndarray] = []
+    for _, current_index, neighbor_index, source, target in pair_rows:
+        if current_index in used_current or neighbor_index in used_neighbor:
+            continue
+        used_current.add(int(current_index))
+        used_neighbor.add(int(neighbor_index))
+        source_points.append(source)
+        target_points.append(target)
+        if len(source_points) >= 6:
+            break
+    if len(source_points) < 2:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    src = np.concatenate(source_points, axis=0).astype(np.float32)
+    dst = np.concatenate(target_points, axis=0).astype(np.float32)
+    if src.shape[0] < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+
+    matrix, inliers = cv2.findHomography(
+        src,
+        dst,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=8.0,
+        maxIters=1000,
+        confidence=0.995,
+    )
+    if matrix is None or inliers is None:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    inlier_mask = inliers.reshape(-1).astype(bool)
+    inlier_count = int(inlier_mask.sum())
+    if inlier_count < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    src_h = np.concatenate([src, np.ones((src.shape[0], 1), dtype=np.float32)], axis=1)
+    projected_h = (np.asarray(matrix, dtype=np.float64) @ src_h.T).T
+    denom = projected_h[:, 2:3]
+    valid = np.abs(denom[:, 0]) > 1.0e-9
+    if not bool(valid.any()):
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    projected = np.full((projected_h.shape[0], 2), np.nan, dtype=np.float64)
+    projected[valid] = projected_h[valid, :2] / denom[valid]
+    valid_inliers = inlier_mask & np.isfinite(projected).all(axis=1)
+    if int(valid_inliers.sum()) < 8:
+        return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
+    errors = np.linalg.norm(projected - dst, axis=1)
+    median_error = float(np.median(errors[valid_inliers]))
+    inlier_fraction = float(inlier_count) / max(float(src.shape[0]), 1.0)
+    pair_fraction = float(len(source_points)) / max(float(min(len(current_lanes), len(neighbor_lanes))), 1.0)
+    response = float(np.clip((inlier_fraction * min(pair_fraction, 1.0)) / (1.0 + median_error / 8.0), 0.0, 1.0))
+    raw_matrix = tuple(float(value) for value in np.asarray(matrix, dtype=np.float64).reshape(-1))
+    if abs(float(raw_matrix[8])) > 1.0e-9:
+        scale = float(raw_matrix[8])
+        raw_matrix = tuple(float(value) / scale for value in raw_matrix)
+    raw_h, raw_w = int(raw_hw[0]), int(raw_hw[1])
+    max_displacement = _corner_max_displacement_homography(raw_matrix, raw_hw=(raw_h, raw_w))
+    max_allowed = float(max(max(raw_w, raw_h), 1)) * float(max_shift_frac)
+    if max_displacement > max_allowed:
+        return {"dx": 0.0, "dy": 0.0, "response": response, "applied": 0.0}
+    h00, h01, h02, h10, h11, h12, h20, h21, h22 = raw_matrix
+    return {
+        "dx": float(h02),
+        "dy": float(h12),
+        "response": response,
+        "applied": 1.0,
+        "h00": float(h00),
+        "h01": float(h01),
+        "h02": float(h02),
+        "h10": float(h10),
+        "h11": float(h11),
+        "h12": float(h12),
+        "h20": float(h20),
+        "h21": float(h21),
+        "h22": float(h22),
+        "lane_homography_pair_count": float(len(source_points)),
+        "lane_homography_inlier_count": float(inlier_count),
+    }
+
+
 def _temporal_alignment(
     *,
     current_meta: dict[str, Any],
@@ -692,11 +814,18 @@ def _temporal_alignment(
 ) -> dict[str, float]:
     if str(mode) == "none":
         return {"dx": 0.0, "dy": 0.0, "response": 0.0, "applied": 0.0}
-    if str(mode) not in {"phase_corr", "sparse_affine", "orb_homography", "lane_affine"}:
+    if str(mode) not in {"phase_corr", "sparse_affine", "orb_homography", "lane_affine", "lane_homography"}:
         raise ValueError(f"unknown temporal alignment mode: {mode}")
     raw_h, raw_w = int(current_meta.get("raw_hw", (1, 1))[0]), int(current_meta.get("raw_hw", (1, 1))[1])
     if str(mode) == "lane_affine":
         return _lane_affine_alignment_from_predictions(
+            current_prediction,
+            neighbor_prediction,
+            raw_hw=(raw_h, raw_w),
+            max_shift_frac=float(max_shift_frac),
+        )
+    if str(mode) == "lane_homography":
+        return _lane_homography_alignment_from_predictions(
             current_prediction,
             neighbor_prediction,
             raw_hw=(raw_h, raw_w),

@@ -25967,3 +25967,40 @@ Decision:
 
 - Historical negative checkpoints should not be treated as retained frontier artifacts.
 - Future negative runs should retain metric evidence first, then prune checkpoints/TensorBoard unless the checkpoint is explicitly needed for a current runtime contract or follow-up reproduction gate.
+
+## 411. 2026-06-01 Stop-line lane-homography temporal alignment: implementation landed, metric gate pending
+
+Context:
+
+- The closed stop-line temporal families show that image-plane phase/sparse-affine/ORB and predicted-lane affine warps did not produce deployable TP/FP/FN movement.
+- The only legitimate reason to reopen this surface is a materially different motion contract, preferably closer to ego/BEV alignment or a learned temporal segment emitter.
+- This slice does not claim success. It implements a projective predicted-lane alignment mode so the next probe can test whether lane-track shear/perspective contains better temporal stop-line candidate geometry than the closed affine lane-track warp.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_temporal_candidates.py`
+  - adds `--temporal-alignment-mode lane_homography`;
+  - samples matched current/neighbor predicted lane tracks over overlapping y ranges;
+  - estimates a RANSAC homography from neighbor lane points into the current frame;
+  - validates inlier count, response, finite projection, and maximum corner displacement;
+  - returns homography matrix keys already consumed by `_warp_stop_line_points`.
+- `test/test_stopline_temporal_candidates.py`
+  - adds a synthetic lane-track shear regression test showing `lane_homography` applies a non-affine-compatible homography path.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+
+Artifact and storage state:
+
+- No dataset copy was created.
+- No training checkpoint, verifier checkpoint, or TensorBoard artifact was produced in this implementation-only slice.
+- Root `yolo26*.pt` files are absent.
+- Retained large checkpoint files remain limited to the two documented phase-4 frontier `best.pt` files; `merged_lane_head.pt` remains in the lane-head transplant run.
+
+Decision:
+
+- Do not treat `lane_homography` as F1 progress until a real smoke/exact probe reports stop-line TP/FP/FN.
+- Next gate, if this branch resumes, is a small train64/fixed-val4 or direct train256/exact-val128 temporal probe using `--temporal-alignment-mode=lane_homography` with the retained projection-comp runtime contract and `crosswalk_polygon_mode=hull`.
+- If exact stop-line remains below primary projection-comp `32 / 28 / 28`, F1 `0.5333`, or oracle temporal coverage is not materially better than the closed lane-affine/pair-consensus runs, close it without broader-val512.
