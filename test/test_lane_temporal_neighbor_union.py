@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import math
 
+import cv2
+import numpy as np
+
 from tools.probe_pv26_lane_temporal_neighbor_union import (
     LANE_TEMPORAL_FEATURES,
     SCORE_KEY,
+    _estimate_phase_translation_raw_shift,
     _lane_from_points_json,
     _lane_temporal_feature_vector,
     _nearest_lane_distance,
     _neighbor_sample_id,
     _parse_neighbor_offsets,
     _select_verified_temporal_lanes,
+    _shift_lane_points,
     _split_temporal_sample_id,
 )
 
@@ -96,3 +101,29 @@ def test_select_verified_temporal_lanes_respects_score_dedupe_and_cap() -> None:
     assert duplicate_row.get("verifier_selected") is not True
     assert selected_row.get("verifier_selected") is True
     assert low_score_row.get("verifier_selected") is not True
+
+
+def test_phase_translation_alignment_estimates_neighbor_to_current_shift() -> None:
+    target = np.zeros((64, 64), dtype=np.float32)
+    target[20:30, 25:35] = 1.0
+    transform = np.float32([[1.0, 0.0, 5.0], [0.0, 1.0, 3.0]])
+    neighbor = cv2.warpAffine(target, transform, (64, 64))
+
+    shift = _estimate_phase_translation_raw_shift(
+        target_image=target,
+        neighbor_image=neighbor,
+        target_meta={"raw_hw": (64, 64), "transform": {"scale": 1.0}},
+    )
+
+    assert shift["response"] > 0.5
+    assert abs(shift["raw_dx"] + 5.0) < 0.5
+    assert abs(shift["raw_dy"] + 3.0) < 0.5
+
+
+def test_shift_lane_points_clips_to_raw_frame() -> None:
+    lane = {"points_xy": [[2.0, 4.0], [20.0, 30.0]], "score": 0.5}
+
+    shifted = _shift_lane_points(lane, dx=-5.0, dy=10.0, meta={"raw_hw": (40, 50)})
+
+    assert shifted["points_xy"] == [[0.0, 14.0], [15.0, 39.0]]
+    assert shifted["temporal_alignment_dx"] == -5.0

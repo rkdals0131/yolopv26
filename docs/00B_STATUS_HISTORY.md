@@ -24650,3 +24650,108 @@ Decision:
 - The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it as a lane breakthrough path.
 - Do not repeat lane temporal-neighbor verifier as neighbor offset, center support, duplicate distance, verifier threshold, top-k, hidden size, epoch/LR, or train-batch scaling over the same image-space candidate surface.
 - Reopen temporal lane only with materially stronger alignment or candidate generation, such as ego-motion/BEV-aligned propagation or model-side temporal instance emission that first shows clean exact TP/FP/FN headroom.
+
+## 398. 2026-05-31 Lane phase-correlation temporal alignment: global image translation worsens FP-control
+
+Context:
+
+- The prior lane temporal-neighbor verifier was exact-negative because it recovered some missing lane TP but added many more FP.
+- The only allowed reopen premise was stronger alignment/candidate generation, not another neighbor offset, support threshold, verifier threshold, or train-batch sweep.
+- This branch changes candidate geometry before verifier scoring: estimate a global current/neighbor image translation with phase correlation, then shift neighbor-frame lane polylines into current raw coordinates.
+
+Implementation:
+
+- Branch/worktree: `exp/lane-family-f1/current-family-dense-denoise`.
+- Updated `tools/probe_pv26_lane_temporal_neighbor_union.py`.
+- Added `--temporal-alignment-mode {none,phase_translation}`.
+- `phase_translation` path converts current/neighbor encoded images to grayscale, estimates translation with `cv2.phaseCorrelate`, inverts the neighbor displacement, maps it to raw-coordinate lane point shifts, and adds alignment `dx/dy/response` features to the train-split MLP verifier.
+- The first exact attempt exposed a cache-memory problem because full encoded image tensors were retained for neighbor predictions. The predictor cache now stores compact uint8 grayscale images instead.
+- Updated `test/test_lane_temporal_neighbor_union.py` for phase-translation shift estimation and raw-frame point clipping.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `lane_flip_variant=flip_centerline_avg`;
+  - neighbor offsets `-1,1`;
+  - `temporal_alignment_mode=phase_translation`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - `current_center_mean_min=0.0`;
+  - max added lanes per sample `2`;
+  - verifier top-k per sample `12`;
+  - verifier epochs `60`.
+
+Smoke train64 / fixed-val4:
+
+- Train candidates `1569`; train positives `119`.
+- Validation candidates `105`; validation positives `2`.
+- Verifier threshold `0.71`.
+- The verifier selected `5` validation lanes and selected `0` baseline-FN positives.
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5899` | `41 / 12 / 45` | `0.0000` | `0.5455` |
+| phase-translation verifier | `0.5556` | `40 / 18 / 46` | `0.0000` | `0.5455` |
+
+Exact train256 / val128:
+
+- Train candidates `5898`; train positives `408`.
+- Validation candidates `3147`; validation positives `224`.
+- Verifier threshold `0.65`.
+- The verifier selected `212` validation lanes, with `51` selected baseline-FN positives.
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5854` | `1200 / 510 / 1190` | `0.5333` | `0.5988` |
+| phase-translation verifier | `0.5733` | `1236 / 686 / 1154` | `0.5333` | `0.5988` |
+
+Diagnosis:
+
+- Phase alignment does not solve the temporal FP-control problem.
+- Exact recall moves by `+36 TP`, comparable to the unaligned temporal verifier's `+35 TP`.
+- Precision is worse:
+  - unaligned temporal exact added `+122 FP`;
+  - phase-translation exact adds `+176 FP`.
+- Smoke already showed the same failure mode, losing `1` TP and adding `6` FP.
+- Stop-line and crosswalk are preserved, but lane F1 is below both the baseline and the unaligned temporal verifier.
+- Broader-val512 is skipped because exact validation is negative.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_phase_translation_train64_smoke_val4_20260531/summary.json`.
+- Smoke candidates:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_phase_translation_train64_smoke_val4_20260531/lane_temporal_neighbor_candidates.csv`.
+- Exact train256 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_phase_translation_train256_exact_val128_20260531/summary.json`.
+- Exact train256 candidates:
+  - `runs/pv26_exhaustive_od_lane_train/lane_temporal_phase_translation_train256_exact_val128_20260531/lane_temporal_neighbor_candidates.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `2.1M`;
+  - exact export about `12M`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_temporal_neighbor_union.py test/test_lane_temporal_neighbor_union.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m pytest -q test/test_lane_temporal_neighbor_union.py`.
+- CUDA train64/smoke-val4 phase-translation temporal lane verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 phase-translation temporal lane verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it.
+- Close phase-correlation temporal lane alignment as global translation, response-feature, verifier-threshold/top-k, and train-batch scaling over this image-plane temporal candidate surface.
+- Reopen temporal lane only with a materially different motion model or candidate source whose exact TP gain is not paid for by larger FP growth.

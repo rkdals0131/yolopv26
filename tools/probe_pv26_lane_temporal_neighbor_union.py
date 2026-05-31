@@ -11,6 +11,7 @@ import site
 import sys
 from typing import Any
 
+import cv2
 import numpy as np
 import torch
 
@@ -61,6 +62,10 @@ LANE_TEMPORAL_FEATURES = (
     "temporal_base_lane_count_norm",
     "temporal_baseline_fn_count_norm",
     "temporal_nearest_existing_distance_norm",
+    "temporal_alignment_dx_norm",
+    "temporal_alignment_dy_norm",
+    "temporal_alignment_abs_shift_norm",
+    "temporal_alignment_response",
     "current_frame_track_pixels_norm",
     "current_frame_center_mask_mean",
     "current_frame_center_mask_q10",
@@ -107,6 +112,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lane-flip-variant", choices=("baseline", "flip_centerline_avg"), default="flip_centerline_avg")
     parser.add_argument("--neighbor-offsets", default="-1,1")
+    parser.add_argument(
+        "--temporal-alignment-mode",
+        choices=("none", "phase_translation"),
+        default="none",
+        help=(
+            "How to map neighbor-frame lane predictions into the current frame before "
+            "verifier scoring. phase_translation estimates a global image translation "
+            "with cv2.phaseCorrelate and shifts neighbor polylines in raw coordinates."
+        ),
+    )
     parser.add_argument(
         "--verifier-enabled",
         type=int,
@@ -218,6 +233,130 @@ def _copy_lane(lane: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
+def _image_to_gray_float(image: Any) -> np.ndarray | None:
+    if isinstance(image, torch.Tensor):
+        array = image.detach().float().cpu().numpy()
+    else:
+        array = np.asarray(image, dtype=np.float32)
+    if array.size == 0:
+        return None
+    if array.ndim == 3 and array.shape[0] in {1, 3, 4}:
+        array = np.moveaxis(array, 0, -1)
+    if array.ndim == 3:
+        array = array[..., :3].mean(axis=-1)
+    if array.ndim != 2:
+        return None
+    array = np.asarray(array, dtype=np.float32)
+    if not bool(np.isfinite(array).all()):
+        array = np.nan_to_num(array, nan=0.0, posinf=0.0, neginf=0.0)
+    lo = float(np.percentile(array, 1.0))
+    hi = float(np.percentile(array, 99.0))
+    if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo + 1.0e-6:
+        lo = float(array.min())
+        hi = float(array.max())
+    if hi > lo + 1.0e-6:
+        array = np.clip((array - lo) / (hi - lo), 0.0, 1.0)
+    else:
+        array = np.zeros_like(array, dtype=np.float32)
+    return cv2.GaussianBlur(array.astype(np.float32), (5, 5), 0)
+
+
+def _compact_gray_image(image: Any) -> np.ndarray | None:
+    gray = _image_to_gray_float(image)
+    if gray is None:
+        return None
+    return np.clip(gray * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+def _raw_scale_from_meta(meta: dict[str, Any]) -> float:
+    transform = meta.get("transform") if isinstance(meta, dict) else None
+    if isinstance(transform, dict):
+        scale = _finite_float(transform.get("scale"), 1.0)
+        if scale > 1.0e-6:
+            return float(scale)
+    return 1.0
+
+
+def _estimate_phase_translation_raw_shift(
+    *,
+    target_image: Any,
+    neighbor_image: Any,
+    target_meta: dict[str, Any],
+) -> dict[str, float]:
+    target_gray = _image_to_gray_float(target_image)
+    neighbor_gray = _image_to_gray_float(neighbor_image)
+    if target_gray is None or neighbor_gray is None:
+        return {
+            "raw_dx": 0.0,
+            "raw_dy": 0.0,
+            "network_dx": 0.0,
+            "network_dy": 0.0,
+            "response": 0.0,
+        }
+    if target_gray.shape != neighbor_gray.shape:
+        neighbor_gray = cv2.resize(
+            neighbor_gray,
+            (int(target_gray.shape[1]), int(target_gray.shape[0])),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    height, width = int(target_gray.shape[0]), int(target_gray.shape[1])
+    if height < 8 or width < 8:
+        return {
+            "raw_dx": 0.0,
+            "raw_dy": 0.0,
+            "network_dx": 0.0,
+            "network_dy": 0.0,
+            "response": 0.0,
+        }
+    window = cv2.createHanningWindow((width, height), cv2.CV_32F)
+    (neighbor_dx, neighbor_dy), response = cv2.phaseCorrelate(
+        target_gray.astype(np.float32),
+        neighbor_gray.astype(np.float32),
+        window,
+    )
+    if not math.isfinite(float(neighbor_dx)) or not math.isfinite(float(neighbor_dy)):
+        neighbor_dx = 0.0
+        neighbor_dy = 0.0
+    if not math.isfinite(float(response)):
+        response = 0.0
+    # phaseCorrelate(target, neighbor) returns the neighbor displacement relative
+    # to target. To map neighbor predictions into target coordinates, invert it.
+    align_dx = -float(neighbor_dx)
+    align_dy = -float(neighbor_dy)
+    max_dx = max(float(width) * 0.25, 1.0)
+    max_dy = max(float(height) * 0.25, 1.0)
+    align_dx = float(np.clip(align_dx, -max_dx, max_dx))
+    align_dy = float(np.clip(align_dy, -max_dy, max_dy))
+    scale = _raw_scale_from_meta(target_meta)
+    return {
+        "raw_dx": float(align_dx / max(scale, 1.0e-6)),
+        "raw_dy": float(align_dy / max(scale, 1.0e-6)),
+        "network_dx": float(align_dx),
+        "network_dy": float(align_dy),
+        "response": float(np.clip(float(response), 0.0, 1.0)),
+    }
+
+
+def _shift_lane_points(lane: dict[str, Any], *, dx: float, dy: float, meta: dict[str, Any]) -> dict[str, Any]:
+    shifted = _copy_lane(lane)
+    raw_hw = meta.get("raw_hw") if isinstance(meta, dict) else None
+    raw_h = int(raw_hw[0]) if isinstance(raw_hw, (list, tuple)) and len(raw_hw) >= 2 else 0
+    raw_w = int(raw_hw[1]) if isinstance(raw_hw, (list, tuple)) and len(raw_hw) >= 2 else 0
+    points: list[list[float]] = []
+    for point in lane.get("points_xy", []):
+        x = float(point[0]) + float(dx)
+        y = float(point[1]) + float(dy)
+        if raw_w > 0:
+            x = float(np.clip(x, 0.0, max(float(raw_w - 1), 0.0)))
+        if raw_h > 0:
+            y = float(np.clip(y, 0.0, max(float(raw_h - 1), 0.0)))
+        points.append([x, y])
+    shifted["points_xy"] = points
+    shifted["temporal_alignment_dx"] = float(dx)
+    shifted["temporal_alignment_dy"] = float(dy)
+    return shifted
+
+
 def _build_scenario(args: argparse.Namespace) -> tuple[Any, Path, dict[str, Any], Any, Any]:
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     source_run = Path(args.source_run).expanduser().resolve()
@@ -313,6 +452,7 @@ class _Predictor:
         payload = {
             "prediction": batch_predictions[0],
             "meta": meta[0],
+            "image": _compact_gray_image(encoded["image"][0]) if isinstance(encoded.get("image"), torch.Tensor) else None,
         }
         self.cache[dataset_index] = payload
         return payload
@@ -520,21 +660,44 @@ def _temporal_candidates_for_sample(
     sample_index: int,
     sample_batch_index: int,
     target_meta: dict[str, Any],
+    target_image: Any,
     target_maps: dict[str, torch.Tensor],
     base_lanes: list[dict[str, Any]],
     gt_lanes: list[dict[str, Any]],
     unmatched_gt_indices: set[int],
     neighbor_predictions: list[tuple[int, int, dict[str, Any]]],
+    alignment_mode: str,
     center_mean_min: float,
     dedupe_distance: float,
     max_added_per_sample: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     proposed: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
-    for offset, neighbor_dataset_index, neighbor_prediction in neighbor_predictions:
+    for offset, neighbor_dataset_index, neighbor_payload in neighbor_predictions:
+        neighbor_prediction = dict(neighbor_payload.get("prediction", {}))
+        alignment = {
+            "raw_dx": 0.0,
+            "raw_dy": 0.0,
+            "network_dx": 0.0,
+            "network_dy": 0.0,
+            "response": 0.0,
+        }
+        if str(alignment_mode) == "phase_translation":
+            alignment = _estimate_phase_translation_raw_shift(
+                target_image=target_image,
+                neighbor_image=neighbor_payload.get("image"),
+                target_meta=target_meta,
+            )
         neighbor_lanes = list(neighbor_prediction.get("lanes", []))
         for neighbor_lane_index, lane in enumerate(neighbor_lanes):
             candidate = _copy_lane(lane)
+            if str(alignment_mode) == "phase_translation":
+                candidate = _shift_lane_points(
+                    candidate,
+                    dx=float(alignment.get("raw_dx", 0.0)),
+                    dy=float(alignment.get("raw_dy", 0.0)),
+                    meta=target_meta,
+                )
             evidence = _track_map_evidence(
                 list(candidate.get("points_xy", [])),
                 maps=target_maps,
@@ -558,6 +721,18 @@ def _temporal_candidates_for_sample(
                 "temporal_baseline_fn_count_norm": min(float(len(unmatched_gt_indices)) / 16.0, 2.0),
                 "nearest_existing_distance": float(nearest_existing_distance),
                 "temporal_nearest_existing_distance_norm": min(float(nearest_existing_distance) / 240.0, 4.0),
+                "temporal_alignment_mode": str(alignment_mode),
+                "temporal_alignment_dx": float(alignment.get("raw_dx", 0.0)),
+                "temporal_alignment_dy": float(alignment.get("raw_dy", 0.0)),
+                "temporal_alignment_network_dx": float(alignment.get("network_dx", 0.0)),
+                "temporal_alignment_network_dy": float(alignment.get("network_dy", 0.0)),
+                "temporal_alignment_response": float(alignment.get("response", 0.0)),
+                "temporal_alignment_dx_norm": float(np.clip(float(alignment.get("raw_dx", 0.0)) / 240.0, -4.0, 4.0)),
+                "temporal_alignment_dy_norm": float(np.clip(float(alignment.get("raw_dy", 0.0)) / 240.0, -4.0, 4.0)),
+                "temporal_alignment_abs_shift_norm": min(
+                    math.hypot(float(alignment.get("raw_dx", 0.0)), float(alignment.get("raw_dy", 0.0))) / 240.0,
+                    4.0,
+                ),
                 "nearest_existing_distance_bin": _distance_bin(float(nearest_existing_distance)),
                 "candidate_points_json": _points_json(candidate),
                 "candidate_class_name": str(candidate.get("class_name", "white_lane")),
@@ -656,6 +831,11 @@ def _collect_temporal_records(
                 sample_id = str(sample_meta.get("sample_id", ""))
                 dataset_key = str(sample_meta.get("dataset_key", ""))
                 split = str(sample_meta.get("split", ""))
+                target_image = (
+                    _detach_to_cpu(encoded["image"])[sample_batch_index]
+                    if isinstance(encoded.get("image"), torch.Tensor)
+                    else None
+                )
                 target_maps = lane_segfirst_prediction_maps(postprocess_predictions, batch_index=sample_batch_index)
                 base_lanes = list(sample_pred.get("lanes", []))
                 gt_lanes = list(sample_gt.get("lanes", []))
@@ -673,18 +853,20 @@ def _collect_temporal_records(
                         missing_neighbors += 1
                         continue
                     neighbor_payload = predictor.predict_index(neighbor_index)
-                    neighbor_payloads.append((int(offset), int(neighbor_index), dict(neighbor_payload["prediction"])))
+                    neighbor_payloads.append((int(offset), int(neighbor_index), dict(neighbor_payload)))
 
                 fixed_sample = copy.deepcopy(sample_pred)
                 added_lanes, rows = _temporal_candidates_for_sample(
                     sample_index=global_sample_index,
                     sample_batch_index=sample_batch_index,
                     target_meta=sample_meta,
+                    target_image=target_image,
                     target_maps=target_maps,
                     base_lanes=base_lanes,
                     gt_lanes=gt_lanes,
                     unmatched_gt_indices=unmatched_gt_indices,
                     neighbor_predictions=neighbor_payloads,
+                    alignment_mode=str(args.temporal_alignment_mode),
                     center_mean_min=float(args.current_center_mean_min),
                     dedupe_distance=float(args.dedupe_distance),
                     max_added_per_sample=int(args.max_added_per_sample),
@@ -711,6 +893,7 @@ def _collect_temporal_records(
                         "missing_neighbor_count": int(missing_neighbors),
                         "temporal_candidate_count": int(len(rows)),
                         "temporal_selected_count": int(len(added_lanes)),
+                        "temporal_alignment_mode": str(args.temporal_alignment_mode),
                     }
                 )
                 global_sample_index += 1
@@ -905,6 +1088,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "validation_epoch": int(args.validation_epoch),
         "lane_flip_variant": str(args.lane_flip_variant),
         "neighbor_offsets": list(neighbor_offsets),
+        "temporal_alignment_mode": str(args.temporal_alignment_mode),
         "verifier_enabled": bool(int(args.verifier_enabled)),
         "train_record_batches": int(args.train_record_batches),
         "verifier_epochs": int(args.verifier_epochs),
