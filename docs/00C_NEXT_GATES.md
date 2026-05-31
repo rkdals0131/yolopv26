@@ -480,9 +480,9 @@ Latest lane center-offset field broader runtime composite:
 - exact epoch-2 subset만으로 성공 판정하지 않는다.
 - metric은 task F1, TP/FP/FN, support를 같이 본다.
 - comparison grid는 metric 보조 증거로만 쓴다.
-- run artifact는 `best.pt`, exact eval summary, comparison grid 정도만 남긴다.
+- run artifact는 frontier/runtime 후보가 아니면 CSV/summary/history 중심으로 남기고 checkpoint/TensorBoard는 정리한다. Current retained checkpoint surfaces는 base `best.pt`, stop-line-priority router specialist `best.pt`, and `merged_lane_head.pt`이다.
 - Git branch/worktree를 파서 실험할 때도 한 worktree는 한 가설만 소유한다.
-- `/tmp` 안의 임시 산출물은 삭제 가능하다. 그 밖 경로에서는 삭제하지 않고 삭제후보 폴더로 이동만 허용한다.
+- `/tmp` 안의 임시 산출물은 삭제 가능하다. `runs/` 아래 실험 checkpoint/TensorBoard는 metric/docs가 남고 frontier-retained가 아니면 artifact-cleanup 지시 하에 삭제 가능하다. Dataset root, retained checkpoint surfaces, and non-run paths는 삭제하지 않고 삭제후보 폴더로 이동만 허용한다.
 
 ## 3. Worktree experiment protocol
 

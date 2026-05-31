@@ -25937,3 +25937,33 @@ Decision:
 - Close this as lane area-ROI gap-fill set-occupancy union selection.
 - Do not repeat it as gap support threshold, row sample count, edge/exterior weight, max append count, MLP epoch/LR/hidden size, or train-batch scaling on the same dropped-area union-pool surface.
 - Reopen lane area-ROI only with a materially different candidate generator, learned instance emitter, or verifier signal that first improves fixed smoke TP/FP/FN with FP growth below TP gain.
+
+## 410. 2026-05-31 Artifact sweep: keep frontier checkpoints, prune historical negative weights
+
+Context:
+
+- The current frontier still fails the actual target, but many historical negative train runs were still keeping large `phase_4/checkpoints/*.pt` and TensorBoard files after their TP/FP/FN evidence had already been documented.
+- The user explicitly asked for smart storage handling and no dataset copying.
+
+Cleanup:
+
+- Removed non-frontier `phase_4/checkpoints/*.pt` and `phase_4/tensorboard/events.out.tfevents*` files from historical closed runs.
+- Dry-run accounting selected `46` files, about `3.7 GiB`.
+- Kept the current retained checkpoint surfaces:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Kept compact CSV, JSON summary, history, and analysis exports for documented negative runs.
+- No dataset files were copied or removed.
+- Root `yolo26*.pt` files are absent.
+
+Verification:
+
+- `find runs/pv26_exhaustive_od_lane_train -type f \( -path '*/phase_4/checkpoints/*.pt' -o -path '*/phase_4/tensorboard/events.out.tfevents*' \) -printf '%s %p\n' | sort -nr`
+  now reports only the two retained phase-4 `best.pt` files.
+- `find . -maxdepth 1 -type f \( -name 'yolo26*.pt' -o -name '*.pt' \)` reports no root weight files.
+
+Decision:
+
+- Historical negative checkpoints should not be treated as retained frontier artifacts.
+- Future negative runs should retain metric evidence first, then prune checkpoints/TensorBoard unless the checkpoint is explicitly needed for a current runtime contract or follow-up reproduction gate.
