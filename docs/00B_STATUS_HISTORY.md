@@ -24960,3 +24960,121 @@ Decision:
 - The implementation is mechanically valid and trains/evaluates on real data, but fixed val4 rejects it.
 - Close copy-paste static-trunk as freeze-policy / copy-paste probability / margin / alpha / seed / head-LR / epoch-count / train-batch scaling over this same augmentation signal.
 - Reopen augmented stop-line feeding only with a materially different candidate-generation, along-axis geometry, or no-GT quality signal that first improves fixed smoke TP/FP/FN.
+
+## 401. 2026-05-31 Lane area-ROI stacked-quality verifier: new lane frontier still below all-task target
+
+Context:
+
+- The dropped-area lane verifier remained the closest learned lane replay surface, but prior exact/broader gains were FP-limited.
+- This run tests one stronger no-GT instance-quality stack rather than one more single-feature retune:
+  - nearest retained-lane alignment context;
+  - dense side-contrast along the candidate;
+  - row-local centerline/support peak alignment;
+  - stop-line/crosswalk dense-map conflict;
+  - alternate-decode TTA consistency;
+  - 3-member verifier ensemble with `mean_minus_std` probability.
+
+Implementation:
+
+- No code changes were needed; the existing `tools/probe_pv26_lane_area_roi_verifier.py` flags were used.
+- Candidate source stayed `dropped_area`.
+- Candidate integration stayed append-only:
+  - `candidate_integration_mode=append`;
+  - `quality_threshold=0.80`;
+  - `max_appends_per_sample=2`.
+- Training/eval reused the existing canonical dataset root in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- The retained runtime context stayed fixed:
+  - checkpoint `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`;
+  - lane flip variant `flip_centerline_avg_lane_cross_comp050`;
+  - experiment `stopline_projection_comp_runtime`.
+
+Smoke train64 / fixed val4:
+
+| Task | Baseline F1 | Repaired F1 | Baseline TP/FP/FN | Repaired TP/FP/FN |
+| --- | ---: | ---: | --- | --- |
+| lane | `0.5839` | `0.6056` | `40 / 11 / 46` | `43 / 13 / 43` |
+| stop_line | `0.0000` | `0.0000` | `0 / 3 / 2` | `0 / 3 / 2` |
+| crosswalk | `0.5455` | `0.5455` | `3 / 1 / 4` | `3 / 1 / 4` |
+
+Exact train256 / val128:
+
+| Task | Baseline F1 | Repaired F1 | Baseline TP/FP/FN | Repaired TP/FP/FN |
+| --- | ---: | ---: | --- | --- |
+| lane | `0.5888` | `0.5986` | `1202 / 491 / 1188` | `1240 / 513 / 1150` |
+| stop_line | `0.5333` | `0.5333` | `32 / 28 / 28` | `32 / 28 / 28` |
+| crosswalk | `0.5988` | `0.5988` | `50 / 36 / 31` | `50 / 36 / 31` |
+
+Broader train256 / val512 aggregate:
+
+- The single val512 process exited before summary emission around val batch `180`, so the retained broader result is an aggregate of four completed deterministic 128-batch chunks:
+  - chunk `0`: exact-val128 output directory;
+  - chunk `128`;
+  - chunk `256`;
+  - chunk `384`.
+- Counts below are summed TP/FP/FN across those four chunks.
+
+| Task | Baseline F1 | Repaired F1 | Baseline TP/FP/FN | Repaired TP/FP/FN |
+| --- | ---: | ---: | --- | --- |
+| lane | `0.5749` | `0.5851` | `4634 / 1983 / 4871` | `4801 / 2105 / 4704` |
+| stop_line | `0.5302` | `0.5302` | `123 / 90 / 128` | `123 / 90 / 128` |
+| crosswalk | `0.5969` | `0.5969` | `228 / 136 / 172` | `228 / 136 / 172` |
+
+Candidate accounting:
+
+- Exact val128:
+  - validation candidates `749`;
+  - selected candidates `60`;
+  - selected oracle-positive `40`.
+- Broader val512 aggregate:
+  - validation candidates `3139`;
+  - selected candidates `289`;
+  - selected oracle-positive `175`.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train256_exact_val128_20260531/summary.json`.
+- Broader chunk summaries:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train256_broader_val512_chunk128_20260531/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train256_broader_val512_chunk256_20260531/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train256_broader_val512_chunk384_20260531/summary.json`.
+- Broader aggregate:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train256_broader_val512_aggregate_20260531/summary.json`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_stacked_quality_train256_broader_val512_aggregate_20260531/metrics.csv`.
+
+Storage:
+
+- Retained outputs are CSV/summary-only:
+  - smoke `48K`;
+  - exact `204K`;
+  - chunk128 `212K`;
+  - chunk256 `208K`;
+  - chunk384 `216K`;
+  - aggregate `12K`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- CUDA train64/fixed-val4 stacked-quality verifier on the existing canonical dataset root.
+- CUDA train256/exact-val128 stacked-quality verifier on the existing canonical dataset root.
+- Chunked broader-val512 aggregate from four completed 128-batch summaries on the existing canonical dataset root.
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py`.
+- `git diff --check`.
+
+Decision:
+
+- Mechanically valid and real-data positive: this is the new lane area-ROI exact and broader replay frontier.
+- Not success:
+  - exact lane is still below `0.60` at `0.5986`;
+  - broader lane is still below `0.60` at `0.5851`;
+  - broader stop-line/crosswalk are also below `0.60` on this aggregate slice.
+- Close this as a standalone stacked-feature/ensemble path over the same dropped-area append surface.
+- Do not repeat as feature-stack subset/order, ensemble size/mode, quality threshold, max-append cap, hidden dim, member seed, or train-batch scaling on the same candidate surface.
+- Reopen dropped-candidate rescue only with a different candidate generator, a TP-preserving model-side instance emitter, or a genuinely stronger no-GT instance-quality signal whose exact TP gain is not paid for by comparable FP growth.
