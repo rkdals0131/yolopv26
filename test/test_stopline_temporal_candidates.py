@@ -7,8 +7,12 @@ import numpy as np
 from model.data.transform import compute_letterbox_transform
 from tools.probe_pv26_stopline_temporal_candidates import (
     TEMPORAL_FEATURES,
+    UNION_SCORE_KEY,
+    _build_baseline_union_candidates,
     _build_temporal_candidates,
+    _build_union_candidates,
     _phase_correlation_shift,
+    _select_union_stop_lines,
     _select_temporal_stop_lines,
     _sparse_affine_alignment_from_arrays,
     _stopline_temporal_features,
@@ -141,6 +145,35 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertTrue(candidates[0]["is_oracle_positive"])
         self.assertEqual(candidates[0]["neighbor_dataset_index"], 12)
 
+    def test_build_union_candidates_assigns_single_match_label(self) -> None:
+        mask = np.ones((76, 100), dtype=np.float32) * 0.5
+        center = np.ones((76, 100), dtype=np.float32) * 0.4
+        selector = np.ones((76, 100), dtype=np.float32) * 0.3
+        baseline_prediction = {
+            "stop_lines": [{"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.8}]
+        }
+        temporal_candidates = [
+            {"points_xy": [[100.0, 300.0], [700.0, 300.0]], "score": 0.7, "temporal_rank_score": 1.0}
+        ]
+        gt = [{"points_xy": [[100.0, 300.0], [700.0, 300.0]]}]
+
+        baseline_candidates = _build_baseline_union_candidates(
+            meta=_meta(),
+            mask_probs=mask,
+            center_probs=center,
+            selector_probs=selector,
+            baseline_prediction=baseline_prediction,
+        )
+        union_candidates = _build_union_candidates(
+            baseline_candidates=baseline_candidates,
+            temporal_candidates=temporal_candidates,
+            gt_stop_lines=gt,
+        )
+
+        self.assertEqual(len(union_candidates), 2)
+        self.assertEqual(sum(1 for candidate in union_candidates if candidate["is_union_positive"]), 1)
+        self.assertEqual({candidate["source"] for candidate in union_candidates}, {"retained_projection_comp", "temporal_neighbor"})
+
     def test_select_temporal_stop_lines_applies_score_and_cap(self) -> None:
         candidates = [
             {"points_xy": [[100.0, 300.0], [700.0, 300.0]], "temporal_mlp_score": 0.9, "length": 600.0},
@@ -154,6 +187,29 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
             top_k=2,
             max_components=1,
         )
+
+        self.assertEqual(len(selected), 1)
+        self.assertAlmostEqual(float(selected[0]["score"]), 0.9)
+
+    def test_select_union_stop_lines_applies_score_and_cap(self) -> None:
+        candidates = [
+            {
+                "points_xy": [[100.0, 300.0], [700.0, 300.0]],
+                UNION_SCORE_KEY: 0.9,
+                "temporal_rank_score": 0.5,
+                "length": 600.0,
+                "source": "retained_projection_comp",
+            },
+            {
+                "points_xy": [[100.0, 330.0], [700.0, 330.0]],
+                UNION_SCORE_KEY: 0.2,
+                "temporal_rank_score": 0.7,
+                "length": 600.0,
+                "source": "temporal_neighbor",
+            },
+        ]
+
+        selected = _select_union_stop_lines(candidates, threshold=0.5, top_k=2, max_components=1)
 
         self.assertEqual(len(selected), 1)
         self.assertAlmostEqual(float(selected[0]["score"]), 0.9)

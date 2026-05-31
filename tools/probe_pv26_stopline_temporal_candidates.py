@@ -49,6 +49,7 @@ from tools.pv26_train import cli as train_cli
 
 
 SCORE_KEY = "temporal_mlp_score"
+UNION_SCORE_KEY = "temporal_union_mlp_score"
 TEMPORAL_FEATURES = (
     "temporal_neighbor_score",
     "temporal_neighbor_length",
@@ -74,6 +75,13 @@ TEMPORAL_FEATURES = (
     "temporal_center_y_norm",
     "temporal_abs_cos",
     "temporal_abs_sin",
+)
+TEMPORAL_UNION_FEATURES = (
+    *TEMPORAL_FEATURES,
+    "union_source_retained",
+    "union_source_temporal",
+    "union_candidate_rank_norm",
+    "union_candidate_count_norm",
 )
 
 
@@ -126,6 +134,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temporal-top-k", type=int, default=8)
     parser.add_argument("--max-temporal-candidates", type=int, default=16)
     parser.add_argument("--max-components", type=int, default=2)
+    parser.add_argument("--union-selector-enabled", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--union-top-k", type=int, default=12)
     parser.add_argument("--threshold-grid", type=int, default=101)
     parser.add_argument("--verifier-epochs", type=int, default=60)
     parser.add_argument("--verifier-lr", type=float, default=1.0e-3)
@@ -537,6 +547,122 @@ def _candidate_row(candidate: dict[str, Any], *, batch_index: int, sample_index:
     }
 
 
+def _assign_union_match_labels(candidates: list[dict[str, Any]], gt_stop_lines: list[dict[str, Any]]) -> None:
+    for candidate in candidates:
+        candidate["is_union_positive"] = False
+    if not candidates or not gt_stop_lines:
+        return
+    pairs: list[tuple[float, int, int]] = []
+    for candidate_index, candidate in enumerate(candidates):
+        for gt_index, gt_line in enumerate(gt_stop_lines):
+            distance = _stop_line_distance(candidate, gt_line)
+            if math.isfinite(distance) and float(distance) <= 40.0:
+                pairs.append((float(distance), int(candidate_index), int(gt_index)))
+    pairs.sort(key=lambda item: item[0])
+    used_candidates: set[int] = set()
+    used_gt: set[int] = set()
+    for _distance, candidate_index, gt_index in pairs:
+        if candidate_index in used_candidates or gt_index in used_gt:
+            continue
+        candidates[candidate_index]["is_union_positive"] = True
+        used_candidates.add(candidate_index)
+        used_gt.add(gt_index)
+
+
+def _build_baseline_union_candidates(
+    *,
+    meta: dict[str, Any],
+    mask_probs: np.ndarray | None,
+    center_probs: np.ndarray | None,
+    selector_probs: np.ndarray | None,
+    baseline_prediction: dict[str, Any],
+) -> list[dict[str, Any]]:
+    current_stop_lines = list(baseline_prediction.get("stop_lines", []))
+    current_stop_lines.sort(key=_stopline_prediction_sort_key, reverse=True)
+    candidates: list[dict[str, Any]] = []
+    for rank, line in enumerate(current_stop_lines, start=1):
+        candidate = _copy_stop_line(line, score=_line_score(line), source="retained_projection_comp")
+        candidate["neighbor_offset"] = 0
+        candidate["neighbor_dataset_index"] = -1
+        candidate["neighbor_rank"] = int(rank)
+        candidate["temporal_alignment_dx"] = 0.0
+        candidate["temporal_alignment_dy"] = 0.0
+        candidate["temporal_alignment_response_raw"] = 0.0
+        candidate["temporal_alignment_applied"] = 0.0
+        candidate["length"] = _line_length(candidate)
+        candidate.update(
+            _stopline_temporal_features(
+                candidate,
+                meta=meta,
+                mask_probs=mask_probs,
+                center_probs=center_probs,
+                selector_probs=selector_probs,
+                neighbor_offset=0,
+                neighbor_rank=int(rank),
+                alignment={},
+                current_stop_lines=current_stop_lines,
+            )
+        )
+        candidate["temporal_rank_score"] = (
+            float(candidate.get("temporal_proposal_max", 0.0))
+            + 0.5 * float(candidate.get("temporal_mask_mean", 0.0))
+            + 0.25 * float(candidate.get("temporal_neighbor_score", 0.0))
+        )
+        candidates.append(candidate)
+    return candidates
+
+
+def _build_union_candidates(
+    *,
+    baseline_candidates: list[dict[str, Any]],
+    temporal_candidates: list[dict[str, Any]],
+    gt_stop_lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidates = [dict(candidate) for candidate in baseline_candidates] + [
+        dict(candidate, source="temporal_neighbor", proposal_source="temporal_neighbor") for candidate in temporal_candidates
+    ]
+    for candidate in candidates:
+        source = str(candidate.get("source", ""))
+        candidate["union_source_retained"] = float(1.0 if source == "retained_projection_comp" else 0.0)
+        candidate["union_source_temporal"] = float(1.0 if source == "temporal_neighbor" else 0.0)
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("temporal_rank_score", 0.0)),
+            float(item.get("temporal_neighbor_score", 0.0)),
+            float(item.get("length", 0.0)),
+        ),
+        reverse=True,
+    )
+    _assign_union_match_labels(candidates, gt_stop_lines)
+    return candidates
+
+
+def _union_candidate_row(
+    candidate: dict[str, Any],
+    *,
+    batch_index: int,
+    sample_index: int,
+    meta: dict[str, Any],
+    rank: int,
+    candidate_count: int,
+) -> dict[str, Any]:
+    row = _candidate_row(candidate, batch_index=batch_index, sample_index=sample_index, meta=meta)
+    source = str(candidate.get("source", ""))
+    row.update(
+        {
+            "source": source,
+            "is_union_positive": int(bool(candidate.get("is_union_positive", False))),
+            "union_source_retained": float(1.0 if source == "retained_projection_comp" else 0.0),
+            "union_source_temporal": float(1.0 if source == "temporal_neighbor" else 0.0),
+            "union_candidate_rank_norm": float(1.0 / max(int(rank), 1)),
+            "union_candidate_count_norm": float(min(float(candidate_count) / 16.0, 4.0)),
+        }
+    )
+    if UNION_SCORE_KEY in candidate:
+        row[UNION_SCORE_KEY] = float(candidate.get(UNION_SCORE_KEY, 0.0))
+    return row
+
+
 def _build_temporal_candidates(
     *,
     meta: dict[str, Any],
@@ -620,9 +746,10 @@ def _collect_records(
     temporal_alignment_max_shift_frac: float,
     max_temporal_candidates: int,
     split_name: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
+    union_rows: list[dict[str, Any]] = []
     sample_rows: list[dict[str, Any]] = []
     with torch.no_grad():
         for batch_index, batch in enumerate(loader, start=1):
@@ -682,6 +809,18 @@ def _collect_records(
                     neighbor_predictions=neighbor_payloads,
                     max_candidates=int(max_temporal_candidates),
                 )
+                baseline_candidates = _build_baseline_union_candidates(
+                    meta=meta,
+                    mask_probs=mask_probs,
+                    center_probs=center_probs,
+                    selector_probs=selector_probs,
+                    baseline_prediction=baseline_prediction,
+                )
+                union_candidates = _build_union_candidates(
+                    baseline_candidates=baseline_candidates,
+                    temporal_candidates=candidates,
+                    gt_stop_lines=list(gt_sample.get("stop_lines", [])),
+                )
                 candidate_rows = [
                     _candidate_row(candidate, batch_index=batch_index, sample_index=sample_index, meta=meta)
                     for candidate in candidates
@@ -689,6 +828,20 @@ def _collect_records(
                 for row in candidate_rows:
                     row["split"] = str(split_name)
                 rows.extend(candidate_rows)
+                sample_union_rows = [
+                    _union_candidate_row(
+                        candidate,
+                        batch_index=batch_index,
+                        sample_index=sample_index,
+                        meta=meta,
+                        rank=rank,
+                        candidate_count=len(union_candidates),
+                    )
+                    for rank, candidate in enumerate(union_candidates, start=1)
+                ]
+                for row in sample_union_rows:
+                    row["split"] = str(split_name)
+                union_rows.extend(sample_union_rows)
                 records.append(
                     {
                         "batch_index": int(batch_index),
@@ -698,7 +851,9 @@ def _collect_records(
                         "baseline_prediction": dict(baseline_prediction),
                         "gt_stop_lines": list(gt_sample.get("stop_lines", [])),
                         "candidates": candidates,
+                        "union_candidates": union_candidates,
                         "candidate_feature_rows": candidate_rows,
+                        "union_candidate_rows": sample_union_rows,
                     }
                 )
                 sample_rows.append(
@@ -716,12 +871,16 @@ def _collect_records(
                         "baseline_stopline_count": int(len(list(baseline_prediction.get("stop_lines", [])))),
                         "gt_stopline_count": int(len(list(gt_sample.get("stop_lines", [])))),
                         "temporal_candidate_count": int(len(candidates)),
+                        "union_candidate_count": int(len(union_candidates)),
+                        "union_oracle_positive_count": int(
+                            sum(1 for candidate in union_candidates if bool(candidate.get("is_union_positive", False)))
+                        ),
                         "temporal_oracle_positive_count": int(
                             sum(1 for candidate in candidates if bool(candidate.get("is_oracle_positive", False)))
                         ),
                     }
                 )
-    return records, rows, sample_rows
+    return records, rows, union_rows, sample_rows
 
 
 def _feature_matrix(records: list[dict[str, Any]], *, top_k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -735,6 +894,35 @@ def _feature_matrix(records: list[dict[str, Any]], *, top_k: int) -> tuple[np.nd
             labels.append(float(bool(candidate.get("is_oracle_positive", False))))
     if not features:
         return np.zeros((0, len(TEMPORAL_FEATURES)), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return np.asarray(features, dtype=np.float32), np.asarray(labels, dtype=np.float32)
+
+
+def _union_feature_vector(candidate: dict[str, Any], *, rank: int, candidate_count: int) -> list[float]:
+    source = str(candidate.get("source", ""))
+    values = [float(candidate.get(name, 0.0)) for name in TEMPORAL_FEATURES]
+    values.extend(
+        [
+            float(1.0 if source == "retained_projection_comp" else 0.0),
+            float(1.0 if source == "temporal_neighbor" else 0.0),
+            float(1.0 / max(int(rank), 1)),
+            float(min(float(candidate_count) / 16.0, 4.0)),
+        ]
+    )
+    return [0.0 if not math.isfinite(float(value)) else float(value) for value in values]
+
+
+def _union_feature_matrix(records: list[dict[str, Any]], *, top_k: int) -> tuple[np.ndarray, np.ndarray]:
+    features: list[list[float]] = []
+    labels: list[float] = []
+    for record in records:
+        candidates = list(record.get("union_candidates", []))
+        for rank, candidate in enumerate(candidates, start=1):
+            if rank > int(top_k):
+                continue
+            features.append(_union_feature_vector(candidate, rank=rank, candidate_count=len(candidates)))
+            labels.append(float(bool(candidate.get("is_union_positive", False))))
+    if not features:
+        return np.zeros((0, len(TEMPORAL_UNION_FEATURES)), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     return np.asarray(features, dtype=np.float32), np.asarray(labels, dtype=np.float32)
 
 
@@ -753,6 +941,22 @@ def _attach_scores(records: list[dict[str, Any]], scores: np.ndarray, *, top_k: 
             index += 1
     if index != int(scores.shape[0]):
         raise ValueError(f"score length mismatch: attached {index}, got {int(scores.shape[0])}")
+
+
+def _attach_union_scores(records: list[dict[str, Any]], scores: np.ndarray, *, top_k: int) -> None:
+    index = 0
+    for record in records:
+        rows = list(record.get("union_candidate_rows", []))
+        for rank, candidate in enumerate(record.get("union_candidates", []), start=1):
+            if rank > int(top_k):
+                continue
+            score = float(scores[index])
+            candidate[UNION_SCORE_KEY] = score
+            if rank - 1 < len(rows):
+                rows[rank - 1][UNION_SCORE_KEY] = score
+            index += 1
+    if index != int(scores.shape[0]):
+        raise ValueError(f"union score length mismatch: attached {index}, got {int(scores.shape[0])}")
 
 
 def _score_records(
@@ -776,6 +980,38 @@ def _score_records(
     val_scores = _predict_raw_patch_mlp(model, val_std)
     _attach_scores(train_records, train_scores, top_k=int(top_k))
     _attach_scores(val_records, val_scores, top_k=int(top_k))
+    return {
+        "train_candidate_count": int(train_x.shape[0]),
+        "train_positive_count": int(train_y.sum()),
+        "val_candidate_count": int(val_x.shape[0]),
+        "val_positive_count": int(val_y.sum()),
+        "feature_dim": int(train_x.shape[1]),
+        "mean_dim": int(mean.shape[0]),
+        "std_min": float(std.min()) if std.size else 0.0,
+    }
+
+
+def _score_union_records(
+    *,
+    train_records: list[dict[str, Any]],
+    val_records: list[dict[str, Any]],
+    top_k: int,
+    epochs: int,
+    lr: float,
+) -> dict[str, Any]:
+    train_x, train_y = _union_feature_matrix(train_records, top_k=int(top_k))
+    val_x, val_y = _union_feature_matrix(val_records, top_k=int(top_k))
+    if train_x.shape[0] == 0 or val_x.shape[0] == 0:
+        raise ValueError("temporal union selector requires non-empty train and validation candidates")
+    combined_x = np.concatenate([train_x, val_x], axis=0)
+    combined_std, mean, std = _standardize_from_train(train_x.astype(np.float64), combined_x.astype(np.float64))
+    train_std = combined_std[: train_x.shape[0]].astype(np.float32)
+    val_std = combined_std[train_x.shape[0] :].astype(np.float32)
+    model = _fit_raw_patch_mlp(train_std, train_y.astype(np.float32), epochs=int(epochs), lr=float(lr))
+    train_scores = _predict_raw_patch_mlp(model, train_std)
+    val_scores = _predict_raw_patch_mlp(model, val_std)
+    _attach_union_scores(train_records, train_scores, top_k=int(top_k))
+    _attach_union_scores(val_records, val_scores, top_k=int(top_k))
     return {
         "train_candidate_count": int(train_x.shape[0]),
         "train_positive_count": int(train_y.sum()),
@@ -812,6 +1048,38 @@ def _select_temporal_stop_lines(
     )
     predictions = [
         _copy_stop_line(candidate, score=float(candidate.get(score_key, 0.0)), source="temporal_neighbor")
+        for candidate in selected
+    ]
+    predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
+    predictions = _dedupe_stop_line_predictions(predictions)
+    return predictions[: max(1, int(max_components))]
+
+
+def _select_union_stop_lines(
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for rank, candidate in enumerate(candidates, start=1):
+        if rank > int(top_k):
+            continue
+        if float(candidate.get(UNION_SCORE_KEY, 0.0)) < float(threshold):
+            continue
+        selected.append(candidate)
+    selected.sort(
+        key=lambda item: (
+            float(item.get(UNION_SCORE_KEY, 0.0)),
+            float(item.get("union_source_retained", 0.0)),
+            float(item.get("temporal_rank_score", 0.0)),
+            float(item.get("length", 0.0)),
+        ),
+        reverse=True,
+    )
+    predictions = [
+        _copy_stop_line(candidate, score=float(candidate.get(UNION_SCORE_KEY, 0.0)), source=str(candidate.get("source", "union")))
         for candidate in selected
     ]
     predictions.sort(key=_stopline_prediction_sort_key, reverse=True)
@@ -866,6 +1134,43 @@ def _metrics_row(
     return row
 
 
+def _union_metrics_row(
+    records: list[dict[str, Any]],
+    *,
+    name: str,
+    split: str,
+    threshold: float,
+    top_k: int,
+    max_components: int,
+) -> dict[str, Any]:
+    predictions: list[dict[str, Any]] = []
+    raw_batches: list[dict[str, Any]] = []
+    for record in records:
+        raw_batches.append(record["raw_batch"])
+        stop_lines = _select_union_stop_lines(
+            list(record.get("union_candidates", [])),
+            threshold=float(threshold),
+            top_k=int(top_k),
+            max_components=int(max_components),
+        )
+        predictions.append({**record["baseline_prediction"], "stop_lines": stop_lines})
+    merged_raw = _merge_raw_batches(raw_batches)
+    metrics = augment_lane_family_metrics(summarize_pv26_metrics(predictions, merged_raw))
+    prediction_count = sum(len(sample.get("stop_lines", [])) for sample in predictions)
+    row = _row_from_metrics(name, metrics, prediction_count=prediction_count, stats={})
+    row.update(
+        {
+            "split": str(split),
+            "score_key": UNION_SCORE_KEY,
+            "threshold": float(threshold),
+            "top_k": int(top_k),
+            "union_baseline": 0,
+            "sample_count": int(len(records)),
+        }
+    )
+    return row
+
+
 def _best_threshold(
     records: list[dict[str, Any]],
     *,
@@ -874,23 +1179,71 @@ def _best_threshold(
     max_components: int,
     grid_size: int,
 ) -> float:
+    del max_components
+    candidate_rows: list[tuple[float, int]] = []
+    for record in records:
+        for rank, candidate in enumerate(record.get("candidates", []), start=1):
+            if rank > int(top_k):
+                continue
+            candidate_rows.append((float(candidate.get(score_key, 0.0)), int(bool(candidate.get("is_oracle_positive", False)))))
+    if not candidate_rows:
+        return 0.5
+    total_positive = int(sum(label for _score, label in candidate_rows))
+    if total_positive <= 0:
+        return 1.0
     best_threshold = 0.5
-    best_key: tuple[float, float, float] = (-1.0, -1.0, 0.0)
+    best_key: tuple[float, int, int] = (-1.0, -1, 0)
     for threshold in np.linspace(0.0, 1.0, max(2, int(grid_size))).tolist():
-        row = _metrics_row(
-            records,
-            name="threshold_search",
-            split="train",
-            score_key=score_key,
-            threshold=float(threshold),
-            top_k=int(top_k),
-            max_components=int(max_components),
-        )
-        key = (
-            float(row.get("stop_line_f1", 0.0)),
-            float(row.get("stop_line_tp", 0.0)),
-            -float(row.get("stop_line_fp", 0.0)),
-        )
+        tp = 0
+        fp = 0
+        for score, label in candidate_rows:
+            if float(score) < float(threshold):
+                continue
+            if label:
+                tp += 1
+            else:
+                fp += 1
+        fn = max(0, total_positive - tp)
+        f1 = 0.0 if tp <= 0 else (2.0 * float(tp)) / (2.0 * float(tp) + float(fp) + float(fn))
+        key = (float(f1), int(tp), -int(fp))
+        if key > best_key:
+            best_key = key
+            best_threshold = float(threshold)
+    return float(best_threshold)
+
+
+def _best_union_threshold(
+    records: list[dict[str, Any]],
+    *,
+    top_k: int,
+    grid_size: int,
+) -> float:
+    candidate_rows: list[tuple[float, int]] = []
+    for record in records:
+        for rank, candidate in enumerate(record.get("union_candidates", []), start=1):
+            if rank > int(top_k):
+                continue
+            candidate_rows.append((float(candidate.get(UNION_SCORE_KEY, 0.0)), int(bool(candidate.get("is_union_positive", False)))))
+    if not candidate_rows:
+        return 0.5
+    total_positive = int(sum(label for _score, label in candidate_rows))
+    if total_positive <= 0:
+        return 1.0
+    best_threshold = 0.5
+    best_key: tuple[float, int, int] = (-1.0, -1, 0)
+    for threshold in np.linspace(0.0, 1.0, max(2, int(grid_size))).tolist():
+        tp = 0
+        fp = 0
+        for score, label in candidate_rows:
+            if float(score) < float(threshold):
+                continue
+            if label:
+                tp += 1
+            else:
+                fp += 1
+        fn = max(0, total_positive - tp)
+        f1 = 0.0 if tp <= 0 else (2.0 * float(tp)) / (2.0 * float(tp) + float(fp) + float(fn))
+        key = (float(f1), int(tp), -int(fp))
         if key > best_key:
             best_key = key
             best_threshold = float(threshold)
@@ -944,7 +1297,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         (str(record.dataset_key), str(record.split), str(record.sample_id)): int(index)
         for index, record in enumerate(dataset.records)
     }
-    train_records, train_candidate_rows, train_sample_rows = _collect_records(
+    train_records, train_candidate_rows, train_union_candidate_rows, train_sample_rows = _collect_records(
         loader=train_loader,
         evaluator=evaluator,
         predictor=predictor,
@@ -958,7 +1311,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_temporal_candidates=int(args.max_temporal_candidates),
         split_name="train",
     )
-    val_records, val_candidate_rows, val_sample_rows = _collect_records(
+    val_records, val_candidate_rows, val_union_candidate_rows, val_sample_rows = _collect_records(
         loader=val_loader,
         evaluator=evaluator,
         predictor=predictor,
@@ -986,6 +1339,21 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_components=int(args.max_components),
         grid_size=int(args.threshold_grid),
     )
+    union_score_summary: dict[str, Any] = {}
+    union_threshold: float | None = None
+    if int(args.union_selector_enabled) == 1:
+        union_score_summary = _score_union_records(
+            train_records=train_records,
+            val_records=val_records,
+            top_k=int(args.union_top_k),
+            epochs=int(args.verifier_epochs),
+            lr=float(args.verifier_lr),
+        )
+        union_threshold = _best_union_threshold(
+            train_records,
+            top_k=int(args.union_top_k),
+            grid_size=int(args.threshold_grid),
+        )
     rows = [
         _metrics_row(train_records, name="baseline", split="train"),
         _metrics_row(val_records, name="baseline", split="val"),
@@ -1047,6 +1415,27 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             union_baseline=True,
         ),
     ]
+    if int(args.union_selector_enabled) == 1 and union_threshold is not None:
+        rows.extend(
+            [
+                _union_metrics_row(
+                    train_records,
+                    name="temporal_union_selector",
+                    split="train",
+                    threshold=float(union_threshold),
+                    top_k=int(args.union_top_k),
+                    max_components=int(args.max_components),
+                ),
+                _union_metrics_row(
+                    val_records,
+                    name="temporal_union_selector",
+                    split="val",
+                    threshold=float(union_threshold),
+                    top_k=int(args.union_top_k),
+                    max_components=int(args.max_components),
+                ),
+            ]
+        )
     summary = {
         "checkpoint": str(checkpoint),
         "source_run": str(Path(args.source_run).expanduser().resolve()),
@@ -1063,16 +1452,30 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "temporal_top_k": int(args.temporal_top_k),
         "max_temporal_candidates": int(args.max_temporal_candidates),
         "max_components": int(args.max_components),
+        "union_selector_enabled": int(args.union_selector_enabled),
+        "union_top_k": int(args.union_top_k),
         "threshold": float(threshold),
+        "threshold_selection": "train_candidate_oracle_label_f1",
+        "union_threshold": None if union_threshold is None else float(union_threshold),
+        "union_threshold_selection": None if union_threshold is None else "train_union_candidate_label_f1",
         "score_summary": score_summary,
+        "union_score_summary": union_score_summary,
         "train_sample_count": int(len(train_records)),
         "val_sample_count": int(len(val_records)),
         "train_temporal_candidate_count": int(len(train_candidate_rows)),
         "val_temporal_candidate_count": int(len(val_candidate_rows)),
+        "train_union_candidate_count": int(len(train_union_candidate_rows)),
+        "val_union_candidate_count": int(len(val_union_candidate_rows)),
         "train_temporal_oracle_positive_count": int(
             sum(int(row.get("is_oracle_positive", 0)) for row in train_candidate_rows)
         ),
         "val_temporal_oracle_positive_count": int(sum(int(row.get("is_oracle_positive", 0)) for row in val_candidate_rows)),
+        "train_union_oracle_positive_count": int(
+            sum(int(row.get("is_union_positive", 0)) for row in train_union_candidate_rows)
+        ),
+        "val_union_oracle_positive_count": int(
+            sum(int(row.get("is_union_positive", 0)) for row in val_union_candidate_rows)
+        ),
         "train_temporal_alignment_applied_count": int(
             sum(1 for row in train_candidate_rows if float(row.get("temporal_alignment_applied", 0.0)) > 0.0)
         ),
@@ -1083,7 +1486,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "interpretation": (
             "Temporal stop-line candidate probe. Runtime candidates come from neighboring frame predictions "
             "and current-frame dense stop-line map features; GT is used for train labels, oracle diagnostics, "
-            "and final metrics only."
+            "and final metrics only. The opt-in union selector trains a candidate-level FP-control verifier "
+            "over retained projection-comp plus temporal candidates, then emits one fixed-size selected set."
         ),
     }
     return {
@@ -1091,6 +1495,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "rows": rows,
         "train_candidate_rows": train_candidate_rows,
         "val_candidate_rows": val_candidate_rows,
+        "train_union_candidate_rows": train_union_candidate_rows,
+        "val_union_candidate_rows": val_union_candidate_rows,
         "sample_rows": [*train_sample_rows, *val_sample_rows],
     }
 
@@ -1103,6 +1509,9 @@ def main() -> int:
     _write_csv(output_dir / "temporal_variants.csv", payload["rows"])
     _write_candidate_features_csv(output_dir / "train_candidate_features.csv", payload["train_candidate_rows"])
     _write_candidate_features_csv(output_dir / "val_candidate_features.csv", payload["val_candidate_rows"])
+    if payload.get("train_union_candidate_rows") or payload.get("val_union_candidate_rows"):
+        _write_candidate_features_csv(output_dir / "train_union_candidate_features.csv", payload["train_union_candidate_rows"])
+        _write_candidate_features_csv(output_dir / "val_union_candidate_features.csv", payload["val_union_candidate_rows"])
     _write_csv(output_dir / "temporal_samples.csv", payload["sample_rows"])
     (output_dir / "summary.json").write_text(
         json.dumps(payload["summary"], ensure_ascii=False, indent=2),

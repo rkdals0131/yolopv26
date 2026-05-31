@@ -24395,3 +24395,127 @@ Decision:
 - The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it.
 - Do not repeat crosswalk-derived stop-line generation as offset/length-scale/top-k/max-candidate/verifier-threshold/train-scale tuning.
 - Reopen only if the candidate geometry itself changes enough that fixed exact oracle union beats primary `32 / 28 / 28`, F1 `0.5333`, before training another selector.
+
+## 396. 2026-05-31 Stop-line sparse-affine temporal union selector: candidate-level FP-control is too small
+
+Context:
+
+- Sparse-affine temporal alignment had some oracle headroom, but the deployable temporal verifier added too many FP.
+- The retained-output suppressor showed that learned no-GT FP-control can reduce stop-line FP, but suppress-only cannot recover the missing TP.
+- This branch paired the two ideas:
+  - retained projection-comp stop-lines and sparse-affine temporal stop-line candidates enter one candidate pool;
+  - labels are assignment-aware per candidate on the train split;
+  - a train-split MLP emits a fixed-size selected stop-line set on validation.
+- This is distinct from appending temporal candidates after a verifier threshold:
+  - retained candidates can be removed;
+  - temporal candidates and retained candidates compete directly;
+  - candidate-label threshold selection is used to avoid repeated full metric evaluator sweeps.
+
+Implementation:
+
+- Updated `tools/probe_pv26_stopline_temporal_candidates.py`.
+- Added opt-in CLI:
+  - `--union-selector-enabled`;
+  - `--union-top-k`.
+- Added union helper path:
+  - `_build_baseline_union_candidates`;
+  - `_build_union_candidates`;
+  - `_assign_union_match_labels`;
+  - `_union_feature_matrix`;
+  - `_score_union_records`;
+  - `_select_union_stop_lines`;
+  - `_union_metrics_row`.
+- Added `TEMPORAL_UNION_FEATURES`, combining existing temporal dense/geometry features with source flags and candidate-set rank/count features.
+- Existing temporal threshold search now uses train candidate oracle-label F1 instead of repeated full evaluator metrics.
+- Updated `test/test_stopline_temporal_candidates.py` to cover assignment-aware union labels and union selection.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `temporal_alignment_mode=sparse_affine`;
+  - neighbor offsets `-1,1`;
+  - validation epoch `2`;
+  - batch size `4`;
+  - temporal top-k `8`;
+  - union top-k `12`;
+  - max emitted stop-lines `2`.
+
+Smoke train64 / fixed-val4:
+
+- Train temporal candidates `204`; train temporal positives `73`.
+- Train union candidates `319`; train union positives `98`.
+- Validation temporal candidates `6`; validation temporal positives `0`.
+- Validation union candidates `9`; validation union positives `0`.
+- Fixed val4 is not decision-useful because no validation candidate is oracle-positive.
+- Baseline and union selector both stayed stop-line `0 / 3 / 2`, F1 `0.0000`.
+
+Exact train256 / val128:
+
+- Train temporal candidates `873`; train temporal positives `261`.
+- Train union candidates `1394`; train union positives `396`.
+- Validation temporal candidates `104`; validation temporal positives `21`.
+- Validation union candidates `167`; validation union positives `35`.
+- Temporal threshold: `0.66`.
+- Union threshold: `0.64`.
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5203` | `32 / 31 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2683` | `11 / 11 / 49` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4812` | `32 / 41 / 28` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5385` | `35 / 35 / 25` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.5345` | `31 / 25 / 29` | `0.5988` |
+
+Diagnosis:
+
+- The union selector does learn FP-control on this candidate set:
+  - compared with this run's baseline, FP drops `31 -> 25`;
+  - F1 rises `0.5203 -> 0.5345`.
+- But it is not a real gate pass:
+  - it loses one TP and adds one FN against the primary projection-comp reference `32 / 28 / 28`, F1 `0.5333`;
+  - the absolute F1 gain over primary is only about `+0.0011`;
+  - this is weaker than the retained suppress-only exact result (`0.5400`) and still cannot recover the missing TP needed for `0.60`.
+- Oracle union headroom on this exact run is also weak:
+  - `35 / 35 / 25`, F1 `0.5385`;
+  - the candidate/motion source, not only the selector, is still insufficient.
+- Broader-val512 is skipped because exact did not improve TP/FP/FN over the real primary gate.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_union_selector_sparse_affine_train64_smoke_val4_20260531/summary.json`.
+- Smoke variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_union_selector_sparse_affine_train64_smoke_val4_20260531/temporal_variants.csv`.
+- Exact train256 summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_union_selector_sparse_affine_train256_exact_val128_20260531/summary.json`.
+- Exact train256 variants:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_union_selector_sparse_affine_train256_exact_val128_20260531/temporal_variants.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `596K`;
+  - exact export about `2.7M`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/smoke-val4 temporal union selector run on the existing canonical dataset root.
+- CUDA train256/exact-val128 temporal union selector run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it as a breakthrough path.
+- Do not repeat sparse-affine temporal union selection as source flag, union top-k, candidate-label threshold, verifier hidden/epoch/LR, or train-batch scaling over the same candidate surface.
+- Reopen temporal stop-line only with a materially stronger motion/candidate source whose exact oracle union has enough TP/FP/FN headroom before training another selector.
