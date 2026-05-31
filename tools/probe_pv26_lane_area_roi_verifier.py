@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from itertools import islice
 import json
+import math
 from pathlib import Path
 import site
 import sys
@@ -129,6 +130,15 @@ def parse_args() -> argparse.Namespace:
             "Append no-GT center-vs-side-band dense evidence features for each "
             "dropped candidate. This tests whether raw candidates lie on a thin "
             "lane ridge rather than broad support/noise."
+        ),
+    )
+    parser.add_argument(
+        "--row-peak-alignment-features",
+        action="store_true",
+        help=(
+            "Append no-GT row-wise peak alignment features for each candidate. "
+            "This tests whether the candidate x positions sit on local dense "
+            "centerline/support row peaks instead of merely crossing broad evidence."
         ),
     )
     parser.add_argument(
@@ -506,6 +516,66 @@ def _lane_side_contrast_features(
         features.extend(_summary_stats(alignment)[:4])
     else:
         features.extend([0.0, 0.0, 0.0, 0.0])
+    return _finite_feature_array(features)
+
+
+def _row_peak_stats_for_map(dense_map: np.ndarray, sampled: np.ndarray, *, radius_px: int) -> list[float]:
+    if sampled.shape[0] == 0:
+        return [0.0] * 24
+    array = np.asarray(dense_map, dtype=np.float32)
+    if array.ndim != 2 or int(array.shape[0]) <= 0 or int(array.shape[1]) <= 0:
+        return [0.0] * 24
+    height, width = int(array.shape[0]), int(array.shape[1])
+    radius = max(1, int(radius_px))
+    ratios: list[float] = []
+    gaps: list[float] = []
+    peak_distances: list[float] = []
+    margins: list[float] = []
+    for point in np.asarray(sampled, dtype=np.float32).reshape(-1, 2):
+        if not np.isfinite(point).all():
+            continue
+        x = int(np.clip(round(float(point[0])), 0, width - 1))
+        y = int(np.clip(round(float(point[1])), 0, height - 1))
+        left = max(0, x - radius)
+        right = min(width, x + radius + 1)
+        window = array[y, left:right].astype(np.float32)
+        if window.size == 0:
+            continue
+        center_value = float(array[y, x])
+        local_max = float(np.nanmax(window))
+        local_mean = float(np.nanmean(window))
+        if not math.isfinite(local_max) or not math.isfinite(local_mean):
+            continue
+        peak_columns = np.flatnonzero(window >= local_max - 1.0e-6)
+        if peak_columns.size:
+            absolute_peak_columns = peak_columns.astype(np.float32) + float(left)
+            nearest_peak_distance = float(np.min(np.abs(absolute_peak_columns - float(x))))
+        else:
+            nearest_peak_distance = float(radius)
+        ratios.append(center_value / max(local_max, 1.0e-6))
+        gaps.append(max(local_max - center_value, 0.0))
+        peak_distances.append(min(nearest_peak_distance / max(float(radius), 1.0), 1.0))
+        margins.append(center_value - local_mean)
+    features: list[float] = []
+    for values in (np.asarray(ratios), np.asarray(gaps), np.asarray(peak_distances), np.asarray(margins)):
+        features.extend(_summary_stats(values))
+    return features
+
+
+def _lane_row_peak_alignment_features(
+    sampled_map_points: np.ndarray,
+    *,
+    maps: dict[str, torch.Tensor],
+    radius_px: int = 16,
+) -> np.ndarray:
+    """No-GT evidence that candidate x positions sit on row-local lane peaks."""
+
+    sampled = np.asarray(sampled_map_points, dtype=np.float32).reshape(-1, 2)
+    centerline = _as_channel(maps["centerline_core"])
+    support = _as_channel(maps["support"])
+    features: list[float] = []
+    for dense_map in (centerline, support):
+        features.extend(_row_peak_stats_for_map(dense_map, sampled, radius_px=int(radius_px)))
     return _finite_feature_array(features)
 
 
@@ -1027,6 +1097,10 @@ def _collect_examples(
                             features = np.concatenate(
                                 [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
                             ).astype(np.float32)
+                        if bool(args.row_peak_alignment_features):
+                            features = np.concatenate(
+                                [features, _lane_row_peak_alignment_features(sampled_map_points, maps=maps)]
+                            ).astype(np.float32)
                         if bool(args.raw_image_line_features):
                             sample_image = None
                             if isinstance(batch_images, torch.Tensor) and int(batch_images.shape[0]) > sample_batch_index:
@@ -1148,6 +1222,10 @@ def _collect_examples(
                             features = np.concatenate(
                                 [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
                             ).astype(np.float32)
+                        if bool(args.row_peak_alignment_features):
+                            features = np.concatenate(
+                                [features, _lane_row_peak_alignment_features(sampled_map_points, maps=maps)]
+                            ).astype(np.float32)
                         if bool(args.raw_image_line_features):
                             sample_image = None
                             if isinstance(batch_images, torch.Tensor) and int(batch_images.shape[0]) > sample_batch_index:
@@ -1265,6 +1343,10 @@ def _collect_examples(
                     if bool(args.side_contrast_features):
                         features = np.concatenate(
                             [features, _lane_side_contrast_features(sampled_map_points, maps=maps)]
+                        ).astype(np.float32)
+                    if bool(args.row_peak_alignment_features):
+                        features = np.concatenate(
+                            [features, _lane_row_peak_alignment_features(sampled_map_points, maps=maps)]
                         ).astype(np.float32)
                     if bool(args.raw_image_line_features):
                         sample_image = None

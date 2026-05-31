@@ -18,6 +18,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _finalize_task_counts,
     _lane_cross_task_conflict_features,
     _lane_raw_image_line_features,
+    _lane_row_peak_alignment_features,
     _lane_set_geometry_support,
     _lane_side_contrast_features,
     _lane_tta_consistency_features,
@@ -258,6 +259,24 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
 
         self.assertGreater(supported, 0.8)
         self.assertLess(unsupported, 0.45)
+
+    def test_row_peak_alignment_features_score_candidate_on_local_peak(self) -> None:
+        centerline = torch.zeros((1, 7, 9), dtype=torch.float32)
+        support = torch.zeros((1, 7, 9), dtype=torch.float32)
+        centerline[0, :, 4] = 1.0
+        support[0, :, 4] = 0.8
+        maps = {"centerline_core": centerline, "support": support}
+        on_peak = np.asarray([[4.0, y] for y in range(7)], dtype=np.float32)
+        off_peak = np.asarray([[2.0, y] for y in range(7)], dtype=np.float32)
+
+        on_features = _lane_row_peak_alignment_features(on_peak, maps=maps, radius_px=3)
+        off_features = _lane_row_peak_alignment_features(off_peak, maps=maps, radius_px=3)
+
+        self.assertEqual(on_features.shape, (48,))
+        self.assertTrue(np.isfinite(on_features).all())
+        self.assertGreater(float(on_features[0]), float(off_features[0]))
+        self.assertLess(float(on_features[12]), float(off_features[12]))
+        self.assertGreater(float(on_features[18]), float(off_features[18]))
 
     def test_select_topk_union_geometry_keeps_retained_over_unsupported_drop(self) -> None:
         class FeatureLogitVerifier(torch.nn.Module):

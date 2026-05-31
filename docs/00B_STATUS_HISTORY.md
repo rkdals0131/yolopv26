@@ -23700,3 +23700,100 @@ Decision:
 - The exact gate is below the HAF checkpoint baseline and far below primary projection-comp exact, so broader-val512 is skipped.
 - Close this HAF candidate-verifier contract as same HAF consensus candidate source plus MLP verifier.
 - Reopen HAF only with materially different candidate coverage or source-quality signal that first improves fixed exact TP/FP/FN over primary projection-comp.
+
+## 389. 2026-05-31 Lane area-ROI row-peak verifier: local dense peak alignment is still FP-limited
+
+Premise:
+
+- The learned lane area-ROI dropped-candidate verifier repeatedly recovers real lane TP from raw row-scan/tangent candidates dropped by default bbox/area filters, but it adds FP faster than TP.
+- Previous no-GT feature attempts included line-ROI statistics, nearest-retained-lane context, dense side-band contrast, raw-image line contrast, cross-task dense-map conflict, TTA consistency, and ensemble stability.
+- This branch adds a materially different candidate-quality signal:
+  - for each sampled candidate lane point, read the row-local dense centerline/support window;
+  - compare the candidate x against the local row peak;
+  - summarize candidate/peak ratio, local max gap, normalized nearest-peak distance, and center-minus-row-mean margin.
+- This is not a scalar threshold sweep; it asks whether a candidate is row-aligned to local dense lane peaks.
+
+Code changes:
+
+- `tools/probe_pv26_lane_area_roi_verifier.py`:
+  - added `--row-peak-alignment-features`;
+  - added `_row_peak_stats_for_map(...)`;
+  - added `_lane_row_peak_alignment_features(...)`;
+  - appended the new 48-dim feature block to retained, dropped-area, and conditional-union candidate paths when enabled.
+- `test/test_lane_area_roi_verifier.py`:
+  - added coverage showing that an on-peak vertical candidate scores higher than an off-peak candidate and has lower normalized peak distance.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| row-peak area-ROI append | `0.5931` | `43 / 16 / 43` | `0.0000` | `0.5455` |
+
+Smoke stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Verifier train batches: `64`.
+- Train examples / positives / negatives: `439 / 66 / 373`.
+- Validation dropped candidates / selected / selected oracle-positive: `29 / 8 / 3`.
+- Delta: lane TP `+3`, FP `+5`, FN `-3`, F1 `+0.0092`.
+
+Exact train256 / fixed val128:
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `0.5988` |
+| row-peak area-ROI append | `0.5950` | `1246 / 552 / 1144` | `0.5333` | `0.5988` |
+
+Exact stats:
+
+- Dataset root: `seg_dataset/pv26_exhaustive_od_lane_dataset`.
+- Indexed records: `429350`.
+- Dataset copies created: `0`.
+- Verifier train batches: `256`.
+- Train examples / positives / negatives: `1568 / 253 / 1315`.
+- Validation dropped candidates / selected / selected oracle-positive: `749 / 105 / 49`.
+- Delta: lane TP `+44`, FP `+61`, FN `-44`, F1 `+0.0063`.
+- Stop-line and crosswalk are unchanged because this replay only appends lane candidates.
+
+Larger train attempts:
+
+- Train512 / exact val128 was attempted first through the direct exec session, then through `tmux` logging after the direct session was cut.
+- The `tmux` train512 attempt reached val batch `80 / 128` and was killed with exit status `137`, so no summary was produced.
+- Train384 / exact val128 was then attempted as a lower-memory larger-training fallback.
+- The train384 attempt reached val batch `120 / 128` and was also killed with exit status `137`, so no summary was produced.
+- Failed scratch folders were pruned; only completed train64/train256 summary artifacts are retained.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_row_peak_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_row_peak_train256_exact_val128_20260531/summary.json`.
+
+Storage:
+
+- No verifier checkpoint was saved.
+- Retained artifacts are CSV/summary only:
+  - smoke directory about `48K`;
+  - exact directory about `212K`.
+- Temporary root `yolo26s.pt` was pruned.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/fixed-val4 row-peak verifier run.
+- CUDA train256/exact-val128 row-peak verifier run.
+- Train384/train512 larger attempts were executed but produced no usable metrics because they were killed before summary export.
+
+Decision:
+
+- The row-peak feature has real signal, but it does not solve FP control.
+- Exact remains below `0.60` and below the prior area-ROI exact frontier (`0.5956` plain train384, `0.5963` ensemble-stability).
+- Broader-val512 is skipped because exact TP gain still comes with more FP than TP.
+- Close this as same dropped-candidate area-ROI verifier plus row-local peak-alignment features.
+- Reopen dropped-candidate rescue only with a materially different candidate generator or TP-preserving instance-quality contract, not row-peak radius, verifier threshold, max-append, hidden-size, or train-batch scaling.
