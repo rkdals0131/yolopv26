@@ -25313,3 +25313,82 @@ Decision:
 - Close this as image-space sparse-affine temporal dense-component candidate generation plus learned MLP/union FP-control.
 - Do not repeat it as dense mask/proposal threshold, component area, PCA quantile, source flag, dense feature subset, MLP epoch/LR/hidden size, top-k/cap, threshold-grid, or train-batch scaling.
 - Reopen temporal stop-line only with a materially different motion model, ego/BEV alignment, or learned temporal segment emitter whose exact learned TP/FP/FN beats primary projection-comp.
+
+## 404. 2026-05-31 Lane conditional teacher-runtime row target: train path works, runtime rows stay non-contributive
+
+Situation:
+
+- The user explicitly asked to keep trying model/training-side changes, including real training and evaluation, without copying the dataset.
+- Prior conditional row branches failed either by FP blow-up or by no runtime movement.
+- This reopened conditional rows with a different target source:
+  train the existing conditional row auxiliary losses from retained runtime teacher lane rows instead of encoded GT rows.
+- The training validation kept `lane_conditional_row_enabled=false`, so the teacher/runtime target path was not contaminated by untrained conditional-row emit.
+- The dataset was reused in place from `seg_dataset/pv26_exhaustive_od_lane_dataset`; no dataset copy was created.
+
+Implementation:
+
+- `model/engine/loss.py`
+  - adds `conditional_target_source` to `_lane_segfirst_loss`;
+  - routes conditional row and conditional seed auxiliary losses through `_query_targets(..., target_source=...)`;
+  - lets `lane_family_query_target_source=teacher_runtime` affect conditional row/seed auxiliary losses, not only vector query losses.
+- `tools/run_pv26_lane60_probe.py`
+  - adds `lane_conditional_teacher_runtime_row`;
+  - uses `freeze_policy=lane_conditional_row_only`, `trunk_lr=0.0`, `head_lr=5e-4`;
+  - enables `distill_teacher_runtime_targets_enabled=True`;
+  - keeps stop-line projection-comp and crosswalk hull postprocess settings in the run contract.
+- `test/test_pv26_loss_runtime.py`
+  - adds a regression test proving conditional row auxiliary loss can use teacher-runtime lane targets.
+
+Train:
+
+- Real CUDA smoke:
+  - command shape: `tools/run_pv26_lane60_probe.py --experiment lane_conditional_teacher_runtime_row --epochs 2 --train-batches 64 --val-batches 4 --batch-size 4 --device cuda:0`;
+  - source run: `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412`;
+  - canonical dataset index: `429350` records;
+  - skipped steps: `0`;
+  - best internal phase objective: `0.6436732765` at epoch 1;
+  - epoch-2 internal phase objective: `0.6283340126`.
+
+Fixed val4 epoch-2:
+
+| Runtime setting | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 | Crosswalk TP/FP/FN |
+| --- | ---: | --- | ---: | --- | ---: | --- |
+| conditional rows enabled | `0.5000` | `33 / 13 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| conditional rows disabled | `0.5000` | `33 / 13 / 53` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Diagnosis:
+
+- The loss/config plumbing is mechanically valid and covered by test.
+- The actual learned conditional rows do not change runtime TP/FP/FN at the first fixed gate.
+- This is not a broader candidate: fixed val4 fails the required lane movement gate and recovers no stop-line TP.
+- Exact-val128, broader-val512, and larger train-batch scaling are skipped.
+
+Artifacts:
+
+- Run:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_teacher_runtime_row_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260531_211934`.
+- Fixed val4 enabled metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_teacher_runtime_row_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260531_211934/analysis_exports/fixed_val4_condrow_enabled_epoch2/metrics.csv`.
+- Fixed val4 disabled metrics:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_conditional_teacher_runtime_row_from_lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412_default_20260531_211934/analysis_exports/fixed_val4_condrow_disabled_epoch2/metrics.csv`.
+
+Storage:
+
+- Negative checkpoints and TensorBoard were pruned.
+- Temporary root `yolo26s.pt` was pruned.
+- Retained run size is about `13M`, mostly compact CSV/summary/history artifacts.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py tools/run_pv26_lane60_probe.py test/test_pv26_loss_runtime.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_loss_runtime.PV26LossRuntimeTests.test_lane_conditional_row_aux_loss_backprops_when_enabled test_pv26_loss_runtime.PV26LossRuntimeTests.test_lane_conditional_row_aux_loss_can_use_teacher_runtime_targets`.
+- CUDA `2x64` train on the existing canonical dataset root.
+- Fixed val4 epoch-2 evaluation with conditional rows enabled.
+- Fixed val4 epoch-2 evaluation with conditional rows disabled.
+
+Decision:
+
+- Close this as conditional row auxiliary training from teacher-runtime targets.
+- Do not repeat it as `lane_family_query_target_source`, teacher-runtime threshold/variant, row-aux weight, seed-aux weight, dense-gate threshold, head LR, epoch count, train-batch scaling, or enabled/disabled runtime replay on the same conditional-row surface.
+- Reopen conditional row work only if the runtime candidate generator or instance-quality contract changes enough to produce fixed-smoke TP/FP/FN movement over the retained lane reference.

@@ -543,6 +543,7 @@ def _lane_segfirst_loss(
     conditional_seed_aux_weight: float = 0.0,
     conditional_seed_target_mode: str = "centerline_core",
     conditional_objectness_target_mode: str = "binary",
+    conditional_target_source: str = "encoded",
     conditional_row_x_weight: float = 0.05,
     conditional_denoise_aux_weight: float = 0.0,
     instance_embedding_aux_weight: float = 0.0,
@@ -758,6 +759,7 @@ def _lane_segfirst_loss(
             encoded,
             seed_target_mode=str(conditional_seed_target_mode),
             objectness_target_mode=str(conditional_objectness_target_mode),
+            target_source=str(conditional_target_source),
             row_x_weight=float(conditional_row_x_weight),
         )
     if float(conditional_seed_aux_weight) > 0.0:
@@ -765,6 +767,7 @@ def _lane_segfirst_loss(
             predictions,
             encoded,
             seed_target_mode=str(conditional_seed_target_mode),
+            target_source=str(conditional_target_source),
         )
     if float(conditional_denoise_aux_weight) > 0.0:
         conditional_denoise_loss = _lane_conditional_denoise_row_loss(
@@ -1399,25 +1402,28 @@ def _lane_conditional_row_loss(
     *,
     seed_target_mode: str = "centerline_core",
     objectness_target_mode: str = "binary",
+    target_source: str = "encoded",
     row_x_weight: float = 0.05,
 ) -> torch.Tensor:
     conditional_rows = predictions.get("lane_conditional_rows")
     if not isinstance(conditional_rows, torch.Tensor):
         return _zero_graph(predictions["lane"])
-    lane_target = encoded.get("lane")
     mask_payload = encoded.get("mask")
-    if not isinstance(lane_target, torch.Tensor) or not isinstance(mask_payload, dict):
+    if not isinstance(mask_payload, dict):
         return _zero_graph(conditional_rows)
-    lane_valid = mask_payload.get("lane_valid")
-    lane_source = mask_payload.get("lane_source")
-    if not isinstance(lane_valid, torch.Tensor) or not isinstance(lane_source, torch.Tensor):
+    lane_target_raw, lane_valid_raw, lane_source_raw = _query_targets(
+        encoded,
+        "lane",
+        target_source=str(target_source),
+    )
+    if not isinstance(lane_target_raw, torch.Tensor) or not isinstance(lane_valid_raw, torch.Tensor) or not isinstance(lane_source_raw, torch.Tensor):
         return _zero_graph(conditional_rows)
 
     device = conditional_rows.device
     dtype = conditional_rows.dtype
-    lane_target = lane_target.to(device=device, dtype=dtype)
-    lane_valid = lane_valid.to(device=device, dtype=torch.bool)
-    lane_source = lane_source.to(device=device, dtype=torch.bool)
+    lane_target = lane_target_raw.to(device=device, dtype=dtype)
+    lane_valid = lane_valid_raw.to(device=device, dtype=torch.bool)
+    lane_source = lane_source_raw.to(device=device, dtype=torch.bool)
     objectness_target_mode = str(objectness_target_mode).strip().lower()
     if objectness_target_mode not in {"binary", "metric_quality"}:
         raise ValueError(f"unsupported lane_conditional_objectness_target_mode: {objectness_target_mode}")
@@ -1516,18 +1522,21 @@ def _lane_conditional_seed_loss(
     encoded: dict[str, Any],
     *,
     seed_target_mode: str = "centerline_core",
+    target_source: str = "encoded",
 ) -> torch.Tensor:
     seed_logits = predictions.get("lane_conditional_seed_logits")
     if not isinstance(seed_logits, torch.Tensor):
         return _zero_graph(predictions["lane"])
-    lane_target = encoded.get("lane")
     mask_payload = encoded.get("mask")
     aux = encoded.get("roadmark_v2")
-    if not isinstance(lane_target, torch.Tensor) or not isinstance(mask_payload, dict) or not isinstance(aux, dict):
+    if not isinstance(mask_payload, dict) or not isinstance(aux, dict):
         return _zero_graph(seed_logits)
-    lane_valid = mask_payload.get("lane_valid")
-    lane_source = mask_payload.get("lane_source")
-    if not isinstance(lane_valid, torch.Tensor) or not isinstance(lane_source, torch.Tensor):
+    lane_target_raw, lane_valid_raw, lane_source_raw = _query_targets(
+        encoded,
+        "lane",
+        target_source=str(target_source),
+    )
+    if not isinstance(lane_target_raw, torch.Tensor) or not isinstance(lane_valid_raw, torch.Tensor) or not isinstance(lane_source_raw, torch.Tensor):
         return _zero_graph(seed_logits)
     seed_target_mode = str(seed_target_mode).strip().lower()
     ignore = aux.get("lane_seg_ignore")
@@ -1536,7 +1545,7 @@ def _lane_conditional_seed_loss(
         if not isinstance(centerline_target, torch.Tensor):
             return _zero_graph(seed_logits)
         centerline_target = centerline_target.to(device=seed_logits.device, dtype=seed_logits.dtype)
-        valid_mask = lane_source.to(device=seed_logits.device, dtype=torch.bool)[:, None, None, None].expand_as(seed_logits)
+        valid_mask = lane_source_raw.to(device=seed_logits.device, dtype=torch.bool)[:, None, None, None].expand_as(seed_logits)
         if isinstance(ignore, torch.Tensor):
             valid_mask = valid_mask & (~ignore.to(device=seed_logits.device, dtype=torch.bool).expand_as(seed_logits))
         return _masked_binary_ce_balanced(
@@ -1548,9 +1557,9 @@ def _lane_conditional_seed_loss(
     if seed_target_mode == "bottom_anchor":
         seed_target, seed_valid = _lane_conditional_bottom_anchor_seed_target(
             seed_logits,
-            lane_target.to(device=seed_logits.device, dtype=seed_logits.dtype),
-            lane_valid.to(device=seed_logits.device, dtype=torch.bool),
-            lane_source.to(device=seed_logits.device, dtype=torch.bool),
+            lane_target_raw.to(device=seed_logits.device, dtype=seed_logits.dtype),
+            lane_valid_raw.to(device=seed_logits.device, dtype=torch.bool),
+            lane_source_raw.to(device=seed_logits.device, dtype=torch.bool),
             ignore if isinstance(ignore, torch.Tensor) else None,
         )
         return _masked_binary_ce_balanced(
@@ -4229,6 +4238,7 @@ class PV26MultiTaskLoss(nn.Module):
                 conditional_seed_aux_weight=self.lane_conditional_seed_aux_weight,
                 conditional_seed_target_mode=self.lane_conditional_seed_target_mode,
                 conditional_objectness_target_mode=self.lane_conditional_objectness_target_mode,
+                conditional_target_source=self.lane_family_query_target_source,
                 conditional_row_x_weight=self.lane_conditional_row_x_weight,
                 conditional_denoise_aux_weight=self.lane_conditional_denoise_aux_weight,
                 instance_embedding_aux_weight=self.lane_segfirst_instance_embedding_aux_weight,

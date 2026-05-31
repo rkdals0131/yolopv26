@@ -837,6 +837,67 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["lane_conditional_rows"].grad)
         self.assertIsNotNone(predictions["lane_conditional_seed_logits"].grad)
 
+    def test_lane_conditional_row_aux_loss_can_use_teacher_runtime_targets(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+        from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
+
+        batch_size = 1
+        h, w = ROADMARK_DENSE_OUTPUT_HW
+        encoded = _with_zero_segfirst_targets(_make_encoded_batch(batch_size=batch_size, q_det=2))
+        teacher_lane = encoded["lane"].clone()
+        teacher_lane[:, :, LANE_X_SLICE] = teacher_lane[:, :, LANE_X_SLICE] + 96.0
+        encoded["teacher_cache"] = {
+            "teacher_runtime_lane": teacher_lane,
+            "teacher_runtime_lane_valid": encoded["mask"]["lane_valid"].clone(),
+        }
+        conditional_rows = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_DIM), dtype=torch.float32)
+        conditional_rows[0, 0] = teacher_lane[0, 0]
+        conditional_rows[0, 0, 0] = 8.0
+        predictions = _zero_predictions(batch_size=batch_size, q_det=2)
+        predictions.update(
+            {
+                "lane_seg_centerline_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_support_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_seg_tangent_axis": torch.zeros((batch_size, 2, h, w), requires_grad=True),
+                "lane_seg_color_logits": torch.zeros((batch_size, LANE_COLOR_DIM, h, w), requires_grad=True),
+                "lane_seg_type_logits": torch.zeros((batch_size, LANE_TYPE_DIM, h, w), requires_grad=True),
+                "lane_conditional_seed_logits": torch.zeros((batch_size, 1, h, w), requires_grad=True),
+                "lane_conditional_rows": conditional_rows.requires_grad_(),
+            }
+        )
+
+        common_kwargs = {
+            "stage": "stage_4_lane_family_finetune",
+            "loss_weights": {"stop_line": 0.0, "crosswalk": 0.0},
+            "lane_conditional_row_aux_weight": 1.0,
+            "lane_conditional_seed_aux_weight": 0.0,
+            "lane_conditional_seed_target_mode": "bottom_anchor",
+            "lane_conditional_objectness_target_mode": "metric_quality",
+            "lane_conditional_row_x_weight": 1.0,
+            "lane_segfirst_loss_weights": {
+                "centerline_bce": 0.0,
+                "centerline_dice": 0.0,
+                "support_bce": 0.0,
+                "tangent": 0.0,
+                "color": 0.0,
+                "type": 0.0,
+            },
+        }
+        encoded_criterion = PV26MultiTaskLoss(**common_kwargs)
+        teacher_criterion = PV26MultiTaskLoss(
+            **common_kwargs,
+            distill_enabled=True,
+            lane_family_query_target_source="teacher_runtime",
+        )
+
+        encoded_loss = encoded_criterion(predictions, encoded)["total"].detach()
+        teacher_losses = teacher_criterion(predictions, encoded)
+
+        self.assertLess(float(teacher_losses["total"].detach()), float(encoded_loss))
+        self.assertEqual(teacher_criterion.export_config()["lane_family_query_target_source"], "teacher_runtime")
+        teacher_losses["total"].backward()
+        self.assertIsNotNone(predictions["lane_conditional_rows"].grad)
+
     def test_lane_conditional_denoise_aux_loss_backprops_when_enabled(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
         from model.data.roadmark_v2_targets import ROADMARK_DENSE_OUTPUT_HW
