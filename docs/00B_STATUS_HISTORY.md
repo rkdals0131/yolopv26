@@ -25968,13 +25968,13 @@ Decision:
 - Historical negative checkpoints should not be treated as retained frontier artifacts.
 - Future negative runs should retain metric evidence first, then prune checkpoints/TensorBoard unless the checkpoint is explicitly needed for a current runtime contract or follow-up reproduction gate.
 
-## 411. 2026-06-01 Stop-line lane-homography temporal alignment: implementation landed, metric gate pending
+## 411. 2026-06-01 Stop-line lane-homography temporal alignment: projective lane motion adds only tiny oracle headroom and learned FP grows
 
 Context:
 
 - The closed stop-line temporal families show that image-plane phase/sparse-affine/ORB and predicted-lane affine warps did not produce deployable TP/FP/FN movement.
 - The only legitimate reason to reopen this surface is a materially different motion contract, preferably closer to ego/BEV alignment or a learned temporal segment emitter.
-- This slice does not claim success. It implements a projective predicted-lane alignment mode so the next probe can test whether lane-track shear/perspective contains better temporal stop-line candidate geometry than the closed affine lane-track warp.
+- This slice tests a projective predicted-lane alignment mode so the temporal probe can measure whether lane-track shear/perspective contains better stop-line candidate geometry than the closed affine lane-track warp.
 
 Implementation:
 
@@ -25987,20 +25987,85 @@ Implementation:
 - `test/test_stopline_temporal_candidates.py`
   - adds a synthetic lane-track shear regression test showing `lane_homography` applies a non-affine-compatible homography path.
 
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Runtime contract:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `temporal_alignment_mode=lane_homography`;
+  - `neighbor_offsets=-1,1`;
+  - `crosswalk_polygon_mode=hull`.
+
+Smoke train64 / fixed val4:
+
+| Variant | Stop-line F1 | Stop-line TP/FP/FN | Note |
+| --- | ---: | --- | --- |
+| baseline | `0.0000` | `0 / 3 / 2` | retained projection-comp runtime |
+| temporal MLP | `0.0000` | `0 / 4 / 2` | learned temporal only |
+| baseline + temporal MLP | `0.0000` | `0 / 6 / 2` | adds FP |
+| baseline + oracle temporal | `0.0000` | `0 / 3 / 2` | val temporal oracle positives were `0` |
+
+Smoke accounting:
+
+- train temporal candidates `204`, positives `59`.
+- val temporal candidates `6`, positives `0`.
+- lane-homography alignment applied to `79` train and `3` val candidate rows.
+- This gate is not decision-useful because validation has no temporal oracle-positive candidate.
+
+Exact train256 / val128:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal MLP | `0.5660` | `0.2169` | `9 / 14 / 51` | `0.5988` |
+| baseline + temporal MLP | `0.5660` | `0.4848` | `32 / 40 / 28` | `0.5988` |
+| oracle temporal | `0.5660` | `0.3514` | `13 / 1 / 47` | `0.5988` |
+| baseline + oracle temporal | `0.5660` | `0.5397` | `34 / 32 / 26` | `0.5988` |
+
+Exact accounting:
+
+- train temporal candidates `841`, positives `215`.
+- val temporal candidates `98`, positives `19`.
+- val union oracle positives `34`.
+- lane-homography alignment applied to `324` train and `47` val candidate rows.
+
+Diagnosis:
+
+- The projective lane-derived motion model is not a no-op: it creates validation temporal candidates and applies homographies.
+- It is negative as a stop-line `0.60` path because deployable baseline-plus-temporal MLP keeps TP flat (`32`) while FP rises `+12`, lowering exact stop-line F1 from `0.5333` to `0.4848`.
+- The oracle path is also weak: baseline-plus-oracle temporal only reaches `34 / 32 / 26`, F1 `0.5397`, a `+2` TP / `+4` FP change over primary.
+- Broader-val512 is skipped because exact learned TP/FP/FN is below primary projection-comp and oracle headroom is smaller than needed.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_lane_homography_train64_smoke_val4_20260601/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_lane_homography_train256_exact_val128_20260601/summary.json`.
+- Both runs retain compact CSV/summary artifacts only.
+
 Verification:
 
 - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
 - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 lane-homography temporal verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 lane-homography temporal verifier run on the existing canonical dataset root.
 
 Artifact and storage state:
 
 - No dataset copy was created.
-- No training checkpoint, verifier checkpoint, or TensorBoard artifact was produced in this implementation-only slice.
+- No training checkpoint, verifier checkpoint, or TensorBoard artifact was produced.
 - Root `yolo26*.pt` files are absent.
 - Retained large checkpoint files remain limited to the two documented phase-4 frontier `best.pt` files; `merged_lane_head.pt` remains in the lane-head transplant run.
+- Retained output sizes:
+  - smoke about `640K`;
+  - exact about `2.8M`.
 
 Decision:
 
-- Do not treat `lane_homography` as F1 progress until a real smoke/exact probe reports stop-line TP/FP/FN.
-- Next gate, if this branch resumes, is a small train64/fixed-val4 or direct train256/exact-val128 temporal probe using `--temporal-alignment-mode=lane_homography` with the retained projection-comp runtime contract and `crosswalk_polygon_mode=hull`.
-- If exact stop-line remains below primary projection-comp `32 / 28 / 28`, F1 `0.5333`, or oracle temporal coverage is not materially better than the closed lane-affine/pair-consensus runs, close it without broader-val512.
+- Close this as predicted-lane homography temporal alignment plus the same temporal MLP/baseline merge contract.
+- Do not repeat it as homography RANSAC threshold, max-shift fraction, lane-track matching, temporal top-k/cap, verifier epoch/LR/hidden size, threshold-grid, or train-batch scaling on the same candidate pool.
+- Reopen temporal stop-line only with a true ego/BEV alignment signal, a materially different temporal segment emitter, or a candidate source whose fixed exact oracle union beats primary TP/FP/FN by enough margin before training another no-GT verifier.
