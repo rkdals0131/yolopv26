@@ -81,6 +81,7 @@ TEMPORAL_FEATURES = (
     "temporal_source_neighbor",
     "temporal_source_envelope",
     "temporal_source_dense_component",
+    "temporal_source_pair_consensus",
     *TEMPORAL_DENSE_COMPONENT_AUDIT_FIELDS,
     "temporal_neighbor_score",
     "temporal_neighbor_length",
@@ -91,6 +92,7 @@ TEMPORAL_FEATURES = (
     "temporal_envelope_length_gain_norm",
     "temporal_abs_offset",
     "temporal_offset_sign",
+    "temporal_pair_offset_span",
     "temporal_neighbor_rank_norm",
     "temporal_current_stopline_count",
     "temporal_nearest_current_distance_norm",
@@ -183,6 +185,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temporal-envelope-enabled", type=int, choices=(0, 1), default=0)
     parser.add_argument("--temporal-dense-component-enabled", type=int, choices=(0, 1), default=0)
     parser.add_argument("--max-temporal-dense-components", type=int, default=4)
+    parser.add_argument("--temporal-pair-consensus-enabled", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--max-temporal-pair-consensus-candidates", type=int, default=8)
     parser.add_argument("--max-components", type=int, default=2)
     parser.add_argument("--union-selector-enabled", type=int, choices=(0, 1), default=0)
     parser.add_argument("--union-top-k", type=int, default=12)
@@ -841,7 +845,12 @@ def _nearest_current_distance(candidate: dict[str, Any], current_stop_lines: lis
 
 
 def _is_temporal_source(source: str) -> bool:
-    return str(source) in {"temporal_neighbor", "temporal_endpoint_envelope", "temporal_dense_component"}
+    return str(source) in {
+        "temporal_neighbor",
+        "temporal_endpoint_envelope",
+        "temporal_dense_component",
+        "temporal_pair_consensus",
+    }
 
 
 def _build_dense_component_stop_lines(
@@ -1026,6 +1035,7 @@ def _stopline_temporal_features(
         "temporal_source_neighbor": float(1.0 if source == "temporal_neighbor" else 0.0),
         "temporal_source_envelope": float(1.0 if source == "temporal_endpoint_envelope" else 0.0),
         "temporal_source_dense_component": float(1.0 if source == "temporal_dense_component" else 0.0),
+        "temporal_source_pair_consensus": float(1.0 if source == "temporal_pair_consensus" else 0.0),
         **{name: float(candidate.get(name, 0.0)) for name in TEMPORAL_DENSE_COMPONENT_AUDIT_FIELDS},
         "temporal_neighbor_score": float(_line_score(candidate)),
         "temporal_neighbor_length": float(length),
@@ -1042,6 +1052,7 @@ def _stopline_temporal_features(
         ),
         "temporal_abs_offset": float(abs(int(neighbor_offset))),
         "temporal_offset_sign": float(1.0 if int(neighbor_offset) > 0 else -1.0),
+        "temporal_pair_offset_span": float(abs(int(candidate.get("temporal_pair_offset_span", 0)))),
         "temporal_neighbor_rank_norm": float(1.0 / max(int(neighbor_rank), 1)),
         "temporal_current_stopline_count": float(len(current_stop_lines)),
         "temporal_nearest_current_distance_norm": float(min(nearest_distance / max(float(raw_w), 1.0), 4.0)),
@@ -1148,6 +1159,165 @@ def _temporal_endpoint_envelope(
     envelope["temporal_envelope_axis_error"] = axis_error
     envelope["temporal_envelope_length_gain"] = length_gain
     return envelope
+
+
+def _temporal_pair_consensus(
+    first_line: dict[str, Any],
+    second_line: dict[str, Any],
+    *,
+    meta: dict[str, Any],
+) -> dict[str, Any] | None:
+    first_points = _line_points_array(first_line)
+    second_points = _line_points_array(second_line)
+    first_axis = _line_axis(first_points)
+    second_axis = _line_axis(second_points)
+    if first_axis is None or second_axis is None:
+        return None
+    axis_dot = float(np.clip(float(np.dot(first_axis, second_axis)), -1.0, 1.0))
+    if axis_dot < 0.0:
+        second_points = second_points[::-1].copy()
+        second_axis = -second_axis
+        axis_dot = -axis_dot
+    axis_error = float(math.acos(np.clip(axis_dot, -1.0, 1.0)))
+    if axis_error > math.radians(22.5):
+        return None
+    first_center = first_points.mean(axis=0)
+    second_center = second_points.mean(axis=0)
+    normal = np.asarray([-first_axis[1], first_axis[0]], dtype=np.float32)
+    center_delta = second_center - first_center
+    normal_distance = float(abs(float(np.dot(center_delta, normal))))
+    if normal_distance > 40.0:
+        return None
+    first_length = float(np.linalg.norm(first_points[-1] - first_points[0]))
+    second_length = float(np.linalg.norm(second_points[-1] - second_points[0]))
+    along_distance = float(abs(float(np.dot(center_delta, first_axis))))
+    if along_distance > max(160.0, 0.65 * max(first_length + second_length, 1.0)):
+        return None
+    all_points = np.concatenate([first_points, second_points], axis=0)
+    origin = all_points.mean(axis=0)
+    projected_axis = (all_points - origin[None, :]) @ first_axis
+    projected_normal = (all_points - origin[None, :]) @ normal
+    start_t = float(projected_axis.min())
+    end_t = float(projected_axis.max())
+    normal_t = float(projected_normal.mean())
+    start = origin + first_axis * start_t + normal * normal_t
+    end = origin + first_axis * end_t + normal * normal_t
+    raw_h, raw_w = int(meta.get("raw_hw", (1, 1))[0]), int(meta.get("raw_hw", (1, 1))[1])
+    start[0] = np.clip(start[0], 0.0, max(float(raw_w - 1), 0.0))
+    start[1] = np.clip(start[1], 0.0, max(float(raw_h - 1), 0.0))
+    end[0] = np.clip(end[0], 0.0, max(float(raw_w - 1), 0.0))
+    end[1] = np.clip(end[1], 0.0, max(float(raw_h - 1), 0.0))
+    consensus_length = float(np.linalg.norm(end - start))
+    length_gain = consensus_length - max(first_length, second_length)
+    if consensus_length < 12.0 or length_gain < 2.0:
+        return None
+    partner_distance = float(_stop_line_distance(first_line, second_line))
+    score = min(float(_line_score(first_line)), float(_line_score(second_line))) + 0.05
+    consensus = _copy_stop_line(
+        {
+            "points_xy": [[float(start[0]), float(start[1])], [float(end[0]), float(end[1])]],
+            "length": consensus_length,
+        },
+        score=score,
+        source="temporal_pair_consensus",
+    )
+    consensus["length"] = consensus_length
+    consensus["temporal_envelope_partner_distance"] = partner_distance
+    consensus["temporal_envelope_normal_distance"] = normal_distance
+    consensus["temporal_envelope_axis_error"] = axis_error
+    consensus["temporal_envelope_length_gain"] = length_gain
+    consensus["temporal_pair_offset_span"] = abs(
+        int(first_line.get("neighbor_offset", 0)) - int(second_line.get("neighbor_offset", 0))
+    )
+    return consensus
+
+
+def _build_temporal_pair_consensus(
+    *,
+    meta: dict[str, Any],
+    temporal_candidates: list[dict[str, Any]],
+    gt_stop_lines: list[dict[str, Any]],
+    mask_probs: np.ndarray | None,
+    center_probs: np.ndarray | None,
+    selector_probs: np.ndarray | None,
+    current_stop_lines: list[dict[str, Any]],
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    usable_candidates = [
+        candidate
+        for candidate in temporal_candidates
+        if str(candidate.get("source", "")) in {"temporal_neighbor", "temporal_dense_component"}
+        and int(candidate.get("neighbor_offset", 0)) != 0
+    ]
+    pair_candidates: list[dict[str, Any]] = []
+    for first_index, first in enumerate(usable_candidates):
+        first_offset = int(first.get("neighbor_offset", 0))
+        for second in usable_candidates[first_index + 1 :]:
+            second_offset = int(second.get("neighbor_offset", 0))
+            if first_offset * second_offset >= 0:
+                continue
+            candidate = _temporal_pair_consensus(first, second, meta=meta)
+            if candidate is None:
+                continue
+            candidate["neighbor_offset"] = first_offset if abs(first_offset) <= abs(second_offset) else second_offset
+            candidate["neighbor_dataset_index"] = -1
+            candidate["neighbor_rank"] = int(
+                min(int(first.get("neighbor_rank", 0)), int(second.get("neighbor_rank", 0)))
+            )
+            candidate["temporal_alignment_dx"] = 0.5 * (
+                float(first.get("temporal_alignment_dx", 0.0)) + float(second.get("temporal_alignment_dx", 0.0))
+            )
+            candidate["temporal_alignment_dy"] = 0.5 * (
+                float(first.get("temporal_alignment_dy", 0.0)) + float(second.get("temporal_alignment_dy", 0.0))
+            )
+            candidate["temporal_alignment_response_raw"] = min(
+                float(first.get("temporal_alignment_response_raw", 0.0)),
+                float(second.get("temporal_alignment_response_raw", 0.0)),
+            )
+            candidate["temporal_alignment_applied"] = min(
+                float(first.get("temporal_alignment_applied", 0.0)),
+                float(second.get("temporal_alignment_applied", 0.0)),
+            )
+            alignment = {
+                "dx": float(candidate.get("temporal_alignment_dx", 0.0)),
+                "dy": float(candidate.get("temporal_alignment_dy", 0.0)),
+                "response": float(candidate.get("temporal_alignment_response_raw", 0.0)),
+            }
+            candidate.update(
+                _stopline_temporal_features(
+                    candidate,
+                    meta=meta,
+                    mask_probs=mask_probs,
+                    center_probs=center_probs,
+                    selector_probs=selector_probs,
+                    neighbor_offset=int(candidate.get("neighbor_offset", 0)),
+                    neighbor_rank=int(candidate.get("neighbor_rank", 0)),
+                    alignment=alignment,
+                    current_stop_lines=current_stop_lines,
+                )
+            )
+            nearest_distance, nearest_angle, nearest_index = _nearest_gt(candidate, gt_stop_lines)
+            candidate["nearest_gt_distance"] = float(nearest_distance)
+            candidate["nearest_gt_angle_error"] = float(nearest_angle)
+            candidate["nearest_gt_index"] = int(nearest_index)
+            candidate["is_oracle_positive"] = bool(nearest_distance <= 40.0)
+            candidate["temporal_rank_score"] = (
+                float(candidate.get("temporal_proposal_max", 0.0))
+                + 0.5 * float(candidate.get("temporal_mask_mean", 0.0))
+                + 0.25 * float(candidate.get("temporal_neighbor_score", 0.0))
+                + 0.12 * float(candidate.get("temporal_source_pair_consensus", 0.0))
+                - 0.03 * float(candidate.get("temporal_pair_offset_span", 0.0))
+            )
+            pair_candidates.append(candidate)
+    pair_candidates.sort(
+        key=lambda item: (
+            float(item.get("temporal_rank_score", 0.0)),
+            -float(item.get("temporal_envelope_normal_distance", 0.0)),
+            float(item.get("length", 0.0)),
+        ),
+        reverse=True,
+    )
+    return pair_candidates[: max(1, int(max_candidates))]
 
 
 def _build_temporal_endpoint_envelopes(
@@ -1430,6 +1600,8 @@ def _build_temporal_candidates(
     temporal_envelope_enabled: bool = False,
     temporal_dense_component_enabled: bool = False,
     max_temporal_dense_components: int = 4,
+    temporal_pair_consensus_enabled: bool = False,
+    max_temporal_pair_consensus_candidates: int = 8,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for neighbor_payload in neighbor_predictions:
@@ -1531,10 +1703,23 @@ def _build_temporal_candidates(
                     - 0.05 * float(abs(int(offset)))
                 )
                 candidates.append(candidate)
+    base_temporal_candidates = list(candidates)
+    if bool(temporal_pair_consensus_enabled):
+        pair_candidates = _build_temporal_pair_consensus(
+            meta=meta,
+            temporal_candidates=base_temporal_candidates,
+            gt_stop_lines=gt_stop_lines,
+            mask_probs=mask_probs,
+            center_probs=center_probs,
+            selector_probs=selector_probs,
+            current_stop_lines=current_stop_lines,
+            max_candidates=int(max_temporal_pair_consensus_candidates),
+        )
+        candidates.extend(pair_candidates)
     if bool(temporal_envelope_enabled) and current_stop_lines:
         envelope_candidates = _build_temporal_endpoint_envelopes(
             meta=meta,
-            temporal_candidates=candidates,
+            temporal_candidates=base_temporal_candidates,
             current_stop_lines=current_stop_lines,
             gt_stop_lines=gt_stop_lines,
             mask_probs=mask_probs,
@@ -1569,6 +1754,8 @@ def _collect_records(
     temporal_envelope_enabled: bool,
     temporal_dense_component_enabled: bool,
     max_temporal_dense_components: int,
+    temporal_pair_consensus_enabled: bool,
+    max_temporal_pair_consensus_candidates: int,
     split_name: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
@@ -1639,6 +1826,8 @@ def _collect_records(
                     temporal_envelope_enabled=bool(temporal_envelope_enabled),
                     temporal_dense_component_enabled=bool(temporal_dense_component_enabled),
                     max_temporal_dense_components=int(max_temporal_dense_components),
+                    temporal_pair_consensus_enabled=bool(temporal_pair_consensus_enabled),
+                    max_temporal_pair_consensus_candidates=int(max_temporal_pair_consensus_candidates),
                 )
                 baseline_candidates = _build_baseline_union_candidates(
                     meta=meta,
@@ -1726,6 +1915,13 @@ def _collect_records(
                                 if str(candidate.get("source", "")) == "temporal_dense_component"
                             )
                         ),
+                        "temporal_pair_consensus_candidate_count": int(
+                            sum(
+                                1
+                                for candidate in candidates
+                                if str(candidate.get("source", "")) == "temporal_pair_consensus"
+                            )
+                        ),
                         "union_candidate_count": int(len(union_candidates)),
                         "union_oracle_positive_count": int(
                             sum(1 for candidate in union_candidates if bool(candidate.get("is_union_positive", False)))
@@ -1738,6 +1934,14 @@ def _collect_records(
                                 1
                                 for candidate in candidates
                                 if str(candidate.get("source", "")) == "temporal_dense_component"
+                                and bool(candidate.get("is_oracle_positive", False))
+                            )
+                        ),
+                        "temporal_pair_consensus_oracle_positive_count": int(
+                            sum(
+                                1
+                                for candidate in candidates
+                                if str(candidate.get("source", "")) == "temporal_pair_consensus"
                                 and bool(candidate.get("is_oracle_positive", False))
                             )
                         ),
@@ -2247,6 +2451,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         temporal_envelope_enabled=bool(int(args.temporal_envelope_enabled)),
         temporal_dense_component_enabled=bool(int(args.temporal_dense_component_enabled)),
         max_temporal_dense_components=int(args.max_temporal_dense_components),
+        temporal_pair_consensus_enabled=bool(int(args.temporal_pair_consensus_enabled)),
+        max_temporal_pair_consensus_candidates=int(args.max_temporal_pair_consensus_candidates),
         split_name="train",
     )
     val_records, val_candidate_rows, val_union_candidate_rows, val_sample_rows = _collect_records(
@@ -2264,6 +2470,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         temporal_envelope_enabled=bool(int(args.temporal_envelope_enabled)),
         temporal_dense_component_enabled=bool(int(args.temporal_dense_component_enabled)),
         max_temporal_dense_components=int(args.max_temporal_dense_components),
+        temporal_pair_consensus_enabled=bool(int(args.temporal_pair_consensus_enabled)),
+        max_temporal_pair_consensus_candidates=int(args.max_temporal_pair_consensus_candidates),
         split_name="val",
     )
     score_summary = _score_records(
@@ -2450,6 +2658,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "temporal_envelope_enabled": int(args.temporal_envelope_enabled),
         "temporal_dense_component_enabled": int(args.temporal_dense_component_enabled),
         "max_temporal_dense_components": int(args.max_temporal_dense_components),
+        "temporal_pair_consensus_enabled": int(args.temporal_pair_consensus_enabled),
+        "max_temporal_pair_consensus_candidates": int(args.max_temporal_pair_consensus_candidates),
         "max_components": int(args.max_components),
         "union_selector_enabled": int(args.union_selector_enabled),
         "union_top_k": int(args.union_top_k),
@@ -2513,6 +2723,26 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 if str(row.get("source", "")) == "temporal_dense_component"
             )
         ),
+        "train_temporal_pair_consensus_candidate_count": int(
+            sum(1 for row in train_candidate_rows if str(row.get("source", "")) == "temporal_pair_consensus")
+        ),
+        "val_temporal_pair_consensus_candidate_count": int(
+            sum(1 for row in val_candidate_rows if str(row.get("source", "")) == "temporal_pair_consensus")
+        ),
+        "train_temporal_pair_consensus_oracle_positive_count": int(
+            sum(
+                int(row.get("is_oracle_positive", 0))
+                for row in train_candidate_rows
+                if str(row.get("source", "")) == "temporal_pair_consensus"
+            )
+        ),
+        "val_temporal_pair_consensus_oracle_positive_count": int(
+            sum(
+                int(row.get("is_oracle_positive", 0))
+                for row in val_candidate_rows
+                if str(row.get("source", "")) == "temporal_pair_consensus"
+            )
+        ),
         "train_union_oracle_positive_count": int(
             sum(int(row.get("is_union_positive", 0)) for row in train_union_candidate_rows)
         ),
@@ -2531,7 +2761,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "and current-frame dense stop-line map features; the optional endpoint-envelope source creates "
             "a new along-axis extent candidate when retained and aligned neighbor lines support one axis, "
             "and the optional dense-component source extracts stop-line segments directly from neighboring "
-            "dense stop-line maps before temporal alignment. "
+            "dense stop-line maps before temporal alignment. The optional pair-consensus source creates a "
+            "new segment only when opposite-offset temporal candidates agree on axis and normal position. "
             "GT is used for train labels, oracle diagnostics, "
             "and final metrics only. The opt-in union selector trains a candidate-level FP-control verifier "
             "over retained projection-comp plus temporal candidates, then emits one fixed-size selected set."

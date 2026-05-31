@@ -25724,3 +25724,124 @@ Decision:
 - Close this as predicted-lane-affine temporal alignment plus endpoint-envelope/dense-component temporal candidates and learned MLP/union FP-control.
 - Do not repeat it as lane-pair matching, affine max-shift, temporal top-k/cap, envelope/dense toggles, MLP epoch/LR/hidden size, threshold-grid, or train-batch scaling.
 - Reopen temporal stop-line only with a true ego/BEV alignment signal or learned temporal segment emitter whose fixed exact oracle and learned TP/FP/FN both beat primary projection-comp.
+
+## 408. 2026-05-31 Stop-line temporal pair-consensus source: opposite-offset consensus creates coverage but learned FP-control still fails
+
+Situation:
+
+- The user asked to keep real train/eval in the loop but stop after this turn's artifact cleanup, docs, commit, and push.
+- Prior temporal stop-line branches closed no-alignment neighbor replay, phase-correlation translation, sparse optical-flow affine, ORB homography, endpoint-envelope, dense-component sources, retained-suppressor composition, and predicted-lane affine alignment.
+- This branch tested the remaining "learned temporal segment emitter" premise in the lightest opt-in form:
+  opposite-offset sparse-affine temporal candidates (`-1` and `+1`) must agree on axis and normal position before a new along-axis consensus segment is emitted.
+- Lane/crosswalk runtime behavior was not changed; `crosswalk_polygon_mode=hull` remained fixed.
+
+Implementation:
+
+- `tools/probe_pv26_stopline_temporal_candidates.py`
+  - adds `--temporal-pair-consensus-enabled`;
+  - adds `--max-temporal-pair-consensus-candidates`;
+  - adds `temporal_pair_consensus` as a temporal source and feature flag;
+  - emits pair candidates only for opposite-offset temporal candidates with compatible axis, normal distance, and along-axis span;
+  - reports train/validation pair candidate and oracle-positive counts in `summary.json` and sample CSV rows.
+- `test/test_stopline_temporal_candidates.py`
+  - adds regression coverage for source flags;
+  - verifies synthetic opposite-offset pair-consensus candidate creation;
+  - verifies `_build_temporal_candidates()` can add the new source.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime contract:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `temporal_alignment_mode=sparse_affine`;
+  - `temporal_envelope_enabled=1`;
+  - `temporal_dense_component_enabled=1`;
+  - `temporal_pair_consensus_enabled=1`;
+  - `union_selector_enabled=1`;
+  - `crosswalk_polygon_mode=hull`.
+
+Smoke train64 / fixed val4:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5507` | `0.0000` | `0 / 3 / 2` | `0.5455` |
+| temporal_mlp | `0.5507` | `0.0000` | `0 / 5 / 2` | `0.5455` |
+| baseline_plus_temporal_mlp | `0.5507` | `0.0000` | `0 / 6 / 2` | `0.5455` |
+| temporal_union_selector | `0.5507` | `0.0000` | `0 / 6 / 2` | `0.5455` |
+
+Smoke accounting:
+
+- train temporal candidates `797`, positives `308`;
+- validation temporal candidates `29`, positives `0`;
+- train pair-consensus candidates `103`, positives `47`;
+- validation pair-consensus candidates `0`, positives `0`;
+- validation endpoint-envelope candidates `7`, positives `0`;
+- validation dense-component candidates `14`, positives `0`;
+- sparse-affine alignment applied to `740` train and `24` validation temporal candidate rows.
+
+Exact train256 / val128:
+
+| Variant | Lane F1 | Stop-line F1 | Stop-line TP/FP/FN | Crosswalk F1 |
+| --- | ---: | ---: | --- | ---: |
+| baseline | `0.5660` | `0.5333` | `32 / 28 / 28` | `0.5988` |
+| temporal_mlp | `0.5660` | `0.2500` | `15 / 45 / 45` | `0.5988` |
+| baseline_plus_temporal_mlp | `0.5660` | `0.4286` | `33 / 61 / 27` | `0.5988` |
+| oracle_temporal | `0.5660` | `0.5000` | `22 / 6 / 38` | `0.5988` |
+| baseline_plus_oracle_temporal | `0.5660` | `0.5362` | `37 / 41 / 23` | `0.5988` |
+| temporal_union_selector | `0.5660` | `0.4878` | `30 / 33 / 30` | `0.5988` |
+
+Exact accounting:
+
+- train temporal candidates `3263`, positives `1159`;
+- validation temporal candidates `419`, positives `66`;
+- train pair-consensus candidates `386`, positives `180`;
+- validation pair-consensus candidates `28`, positives `4`;
+- validation endpoint-envelope candidates `76`, positives `18`;
+- validation dense-component candidates `217`, positives `23`;
+- validation union candidates `479`, positives `37`;
+- sparse-affine alignment applied to `2988` train and `401` validation temporal candidate rows.
+
+Diagnosis:
+
+- Pair-consensus is not a no-op: it creates train and exact validation oracle-positive candidates.
+- Pair-consensus headroom is too small on exact validation:
+  only `4` validation positives come from the new pair source, and baseline-plus-oracle temporal reaches only `37 / 41 / 23`, F1 `0.5362`.
+- The deployable learned paths are clearly negative:
+  temporal MLP loses `17` TP and adds `17` FP versus primary, while union selector loses `2` TP and adds `5` FP.
+- Broader-val512 is skipped because exact learned TP/FP/FN is below primary projection-comp.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_pair_consensus_train64_smoke_val4_20260531/summary.json`.
+- Exact summary:
+  - `runs/pv26_exhaustive_od_lane_train/stopline_temporal_pair_consensus_train256_exact_val128_20260531/summary.json`.
+- Each run also keeps compact CSV feature/variant/sample exports.
+
+Storage:
+
+- Retained outputs are compact:
+  - smoke export about `2.2M`;
+  - exact export about `9.6M`.
+- No verifier checkpoint was saved.
+- No TensorBoard artifact was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` was pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_stopline_temporal_candidates.py test/test_stopline_temporal_candidates.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_stopline_temporal_candidates`.
+- CUDA train64/fixed-val4 temporal pair-consensus verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 temporal pair-consensus verifier run on the existing canonical dataset root.
+
+Decision:
+
+- Close this as sparse-affine temporal pair-consensus candidate generation plus learned MLP/union FP-control.
+- Do not repeat it as pair axis/normal gates, pair length-gain threshold, pair cap, source flag/feature inclusion, temporal top-k/cap, MLP epoch/LR/hidden size, threshold-grid, union threshold, or train-batch scaling.
+- Reopen temporal stop-line only with a true ego/BEV alignment signal or a learned temporal segment emitter whose exact oracle and learned TP/FP/FN both materially beat primary projection-comp.

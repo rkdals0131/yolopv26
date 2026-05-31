@@ -12,6 +12,7 @@ from tools.probe_pv26_stopline_temporal_candidates import (
     _build_dense_component_stop_lines,
     _build_temporal_endpoint_envelopes,
     _build_temporal_candidates,
+    _build_temporal_pair_consensus,
     _build_union_candidates,
     _lane_affine_alignment_from_predictions,
     _merge_stop_lines_with_extra,
@@ -64,6 +65,7 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertEqual(features["temporal_source_neighbor"], 0.0)
         self.assertEqual(features["temporal_source_envelope"], 0.0)
         self.assertEqual(features["temporal_source_dense_component"], 0.0)
+        self.assertEqual(features["temporal_source_pair_consensus"], 0.0)
         self.assertLess(features["temporal_alignment_dx_norm"], 0.0)
         self.assertGreater(features["temporal_alignment_dy_norm"], 0.0)
         self.assertAlmostEqual(features["temporal_alignment_response"], 0.5)
@@ -322,6 +324,63 @@ class StoplineTemporalCandidateTests(unittest.TestCase):
         self.assertGreater(envelopes[0]["temporal_envelope_length_gain"], 0.0)
         self.assertTrue(envelopes[0]["is_oracle_positive"])
         self.assertEqual(envelopes[0]["temporal_source_envelope"], 1.0)
+
+    def test_temporal_pair_consensus_extends_opposite_offsets(self) -> None:
+        first = {
+            "points_xy": [[180.0, 300.0], [620.0, 300.0]],
+            "score": 0.8,
+            "source": "temporal_neighbor",
+            "neighbor_offset": -1,
+        }
+        second = {
+            "points_xy": [[120.0, 302.0], [560.0, 302.0]],
+            "score": 0.7,
+            "source": "temporal_neighbor",
+            "neighbor_offset": 1,
+        }
+
+        candidate = _build_temporal_pair_consensus(
+            meta=_meta(),
+            temporal_candidates=[first, second],
+            gt_stop_lines=[{"points_xy": [[120.0, 301.0], [620.0, 301.0]]}],
+            mask_probs=np.ones((76, 100), dtype=np.float32) * 0.5,
+            center_probs=np.ones((76, 100), dtype=np.float32) * 0.4,
+            selector_probs=np.ones((76, 100), dtype=np.float32) * 0.3,
+            current_stop_lines=[],
+            max_candidates=4,
+        )
+
+        self.assertEqual(len(candidate), 1)
+        self.assertEqual(candidate[0]["source"], "temporal_pair_consensus")
+        self.assertGreater(candidate[0]["length"], 480.0)
+        self.assertEqual(candidate[0]["temporal_source_pair_consensus"], 1.0)
+        self.assertEqual(candidate[0]["temporal_pair_offset_span"], 2.0)
+        self.assertTrue(candidate[0]["is_oracle_positive"])
+
+    def test_build_candidates_adds_temporal_pair_consensus_source(self) -> None:
+        mask = np.ones((76, 100), dtype=np.float32) * 0.5
+        center = np.ones((76, 100), dtype=np.float32) * 0.4
+        selector = np.ones((76, 100), dtype=np.float32) * 0.3
+        gt = [{"points_xy": [[120.0, 301.0], [620.0, 301.0]]}]
+
+        candidates = _build_temporal_candidates(
+            meta=_meta(),
+            mask_probs=mask,
+            center_probs=center,
+            selector_probs=selector,
+            current_stop_lines=[],
+            gt_stop_lines=gt,
+            neighbor_predictions=[
+                (-1, 12, {"stop_lines": [{"points_xy": [[180.0, 300.0], [620.0, 300.0]], "score": 0.8}]}),
+                (1, 14, {"stop_lines": [{"points_xy": [[120.0, 302.0], [560.0, 302.0]], "score": 0.7}]}),
+            ],
+            max_candidates=8,
+            temporal_pair_consensus_enabled=True,
+        )
+
+        pair_candidates = [candidate for candidate in candidates if candidate["source"] == "temporal_pair_consensus"]
+        self.assertEqual(len(pair_candidates), 1)
+        self.assertTrue(pair_candidates[0]["is_oracle_positive"])
 
     def test_build_union_candidates_assigns_single_match_label(self) -> None:
         mask = np.ones((76, 100), dtype=np.float32) * 0.5
