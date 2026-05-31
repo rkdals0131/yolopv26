@@ -24755,3 +24755,111 @@ Decision:
 - The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it.
 - Close phase-correlation temporal lane alignment as global translation, response-feature, verifier-threshold/top-k, and train-batch scaling over this image-plane temporal candidate surface.
 - Reopen temporal lane only with a materially different motion model or candidate source whose exact TP gain is not paid for by larger FP growth.
+
+## 399. 2026-05-31 Lane area-ROI focal-BCE verifier: hard-example loss does not beat the FP frontier
+
+Context:
+
+- The dropped-candidate lane area-ROI family has repeatedly shown real recall headroom, but exact and broader failures are FP-limited.
+- This branch changes the verifier training methodology, not candidate generation or postprocess thresholds:
+  - same raw bbox/area-dropped row-scan candidate surface;
+  - same no-GT line-ROI feature set;
+  - same append integration contract;
+  - BCE is replaced by focal BCE so hard misclassified examples receive more training weight.
+
+Implementation:
+
+- Updated `tools/probe_pv26_lane_area_roi_verifier.py`.
+- Added `--verifier-loss-mode focal_bce`.
+- Added fixed focal modulation with `--focal-gamma`, default `2.0`.
+- Added `_candidate_bce_loss()` so ordinary BCE, focal BCE, set-context groups, and pairwise BCE stabilizer share one finite loss path.
+- Updated `test/test_lane_area_roi_verifier.py` with focal-loss coverage and focal training summary assertions.
+
+Training and evaluation:
+
+- Existing canonical dataset root reused in place:
+  - `seg_dataset/pv26_exhaustive_od_lane_dataset`;
+  - dataset index reported `429350` records;
+  - no dataset copy was created.
+- Checkpoint:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- Runtime:
+  - `lane60_experiment=stopline_projection_comp_runtime`;
+  - `lane_flip_variant=flip_centerline_avg_lane_cross_comp050`;
+  - `candidate_source=dropped_area`;
+  - `candidate_integration_mode=append`;
+  - `quality_threshold=0.80`;
+  - max appends per sample `2`;
+  - focal gamma `2.0`;
+  - validation epoch `2`;
+  - batch size `4`.
+
+Smoke train64 / fixed-val4:
+
+- Train examples `439`; positives `66`; negatives `373`.
+- Validation candidates `29`.
+- Selected candidates `5`; selected oracle-positive candidates `2`.
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5839` | `40 / 11 / 46` | `0.0000` | `0.5455` |
+| focal-BCE area-ROI append | `0.5915` | `42 / 14 / 44` | `0.0000` | `0.5455` |
+
+Exact train256 / val128:
+
+- Train examples `1568`; positives `253`; negatives `1315`.
+- Validation candidates `749`.
+- Selected candidates `92`; selected oracle-positive candidates `41`.
+
+| Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Crosswalk F1 |
+| --- | ---: | --- | ---: | ---: |
+| baseline | `0.5888` | `1202 / 491 / 1188` | `0.5333` | `0.5988` |
+| focal-BCE area-ROI append | `0.5945` | `1241 / 544 / 1149` | `0.5333` | `0.5988` |
+
+Diagnosis:
+
+- Focal BCE is trainable and does move exact lane recall, but it does not solve FP-control.
+- Exact TP rises `+39`, while FP rises `+53`.
+- Exact F1 `0.5945` stays below:
+  - target lane F1 `0.60`;
+  - plain train384 area-ROI exact `0.5956`;
+  - ensemble-stability area-ROI exact `0.5963`.
+- Stop-line and crosswalk are unchanged, so the full all-task target remains unmet.
+- Broader-val512 is skipped because the exact gate does not beat the retained lane area-ROI frontier.
+
+Artifacts:
+
+- Smoke summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train64_smoke_val4_20260531/summary.json`.
+- Smoke candidates/replay:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train64_smoke_val4_20260531/train_candidates.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train64_smoke_val4_20260531/val_candidates.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train64_smoke_val4_20260531/verifier_replay_rows.csv`.
+- Exact train256 summary:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train256_exact_val128_20260531/summary.json`.
+- Exact train256 candidates/replay:
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train256_exact_val128_20260531/train_candidates.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train256_exact_val128_20260531/val_candidates.csv`;
+  - `runs/pv26_exhaustive_od_lane_train/lane_area_roi_focal_bce_train256_exact_val128_20260531/verifier_replay_rows.csv`.
+
+Storage:
+
+- Outputs are CSV/summary-only:
+  - smoke export about `48K`;
+  - exact export about `208K`.
+- No verifier checkpoint was saved.
+- No dataset copy was created.
+- Temporary root `yolo26s.pt` / `yolo26n.pt` were pruned after the runs.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/probe_pv26_lane_area_roi_verifier.py test/test_lane_area_roi_verifier.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_lane_area_roi_verifier`.
+- CUDA train64/fixed-val4 focal-BCE area-ROI verifier run on the existing canonical dataset root.
+- CUDA train256/exact-val128 focal-BCE area-ROI verifier run on the existing canonical dataset root.
+
+Decision:
+
+- The implementation is mechanically valid and trains/evaluates on real data, but exact validation rejects it as a breakthrough path.
+- Close focal-BCE area-ROI as focal gamma / focal-vs-BCE / quality-threshold / hidden-dim / max-append / train-batch scaling on the same dropped-candidate surface.
+- Reopen dropped-candidate rescue only with a materially stronger instance-quality/alignment signal or a different candidate generator whose exact TP gain is not paid for by larger FP growth.

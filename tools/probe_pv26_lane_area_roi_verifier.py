@@ -197,15 +197,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--set-context-heads", type=int, default=4)
     parser.add_argument(
         "--verifier-loss-mode",
-        choices=("bce", "sample_pairwise_rank"),
+        choices=("bce", "focal_bce", "sample_pairwise_rank"),
         default="bce",
         help=(
             "bce keeps the historical independent candidate classifier. "
+            "focal_bce keeps the same labels/features but upweights hard "
+            "misclassified candidates during verifier training. "
             "sample_pairwise_rank trains the same scorer to rank positive "
             "lane candidates above negative candidates inside each sample, "
             "which tests a set-selection signal rather than another score "
             "threshold sweep."
         ),
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=2.0,
+        help="Focal modulation gamma for --verifier-loss-mode focal_bce.",
     )
     parser.add_argument("--pairwise-margin", type=float, default=0.20)
     parser.add_argument(
@@ -314,6 +322,23 @@ class LaneAreaRoiSetContextVerifierNet(nn.Module):
 
 def _is_set_context_verifier(model: nn.Module) -> bool:
     return bool(getattr(model, "is_set_context_verifier", False))
+
+
+def _candidate_bce_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    pos_weight: torch.Tensor,
+    loss_mode: str,
+    focal_gamma: float,
+) -> torch.Tensor:
+    bce = F.binary_cross_entropy_with_logits(logits, labels, pos_weight=pos_weight, reduction="none")
+    if str(loss_mode) != "focal_bce":
+        return bce.mean()
+    probabilities = torch.sigmoid(logits.detach())
+    pt = torch.where(labels > 0.5, probabilities, 1.0 - probabilities).clamp(min=1.0e-6, max=1.0)
+    focal_weight = torch.pow(1.0 - pt, max(float(focal_gamma), 0.0))
+    return (focal_weight * bce).mean()
 
 
 def _lane_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
@@ -1540,10 +1565,12 @@ def _train_verifier(
                 pairwise_loss = F.softplus(
                     negative_logits[:, None] - positive_logits[None, :] + margin
                 ).mean()
-                bce_loss = F.binary_cross_entropy_with_logits(
+                bce_loss = _candidate_bce_loss(
                     logits,
                     group_labels,
                     pos_weight=pos_weight,
+                    loss_mode="bce",
+                    focal_gamma=float(getattr(args, "focal_gamma", 2.0)),
                 )
                 loss = (rank_weight * pairwise_loss) + (bce_weight * bce_loss)
                 optimizer.zero_grad(set_to_none=True)
@@ -1562,7 +1589,13 @@ def _train_verifier(
                 for group_order_index in order:
                     group = all_grouped_indices[int(group_order_index)]
                     logits = model(features[group])
-                    loss = F.binary_cross_entropy_with_logits(logits, labels[group], pos_weight=pos_weight)
+                    loss = _candidate_bce_loss(
+                        logits,
+                        labels[group],
+                        pos_weight=pos_weight,
+                        loss_mode=loss_mode,
+                        focal_gamma=float(getattr(args, "focal_gamma", 2.0)),
+                    )
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
                     optimizer.step()
@@ -1576,7 +1609,13 @@ def _train_verifier(
                 for start in range(0, int(order.numel()), batch_size):
                     index = order[start : start + batch_size].to(device)
                     logits = model(features[index])
-                    loss = F.binary_cross_entropy_with_logits(logits, labels[index], pos_weight=pos_weight)
+                    loss = _candidate_bce_loss(
+                        logits,
+                        labels[index],
+                        pos_weight=pos_weight,
+                        loss_mode=loss_mode,
+                        focal_gamma=float(getattr(args, "focal_gamma", 2.0)),
+                    )
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
                     optimizer.step()
@@ -1594,6 +1633,7 @@ def _train_verifier(
         "set_context_layers": int(getattr(args, "set_context_layers", 2)),
         "set_context_heads": int(getattr(args, "set_context_heads", 4)),
         "loss_mode": loss_mode,
+        "focal_gamma": float(getattr(args, "focal_gamma", 2.0)),
         "pairwise_margin": float(getattr(args, "pairwise_margin", 0.20)),
         "pairwise_bce_weight": float(getattr(args, "pairwise_bce_weight", 0.35)),
         "history": history,

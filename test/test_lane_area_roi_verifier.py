@@ -13,6 +13,7 @@ from tools.probe_pv26_lane_area_roi_verifier import (
     _apply_verifier,
     _baseline_matched_gt_indices,
     _candidate_label,
+    _candidate_bce_loss,
     _conditional_union_source_features,
     _empty_task_count_payload,
     _finalize_task_counts,
@@ -520,6 +521,54 @@ class LaneAreaRoiVerifierTests(unittest.TestCase):
         self.assertEqual(summary["positive_count"], 2)
         self.assertEqual(summary["negative_count"], 2)
         self.assertEqual(summary["input_dim"], 2)
+        self.assertTrue(summary["history"])
+
+    def test_focal_bce_downweights_easy_examples(self) -> None:
+        logits = torch.tensor([8.0, -8.0, 0.0, 0.0], dtype=torch.float32)
+        labels = torch.tensor([1.0, 0.0, 1.0, 0.0], dtype=torch.float32)
+        pos_weight = torch.ones(1, dtype=torch.float32)
+
+        plain = _candidate_bce_loss(
+            logits,
+            labels,
+            pos_weight=pos_weight,
+            loss_mode="bce",
+            focal_gamma=2.0,
+        )
+        focal = _candidate_bce_loss(
+            logits,
+            labels,
+            pos_weight=pos_weight,
+            loss_mode="focal_bce",
+            focal_gamma=2.0,
+        )
+
+        self.assertLess(float(focal), float(plain))
+
+    def test_focal_bce_training_reports_loss_mode(self) -> None:
+        examples = [
+            {"features": np.asarray([1.0, 0.0], dtype=np.float32), "positive": 1.0, "sample_index": 0},
+            {"features": np.asarray([0.0, 1.0], dtype=np.float32), "positive": 0.0, "sample_index": 0},
+            {"features": np.asarray([0.8, 0.2], dtype=np.float32), "positive": 1.0, "sample_index": 1},
+            {"features": np.asarray([0.2, 0.8], dtype=np.float32), "positive": 0.0, "sample_index": 1},
+        ]
+
+        _model, summary = _train_verifier(
+            examples,
+            args=SimpleNamespace(
+                seed=7,
+                hidden_dim=8,
+                verifier_lr=1.0e-2,
+                verifier_batch_size=4,
+                verifier_epochs=2,
+                verifier_loss_mode="focal_bce",
+                focal_gamma=2.0,
+            ),
+            device="cpu",
+        )
+
+        self.assertEqual(summary["loss_mode"], "focal_bce")
+        self.assertEqual(summary["focal_gamma"], 2.0)
         self.assertTrue(summary["history"])
 
     def test_set_context_verifier_forward_scores_candidate_sets(self) -> None:
