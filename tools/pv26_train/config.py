@@ -299,6 +299,8 @@ class TrainDefaultsConfig:
     distill_teacher_runtime_targets_enabled: bool = False
     distill_teacher_mode: str = "cache"
     distill_sample_mode: str = "all"
+    distill_confidence_mode: str = "none"
+    distill_confidence_threshold: float = 0.65
     distill_loss_weights: dict[str, float] = field(default_factory=dict)
     distill_normalize_mode: str = "none"
     distill_ema_decay: float = 0.95
@@ -1705,6 +1707,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
             data.get("distill_sample_mode", defaults.distill_sample_mode),
             field_name="train_defaults.distill_sample_mode",
         ),
+        distill_confidence_mode=_coerce_str(
+            data.get("distill_confidence_mode", defaults.distill_confidence_mode),
+            field_name="train_defaults.distill_confidence_mode",
+        ),
+        distill_confidence_threshold=_coerce_float(
+            data.get("distill_confidence_threshold", defaults.distill_confidence_threshold),
+            field_name="train_defaults.distill_confidence_threshold",
+        ),
         distill_loss_weights={
             _coerce_str(name, field_name="train_defaults.distill_loss_weights.key"): _coerce_float(
                 value,
@@ -2020,6 +2030,12 @@ def validate_meta_train_scenario(
             raise ValueError(
                 f"phase {index} distill_sample_mode must be one of: all, det_source_only"
             )
+        if str(phase_train.distill_confidence_mode).strip().lower() not in {"none", "teacher_positive"}:
+            raise ValueError(
+                f"phase {index} distill_confidence_mode must be one of: none, teacher_positive"
+            )
+        if not (0.0 < float(phase_train.distill_confidence_threshold) < 1.0):
+            raise ValueError(f"phase {index} distill_confidence_threshold must be in (0, 1)")
         if phase_train.lane_objectness_target_mode not in {"binary", "quality_ramp"}:
             raise ValueError(
                 f"phase {index} lane_objectness_target_mode must be one of: binary, quality_ramp"

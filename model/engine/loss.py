@@ -94,19 +94,73 @@ def _logit_kl_divergence(student_logits: torch.Tensor, teacher_logits: torch.Ten
     return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
 
 
-def _binary_logit_distill(student_logits: torch.Tensor, teacher_logits: torch.Tensor) -> torch.Tensor:
+def _distill_mask_for(mask: torch.Tensor | None, target: torch.Tensor) -> torch.Tensor | None:
+    if mask is None:
+        return None
+    expanded = mask.to(device=target.device, dtype=torch.bool)
+    if expanded.ndim == target.ndim - 1 and target.ndim >= 2:
+        expanded = expanded.unsqueeze(1)
+    if expanded.shape == target.shape:
+        return expanded
+    try:
+        return torch.broadcast_to(expanded, target.shape)
+    except RuntimeError as exc:
+        raise ValueError(
+            f"distill mask shape {tuple(expanded.shape)} is incompatible with target shape {tuple(target.shape)}"
+        ) from exc
+
+
+def _masked_mean_or_zero(loss: torch.Tensor, mask: torch.Tensor | None, *graph_tensors: torch.Tensor) -> torch.Tensor:
+    expanded_mask = _distill_mask_for(mask, loss)
+    if expanded_mask is None:
+        return loss.mean()
+    denom = expanded_mask.to(dtype=loss.dtype).sum()
+    if float(denom.detach().cpu()) <= 0.0:
+        return _zero_graph(*graph_tensors)
+    return (loss * expanded_mask.to(dtype=loss.dtype)).sum() / denom.clamp_min(1.0)
+
+
+def _binary_logit_distill(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    *,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     teacher_probs = torch.sigmoid(teacher_logits)
-    return F.binary_cross_entropy_with_logits(student_logits, teacher_probs, reduction="mean")
+    loss = F.binary_cross_entropy_with_logits(student_logits, teacher_probs, reduction="none")
+    return _masked_mean_or_zero(loss, mask, student_logits, teacher_logits)
 
 
-def _soft_dice_distill(student_logits: torch.Tensor, teacher_logits: torch.Tensor) -> torch.Tensor:
+def _soft_dice_distill(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    *,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     student_probs = torch.sigmoid(student_logits)
     teacher_probs = torch.sigmoid(teacher_logits)
+    expanded_mask = _distill_mask_for(mask, student_probs)
+    if expanded_mask is not None:
+        denom = expanded_mask.to(dtype=student_probs.dtype).sum()
+        if float(denom.detach().cpu()) <= 0.0:
+            return _zero_graph(student_logits, teacher_logits)
+        student_probs = student_probs * expanded_mask.to(dtype=student_probs.dtype)
+        teacher_probs = teacher_probs * expanded_mask.to(dtype=teacher_probs.dtype)
     numerator = 2.0 * (student_probs * teacher_probs).sum()
     denominator = student_probs.square().sum() + teacher_probs.square().sum()
     if not bool(torch.isfinite(denominator)):
         return _zero_graph(student_logits, teacher_logits)
     return 1.0 - ((numerator + 1.0) / (denominator + 1.0))
+
+
+def _smooth_l1_distill(
+    student: torch.Tensor,
+    teacher: torch.Tensor,
+    *,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    loss = F.smooth_l1_loss(student, teacher, reduction="none")
+    return _masked_mean_or_zero(loss, mask, student, teacher)
 
 
 def _feature_cosine_similarity(student_feature: torch.Tensor, teacher_feature: torch.Tensor) -> torch.Tensor:
@@ -2815,6 +2869,8 @@ class PV26MultiTaskLoss(nn.Module):
         distill_enabled: bool = False,
         distill_teacher_mode: str = "cache",
         distill_sample_mode: str = "all",
+        distill_confidence_mode: str = "none",
+        distill_confidence_threshold: float = 0.65,
         distill_loss_weights: dict[str, float] | None = None,
         distill_normalize_mode: str = "none",
         distill_ema_decay: float = 0.95,
@@ -2952,6 +3008,12 @@ class PV26MultiTaskLoss(nn.Module):
         self.distill_sample_mode = str(distill_sample_mode).strip().lower()
         if self.distill_sample_mode not in {"all", "det_source_only"}:
             raise ValueError(f"unsupported distill_sample_mode: {self.distill_sample_mode}")
+        self.distill_confidence_mode = str(distill_confidence_mode).strip().lower()
+        if self.distill_confidence_mode not in {"none", "teacher_positive"}:
+            raise ValueError(f"unsupported distill_confidence_mode: {self.distill_confidence_mode}")
+        self.distill_confidence_threshold = float(distill_confidence_threshold)
+        if not (0.0 < self.distill_confidence_threshold < 1.0):
+            raise ValueError("distill_confidence_threshold must be in (0, 1)")
         self.distill_normalize_mode = str(distill_normalize_mode)
         self.distill_ema_decay = float(distill_ema_decay)
         self.distill_ema_warmup_steps = int(distill_ema_warmup_steps)
@@ -3144,6 +3206,8 @@ class PV26MultiTaskLoss(nn.Module):
             "distill_enabled": bool(self.distill_enabled),
             "distill_teacher_mode": self.distill_teacher_mode,
             "distill_sample_mode": self.distill_sample_mode,
+            "distill_confidence_mode": self.distill_confidence_mode,
+            "distill_confidence_threshold": float(self.distill_confidence_threshold),
             "distill_normalize_mode": self.distill_normalize_mode,
             "distill_ema_decay": float(self.distill_ema_decay),
             "distill_ema_warmup_steps": int(self.distill_ema_warmup_steps),
@@ -3230,6 +3294,57 @@ class PV26MultiTaskLoss(nn.Module):
             else:
                 selected[key] = value
         return selected
+
+    def _teacher_positive_distill_mask(
+        self,
+        teacher_cache: dict[str, torch.Tensor],
+        *,
+        keys: tuple[str, ...],
+        reference: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if self.distill_confidence_mode == "none":
+            return None
+        masks: list[torch.Tensor] = []
+        for key in keys:
+            logits = teacher_cache.get(key)
+            if not isinstance(logits, torch.Tensor) or logits.ndim < 3:
+                continue
+            probs = torch.sigmoid(logits.to(device=reference.device))
+            if probs.ndim == 4 and int(probs.shape[1]) > 1:
+                probs = probs.max(dim=1, keepdim=True).values
+            elif probs.ndim == 3:
+                probs = probs.unsqueeze(1)
+            if tuple(probs.shape[-2:]) != tuple(reference.shape[-2:]):
+                probs = F.interpolate(
+                    probs.float(),
+                    size=tuple(reference.shape[-2:]),
+                    mode="nearest",
+                )
+            masks.append(probs >= float(self.distill_confidence_threshold))
+        if not masks:
+            return None
+        merged = masks[0]
+        for item in masks[1:]:
+            merged = merged | item
+        return merged.detach()
+
+    def _masked_spatial_logit_kl(
+        self,
+        student_logits: torch.Tensor,
+        teacher_logits: torch.Tensor,
+        spatial_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        student = student_logits.permute(0, 2, 3, 1).reshape(-1, student_logits.shape[1])
+        teacher = teacher_logits.permute(0, 2, 3, 1).reshape(-1, teacher_logits.shape[1])
+        if spatial_mask is None:
+            return _logit_kl_divergence(student, teacher)
+        mask = spatial_mask.to(device=student_logits.device, dtype=torch.bool)
+        if mask.ndim == 4:
+            mask = mask[:, 0]
+        selected = mask.reshape(-1)
+        if float(selected.to(dtype=torch.float32).sum().detach().cpu()) <= 0.0:
+            return _zero_graph(student_logits, teacher_logits)
+        return _logit_kl_divergence(student[selected], teacher[selected])
 
     def _normalize_distill_loss(
         self,
@@ -3443,50 +3558,51 @@ class PV26MultiTaskLoss(nn.Module):
                 indices=sample_indices,
                 batch_size=batch_size,
             )
+        spatial_mask = self._teacher_positive_distill_mask(
+            teacher_cache,
+            keys=("lane_seg_centerline_logits", "lane_seg_support_logits"),
+            reference=predictions["lane_seg_centerline_logits"],
+        )
         center_bce = _binary_logit_distill(
             predictions["lane_seg_centerline_logits"],
             teacher_cache["lane_seg_centerline_logits"],
+            mask=spatial_mask,
         )
         center_dice = _soft_dice_distill(
             predictions["lane_seg_centerline_logits"],
             teacher_cache["lane_seg_centerline_logits"],
+            mask=spatial_mask,
         )
         support_bce = _binary_logit_distill(
             predictions["lane_seg_support_logits"],
             teacher_cache["lane_seg_support_logits"],
+            mask=spatial_mask,
         )
         support_dice = _soft_dice_distill(
             predictions["lane_seg_support_logits"],
             teacher_cache["lane_seg_support_logits"],
+            mask=spatial_mask,
         )
-        center_offset = F.smooth_l1_loss(
+        center_offset = _smooth_l1_distill(
             predictions["lane_seg_center_offset"],
             teacher_cache["lane_seg_center_offset"],
-            reduction="mean",
+            mask=spatial_mask,
         )
-        tangent = F.smooth_l1_loss(
+        tangent = _smooth_l1_distill(
             predictions["lane_seg_tangent_axis"],
             teacher_cache["lane_seg_tangent_axis"],
-            reduction="mean",
+            mask=spatial_mask,
         )
-        student_color = predictions["lane_seg_color_logits"].permute(0, 2, 3, 1).reshape(
-            -1,
-            predictions["lane_seg_color_logits"].shape[1],
+        color_kl = self._masked_spatial_logit_kl(
+            predictions["lane_seg_color_logits"],
+            teacher_cache["lane_seg_color_logits"],
+            spatial_mask,
         )
-        teacher_color = teacher_cache["lane_seg_color_logits"].permute(0, 2, 3, 1).reshape(
-            -1,
-            teacher_cache["lane_seg_color_logits"].shape[1],
+        type_kl = self._masked_spatial_logit_kl(
+            predictions["lane_seg_type_logits"],
+            teacher_cache["lane_seg_type_logits"],
+            spatial_mask,
         )
-        student_type = predictions["lane_seg_type_logits"].permute(0, 2, 3, 1).reshape(
-            -1,
-            predictions["lane_seg_type_logits"].shape[1],
-        )
-        teacher_type = teacher_cache["lane_seg_type_logits"].permute(0, 2, 3, 1).reshape(
-            -1,
-            teacher_cache["lane_seg_type_logits"].shape[1],
-        )
-        color_kl = _logit_kl_divergence(student_color, teacher_color)
-        type_kl = _logit_kl_divergence(student_type, teacher_type)
         feature_cosine = _feature_cosine_similarity(predictions["lane_feature"], teacher_cache["lane_feature"])
         raw_loss = center_bce + center_dice + support_bce + support_dice + center_offset + tangent + color_kl + type_kl
         scaled_loss, scaling = self._normalize_distill_loss("lane", raw_loss, encoded)
@@ -3540,19 +3656,40 @@ class PV26MultiTaskLoss(nn.Module):
                 indices=sample_indices,
                 batch_size=batch_size,
             )
-        mask_bce = _binary_logit_distill(predictions["stop_line_mask_logits"], teacher_cache["stop_line_mask_logits"])
-        mask_dice = _soft_dice_distill(predictions["stop_line_mask_logits"], teacher_cache["stop_line_mask_logits"])
-        center_bce = _binary_logit_distill(predictions["stop_line_center_logits"], teacher_cache["stop_line_center_logits"])
-        center_offset = F.smooth_l1_loss(
+        spatial_mask = self._teacher_positive_distill_mask(
+            teacher_cache,
+            keys=("stop_line_mask_logits", "stop_line_center_logits"),
+            reference=predictions["stop_line_mask_logits"],
+        )
+        mask_bce = _binary_logit_distill(
+            predictions["stop_line_mask_logits"],
+            teacher_cache["stop_line_mask_logits"],
+            mask=spatial_mask,
+        )
+        mask_dice = _soft_dice_distill(
+            predictions["stop_line_mask_logits"],
+            teacher_cache["stop_line_mask_logits"],
+            mask=spatial_mask,
+        )
+        center_bce = _binary_logit_distill(
+            predictions["stop_line_center_logits"],
+            teacher_cache["stop_line_center_logits"],
+            mask=spatial_mask,
+        )
+        center_offset = _smooth_l1_distill(
             predictions["stop_line_center_offset"],
             teacher_cache["stop_line_center_offset"],
-            reduction="mean",
+            mask=spatial_mask,
         )
-        angle = F.smooth_l1_loss(predictions["stop_line_angle"], teacher_cache["stop_line_angle"], reduction="mean")
-        half_length = F.smooth_l1_loss(
+        angle = _smooth_l1_distill(
+            predictions["stop_line_angle"],
+            teacher_cache["stop_line_angle"],
+            mask=spatial_mask,
+        )
+        half_length = _smooth_l1_distill(
             predictions["stop_line_half_length"],
             teacher_cache["stop_line_half_length"],
-            reduction="mean",
+            mask=spatial_mask,
         )
         feature_cosine = _feature_cosine_similarity(predictions["stop_line_feature"], teacher_cache["stop_line_feature"])
         raw_loss = mask_bce + mask_dice + center_bce + center_offset + angle + half_length
@@ -3605,15 +3742,30 @@ class PV26MultiTaskLoss(nn.Module):
                 indices=sample_indices,
                 batch_size=batch_size,
             )
-        mask_bce = _binary_logit_distill(predictions["crosswalk_mask_logits"], teacher_cache["crosswalk_mask_logits"])
-        mask_dice = _soft_dice_distill(predictions["crosswalk_mask_logits"], teacher_cache["crosswalk_mask_logits"])
+        spatial_mask = self._teacher_positive_distill_mask(
+            teacher_cache,
+            keys=("crosswalk_mask_logits", "crosswalk_boundary_logits", "crosswalk_center_logits"),
+            reference=predictions["crosswalk_mask_logits"],
+        )
+        mask_bce = _binary_logit_distill(
+            predictions["crosswalk_mask_logits"],
+            teacher_cache["crosswalk_mask_logits"],
+            mask=spatial_mask,
+        )
+        mask_dice = _soft_dice_distill(
+            predictions["crosswalk_mask_logits"],
+            teacher_cache["crosswalk_mask_logits"],
+            mask=spatial_mask,
+        )
         boundary_bce = _binary_logit_distill(
             predictions["crosswalk_boundary_logits"],
             teacher_cache["crosswalk_boundary_logits"],
+            mask=spatial_mask,
         )
         center_bce = _binary_logit_distill(
             predictions["crosswalk_center_logits"],
             teacher_cache["crosswalk_center_logits"],
+            mask=spatial_mask,
         )
         feature_cosine = _feature_cosine_similarity(predictions["crosswalk_feature"], teacher_cache["crosswalk_feature"])
         raw_loss = mask_bce + mask_dice + boundary_bce + center_bce

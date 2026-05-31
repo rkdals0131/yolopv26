@@ -821,6 +821,8 @@ def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) 
         distill_enabled=train_config.distill_enabled,
         distill_teacher_mode=train_config.distill_teacher_mode,
         distill_sample_mode=train_config.distill_sample_mode,
+        distill_confidence_mode=train_config.distill_confidence_mode,
+        distill_confidence_threshold=train_config.distill_confidence_threshold,
         distill_loss_weights=train_config.distill_loss_weights,
         distill_normalize_mode=train_config.distill_normalize_mode,
         distill_ema_decay=train_config.distill_ema_decay,

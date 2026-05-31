@@ -272,6 +272,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
                             },
                             "lane_family_include_det_source_distill_only": True,
                             "distill_sample_mode": "det_source_only",
+                            "distill_confidence_mode": "teacher_positive",
+                            "distill_confidence_threshold": 0.72,
                             "distill_normalize_mode": "ema",
                             "distill_ema_decay": 0.9,
                             "distill_ema_warmup_steps": 2,
@@ -509,6 +511,8 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertAlmostEqual(scenario.train_defaults.distill_loss_weights["crosswalk"], 0.0)
         self.assertTrue(scenario.train_defaults.lane_family_include_det_source_distill_only)
         self.assertEqual(scenario.train_defaults.distill_sample_mode, "det_source_only")
+        self.assertEqual(scenario.train_defaults.distill_confidence_mode, "teacher_positive")
+        self.assertAlmostEqual(scenario.train_defaults.distill_confidence_threshold, 0.72)
         self.assertEqual(scenario.train_defaults.distill_normalize_mode, "ema")
         self.assertAlmostEqual(scenario.train_defaults.distill_ema_decay, 0.9)
         self.assertEqual(scenario.train_defaults.distill_ema_warmup_steps, 2)

@@ -24060,3 +24060,72 @@ Decision:
 - Broader-val512 is skipped because exact does not improve TP/FP/FN over projection-comp.
 - Close this lane-pair topology candidate surface as a standalone stop-line breakthrough path.
 - Do not repeat this as lane-pair y-fraction, dense-anchor count/stride, verifier threshold, hidden size, train-batch scaling, or baseline merge sweep unless the lane-derived candidate geometry changes materially.
+
+## 392. 2026-05-31 Lane-family det-source confident distill: teacher-positive masking does not improve the fixed gate
+
+Context:
+
+- The previous det-source distill sample-selection run was the allowed full-root unlabeled exposure reopen path: it applied dense teacher distill only on det-source-only rows, not on supervised lane-family rows.
+- That run improved over unmasked det-source distill but still missed the fixed gate at lane TP/FP/FN `38 / 10 / 48` and stop-line `0 / 3 / 2`.
+- This branch tested the next narrower quality premise: keep the same full-root det-source rows, but distill only teacher-positive dense pixels instead of the teacher's entire dense background.
+- It reused `seg_dataset/pv26_exhaustive_od_lane_dataset` in place and created no dataset copy.
+
+Implementation:
+
+- `model/engine/loss.py`:
+  - adds masked BCE, dice, SmoothL1, and spatial KL support for distill;
+  - adds `distill_confidence_mode="teacher_positive"` and `distill_confidence_threshold`;
+  - keeps default distill behavior unchanged when confidence mode is `none`.
+- `tools/pv26_train/config.py` and `tools/pv26_train/cli.py` plumb the new train defaults into `PV26MultiTaskLoss`.
+- `tools/run_pv26_lane60_probe.py` adds `lane_family_det_source_confident_distill_only`, inheriting the previous det-source-only sample-selection preset and setting threshold `0.65`.
+- Tests cover config parsing and verify that low-confidence teacher pixels do not backprop while the det-source-only sample mask still excludes supervised rows.
+
+Training:
+
+- Run: `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_confident_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_143129`.
+- Seed checkpoint: `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- CUDA training: `2` epochs, `64` train batches per epoch, `4` validation batches, batch size `4`.
+- Dataset index: `429350` canonical records, split `326709 / 82641 / 20000`.
+- Dataset key counts included `aihub_lane_seoul=132700`, `pv26_exhaustive_aihub_obstacle_seoul=46650`, `pv26_exhaustive_aihub_traffic_seoul=150000`, and `pv26_exhaustive_bdd100k_det_100k=100000`.
+- Skipped steps: `0`.
+- Best internal phase objective reached `0.6410053067` at epoch 1, but this is not success evidence because final judgement uses fixed task metrics.
+
+Fixed val4 evaluation:
+
+| Eval | Variant | Lane F1 | Lane TP/FP/FN | Stop-line F1 | Stop TP/FP/FN | Crosswalk F1 | Cross TP/FP/FN |
+| --- | --- | ---: | --- | ---: | --- | ---: | --- |
+| fixed val4 epoch-1 best | `flip_centerline_avg_lane_cross_comp050` | `0.5672` | `38 / 10 / 48` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+| fixed val4 epoch-1 best | `baseline` | `0.5373` | `36 / 12 / 50` | `0.0000` | `0 / 3 / 2` | `0.5455` | `3 / 1 / 4` |
+
+Reference:
+
+- Retained fixed val4 flip/cross-mask reference: lane `0.5839`, lane TP/FP/FN `40 / 11 / 46`, stop-line `0 / 3 / 2`, crosswalk `3 / 1 / 4`.
+- Confidence masking does not improve over the previous det-source-only sample-selection gate; it keeps the same best fixed lane `38 / 10 / 48` and still recovers no stop-line TP.
+
+Artifacts:
+
+- Fixed val4 metrics: `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_confident_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_143129/analysis_exports/fixed_val4_epoch1_best/metrics.csv`.
+- Fixed val4 summary: `runs/pv26_exhaustive_od_lane_train/lane60_lane_family_det_source_confident_distill_only_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260531_143129/analysis_exports/fixed_val4_epoch1_best/summary.json`.
+- Train summary/history retained under the same run directory.
+
+Storage:
+
+- Negative checkpoints, TensorBoard, and root `yolo26s.pt` / `yolo26n.pt` were pruned.
+- Retained run size after cleanup is about `844K`.
+- No dataset copy was created.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m py_compile model/engine/loss.py tools/pv26_train/config.py tools/pv26_train/cli.py tools/run_pv26_lane60_probe.py test/test_pv26_distill_retention.py test/test_run_pv26_train.py`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_distill_retention.PV26DistillRetentionTests test_run_pv26_train.RunPV26TrainScenarioTests.test_load_meta_train_scenario_applies_user_yaml_overrides`.
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=test:. python -m unittest test_pv26_loss_runtime`.
+- `PYTHONDONTWRITEBYTECODE=1 python tools/run_pv26_lane60_probe.py --help`.
+- CUDA `lane_family_det_source_confident_distill_only` smoke training with `2x64` train batches.
+- CUDA fixed val4 evaluation with `baseline` and `flip_centerline_avg_lane_cross_comp050`.
+
+Decision:
+
+- The confidence-gated distill implementation is mechanically valid and trainable, but the trained experiment is fixed-gate negative.
+- Exact-val128 and broader-val512 are skipped because fixed val4 still loses lane TP versus the retained reference and recovers no stop-line TP.
+- Close this as `distill_confidence_mode`, teacher-positive threshold, det-source sampler ratio, distill weight, teacher checkpoint, head LR, epoch-count, train-batch scaling, and same static-head freeze-policy tuning.
+- Reopen full-root unlabeled exposure only with a materially different pseudo-label source, geometry-emitting contract, or candidate-generation signal that first improves fixed TP/FP/FN.
