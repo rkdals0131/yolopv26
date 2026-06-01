@@ -26231,3 +26231,45 @@ Decision:
 - Keep the benchmark target unchanged: broader lane/stop_line/crosswalk F1 all `>= 0.60`.
 - Treat field playback as a separate product-utility signal, not a replacement for held-out validation.
 - If new collection is planned, prioritize close-range/medium-plus traffic lights and underrepresented lane/roadmark cases before simply adding more of the already dominant vehicle/white-lane distribution.
+
+## 415. 2026-06-02 Develop integration: current frontier is now official, exp branch stays as anchor
+
+Context:
+
+- The user asked whether the best is currently on an exp branch and whether it should be formally integrated into `develop`.
+- Before integration, `origin/develop...origin/exp/lane-family-f1/current-family-dense-denoise` was `0 / 170`, so develop was behind and the current frontier was only on the exp branch.
+- The current frontier is now promoted to `develop` by fast-forward, not by cherry-picking or rewriting history.
+
+Integration:
+
+- Source branch:
+  - `exp/lane-family-f1/current-family-dense-denoise`.
+- Destination branch:
+  - `develop`.
+- Merge shape:
+  - fast-forward only.
+- Reason:
+  - this branch contains the current best/status docs, artifact cleanup checkpoint, branch pruning checkpoint, field playback note, and latest retained frontier/negative-result ledger.
+
+Branch retention decision:
+
+- There is no strong reason to delete `exp/lane-family-f1/current-family-dense-denoise` immediately after develop integration.
+- Keep it because:
+  - it is the named research ledger for the lane-family F1 search;
+  - it provides an easy anchor for comparison, rollback, and future worktree creation;
+  - branch clutter is already controlled because only two `exp/lane-family-f1/*` branches remain.
+- The branch can be deleted later only after `develop` or a tag is the accepted long-term anchor and there is no need to name the research line separately.
+
+Current branch roles after integration:
+
+| Branch | Role |
+| --- | --- |
+| `develop` | Official integration branch with current best/status/docs. |
+| `main` | Solid runtime-contract line at projection-comp stop-line runtime contract. |
+| `exp/lane-family-f1/current-family-dense-denoise` | Named research ledger/anchor, same frontier line as develop after integration. |
+| `exp/lane-family-f1/runtime-stopline-specialist-router` | Best numeric router anchor, not a single-checkpoint deployment claim. |
+
+Decision:
+
+- Develop may now be called the current official best/status branch.
+- Do not delete the current exp branch yet; it is useful and no longer creates branch clutter.
