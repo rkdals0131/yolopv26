@@ -5,7 +5,9 @@
 
 ## 0. 현재 기준
 
-- 최신 best/status/docs/artifact cleanup 기준 브랜치는 `exp/lane-family-f1/current-family-dense-denoise`이다. 2026-06-02 확인 기준 `origin/develop...HEAD = 0 / 167`이며, current HEAD `42b1f83`은 아직 `origin/develop`에 포함되지 않았다.
+- 최신 best/status/docs/artifact cleanup 기준 브랜치는 `exp/lane-family-f1/current-family-dense-denoise`이다. 2026-06-02 branch cleanup 후 확인 기준 `origin/develop...HEAD = 0 / 168`이며, current HEAD `bae3803`은 아직 `origin/develop`에 포함되지 않았다.
+- `main`은 solid runtime contract인 `stopline-projcomp-runtime-contract` 지점 `364c019`까지 fast-forward됐다. current search branch 전체를 main에 올린 것은 아니며, current branch는 `origin/main`보다 `151`커밋 앞서 있다.
+- 원격/local `exp/lane-family-f1/*`는 두 개만 남긴다: `current-family-dense-denoise`와 `runtime-stopline-specialist-router`.
 - 현재 best broader surface는 single raw checkpoint가 아니다. Best two-checkpoint/router stop-line tradeoff는 lane/stop/cross `0.5628 / 0.5309 / 0.6187`이고, retained lane-preserving task-balance/runtime composite는 `0.5628 / 0.5164 / 0.6187`이다.
 - `develop`을 최신 best라고 부르지 않는다. develop에 병합되기 전까지는 current search branch와 `00A_CURRENT_STATUS.md`를 기준으로 판단한다.
 - 여전히 목표 미달이다. final success는 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`이어야 한다.

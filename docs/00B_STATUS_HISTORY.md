@@ -26117,3 +26117,50 @@ Decision:
 
 - Do not call `develop` the current best until this branch is merged.
 - Do not call any current surface solved: lane and stop-line are still below `0.60`, and the best stop-line tradeoff is a router/composite surface rather than a single raw deployable checkpoint.
+
+## 413. 2026-06-02 Branch pruning and main promotion: keep two exp branches, promote only the solid runtime contract
+
+Context:
+
+- The user requested keeping only about two best experiment branches and moving only the truly solid methodology to `main`.
+- Directly fast-forwarding `main` to the current search branch would have moved `543` commits from old `main`, including the later negative-search ledger and many exploratory code paths.
+- The narrower solid promotion point is `origin/exp/lane-family-f1/stopline-projcomp-runtime-contract` at `364c019`, which makes the projection-competition stop-line replay a real runtime/config/evaluator contract and grounds the retained lane-preserving task-balance runtime composite.
+
+Main promotion:
+
+- `origin/main` was fast-forwarded without force:
+  - before: `be5106d`;
+  - after: `364c019` (`Ground task-balance runtime composite before next search`).
+- This promotes the solid retained projection-competition runtime contract to `main`.
+- It does not promote the later current-search frontier or the many later negative experiments to `main`.
+
+Kept experiment branches:
+
+| Branch | Reason |
+| --- | --- |
+| `exp/lane-family-f1/current-family-dense-denoise` | Current frontier, docs, cleanup checkpoint, and negative-result ledger. |
+| `exp/lane-family-f1/runtime-stopline-specialist-router` | Best numeric two-checkpoint/router stop-line tradeoff anchor, broader lane/stop/cross `0.5628 / 0.5309 / 0.6187`. |
+
+Pruned branches:
+
+- Deleted `97` remote `origin/exp/lane-family-f1/*` branches, including `stopline-projcomp-runtime-contract` after its tip was moved to `main`.
+- Ran `git fetch origin --prune` after remote deletion.
+- Ran `git worktree prune` and deleted `343` stale local `exp/lane-family-f1/*` branch refs.
+
+Verification:
+
+- Remote `exp/lane-family-f1/*` now contains only:
+  - `origin/exp/lane-family-f1/current-family-dense-denoise`;
+  - `origin/exp/lane-family-f1/runtime-stopline-specialist-router`.
+- Local `exp/lane-family-f1/*` now contains only:
+  - `exp/lane-family-f1/current-family-dense-denoise`;
+  - `exp/lane-family-f1/runtime-stopline-specialist-router`.
+- `origin/main` points to `364c019`.
+- `origin/main...HEAD` is `0 / 151`, so current search remains ahead of main and is intentionally not fully promoted.
+- `origin/develop...HEAD` is `0 / 168`, so develop remains behind the current search branch.
+
+Decision:
+
+- Treat `main` as the solid runtime-contract line for retained projection-competition evidence.
+- Treat `exp/lane-family-f1/current-family-dense-denoise` as the active research ledger/frontier.
+- Treat `exp/lane-family-f1/runtime-stopline-specialist-router` as the best numeric router anchor, not as a single-checkpoint deployment claim.

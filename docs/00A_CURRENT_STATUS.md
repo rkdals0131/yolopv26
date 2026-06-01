@@ -5,7 +5,9 @@
 
 ## 0. 2026-06-02 현재 best / branch 기준
 
-현재 best 상태와 최신 실패 이력은 `develop`이 아니라 `exp/lane-family-f1/current-family-dense-denoise`에 있다. 2026-06-02 확인 기준 HEAD는 `42b1f83`이고, `origin/develop...HEAD`는 `0 / 167`이다. 즉 `origin/develop`은 현재 search branch의 조상이며, 현재 HEAD는 아직 `origin/develop`에 포함돼 있지 않다.
+현재 best 상태와 최신 실패 이력은 `develop`이 아니라 `exp/lane-family-f1/current-family-dense-denoise`에 있다. 2026-06-02 정리 후 기준 HEAD는 `bae3803`이고, `origin/develop...HEAD`는 `0 / 168`이다. 즉 `origin/develop`은 현재 search branch의 조상이며, 현재 HEAD는 아직 `origin/develop`에 포함돼 있지 않다.
+
+`main`은 solid runtime contract로 판단한 `stopline-projcomp-runtime-contract` 지점까지 fast-forward되어 `364c019`를 가리킨다. 이것은 retained lane-preserving projection-competition runtime composite를 main에 올린 것이며, 이후 negative-search ledger와 current frontier까지 main에 모두 올린 것은 아니다. 현재 search branch는 `main`보다 `151`커밋 앞서 있다.
 
 | Surface | Broader lane / stop_line / crosswalk F1 | Interpretation |
 | --- | --- | --- |
@@ -15,6 +17,11 @@
 | Current learned lane replay frontier | lane aggregate `0.5851`, stop/cross `0.5302 / 0.5969` | area-ROI stacked-quality replay frontier; lane은 전진했지만 세 task 모두 `0.60`을 넘지 못한다. |
 
 따라서 지금 “best”는 `develop`의 일반 상태가 아니라 current search branch에 보존된 runtime/composite frontier다. 최종 목표는 여전히 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`인 것이고 아직 달성되지 않았다.
+
+Branch cleanup on 2026-06-02: local and remote `exp/lane-family-f1/*` refs were pruned to two branches only:
+
+- `exp/lane-family-f1/current-family-dense-denoise`: current frontier, docs, artifact cleanup, and negative-result ledger.
+- `exp/lane-family-f1/runtime-stopline-specialist-router`: best numeric two-checkpoint/router stop-line tradeoff anchor.
 
 ## 1. 한 줄 결론
 
