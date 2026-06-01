@@ -26273,3 +26273,45 @@ Decision:
 
 - Develop may now be called the current official best/status branch.
 - Do not delete the current exp branch yet; it is useful and no longer creates branch clutter.
+
+## 416. 2026-06-02 Branch hygiene correction: replace exp anchors with tags
+
+Context:
+
+- The user challenged the branch model after seeing many `origin/exp/...` labels in the graph.
+- The operational correction is valid: branch-per-attempt is the wrong abstraction. Branches should represent genuinely different research directions, not every train/eval attempt.
+- Since `develop` now carries the official current frontier, the remaining exp branches no longer need to stay live.
+
+Action:
+
+- Created archive tags:
+  - `archive/lane-family-current-frontier-20260602` at `582c84a`;
+  - `archive/lane-family-router-best-20260529` at `aaf04e1`.
+- Deleted remote exp branches:
+  - `origin/exp/lane-family-f1/current-family-dense-denoise`;
+  - `origin/exp/lane-family-f1/runtime-stopline-specialist-router`.
+- Deleted local exp/debug leftovers:
+  - `exp/lane-family-f1/current-family-dense-denoise`;
+  - `exp/lane-family-f1/runtime-stopline-specialist-router`;
+  - `exp/lane-family-60pct`;
+  - `debug`.
+- Updated `docs/11_GIT_BRANCH_WORKFLOW.md` so future work does not create a new branch for every experiment.
+
+Current branch policy:
+
+- `develop` is the official current frontier/status branch.
+- `main` remains the narrower solid runtime-contract branch.
+- Live experiment branches are allowed only for genuinely divergent research directions or real parallel comparison lines.
+- Single-axis iterations inside one direction must be represented by commit messages, docs, artifacts, and tags, not by new branches.
+- Fixed anchors should use tags, not long-lived exp branches.
+
+Verification:
+
+- `git ls-remote --heads origin` shows no `exp/` heads after deletion.
+- Local branches are limited to `develop` and `main` after cleanup.
+- Archive tags exist locally and remotely for the former current frontier and router anchor.
+
+Decision:
+
+- Do not recreate `exp/lane-family-f1/*` branches unless the work is a genuinely separate long-lived research direction.
+- If a branch is created for parallel work, delete it or tag its final state after integration.

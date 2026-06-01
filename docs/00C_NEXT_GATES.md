@@ -5,11 +5,11 @@
 
 ## 0. 현재 기준
 
-- 최신 best/status/docs/artifact cleanup 기준은 `develop`과 `exp/lane-family-f1/current-family-dense-denoise` 양쪽에 있다. 2026-06-02 정식 편입 전 `origin/develop...current = 0 / 170`이었고, current frontier를 fast-forward 방식으로 `develop`에 편입했다.
+- 최신 best/status/docs/artifact cleanup 기준은 `develop`이다. 2026-06-02 정식 편입 전 `origin/develop...current = 0 / 170`이었고, current frontier를 fast-forward 방식으로 `develop`에 편입했다.
 - `main`은 solid runtime contract인 `stopline-projcomp-runtime-contract` 지점 `364c019`까지 fast-forward됐다. current search branch 전체를 main에 올린 것은 아니며, current frontier line은 `origin/main`보다 후속 연구/문서 커밋들을 더 포함한다.
-- 원격/local `exp/lane-family-f1/*`는 두 개만 남긴다: `current-family-dense-denoise`와 `runtime-stopline-specialist-router`.
+- 원격/local `exp/lane-family-f1/*` live branch는 남기지 않는다. 고정 anchor는 `archive/lane-family-current-frontier-20260602`, `archive/lane-family-router-best-20260529` tag로 보존한다.
 - 현재 best broader surface는 single raw checkpoint가 아니다. Best two-checkpoint/router stop-line tradeoff는 lane/stop/cross `0.5628 / 0.5309 / 0.6187`이고, retained lane-preserving task-balance/runtime composite는 `0.5628 / 0.5164 / 0.6187`이다.
-- `develop`은 이제 최신 best/status를 포함한다. 다만 `exp/lane-family-f1/current-family-dense-denoise`도 연구 ledger/anchor로 유지한다.
+- `develop`은 이제 최신 best/status를 포함한다. 새 branch는 장기 연구 방향이 갈라질 때만 만들고, 단일축 반복 실험은 같은 branch에서 커밋과 문서로 직렬화한다.
 - 여전히 목표 미달이다. final success는 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`이어야 한다.
 - Practical playback feedback says the current model is useful around `60-65 / 100`, with strong vehicle OD and plausible lane/stop-line/crosswalk behavior. Do not convert that qualitative field utility into benchmark success.
 - If collecting more data, prioritize close-range/medium-plus traffic-light positives first. The final dataset has `80,916` traffic-light images overall, but only `5,910` medium-plus traffic-light images; valid TL attribute images are `71,479`. Lane has `132,097` positive images overall, but yellow/blue lane subclasses are much smaller (`52,199` / `8,559` images). Stop-line/crosswalk are also far below `100k` images (`18,797` / `23,343`).

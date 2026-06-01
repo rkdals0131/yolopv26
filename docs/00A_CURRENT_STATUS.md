@@ -5,7 +5,7 @@
 
 ## 0. 2026-06-02 현재 best / branch 기준
 
-2026-06-02 정식 편입 후 현재 best 상태와 최신 실패 이력은 `develop`에도 포함된다. 직전에는 `origin/develop...current = 0 / 170`으로 develop이 current search branch 뒤에 있었지만, current frontier를 fast-forward 방식으로 `develop`에 편입했다. `exp/lane-family-f1/current-family-dense-denoise`는 같은 tip을 가리키는 연구 ledger/anchor branch로 유지한다.
+2026-06-02 정식 편입 후 현재 best 상태와 최신 실패 이력은 `develop`에 포함된다. 직전에는 `origin/develop...current = 0 / 170`으로 develop이 current search branch 뒤에 있었지만, current frontier를 fast-forward 방식으로 `develop`에 편입했다. 이후 exp branch anchor는 live branch가 아니라 archive tag로 전환했다.
 
 `main`은 solid runtime contract로 판단한 `stopline-projcomp-runtime-contract` 지점까지 fast-forward되어 `364c019`를 가리킨다. 이것은 retained lane-preserving projection-competition runtime composite를 main에 올린 것이며, 이후 negative-search ledger와 current frontier까지 main에 모두 올린 것은 아니다. current frontier line은 main보다 후속 연구/문서 커밋들을 더 포함한다.
 
@@ -16,12 +16,12 @@
 | Best single trained stop/cross lane-frozen composite | `0.5571 / 0.5278 / 0.6142` | 한 학습 축에서 나온 best trained composite지만 lane이 retained lane surface보다 낮다. |
 | Current learned lane replay frontier | lane aggregate `0.5851`, stop/cross `0.5302 / 0.5969` | area-ROI stacked-quality replay frontier; lane은 전진했지만 세 task 모두 `0.60`을 넘지 못한다. |
 
-따라서 지금 “best”는 `develop`과 `exp/lane-family-f1/current-family-dense-denoise` 양쪽에 보존된 runtime/composite frontier다. 최종 목표는 여전히 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`인 것이고 아직 달성되지 않았다.
+따라서 지금 “best”는 `develop`에 보존된 runtime/composite frontier다. 최종 목표는 여전히 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`인 것이고 아직 달성되지 않았다.
 
-Branch cleanup on 2026-06-02: local and remote `exp/lane-family-f1/*` refs were pruned to two branches only. `develop` now carries the current frontier, but the exp branch is still useful as a named research ledger and rollback/comparison anchor:
+Branch cleanup on 2026-06-02: local and remote `exp/lane-family-f1/*` refs were removed after `develop` integration. Fixed historical anchors are preserved as tags instead of live branches:
 
-- `exp/lane-family-f1/current-family-dense-denoise`: current frontier, docs, artifact cleanup, and negative-result ledger.
-- `exp/lane-family-f1/runtime-stopline-specialist-router`: best numeric two-checkpoint/router stop-line tradeoff anchor.
+- `archive/lane-family-current-frontier-20260602`: current frontier, docs, artifact cleanup, and negative-result ledger before exp branch deletion.
+- `archive/lane-family-router-best-20260529`: best numeric two-checkpoint/router stop-line tradeoff anchor.
 
 Qualitative field note on 2026-06-02: live dataset/road playback feels useful but not solved, roughly `60-65 / 100` if `80` is satisfactory and `100` is perfect. Vehicle OD is strong, likely helped by BDD100K plus AIHUB exposure. Lane output is most useful on the ego-lane left/right boundaries. Stop-line and crosswalk outputs look more robust in practical playback than their strict broader F1 might suggest. The largest visible weakness is close-range traffic-light robustness.
 
