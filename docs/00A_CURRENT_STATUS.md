@@ -3,6 +3,19 @@
 > 다음 작업자는 이 문서를 먼저 읽는다.
 > 상세 실패 이력은 `00B_STATUS_HISTORY.md`, 다음 실행 gate는 `00C_NEXT_GATES.md`를 본다.
 
+## 0. 2026-06-02 현재 best / branch 기준
+
+현재 best 상태와 최신 실패 이력은 `develop`이 아니라 `exp/lane-family-f1/current-family-dense-denoise`에 있다. 2026-06-02 확인 기준 HEAD는 `42b1f83`이고, `origin/develop...HEAD`는 `0 / 167`이다. 즉 `origin/develop`은 현재 search branch의 조상이며, 현재 HEAD는 아직 `origin/develop`에 포함돼 있지 않다.
+
+| Surface | Broader lane / stop_line / crosswalk F1 | Interpretation |
+| --- | --- | --- |
+| Best broader two-checkpoint/router stop-line tradeoff | `0.5628 / 0.5309 / 0.6187` | retained lane/crosswalk를 보존하면서 stop-line-priority specialist를 라우팅한 최고 stop-line tradeoff; single raw checkpoint가 아니다. |
+| Best retained lane-preserving runtime/task-balance composite | `0.5628 / 0.5164 / 0.6187` | flip-centerline + fixed crosswalk-mask lane gate, projection-competition stop-line runtime decode, hull crosswalk의 retained lower-bound surface. |
+| Best single trained stop/cross lane-frozen composite | `0.5571 / 0.5278 / 0.6142` | 한 학습 축에서 나온 best trained composite지만 lane이 retained lane surface보다 낮다. |
+| Current learned lane replay frontier | lane aggregate `0.5851`, stop/cross `0.5302 / 0.5969` | area-ROI stacked-quality replay frontier; lane은 전진했지만 세 task 모두 `0.60`을 넘지 못한다. |
+
+따라서 지금 “best”는 `develop`의 일반 상태가 아니라 current search branch에 보존된 runtime/composite frontier다. 최종 목표는 여전히 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`인 것이고 아직 달성되지 않았다.
+
 ## 1. 한 줄 결론
 
 PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 two-checkpoint runtime probe 기준 `phase_objective=0.6525130665`, broader-val512 two-checkpoint runtime probe 기준 `0.6467983828`까지 확인됐다.

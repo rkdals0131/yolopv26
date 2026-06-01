@@ -26069,3 +26069,51 @@ Decision:
 - Close this as predicted-lane homography temporal alignment plus the same temporal MLP/baseline merge contract.
 - Do not repeat it as homography RANSAC threshold, max-shift fraction, lane-track matching, temporal top-k/cap, verifier epoch/LR/hidden size, threshold-grid, or train-batch scaling on the same candidate pool.
 - Reopen temporal stop-line only with a true ego/BEV alignment signal, a materially different temporal segment emitter, or a candidate source whose fixed exact oracle union beats primary TP/FP/FN by enough margin before training another no-GT verifier.
+
+## 412. 2026-06-02 Best-surface and cleanup checkpoint: develop is behind the current search branch
+
+Context:
+
+- The user asked whether the current best is still on `develop`, and requested a documentation plus artifact/worktree cleanup checkpoint before further experimentation.
+- The latest project state is on `exp/lane-family-f1/current-family-dense-denoise`, not `develop`.
+
+Branch status:
+
+- Current branch: `exp/lane-family-f1/current-family-dense-denoise`.
+- Current HEAD: `42b1f83`.
+- `git rev-list --left-right --count origin/develop...HEAD` reports `0 / 167`.
+- `git branch -r --contains HEAD` reports only `origin/exp/lane-family-f1/current-family-dense-denoise`.
+- Interpretation: `origin/develop` is behind the current search branch; current HEAD is not yet contained in `origin/develop`.
+
+Current best surfaces:
+
+| Surface | Broader lane / stop_line / crosswalk F1 | Interpretation |
+| --- | --- | --- |
+| Best broader two-checkpoint/router stop-line tradeoff | `0.5628 / 0.5309 / 0.6187` | Preserves retained lane/crosswalk while routing stop-line from the stop-line-priority specialist; not a single raw checkpoint. |
+| Best retained lane-preserving task-balance/runtime composite | `0.5628 / 0.5164 / 0.6187` | Current retained lane/crosswalk runtime composite plus projection-competition stop-line runtime decode. |
+| Best single trained stop/cross lane-frozen composite | `0.5571 / 0.5278 / 0.6142` | Best trained composite on that lane-frozen axis, but lane is below retained lane surface. |
+| Current learned lane replay frontier | lane aggregate `0.5851`, stop/cross `0.5302 / 0.5969` | Area-ROI stacked-quality replay frontier; not final success because all three tasks are not `>= 0.60`. |
+
+Cleanup:
+
+- Removed project-local Python/pytest cache directories outside `.venv` and `seg_dataset`.
+- Removed two empty run directories:
+  - `runs/pv26_exhaustive_od_lane_train/lane_feature_roi_repair_smoke_val4_20260530_01`;
+  - `runs/pv26_exhaustive_od_lane_train/stopline_trainset_patch_verifier_train64_smoke_val4_20260530`.
+- Kept documented compact CSV/summary/history artifacts.
+- Kept the retained large checkpoint surfaces:
+  - `runs/pv26_exhaustive_od_lane_train/lane60_core_centerline_refine_cross_retain_from_exhaustive_od_lane_default_20260505_032217_default_20260510_003412/phase_4/checkpoints/best.pt`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_stopline_priority_positive_sampler_from_lane60_lane_head_transplant_original_stop_pca_20260512_default_20260529_101745/phase_4/checkpoints/best.pt`;
+  - `runs/pv26_exhaustive_od_lane_train/lane60_lane_head_transplant_original_stop_pca_20260512/merged_lane_head.pt`.
+- No dataset file was copied or removed.
+
+Verification:
+
+- `find runs/pv26_exhaustive_od_lane_train -type f \( -path '*/phase_4/checkpoints/*.pt' -o -path '*/phase_4/tensorboard/events.out.tfevents*' \) -printf '%s %p\n' | sort -nr` reports only the two retained phase-4 `best.pt` files.
+- `find . -maxdepth 1 -type f \( -name 'yolo26*.pt' -o -name '*.pt' \)` reports no root weight files.
+- Project-local cache scan after cleanup reports no `__pycache__`, `.pytest_cache`, or `.mypy_cache` directories outside `.venv` and `seg_dataset`.
+
+Decision:
+
+- Do not call `develop` the current best until this branch is merged.
+- Do not call any current surface solved: lane and stop-line are still below `0.60`, and the best stop-line tradeoff is a router/composite surface rather than a single raw deployable checkpoint.

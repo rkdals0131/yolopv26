@@ -3,6 +3,13 @@
 > 이 문서는 다음 실행 순서와 금지사항을 관리한다.
 > 새 실험을 끝내면 `00B_STATUS_HISTORY.md`에 결과를 추가하고, 이 문서의 gate를 갱신한다.
 
+## 0. 현재 기준
+
+- 최신 best/status/docs/artifact cleanup 기준 브랜치는 `exp/lane-family-f1/current-family-dense-denoise`이다. 2026-06-02 확인 기준 `origin/develop...HEAD = 0 / 167`이며, current HEAD `42b1f83`은 아직 `origin/develop`에 포함되지 않았다.
+- 현재 best broader surface는 single raw checkpoint가 아니다. Best two-checkpoint/router stop-line tradeoff는 lane/stop/cross `0.5628 / 0.5309 / 0.6187`이고, retained lane-preserving task-balance/runtime composite는 `0.5628 / 0.5164 / 0.6187`이다.
+- `develop`을 최신 best라고 부르지 않는다. develop에 병합되기 전까지는 current search branch와 `00A_CURRENT_STATUS.md`를 기준으로 판단한다.
+- 여전히 목표 미달이다. final success는 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`이어야 한다.
+
 ## 1. 지금 하지 말 것
 
 - 60% 돌파를 "raw model solved"로 표현하지 않는다.
