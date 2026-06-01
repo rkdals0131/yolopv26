@@ -11,6 +11,8 @@
 - 현재 best broader surface는 single raw checkpoint가 아니다. Best two-checkpoint/router stop-line tradeoff는 lane/stop/cross `0.5628 / 0.5309 / 0.6187`이고, retained lane-preserving task-balance/runtime composite는 `0.5628 / 0.5164 / 0.6187`이다.
 - `develop`을 최신 best라고 부르지 않는다. develop에 병합되기 전까지는 current search branch와 `00A_CURRENT_STATUS.md`를 기준으로 판단한다.
 - 여전히 목표 미달이다. final success는 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`이어야 한다.
+- Practical playback feedback says the current model is useful around `60-65 / 100`, with strong vehicle OD and plausible lane/stop-line/crosswalk behavior. Do not convert that qualitative field utility into benchmark success.
+- If collecting more data, prioritize close-range/medium-plus traffic-light positives first. The final dataset has `80,916` traffic-light images overall, but only `5,910` medium-plus traffic-light images; valid TL attribute images are `71,479`. Lane has `132,097` positive images overall, but yellow/blue lane subclasses are much smaller (`52,199` / `8,559` images). Stop-line/crosswalk are also far below `100k` images (`18,797` / `23,343`).
 
 ## 1. 지금 하지 말 것
 

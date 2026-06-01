@@ -26164,3 +26164,70 @@ Decision:
 - Treat `main` as the solid runtime-contract line for retained projection-competition evidence.
 - Treat `exp/lane-family-f1/current-family-dense-denoise` as the active research ledger/frontier.
 - Treat `exp/lane-family-f1/runtime-stopline-specialist-router` as the best numeric router anchor, not as a single-checkpoint deployment claim.
+
+## 414. 2026-06-02 Field playback feedback and final dataset count checkpoint
+
+Context:
+
+- The user reported practical playback impressions after wiring the model to real dataset/road frames.
+- The subjective utility is useful but not solved: roughly `60-65 / 100`, where `80` would feel satisfactory and `100` would be perfect.
+- The reported qualitative pattern differs from strict broader F1 in a useful way: vehicle OD is strong, ego-lane adjacent lane boundaries are often visible, stop-line/crosswalk look practically robust, and the largest visible weakness is close-range traffic-light robustness.
+
+Branch/performance state at this checkpoint:
+
+- Current branch: `exp/lane-family-f1/current-family-dense-denoise` at `e627573`.
+- `origin/main`: `364c019`, the promoted solid projection-competition runtime contract.
+- `origin/exp/lane-family-f1/runtime-stopline-specialist-router`: `aaf04e1`, best numeric two-checkpoint/router stop-line anchor.
+- Remote `exp/lane-family-f1/*` count: `2`.
+- Local `exp/lane-family-f1/*` count: `2`.
+- Full local branch count: `6`.
+- Full remote branch count under `origin`: `6`.
+
+Best retained surfaces:
+
+| Surface | Broader lane / stop_line / crosswalk F1 | Interpretation |
+| --- | --- | --- |
+| Best broader two-checkpoint/router stop-line tradeoff | `0.5628 / 0.5309 / 0.6187` | Best numeric stop-line tradeoff while preserving retained lane/crosswalk; not a single raw checkpoint. |
+| Retained lane-preserving runtime/task-balance composite | `0.5628 / 0.5164 / 0.6187` | Retained lower-bound runtime composite using projection-competition stop-line decode. |
+| Solid main runtime contract | main at `364c019` | Projection-competition stop-line runtime contract promoted to `main`; not the full later search ledger. |
+
+Dataset count source:
+
+- `seg_dataset/pv26_exhaustive_od_lane_dataset/meta/final_dataset_stats.json`.
+- Generated at `2026-05-02T17:34:17`.
+- Total samples: `429,350`.
+- Source counts:
+  - `aihub_lane_seoul`: `132,700`;
+  - `pv26_exhaustive_aihub_traffic_seoul`: `150,000`;
+  - `pv26_exhaustive_bdd100k_det_100k`: `100,000`;
+  - `pv26_exhaustive_aihub_obstacle_seoul`: `46,650`.
+
+Detection/lane-family count snapshot:
+
+| Target | Positive images | Instances | Train images | Val images | Note |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `traffic_light` det | `80,916` | `233,902` | `62,677` | `17,893` | Below a `100k` positive-image target. |
+| valid TL attribute | `71,479` | `178,211` | `55,487` | `15,992` | Attribute-valid subset. |
+| TL `tiny` bucket | `68,403` | `177,768` | - | - | Dominates traffic-light distribution. |
+| TL `small` bucket | `24,681` | `43,815` | - | - | Secondary traffic-light support. |
+| TL `medium_plus` bucket | `5,910` | `7,552` | - | - | Likely close-range traffic-light data gap. |
+| any lane | `132,097` | - | - | - | Lane-positive scenes exceed `100k`, but subclasses are imbalanced. |
+| `white_lane` | `127,620` | `493,348` | `100,816` | `26,804` | Strongest lane subclass. |
+| `yellow_lane` | `52,199` | `117,554` | `41,452` | `10,747` | Below `100k` images. |
+| `blue_lane` | `8,559` | `11,082` | `6,916` | `1,643` | Sparse. |
+| `stop_line` | `18,797` | `25,435` | - | - | Far below `100k` images. |
+| `crosswalk` | `23,343` | `38,709` | - | - | Far below `100k` images. |
+| `vehicle` det | `283,624` | `2,355,495` | `212,976` | `50,807` | Strong OD support. |
+
+Interpretation:
+
+- The field observation that vehicle OD is strong matches the data scale: vehicle has `283,624` positive images and over `2.35M` instances.
+- Traffic light has many instances but not enough positive images for robust coverage, and the close/large bucket is especially thin (`5,910` images, `7,552` instances).
+- Lane has enough total positive scenes, but the observed “ego-lane adjacent boundaries work best” is consistent with stronger white-lane support and weaker color/minority coverage.
+- Stop-line and crosswalk can look practically useful despite low image counts because their geometry is visually distinctive, but these counts remain too small for broad, high-confidence generalization.
+
+Decision:
+
+- Keep the benchmark target unchanged: broader lane/stop_line/crosswalk F1 all `>= 0.60`.
+- Treat field playback as a separate product-utility signal, not a replacement for held-out validation.
+- If new collection is planned, prioritize close-range/medium-plus traffic lights and underrepresented lane/roadmark cases before simply adding more of the already dominant vehicle/white-lane distribution.

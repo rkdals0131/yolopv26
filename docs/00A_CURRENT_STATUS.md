@@ -23,6 +23,25 @@ Branch cleanup on 2026-06-02: local and remote `exp/lane-family-f1/*` refs were 
 - `exp/lane-family-f1/current-family-dense-denoise`: current frontier, docs, artifact cleanup, and negative-result ledger.
 - `exp/lane-family-f1/runtime-stopline-specialist-router`: best numeric two-checkpoint/router stop-line tradeoff anchor.
 
+Qualitative field note on 2026-06-02: live dataset/road playback feels useful but not solved, roughly `60-65 / 100` if `80` is satisfactory and `100` is perfect. Vehicle OD is strong, likely helped by BDD100K plus AIHUB exposure. Lane output is most useful on the ego-lane left/right boundaries. Stop-line and crosswalk outputs look more robust in practical playback than their strict broader F1 might suggest. The largest visible weakness is close-range traffic-light robustness.
+
+Dataset scale note from `seg_dataset/pv26_exhaustive_od_lane_dataset/meta/final_dataset_stats.json` (`2026-05-02T17:34:17`):
+
+| Target | Positive images | Instances | Train images | Val images | Note |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `traffic_light` det | `80,916` | `233,902` | `62,677` | `17,893` | Below `100k` image target; medium/large traffic-light bucket is much smaller. |
+| valid TL attribute | `71,479` | `178,211` | `55,487` | `15,992` | Attribute-valid subset, not all traffic-light boxes. |
+| traffic-light `tiny` bucket | `68,403` | `177,768` | - | - | Dominates TL training distribution. |
+| traffic-light `small` bucket | `24,681` | `43,815` | - | - | Secondary TL support. |
+| traffic-light `medium_plus` bucket | `5,910` | `7,552` | - | - | Likely relevant to close-range robustness gap. |
+| any lane | `132,097` | - | - | - | Lane-family positive scenes are above `100k`, but color subclasses are imbalanced. |
+| `white_lane` | `127,620` | `493,348` | `100,816` | `26,804` | Strongest lane subclass. |
+| `yellow_lane` | `52,199` | `117,554` | `41,452` | `10,747` | Below `100k` image target. |
+| `blue_lane` | `8,559` | `11,082` | `6,916` | `1,643` | Very sparse. |
+| `stop_line` | `18,797` | `25,435` | - | - | Far below `100k`, despite practical robustness. |
+| `crosswalk` | `23,343` | `38,709` | - | - | Far below `100k`, despite practical robustness. |
+| `vehicle` det | `283,624` | `2,355,495` | `212,976` | `50,807` | Strong OD support. |
+
 ## 1. 한 줄 결론
 
 PV26은 exhaustive OD + lane-family 통합 학습 경로와 derived fine-tune 경로가 구현되어 있고, lane-family는 exact epoch-2 two-checkpoint runtime probe 기준 `phase_objective=0.6525130665`, broader-val512 two-checkpoint runtime probe 기준 `0.6467983828`까지 확인됐다.
