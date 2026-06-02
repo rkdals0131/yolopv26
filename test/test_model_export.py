@@ -290,3 +290,40 @@ class PV26ExportMetadataContractTests(unittest.TestCase):
                 verification=[],
                 checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
             )
+
+    def test_export_metadata_rejects_lane_family_shape_drift(self) -> None:
+        spec = build_loss_spec()
+
+        for head_name, shape_overrides in (
+            ("lane", {"lane_shape": [1, 24, 37]}),
+            ("stop_line", {"stop_line_shape": [1, 8, 8]}),
+            ("crosswalk", {"crosswalk_shape": [1, 8, 32]}),
+        ):
+            with self.subTest(head_name=head_name):
+                shapes = {
+                    "lane_shape": [1, 24, 38],
+                    "stop_line_shape": [1, 8, 9],
+                    "crosswalk_shape": [1, 8, 33],
+                }
+                shapes.update(shape_overrides)
+
+                with self.assertRaisesRegex(ValueError, "raw head metadata shape mismatch"):
+                    pv26_exporter.export_metadata(
+                        checkpoint_path=Path("/tmp/best.pt"),
+                        output_path=Path("/tmp/best.torchscript.pt"),
+                        trunk_weights=Path("/tmp/yolo26s.pt"),
+                        input_height=608,
+                        input_width=800,
+                        det_shape=[1, 9975, 12],
+                        tl_attr_shape=[1, 9975, 4],
+                        od_classes=list(spec["model_contract"]["od_classes"]),
+                        tl_bits=list(spec["model_contract"]["tl_bits"]),
+                        lane_classes=list(spec["model_contract"]["lane_classes"]),
+                        lane_types=list(spec["model_contract"]["lane_types"]),
+                        det_feature_shapes=[[76, 100], [38, 50], [19, 25]],
+                        det_feature_strides=[8, 16, 32],
+                        example_info={"kind": "random"},
+                        verification=[],
+                        checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
+                        **shapes,
+                    )

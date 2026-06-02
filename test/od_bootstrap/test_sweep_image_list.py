@@ -14,6 +14,16 @@ from tools.od_bootstrap.build.image_list import (
 )
 
 
+def _scene_payload(*, file_name: str, dataset_key: str, split: str, tasks: dict | None = None) -> dict:
+    payload = {
+        "image": {"file_name": file_name},
+        "source": {"dataset": dataset_key, "split": split},
+    }
+    if tasks is not None:
+        payload["tasks"] = tasks
+    return payload
+
+
 class ODBootstrapImageListTests(unittest.TestCase):
     def test_discover_image_list_entries_rejects_non_object_scene_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -143,20 +153,36 @@ class ODBootstrapImageListTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             images_dir = root / "images"
-            images_dir.mkdir(parents=True, exist_ok=True)
-            (images_dir / "b.png").write_bytes(b"b")
-            (images_dir / "a.png").write_bytes(b"a")
-            (root / "labels_scene").mkdir(parents=True, exist_ok=True)
-            (root / "labels_scene" / "scene_a.json").write_text("{}", encoding="utf-8")
-            (root / "labels_scene" / "scene_b.json").write_text("{}", encoding="utf-8")
+            (images_dir / "train").mkdir(parents=True, exist_ok=True)
+            (images_dir / "val").mkdir(parents=True, exist_ok=True)
+            (images_dir / "train" / "b.png").write_bytes(b"b")
+            (images_dir / "val" / "a.png").write_bytes(b"a")
+            (root / "labels_scene" / "val").mkdir(parents=True, exist_ok=True)
+            (root / "labels_scene" / "train").mkdir(parents=True, exist_ok=True)
+            (root / "labels_scene" / "val" / "scene_a.json").write_text(
+                json.dumps(
+                    _scene_payload(file_name="a.png", dataset_key="bdd100k_det_100k", split="val"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "labels_scene" / "train" / "scene_b.json").write_text(
+                json.dumps(
+                    _scene_payload(file_name="b.png", dataset_key="aihub_traffic_seoul", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             manifest_path = root / "image_list.jsonl"
             rows = [
                 {
                     "sample_id": "scene_b",
                     "sample_uid": build_sample_uid(dataset_key="aihub_traffic_seoul", split="train", sample_id="scene_b"),
-                    "image_path": "images/b.png",
-                    "scene_path": "labels_scene/scene_b.json",
+                    "image_path": "images/train/b.png",
+                    "scene_path": "labels_scene/train/scene_b.json",
                     "dataset_root": ".",
                     "dataset_key": "aihub_traffic_seoul",
                     "split": "train",
@@ -164,8 +190,8 @@ class ODBootstrapImageListTests(unittest.TestCase):
                 {
                     "sample_id": "scene_a",
                     "sample_uid": build_sample_uid(dataset_key="bdd100k_det_100k", split="val", sample_id="scene_a"),
-                    "image_path": "images/a.png",
-                    "scene_path": "labels_scene/scene_a.json",
+                    "image_path": "images/val/a.png",
+                    "scene_path": "labels_scene/val/scene_a.json",
                     "dataset_root": ".",
                     "dataset_key": "bdd100k_det_100k",
                     "split": "val",
@@ -179,8 +205,348 @@ class ODBootstrapImageListTests(unittest.TestCase):
             entries = load_image_list(manifest_path)
 
             self.assertEqual([entry.sample_uid for entry in entries], ["aihub_traffic_seoul__train__scene_b", "bdd100k_det_100k__val__scene_a"])
-            self.assertEqual(entries[0].image_path, (images_dir / "b.png").resolve())
+            self.assertEqual(entries[0].image_path, (images_dir / "train" / "b.png").resolve())
             self.assertEqual(entries[1].dataset_key, "bdd100k_det_100k")
+
+    def test_load_image_list_rejects_scene_dataset_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="sample.jpg", dataset_key="aihub_traffic_seoul", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.dataset must match image list dataset_key"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_scene_split_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="sample.jpg", dataset_key="bdd100k_det_100k", split="val"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.split must match image list split"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_image_path_mismatch_with_scene_file_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "manifest.jpg"
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="scene.jpg", dataset_key="bdd100k_det_100k", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "image_list image_path must match scene image.file_name"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_scene_path_mismatch_with_sample_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path = root / "labels_scene" / "train" / "other.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="sample.jpg", dataset_key="bdd100k_det_100k", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "image_list scene_path must match dataset_root/split/sample_id"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_sample_uid_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="sample.jpg", dataset_key="bdd100k_det_100k", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="val",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "image_list sample_uid must match dataset_key/split/sample_id"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_missing_det_label_when_scene_requires_det(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "tasks": {"has_det": 1},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "image_list det label not found"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_missing_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(root / "images" / "train" / "sample.jpg"),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "image_list image not found"):
+                load_image_list(manifest_path)
+
+    def test_load_image_list_rejects_stale_det_label_when_scene_has_no_det(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            det_path = root / "labels_det" / "train" / "sample.txt"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            det_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            det_path.write_text("0 0.500000 0.500000 0.100000 0.100000\n", encoding="utf-8")
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "tasks": {"has_det": 0},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "image_list.jsonl"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": "sample",
+                        "sample_uid": build_sample_uid(
+                            dataset_key="bdd100k_det_100k",
+                            split="train",
+                            sample_id="sample",
+                        ),
+                        "image_path": str(image_path),
+                        "scene_path": str(scene_path),
+                        "dataset_root": str(root),
+                        "dataset_key": "bdd100k_det_100k",
+                        "split": "train",
+                        "det_path": str(det_path),
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "image_list stale det label"):
+                load_image_list(manifest_path)
 
     def test_load_image_list_rejects_non_object_rows_with_physical_line_numbers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -193,10 +559,19 @@ class ODBootstrapImageListTests(unittest.TestCase):
     def test_load_image_list_rejects_duplicate_image_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            image_path = root / "dup.png"
+            image_path = root / "images" / "train" / "dup.png"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
             image_path.write_bytes(b"dup")
-            scene_path = root / "scene.json"
-            scene_path.write_text("{}", encoding="utf-8")
+            scene_path = root / "labels_scene" / "train" / "one.json"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="dup.png", dataset_key="bdd100k_det_100k", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             manifest_path = root / "image_list.jsonl"
             rows = [
                 {
@@ -205,6 +580,8 @@ class ODBootstrapImageListTests(unittest.TestCase):
                     "image_path": str(image_path),
                     "scene_path": str(scene_path),
                     "dataset_root": str(root),
+                    "dataset_key": "bdd100k_det_100k",
+                    "split": "train",
                 },
                 {
                     "sample_id": "two",
@@ -212,6 +589,8 @@ class ODBootstrapImageListTests(unittest.TestCase):
                     "image_path": str(image_path),
                     "scene_path": str(scene_path),
                     "dataset_root": str(root),
+                    "dataset_key": "aihub_traffic_seoul",
+                    "split": "train",
                 },
             ]
             manifest_path.write_text(
@@ -225,26 +604,39 @@ class ODBootstrapImageListTests(unittest.TestCase):
     def test_load_image_list_rejects_duplicate_sample_uids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            (root / "image_a.png").write_bytes(b"a")
-            (root / "image_b.png").write_bytes(b"b")
-            scene_path = root / "scene.json"
-            scene_path.write_text("{}", encoding="utf-8")
+            (root / "images" / "train").mkdir(parents=True, exist_ok=True)
+            (root / "images" / "train" / "image_a.png").write_bytes(b"a")
+            (root / "images" / "train" / "image_b.png").write_bytes(b"b")
+            scene_path = root / "labels_scene" / "train" / "dup.json"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.write_text(
+                json.dumps(
+                    _scene_payload(file_name="image_a.png", dataset_key="bdd100k_det_100k", split="train"),
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             sample_uid = build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="dup")
             manifest_path = root / "image_list.jsonl"
             rows = [
                 {
                     "sample_id": "dup",
                     "sample_uid": sample_uid,
-                    "image_path": str(root / "image_a.png"),
+                    "image_path": str(root / "images" / "train" / "image_a.png"),
                     "scene_path": str(scene_path),
                     "dataset_root": str(root),
+                    "dataset_key": "bdd100k_det_100k",
+                    "split": "train",
                 },
                 {
                     "sample_id": "dup",
                     "sample_uid": sample_uid,
-                    "image_path": str(root / "image_b.png"),
+                    "image_path": str(root / "images" / "train" / "image_b.png"),
                     "scene_path": str(scene_path),
                     "dataset_root": str(root),
+                    "dataset_key": "bdd100k_det_100k",
+                    "split": "train",
                 },
             ]
             manifest_path.write_text(

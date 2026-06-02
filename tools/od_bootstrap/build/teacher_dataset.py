@@ -142,12 +142,18 @@ def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) ->
         return "copy"
 
 
-def _parse_det_row(line: str) -> tuple[int, list[float]] | None:
+def _parse_det_row(line: str, *, label_path: Path, line_number: int) -> tuple[int, list[float]] | None:
+    if not line.strip():
+        return None
     parts = line.strip().split()
     if len(parts) != 5:
-        return None
-    class_id = int(parts[0])
-    return class_id, [float(value) for value in parts[1:]]
+        raise ValueError(f"teacher dataset malformed det label row {line_number}: {label_path}")
+    try:
+        class_id = int(parts[0])
+        values = [float(value) for value in parts[1:]]
+    except ValueError as exc:
+        raise ValueError(f"teacher dataset malformed det label row {line_number}: {label_path}") from exc
+    return class_id, values
 
 
 def _global_class_name(class_id: int) -> str:
@@ -294,8 +300,8 @@ def _process_teacher_task(
     filtered_rows: list[str] = []
     class_counts: dict[str, int] = {}
     if task.label_src.is_file():
-        for line in _read_text(task.label_src).splitlines():
-            parsed = _parse_det_row(line)
+        for line_number, line in enumerate(_read_text(task.label_src).splitlines(), start=1):
+            parsed = _parse_det_row(line, label_path=task.label_src, line_number=line_number)
             if parsed is None:
                 continue
             class_id, values = parsed

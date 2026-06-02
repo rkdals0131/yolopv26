@@ -66,6 +66,79 @@ def _det_label_state_from_tasks(scene: dict[str, Any]) -> bool | None:
     return bool(tasks.get("has_det"))
 
 
+def _validate_det_path_for_scene(
+    *,
+    scene: dict[str, Any],
+    scene_path: Path,
+    det_path: Path | None,
+    default_det_path: Path,
+) -> Path | None:
+    det_required = _det_label_state_from_tasks(scene)
+    candidate_det_path = det_path if det_path is not None else default_det_path
+    if det_required is True and not candidate_det_path.is_file():
+        raise FileNotFoundError(f"image_list det label not found: {candidate_det_path} ({scene_path})")
+    if det_required is False and candidate_det_path.is_file():
+        raise ValueError(f"image_list stale det label for non-det scene: {candidate_det_path} ({scene_path})")
+    if det_path is not None and not det_path.is_file():
+        raise FileNotFoundError(f"image_list det label not found: {det_path} ({scene_path})")
+    return det_path if det_path is not None else (default_det_path if default_det_path.is_file() else None)
+
+
+def _validate_manifest_scene_metadata(
+    *,
+    scene: dict[str, Any],
+    scene_path: Path,
+    dataset_root: Path,
+    dataset_key: str,
+    split: str,
+    sample_id: str,
+    sample_uid: str,
+    image_path: Path,
+) -> None:
+    source = scene.get("source") if isinstance(scene.get("source"), dict) else {}
+    scene_dataset_key = str(source.get("dataset") or "").strip()
+    if not scene_dataset_key:
+        raise ValueError(f"scene source.dataset missing: {scene_path}")
+    if scene_dataset_key != dataset_key:
+        raise ValueError(
+            f"scene source.dataset must match image list dataset_key: "
+            f"{scene_dataset_key} != {dataset_key} ({scene_path})"
+        )
+
+    scene_split = str(source.get("split") or "").strip()
+    if not scene_split:
+        raise ValueError(f"scene source.split missing: {scene_path}")
+    if scene_split != split:
+        raise ValueError(f"scene source.split must match image list split: {scene_split} != {split} ({scene_path})")
+
+    expected_scene_path = (dataset_root / "labels_scene" / split / f"{sample_id}.json").resolve()
+    if scene_path != expected_scene_path:
+        raise ValueError(
+            f"image_list scene_path must match dataset_root/split/sample_id: "
+            f"{scene_path} != {expected_scene_path}"
+        )
+
+    image_file_name = _coerce_str(
+        scene.get("image", {}).get("file_name"),
+        field_name=f"{scene_path}.image.file_name",
+    )
+    if Path(image_file_name).is_absolute() or Path(image_file_name).name != image_file_name:
+        raise ValueError(f"{scene_path}.image.file_name must be a file name, not a path")
+    expected_image_path = (dataset_root / "images" / split / image_file_name).resolve()
+    if image_path != expected_image_path:
+        raise ValueError(
+            f"image_list image_path must match scene image.file_name: "
+            f"{image_path} != {expected_image_path} ({scene_path})"
+        )
+
+    expected_sample_uid = build_sample_uid(dataset_key=dataset_key, split=split, sample_id=sample_id)
+    if sample_uid != expected_sample_uid:
+        raise ValueError(
+            f"image_list sample_uid must match dataset_key/split/sample_id: "
+            f"{sample_uid} != {expected_sample_uid}"
+        )
+
+
 def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
     manifest_path = Path(path).resolve()
     if not manifest_path.is_file():
@@ -82,13 +155,15 @@ def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
             _coerce_str(payload.get("image_path"), field_name=f"image_list[{line_index}].image_path"),
             base_dir=manifest_path.parent,
         )
+        if not image_path.is_file():
+            raise FileNotFoundError(f"image_list image not found: {image_path}")
         dedupe_key = str(image_path)
         if dedupe_key in seen_paths:
             raise ValueError(f"duplicate image_path in image list manifest: {image_path}")
         seen_paths.add(dedupe_key)
 
-        dataset_key = str(payload.get("dataset_key", "")).strip()
-        split = str(payload.get("split", "")).strip()
+        dataset_key = _coerce_str(payload.get("dataset_key"), field_name=f"image_list[{line_index}].dataset_key")
+        split = _coerce_str(payload.get("split"), field_name=f"image_list[{line_index}].split")
         sample_id = str(payload.get("sample_id") or image_path.stem).strip()
         if not sample_id:
             raise ValueError(f"image_list[{line_index}].sample_id must not be empty")
@@ -105,20 +180,40 @@ def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
             else _coerce_str(raw_det_path, field_name=f"image_list[{line_index}].det_path"),
             base_dir=manifest_path.parent,
         )
+        scene_path = resolve_path(
+            _coerce_str(payload.get("scene_path"), field_name=f"image_list[{line_index}].scene_path"),
+            base_dir=manifest_path.parent,
+        )
+        dataset_root = resolve_path(
+            _coerce_str(payload.get("dataset_root"), field_name=f"image_list[{line_index}].dataset_root"),
+            base_dir=manifest_path.parent,
+        )
+        scene = _load_scene(scene_path)
+        _validate_manifest_scene_metadata(
+            scene=scene,
+            scene_path=scene_path,
+            dataset_root=dataset_root,
+            dataset_key=dataset_key,
+            split=split,
+            sample_id=sample_id,
+            sample_uid=sample_uid,
+            image_path=image_path,
+        )
+        default_det_path = dataset_root / "labels_det" / split / f"{sample_id}.txt"
+        det_path = _validate_det_path_for_scene(
+            scene=scene,
+            scene_path=scene_path,
+            det_path=det_path,
+            default_det_path=default_det_path,
+        )
 
         entries.append(
             ImageListEntry(
                 sample_id=sample_id,
                 sample_uid=sample_uid,
                 image_path=image_path,
-                scene_path=resolve_path(
-                    _coerce_str(payload.get("scene_path"), field_name=f"image_list[{line_index}].scene_path"),
-                    base_dir=manifest_path.parent,
-                ),
-                dataset_root=resolve_path(
-                    _coerce_str(payload.get("dataset_root"), field_name=f"image_list[{line_index}].dataset_root"),
-                    base_dir=manifest_path.parent,
-                ),
+                scene_path=scene_path,
+                dataset_root=dataset_root,
                 dataset_key=dataset_key,
                 split=split,
                 det_path=det_path,
@@ -163,11 +258,12 @@ def discover_image_list_entries(
             if not image_path.is_file():
                 raise FileNotFoundError(f"image_list image not found: {image_path}")
             det_path = resolved_root / "labels_det" / split / f"{sample_id}.txt"
-            det_required = _det_label_state_from_tasks(scene)
-            if det_required is True and not det_path.is_file():
-                raise FileNotFoundError(f"image_list det label not found: {det_path} ({scene_path})")
-            if det_required is False and det_path.is_file():
-                raise ValueError(f"image_list stale det label for non-det scene: {det_path} ({scene_path})")
+            det_path = _validate_det_path_for_scene(
+                scene=scene,
+                scene_path=scene_path,
+                det_path=None,
+                default_det_path=det_path,
+            )
             sample_uid = build_sample_uid(dataset_key=dataset_key, split=split, sample_id=sample_id)
             entries.append(
                 ImageListEntry(
@@ -178,7 +274,7 @@ def discover_image_list_entries(
                     dataset_root=resolved_root,
                     dataset_key=dataset_key,
                     split=split,
-                    det_path=det_path if det_path.is_file() else None,
+                    det_path=det_path,
                     source_name=resolved_root.name,
                 )
             )

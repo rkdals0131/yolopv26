@@ -1841,6 +1841,24 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
 
             def load_model_weights(self, checkpoint_path: Path, *, map_location: str) -> None:
                 self.loaded_weights.append((checkpoint_path, map_location))
+                return {
+                    "load_policy": "shape_aware_partial",
+                    "adapter_load_report": {
+                        "loaded_count": 2,
+                        "loaded_keys": ["adapter.layer"],
+                        "skipped_shape_keys": [],
+                        "missing_target_keys": [],
+                    },
+                    "heads_load_report": {
+                        "loaded_count": 1,
+                        "loaded_keys": ["heads.det"],
+                        "skipped_shape_keys": ["heads.lane"],
+                        "missing_target_keys": [],
+                    },
+                    "checkpoint_metadata": {
+                        "architecture_generation": "pv26-road-marking-v3",
+                    },
+                }
 
             def fit(self, train_loader, **kwargs):
                 self.fit_train_loader = train_loader
@@ -1943,6 +1961,18 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(fake_trainer.fit_train_loader, "train-loader")
 
         fit_kwargs = fake_trainer.fit_kwargs
+        self.assertEqual(
+            fit_kwargs["run_manifest_extra"]["weights_only_handoff"]["checkpoint_path"],
+            str(previous_best_checkpoint),
+        )
+        self.assertEqual(
+            fit_kwargs["run_manifest_extra"]["weights_only_handoff"]["load_policy"],
+            "shape_aware_partial",
+        )
+        self.assertEqual(
+            fit_kwargs["run_manifest_extra"]["weights_only_handoff"]["heads_load_report"]["skipped_shape_keys"],
+            ["heads.lane"],
+        )
         self.assertEqual(fit_kwargs["epochs"], 5)
         self.assertEqual(fit_kwargs["phase_index"], 1)
         self.assertEqual(fit_kwargs["phase_count"], 1)
@@ -1988,10 +2018,82 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(result["phase_state"], {"best_phase_objective": 0.812})
         self.assertEqual(result["selection"]["metric_path"], "val.custom_metric")
         self.assertEqual(result["head_channels"], [11, 22, 33, 44])
+        self.assertEqual(result["weights_only_handoff"]["checkpoint_path"], str(previous_best_checkpoint))
+        self.assertEqual(result["weights_only_handoff"]["load_policy"], "shape_aware_partial")
+        self.assertEqual(
+            result["weights_only_handoff"]["checkpoint_metadata"]["architecture_generation"],
+            "pv26-road-marking-v3",
+        )
         self.assertEqual(result["phase_train_config"]["checkpoint_every"], 3)
         self.assertEqual(result["run_summary"]["completed_epochs"], 3)
         self.assertEqual(result["preview"]["best"]["kind"], "best")
         self.assertEqual(result["preview"]["last"]["kind"], "last")
+
+    def test_execute_phase_records_the_trainer_runtime_postprocess_config(self) -> None:
+        from model.engine.postprocess import PV26PostprocessConfig
+
+        class _FakeTrainer:
+            def __init__(self) -> None:
+                self.heads = SimpleNamespace(in_channels=(11, 22, 33, 44))
+                self.postprocess_config = PV26PostprocessConfig(det_conf_threshold=0.17, lane_obj_threshold=0.27)
+                self.fit_kwargs = None
+
+            def fit(self, train_loader, **kwargs):
+                del train_loader
+                self.fit_kwargs = kwargs
+                checkpoint_dir = Path(kwargs["run_dir"]) / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                best_checkpoint = checkpoint_dir / "best.pt"
+                best_checkpoint.write_text("best", encoding="utf-8")
+                return {
+                    "completed_epochs": 1,
+                    "best_metric_value": 0.5,
+                    "best_epoch": 1,
+                    "checkpoint_paths": {
+                        "best": str(best_checkpoint),
+                        "last": None,
+                    },
+                    "early_exit": {"reason": "completed", "phase_state": {}},
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            phase = PhaseConfig(
+                name="stage4",
+                stage="stage_4_lane_family_finetune",
+                min_epochs=1,
+                max_epochs=1,
+                patience=1,
+            )
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=root / "dataset"),
+                run=RunConfig(run_root=root / "runs"),
+                train_defaults=TrainDefaultsConfig(device="cpu"),
+                selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min"),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(phase,),
+            )
+            fake_trainer = _FakeTrainer()
+            rebuilt_config = PV26PostprocessConfig(det_conf_threshold=0.91, lane_obj_threshold=0.92)
+
+            with patch("tools.run_pv26_train._build_phase_train_loaders", return_value=("train-loader", None)):
+                with patch("tools.run_pv26_train._build_phase_trainer", return_value=fake_trainer):
+                    with patch("tools.run_pv26_train._build_postprocess_config", return_value=rebuilt_config):
+                        result = _execute_phase(
+                            scenario=scenario,
+                            scenario_path=root / "default.yaml",
+                            dataset=object(),  # type: ignore[arg-type]
+                            preview_samples=[],
+                            phase_index=1,
+                            phase=phase,
+                            run_dir=root / "runs" / "audit",
+                            previous_best_checkpoint=None,
+                        )
+
+        self.assertEqual(fake_trainer.fit_kwargs["run_manifest_extra"]["postprocess"]["det_conf_threshold"], 0.17)
+        self.assertEqual(fake_trainer.fit_kwargs["run_manifest_extra"]["postprocess"]["lane_obj_threshold"], 0.27)
+        self.assertEqual(result["postprocess"]["det_conf_threshold"], 0.17)
+        self.assertEqual(result["postprocess"]["lane_obj_threshold"], 0.27)
 
     def test_epoch_comparison_ground_truth_overlay_uses_raw_coordinates(self) -> None:
         sample = {

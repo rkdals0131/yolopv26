@@ -102,7 +102,7 @@ class ODBootstrapBuildDebugVisTests(unittest.TestCase):
                 ),
             )
 
-            with self.assertRaisesRegex(TypeError, "scene JSON root must be a mapping"):
+            with self.assertRaisesRegex(TypeError, "scene root must be an object"):
                 generate_canonical_debug_vis(
                     image_list_manifest_path=image_list_path,
                     canonical_root=canonical_root,

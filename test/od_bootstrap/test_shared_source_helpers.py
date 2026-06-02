@@ -32,6 +32,8 @@ from tools.od_bootstrap.source.shared.parallel import LiveLogger, default_worker
 from tools.od_bootstrap.source.shared.raw import (
     discover_pairs,
     extract_annotations,
+    extract_bbox,
+    extract_points,
     now_iso as shared_raw_now_iso,
     normalize_text,
     safe_slug,
@@ -221,6 +223,15 @@ class SharedSourceHelpersTests(unittest.TestCase):
                     {"id": 2, "bbox": [5, 6, 7, 8], "class": "sign"},
                 ],
             )
+            self.assertEqual(extract_bbox({"bbox": [5, 6, 12, 14]}, 640, 480), [5.0, 6.0, 12.0, 14.0])
+            self.assertIsNone(extract_bbox({"bbox": [5, float("nan"), 7, 8]}, 640, 480))
+            self.assertIsNone(extract_bbox({"box": {"x1": 5, "y1": 6, "x2": float("inf"), "y2": 8}}, 640, 480))
+            self.assertEqual(
+                extract_points({"points": [{"x": 1, "y": 4}, {"x": 3, "y": 2}]}),
+                [[1.0, 4.0], [3.0, 2.0]],
+            )
+            self.assertEqual(extract_points({"points": [{"x": 1, "y": 4}, {"x": float("nan"), "y": 2}]}), [])
+            self.assertEqual(extract_points({"x": [1, float("inf")], "y": [4, 2]}), [])
         self.assertEqual(counter_to_dict(Counter({"z": 1, "a": 2})), {"a": 2, "z": 1})
 
     def test_discover_pairs_does_not_cross_split_match_same_named_images(self) -> None:
@@ -242,6 +253,30 @@ class SharedSourceHelpersTests(unittest.TestCase):
             self.assertEqual(len(report.missing_images), 1)
             self.assertEqual(report.missing_images[0]["split"], "train")
             self.assertEqual(report.missing_labels[0]["split"], "val")
+
+    def test_discover_pairs_does_not_reuse_one_source_image_for_multiple_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            image_path = root / "Training" / "images" / "frame.jpg"
+            first_label = root / "Training" / "labels_a" / "sample_a.json"
+            second_label = root / "Training" / "labels_b" / "sample_b.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            first_label.parent.mkdir(parents=True, exist_ok=True)
+            second_label.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            for label_path in (first_label, second_label):
+                label_path.write_text(
+                    json.dumps({"image": {"file_name": "frame.jpg", "image_size": [16, 8]}}),
+                    encoding="utf-8",
+                )
+
+            report = discover_pairs(LANE_DATASET_KEY, root)
+
+            self.assertEqual(len(report.pairs), 1)
+            self.assertEqual(report.pairs[0].image_path, image_path)
+            self.assertEqual(len(report.missing_images), 1)
+            self.assertEqual(report.missing_images[0]["image_file_name"], "frame.jpg")
+            self.assertEqual(report.missing_images[0]["split"], "train")
 
     def test_shared_resume_and_bdd_source_meta_helpers_cover_public_source_cleanup_api(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -280,6 +315,7 @@ class SharedSourceHelpersTests(unittest.TestCase):
             image_path.write_bytes(b"jpg")
             payload = {
                 "version": "scene-v1",
+                "image": {"file_name": f"{sample_id_value}.jpg"},
                 "source": {"dataset": "bdd100k_det_100k", "split": "train"},
                 "detections": [],
                 "held_annotations": [{"reason": "Traffic Light"}],
@@ -300,6 +336,32 @@ class SharedSourceHelpersTests(unittest.TestCase):
             self.assertIsNotNone(bundle)
             assert bundle is not None
             self.assertEqual(bundle["scene"]["version"], "scene-v1")
+            self.assertIsNotNone(
+                load_existing_scene_output(
+                    output_root=output_root,
+                    split="train",
+                    sample_id=sample_id_value,
+                    image_suffix=".jpg",
+                    load_json_fn=load_json,
+                    scene_version="scene-v1",
+                    expected_dataset_key="bdd100k_det_100k",
+                    expected_split="train",
+                    expected_image_file_name=f"{sample_id_value}.jpg",
+                )
+            )
+            self.assertIsNone(
+                load_existing_scene_output(
+                    output_root=output_root,
+                    split="train",
+                    sample_id=sample_id_value,
+                    image_suffix=".jpg",
+                    load_json_fn=load_json,
+                    scene_version="scene-v1",
+                    expected_dataset_key="bdd100k_det_100k",
+                    expected_split="train",
+                    expected_image_file_name="stale.jpg",
+                )
+            )
             self.assertIsNone(
                 load_existing_scene_output(
                     output_root=output_root,

@@ -190,6 +190,54 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("Mobility", teacher_export_action.label)
         self.assertEqual(teacher_export_action.argv, ())
 
+    def test_check_env_path_resolution_does_not_require_calibration_policy(self) -> None:
+        from tools.check_env import scan
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def _strict_sweep_preset(*, allow_default_class_policy: bool = False):
+                if not allow_default_class_policy:
+                    raise FileNotFoundError("missing calibration class_policy.yaml")
+                return SimpleNamespace(
+                    run=SimpleNamespace(output_root=root / "runs" / "od_bootstrap"),
+                    materialization=SimpleNamespace(output_root=root / "dataset" / "exhaustive_od"),
+                )
+
+            with unittest.mock.patch(
+                "tools.check_env.scan.build_default_source_preset",
+                return_value=SimpleNamespace(
+                    roots=SimpleNamespace(bdd_root=root / "BDD100K", aihub_root=root / "AIHUB"),
+                    output_root=root / "bootstrap",
+                ),
+            ), unittest.mock.patch(
+                "tools.check_env.scan.build_teacher_dataset_preset",
+                return_value=SimpleNamespace(output_root=root / "teacher_datasets"),
+            ), unittest.mock.patch(
+                "tools.check_env.scan.build_calibration_preset",
+                return_value=SimpleNamespace(
+                    run=SimpleNamespace(output_root=root / "calibration"),
+                    teachers=(SimpleNamespace(checkpoint_path=root / "train" / "mobility" / "weights" / "best.pt"),),
+                ),
+            ), unittest.mock.patch(
+                "tools.check_env.scan.build_sweep_preset",
+                side_effect=_strict_sweep_preset,
+            ) as build_sweep, unittest.mock.patch(
+                "tools.check_env.scan.build_final_dataset_preset",
+                return_value=SimpleNamespace(output_root=root / "final_dataset"),
+            ), unittest.mock.patch(
+                "tools.check_env.scan.build_teacher_eval_preset",
+                return_value=SimpleNamespace(run=SimpleNamespace(output_root=root / "eval" / "mobility")),
+            ), unittest.mock.patch(
+                "tools.check_env.scan.load_user_paths_config",
+                return_value={"pv26_train": {"run_root": str(root / "pv26_runs")}},
+            ):
+                paths = scan._resolve_pipeline_paths()
+
+        self.assertEqual(paths.calibration_root, (root / "calibration").resolve())
+        self.assertEqual(paths.exhaustive_run_root, (root / "runs" / "od_bootstrap").resolve())
+        build_sweep.assert_called_once_with(allow_default_class_policy=True)
+
     def test_scan_pv26_resume_candidates_filters_completed_runs(self) -> None:
         from tools.check_env import _scan_pv26_resume_candidates
 
@@ -817,6 +865,78 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("stage=stage_4_lane_family_finetune", row_map["PV26 학습 run"].current_state)
         self.assertIn("backbone=s", row_map["PV26 학습 run"].current_state)
         self.assertIn("selection=selection_metrics.phase_objective", row_map["PV26 학습 run"].current_state)
+
+    def test_workspace_status_derives_pv26_state_from_meta_manifest_when_summary_is_missing(self) -> None:
+        from tools.check_env import PipelinePaths, scan_workspace_status
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pv26_run_root = root / "pv26_runs"
+            latest_pv26 = pv26_run_root / "run_001"
+            latest_pv26.mkdir(parents=True, exist_ok=True)
+            (latest_pv26 / "meta_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "train_defaults": {"backbone_variant": "s"},
+                        "phases": [
+                            {
+                                "index": 1,
+                                "name": "warmup",
+                                "stage": "stage_1_frozen_trunk_warmup",
+                                "status": "completed",
+                                "selection": {"metric_path": "val.losses.total.mean", "mode": "min"},
+                            },
+                            {
+                                "index": 2,
+                                "name": "lane",
+                                "stage": "stage_4_lane_family_finetune",
+                                "status": "running",
+                                "selection": {"metric_path": "val.metrics.lane_family.mean_f1", "mode": "max"},
+                            },
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            paths = PipelinePaths(
+                repo_root=root,
+                raw_bdd_root=root / "bdd_raw",
+                raw_aihub_root=root / "aihub_raw",
+                bootstrap_root=root / "bootstrap",
+                teacher_dataset_root=root / "teacher_datasets",
+                teacher_train_root=root / "teacher_runs",
+                teacher_eval_root=root / "teacher_eval",
+                calibration_root=root / "calibration",
+                exhaustive_run_root=root / "exhaustive_runs",
+                exhaustive_dataset_root=root / "exhaustive",
+                final_dataset_root=root / "final_dataset",
+                pv26_run_root=pv26_run_root,
+                user_paths_config_path=root / "config" / "user_paths.yaml",
+                od_hyperparameters_config_path=root / "config" / "od.yaml",
+                pv26_hyperparameters_config_path=root / "config" / "pv26.yaml",
+            )
+            paths.raw_bdd_root.mkdir(parents=True, exist_ok=True)
+            paths.raw_aihub_root.mkdir(parents=True, exist_ok=True)
+            report = {
+                "versions": {"torch": "2.0.0", "torchvision": "0.1.0", "ultralytics": "8.0.0"},
+                "checks": {
+                    "torchvision_nms": {"callable": True},
+                    "yolo26": {"importable": True, "runtime_load_ok": True},
+                },
+            }
+
+            snapshot = scan_workspace_status(report, paths=paths)
+
+        row_map = {row.stage: row for row in snapshot.rows}
+        self.assertEqual(row_map["PV26 학습 run"].verdict, "WARN")
+        self.assertIn("status=running", row_map["PV26 학습 run"].current_state)
+        self.assertIn("phases=1/2", row_map["PV26 학습 run"].current_state)
+        self.assertIn("stage=stage_4_lane_family_finetune", row_map["PV26 학습 run"].current_state)
+        self.assertIn("backbone=s", row_map["PV26 학습 run"].current_state)
+        self.assertIn("selection=val.metrics.lane_family.mean_f1", row_map["PV26 학습 run"].current_state)
 
     def test_empty_final_dataset_directory_stays_todo(self) -> None:
         from tools.check_env import PipelinePaths, scan_workspace_status

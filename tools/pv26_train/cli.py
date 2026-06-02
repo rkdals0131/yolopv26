@@ -1095,6 +1095,8 @@ def _phase_manifest_extra(
     train_config: TrainDefaultsConfig,
     scenario: MetaTrainScenario,
     head_channels: tuple[int, ...] | list[int] | None = None,
+    postprocess_config: PV26PostprocessConfig | None = None,
+    weights_only_handoff: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
     backbone_weights = _resolve_backbone_weights(train_config)
@@ -1103,8 +1105,8 @@ def _phase_manifest_extra(
         if head_channels is not None
         else _configured_head_channels(train_config)
     )
-    postprocess_config = _build_postprocess_config(train_config)
-    return {
+    postprocess_config = postprocess_config or _build_postprocess_config(train_config)
+    payload = {
         "entry_script": "tools/run_pv26_train.py",
         "scenario_path": str(scenario_path),
         "dataset_config": train_artifacts.json_ready(asdict(scenario.dataset)),
@@ -1132,6 +1134,9 @@ def _phase_manifest_extra(
         "postprocess": train_artifacts.json_ready(asdict(postprocess_config)),
         "head_channels": list(resolved_head_channels),
     }
+    if weights_only_handoff is not None:
+        payload["weights_only_handoff"] = train_artifacts.json_ready(weights_only_handoff)
+    return payload
 
 
 def _execute_phase(
@@ -1154,16 +1159,27 @@ def _execute_phase(
     controller.replay(train_artifacts.read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
 
     trainer = _build_phase_trainer(phase, phase_train_config)
+    phase_postprocess_config = getattr(trainer, "postprocess_config", None)
+    if not isinstance(phase_postprocess_config, PV26PostprocessConfig):
+        phase_postprocess_config = _build_postprocess_config(phase_train_config)
     phase_head_channels = tuple(
         int(value)
         for value in getattr(getattr(trainer, "heads", None), "in_channels", _configured_head_channels(phase_train_config))
     )
+    weights_only_handoff: dict[str, Any] | None = None
     last_checkpoint_path = phase_run_dir / "checkpoints" / "last.pt"
     if previous_best_checkpoint is not None and not last_checkpoint_path.is_file():
         _log_meta_train(
             f"loading weights-only handoff for phase_{phase_index} from {previous_best_checkpoint}"
         )
-        trainer.load_model_weights(previous_best_checkpoint, map_location=phase_train_config.device)
+        load_result = trainer.load_model_weights(previous_best_checkpoint, map_location=phase_train_config.device)
+        weights_only_handoff = {
+            "checkpoint_path": str(previous_best_checkpoint),
+            "load_policy": load_result.get("load_policy") if isinstance(load_result, dict) else None,
+            "adapter_load_report": load_result.get("adapter_load_report") if isinstance(load_result, dict) else None,
+            "heads_load_report": load_result.get("heads_load_report") if isinstance(load_result, dict) else None,
+            "checkpoint_metadata": load_result.get("checkpoint_metadata") if isinstance(load_result, dict) else None,
+        }
     elif last_checkpoint_path.is_file():
         _log_meta_train(f"auto-resume checkpoint found for phase_{phase_index}: {last_checkpoint_path}")
 
@@ -1208,6 +1224,8 @@ def _execute_phase(
             train_config=phase_train_config,
             scenario=scenario,
             head_channels=phase_head_channels,
+            postprocess_config=phase_postprocess_config,
+            weights_only_handoff=weights_only_handoff,
         ),
     )
 
@@ -1262,8 +1280,9 @@ def _execute_phase(
             "variant": phase_train_config.backbone_variant,
             "weights": _resolve_backbone_weights(phase_train_config),
         },
-        "postprocess": train_artifacts.json_ready(asdict(_build_postprocess_config(phase_train_config))),
+        "postprocess": train_artifacts.json_ready(asdict(phase_postprocess_config)),
         "head_channels": list(phase_head_channels),
+        "weights_only_handoff": train_artifacts.json_ready(weights_only_handoff),
         "preview": train_artifacts.json_ready(preview_payload),
         "phase_train_config": train_artifacts.json_ready(asdict(phase_train_config)),
         "run_summary": train_artifacts.json_ready(phase_summary),

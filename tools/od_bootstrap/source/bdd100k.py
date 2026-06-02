@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from .shared.raw import env_path as _env_path, now_iso as _now_iso, repo_root as
 from .shared.resume import (
     count_held_annotation_reasons as _count_held_annotation_reasons,
     load_existing_scene_output as _load_existing_scene_output,
+    scene_detections_match_labels_det as _scene_detections_match_labels_det,
 )
 from .shared.reports import det_class_map_yaml as _det_class_map_yaml
 from .shared.scene import bbox_to_yolo_line as _bbox_to_yolo_line, build_base_scene as _build_base_scene
@@ -126,6 +128,19 @@ def _sample_id(pair: PairRecord) -> str:
     return _safe_slug(f"{OUTPUT_DATASET_KEY}_{pair.split}_{pair.relative_id}")
 
 
+def _reject_duplicate_output_sample_ids(tasks: list[BDDTask]) -> None:
+    owners: dict[str, PairRecord] = {}
+    for task in tasks:
+        sample_id = _sample_id(task.pair)
+        prior = owners.get(sample_id)
+        if prior is not None:
+            raise ValueError(
+                "duplicate source output sample_id "
+                f"{sample_id}: {prior.label_path} and {task.pair.label_path}"
+            )
+        owners[sample_id] = task.pair
+
+
 def _discover_pairs(images_root: Path, labels_root: Path) -> dict[str, Any]:
     pairs: list[PairRecord] = []
     missing_images: list[dict[str, str]] = []
@@ -213,6 +228,8 @@ def _extract_bbox(box2d: Any, width: int, height: int) -> list[float] | None:
         x2 = float(box2d["x2"])
         y2 = float(box2d["y2"])
     except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
         return None
     x1 = max(0.0, min(x1, width - 1.0))
     y1 = max(0.0, min(y1, height - 1.0))
@@ -302,11 +319,12 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
             continue
 
         if bbox is None:
-            held_reason_counts["mapped_category_missing_box2d"] += 1
+            reason = "mapped_category_missing_box2d" if box2d is None else "mapped_category_invalid_box2d"
+            held_reason_counts[reason] += 1
             _maybe_append_held(
                 held_annotations,
                 raw_category=canonical_category or "missing_category",
-                reason="mapped_category_missing_box2d",
+                reason=reason,
                 bbox_present=box2d is not None,
             )
             continue
@@ -421,6 +439,7 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
         scene_version=SCENE_VERSION,
         expected_dataset_key=OUTPUT_DATASET_KEY,
         expected_split=pair.split,
+        expected_image_file_name=f"{sample_id}{pair.image_path.suffix.lower()}",
     )
     if bundle is None:
         return None
@@ -451,7 +470,7 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
         return None
     if lanes or stop_lines or crosswalks:
         return None
-    if bool(detections) != det_path.is_file():
+    if not _scene_detections_match_labels_det(detections, det_path, class_to_id=OD_CLASS_TO_ID):
         return None
 
     det_class_counts = Counter()
@@ -1113,6 +1132,7 @@ def run_standardization(
         max_samples_per_split=max_samples_per_split,
     )
     tasks = [BDDTask(pair=pair, output_root=str(output_root)) for pair in pairs]
+    _reject_duplicate_output_sample_ids(tasks)
     summaries, pending_tasks = _scan_existing_outputs(
         tasks,
         force_reprocess=force_reprocess,

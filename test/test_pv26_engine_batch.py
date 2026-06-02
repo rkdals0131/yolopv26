@@ -9,6 +9,8 @@ from model.engine.batch import (
     merge_raw_batches,
     move_batch_to_device,
     raw_batch_for_metrics,
+    validate_prediction_batch_matches_image,
+    validate_raw_batch_matches_image,
 )
 
 
@@ -86,6 +88,62 @@ class EngineBatchHelpersTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "raw batch field lengths must match"):
             merge_raw_batches([malformed])
+
+    def test_merge_raw_batches_rejects_image_batch_size_mismatch(self) -> None:
+        malformed = {
+            "image": torch.zeros(2, 3, 4, 4),
+            "det_targets": [{"sample_id": "a"}],
+            "tl_attr_targets": [{"sample_id": "a"}],
+            "lane_targets": [{"sample_id": "a"}],
+            "source_mask": [{"det": True}],
+            "valid_mask": [{"lane": True}],
+            "meta": [{"sample_id": "a"}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "raw batch image batch size must match meta length"):
+            merge_raw_batches([malformed])
+
+    def test_validate_raw_batch_rejects_missing_metric_fields(self) -> None:
+        raw_batch = {
+            "det_targets": [{"sample_id": "a"}],
+            "tl_attr_targets": [{"sample_id": "a"}],
+            "lane_targets": [{"sample_id": "a"}],
+            "source_mask": [{"det": True}],
+            "meta": [{"sample_id": "a"}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "encoded _raw_batch missing required fields"):
+            validate_raw_batch_matches_image(
+                raw_batch,
+                torch.zeros((1, 3, 4, 4), dtype=torch.float32),
+                context="encoded",
+            )
+
+    def test_validate_raw_batch_rejects_non_batched_image_tensor(self) -> None:
+        raw_batch = {
+            "det_targets": [{"sample_id": str(index)} for index in range(3)],
+            "tl_attr_targets": [{"sample_id": str(index)} for index in range(3)],
+            "lane_targets": [{"sample_id": str(index)} for index in range(3)],
+            "source_mask": [{"det": True} for _ in range(3)],
+            "valid_mask": [{"lane": True} for _ in range(3)],
+            "meta": [{"sample_id": str(index)} for index in range(3)],
+        }
+
+        with self.assertRaisesRegex(ValueError, "encoded image must be a 4D tensor batch"):
+            validate_raw_batch_matches_image(
+                raw_batch,
+                torch.zeros((3, 4, 4), dtype=torch.float32),
+                context="encoded",
+            )
+
+    def test_validate_prediction_batch_rejects_non_batched_image_tensor(self) -> None:
+        predictions = {"det": torch.zeros((3, 10, 12), dtype=torch.float32)}
+
+        with self.assertRaisesRegex(ValueError, "prediction image must be a 4D tensor batch"):
+            validate_prediction_batch_matches_image(
+                predictions,
+                torch.zeros((3, 4, 4), dtype=torch.float32),
+            )
 
     def test_augment_lane_family_metrics_adds_summary_without_mutating_input(self) -> None:
         metrics = {

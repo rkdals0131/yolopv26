@@ -212,6 +212,48 @@ class ODBootstrapTeacherDatasetTests(unittest.TestCase):
                     ),
                 )
 
+    def test_build_teacher_dataset_rejects_malformed_det_label_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "canonical" / "bdd100k_det_100k"
+            aihub_root = root / "canonical" / "aihub_standardized"
+            _make_image(bdd_root / "images" / "train" / "sample.jpg", 1280, 720, "#222222")
+            _write_json(
+                bdd_root / "labels_scene" / "train" / "sample.json",
+                {
+                    "image": {"file_name": "sample.jpg", "width": 1280, "height": 720},
+                    "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                    "tasks": {"has_det": 1},
+                    "detections": [
+                        {
+                            "id": 0,
+                            "class_name": "vehicle",
+                            "bbox": [100.0, 100.0, 300.0, 300.0],
+                        }
+                    ],
+                },
+            )
+            _write_text(
+                bdd_root / "labels_det" / "train" / "sample.txt",
+                "0 0.500000 0.500000 0.250000\n",
+            )
+            bundle = CanonicalSourceBundle(
+                bdd_root=bdd_root,
+                aihub_root=aihub_root,
+                output_root=root / "pv26_od_bootstrap",
+            )
+
+            with self.assertRaisesRegex(ValueError, "teacher dataset malformed det label row"):
+                build_teacher_dataset(
+                    bundle,
+                    "mobility",
+                    config=TeacherDatasetBuildConfig(
+                        output_root=root / "pv26_od_bootstrap" / "teacher_datasets",
+                        workers=1,
+                        debug_vis_count=0,
+                    ),
+                )
+
     def test_build_teacher_datasets_filters_lane_and_remaps_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -295,6 +295,112 @@ class BDD100KStandardizationTests(unittest.TestCase):
             self.assertEqual(repaired_scene["tasks"]["has_det"], 1)
             self.assertEqual([item["id"] for item in repaired_scene["detections"]], [0])
 
+    def test_resume_reprocesses_stale_bdd_det_file_row_count_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+
+            self._create_bdd_fixture(images_root, labels_root)
+
+            run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            scene_path = sorted((output_root / "labels_scene" / "train").glob("*.json"))[0]
+            det_path = output_root / "labels_det" / "train" / f"{scene_path.stem}.txt"
+            det_path.write_text(
+                det_path.read_text(encoding="utf-8") + "0 0.500000 0.500000 0.100000 0.100000\n",
+                encoding="utf-8",
+            )
+
+            outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            self.assertEqual(report["dataset"]["resume_skipped_count"], 2)
+            self.assertEqual(report["dataset"]["fresh_processed_count"], 1)
+            self._assert_labels_det_matches_detection_order(scene_path, output_root)
+
+    def test_resume_reprocesses_stale_bdd_scene_image_file_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+
+            self._create_bdd_fixture(images_root, labels_root)
+
+            run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            scene_path = sorted((output_root / "labels_scene" / "train").glob("*.json"))[0]
+            stale_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            stale_scene["image"]["file_name"] = "stale.jpg"
+            scene_path.write_text(json.dumps(stale_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+            outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            repaired_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["dataset"]["resume_skipped_count"], 2)
+            self.assertEqual(report["dataset"]["fresh_processed_count"], 1)
+            self.assertEqual(repaired_scene["image"]["file_name"], f"{scene_path.stem}.jpg")
+
+    def test_standardization_rejects_duplicate_output_sample_ids_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+            for stem in ("sample one", "sample_one"):
+                _make_image(images_root / "train" / f"{stem}.jpg", 640, 480, "#202020")
+                _write_json(
+                    labels_root / "train" / f"{stem}.json",
+                    {
+                        "name": f"{stem}.jpg",
+                        "attributes": {"weather": "clear", "scene": "city street", "timeofday": "daytime"},
+                        "frames": [{"timestamp": 1000, "objects": []}],
+                    },
+                )
+
+            with self.assertRaisesRegex(ValueError, "duplicate source output sample_id"):
+                run_standardization(
+                    bdd_root=bdd_root,
+                    images_root=images_root,
+                    labels_root=labels_root,
+                    output_root=output_root,
+                    workers=1,
+                    debug_vis_count=0,
+                    write_dataset_readme=False,
+                )
+
     def test_parallel_standardize_logs_submit_progress_before_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -319,6 +425,66 @@ class BDD100KStandardizationTests(unittest.TestCase):
             logs = log_stream.getvalue()
             self.assertIn("stage=parallel_standardize submit_progress=1/", logs)
             self.assertIn("stage=parallel_standardize waiting_for_results submitted=", logs)
+
+    def test_standardization_holds_non_finite_bdd_boxes_before_labels_det(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+            stem = "nonfinite-box"
+
+            _make_image(images_root / "train" / f"{stem}.jpg", 640, 480, "#222222")
+            _write_json(
+                labels_root / "train" / f"{stem}.json",
+                {
+                    "name": f"{stem}.jpg",
+                    "frames": [
+                        {
+                            "objects": [
+                                {
+                                    "id": 1,
+                                    "category": "car",
+                                    "box2d": {"x1": float("nan"), "y1": 10, "x2": 100, "y2": 80},
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
+
+            outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            conversion_report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            dataset = conversion_report["dataset"]
+            self.assertEqual(dataset["processed_samples"], 1)
+            self.assertEqual(dataset["detection_count"], 0)
+            self.assertEqual(dataset["held_reason_counts"]["mapped_category_invalid_box2d"], 1)
+
+            scene_path = next((output_root / "labels_scene" / "train").glob("*.json"))
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(scene["tasks"]["has_det"], 0)
+            self.assertEqual(scene["detections"], [])
+            self.assertEqual(
+                scene["held_annotations"],
+                [
+                    {
+                        "raw_category": "car",
+                        "reason": "mapped_category_invalid_box2d",
+                        "bbox_present": True,
+                    }
+                ],
+            )
+            det_path = output_root / "labels_det" / "train" / f"{scene_path.stem}.txt"
+            self.assertFalse(det_path.exists())
 
     def _create_bdd_fixture(self, images_root: Path, labels_root: Path) -> None:
         samples = {

@@ -83,6 +83,48 @@ class PV26TransformRoundtripTests(unittest.TestCase):
 
         self.assertEqual(restored, transform)
 
+    def test_transform_from_meta_rejects_malformed_letterbox_handoff(self) -> None:
+        transform = compute_letterbox_transform((720, 1280), network_hw=(608, 800))
+        valid_meta = {
+            "raw_hw": transform.raw_hw,
+            "network_hw": transform.network_hw,
+            "transform": transform.as_meta(),
+        }
+        cases = (
+            ("zero_scale", {"scale": 0.0}, "letterbox transform scale must be positive and finite"),
+            ("nan_scale", {"scale": float("nan")}, "letterbox transform scale must be positive and finite"),
+            ("negative_pad", {"pad_top": -1}, "letterbox transform padding must be non-negative"),
+            ("bad_canvas_sum", {"pad_bottom": 80}, "letterbox resized/padding must match network_hw"),
+            ("bad_resized_scale", {"scale": 0.5}, "letterbox resized_hw must match raw_hw and scale"),
+        )
+
+        for name, overrides, message in cases:
+            with self.subTest(name=name):
+                meta = {
+                    "raw_hw": valid_meta["raw_hw"],
+                    "network_hw": valid_meta["network_hw"],
+                    "transform": {**valid_meta["transform"], **overrides},
+                }
+                with self.assertRaisesRegex(ValueError, message):
+                    transform_from_meta(meta)
+
+    def test_transform_from_meta_rejects_noncanonical_letterbox_handoff(self) -> None:
+        meta = {
+            "raw_hw": (720, 1280),
+            "network_hw": (608, 800),
+            "transform": {
+                "scale": 0.5,
+                "pad_left": 80,
+                "pad_top": 124,
+                "pad_right": 80,
+                "pad_bottom": 124,
+                "resized_hw": (360, 640),
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "letterbox transform must match raw_hw/network_hw"):
+            transform_from_meta(meta)
+
     def test_box_roundtrip_restores_original_coordinates(self) -> None:
         transform = compute_letterbox_transform((720, 1280), network_hw=(608, 800))
         original = [120.0, 180.0, 640.0, 520.0]

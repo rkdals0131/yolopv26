@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -80,10 +81,15 @@ def _obstacle_bbox(annotation: dict[str, Any], width: int, height: int) -> list[
     box = annotation.get("bbox")
     if not isinstance(box, (list, tuple)) or len(box) != 4:
         return None
-    x_value = float(box[0])
-    y_value = float(box[1])
-    w_value = float(box[2])
-    h_value = float(box[3])
+    try:
+        x_value = float(box[0])
+        y_value = float(box[1])
+        w_value = float(box[2])
+        h_value = float(box[3])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x_value, y_value, w_value, h_value)):
+        return None
     if w_value <= 0.0 or h_value <= 0.0:
         return None
     x1 = max(0.0, min(x_value, float(width)))

@@ -1323,6 +1323,28 @@ class PV26LossRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(predictions["tl_attr"].grad)
         self.assertIsNotNone(predictions["lane"].grad)
 
+    def test_loss_rejects_missing_raw_prediction_heads_at_entry(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions.pop("lane")
+        criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
+
+        with self.assertRaisesRegex(ValueError, "loss predictions missing required tensor heads"):
+            criterion(predictions, encoded)
+
+    def test_loss_rejects_raw_prediction_shape_drift_at_entry(self) -> None:
+        from model.engine.loss import PV26MultiTaskLoss
+
+        encoded = _make_encoded_batch(batch_size=1, q_det=2)
+        predictions = _zero_predictions(batch_size=1, q_det=2)
+        predictions["lane"] = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM - 1), dtype=torch.float32)
+        criterion = PV26MultiTaskLoss(stage="stage_4_lane_family_finetune")
+
+        with self.assertRaisesRegex(ValueError, "loss prediction shape contract violation"):
+            criterion(predictions, encoded)
+
     def test_loss_handles_no_source_batch_without_nan(self) -> None:
         from model.engine.loss import PV26MultiTaskLoss
 

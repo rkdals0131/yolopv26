@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -238,6 +239,7 @@ def _discover_pairs(dataset_key: str, dataset_root: Path) -> DiscoveryReport:
         candidates = image_candidates.get(filename, [])
         if split != "unspecified":
             candidates = [candidate for candidate in candidates if _infer_split(candidate) == split]
+        candidates = [candidate for candidate in candidates if candidate not in matched_images]
         image_path = None
         if candidates:
             image_path = max(candidates, key=lambda candidate: _path_similarity(label_path, candidate))
@@ -283,10 +285,17 @@ def _discover_pairs(dataset_key: str, dataset_root: Path) -> DiscoveryReport:
     return report
 
 
-def _clean_points(points: Iterable[tuple[float, float]]) -> list[list[float]]:
+def _clean_points(points: Iterable[tuple[Any, Any]]) -> list[list[float]]:
     cleaned: list[list[float]] = []
     for x_value, y_value in points:
-        point = [round(float(x_value), 3), round(float(y_value), 3)]
+        try:
+            x_float = float(x_value)
+            y_float = float(y_value)
+        except (TypeError, ValueError):
+            return []
+        if not math.isfinite(x_float) or not math.isfinite(y_float):
+            return []
+        point = [round(x_float, 3), round(y_float, 3)]
         if cleaned and cleaned[-1] == point:
             continue
         cleaned.append(point)
@@ -314,7 +323,7 @@ def _extract_points(annotation: dict[str, Any]) -> list[list[float]]:
 
     points = annotation.get("points")
     if isinstance(points, list):
-        extracted: list[tuple[float, float]] = []
+        extracted: list[tuple[Any, Any]] = []
         for point in points:
             if isinstance(point, dict):
                 x_value = point.get("x")
@@ -323,7 +332,7 @@ def _extract_points(annotation: dict[str, Any]) -> list[list[float]]:
                 x_value, y_value = point[0], point[1]
             else:
                 continue
-            extracted.append((float(x_value), float(y_value)))
+            extracted.append((x_value, y_value))
         return _clean_points(extracted)
 
     data = annotation.get("data")
@@ -359,16 +368,26 @@ def _extract_attribute_map(annotation: dict[str, Any]) -> dict[str, Any]:
 def _extract_bbox(annotation: dict[str, Any], width: int, height: int) -> list[float] | None:
     box = annotation.get("box") or annotation.get("bbox")
     if isinstance(box, dict):
-        if all(key in box for key in ("x1", "y1", "x2", "y2")):
-            coords = [box["x1"], box["y1"], box["x2"], box["y2"]]
-        elif all(key in box for key in ("left", "top", "right", "bottom")):
-            coords = [box["left"], box["top"], box["right"], box["bottom"]]
-        elif all(key in box for key in ("x", "y", "w", "h")):
-            coords = [box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]]
-        else:
+        try:
+            if all(key in box for key in ("x1", "y1", "x2", "y2")):
+                coords = [float(box["x1"]), float(box["y1"]), float(box["x2"]), float(box["y2"])]
+            elif all(key in box for key in ("left", "top", "right", "bottom")):
+                coords = [float(box["left"]), float(box["top"]), float(box["right"]), float(box["bottom"])]
+            elif all(key in box for key in ("x", "y", "w", "h")):
+                x_value = float(box["x"])
+                y_value = float(box["y"])
+                w_value = float(box["w"])
+                h_value = float(box["h"])
+                coords = [x_value, y_value, x_value + w_value, y_value + h_value]
+            else:
+                return None
+        except (TypeError, ValueError):
             return None
     elif isinstance(box, (list, tuple)) and len(box) == 4:
-        coords = [float(value) for value in box]
+        try:
+            coords = [float(value) for value in box]
+        except (TypeError, ValueError):
+            return None
         if coords[2] <= coords[0] or coords[3] <= coords[1]:
             coords = [coords[0], coords[1], coords[0] + coords[2], coords[1] + coords[3]]
     elif isinstance(box, (list, tuple)) and len(box) == 2:
@@ -379,12 +398,17 @@ def _extract_bbox(annotation: dict[str, Any], width: int, height: int) -> list[f
             and len(first) >= 2
             and len(second) >= 2
         ):
-            coords = [float(first[0]), float(first[1]), float(second[0]), float(second[1])]
+            try:
+                coords = [float(first[0]), float(first[1]), float(second[0]), float(second[1])]
+            except (TypeError, ValueError):
+                return None
         else:
             return None
     else:
         return None
 
+    if not all(math.isfinite(value) for value in coords):
+        return None
     x1 = max(0.0, min(float(coords[0]), float(width)))
     y1 = max(0.0, min(float(coords[1]), float(height)))
     x2 = max(0.0, min(float(coords[2]), float(width)))

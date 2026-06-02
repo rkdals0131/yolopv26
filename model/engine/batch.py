@@ -8,6 +8,13 @@ import torch
 RAW_BATCH_FIELDS = ("det_targets", "tl_attr_targets", "lane_targets", "source_mask", "valid_mask", "meta")
 
 
+def _image_batch_size(image: Any, *, context: str) -> int:
+    if not isinstance(image, torch.Tensor) or image.ndim != 4:
+        shape = tuple(image.shape) if isinstance(image, torch.Tensor) else type(image).__name__
+        raise ValueError(f"{context} image must be a 4D tensor batch: shape={shape}")
+    return int(image.shape[0])
+
+
 def move_batch_to_device(item: Any, device: torch.device, *, non_blocking: bool = False) -> Any:
     if isinstance(item, torch.Tensor):
         return item.to(device, non_blocking=non_blocking)
@@ -35,7 +42,10 @@ def validate_raw_batch_matches_image(
     *,
     context: str,
 ) -> None:
-    expected_length = int(image.shape[0])
+    expected_length = _image_batch_size(image, context=context)
+    missing = [field for field in RAW_BATCH_FIELDS if field not in raw_batch]
+    if missing:
+        raise ValueError(f"{context} _raw_batch missing required fields: {missing}")
     field_lengths = {field: len(raw_batch[field]) for field in RAW_BATCH_FIELDS}
     mismatched = {field: length for field, length in field_lengths.items() if length != expected_length}
     if mismatched:
@@ -49,7 +59,7 @@ def validate_prediction_batch_matches_image(
     predictions: dict[str, Any],
     image: torch.Tensor,
 ) -> None:
-    expected_length = int(image.shape[0])
+    expected_length = _image_batch_size(image, context="prediction")
     mismatched = {
         name: int(value.shape[0])
         for name, value in predictions.items()
@@ -74,6 +84,13 @@ def merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
                 "raw batch field lengths must match before merge: "
                 f"batch_index={batch_index} meta={expected_length} mismatched={mismatched}"
             )
+        if "image" in batch:
+            image_length = _image_batch_size(batch["image"], context=f"raw batch {batch_index}")
+            if image_length != expected_length:
+                raise ValueError(
+                    "raw batch image batch size must match meta length before merge: "
+                    f"batch_index={batch_index} image={image_length} meta={expected_length}"
+                )
     merged = {
         "det_targets": [item for batch in batches for item in batch["det_targets"]],
         "tl_attr_targets": [item for batch in batches for item in batch["tl_attr_targets"]],

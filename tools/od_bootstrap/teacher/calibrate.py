@@ -145,17 +145,21 @@ def _load_ground_truth_by_class(
     ground_truth: dict[str, list[list[float]]] = {class_name: [] for class_name in teacher.classes}
     if not label_path.is_file():
         return ground_truth
-    for line in read_text(label_path).splitlines():
+    for line_number, line in enumerate(read_text(label_path).splitlines(), start=1):
+        if not line.strip():
+            continue
         parts = line.strip().split()
         if len(parts) != 5:
-            continue
-        class_index = int(parts[0])
+            raise ValueError(f"calibration malformed label row {line_number}: {label_path}")
+        try:
+            class_index = int(parts[0])
+            box_values = [float(value) for value in parts[1:]]
+        except ValueError as exc:
+            raise ValueError(f"calibration malformed label row {line_number}: {label_path}") from exc
         if not 0 <= class_index < len(teacher.classes):
-            continue
+            raise ValueError(f"calibration label class index out of range on row {line_number}: {label_path}")
         class_name = teacher.classes[class_index]
-        ground_truth[class_name].append(
-            _yolo_to_xyxy([float(value) for value in parts[1:]], width=width, height=height)
-        )
+        ground_truth[class_name].append(_yolo_to_xyxy(box_values, width=width, height=height))
     return ground_truth
 
 

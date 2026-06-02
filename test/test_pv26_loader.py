@@ -136,6 +136,51 @@ class PV26LoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "scene source.split must match labels_scene split"):
                 PV26CanonicalDataset([root])
 
+    def test_loader_revalidates_runtime_scene_record_identity(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        drift_cases = [
+            (
+                "dataset",
+                lambda scene: scene["source"].update({"dataset": "bdd100k_det_100k"}),
+                "scene source.dataset must match discovered record",
+            ),
+            (
+                "split",
+                lambda scene: scene["source"].update({"split": "val"}),
+                "scene source.split must match discovered record",
+            ),
+            (
+                "image_file_name",
+                lambda scene: scene["image"].update({"file_name": "other.png"}),
+                "scene image.file_name must match discovered record",
+            ),
+        ]
+        for case_name, mutate_scene, error_message in drift_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                scene_path = root / "labels_scene" / "train" / "sample.json"
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    scene_path,
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                        "detections": [],
+                        "lanes": [],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                    },
+                )
+
+                dataset = PV26CanonicalDataset([root])
+                scene = json.loads(scene_path.read_text(encoding="utf-8"))
+                mutate_scene(scene)
+                _write_json(scene_path, scene)
+
+                with self.assertRaisesRegex(ValueError, error_message):
+                    dataset[0]
+
     def test_loader_rejects_final_dataset_manifest_record_drift(self) -> None:
         from model.data.dataset import PV26CanonicalDataset
 
@@ -229,6 +274,101 @@ class PV26LoaderTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "final dataset manifest scene_path must match discovered record"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_final_dataset_manifest_dataset_count_drift(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+            _write_json(
+                root / "labels_scene" / "train" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {
+                        "dataset": "aihub_lane_seoul",
+                        "split": "train",
+                        "final_sample_id": "sample",
+                    },
+                    "detections": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+            _write_json(
+                root / "meta" / "final_dataset_manifest.json",
+                {
+                    "version": "pv26-exhaustive-od-lane-v2",
+                    "sample_count": 1,
+                    "dataset_counts": {"aihub_lane_seoul": 2},
+                    "samples": [
+                        {
+                            "final_sample_id": "sample",
+                            "source_kind": "lane",
+                            "source_dataset_key": "aihub_lane_seoul",
+                            "split": "train",
+                            "source_scene_path": str(root / "source" / "sample.json"),
+                            "source_image_path": str(root / "source" / "sample.png"),
+                            "source_det_path": None,
+                            "scene_path": str((root / "labels_scene" / "train" / "sample.json").resolve()),
+                            "det_path": None,
+                            "image_path": str((root / "images" / "train" / "sample.png").resolve()),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "final dataset manifest dataset_counts must match samples"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_final_dataset_manifest_output_root_drift(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+            _write_json(
+                root / "labels_scene" / "train" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {
+                        "dataset": "aihub_lane_seoul",
+                        "split": "train",
+                        "final_sample_id": "sample",
+                    },
+                    "detections": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+            _write_json(
+                root / "meta" / "final_dataset_manifest.json",
+                {
+                    "version": "pv26-exhaustive-od-lane-v2",
+                    "output_root": str((root / ".staging").resolve()),
+                    "sample_count": 1,
+                    "dataset_counts": {"aihub_lane_seoul": 1},
+                    "samples": [
+                        {
+                            "final_sample_id": "sample",
+                            "source_kind": "lane",
+                            "source_dataset_key": "aihub_lane_seoul",
+                            "split": "train",
+                            "source_scene_path": str(root / "source" / "sample.json"),
+                            "source_image_path": str(root / "source" / "sample.png"),
+                            "source_det_path": None,
+                            "scene_path": str((root / "labels_scene" / "train" / "sample.json").resolve()),
+                            "det_path": None,
+                            "image_path": str((root / "images" / "train" / "sample.png").resolve()),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "final dataset manifest output_root must match dataset root"):
                 PV26CanonicalDataset([root])
 
     def test_loader_rejects_scene_image_size_mismatch(self) -> None:
@@ -489,6 +629,38 @@ class PV26LoaderTests(unittest.TestCase):
                     },
                 )
                 _write_text(root / "labels_det" / "train" / "sample.txt", "5 0.5 0.5 0.1 0.1\n")
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(ValueError, error_message):
+                    dataset[0]
+
+    def test_loader_rejects_malformed_detector_label_rows(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            ("missing_column", "0 0.5 0.5 0.1\n", "expected 5 columns"),
+            ("bad_class_id", "99 0.5 0.5 0.1 0.1\n", "invalid detection class id"),
+            ("non_finite_center", "0 nan 0.5 0.1 0.1\n", "non-finite detection center_x"),
+            ("bad_center", "0 1.5 0.5 0.1 0.1\n", "invalid normalized detection center"),
+            ("bad_size", "0 0.5 0.5 0.0 0.1\n", "invalid normalized detection size"),
+        ]
+        for case_name, det_row, error_message in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "detections": [],
+                        "lanes": [],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                        "traffic_lights": [],
+                    },
+                )
+                _write_text(root / "labels_det" / "train" / "sample.txt", det_row)
 
                 dataset = PV26CanonicalDataset([root])
                 with self.assertRaisesRegex(ValueError, error_message):

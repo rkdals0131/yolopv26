@@ -179,6 +179,32 @@ def select_best_epoch(epochs: list[dict[str, Any]], top_entry: dict[str, Any]) -
     )
 
 
+def summarize_weights_only_handoff(top_entry: dict[str, Any]) -> dict[str, Any]:
+    handoff = top_entry.get("weights_only_handoff")
+    if not isinstance(handoff, dict):
+        return {}
+    adapter_report = handoff.get("adapter_load_report")
+    if not isinstance(adapter_report, dict):
+        adapter_report = {}
+    heads_report = handoff.get("heads_load_report")
+    if not isinstance(heads_report, dict):
+        heads_report = {}
+    row = {
+        "weights_only_handoff_checkpoint_path": handoff.get("checkpoint_path", ""),
+        "weights_only_handoff_load_policy": handoff.get("load_policy", ""),
+        "weights_only_handoff_adapter_loaded_count": adapter_report.get("loaded_count", ""),
+        "weights_only_handoff_heads_loaded_count": heads_report.get("loaded_count", ""),
+        "weights_only_handoff_adapter_skipped_shape_count": len(adapter_report.get("skipped_shape_keys", []) or []),
+        "weights_only_handoff_heads_skipped_shape_count": len(heads_report.get("skipped_shape_keys", []) or []),
+        "weights_only_handoff_adapter_missing_target_count": len(adapter_report.get("missing_target_keys", []) or []),
+        "weights_only_handoff_heads_missing_target_count": len(heads_report.get("missing_target_keys", []) or []),
+    }
+    checkpoint_metadata = handoff.get("checkpoint_metadata")
+    if isinstance(checkpoint_metadata, dict):
+        row.update(flatten_for_csv(checkpoint_metadata, prefix="weights_only_handoff_checkpoint_metadata"))
+    return row
+
+
 def iso_from_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(float(timestamp), tz=timezone.utc).isoformat()
 
@@ -404,6 +430,7 @@ def build_phase_overview_rows(run_dir: Path, phase_infos: list[dict[str, Any]]) 
             "best_checkpoint_path": top_entry.get("best_checkpoint_path", ""),
             "last_checkpoint_path": top_entry.get("last_checkpoint_path", ""),
         }
+        row.update(summarize_weights_only_handoff(top_entry))
         for key, value in sorted(phase_source_totals.items()):
             row[f"phase_total_{key}"] = value
         rows.append(row)

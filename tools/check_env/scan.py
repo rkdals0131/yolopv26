@@ -291,7 +291,7 @@ def _resolve_pipeline_paths() -> PipelinePaths:
     source_preset = build_default_source_preset()
     teacher_dataset_preset = build_teacher_dataset_preset()
     calibration_preset = build_calibration_preset()
-    sweep_preset = build_sweep_preset()
+    sweep_preset = build_sweep_preset(allow_default_class_policy=True)
     final_preset = build_final_dataset_preset()
     teacher_eval_preset = build_teacher_eval_preset("mobility")
     user_paths = load_user_paths_config()
@@ -738,14 +738,40 @@ def _build_pv26_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
     summary = _json_load_if_exists(summary_path) if summary_path is not None else None
     if run_dir is not None and summary is not None:
         status = str(summary.get("status") or "unknown")
+        phases = summary.get("phases", [])
         completed_phases = _safe_int(summary.get("completed_phases"))
-        total_phases = _safe_int(summary.get("total_phases") or len(summary.get("phases", [])))
+        total_phases = _safe_int(summary.get("total_phases") or len(phases))
+        latest_phase_entry: dict[str, Any] | None = None
+        if isinstance(phases, list):
+            manifest_completed = 0
+            manifest_total = 0
+            for entry in phases:
+                if not isinstance(entry, dict):
+                    continue
+                entry_status = str(entry.get("status") or "")
+                if entry_status == "skipped":
+                    continue
+                manifest_total += 1
+                if entry_status == "completed":
+                    manifest_completed += 1
+                if entry_status in {"completed", "running", "active"}:
+                    latest_phase_entry = entry
+            if completed_phases == 0 and manifest_completed:
+                completed_phases = manifest_completed
+            if total_phases == 0 and manifest_total:
+                total_phases = manifest_total
         train_defaults = summary.get("train_defaults", {})
         backbone_variant = None
         if isinstance(train_defaults, dict):
             backbone_variant = train_defaults.get("backbone_variant")
         latest_phase_stage = summary.get("latest_phase_stage")
         latest_selection = summary.get("latest_selection_metric_path")
+        if latest_phase_stage in {None, ""} and latest_phase_entry is not None:
+            latest_phase_stage = latest_phase_entry.get("stage")
+        if latest_selection in {None, ""} and latest_phase_entry is not None:
+            phase_selection = latest_phase_entry.get("selection")
+            if isinstance(phase_selection, dict):
+                latest_selection = phase_selection.get("metric_path")
         latest_backbone_variant = summary.get("latest_backbone_variant") or backbone_variant
         current_state_parts = [
             f"latest={run_dir.name}",

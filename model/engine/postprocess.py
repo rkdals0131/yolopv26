@@ -3630,6 +3630,24 @@ def _det_query_count_from_feature_shapes(feature_shapes: list[Any]) -> int:
     return query_count
 
 
+def _coerce_det_feature_strides(feature_strides: list[Any]) -> list[int]:
+    strides: list[int] = []
+    for value in feature_strides:
+        if isinstance(value, bool):
+            raise ValueError("postprocess requires positive integer det_feature_strides entries")
+        try:
+            stride_float = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("postprocess requires positive integer det_feature_strides entries") from exc
+        if not np.isfinite(stride_float) or not stride_float.is_integer():
+            raise ValueError("postprocess requires positive integer det_feature_strides entries")
+        stride = int(stride_float)
+        if stride <= 0:
+            raise ValueError("postprocess requires positive integer det_feature_strides entries")
+        strides.append(stride)
+    return strides
+
+
 def _require_prediction_tensor(
     predictions: dict[str, torch.Tensor | list[Any]],
     name: str,
@@ -3699,6 +3717,7 @@ def postprocess_pv26_batch(
         raise ValueError("postprocess requires det_feature_shapes and det_feature_strides metadata")
     if len(feature_shapes) != len(feature_strides):
         raise ValueError("postprocess requires det_feature_shapes and det_feature_strides with matching lengths")
+    feature_strides = _coerce_det_feature_strides(feature_strides)
     batch_size = len(meta)
     det_query_count = _det_query_count_from_feature_shapes(feature_shapes)
     det_pred = _require_prediction_tensor(

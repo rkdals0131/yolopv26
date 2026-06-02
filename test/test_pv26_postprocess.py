@@ -271,6 +271,20 @@ class PV26PostprocessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "det prediction tensor must have shape"):
             postprocess_pv26_batch(predictions, _meta_identity())
 
+    def test_postprocess_rejects_malformed_detector_feature_strides(self) -> None:
+        malformed_stride_cases = [
+            ("zero", [8, 0, 32]),
+            ("bool", [8, True, 32]),
+            ("fractional", [8, 16.5, 32]),
+        ]
+        for case_name, strides in malformed_stride_cases:
+            with self.subTest(case_name=case_name):
+                predictions = _make_prediction_batch()
+                predictions["det_feature_strides"] = strides
+
+                with self.assertRaisesRegex(ValueError, "positive integer det_feature_strides"):
+                    postprocess_pv26_batch(predictions, _meta_identity())
+
     def test_postprocess_rejects_meta_batch_size_mismatch(self) -> None:
         predictions = _make_prediction_batch()
 

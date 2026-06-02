@@ -98,6 +98,96 @@ class AnalyzePV26RunIOTests(unittest.TestCase):
             self.assertEqual(rows[0]["phase_objective_best_epoch"], 1)
             self.assertEqual(rows[0]["phase_objective_best"], 0.1)
 
+    def test_phase_overview_preserves_weights_only_handoff_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "run"
+            phase_dir = run_dir / "phase_2"
+            history_dir = phase_dir / "history"
+            history_dir.mkdir(parents=True)
+            (phase_dir / "summary.json").write_text(
+                json.dumps({"stage": "stage_4_lane_family_finetune"}, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+            )
+            (history_dir / "train_steps.jsonl").write_text(
+                json.dumps(
+                    {
+                        "batch_size": 2,
+                        "trainable": {
+                            "freeze_policy": "heads_only",
+                            "head_training_policy": "lane_family",
+                        },
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (history_dir / "epochs.jsonl").write_text(
+                json.dumps(
+                    {
+                        "epoch": 1,
+                        "selection_metrics": {"phase_objective": 0.42},
+                        "train": {"losses": {"total": {"mean": 3.0}}, "duration_sec": 1.0, "batches": 1},
+                        "val": {
+                            "losses": {"total": {"mean": 2.0}},
+                            "metrics": {},
+                            "duration_sec": 1.0,
+                            "batches": 1,
+                        },
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            top_summary = {
+                "phases": [
+                    {
+                        "name": "lane_handoff",
+                        "stage": "stage_4_lane_family_finetune",
+                        "run_dir": str(phase_dir),
+                        "status": "completed",
+                        "best_epoch": 1,
+                        "best_metric_value": 0.42,
+                        "selection": {"metric_path": "selection_metrics.phase_objective", "mode": "max"},
+                        "weights_only_handoff": {
+                            "checkpoint_path": "/runs/source/phase_1/checkpoints/best.pt",
+                            "load_policy": "shape_aware_partial",
+                            "adapter_load_report": {
+                                "loaded_count": 12,
+                                "skipped_shape_keys": ["adapter.stale"],
+                            },
+                            "heads_load_report": {
+                                "loaded_count": 7,
+                                "skipped_shape_keys": ["heads.lane.location_head.weight"],
+                            },
+                            "checkpoint_metadata": {
+                                "architecture_generation": "pv26-road-marking-v3",
+                                "spec_version": "pv26-loss-spec-v1",
+                            },
+                        },
+                    }
+                ]
+            }
+
+            rows = build_phase_overview_rows(run_dir, build_phase_infos(run_dir, top_summary))
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["weights_only_handoff_checkpoint_path"], "/runs/source/phase_1/checkpoints/best.pt")
+            self.assertEqual(rows[0]["weights_only_handoff_load_policy"], "shape_aware_partial")
+            self.assertEqual(rows[0]["weights_only_handoff_adapter_loaded_count"], 12)
+            self.assertEqual(rows[0]["weights_only_handoff_heads_loaded_count"], 7)
+            self.assertEqual(rows[0]["weights_only_handoff_adapter_skipped_shape_count"], 1)
+            self.assertEqual(rows[0]["weights_only_handoff_heads_skipped_shape_count"], 1)
+            self.assertEqual(
+                rows[0]["weights_only_handoff_checkpoint_metadata.architecture_generation"],
+                "pv26-road-marking-v3",
+            )
+            self.assertEqual(
+                rows[0]["weights_only_handoff_checkpoint_metadata.spec_version"],
+                "pv26-loss-spec-v1",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

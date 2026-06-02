@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -212,6 +213,43 @@ def _coerce_manifest_path(
     return path.resolve()
 
 
+def _coerce_manifest_dataset_counts(manifest: dict[str, Any], *, manifest_path: Path) -> dict[str, int] | None:
+    payload = manifest.get("dataset_counts")
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError(f"final dataset manifest dataset_counts must be an object: {manifest_path}")
+    counts: dict[str, int] = {}
+    for dataset_key, count in payload.items():
+        dataset_name = str(dataset_key).strip()
+        if not dataset_name:
+            raise ValueError(f"final dataset manifest dataset_counts keys must not be empty: {manifest_path}")
+        if isinstance(count, bool):
+            raise ValueError(f"final dataset manifest dataset_counts values must be non-negative integers: {manifest_path}")
+        try:
+            count_int = int(count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"final dataset manifest dataset_counts values must be non-negative integers: {manifest_path}"
+            ) from exc
+        if count_int < 0:
+            raise ValueError(f"final dataset manifest dataset_counts values must be non-negative integers: {manifest_path}")
+        counts[dataset_name] = count_int
+    return counts
+
+
+def _validate_manifest_output_root(manifest: dict[str, Any], *, dataset_root: Path, manifest_path: Path) -> None:
+    payload = manifest.get("output_root")
+    if payload is None:
+        return
+    output_root = Path(str(payload or "").strip()).expanduser().resolve()
+    if output_root != dataset_root:
+        raise ValueError(
+            "final dataset manifest output_root must match dataset root: "
+            f"{output_root} != {dataset_root} ({manifest_path})"
+        )
+
+
 def _apply_final_dataset_manifest(dataset_root: Path, records: list[SampleRecord]) -> list[SampleRecord]:
     manifest_path = dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
     if not manifest_path.is_file():
@@ -222,11 +260,13 @@ def _apply_final_dataset_manifest(dataset_root: Path, records: list[SampleRecord
     rows = manifest.get("samples")
     if not isinstance(rows, list):
         raise ValueError(f"final dataset manifest samples must be a list: {manifest_path}")
+    _validate_manifest_output_root(manifest, dataset_root=dataset_root, manifest_path=manifest_path)
     sample_count = manifest.get("sample_count")
     if sample_count is not None and int(sample_count) != len(rows):
         raise ValueError(
             f"final dataset manifest sample_count must match samples length: {manifest_path}"
         )
+    expected_dataset_counts = _coerce_manifest_dataset_counts(manifest, manifest_path=manifest_path)
 
     record_by_key = {(record.dataset_key, record.split, record.sample_id): record for record in records}
     manifest_keys: set[tuple[str, str, str]] = set()
@@ -291,6 +331,16 @@ def _apply_final_dataset_manifest(dataset_root: Path, records: list[SampleRecord
                 ),
             )
         )
+
+    if expected_dataset_counts is not None:
+        actual_dataset_counts = dict(
+            sorted(Counter(record.dataset_key for record in updated_records).items())
+        )
+        if expected_dataset_counts != actual_dataset_counts:
+            raise ValueError(
+                "final dataset manifest dataset_counts must match samples: "
+                f"{expected_dataset_counts} != {actual_dataset_counts} ({manifest_path})"
+            )
 
     discovered_keys = set(record_by_key)
     if manifest_keys != discovered_keys:
@@ -601,6 +651,29 @@ def _build_det_supervision_policy(dataset_key: str) -> dict[str, Any]:
     }
 
 
+def _assert_runtime_scene_matches_record(scene: dict[str, Any], *, record: SampleRecord) -> None:
+    scene_dataset_key = _coerce_scene_dataset_key(scene, scene_path=record.scene_path)
+    if scene_dataset_key != record.dataset_key:
+        raise ValueError(
+            "scene source.dataset must match discovered record: "
+            f"{scene_dataset_key} != {record.dataset_key} ({record.scene_path})"
+        )
+    source = scene.get("source")
+    source_split = str(source.get("split") if isinstance(source, dict) else "").strip()
+    scene_split = source_split or record.scene_path.parent.name
+    if scene_split != record.split:
+        raise ValueError(
+            "scene source.split must match discovered record: "
+            f"{scene_split} != {record.split} ({record.scene_path})"
+        )
+    image_file_name = _coerce_scene_image_file_name(scene, scene_path=record.scene_path)
+    if image_file_name != record.image_path.name:
+        raise ValueError(
+            "scene image.file_name must match discovered record: "
+            f"{image_file_name} != {record.image_path.name} ({record.scene_path})"
+        )
+
+
 class PV26CanonicalDataset(Dataset):
     def __init__(
         self,
@@ -661,6 +734,7 @@ class PV26CanonicalDataset(Dataset):
             if donor_record.scene_path == current_record.scene_path:
                 continue
             donor_scene = _load_json(donor_record.scene_path)
+            _assert_runtime_scene_matches_record(donor_scene, record=donor_record)
             donor_raw_hw = _coerce_scene_image_hw(donor_scene, scene_path=donor_record.scene_path)
             donor_transform = compute_letterbox_transform(donor_raw_hw)
             donor_stop_lines, donor_valid = _build_geometry_rows(
@@ -689,6 +763,7 @@ class PV26CanonicalDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
         scene = _load_json(record.scene_path)
+        _assert_runtime_scene_matches_record(scene, record=record)
         raw_hw = _coerce_scene_image_hw(scene, scene_path=record.scene_path)
         transform = compute_letterbox_transform(raw_hw)
         image = load_letterboxed_image(record.image_path, transform)

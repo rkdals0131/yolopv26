@@ -369,6 +369,62 @@ class PV26TargetEncoderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "raw batch field length must match image batch size"):
             encode_pv26_batch(batch)
 
+    def test_encode_batch_rejects_raw_image_shape_drift(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["image"] = torch.zeros((1, 3, 320, 800), dtype=torch.float32)
+
+        with self.assertRaisesRegex(ValueError, "raw batch image must be float32"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_raw_image_dtype_drift(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["image"] = torch.zeros((1, 3, 608, 800), dtype=torch.float16)
+
+        with self.assertRaisesRegex(ValueError, "raw batch image must be float32"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_incomplete_source_mask(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=True)
+        del batch["source_mask"][0]["det"]
+
+        with self.assertRaisesRegex(ValueError, "raw source_mask must include required task keys"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_incomplete_valid_mask(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        del batch["valid_mask"][0]["lane"]
+
+        with self.assertRaisesRegex(ValueError, "raw valid_mask must include required task keys"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_tl_attr_source_without_det_source(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["tl_attr"] = True
+        batch["det_targets"][0] = {
+            "boxes_xyxy": torch.zeros((1, 4), dtype=torch.float32),
+            "classes": torch.zeros((1,), dtype=torch.long),
+        }
+        batch["tl_attr_targets"][0] = {
+            "bits": torch.tensor([[1.0, 0.0, 0.0, 1.0]], dtype=torch.float32),
+            "is_traffic_light": torch.ones((1,), dtype=torch.bool),
+            "collapse_reason": ["valid"],
+        }
+        batch["valid_mask"][0]["det"] = torch.ones((1,), dtype=torch.bool)
+        batch["valid_mask"][0]["tl_attr"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw source_mask.tl_attr requires source_mask.det"):
+            encode_pv26_batch(batch)
+
     def test_runtime_prediction_encoding_rejects_meta_length_mismatch(self) -> None:
         from model.data.target_encoder import encode_lane_family_runtime_predictions
 
@@ -656,6 +712,24 @@ class PV26TargetEncoderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "raw lane visibility length must match points"):
             encode_pv26_batch(batch)
 
+    def test_encode_batch_rejects_lane_visibility_outside_loader_range(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["lane"] = True
+        batch["lane_targets"][0]["lanes"] = [
+            {
+                "points_xy": torch.tensor([[10.0, 500.0], [60.0, 100.0]], dtype=torch.float32),
+                "visibility": torch.tensor([1.5, -0.25], dtype=torch.float32),
+                "color": 0,
+                "lane_type": 0,
+            }
+        ]
+        batch["valid_mask"][0]["lane"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw lane visibility must be in \\[0, 1\\]"):
+            encode_pv26_batch(batch)
+
     def test_encode_batch_rejects_lane_points_shape_mismatch(self) -> None:
         from model.data import encode_pv26_batch
 
@@ -699,6 +773,49 @@ class PV26TargetEncoderTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "raw geometry points shape must match"):
             encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_degenerate_valid_roadmark_rows(self) -> None:
+        from model.data import encode_pv26_batch
+
+        malformed_cases = [
+            (
+                "lane",
+                "lanes",
+                {
+                    "points_xy": torch.tensor([[10.0, 100.0], [10.0, 100.0]], dtype=torch.float32),
+                    "visibility": torch.ones((2,), dtype=torch.float32),
+                    "color": 0,
+                    "lane_type": 0,
+                },
+                "valid lane_targets.lanes\\[0\\].points_xy must contain at least 2 unique points",
+            ),
+            (
+                "stop_line",
+                "stop_lines",
+                {"points_xy": torch.tensor([[20.0, 200.0], [20.0, 200.0]], dtype=torch.float32)},
+                "valid lane_targets.stop_lines\\[0\\].points_xy must contain at least 2 unique points",
+            ),
+            (
+                "crosswalk",
+                "crosswalks",
+                {
+                    "points_xy": torch.tensor(
+                        [[30.0, 300.0], [30.0, 300.0], [30.0, 300.0]],
+                        dtype=torch.float32,
+                    )
+                },
+                "valid lane_targets.crosswalks\\[0\\].points_xy must contain at least 3 unique points",
+            ),
+        ]
+        for mask_key, target_key, row, error_message in malformed_cases:
+            with self.subTest(mask_key=mask_key):
+                batch = _minimal_raw_batch(det_source=False)
+                batch["source_mask"][0][mask_key] = True
+                batch["lane_targets"][0][target_key] = [row]
+                batch["valid_mask"][0][mask_key] = torch.ones((1,), dtype=torch.bool)
+
+                with self.assertRaisesRegex(ValueError, error_message):
+                    encode_pv26_batch(batch)
 
     def test_encode_batch_accepts_det_source_false_without_det_supervision_meta(self) -> None:
         from model.data import encode_pv26_batch

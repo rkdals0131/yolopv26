@@ -275,6 +275,46 @@ def _validate_detector_feature_metadata(
         )
 
 
+def _current_raw_head_shape_contract() -> dict[str, list[int]]:
+    from model.engine.spec import build_loss_spec
+
+    spec = build_loss_spec()
+    lane_encoding = spec["heads"]["lane"]["target_encoding"]
+    lane_anchor_count = int(lane_encoding["anchor_rows"])
+    lane_dim = 1 + int(lane_encoding["color_logits"]) + int(lane_encoding["type_logits"]) + 2 * lane_anchor_count
+    stop_line_dim = 1 + int(spec["heads"]["stop_line"]["target_encoding"]["polyline_points"]) * 2
+    crosswalk_dim = 1 + int(spec["heads"]["crosswalk"]["target_encoding"]["sequence_points"]) * 2
+    return {
+        "lane": [int(spec["heads"]["lane"]["query_count"]), lane_dim],
+        "stop_line": [int(spec["heads"]["stop_line"]["query_count"]), stop_line_dim],
+        "crosswalk": [int(spec["heads"]["crosswalk"]["query_count"]), crosswalk_dim],
+    }
+
+
+def _validate_raw_head_metadata_shapes(
+    *,
+    lane_shape: list[int],
+    stop_line_shape: list[int],
+    crosswalk_shape: list[int],
+) -> None:
+    expected = _current_raw_head_shape_contract()
+    actual = {
+        "lane": lane_shape,
+        "stop_line": stop_line_shape,
+        "crosswalk": crosswalk_shape,
+    }
+    violations: list[str] = []
+    for name, shape in actual.items():
+        if len(shape) != 3:
+            violations.append(f"{name} rank={len(shape)} expected 3")
+            continue
+        tail = [int(value) for value in shape[1:]]
+        if tail != expected[name]:
+            violations.append(f"{name} tail={tail} expected {expected[name]}")
+    if violations:
+        raise ValueError("raw head metadata shape mismatch: " + "; ".join(violations))
+
+
 def export_metadata(
     *,
     checkpoint_path: Path,
@@ -302,6 +342,11 @@ def export_metadata(
         tl_attr_shape=tl_attr_shape,
         det_feature_shapes=det_feature_shapes,
         det_feature_strides=det_feature_strides,
+    )
+    _validate_raw_head_metadata_shapes(
+        lane_shape=lane_shape,
+        stop_line_shape=stop_line_shape,
+        crosswalk_shape=crosswalk_shape,
     )
     return {
         "format_version": 2,

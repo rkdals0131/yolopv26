@@ -127,15 +127,43 @@ def transform_from_meta(meta: dict[str, object]) -> LetterboxTransform:
     network_hw = tuple(int(value) for value in meta["network_hw"])
     payload = dict(meta["transform"])
     resized_hw = tuple(int(value) for value in payload["resized_hw"])
+    scale = float(payload["scale"])
+    pad_left = int(payload["pad_left"])
+    pad_top = int(payload["pad_top"])
+    pad_right = int(payload["pad_right"])
+    pad_bottom = int(payload["pad_bottom"])
+    raw_h, raw_w = raw_hw
+    net_h, net_w = network_hw
+    resized_h, resized_w = resized_hw
+    if raw_h <= 0 or raw_w <= 0 or net_h <= 0 or net_w <= 0 or resized_h <= 0 or resized_w <= 0:
+        raise ValueError("letterbox transform dimensions must be positive")
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("letterbox transform scale must be positive and finite")
+    if pad_left < 0 or pad_top < 0 or pad_right < 0 or pad_bottom < 0:
+        raise ValueError("letterbox transform padding must be non-negative")
+    if resized_h + pad_top + pad_bottom != net_h or resized_w + pad_left + pad_right != net_w:
+        raise ValueError("letterbox resized/padding must match network_hw")
+    if resized_h != int(round(raw_h * scale)) or resized_w != int(round(raw_w * scale)):
+        raise ValueError("letterbox resized_hw must match raw_hw and scale")
+    expected = compute_letterbox_transform((raw_h, raw_w), network_hw=(net_h, net_w))
+    if (
+        not math.isclose(scale, expected.scale, rel_tol=1.0e-9, abs_tol=1.0e-9)
+        or pad_left != expected.pad_left
+        or pad_top != expected.pad_top
+        or pad_right != expected.pad_right
+        or pad_bottom != expected.pad_bottom
+        or (resized_h, resized_w) != expected.resized_hw
+    ):
+        raise ValueError("letterbox transform must match raw_hw/network_hw")
     return LetterboxTransform(
-        raw_hw=raw_hw,
-        network_hw=network_hw,
-        scale=float(payload["scale"]),
-        pad_left=int(payload["pad_left"]),
-        pad_top=int(payload["pad_top"]),
-        pad_right=int(payload["pad_right"]),
-        pad_bottom=int(payload["pad_bottom"]),
-        resized_hw=resized_hw,
+        raw_hw=(raw_h, raw_w),
+        network_hw=(net_h, net_w),
+        scale=scale,
+        pad_left=pad_left,
+        pad_top=pad_top,
+        pad_right=pad_right,
+        pad_bottom=pad_bottom,
+        resized_hw=(resized_h, resized_w),
     )
 
 

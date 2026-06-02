@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from common.pv26_schema import TL_BITS
+from common.pv26_schema import OD_CLASS_TO_ID, TL_BITS
 
 from .lane_worker import lane_worker
 from .obstacle_worker import obstacle_worker, prepare_debug_scene_for_overlay
@@ -15,6 +15,7 @@ from ..shared.raw import normalize_text as _normalize_text, safe_slug as _safe_s
 from ..shared.resume import (
     count_held_annotation_reasons as _count_held_annotation_reasons,
     load_existing_scene_output as _load_existing_scene_output,
+    scene_detections_match_labels_det as _scene_detections_match_labels_det,
 )
 from ..shared.scene import sample_id as _sample_id
 from ..shared.summary import counter_to_dict as _counter_to_dict
@@ -69,6 +70,7 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         load_json_fn=load_json,
         expected_dataset_key=task.output_dataset_key,
         expected_split=task.pair.split,
+        expected_image_file_name=f"{sample_id_value}{task.pair.image_path.suffix.lower()}",
     )
     if bundle is None:
         return None
@@ -114,7 +116,7 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         }
         if tasks != expected_tasks or lanes or stop_lines or crosswalks or traffic_lights or traffic_signs:
             return None
-        if bool(detections) != det_path.is_file():
+        if not _scene_detections_match_labels_det(detections, det_path, class_to_id=OD_CLASS_TO_ID):
             return None
     elif task.dataset_kind == "traffic":
         expected_tasks = {
@@ -126,7 +128,7 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         }
         if tasks != expected_tasks or lanes or stop_lines or crosswalks:
             return None
-        if bool(detections) != det_path.is_file():
+        if not _scene_detections_match_labels_det(detections, det_path, class_to_id=OD_CLASS_TO_ID):
             return None
     else:
         return None

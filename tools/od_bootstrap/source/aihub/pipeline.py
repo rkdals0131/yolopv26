@@ -66,6 +66,7 @@ from ..shared.raw import (
     seg_dataset_root as _seg_dataset_root,
 )
 from ..shared.reports import det_class_map_yaml as _det_class_map_yaml
+from ..shared.scene import sample_id as _sample_id
 from ..types import DebugVisOutputs, DebugVisSummaryRow
 
 PIPELINE_VERSION = "pv26-aihub-standardize-v1"
@@ -231,6 +232,19 @@ def _scan_existing_outputs(
     else:
         logger.progress(0, {"pending": 0, "reused": 0}, force=True)
     return summaries, pending_tasks
+
+
+def _reject_duplicate_output_sample_ids(tasks: list[StandardizeTask]) -> None:
+    owners: dict[str, StandardizeTask] = {}
+    for task in tasks:
+        sample_id = _sample_id(task.output_dataset_key, task.pair, safe_slug=_safe_slug)
+        prior = owners.get(sample_id)
+        if prior is not None:
+            raise ValueError(
+                "duplicate source output sample_id "
+                f"{sample_id}: {prior.pair.label_path} and {task.pair.label_path}"
+            )
+        owners[sample_id] = task
 
 
 def _run_pending_standardization(
@@ -581,6 +595,7 @@ def run_standardization(
         StandardizeTask("traffic", OUTPUT_TRAFFIC_KEY, pair, str(output_root))
         for pair in traffic_pairs
     ]
+    _reject_duplicate_output_sample_ids(tasks)
 
     summaries, pending_tasks = _scan_existing_outputs(
         tasks,

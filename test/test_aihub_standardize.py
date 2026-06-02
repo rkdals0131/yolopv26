@@ -421,6 +421,98 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(repaired_scene["detections"], [])
             self.assertFalse(stale_det_path.exists())
 
+    def test_resume_reprocesses_stale_aihub_scene_image_file_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+
+            run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            lane_scene_path = sorted((output_root / "labels_scene").rglob("aihub_lane_seoul*.json"))[0]
+            stale_scene = json.loads(lane_scene_path.read_text(encoding="utf-8"))
+            stale_scene["image"]["file_name"] = "stale.jpg"
+            lane_scene_path.write_text(json.dumps(stale_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+            outputs = run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            datasets = {item["dataset_key"]: item for item in report["datasets"]}
+            repaired_scene = json.loads(lane_scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(datasets["aihub_lane_seoul"]["resume_skipped_count"], 0)
+            self.assertEqual(datasets["aihub_lane_seoul"]["fresh_processed_count"], 1)
+            self.assertEqual(repaired_scene["image"]["file_name"], f"{lane_scene_path.stem}.jpg")
+
+    def test_resume_reprocesses_stale_aihub_det_file_row_count_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+
+            run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            obstacle_scene_path = sorted((output_root / "labels_scene").rglob("aihub_obstacle_seoul*.json"))[0]
+            obstacle_scene = json.loads(obstacle_scene_path.read_text(encoding="utf-8"))
+            det_path = output_root / "labels_det" / obstacle_scene["source"]["split"] / f"{obstacle_scene_path.stem}.txt"
+            det_path.write_text(
+                det_path.read_text(encoding="utf-8") + "0 0.500000 0.500000 0.100000 0.100000\n",
+                encoding="utf-8",
+            )
+
+            outputs = run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            datasets = {item["dataset_key"]: item for item in report["datasets"]}
+            self.assertEqual(datasets["aihub_obstacle_seoul"]["resume_skipped_count"], 1)
+            self.assertEqual(datasets["aihub_obstacle_seoul"]["fresh_processed_count"], 1)
+            self._assert_labels_det_matches_detection_order(obstacle_scene_path, output_root)
+
     def test_parallel_standardize_logs_submit_progress_before_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -450,6 +542,105 @@ class AIHubStandardizationTests(unittest.TestCase):
             logs = log_stream.getvalue()
             self.assertIn("stage=parallel_standardize submit_progress=1/", logs)
             self.assertIn("stage=parallel_standardize waiting_for_results submitted=", logs)
+
+    def test_standardization_holds_non_finite_lane_points_before_scene_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+            image_path = lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / "lane_train_nan.jpg"
+            label_path = lane_root / "Training" / "[라벨]c_lane_train_1" / "lane_train_nan.json"
+
+            self._create_docs_fixture(docs_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+            _make_image(image_path, 1280, 720, "#202020")
+            _write_json(
+                label_path,
+                {
+                    "image": {"file_name": "lane_train_nan.jpg", "image_size": [720, 1280]},
+                    "annotations": [
+                        {
+                            "class": "traffic_lane",
+                            "attributes": [{"code": "lane_color", "value": "white"}],
+                            "category": "polyline",
+                            "data": [{"x": 220, "y": 690}, {"x": float("nan"), "y": 520}, {"x": 260, "y": 360}],
+                        }
+                    ],
+                },
+            )
+
+            outputs = run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+                docs_root=docs_root,
+            )
+
+            conversion_report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            lane_dataset = {item["dataset_key"]: item for item in conversion_report["datasets"]}["aihub_lane_seoul"]
+            self.assertEqual(lane_dataset["processed_samples"], 1)
+            self.assertEqual(lane_dataset["lane_class_counts"], {})
+            self.assertEqual(lane_dataset["held_reason_counts"]["lane_requires_two_points"], 1)
+
+            scene_path = next((output_root / "labels_scene" / "train").glob("aihub_lane_seoul*.json"))
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(scene["tasks"]["has_lane"], 0)
+            self.assertEqual(scene["lanes"], [])
+            self.assertEqual(scene["held_annotations"], [{"raw_class": "traffic_lane", "reason": "lane_requires_two_points"}])
+            det_path = output_root / "labels_det" / "train" / f"{scene_path.stem}.txt"
+            self.assertFalse(det_path.exists())
+
+    def test_standardization_rejects_duplicate_output_sample_ids_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+            for label_stem, image_name in (("lane train dup", "lane_train_dup_a.jpg"), ("lane_train_dup", "lane_train_dup_b.jpg")):
+                _make_image(
+                    lane_root / "Training" / "[원천]c_lane_train_1" / "c_lane_train_1" / image_name,
+                    1280,
+                    720,
+                    "#202020",
+                )
+                _write_json(
+                    lane_root / "Training" / "[라벨]c_lane_train_1" / f"{label_stem}.json",
+                    {
+                        "image": {"file_name": image_name, "image_size": [720, 1280]},
+                        "annotations": [
+                            {
+                                "class": "traffic_lane",
+                                "attributes": [{"code": "lane_color", "value": "white"}],
+                                "category": "polyline",
+                                "data": [{"x": 220, "y": 690}, {"x": 240, "y": 520}],
+                            }
+                        ],
+                    },
+                )
+
+            with self.assertRaisesRegex(ValueError, "duplicate source output sample_id"):
+                run_standardization(
+                    lane_root=lane_root,
+                    obstacle_root=obstacle_root,
+                    traffic_root=traffic_root,
+                    output_root=output_root,
+                    workers=1,
+                    debug_vis_count=0,
+                    docs_root=docs_root,
+                )
 
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")

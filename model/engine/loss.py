@@ -42,8 +42,14 @@ LANE_COLOR_SLICE = slice(1, 1 + LANE_COLOR_DIM)
 LANE_TYPE_SLICE = slice(LANE_COLOR_SLICE.stop, LANE_COLOR_SLICE.stop + LANE_TYPE_DIM)
 LANE_X_SLICE = slice(LANE_TYPE_SLICE.stop, LANE_TYPE_SLICE.stop + LANE_ANCHOR_COUNT)
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
+LANE_QUERY_COUNT = int(SPEC["heads"]["lane"]["query_count"])
+LANE_VECTOR_DIM = 1 + LANE_COLOR_DIM + LANE_TYPE_DIM + 2 * LANE_ANCHOR_COUNT
 STOP_LINE_POINT_COUNT = int(SPEC["heads"]["stop_line"]["target_encoding"]["polyline_points"])
+STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = 1 + STOP_LINE_POINT_COUNT * 2
 CROSSWALK_POINT_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["sequence_points"])
+CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = 1 + CROSSWALK_POINT_COUNT * 2
 STAGE_LOSS_WEIGHTS = {
     stage["name"]: dict(stage["loss_weights"]) for stage in SPEC["training_schedule"]
 }
@@ -179,6 +185,55 @@ def _prediction_reference_tensor(predictions: dict[str, torch.Tensor]) -> torch.
         if isinstance(value, torch.Tensor):
             return value
     raise KeyError("predictions must include at least one tensor payload")
+
+
+def _validate_loss_prediction_contract(
+    predictions: dict[str, Any],
+    encoded: dict[str, Any],
+    *,
+    required_heads: tuple[str, ...],
+) -> None:
+    raw_heads = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
+    missing = [key for key in required_heads if not isinstance(predictions.get(key), torch.Tensor)]
+    if missing:
+        raise ValueError(f"loss predictions missing required tensor heads: {missing}")
+
+    image = encoded.get("image")
+    expected_batch = int(image.shape[0]) if isinstance(image, torch.Tensor) and image.ndim > 0 else None
+    det = predictions.get("det")
+    tl_attr = predictions.get("tl_attr")
+    expected_shapes = {
+        "lane": (LANE_QUERY_COUNT, LANE_VECTOR_DIM),
+        "stop_line": (STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM),
+        "crosswalk": (CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM),
+    }
+    violations: list[str] = []
+    for key in raw_heads:
+        if not isinstance(predictions.get(key), torch.Tensor):
+            continue
+        value = predictions[key]
+        shape = tuple(int(dim) for dim in value.shape)
+        if value.ndim != 3:
+            violations.append(f"{key}={shape} expected rank-3 [B,Q,D]")
+            continue
+        if expected_batch is not None and int(value.shape[0]) != expected_batch:
+            violations.append(f"{key} batch={int(value.shape[0])} expected {expected_batch}")
+
+    if isinstance(det, torch.Tensor) and det.ndim == 3 and int(det.shape[-1]) != 5 + len(OD_CLASSES):
+        violations.append(f"det last_dim={int(det.shape[-1])} expected {5 + len(OD_CLASSES)}")
+    if isinstance(tl_attr, torch.Tensor) and tl_attr.ndim == 3:
+        if isinstance(det, torch.Tensor) and det.ndim == 3 and int(tl_attr.shape[1]) != int(det.shape[1]):
+            violations.append(f"tl_attr queries={int(tl_attr.shape[1])} expected det queries {int(det.shape[1])}")
+        if int(tl_attr.shape[-1]) != len(TL_BITS):
+            violations.append(f"tl_attr last_dim={int(tl_attr.shape[-1])} expected {len(TL_BITS)}")
+    for key, expected_tail in expected_shapes.items():
+        if not isinstance(predictions.get(key), torch.Tensor):
+            continue
+        value = predictions[key]
+        if value.ndim == 3 and tuple(int(dim) for dim in value.shape[1:]) != expected_tail:
+            violations.append(f"{key} tail={tuple(int(dim) for dim in value.shape[1:])} expected {expected_tail}")
+    if violations:
+        raise ValueError("loss prediction shape contract violation: " + "; ".join(violations))
 
 
 def _loss_precision_predictions(predictions: dict[str, Any]) -> dict[str, Any]:
@@ -3888,6 +3943,16 @@ class PV26MultiTaskLoss(nn.Module):
 
     def forward(self, predictions: dict[str, torch.Tensor], encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         predictions = _loss_precision_predictions(predictions)
+        required_heads: list[str] = []
+        if self._detector_losses_enabled():
+            required_heads.extend(("det", "tl_attr"))
+        if self._task_loss_enabled("lane") and "lane_seg_centerline_logits" not in predictions and "lane_row_logits" not in predictions:
+            required_heads.append("lane")
+        if self._task_loss_enabled("stop_line") and "stop_line_mask_logits" not in predictions:
+            required_heads.append("stop_line")
+        if self._task_loss_enabled("crosswalk"):
+            required_heads.append("crosswalk")
+        _validate_loss_prediction_contract(predictions, encoded, required_heads=tuple(required_heads))
         reference_tensor = _prediction_reference_tensor(predictions)
         self.last_det_loss_breakdown = {
             "det_obj_loss": 0.0,

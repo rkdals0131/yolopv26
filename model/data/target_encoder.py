@@ -17,7 +17,7 @@ from common.task_mode import (
     filter_source_mask_for_task_mode,
 )
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES
-from .transform import NETWORK_HW, clip_points, transform_from_meta, transform_points
+from .transform import NETWORK_HW, clip_points, transform_from_meta, transform_points, unique_point_count
 from .roadmark_v2_targets import (
     LANE_CENTERLINE_OUTPUT_HW,
     LANE_ROW_CLASS_OUTPUT_HW,
@@ -54,6 +54,7 @@ LANE_VECTOR_SIZE = LANE_VIS_SLICE.stop
 STOP_LINE_VECTOR_SIZE = 1 + STOP_LINE_POINT_COUNT * 2
 CROSSWALK_VECTOR_SIZE = 1 + CROSSWALK_POINT_COUNT * 2
 LANE_ANCHOR_ROWS = torch.linspace(float(NETWORK_HW[0] - 1), 0.0, LANE_ANCHOR_COUNT, dtype=torch.float32)
+REQUIRED_TASK_MASK_KEYS = ("det", "tl_attr", "lane", "stop_line", "crosswalk")
 
 
 def _as_float_tensor(points: Any) -> torch.FloatTensor:
@@ -212,6 +213,26 @@ def _raise_det_contract_error(sample_meta: Any, batch_index: int, detail: str) -
     raise ValueError(f"det supervision contract violation for {_sample_label(sample_meta, batch_index)}: {detail}")
 
 
+def _assert_task_mask_keys(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    field_name: str,
+    field_value: Any,
+) -> None:
+    if not isinstance(field_value, dict):
+        raise ValueError(
+            f"raw {field_name} must include required task keys for {_sample_label(sample_meta, batch_index)}: "
+            f"got {type(field_value).__name__}"
+        )
+    missing = [key for key in REQUIRED_TASK_MASK_KEYS if key not in field_value]
+    if missing:
+        raise ValueError(
+            f"raw {field_name} must include required task keys for {_sample_label(sample_meta, batch_index)}: "
+            f"missing={missing}"
+        )
+
+
 def _field_outer_length(value: Any) -> int:
     if isinstance(value, torch.Tensor):
         if value.ndim == 0:
@@ -273,6 +294,7 @@ def _assert_geometry_row_points_shape(
     batch_index: int,
     field_name: str,
     points_xy: Any,
+    min_unique_points: int,
 ) -> None:
     points = torch.as_tensor(points_xy, dtype=torch.float32)
     actual_shape = tuple(int(dim) for dim in points.shape)
@@ -286,6 +308,12 @@ def _assert_geometry_row_points_shape(
             f"raw geometry points must be finite for {_sample_label(sample_meta, batch_index)}: "
             f"{field_name}={actual_shape}"
         )
+    unique_points = unique_point_count(points.detach().cpu().tolist())
+    if unique_points < int(min_unique_points):
+        raise ValueError(
+            f"valid {field_name} must contain at least {int(min_unique_points)} unique points "
+            f"for {_sample_label(sample_meta, batch_index)}: unique_points={unique_points}"
+        )
 
 
 def _assert_geometry_collection_points_shape(
@@ -295,6 +323,7 @@ def _assert_geometry_collection_points_shape(
     field_name: str,
     rows: list[dict[str, Any]],
     valid_mask: Any,
+    min_unique_points: int,
 ) -> None:
     valid_tensor = torch.as_tensor(valid_mask, dtype=torch.bool).reshape(-1)
     for row_index, row in enumerate(rows):
@@ -305,6 +334,7 @@ def _assert_geometry_collection_points_shape(
             batch_index=batch_index,
             field_name=f"{field_name}[{row_index}].points_xy",
             points_xy=row.get("points_xy", []),
+            min_unique_points=min_unique_points,
         )
 
 
@@ -366,6 +396,11 @@ def _assert_lane_collection_visibility_shape(
         if not bool(torch.isfinite(visibility).all()):
             raise ValueError(
                 f"raw lane visibility must be finite values for {_sample_label(sample_meta, batch_index)}: "
+                f"lane_targets.lanes[{row_index}].visibility"
+            )
+        if bool(((visibility < 0.0) | (visibility > 1.0)).any()):
+            raise ValueError(
+                f"raw lane visibility must be in [0, 1] for {_sample_label(sample_meta, batch_index)}: "
                 f"lane_targets.lanes[{row_index}].visibility"
             )
 
@@ -487,6 +522,19 @@ def encode_pv26_batch(
     det_targets = batch["det_targets"]
     tl_attr_targets = batch["tl_attr_targets"]
     lane_targets = batch["lane_targets"]
+    expected_image_shape = (3, int(NETWORK_HW[0]), int(NETWORK_HW[1]))
+    if (
+        not isinstance(images, torch.Tensor)
+        or images.dtype != torch.float32
+        or images.ndim != 4
+        or tuple(images.shape[1:]) != expected_image_shape
+    ):
+        raise ValueError(
+            "raw batch image must be float32 "
+            f"[B,{expected_image_shape[0]},{expected_image_shape[1]},{expected_image_shape[2]}]: "
+            f"shape={tuple(images.shape) if isinstance(images, torch.Tensor) else type(images).__name__} "
+            f"dtype={images.dtype if isinstance(images, torch.Tensor) else 'n/a'}"
+        )
     batch_size = int(images.shape[0])
     for field_name, field_value in (
         ("det_targets", det_targets),
@@ -501,10 +549,27 @@ def encode_pv26_batch(
                 "raw batch field length must match image batch size: "
                 f"{field_name}={len(field_value)} batch_size={batch_size}"
             )
-    source_masks = [filter_source_mask_for_task_mode(item, task_mode) for item in batch["source_mask"]]
+    source_masks_raw = batch["source_mask"]
     valid_masks = batch["valid_mask"]
     meta = batch["meta"]
     active_tasks = set(active_tasks_for_mode(task_mode))
+    for batch_index in range(batch_size):
+        sample_meta = meta[batch_index] if batch_index < len(meta) else {}
+        if not isinstance(sample_meta, dict):
+            sample_meta = {}
+        _assert_task_mask_keys(
+            sample_meta=sample_meta,
+            batch_index=batch_index,
+            field_name="source_mask",
+            field_value=source_masks_raw[batch_index],
+        )
+        _assert_task_mask_keys(
+            sample_meta=sample_meta,
+            batch_index=batch_index,
+            field_name="valid_mask",
+            field_value=valid_masks[batch_index],
+        )
+    source_masks = [filter_source_mask_for_task_mode(item, task_mode) for item in source_masks_raw]
 
     for batch_index in range(batch_size):
         sample_meta = meta[batch_index] if batch_index < len(meta) else {}
@@ -615,6 +680,10 @@ def encode_pv26_batch(
         sample_meta = meta[batch_index] if batch_index < len(meta) else {}
         if not isinstance(sample_meta, dict):
             sample_meta = {}
+        if bool(tl_attr_source[batch_index]) and not bool(det_source[batch_index]):
+            raise ValueError(
+                f"raw source_mask.tl_attr requires source_mask.det for {_sample_label(sample_meta, batch_index)}"
+            )
         if bool(det_source[batch_index]):
             class_ids = sample_meta.get("det_supervised_class_ids")
             if not isinstance(class_ids, (list, tuple)):
@@ -676,6 +745,7 @@ def encode_pv26_batch(
             ("stop_lines", "stop_line", "stop_line rows"),
             ("crosswalks", "crosswalk", "crosswalk rows"),
         ):
+            min_unique_points = 3 if target_key == "crosswalks" else 2
             row_count = len(sample_lane[target_key])
             _assert_raw_sample_field_length(
                 sample_meta=sample_meta,
@@ -698,6 +768,7 @@ def encode_pv26_batch(
                 field_name=f"lane_targets.{target_key}",
                 rows=sample_lane[target_key],
                 valid_mask=sample_valid[valid_key],
+                min_unique_points=min_unique_points,
             )
             if target_key == "lanes":
                 _assert_lane_collection_semantic_range(
