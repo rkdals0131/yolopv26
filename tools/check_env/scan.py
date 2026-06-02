@@ -36,6 +36,11 @@ from tools.od_bootstrap.presets import (
     build_teacher_dataset_preset,
     build_teacher_eval_preset,
 )
+from tools.od_bootstrap.source.constants import (
+    AIHUB_LANE_DIRNAME,
+    AIHUB_OBSTACLE_DIRNAME,
+    AIHUB_TRAFFIC_DIRNAME,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEACHER_NAMES = ("mobility", "signal", "obstacle")
@@ -64,6 +69,12 @@ class PipelinePaths:
     user_paths_config_path: Path
     od_hyperparameters_config_path: Path
     pv26_hyperparameters_config_path: Path
+    raw_bdd_images_root: Path | None = None
+    raw_bdd_labels_root: Path | None = None
+    raw_aihub_lane_root: Path | None = None
+    raw_aihub_obstacle_root: Path | None = None
+    raw_aihub_traffic_root: Path | None = None
+    raw_aihub_docs_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -299,10 +310,19 @@ def _resolve_pipeline_paths() -> PipelinePaths:
         nested_get(user_paths, "pv26_train", "run_root"),
         repo_root=REPO_ROOT,
     ) or (REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train").resolve()
+    source_roots = source_preset.roots
+    raw_bdd_root = source_roots.bdd_root.resolve()
+    raw_aihub_root = source_roots.aihub_root.resolve()
+    raw_bdd_images_root = getattr(source_roots, "bdd_images_root", raw_bdd_root / "bdd100k_images_100k" / "100k")
+    raw_bdd_labels_root = getattr(source_roots, "bdd_labels_root", raw_bdd_root / "bdd100k_labels" / "100k")
+    raw_aihub_lane_root = getattr(source_roots, "aihub_lane_root", None) or (raw_aihub_root / AIHUB_LANE_DIRNAME)
+    raw_aihub_obstacle_root = getattr(source_roots, "aihub_obstacle_root", None) or (raw_aihub_root / AIHUB_OBSTACLE_DIRNAME)
+    raw_aihub_traffic_root = getattr(source_roots, "aihub_traffic_root", None) or (raw_aihub_root / AIHUB_TRAFFIC_DIRNAME)
+    raw_aihub_docs_root = getattr(source_roots, "aihub_docs_root", None) or (raw_aihub_root / "docs")
     return PipelinePaths(
         repo_root=REPO_ROOT,
-        raw_bdd_root=source_preset.roots.bdd_root.resolve(),
-        raw_aihub_root=source_preset.roots.aihub_root.resolve(),
+        raw_bdd_root=raw_bdd_root,
+        raw_aihub_root=raw_aihub_root,
         bootstrap_root=source_preset.output_root.resolve(),
         teacher_dataset_root=teacher_dataset_preset.output_root.resolve(),
         teacher_train_root=Path(calibration_preset.teachers[0].checkpoint_path).resolve().parents[2],
@@ -315,6 +335,12 @@ def _resolve_pipeline_paths() -> PipelinePaths:
         user_paths_config_path=USER_PATHS_CONFIG_PATH.resolve(),
         od_hyperparameters_config_path=USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH.resolve(),
         pv26_hyperparameters_config_path=USER_PV26_TRAIN_HYPERPARAMETERS_CONFIG_PATH.resolve(),
+        raw_bdd_images_root=raw_bdd_images_root.resolve(),
+        raw_bdd_labels_root=raw_bdd_labels_root.resolve(),
+        raw_aihub_lane_root=raw_aihub_lane_root.resolve(),
+        raw_aihub_obstacle_root=raw_aihub_obstacle_root.resolve(),
+        raw_aihub_traffic_root=raw_aihub_traffic_root.resolve(),
+        raw_aihub_docs_root=raw_aihub_docs_root.resolve(),
     )
 
 
@@ -406,12 +432,40 @@ def _build_runtime_row(report: dict[str, Any]) -> tuple[StageRow, dict[str, bool
 
 
 def _build_raw_roots_row(paths: PipelinePaths, counts: dict[str, int]) -> tuple[StageRow, dict[str, bool]]:
-    bdd_exists = paths.raw_bdd_root.exists()
-    aihub_exists = paths.raw_aihub_root.exists()
-    verdict = "OK" if bdd_exists and aihub_exists else ("WARN" if bdd_exists or aihub_exists else "FAIL")
+    bdd_exists = paths.raw_bdd_root.is_dir()
+    aihub_exists = paths.raw_aihub_root.is_dir()
+    bdd_images_exists = paths.raw_bdd_images_root.is_dir() if paths.raw_bdd_images_root is not None else bdd_exists
+    bdd_labels_exists = paths.raw_bdd_labels_root.is_dir() if paths.raw_bdd_labels_root is not None else bdd_exists
+    lane_exists = paths.raw_aihub_lane_root.is_dir() if paths.raw_aihub_lane_root is not None else aihub_exists
+    obstacle_exists = paths.raw_aihub_obstacle_root.is_dir() if paths.raw_aihub_obstacle_root is not None else aihub_exists
+    traffic_exists = paths.raw_aihub_traffic_root.is_dir() if paths.raw_aihub_traffic_root is not None else aihub_exists
+    docs_exists = paths.raw_aihub_docs_root.is_dir() if paths.raw_aihub_docs_root is not None else aihub_exists
+    required_ready = (
+        bdd_exists
+        and bdd_images_exists
+        and bdd_labels_exists
+        and aihub_exists
+        and lane_exists
+        and obstacle_exists
+        and traffic_exists
+    )
+    any_present = any(
+        (
+            bdd_exists,
+            bdd_images_exists,
+            bdd_labels_exists,
+            aihub_exists,
+            lane_exists,
+            obstacle_exists,
+            traffic_exists,
+            docs_exists,
+        )
+    )
+    verdict = "OK" if required_ready else ("WARN" if any_present else "FAIL")
     state = (
-        f"BDD root={'O' if bdd_exists else 'X'} | "
-        f"AIHUB root={'O' if aihub_exists else 'X'} | "
+        f"BDD root={'O' if bdd_exists else 'X'} images={'O' if bdd_images_exists else 'X'} labels={'O' if bdd_labels_exists else 'X'} | "
+        f"AIHUB root={'O' if aihub_exists else 'X'} lane={'O' if lane_exists else 'X'} "
+        f"obstacle={'O' if obstacle_exists else 'X'} traffic={'O' if traffic_exists else 'X'} docs={'O' if docs_exists else 'X'} | "
         f"raw BDD={counts.get('bdd_raw', 0)} | "
         f"lane={counts.get('lane_raw', 0)} | "
         f"traffic={counts.get('traffic_raw', 0)} | "
@@ -420,12 +474,12 @@ def _build_raw_roots_row(paths: PipelinePaths, counts: dict[str, int]) -> tuple[
     return (
         StageRow(
             stage="원본 데이터",
-            success_condition="현재 config 기준 BDD100K / AIHUB raw root가 존재",
+            success_condition="현재 config 기준 BDD100K image/label root와 AIHUB lane/obstacle/traffic root가 모두 존재",
             current_state=state,
             verdict=verdict,
         ),
         {
-            "raw_roots": bdd_exists and aihub_exists,
+            "raw_roots": required_ready,
         },
     )
 
@@ -1063,7 +1117,7 @@ def _recommendation(flags: dict[str, bool]) -> str:
     if not flags.get("runtime_core", False):
         return "환경 런타임부터 정리하세요. 학습/평가 계열 메뉴는 잠깁니다."
     if not flags.get("raw_roots", False):
-        return "raw dataset root가 안 맞습니다. H를 눌러 config 위치를 확인하세요."
+        return "raw dataset 세부 root가 안 맞습니다. BDD image/label과 AIHUB lane/obstacle/traffic 경로를 확인하세요."
     if not flags.get("source_prep", False):
         return "1번 source prep부터 시작하는 편이 안전합니다."
     if not flags.get("teacher_dataset.mobility", False):

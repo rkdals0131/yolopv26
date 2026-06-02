@@ -516,7 +516,7 @@ def run_standardization(
     if not traffic_root.is_dir():
         raise FileNotFoundError(f"traffic root does not exist: {traffic_root}")
     if not docs_root.is_dir():
-        raise FileNotFoundError(f"docs root does not exist: {docs_root}")
+        logger.info(f"docs root not found; continuing without source PDF inventory: {docs_root}")
 
     output_root.mkdir(parents=True, exist_ok=True)
     cache_root = output_root / CACHE_DIR_NAME

@@ -21,41 +21,41 @@ od_bootstrap:
     common:
       imgsz: 640
       device: cuda:0
-      workers: 4
+      workers: 8
       pin_memory: true
       persistent_workers: true
-      prefetch_factor: 2
-      patience: 10
+      prefetch_factor: 4
+      patience: 8
       cache: false
       amp: true
       optimizer: auto
       seed: 0
       resume: false
       val: true
-      save_period: 1
-      log_every_n_steps: 10
-      profile_window: 10
+      save_period: 10
+      log_every_n_steps: 20
+      profile_window: 20
       profile_device_sync: true
     mobility:
       model_size: s
       weights: yolo26s.pt
       classes: [vehicle, bike, pedestrian]
-      epochs: 2
-      batch: 8
+      epochs: 40
+      batch: 24
     signal:
       # 필요하면 common.imgsz 대신 teacher별로 override할 수 있다.
       # imgsz: 960
       model_size: s
       weights: yolo26s.pt
       classes: [traffic_light, sign]
-      epochs: 2
-      batch: 8
+      epochs: 32
+      batch: 24
     obstacle:
       model_size: m
       weights: yolo26m.pt
       classes: [traffic_cone, obstacle]
-      epochs: 2
-      batch: 6
+      epochs: 48
+      batch: 12
 
   teacher_eval:
     common:
