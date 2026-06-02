@@ -40,22 +40,22 @@ od_bootstrap:
       model_size: s
       weights: yolo26s.pt
       classes: [vehicle, bike, pedestrian]
-      epochs: 40
-      batch: 24
+      epochs: 38
+      batch: 20
     signal:
       # 필요하면 common.imgsz 대신 teacher별로 override할 수 있다.
       # imgsz: 960
       model_size: s
       weights: yolo26s.pt
       classes: [traffic_light, sign]
-      epochs: 32
-      batch: 24
+      epochs: 27
+      batch: 20
     obstacle:
       model_size: m
       weights: yolo26m.pt
       classes: [traffic_cone, obstacle]
-      epochs: 48
-      batch: 12
+      epochs: 32
+      batch: 10
 
   teacher_eval:
     common:
