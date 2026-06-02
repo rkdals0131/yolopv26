@@ -27,6 +27,7 @@ from tools.od_bootstrap.teacher.runtime import trainer as runtime_trainer
 from tools.od_bootstrap.teacher.runtime.callbacks import TeacherRuntimeSupport
 from tools.od_bootstrap.teacher.runtime.progress import (
     append_jsonl as runtime_append_jsonl,
+    build_rich_progress_bar,
     install_ultralytics_postfix_renderer,
     timestamp_token as runtime_timestamp_token,
 )
@@ -188,6 +189,25 @@ class UltralyticsRunnerTests(unittest.TestCase):
             "\n\033[Kelapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms",
             rendered,
         )
+
+    def test_rich_progress_bar_uses_task_description_without_field_conflict(self) -> None:
+        progress_bar = build_rich_progress_bar(
+            iter([("batch", 1)]),
+            total=1,
+            description="epoch status",
+            enabled=True,
+        )
+        if progress_bar is None:
+            self.skipTest("rich progress backend is unavailable")
+
+        try:
+            self.assertEqual(next(progress_bar), ("batch", 1))
+            progress_bar.set_description("updated epoch status")
+            progress_bar.set_bootstrap_postfix("elapsed=00:01")
+            with self.assertRaises(StopIteration):
+                next(progress_bar)
+        finally:
+            progress_bar.close()
 
     def test_profile_postfix_updates_before_log_interval(self) -> None:
         runtime_params = {

@@ -70,7 +70,7 @@ class RichBootstrapProgressBar:
         self.status = ""
         self.closed = False
         self._progress = Progress(
-            TextColumn("{task.fields[description]}", markup=False),
+            TextColumn("{task.description}", markup=False),
             BarColumn(bar_width=10),
             TaskProgressColumn(),
             TextColumn("  |  "),
@@ -80,7 +80,7 @@ class RichBootstrapProgressBar:
             auto_refresh=True,
         )
         self._progress.start()
-        self._task_id = self._progress.add_task("", total=total, description=self.desc, status=self.status)
+        self._task_id = self._progress.add_task(self.desc, total=total, status=self.status)
 
     def __iter__(self) -> "RichBootstrapProgressBar":
         return self
