@@ -341,8 +341,11 @@ class PV26Heads(nn.Module):
             "det_dim": DET_DIM,
             "tl_attr_dim": TL_ATTR_DIM,
             "lane_queries": LANE_QUERY_COUNT,
+            "lane_dim": LANE_VECTOR_DIM,
             "stop_line_queries": STOP_LINE_QUERY_COUNT,
+            "stop_line_dim": STOP_LINE_VECTOR_DIM,
             "crosswalk_queries": CROSSWALK_QUERY_COUNT,
+            "crosswalk_dim": CROSSWALK_VECTOR_DIM,
             "roadmark_architecture": self.roadmark_architecture,
             "roadmark": roadmark_payload,
         }

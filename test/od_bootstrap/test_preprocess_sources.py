@@ -10,6 +10,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from tools.od_bootstrap import main as od_bootstrap_main
+from tools.od_bootstrap.cli import _load_json as _load_cli_json
 from tools.od_bootstrap.source.prepare import (
     AIHUB_LANE_DIRNAME,
     AIHUB_OBSTACLE_DIRNAME,
@@ -21,6 +22,14 @@ from tools.od_bootstrap.presets import build_default_source_preset
 
 
 class ODBootstrapSourcePrepTests(unittest.TestCase):
+    def test_cli_load_json_rejects_non_mapping_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "payload.json"
+            self._write_text(path, "[]\n")
+
+            with self.assertRaisesRegex(TypeError, "JSON root must be a mapping"):
+                _load_cli_json(path)
+
     def test_prepare_od_bootstrap_sources_calls_existing_canonicalizers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -122,6 +131,7 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             aihub_canonical_root = canonical_root / "aihub_standardized"
             self._make_image(bdd_canonical_root / "images" / "val" / "bdd_val_001.jpg", 64, 48, "#222222")
             self._make_image(aihub_canonical_root / "images" / "val" / "traffic_val_001.png", 64, 48, "#444444")
+            self._make_image(aihub_canonical_root / "images" / "val" / "lane_val_001.png", 64, 48, "#555555")
             self._write_json(
                 bdd_canonical_root / "labels_scene" / "val" / "bdd_val_001.json",
                 {
@@ -140,6 +150,14 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
                     "image": {"file_name": "traffic_val_001.png", "width": 64, "height": 48},
                     "source": {"dataset": "aihub_traffic_seoul", "split": "val"},
                     "traffic_lights": [{"bbox": [20, 5, 28, 18]}],
+                },
+            )
+            self._write_json(
+                aihub_canonical_root / "labels_scene" / "val" / "lane_val_001.json",
+                {
+                    "image": {"file_name": "lane_val_001.png", "width": 64, "height": 48},
+                    "source": {"dataset": "aihub_lane_seoul", "split": "val"},
+                    "lanes": [{"class_name": "white_lane", "points": [[1, 2], [3, 4]]}],
                 },
             )
             self._write_text(
@@ -170,6 +188,39 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             ):
                 result = prepare_od_bootstrap_sources(config)
 
+            image_list_rows = [
+                json.loads(line)
+                for line in result.image_list_manifest_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(
+                sorted(row["dataset_key"] for row in image_list_rows),
+                ["aihub_traffic_seoul", "bdd100k_det_100k"],
+            )
+            self.assertNotIn("aihub_lane_seoul", {row["dataset_key"] for row in image_list_rows})
+            rows_by_key = {row["dataset_key"]: row for row in image_list_rows}
+            self.assertEqual(rows_by_key["bdd100k_det_100k"]["sample_uid"], "bdd100k_det_100k__val__bdd_val_001")
+            self.assertEqual(rows_by_key["bdd100k_det_100k"]["sample_id"], "bdd_val_001")
+            self.assertEqual(rows_by_key["bdd100k_det_100k"]["split"], "val")
+            self.assertEqual(rows_by_key["bdd100k_det_100k"]["source_name"], "bdd100k_det_100k")
+            self.assertEqual(rows_by_key["bdd100k_det_100k"]["dataset_root"], str(bdd_canonical_root.resolve()))
+            self.assertEqual(
+                rows_by_key["bdd100k_det_100k"]["det_path"],
+                str((bdd_canonical_root / "labels_det" / "val" / "bdd_val_001.txt").resolve()),
+            )
+            self.assertEqual(
+                rows_by_key["aihub_traffic_seoul"]["sample_uid"],
+                "aihub_traffic_seoul__val__traffic_val_001",
+            )
+            self.assertEqual(rows_by_key["aihub_traffic_seoul"]["sample_id"], "traffic_val_001")
+            self.assertEqual(rows_by_key["aihub_traffic_seoul"]["split"], "val")
+            self.assertEqual(rows_by_key["aihub_traffic_seoul"]["source_name"], "aihub_standardized")
+            self.assertEqual(rows_by_key["aihub_traffic_seoul"]["dataset_root"], str(aihub_canonical_root.resolve()))
+            self.assertEqual(
+                rows_by_key["aihub_traffic_seoul"]["det_path"],
+                str((aihub_canonical_root / "labels_det" / "val" / "traffic_val_001.txt").resolve()),
+            )
+
             bdd_manifest = json.loads(
                 result.canonical_debug_vis_manifest_paths["bdd100k_det_100k"].read_text(encoding="utf-8")
             )
@@ -178,6 +229,7 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
             )
             self.assertEqual(bdd_manifest["selection_count"], 1)
             self.assertEqual(aihub_manifest["selection_count"], 1)
+            self.assertEqual(aihub_manifest["items"][0]["dataset_key"], "aihub_traffic_seoul")
             bdd_debug_vis_dir = bdd_canonical_root / "meta" / "debug_vis"
             aihub_debug_vis_dir = aihub_canonical_root / "meta" / "debug_vis"
             self.assertEqual(len(sorted(bdd_debug_vis_dir.glob("*.png"))), 1)

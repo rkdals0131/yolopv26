@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -9,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+from common.io import read_json as _load_json
 
 try:
     from PIL import Image
@@ -169,10 +170,6 @@ def _extract_image_size(raw: dict[str, Any], image_path: Path) -> tuple[int, int
     return actual_size
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _infer_split(path: Path) -> str:
     split_map = {
         "train": "train",
@@ -239,6 +236,8 @@ def _discover_pairs(dataset_key: str, dataset_root: Path) -> DiscoveryReport:
 
         split = label_split or split
         candidates = image_candidates.get(filename, [])
+        if split != "unspecified":
+            candidates = [candidate for candidate in candidates if _infer_split(candidate) == split]
         image_path = None
         if candidates:
             image_path = max(candidates, key=lambda candidate: _path_similarity(label_path, candidate))

@@ -16,6 +16,10 @@ repo_root = str(REPO_ROOT)
 if repo_root not in sys.path:
     site.addsitedir(repo_root)
 
+from common.io import iter_jsonl as _iter_common_jsonl
+from common.io import read_json as _read_common_json
+from common.io import write_json
+
 import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
@@ -43,16 +47,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+    payload = _read_common_json(path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"JSON root must be an object: {path}")
+    return payload
 
 
 def iter_jsonl(path: Path) -> Any:
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            raw = line.strip()
-            if not raw:
-                continue
-            yield json.loads(raw)
+    for _, payload in _iter_common_jsonl(path):
+        yield payload
 
 
 def ensure_dir(path: Path) -> None:
@@ -138,6 +141,42 @@ def nested_get(mapping: dict[str, Any], *parts: str, default: Any = "") -> Any:
     if current is None:
         return default
     return current
+
+
+def resolve_metric_path(mapping: dict[str, Any], metric_path: str, *, default: Any = 0.0) -> Any:
+    parts = [part for part in str(metric_path).split(".") if part]
+    if not parts:
+        return default
+    return nested_get(mapping, *parts, default=default)
+
+
+def select_best_epoch(epochs: list[dict[str, Any]], top_entry: dict[str, Any]) -> dict[str, Any]:
+    if not epochs:
+        raise ValueError("phase overview requires at least one epoch row")
+    top_best_epoch = top_entry.get("best_epoch")
+    if top_best_epoch is not None:
+        try:
+            expected_epoch = int(top_best_epoch)
+        except (TypeError, ValueError):
+            expected_epoch = None
+        if expected_epoch is not None:
+            for item in epochs:
+                if int(item.get("epoch", -1)) == expected_epoch:
+                    return item
+
+    metric_path = nested_get(top_entry, "selection", "metric_path", default="")
+    metric_mode = str(nested_get(top_entry, "selection", "mode", default="")).strip().lower()
+    if metric_path:
+        key_fn = lambda item: float(resolve_metric_path(item, str(metric_path), default=0.0) or 0.0)
+        if metric_mode == "min":
+            return min(epochs, key=key_fn)
+        if metric_mode == "max":
+            return max(epochs, key=key_fn)
+
+    return max(
+        epochs,
+        key=lambda item: float(nested_get(item, "selection_metrics", "phase_objective", default=0.0) or 0.0),
+    )
 
 
 def iso_from_timestamp(timestamp: float) -> str:
@@ -292,11 +331,8 @@ def build_phase_overview_rows(run_dir: Path, phase_infos: list[dict[str, Any]]) 
         first_step = next(iter_jsonl(phase["phase_dir"] / "history" / "train_steps.jsonl"))
         first_epoch = epochs[0]
         last_epoch = epochs[-1]
-        best_epoch = max(
-            epochs,
-            key=lambda item: float(nested_get(item, "selection_metrics", "phase_objective", default=0.0) or 0.0),
-        )
         top_entry = phase["top_entry"]
+        best_epoch = select_best_epoch(epochs, top_entry)
         cfg = top_entry.get("phase_train_config", {})
         total_train_duration = sum(float(nested_get(item, "train", "duration_sec", default=0.0) or 0.0) for item in epochs)
         total_val_duration = sum(float(nested_get(item, "val", "duration_sec", default=0.0) or 0.0) for item in epochs)
@@ -796,7 +832,7 @@ def main() -> int:
         output_dir=output_dir,
         generated_files=generated_files,
     )
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    write_json(manifest_path, manifest)
 
     print(json.dumps(manifest, indent=2))
     return 0

@@ -10,7 +10,12 @@ from common.geometry import (
     sample_crosswalk_contour,
     sample_stop_line_centerline,
 )
-from common.task_mode import LANE_FAMILY_TASK_MODE, active_tasks_for_mode, filter_source_mask_for_task_mode
+from common.task_mode import (
+    LANE_FAMILY_TASK_MODE,
+    LANE_ONLY_TASK_MODE,
+    active_tasks_for_mode,
+    filter_source_mask_for_task_mode,
+)
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES
 from .transform import NETWORK_HW, clip_points, transform_from_meta, transform_points
 from .roadmark_v2_targets import (
@@ -207,17 +212,177 @@ def _raise_det_contract_error(sample_meta: Any, batch_index: int, detail: str) -
     raise ValueError(f"det supervision contract violation for {_sample_label(sample_meta, batch_index)}: {detail}")
 
 
+def _field_outer_length(value: Any) -> int:
+    if isinstance(value, torch.Tensor):
+        if value.ndim == 0:
+            return int(value.numel())
+        return int(value.shape[0])
+    return len(value)
+
+
+def _assert_raw_sample_field_length(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    field_name: str,
+    field_value: Any,
+    expected_label: str,
+    expected_length: int,
+) -> None:
+    actual_length = _field_outer_length(field_value)
+    if actual_length != expected_length:
+        raise ValueError(
+            f"raw sample field length must match {expected_label} for {_sample_label(sample_meta, batch_index)}: "
+            f"{field_name}={actual_length} {expected_label}={expected_length}"
+        )
+
+
+def _assert_raw_sample_tensor_shape(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    field_name: str,
+    field_value: Any,
+    expected_shape: tuple[int, ...],
+) -> None:
+    if isinstance(field_value, torch.Tensor):
+        actual_shape = tuple(int(dim) for dim in field_value.shape)
+    else:
+        actual_shape = (type(field_value).__name__,)
+    if actual_shape != expected_shape:
+        raise ValueError(
+            f"raw sample tensor shape must match for {_sample_label(sample_meta, batch_index)}: "
+            f"{field_name}={actual_shape} expected={expected_shape}"
+        )
+
+
+def _assert_tl_bits_binary(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    field_value: Any,
+) -> None:
+    bits = torch.as_tensor(field_value, dtype=torch.float32)
+    if not bool(torch.isfinite(bits).all()) or not bool(((bits == 0.0) | (bits == 1.0)).all()):
+        raise ValueError(f"raw TL bit targets must be finite binary for {_sample_label(sample_meta, batch_index)}")
+
+
+def _assert_geometry_row_points_shape(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    field_name: str,
+    points_xy: Any,
+) -> None:
+    points = torch.as_tensor(points_xy, dtype=torch.float32)
+    actual_shape = tuple(int(dim) for dim in points.shape)
+    if points.ndim != 2 or int(points.shape[1]) != 2:
+        raise ValueError(
+            f"raw geometry points shape must match for {_sample_label(sample_meta, batch_index)}: "
+            f"{field_name}={actual_shape} expected=(N, 2)"
+        )
+    if not bool(torch.isfinite(points).all()):
+        raise ValueError(
+            f"raw geometry points must be finite for {_sample_label(sample_meta, batch_index)}: "
+            f"{field_name}={actual_shape}"
+        )
+
+
+def _assert_geometry_collection_points_shape(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    field_name: str,
+    rows: list[dict[str, Any]],
+    valid_mask: Any,
+) -> None:
+    valid_tensor = torch.as_tensor(valid_mask, dtype=torch.bool).reshape(-1)
+    for row_index, row in enumerate(rows):
+        if row_index >= int(valid_tensor.numel()) or not bool(valid_tensor[row_index]):
+            continue
+        _assert_geometry_row_points_shape(
+            sample_meta=sample_meta,
+            batch_index=batch_index,
+            field_name=f"{field_name}[{row_index}].points_xy",
+            points_xy=row.get("points_xy", []),
+        )
+
+
+def _assert_lane_collection_semantic_range(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    rows: list[dict[str, Any]],
+    valid_mask: Any,
+) -> None:
+    valid_tensor = torch.as_tensor(valid_mask, dtype=torch.bool).reshape(-1)
+    for row_index, row in enumerate(rows):
+        if row_index >= int(valid_tensor.numel()) or not bool(valid_tensor[row_index]):
+            continue
+        for field_name, upper_bound in (("color", LANE_COLOR_DIM), ("lane_type", LANE_TYPE_DIM)):
+            raw_value = row.get(field_name, -1)
+            try:
+                index = int(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"raw lane semantic index must be integer for {_sample_label(sample_meta, batch_index)}: "
+                    f"lane_targets.lanes[{row_index}].{field_name}={raw_value!r}"
+                ) from exc
+            if index < -1 or index >= upper_bound:
+                raise ValueError(
+                    f"raw lane semantic index out of range for {_sample_label(sample_meta, batch_index)}: "
+                    f"lane_targets.lanes[{row_index}].{field_name}={index} expected=[-1,{upper_bound - 1}]"
+                )
+
+
+def _assert_lane_collection_visibility_shape(
+    *,
+    sample_meta: Any,
+    batch_index: int,
+    rows: list[dict[str, Any]],
+    valid_mask: Any,
+) -> None:
+    valid_tensor = torch.as_tensor(valid_mask, dtype=torch.bool).reshape(-1)
+    for row_index, row in enumerate(rows):
+        if row_index >= int(valid_tensor.numel()) or not bool(valid_tensor[row_index]):
+            continue
+        raw_visibility = row.get("visibility")
+        if raw_visibility is None:
+            continue
+        points = torch.as_tensor(row.get("points_xy", []), dtype=torch.float32)
+        try:
+            visibility = torch.as_tensor(raw_visibility, dtype=torch.float32).reshape(-1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"raw lane visibility must be finite values for {_sample_label(sample_meta, batch_index)}: "
+                f"lane_targets.lanes[{row_index}].visibility={raw_visibility!r}"
+            ) from exc
+        if int(visibility.numel()) != int(points.shape[0]):
+            raise ValueError(
+                f"raw lane visibility length must match points for {_sample_label(sample_meta, batch_index)}: "
+                f"lane_targets.lanes[{row_index}].visibility={int(visibility.numel())} "
+                f"points={int(points.shape[0])}"
+            )
+        if not bool(torch.isfinite(visibility).all()):
+            raise ValueError(
+                f"raw lane visibility must be finite values for {_sample_label(sample_meta, batch_index)}: "
+                f"lane_targets.lanes[{row_index}].visibility"
+            )
+
+
 def _encode_lane_rows(
     rows: list[dict[str, Any]],
     valid_mask: torch.BoolTensor,
     source_enabled: bool,
+    *,
+    require_semantics: bool = True,
 ) -> tuple[torch.FloatTensor, torch.BoolTensor]:
     encoded = torch.zeros((LANE_QUERY_COUNT, LANE_VECTOR_SIZE), dtype=torch.float32)
     row_valid = torch.zeros(LANE_QUERY_COUNT, dtype=torch.bool)
     if not source_enabled:
         return encoded, row_valid
 
-    supervised_mask = lane_supervised_valid_mask(rows, valid_mask)
+    supervised_mask = lane_supervised_valid_mask(rows, valid_mask, require_semantics=require_semantics)
     sorted_rows = [
         (source_index, row)
         for source_index, row in sorted(enumerate(rows), key=lambda item: _lane_sort_key(item[1]))
@@ -230,8 +395,10 @@ def _encode_lane_rows(
         anchor_x, anchor_visibility, anchor_hits = _interpolate_lane_anchor_targets(points, visibility, LANE_ANCHOR_ROWS)
         visible_anchor_mask = anchor_hits & (anchor_visibility >= 0.5)
         encoded[query_index, 0] = 1.0
-        encoded[query_index, LANE_COLOR_SLICE.start + color_index] = 1.0
-        encoded[query_index, LANE_TYPE_SLICE.start + lane_type_index] = 1.0
+        if color_index >= 0:
+            encoded[query_index, LANE_COLOR_SLICE.start + color_index] = 1.0
+        if lane_type_index >= 0:
+            encoded[query_index, LANE_TYPE_SLICE.start + lane_type_index] = 1.0
         encoded[query_index, LANE_X_SLICE] = anchor_x
         encoded[query_index, LANE_VIS_SLICE] = visible_anchor_mask.to(dtype=torch.float32)
         row_valid[query_index] = True
@@ -320,12 +487,43 @@ def encode_pv26_batch(
     det_targets = batch["det_targets"]
     tl_attr_targets = batch["tl_attr_targets"]
     lane_targets = batch["lane_targets"]
+    batch_size = int(images.shape[0])
+    for field_name, field_value in (
+        ("det_targets", det_targets),
+        ("tl_attr_targets", tl_attr_targets),
+        ("lane_targets", lane_targets),
+        ("source_mask", batch["source_mask"]),
+        ("valid_mask", batch["valid_mask"]),
+        ("meta", batch["meta"]),
+    ):
+        if len(field_value) != batch_size:
+            raise ValueError(
+                "raw batch field length must match image batch size: "
+                f"{field_name}={len(field_value)} batch_size={batch_size}"
+            )
     source_masks = [filter_source_mask_for_task_mode(item, task_mode) for item in batch["source_mask"]]
     valid_masks = batch["valid_mask"]
     meta = batch["meta"]
     active_tasks = set(active_tasks_for_mode(task_mode))
 
-    batch_size = int(images.shape[0])
+    for batch_index in range(batch_size):
+        sample_meta = meta[batch_index] if batch_index < len(meta) else {}
+        if not isinstance(sample_meta, dict):
+            sample_meta = {}
+        sample_det = det_targets[batch_index]
+        boxes = sample_det["boxes_xyxy"]
+        if isinstance(boxes, torch.Tensor):
+            det_count = int(boxes.shape[0]) if boxes.ndim > 0 else 0
+        else:
+            det_count = 0
+        _assert_raw_sample_tensor_shape(
+            sample_meta=sample_meta,
+            batch_index=batch_index,
+            field_name="det_targets.boxes_xyxy",
+            field_value=boxes,
+            expected_shape=(det_count, 4),
+        )
+
     max_det_gt = max((int(item["boxes_xyxy"].shape[0]) for item in det_targets), default=0)
 
     det_boxes = torch.zeros((batch_size, max_det_gt, 4), dtype=torch.float32)
@@ -441,6 +639,97 @@ def encode_pv26_batch(
             det_allow_unmatched_class_negatives[batch_index] = bool(sample_meta["det_allow_unmatched_class_negatives"])
 
         det_count = int(sample_det["boxes_xyxy"].shape[0])
+        for field_name, field_value in (
+            ("det_targets.classes", sample_det["classes"]),
+            ("valid_mask.det", sample_valid["det"]),
+            ("tl_attr_targets.bits", sample_tl["bits"]),
+            ("valid_mask.tl_attr", sample_valid["tl_attr"]),
+        ):
+            _assert_raw_sample_field_length(
+                sample_meta=sample_meta,
+                batch_index=batch_index,
+                field_name=field_name,
+                field_value=field_value,
+                expected_label="detection boxes",
+                expected_length=det_count,
+            )
+        for optional_field in ("is_traffic_light", "collapse_reason"):
+            if optional_field in sample_tl:
+                _assert_raw_sample_field_length(
+                    sample_meta=sample_meta,
+                    batch_index=batch_index,
+                    field_name=f"tl_attr_targets.{optional_field}",
+                    field_value=sample_tl[optional_field],
+                    expected_label="detection boxes",
+                    expected_length=det_count,
+                )
+        if "is_traffic_light" in sample_tl:
+            _assert_raw_sample_tensor_shape(
+                sample_meta=sample_meta,
+                batch_index=batch_index,
+                field_name="tl_attr_targets.is_traffic_light",
+                field_value=sample_tl["is_traffic_light"],
+                expected_shape=(det_count,),
+            )
+        for target_key, valid_key, expected_label in (
+            ("lanes", "lane", "lane rows"),
+            ("stop_lines", "stop_line", "stop_line rows"),
+            ("crosswalks", "crosswalk", "crosswalk rows"),
+        ):
+            row_count = len(sample_lane[target_key])
+            _assert_raw_sample_field_length(
+                sample_meta=sample_meta,
+                batch_index=batch_index,
+                field_name=f"valid_mask.{valid_key}",
+                field_value=sample_valid[valid_key],
+                expected_label=expected_label,
+                expected_length=row_count,
+            )
+            _assert_raw_sample_tensor_shape(
+                sample_meta=sample_meta,
+                batch_index=batch_index,
+                field_name=f"valid_mask.{valid_key}",
+                field_value=sample_valid[valid_key],
+                expected_shape=(row_count,),
+            )
+            _assert_geometry_collection_points_shape(
+                sample_meta=sample_meta,
+                batch_index=batch_index,
+                field_name=f"lane_targets.{target_key}",
+                rows=sample_lane[target_key],
+                valid_mask=sample_valid[valid_key],
+            )
+            if target_key == "lanes":
+                _assert_lane_collection_semantic_range(
+                    sample_meta=sample_meta,
+                    batch_index=batch_index,
+                    rows=sample_lane[target_key],
+                    valid_mask=sample_valid[valid_key],
+                )
+                _assert_lane_collection_visibility_shape(
+                    sample_meta=sample_meta,
+                    batch_index=batch_index,
+                    rows=sample_lane[target_key],
+                    valid_mask=sample_valid[valid_key],
+                )
+        for field_name, field_value, expected_shape in (
+            ("det_targets.classes", sample_det["classes"], (det_count,)),
+            ("valid_mask.det", sample_valid["det"], (det_count,)),
+            ("tl_attr_targets.bits", sample_tl["bits"], (det_count, 4)),
+            ("valid_mask.tl_attr", sample_valid["tl_attr"], (det_count,)),
+        ):
+            _assert_raw_sample_tensor_shape(
+                sample_meta=sample_meta,
+                batch_index=batch_index,
+                field_name=field_name,
+                field_value=field_value,
+                expected_shape=expected_shape,
+            )
+        _assert_tl_bits_binary(
+            sample_meta=sample_meta,
+            batch_index=batch_index,
+            field_value=sample_tl["bits"],
+        )
         if det_count > 0:
             det_boxes[batch_index, :det_count] = sample_det["boxes_xyxy"].to(dtype=torch.float32)
             det_classes[batch_index, :det_count] = sample_det["classes"].to(dtype=torch.long)
@@ -453,7 +742,7 @@ def encode_pv26_batch(
         lane_supervised_mask = lane_supervised_valid_mask(
             sample_lane["lanes"],
             sample_valid["lane"],
-            require_semantics=task_mode != "lane_only",
+            require_semantics=task_mode != LANE_ONLY_TASK_MODE,
         )
         lane_supervised_count[batch_index] = int(lane_supervised_mask.to(dtype=torch.int64).sum().item())
 
@@ -461,6 +750,7 @@ def encode_pv26_batch(
             sample_lane["lanes"],
             sample_valid["lane"],
             bool(lane_source[batch_index]),
+            require_semantics=task_mode != LANE_ONLY_TASK_MODE,
         )
         lane_encoded[batch_index] = lane_rows
         lane_valid[batch_index] = lane_rows_valid
@@ -637,6 +927,11 @@ def encode_lane_family_runtime_predictions(
 ) -> dict[str, torch.Tensor]:
     """Encode decoded runtime lane-family predictions back into query-vector targets."""
     batch_size = len(predictions)
+    if len(meta) != batch_size:
+        raise ValueError(
+            "runtime prediction batch length must match meta length: "
+            f"predictions={batch_size} meta={len(meta)}"
+        )
     lane_encoded = torch.zeros((batch_size, LANE_QUERY_COUNT, LANE_VECTOR_SIZE), dtype=torch.float32)
     lane_valid = torch.zeros((batch_size, LANE_QUERY_COUNT), dtype=torch.bool)
     stop_line_encoded = torch.zeros((batch_size, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_SIZE), dtype=torch.float32)

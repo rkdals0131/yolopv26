@@ -26,6 +26,11 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
+def _write_text(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+
 class ODBootstrapBuildDebugVisTests(unittest.TestCase):
     def test_generate_canonical_debug_vis_writes_per_dataset_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -71,6 +76,39 @@ class ODBootstrapBuildDebugVisTests(unittest.TestCase):
                 self.assertEqual(manifest["selection_count"], 1)
                 self.assertEqual(manifest["items"][0]["dataset_key"], dataset_key)
                 self.assertTrue(Path(manifest["items"][0]["overlay_path"]).is_file())
+
+    def test_generate_canonical_debug_vis_rejects_non_mapping_scene_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            canonical_root = root / "canonical"
+            dataset_root = canonical_root / "bdd100k_det_100k"
+            image_path = dataset_root / "images" / "train" / "sample.jpg"
+            scene_path = dataset_root / "labels_scene" / "train" / "sample.json"
+            _make_image(image_path, 640, 360, "#111111")
+            _write_text(scene_path, "[]\n")
+            image_list_path = root / "image_list.jsonl"
+            write_image_list(
+                image_list_path,
+                (
+                    ImageListEntry(
+                        sample_id="sample",
+                        sample_uid=build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="sample"),
+                        image_path=image_path,
+                        scene_path=scene_path,
+                        dataset_root=dataset_root,
+                        dataset_key="bdd100k_det_100k",
+                        split="train",
+                    ),
+                ),
+            )
+
+            with self.assertRaisesRegex(TypeError, "scene JSON root must be a mapping"):
+                generate_canonical_debug_vis(
+                    image_list_manifest_path=image_list_path,
+                    canonical_root=canonical_root,
+                    debug_vis_count=1,
+                    debug_vis_seed=7,
+                )
 
     def test_generate_final_dataset_debug_vis_writes_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

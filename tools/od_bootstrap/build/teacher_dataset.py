@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-import json
 from pathlib import Path
 import time
 from typing import Callable, TypedDict
 
 from common.io import now_iso as _now_iso
+from common.io import read_json as _read_json
+from common.io import read_text as _read_text
 from common.io import write_json as _write_json
+from common.io import write_text as _write_text
 from common.pv26_schema import OD_CLASSES
 from .image_list import build_sample_uid
 
@@ -94,6 +96,7 @@ class TeacherDatasetManifestRow(TypedDict):
     sample_uid: str
     source_scene_path: str
     source_image_path: str
+    source_label_path: str
     output_image_path: str
     output_label_path: str
     detection_count: int
@@ -172,6 +175,20 @@ def _iter_scene_paths(source_root: Path) -> list[Path]:
     return sorted(labels_scene_root.rglob("*.json"), key=lambda item: (item.parent.name, item.stem))
 
 
+def _load_scene(scene_path: Path) -> dict:
+    payload = _read_json(scene_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"scene root must be an object: {scene_path}")
+    return payload
+
+
+def _det_label_state_from_tasks(scene: dict) -> bool | None:
+    tasks = scene.get("tasks")
+    if not isinstance(tasks, dict) or "has_det" not in tasks:
+        return None
+    return bool(tasks.get("has_det"))
+
+
 def _validate_positive_int(value: int, *, field_name: str) -> int:
     resolved = int(value)
     if resolved < 1:
@@ -186,9 +203,9 @@ def _discover_teacher_tasks(
     *,
     log_fn: Callable[[str], None] | None,
 ) -> list[TeacherDatasetTask]:
-    seen_samples: set[tuple[str, str]] = set()
-    seen_image_targets: dict[Path, tuple[str, str]] = {}
-    seen_label_targets: dict[Path, tuple[str, str]] = {}
+    seen_samples: set[tuple[str, str, str]] = set()
+    seen_image_targets: dict[Path, tuple[str, str, str]] = {}
+    seen_label_targets: dict[Path, tuple[str, str, str]] = {}
     source_roots = (source_bundle.bdd_root, source_bundle.aihub_root)
     tasks: list[TeacherDatasetTask] = []
 
@@ -200,22 +217,33 @@ def _discover_teacher_tasks(
             )
         matched_count = 0
         for scene_path in scene_paths:
-            scene = json.loads(scene_path.read_text(encoding="utf-8"))
-            source_dataset_key = str(scene.get("source", {}).get("dataset") or "")
+            scene = _load_scene(scene_path)
+            source = scene.get("source") if isinstance(scene.get("source"), dict) else {}
+            source_dataset_key = str(source.get("dataset") or "").strip()
             if source_dataset_key not in resolved_spec.source_dataset_keys:
                 continue
-            split = str(scene.get("source", {}).get("split") or scene_path.parent.name)
+            labels_scene_split = scene_path.parent.name
+            split = str(source.get("split") or labels_scene_split).strip()
+            if split != labels_scene_split:
+                raise ValueError(f"scene source.split must match labels_scene split: {scene_path}")
             sample_id = scene_path.stem
-            sample_key = (source_dataset_key, sample_id)
+            sample_key = (source_dataset_key, split, sample_id)
             if sample_key in seen_samples:
                 continue
             seen_samples.add(sample_key)
 
-            image_file_name = str(scene.get("image", {}).get("file_name") or "")
+            image_file_name = str(scene.get("image", {}).get("file_name") or "").strip()
             if not image_file_name:
                 raise ValueError(f"teacher dataset image.file_name missing: {scene_path}")
+            if Path(image_file_name).is_absolute() or Path(image_file_name).name != image_file_name:
+                raise ValueError(f"{scene_path}.image.file_name must be a file name, not a path")
             image_src = source_root / "images" / split / image_file_name
             label_src = source_root / "labels_det" / split / f"{sample_id}.txt"
+            det_required = _det_label_state_from_tasks(scene)
+            if det_required is True and not label_src.is_file():
+                raise FileNotFoundError(f"teacher dataset det label missing: {label_src} ({scene_path})")
+            if det_required is False and label_src.is_file():
+                raise ValueError(f"teacher dataset stale det label for non-det scene: {label_src} ({scene_path})")
             image_dst = dataset_root / "images" / split / image_file_name
             label_dst = dataset_root / "labels" / split / f"{sample_id}.txt"
 
@@ -266,7 +294,7 @@ def _process_teacher_task(
     filtered_rows: list[str] = []
     class_counts: dict[str, int] = {}
     if task.label_src.is_file():
-        for line in task.label_src.read_text(encoding="utf-8").splitlines():
+        for line in _read_text(task.label_src).splitlines():
             parsed = _parse_det_row(line)
             if parsed is None:
                 continue
@@ -277,8 +305,7 @@ def _process_teacher_task(
             filtered_rows.append(f"{class_to_local_id[class_name]} " + " ".join(f"{value:.6f}" for value in values))
             class_counts[class_name] = class_counts.get(class_name, 0) + 1
 
-    task.label_dst.parent.mkdir(parents=True, exist_ok=True)
-    task.label_dst.write_text(("\n".join(filtered_rows) + "\n") if filtered_rows else "", encoding="utf-8")
+    _write_text(task.label_dst, ("\n".join(filtered_rows) + "\n") if filtered_rows else "")
     manifest_row: TeacherDatasetManifestRow = {
         "teacher_name": teacher_name,
         "source_dataset_key": task.source_dataset_key,
@@ -291,6 +318,7 @@ def _process_teacher_task(
         ),
         "source_scene_path": str(task.scene_path),
         "source_image_path": str(task.image_src),
+        "source_label_path": str(task.label_src),
         "output_image_path": str(task.image_dst),
         "output_label_path": str(task.label_dst),
         "detection_count": len(filtered_rows),

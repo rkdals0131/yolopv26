@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from common.io import read_json
 from common.user_config import (
     USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH,
     USER_PATHS_CONFIG_PATH,
@@ -157,12 +158,15 @@ def _check_yolo26(check_runtime: bool) -> dict[str, Any]:
         "supported": False,
         "version": None,
         "runtime_load_ok": None,
+        "runtime_source_indices": None,
+        "runtime_source_strides": None,
+        "runtime_feature_channels": None,
         "error": None,
     }
     try:
         from model.net.trunk import (
             ULTRALYTICS_VERSION,
-            build_yolo26n_trunk,
+            build_yolo26_roadmark_trunk,
             ensure_yolo26_support,
         )
 
@@ -171,8 +175,19 @@ def _check_yolo26(check_runtime: bool) -> dict[str, Any]:
         ensure_yolo26_support()
         result["supported"] = True
         if check_runtime:
-            adapter = build_yolo26n_trunk()
-            result["runtime_load_ok"] = bool(adapter.detect_head is not None)
+            adapter = build_yolo26_roadmark_trunk()
+            source_indices = tuple(int(value) for value in getattr(adapter, "feature_source_indices", ()))
+            source_strides = tuple(int(value) for value in getattr(adapter, "feature_source_strides", ()))
+            feature_channels = tuple(int(value) for value in getattr(adapter, "resolved_feature_channels", ()))
+            result["runtime_source_indices"] = list(source_indices)
+            result["runtime_source_strides"] = list(source_strides)
+            result["runtime_feature_channels"] = list(feature_channels)
+            result["runtime_load_ok"] = bool(
+                adapter.detect_head is not None
+                and len(source_indices) == 4
+                and len(source_strides) == 4
+                and len(feature_channels) == 4
+            )
     except Exception as exc:
         result["error"] = str(exc)
         if result["runtime_load_ok"] is None:
@@ -200,7 +215,7 @@ def check_env(*, check_yolo_runtime: bool = False) -> dict[str, Any]:
 
 
 def _json_load(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     if not isinstance(payload, dict):
         raise TypeError(f"JSON root must be an object: {path}")
     return payload

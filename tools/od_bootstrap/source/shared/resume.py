@@ -34,6 +34,8 @@ def load_existing_scene_output(
     image_suffix: str,
     load_json_fn: Callable[[Path], dict[str, Any]],
     scene_version: str | None = None,
+    expected_dataset_key: str | None = None,
+    expected_split: str | None = None,
 ) -> dict[str, Any] | None:
     image_path = output_root / "images" / split / f"{sample_id}{image_suffix}"
     scene_path = output_root / "labels_scene" / split / f"{sample_id}.json"
@@ -47,6 +49,12 @@ def load_existing_scene_output(
         return None
 
     if scene_version is not None and str(scene.get("version") or "").strip() != scene_version:
+        return None
+
+    source = scene.get("source") if isinstance(scene.get("source"), dict) else {}
+    if expected_dataset_key is not None and str(source.get("dataset") or "").strip() != expected_dataset_key:
+        return None
+    if expected_split is not None and str(source.get("split") or "").strip() != expected_split:
         return None
 
     return {

@@ -14,7 +14,10 @@ from . import _trainer_fit as _fit
 from . import _trainer_io as _io
 from . import _trainer_step as _step
 from . import trainer_reporting as _reporting
-from .batch import move_batch_to_device
+from .batch import (
+    move_batch_to_device,
+    validate_raw_batch_matches_image,
+)
 from .loss import PV26MultiTaskLoss
 from .multitask_conflict import init_multitask_conflict_state, normalize_multitask_conflict
 from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
@@ -764,6 +767,8 @@ class PV26Trainer:
         if "det_gt" in batch:
             encoded = batch
             raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
+            if raw_batch is not None:
+                validate_raw_batch_matches_image(raw_batch, encoded["image"], context="encoded")
             has_segfirst = isinstance(encoded.get("roadmark_v2"), dict) and "lane_seg_centerline_core" in encoded["roadmark_v2"]
             if include_segfirst and not has_segfirst and raw_batch is not None:
                 encoded = encode_pv26_batch(
@@ -778,7 +783,12 @@ class PV26Trainer:
                 task_mode=task_mode,
                 include_lane_segfirst_targets=include_segfirst,
             )
-        return move_batch_to_device(encoded, self.device, non_blocking=self.device.type == "cuda")
+        raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
+        encoded_payload = {key: value for key, value in encoded.items() if key != "_raw_batch"}
+        moved = move_batch_to_device(encoded_payload, self.device, non_blocking=self.device.type == "cuda")
+        if raw_batch is not None:
+            moved["_raw_batch"] = raw_batch
+        return moved
 
     def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
         features = forward_pyramid_features(self.adapter, encoded["image"])

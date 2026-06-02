@@ -143,6 +143,7 @@ docs/
 - `tools/check_env.py`는 stable thin entrypoint이고, 실제 구현은 `tools/check_env/` 패키지에 둔다.
 - `tools/od_bootstrap/source`는 `aihub/`와 `shared/` 패키지에 실제 구현을 두고, `bdd100k.py` / `prepare.py`가 coordinator 역할을 맡는다.
 - `tools/od_bootstrap/teacher`는 `runtime/` 패키지에 runtime helper family를 두고, `ultralytics_runner.py`는 thin orchestration facade로 유지한다.
+- `tools/modal/`은 Modal A100 dataset archive, volume, remote check, training entrypoint를 담당하며 root-level `modal/` package를 만들지 않는다.
 
 ## 데이터 흐름
 

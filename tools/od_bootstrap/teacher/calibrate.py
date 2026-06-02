@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from contextlib import nullcontext
-import json
 from pathlib import Path
 from typing import Any
 
 import torch
 import yaml
 
-from common.io import now_iso, read_yaml, write_json, write_text
+from common.io import now_iso, read_json, read_text, read_yaml, write_json, write_jsonl, write_text
 
 try:
     from ultralytics import YOLO
@@ -77,7 +75,9 @@ def _resolve_manifest_image_path(*, manifest_path: Path, raw_path: str) -> Path:
 def _load_hard_negative_manifest(path: Path | None) -> dict[str, list[dict[str, Any]]]:
     if path is None or not path.is_file():
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"hard negative manifest root must be a mapping: {path}")
     classes = payload.get("classes") or {}
     if not isinstance(classes, dict):
         raise TypeError("hard negative manifest classes must be a mapping")
@@ -145,7 +145,7 @@ def _load_ground_truth_by_class(
     ground_truth: dict[str, list[list[float]]] = {class_name: [] for class_name in teacher.classes}
     if not label_path.is_file():
         return ground_truth
-    for line in label_path.read_text(encoding="utf-8").splitlines():
+    for line in read_text(label_path).splitlines():
         parts = line.strip().split()
         if len(parts) != 5:
             continue
@@ -164,7 +164,6 @@ def _append_prediction_rows(
     teacher: CalibrationTeacherConfig,
     result: Any,
     samples: dict[str, dict[str, Any]],
-    prediction_stream: Any | None = None,
 ) -> int:
     image_path = Path(str(getattr(result, "path", ""))).resolve()
     sample_id = image_path.stem
@@ -212,8 +211,6 @@ def _append_prediction_rows(
         }
         sample_record["predictions"].append(row)
         appended += 1
-        if prediction_stream is not None:
-            prediction_stream.write(json.dumps(row, ensure_ascii=True) + "\n")
     sample_record["raw_prediction_count"] = len(sample_record["predictions"])
     return appended
 
@@ -241,47 +238,49 @@ def _run_teacher_predictions_for_images(
     log_every_images = max(batch_size * 50, 500)
     if log_fn is not None:
         log_fn(f"teacher={teacher.name} predict start images={total_images} batch={batch_size}")
-    stream_context = (
-        predictions_path.open("w", encoding="utf-8")
-        if predictions_path is not None
-        else nullcontext(None)
-    )
-    with stream_context as prediction_stream:
-        effective_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
-        for batch_start in range(0, total_images, batch_size):
-            batch = ordered_images[batch_start : batch_start + batch_size]
-            batch_prediction_count = 0
-            for result in model.predict(
-                source=[str(path) for path in batch],
-                imgsz=effective_imgsz,
-                device=scenario.run.device,
-                conf=scenario.run.predict_conf,
-                iou=scenario.run.predict_iou,
-                verbose=False,
-                save=False,
-                stream=True,
-            ):
-                batch_prediction_count += _append_prediction_rows(
-                    teacher=teacher,
-                    result=result,
-                    samples=samples,
-                    prediction_stream=prediction_stream,
-                )
-            processed_images += len(batch)
-            prediction_count += batch_prediction_count
-            if (
-                log_fn is not None
-                and (
-                    processed_images == total_images
-                    or processed_images == len(batch)
-                    or processed_images - last_logged >= log_every_images
-                )
-            ):
-                last_logged = processed_images
-                log_fn(
-                    f"teacher={teacher.name} predict progress {processed_images}/{total_images} "
-                    f"images predictions={prediction_count}"
-                )
+    effective_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
+    for batch_start in range(0, total_images, batch_size):
+        batch = ordered_images[batch_start : batch_start + batch_size]
+        batch_prediction_count = 0
+        for result in model.predict(
+            source=[str(path) for path in batch],
+            imgsz=effective_imgsz,
+            device=scenario.run.device,
+            conf=scenario.run.predict_conf,
+            iou=scenario.run.predict_iou,
+            verbose=False,
+            save=False,
+            stream=True,
+        ):
+            batch_prediction_count += _append_prediction_rows(
+                teacher=teacher,
+                result=result,
+                samples=samples,
+            )
+        processed_images += len(batch)
+        prediction_count += batch_prediction_count
+        if (
+            log_fn is not None
+            and (
+                processed_images == total_images
+                or processed_images == len(batch)
+                or processed_images - last_logged >= log_every_images
+            )
+        ):
+            last_logged = processed_images
+            log_fn(
+                f"teacher={teacher.name} predict progress {processed_images}/{total_images} "
+                f"images predictions={prediction_count}"
+            )
+    if predictions_path is not None:
+        write_jsonl(
+            predictions_path,
+            (
+                row
+                for sample in samples.values()
+                for row in sample["predictions"]
+            ),
+        )
     return prediction_count, samples
 
 

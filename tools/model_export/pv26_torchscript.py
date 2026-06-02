@@ -41,7 +41,9 @@ DEFAULT_LANE_TYPES = [
     "dotted",
 ]
 YOLO26_VARIANT_BY_HEAD_CHANNELS = {
+    (64, 64, 128, 256): "n",
     (64, 128, 256): "n",
+    (128, 128, 256, 512): "s",
     (128, 256, 512): "s",
 }
 
@@ -114,19 +116,22 @@ def import_pv26_symbols() -> tuple[Any, Any, Any]:
 
     try:
         from model.net import PV26Heads
-        from model.net import build_yolo26n_trunk
-        from model.engine._loss_spec import build_loss_spec
+        from model.net import build_yolo26_roadmark_trunk
+        from model.engine.spec import build_loss_spec
 
-        return PV26Heads, build_loss_spec, build_yolo26n_trunk
+        return PV26Heads, build_loss_spec, build_yolo26_roadmark_trunk
     except Exception as exc:
         errors.append(f"current layout import failed: {exc}")
 
     try:
         from model.heads import PV26Heads
         from model.loss.spec import build_loss_spec
-        from model.trunk import build_yolo26n_trunk
+        try:
+            from model.trunk import build_yolo26_roadmark_trunk
+        except ImportError:
+            from model.trunk import build_yolo26n_trunk as build_yolo26_roadmark_trunk
 
-        return PV26Heads, build_loss_spec, build_yolo26n_trunk
+        return PV26Heads, build_loss_spec, build_yolo26_roadmark_trunk
     except Exception as exc:
         errors.append(f"legacy layout import failed: {exc}")
 
@@ -146,7 +151,7 @@ def resolve_default_checkpoint(repo_root: Path) -> Path:
     return candidates[0].resolve()
 
 
-def infer_backbone_variant_from_head_channels(head_channels: tuple[int, int, int]) -> str | None:
+def infer_backbone_variant_from_head_channels(head_channels: tuple[int, ...]) -> str | None:
     normalized = tuple(int(value) for value in head_channels)
     return YOLO26_VARIANT_BY_HEAD_CHANNELS.get(normalized)
 
@@ -181,15 +186,16 @@ def resolve_trunk_weights(
     return candidate
 
 
-def infer_head_channels(heads_state_dict: dict[str, Any]) -> tuple[int, int, int]:
-    channels: list[int] = []
+def infer_head_channels(heads_state_dict: dict[str, Any]) -> tuple[int, int, int, int]:
+    det_channels: list[int] = []
     for index in range(3):
         key = f"det_heads.{index}.block.0.weight"
         weight = heads_state_dict.get(key)
         if weight is None or not hasattr(weight, "shape") or len(weight.shape) != 4:
             raise KeyError(f"checkpoint missing {key}")
-        channels.append(int(weight.shape[1]))
-    return tuple(channels)  # type: ignore[return-value]
+        det_channels.append(int(weight.shape[1]))
+    p2_channels = det_channels[0]
+    return (p2_channels, *det_channels)
 
 
 def letterbox_example_image(image_bgr: np.ndarray, *, input_height: int, input_width: int) -> torch.Tensor:
@@ -243,6 +249,32 @@ def tensor_report(name: str, eager: torch.Tensor, scripted: torch.Tensor, *, ato
     )
 
 
+def _validate_detector_feature_metadata(
+    *,
+    det_shape: list[int],
+    tl_attr_shape: list[int],
+    det_feature_shapes: list[list[int]],
+    det_feature_strides: list[int],
+) -> None:
+    if len(det_shape) < 2 or len(tl_attr_shape) < 2:
+        raise ValueError("detector feature metadata requires det and tl_attr batch/query dimensions")
+    if len(det_feature_shapes) != len(det_feature_strides):
+        raise ValueError("detector feature metadata shape/stride count mismatch")
+    query_count = 0
+    for shape in det_feature_shapes:
+        if len(shape) != 2:
+            raise ValueError("detector feature metadata shapes must be [height, width]")
+        height, width = int(shape[0]), int(shape[1])
+        if height <= 0 or width <= 0:
+            raise ValueError("detector feature metadata shapes must be positive")
+        query_count += height * width
+    if query_count != int(det_shape[1]) or query_count != int(tl_attr_shape[1]):
+        raise ValueError(
+            "detector feature metadata query count mismatch: "
+            f"feature_queries={query_count} det_rows={int(det_shape[1])} tl_attr_rows={int(tl_attr_shape[1])}"
+        )
+
+
 def export_metadata(
     *,
     checkpoint_path: Path,
@@ -265,6 +297,12 @@ def export_metadata(
     verification: list[ExportVerification],
     checkpoint_metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    _validate_detector_feature_metadata(
+        det_shape=det_shape,
+        tl_attr_shape=tl_attr_shape,
+        det_feature_shapes=det_feature_shapes,
+        det_feature_strides=det_feature_strides,
+    )
     return {
         "format_version": 2,
         "artifact_type": "pv26_torchscript_raw_heads",
@@ -295,17 +333,17 @@ def export_metadata(
             "lane": {
                 "shape": ["batch"] + lane_shape[1:],
                 "dtype": "float32",
-                "format": "score_lane_class_lane_type_polyline_visibility",
+                "format": "score_lane_class_lane_type_anchor_row_x_visibility",
             },
             "stop_line": {
                 "shape": ["batch"] + stop_line_shape[1:],
                 "dtype": "float32",
-                "format": "score_endpoints_width",
+                "format": "score_polyline_4_points_xy",
             },
             "crosswalk": {
                 "shape": ["batch"] + crosswalk_shape[1:],
                 "dtype": "float32",
-                "format": "score_quad",
+                "format": "score_contour_16_points_xy",
             },
         },
         "od_classes": od_classes,
@@ -362,7 +400,7 @@ def export_pv26_torchscript(
     ensure_writable_output(output_path, overwrite=overwrite)
     ensure_writable_output(meta_path, overwrite=overwrite)
     setup_pv26_imports(repo_root)
-    PV26Heads, build_loss_spec, build_yolo26n_trunk = import_pv26_symbols()
+    PV26Heads, build_loss_spec, build_yolo26_roadmark_trunk = import_pv26_symbols()
 
     device = resolve_torch_device(device_name)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -384,7 +422,7 @@ def export_pv26_torchscript(
         checkpoint_variant=checkpoint_variant,
     )
 
-    adapter = build_yolo26n_trunk(str(resolved_trunk_weights))
+    adapter = build_yolo26_roadmark_trunk(weights=str(resolved_trunk_weights))
     try:
         adapter.raw_model.load_state_dict(checkpoint["adapter_state_dict"])
     except RuntimeError as exc:
@@ -418,19 +456,20 @@ def export_pv26_torchscript(
         eager_out = wrapper(example_input)
 
     feature_shapes = [[int(feature.shape[-2]), int(feature.shape[-1])] for feature in feature_maps]
-    if len(feature_shapes) != 3:
-        raise RuntimeError(f"expected 3 pyramid feature maps, got {len(feature_shapes)}")
-    feature_strides = [int(value) for value in getattr(heads, "feature_strides", (8, 16, 32))]
-    if len(feature_strides) != len(feature_shapes):
+    if len(feature_shapes) != 4:
+        raise RuntimeError(f"expected 4 pyramid feature maps, got {len(feature_shapes)}")
+    det_feature_shapes = feature_shapes[1:]
+    feature_strides = [int(value) for value in getattr(heads, "det_feature_strides", (8, 16, 32))]
+    if len(feature_strides) != len(det_feature_shapes):
         raise RuntimeError(
             "feature stride count does not match feature map count: "
-            f"shapes={feature_shapes} strides={feature_strides}"
+            f"shapes={det_feature_shapes} strides={feature_strides}"
         )
-    expected_det_rows = sum(int(height) * int(width) for height, width in feature_shapes)
+    expected_det_rows = sum(int(height) * int(width) for height, width in det_feature_shapes)
     if expected_det_rows != int(eager_out[0].shape[1]):
         raise RuntimeError(
             "detector query count does not match feature metadata: "
-            f"queries={int(eager_out[0].shape[1])} feature_shapes={feature_shapes}"
+            f"queries={int(eager_out[0].shape[1])} feature_shapes={det_feature_shapes}"
         )
 
     scripted = torch.jit.trace(wrapper, example_input, strict=False, check_trace=False)
@@ -469,7 +508,7 @@ def export_pv26_torchscript(
         tl_bits=tl_bits or list(DEFAULT_TL_BITS),
         lane_classes=lane_classes,
         lane_types=lane_types,
-        det_feature_shapes=feature_shapes,
+        det_feature_shapes=det_feature_shapes,
         det_feature_strides=feature_strides,
         example_info=example_info,
         verification=verification,

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
-from sdk_import import modal
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from constants import (
+from tools.modal.sdk_import import modal
+
+from tools.modal.constants import (
     APP_NAME,
     DATASET_ARCHIVE_IN_VOLUME,
     DATA_VOLUME_MOUNT,
@@ -25,7 +30,7 @@ from constants import (
 
 
 def _image() -> modal.Image:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = REPO_ROOT
     return (
         modal.Image.debian_slim(python_version="3.10")
         .apt_install("git", "zstd", "libgl1", "libglib2.0-0")
@@ -39,7 +44,7 @@ data_volume = modal.Volume.from_name(DATA_VOLUME_NAME, create_if_missing=True)
 runs_volume = modal.Volume.from_name(RUNS_VOLUME_NAME, create_if_missing=True)
 
 
-from dataset_archive import extract_archive, verify_archive_contract, verify_layout
+from tools.modal.dataset_archive import extract_archive, verify_archive_contract, verify_layout
 
 
 def _log(message: str) -> None:

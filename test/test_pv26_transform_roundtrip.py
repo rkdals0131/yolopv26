@@ -58,6 +58,19 @@ class PV26TransformRoundtripTests(unittest.TestCase):
                 self.assertLessEqual(transform.resized_hw[0], network_hw[0])
                 self.assertLessEqual(transform.resized_hw[1], network_hw[1])
 
+    def test_compute_letterbox_transform_rejects_nonpositive_dimensions(self) -> None:
+        invalid_pairs = (
+            ((0, 1280), (608, 800)),
+            ((720, 0), (608, 800)),
+            ((-1, 1280), (608, 800)),
+            ((720, 1280), (0, 800)),
+            ((720, 1280), (608, -1)),
+        )
+        for raw_hw, network_hw in invalid_pairs:
+            with self.subTest(raw_hw=raw_hw, network_hw=network_hw):
+                with self.assertRaisesRegex(ValueError, "letterbox dimensions must be positive"):
+                    compute_letterbox_transform(raw_hw, network_hw=network_hw)
+
     def test_transform_from_meta_roundtrip_preserves_letterbox_fields(self) -> None:
         transform = compute_letterbox_transform((720, 1280), network_hw=(608, 800))
         restored = transform_from_meta(

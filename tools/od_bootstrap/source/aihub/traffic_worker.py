@@ -235,6 +235,10 @@ def traffic_worker(task: StandardizeTask) -> dict[str, Any]:
     if det_lines:
         det_path = output_root / "labels_det" / pair.split / f"{scene_sample_id}.txt"
         write_text(det_path, "\n".join(det_lines) + "\n")
+    else:
+        stale_det_path = output_root / "labels_det" / pair.split / f"{scene_sample_id}.txt"
+        if stale_det_path.exists():
+            stale_det_path.unlink()
 
     return {
         "dataset_key": task.output_dataset_key,

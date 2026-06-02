@@ -20,13 +20,13 @@ from .shared.parallel import (
     iter_task_chunks as _iter_task_chunks,
     parallel_chunk_size as _parallel_chunk_size,
 )
-from .shared.raw import env_path as _env_path, now_iso as _now_iso, probe_image_size as _probe_image_size, repo_root as _repo_root, safe_slug as _safe_slug, seg_dataset_root as _seg_dataset_root
+from .shared.raw import env_path as _env_path, now_iso as _now_iso, repo_root as _repo_root, safe_slug as _safe_slug, seg_dataset_root as _seg_dataset_root
 from .shared.resume import (
     count_held_annotation_reasons as _count_held_annotation_reasons,
     load_existing_scene_output as _load_existing_scene_output,
 )
 from .shared.reports import det_class_map_yaml as _det_class_map_yaml
-from .shared.scene import bbox_to_yolo_line as _bbox_to_yolo_line
+from .shared.scene import bbox_to_yolo_line as _bbox_to_yolo_line, build_base_scene as _build_base_scene
 from .shared.source_meta import (
     bdd_readme as _bdd_readme,
     bdd_source_inventory_markdown as _source_inventory_markdown,
@@ -250,7 +250,14 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
     output_image_path = output_root / "images" / pair.split / f"{sample_id}{pair.image_path.suffix.lower()}"
     image_materialization = _link_or_copy(pair.image_path, output_image_path)
 
-    width, height = _probe_image_size(pair.image_path)
+    width, height, scene = _build_base_scene(
+        OUTPUT_DATASET_KEY,
+        pair,
+        raw,
+        output_image_path,
+        scene_version=SCENE_VERSION,
+    )
+    scene["source"]["raw_name"] = raw.get("name")
     top_attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
     frames = raw.get("frames") if isinstance(raw.get("frames"), list) else []
     frame = frames[0] if frames else {}
@@ -320,56 +327,47 @@ def _worker_entry(task: BDDTask) -> dict[str, Any]:
         det_class_counts[mapped_class] += 1
         det_lines.append(_bbox_to_yolo_line(OD_CLASS_TO_ID[mapped_class], bbox, width, height))
 
-    scene = {
-        "version": SCENE_VERSION,
-        "image": {
-            "file_name": output_image_path.name,
-            "width": width,
-            "height": height,
-            "original_file_name": pair.image_file_name,
-        },
-        "source": {
-            "dataset": OUTPUT_DATASET_KEY,
-            "raw_id": pair.relative_id,
-            "split": pair.split,
-            "image_path": str(pair.image_path),
-            "label_path": str(pair.label_path),
-            "raw_name": raw.get("name"),
-        },
-        "context": {
-            "weather": top_attributes.get("weather"),
-            "scene": top_attributes.get("scene"),
-            "timeofday": top_attributes.get("timeofday"),
-            "timestamp": frame.get("timestamp"),
-        },
-        "tasks": {
-            "has_det": int(bool(detections)),
-            "has_lane": 0,
-            "has_stop_line": 0,
-            "has_crosswalk": 0,
-            "has_tl_attr": 0,
-        },
-        "detections": detections,
-        "traffic_lights": traffic_lights,
-        "traffic_signs": traffic_signs,
-        "auxiliary_annotations": [],
-        "lanes": [],
-        "stop_lines": [],
-        "crosswalks": [],
-        "ignored_regions": [],
-        "held_annotations": held_annotations,
-        "notes": [
-            "BDD100K is standardized as a detector-only source for PV26.",
-            "BDD canonical output intentionally excludes traffic-light and sign supervision.",
-            "Lane and area categories are intentionally excluded from the detector canonical set.",
-        ],
-    }
+    scene.update(
+        {
+            "context": {
+                "weather": top_attributes.get("weather"),
+                "scene": top_attributes.get("scene"),
+                "timeofday": top_attributes.get("timeofday"),
+                "timestamp": frame.get("timestamp"),
+            },
+            "tasks": {
+                "has_det": int(bool(detections)),
+                "has_lane": 0,
+                "has_stop_line": 0,
+                "has_crosswalk": 0,
+                "has_tl_attr": 0,
+            },
+            "detections": detections,
+            "traffic_lights": traffic_lights,
+            "traffic_signs": traffic_signs,
+            "auxiliary_annotations": [],
+            "lanes": [],
+            "stop_lines": [],
+            "crosswalks": [],
+            "ignored_regions": [],
+            "held_annotations": held_annotations,
+            "notes": [
+                "BDD100K is standardized as a detector-only source for PV26.",
+                "BDD canonical output intentionally excludes traffic-light and sign supervision.",
+                "Lane and area categories are intentionally excluded from the detector canonical set.",
+            ],
+        }
+    )
 
     scene_path = output_root / "labels_scene" / pair.split / f"{sample_id}.json"
     _write_json(scene_path, scene)
     if det_lines:
         det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
         _write_text(det_path, "\n".join(det_lines) + "\n")
+    else:
+        stale_det_path = output_root / "labels_det" / pair.split / f"{sample_id}.txt"
+        if stale_det_path.exists():
+            stale_det_path.unlink()
 
     return {
         "dataset_key": OUTPUT_DATASET_KEY,
@@ -421,6 +419,8 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
         image_suffix=pair.image_path.suffix.lower(),
         load_json_fn=_load_json,
         scene_version=SCENE_VERSION,
+        expected_dataset_key=OUTPUT_DATASET_KEY,
+        expected_split=pair.split,
     )
     if bundle is None:
         return None
@@ -429,12 +429,29 @@ def _existing_output_summary(task: BDDTask) -> dict[str, Any] | None:
     det_path = bundle["det_path"]
     scene = bundle["scene"]
 
-    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
-    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
-    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else None
+    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else None
+    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else None
+    lanes = scene.get("lanes") if isinstance(scene.get("lanes"), list) else None
+    stop_lines = scene.get("stop_lines") if isinstance(scene.get("stop_lines"), list) else None
+    crosswalks = scene.get("crosswalks") if isinstance(scene.get("crosswalks"), list) else None
+    tasks = scene.get("tasks") if isinstance(scene.get("tasks"), dict) else None
+    if any(value is None for value in (detections, traffic_lights, traffic_signs, lanes, stop_lines, crosswalks, tasks)):
+        return None
     if traffic_lights or traffic_signs:
         return None
-    if detections and not det_path.is_file():
+    expected_tasks = {
+        "has_det": int(bool(detections)),
+        "has_lane": 0,
+        "has_stop_line": 0,
+        "has_crosswalk": 0,
+        "has_tl_attr": 0,
+    }
+    if tasks != expected_tasks:
+        return None
+    if lanes or stop_lines or crosswalks:
+        return None
+    if bool(detections) != det_path.is_file():
         return None
 
     det_class_counts = Counter()

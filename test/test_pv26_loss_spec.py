@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from common.pv26_schema import OD_CLASSES, TL_BITS
 from model.engine.loss import build_loss_spec, render_loss_spec_markdown
 
 
@@ -65,6 +66,12 @@ class PV26LossSpecTests(unittest.TestCase):
         self.assertIn("traffic_light", markdown)
         self.assertIn("stage_3_end_to_end_finetune", markdown)
         self.assertIn("stage_4_lane_family_finetune", markdown)
+
+    def test_loss_spec_tracks_shared_schema_classes(self) -> None:
+        spec = build_loss_spec()
+
+        self.assertEqual(tuple(spec["model_contract"]["od_classes"]), OD_CLASSES)
+        self.assertEqual(tuple(spec["model_contract"]["tl_bits"]), TL_BITS)
 
     def test_build_loss_spec_returns_fresh_nested_mutables(self) -> None:
         spec = build_loss_spec()

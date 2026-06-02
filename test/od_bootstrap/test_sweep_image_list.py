@@ -5,10 +5,140 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.od_bootstrap.build.image_list import ImageListEntry, build_sample_uid, load_image_list, write_image_list
+from tools.od_bootstrap.build.image_list import (
+    ImageListEntry,
+    build_sample_uid,
+    discover_image_list_entries,
+    load_image_list,
+    write_image_list,
+)
 
 
 class ODBootstrapImageListTests(unittest.TestCase):
+    def test_discover_image_list_entries_rejects_non_object_scene_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "bad.json"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.write_text("[]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(TypeError, "scene root must be an object"):
+                discover_image_list_entries([root], allowed_dataset_keys={"bdd100k_det_100k"})
+
+    def test_discover_image_list_entries_rejects_source_split_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path = root / "images" / "val" / "sample.jpg"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "val"},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.split must match labels_scene split"):
+                discover_image_list_entries([root], allowed_dataset_keys={"bdd100k_det_100k"})
+
+    def test_discover_image_list_entries_rejects_image_file_name_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "../sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "image.file_name must be a file name"):
+                discover_image_list_entries([root], allowed_dataset_keys={"bdd100k_det_100k"})
+
+    def test_discover_image_list_entries_rejects_missing_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "missing.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "image_list image not found"):
+                discover_image_list_entries([root], allowed_dataset_keys={"bdd100k_det_100k"})
+
+    def test_discover_image_list_entries_rejects_missing_det_label_when_scene_requires_det(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path = root / "images" / "train" / "sample.jpg"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "tasks": {"has_det": 1},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "image_list det label not found"):
+                discover_image_list_entries([root], allowed_dataset_keys={"bdd100k_det_100k"})
+
+    def test_discover_image_list_entries_rejects_stale_det_label_when_scene_has_no_det(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scene_path = root / "labels_scene" / "train" / "sample.json"
+            image_path = root / "images" / "train" / "sample.jpg"
+            det_path = root / "labels_det" / "train" / "sample.txt"
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            det_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(b"jpg")
+            det_path.write_text("0 0.500000 0.500000 0.100000 0.100000\n", encoding="utf-8")
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "image": {"file_name": "sample.jpg"},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "tasks": {"has_det": 0},
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "image_list stale det label"):
+                discover_image_list_entries([root], allowed_dataset_keys={"bdd100k_det_100k"})
+
     def test_load_image_list_resolves_relative_paths_and_sorts_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -51,6 +181,14 @@ class ODBootstrapImageListTests(unittest.TestCase):
             self.assertEqual([entry.sample_uid for entry in entries], ["aihub_traffic_seoul__train__scene_b", "bdd100k_det_100k__val__scene_a"])
             self.assertEqual(entries[0].image_path, (images_dir / "b.png").resolve())
             self.assertEqual(entries[1].dataset_key, "bdd100k_det_100k")
+
+    def test_load_image_list_rejects_non_object_rows_with_physical_line_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "image_list.jsonl"
+            manifest_path.write_text("\n[]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(TypeError, r"image_list\[2\] must be a JSON object"):
+                load_image_list(manifest_path)
 
     def test_load_image_list_rejects_duplicate_image_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

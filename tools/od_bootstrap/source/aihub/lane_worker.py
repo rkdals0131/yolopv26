@@ -196,6 +196,9 @@ def lane_worker(task: StandardizeTask) -> dict[str, Any]:
 
     scene_path = output_root / "labels_scene" / pair.split / f"{scene_sample_id}.json"
     write_json(scene_path, scene)
+    stale_det_path = output_root / "labels_det" / pair.split / f"{scene_sample_id}.txt"
+    if stale_det_path.exists():
+        stale_det_path.unlink()
 
     return {
         "dataset_key": task.output_dataset_key,

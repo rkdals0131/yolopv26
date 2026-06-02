@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from common.io import ensure_parent_dir, remove_path
+from common.io import ensure_parent_dir, remove_path, write_text
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,24 @@ def stage_teacher_dataset_layout(layout: TeacherDatasetLayout) -> Path:
     return staging_root
 
 
+def _validate_split_name(value: str, *, field_name: str) -> str:
+    split_name = str(value).strip()
+    if not split_name or Path(split_name).is_absolute() or Path(split_name).name != split_name:
+        raise ValueError(f"teacher {field_name} must be a name, not a path")
+    return split_name
+
+
+def _normalize_class_names(class_names: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(str(name).strip() for name in class_names)
+    if not normalized:
+        raise ValueError("teacher class_names must not be empty")
+    if any(not name for name in normalized):
+        raise ValueError("teacher class_names must not contain blank names")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("teacher class_names must be unique")
+    return normalized
+
+
 def build_teacher_data_yaml(
     *,
     dataset_root: Path,
@@ -83,13 +101,14 @@ def build_teacher_data_yaml(
     train_split: str = "train",
     val_split: str = "val",
 ) -> Path:
+    resolved_class_names = _normalize_class_names(class_names)
+    resolved_train_split = _validate_split_name(train_split, field_name="train_split")
+    resolved_val_split = _validate_split_name(val_split, field_name="val_split")
     payload: dict[str, Any] = {
         "path": str(dataset_root),
-        "train": f"images/{train_split}",
-        "val": f"images/{val_split}",
-        "nc": len(class_names),
-        "names": list(class_names),
+        "train": f"images/{resolved_train_split}",
+        "val": f"images/{resolved_val_split}",
+        "nc": len(resolved_class_names),
+        "names": list(resolved_class_names),
     }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-    return output_path
+    return write_text(output_path, yaml.safe_dump(payload, sort_keys=False))

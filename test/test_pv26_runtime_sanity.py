@@ -269,7 +269,7 @@ class PV26PreparedDatasetRuntimeSanityTests(unittest.TestCase):
             dataset = PV26CanonicalDataset([root])
             index = next(i for i, record in enumerate(dataset.records) if record.sample_id == sample_id)
 
-            with self.assertRaises(KeyError):
+            with self.assertRaisesRegex(ValueError, "scene image dimensions must be positive integers"):
                 dataset[index]
 
     def test_build_phase_train_loaders_requires_train_split(self) -> None:
@@ -277,7 +277,7 @@ class PV26PreparedDatasetRuntimeSanityTests(unittest.TestCase):
             root = create_prepared_pv26_dataset(Path(temp_dir) / "prepared", splits=("val",))
             dataset = PV26CanonicalDataset([root])
 
-            with self.assertRaisesRegex(ValueError, "balanced sampler found no eligible samples"):
+            with self.assertRaisesRegex(ValueError, "task-positive multi sampler found no positive samples"):
                 _build_phase_train_loaders(
                     dataset,
                     train_config=_default_train_config(),

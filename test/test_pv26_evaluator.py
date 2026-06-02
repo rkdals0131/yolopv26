@@ -250,6 +250,57 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertEqual(len(predictions[0]["stop_lines"]), 1)
         self.assertEqual(len(predictions[0]["crosswalks"]), 1)
 
+    def test_evaluator_prediction_shapes_track_loss_spec_for_all_raw_heads(self) -> None:
+        from model.engine.evaluator import PV26Evaluator
+
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_1_frozen_trunk_warmup",
+            criterion=_ExplodingCriterion(),
+        )
+        evaluator.forward_encoded_batch = lambda encoded: evaluator.heads(None)  # type: ignore[method-assign]
+
+        summary = evaluator.evaluate_batch(
+            _make_encoded_batch(batch_size=1, q_det=9975),
+            include_predictions=True,
+            compute_loss=False,
+        )
+
+        self.assertEqual(summary["losses"], {})
+        self.assertEqual(summary["prediction_shapes"]["det"], [1, 9975, 12])
+        self.assertEqual(summary["prediction_shapes"]["tl_attr"], [1, 9975, 4])
+        self.assertEqual(summary["prediction_shapes"]["lane"], [1, LANE_QUERY_COUNT, LANE_VECTOR_DIM])
+        self.assertEqual(
+            summary["prediction_shapes"]["stop_line"],
+            [1, STOP_LINE_QUERY_COUNT, STOP_LINE_VECTOR_DIM],
+        )
+        self.assertEqual(
+            summary["prediction_shapes"]["crosswalk"],
+            [1, CROSSWALK_QUERY_COUNT, CROSSWALK_VECTOR_DIM],
+        )
+        self.assertEqual(len(summary["predictions"]), 1)
+
+    def test_evaluator_rejects_prediction_batch_mismatch_before_summary(self) -> None:
+        from model.engine.evaluator import PV26Evaluator
+
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_1_frozen_trunk_warmup",
+            criterion=_ExplodingCriterion(),
+        )
+        evaluator.forward_encoded_batch = lambda encoded: {  # type: ignore[method-assign]
+            "det": torch.zeros((2, 9975, 12), dtype=torch.float32)
+        }
+
+        with self.assertRaisesRegex(ValueError, "prediction batch size must match image batch size"):
+            evaluator.evaluate_batch(
+                _make_encoded_batch(batch_size=1, q_det=9975),
+                include_predictions=False,
+                compute_loss=False,
+            )
+
     def test_evaluate_batch_without_loss_still_returns_metrics(self) -> None:
         from model.engine.evaluator import PV26Evaluator
 
@@ -316,6 +367,66 @@ class PV26EvaluatorTests(unittest.TestCase):
         self.assertIn("detector", summary["metrics"])
         self.assertIn("lane", summary["metrics"])
         self.assertGreaterEqual(summary["metrics"]["lane"]["f1"], 0.0)
+
+    def test_prepare_batch_rehydrates_segfirst_targets_from_encoded_raw_bundle(self) -> None:
+        from model.data import encode_pv26_batch
+        from model.engine.evaluator import PV26Evaluator
+
+        raw_batch = make_raw_sample_batch()
+        encoded_batch = encode_pv26_batch(raw_batch)
+        self.assertNotIn("lane_seg_centerline_core", encoded_batch["roadmark_v2"])
+        encoded_batch["_raw_batch"] = {
+            "det_targets": list(raw_batch["det_targets"]),
+            "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+            "lane_targets": list(raw_batch["lane_targets"]),
+            "source_mask": list(raw_batch["source_mask"]),
+            "valid_mask": list(raw_batch["valid_mask"]),
+            "meta": list(raw_batch["meta"]),
+        }
+        raw_bundle = encoded_batch["_raw_batch"]
+        heads = _StaticHeads()
+        heads.lane_head_mode = "seg_first"  # type: ignore[attr-defined]
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            heads,
+            stage="stage_1_frozen_trunk_warmup",
+            criterion=_ExplodingCriterion(),
+        )
+
+        prepared = evaluator.prepare_batch(encoded_batch)
+
+        self.assertIn("lane_seg_centerline_core", prepared["roadmark_v2"])
+        self.assertIn("_raw_batch", prepared)
+        self.assertIs(prepared["_raw_batch"], raw_bundle)
+        self.assertNotIn("image", prepared["_raw_batch"])
+        self.assertEqual(prepared["meta"], raw_bundle["meta"])
+        self.assertEqual(
+            [item["sample_id"] for item in prepared["meta"]],
+            [item["sample_id"] for item in prepared["_raw_batch"]["meta"]],
+        )
+
+    def test_prepare_batch_rejects_encoded_raw_bundle_batch_mismatch(self) -> None:
+        from model.engine.evaluator import PV26Evaluator
+
+        raw_batch = make_raw_sample_batch()
+        encoded_batch = _make_encoded_batch(batch_size=2, q_det=9975)
+        encoded_batch["_raw_batch"] = {
+            "det_targets": list(raw_batch["det_targets"]),
+            "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+            "lane_targets": list(raw_batch["lane_targets"]),
+            "source_mask": list(raw_batch["source_mask"]),
+            "valid_mask": list(raw_batch["valid_mask"]),
+            "meta": list(raw_batch["meta"]),
+        }
+        evaluator = PV26Evaluator(
+            _StaticAdapter(),
+            _StaticHeads(),
+            stage="stage_1_frozen_trunk_warmup",
+            criterion=_ExplodingCriterion(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "encoded _raw_batch length must match image batch size"):
+            evaluator.prepare_batch(encoded_batch)
 
     def test_encoded_eval_collate_preserves_raw_supervision_for_metrics(self) -> None:
         from model.data import collate_pv26_encoded_eval_batch

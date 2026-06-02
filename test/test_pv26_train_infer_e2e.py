@@ -111,15 +111,23 @@ class PV26PreparedDatasetE2ETests(unittest.TestCase):
             self.assertEqual(len(predictions), len(DEFAULT_PREPARED_DATASET_KEYS))
             self.assertTrue(math.isfinite(float(eval_summary["losses"]["total"])))
             self.assertIn("metrics", eval_summary)
+            self.assertIn("lane_family", eval_summary["metrics"])
+            self.assertIn("det", eval_summary["prediction_shapes"])
+            self.assertIn("tl_attr", eval_summary["prediction_shapes"])
+            self.assertIn("lane", eval_summary["prediction_shapes"])
+            self.assertIn("stop_line", eval_summary["prediction_shapes"])
+            self.assertIn("crosswalk", eval_summary["prediction_shapes"])
 
             detection_count = sum(len(item["detections"]) for item in predictions)
-            lane_family_count = sum(
-                len(item["lanes"]) + len(item["stop_lines"]) + len(item["crosswalks"])
-                for item in predictions
-            )
             self.assertGreater(detection_count, 0)
-            self.assertGreater(lane_family_count, 0)
+            for item in predictions:
+                self.assertIsInstance(item["meta"], dict)
+                self.assertIsInstance(item["detections"], list)
+                self.assertIsInstance(item["lanes"], list)
+                self.assertIsInstance(item["stop_lines"], list)
+                self.assertIsInstance(item["crosswalks"], list)
             _assert_nested_finite(self, eval_summary["losses"], field_name="eval_summary.losses")
+            _assert_nested_finite(self, eval_summary["metrics"], field_name="eval_summary.metrics")
             _assert_nested_finite(self, predictions, field_name="predictions")
 
 

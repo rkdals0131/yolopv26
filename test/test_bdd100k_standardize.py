@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from common.pv26_schema import OD_CLASS_TO_ID
 from tools.od_bootstrap.source.bdd100k import run_standardization
 
 
@@ -76,18 +77,39 @@ class BDD100KStandardizationTests(unittest.TestCase):
             train_scene = scene_by_split["train"]
             val_scene = scene_by_split["val"]
             test_scene = scene_by_split["test"]
-            self.assertEqual(train_scene["tasks"]["has_det"], 1)
-            self.assertEqual(train_scene["tasks"]["has_tl_attr"], 0)
+            self.assertEqual(train_scene["source"]["dataset"], "bdd100k_det_100k")
+            self.assertEqual(train_scene["source"]["split"], "train")
+            self.assertEqual(train_scene["source"]["raw_id"], "5bf43587-94432457")
+            self.assertEqual(train_scene["image"]["file_name"], "bdd100k_det_100k_train_5bf43587-94432457.jpg")
+            self.assertEqual(train_scene["image"]["original_file_name"], "5bf43587-94432457.jpg")
+            self.assertEqual(
+                train_scene["tasks"],
+                {"has_det": 1, "has_lane": 0, "has_stop_line": 0, "has_crosswalk": 0, "has_tl_attr": 0},
+            )
             self.assertEqual(train_scene["context"]["weather"], "clear")
             self.assertEqual(train_scene["context"]["scene"], "city street")
             self.assertEqual(train_scene["context"]["timeofday"], "daytime")
             self.assertEqual([item["class_name"] for item in train_scene["detections"]], ["vehicle"])
+            self.assertEqual(
+                {(item["raw_category"], item["reason"]) for item in train_scene["held_annotations"]},
+                {
+                    ("traffic light", "excluded_bdd_traffic_light_policy"),
+                    ("traffic sign", "excluded_bdd_sign_policy"),
+                    ("lane/single white", "ignored_non_pv26_category"),
+                },
+            )
             self.assertEqual(val_scene["image"]["width"], 960)
             self.assertEqual(val_scene["image"]["height"], 540)
             self.assertEqual(test_scene["image"]["width"], 640)
             self.assertEqual(test_scene["image"]["height"], 480)
             self.assertEqual(train_scene["traffic_lights"], [])
             self.assertEqual(train_scene["traffic_signs"], [])
+            self.assertEqual(train_scene["lanes"], [])
+            self.assertEqual(train_scene["stop_lines"], [])
+            self.assertEqual(train_scene["crosswalks"], [])
+            for scene_path in scene_labels:
+                with self.subTest(scene_path=scene_path.name):
+                    self._assert_labels_det_matches_detection_order(scene_path, output_root)
 
             val_det_lines = (output_root / "labels_det" / "val").glob("*.txt")
             val_det_path = sorted(val_det_lines)[0]
@@ -180,6 +202,98 @@ class BDD100KStandardizationTests(unittest.TestCase):
             self.assertEqual(second_failures["failure_count"], 0)
             self.assertEqual(second_report["dataset"]["resume_skipped_count"], 3)
             self.assertEqual(second_report["dataset"]["fresh_processed_count"], 1)
+
+    def test_resume_reprocesses_stale_non_detector_only_bdd_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+
+            self._create_bdd_fixture(images_root, labels_root)
+
+            run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            scene_path = sorted((output_root / "labels_scene" / "train").glob("*.json"))[0]
+            stale_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            stale_scene["tasks"]["has_lane"] = 1
+            stale_scene["lanes"] = [
+                {
+                    "id": 0,
+                    "class_name": "white_lane",
+                    "points": [[100.0, 200.0], [200.0, 300.0]],
+                    "visibility": [1, 1],
+                }
+            ]
+            scene_path.write_text(json.dumps(stale_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+            outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            repaired_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["dataset"]["resume_skipped_count"], 2)
+            self.assertEqual(report["dataset"]["fresh_processed_count"], 1)
+            self.assertEqual(
+                repaired_scene["tasks"],
+                {"has_det": 1, "has_lane": 0, "has_stop_line": 0, "has_crosswalk": 0, "has_tl_attr": 0},
+            )
+            self.assertEqual(repaired_scene["lanes"], [])
+            self.assertEqual(repaired_scene["stop_lines"], [])
+            self.assertEqual(repaired_scene["crosswalks"], [])
+
+    def test_resume_reprocesses_stale_bdd_det_file_without_scene_detections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bdd_root = root / "BDD100K"
+            images_root = bdd_root / "bdd100k_images_100k" / "100k"
+            labels_root = bdd_root / "bdd100k_labels" / "100k"
+            output_root = root / "pv26_bdd100k_standardized"
+
+            self._create_bdd_fixture(images_root, labels_root)
+
+            run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            scene_path = sorted((output_root / "labels_scene" / "train").glob("*.json"))[0]
+            stale_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            stale_scene["tasks"]["has_det"] = 0
+            stale_scene["detections"] = []
+            scene_path.write_text(json.dumps(stale_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+            outputs = run_standardization(
+                bdd_root=bdd_root,
+                images_root=images_root,
+                labels_root=labels_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            repaired_scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["dataset"]["resume_skipped_count"], 2)
+            self.assertEqual(report["dataset"]["fresh_processed_count"], 1)
+            self.assertEqual(repaired_scene["tasks"]["has_det"], 1)
+            self.assertEqual([item["id"] for item in repaired_scene["detections"]], [0])
 
     def test_parallel_standardize_logs_submit_progress_before_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -325,6 +439,19 @@ class BDD100KStandardizationTests(unittest.TestCase):
                     }
                 ],
             },
+        )
+
+    def _assert_labels_det_matches_detection_order(self, scene_path: Path, output_root: Path) -> None:
+        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+        detections = scene["detections"]
+        self.assertEqual([item["id"] for item in detections], list(range(len(detections))))
+
+        det_path = output_root / "labels_det" / scene["source"]["split"] / f"{scene_path.stem}.txt"
+        det_rows = [line.split() for line in det_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(det_rows), len(detections))
+        self.assertEqual(
+            [int(row[0]) for row in det_rows],
+            [OD_CLASS_TO_ID[item["class_name"]] for item in detections],
         )
 
 

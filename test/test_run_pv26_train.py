@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 import torch
 
+from tools.pv26_train import runtime as train_runtime
 from tools.pv26_train.artifacts import load_or_init_meta_manifest
 from tools.run_pv26_train import (
     PRESET_PATH_ROOT,
@@ -20,6 +22,9 @@ from tools.run_pv26_train import (
     PhaseTransitionController,
     PreviewConfig,
     SelectionConfig,
+    _build_backbone_adapter,
+    _execute_phase,
+    _build_phase_trainer,
     _build_phase_train_loaders,
     _build_arg_parser,
     _build_postprocess_config,
@@ -29,6 +34,7 @@ from tools.run_pv26_train import (
     _phase_entry_is_completed,
     _phase_entry_is_terminal,
     _recover_phase_entry_from_run_dir,
+    _resolve_head_channels,
     _sample_preview_selection,
     _scenario_phase_defaults,
     load_meta_train_derived_scenario,
@@ -113,6 +119,201 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             manifest["scenario_snapshot"]["train_defaults"]["batch_size"],
             scenario.train_defaults.batch_size,
         )
+
+    def test_build_backbone_adapter_prefers_roadmark_trunk_contract(self) -> None:
+        train_config = TrainDefaultsConfig(backbone_variant="s", backbone_weights="custom.pt")
+        adapter = object()
+
+        with patch("tools.run_pv26_train.resolve_yolo26_weights", return_value="resolved.pt") as resolve_mock:
+            with patch("tools.run_pv26_train.build_yolo26_roadmark_trunk", return_value=adapter) as roadmark_mock:
+                with patch("tools.run_pv26_train.build_yolo26_trunk") as generic_mock:
+                    with patch("tools.run_pv26_train.build_yolo26n_trunk") as compat_mock:
+                        result = _build_backbone_adapter(train_config)
+
+        self.assertIs(result, adapter)
+        resolve_mock.assert_called_once_with(variant="s", weights="custom.pt")
+        roadmark_mock.assert_called_once_with(variant="s", weights="resolved.pt")
+        generic_mock.assert_not_called()
+        compat_mock.assert_not_called()
+
+    def test_resolve_head_channels_reconstructs_four_level_contract_from_detect_adapter(self) -> None:
+        train_config = TrainDefaultsConfig(backbone_variant="s")
+        adapter = object()
+
+        with patch("tools.run_pv26_train.infer_pyramid_channels", return_value=(128, 256, 512)):
+            channels = _resolve_head_channels(adapter, train_config)
+
+        self.assertEqual(channels, (128, 128, 256, 512))
+
+    def test_runtime_meta_train_scenario_tracks_manifest_lifecycle_for_selected_window(self) -> None:
+        class _FakeDataset:
+            records = (
+                SimpleNamespace(split="train", dataset_key="aihub_lane_seoul"),
+                SimpleNamespace(split="val", dataset_key="pv26_exhaustive_bdd100k_det_100k"),
+            )
+
+            def __init__(self, roots, **kwargs) -> None:
+                self.roots = roots
+                self.kwargs = kwargs
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset_root = root / "dataset"
+            dataset_root.mkdir()
+            run_dir = root / "runs" / "selected"
+            scenario_path = root / "default.yaml"
+            seed_checkpoint = root / "seed" / "best.pt"
+            seed_checkpoint.parent.mkdir(parents=True)
+            seed_checkpoint.write_text("seed", encoding="utf-8")
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=dataset_root),
+                run=RunConfig(run_root=root / "runs", run_dir=run_dir),
+                train_defaults=TrainDefaultsConfig(train_augmentation=True, train_augmentation_seed=123),
+                selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min"),
+                preview=ScenarioPreviewConfig(enabled=False),
+                phases=(
+                    PhaseConfig(
+                        name="warmup",
+                        stage="stage_1_frozen_trunk_warmup",
+                        min_epochs=1,
+                        max_epochs=1,
+                        patience=1,
+                    ),
+                    PhaseConfig(
+                        name="unfreeze",
+                        stage="stage_2_partial_unfreeze",
+                        min_epochs=1,
+                        max_epochs=2,
+                        patience=1,
+                    ),
+                    PhaseConfig(
+                        name="lane",
+                        stage="stage_4_lane_family_finetune",
+                        min_epochs=1,
+                        max_epochs=3,
+                        patience=1,
+                    ),
+                ),
+            )
+            manifest = {
+                "version": "pv26-meta-train-v1",
+                "status": "running",
+                "scenario_path": str(scenario_path),
+                "run_dir": str(run_dir),
+                "active_phase_index": None,
+                "active_phase_name": None,
+                "phases": [
+                    {"index": 1, "name": "warmup", "stage": "stage_1_frozen_trunk_warmup", "status": "pending"},
+                    {"index": 2, "name": "unfreeze", "stage": "stage_2_partial_unfreeze", "status": "pending"},
+                    {"index": 3, "name": "lane", "stage": "stage_4_lane_family_finetune", "status": "pending"},
+                ],
+            }
+            manifest_path = run_dir / "meta_manifest.json"
+            logs: list[str] = []
+            manifest_writes: list[dict] = []
+            summary_writes: list[dict] = []
+            execute_calls: list[dict] = []
+
+            def fake_load_or_init_meta_manifest(**kwargs):
+                self.assertEqual(kwargs["selected_phase_window"]["selected_phase_indices"], [2, 3])
+                self.assertEqual(kwargs["lineage"]["mode"], "derived_run")
+                return manifest, manifest_path
+
+            def fake_write_meta_manifest(path, payload):
+                self.assertEqual(path, manifest_path)
+                manifest_writes.append(copy.deepcopy(payload))
+
+            def fake_write_meta_summary(path, payload):
+                self.assertEqual(path, run_dir)
+                summary_writes.append(copy.deepcopy(payload))
+
+            def fake_execute_phase(**kwargs):
+                phase_index = int(kwargs["phase_index"])
+                execute_calls.append(
+                    {
+                        "phase_index": phase_index,
+                        "phase_name": kwargs["phase"].name,
+                        "previous_best_checkpoint": kwargs["previous_best_checkpoint"],
+                        "preview_samples": kwargs["preview_samples"],
+                    }
+                )
+                best_checkpoint = root / f"phase_{phase_index}_best.pt"
+                return {
+                    "index": phase_index,
+                    "name": kwargs["phase"].name,
+                    "stage": kwargs["phase"].stage,
+                    "status": "completed",
+                    "run_dir": str(run_dir / f"phase_{phase_index}"),
+                    "summary_path": str(run_dir / f"phase_{phase_index}" / "summary.json"),
+                    "run_manifest_path": str(run_dir / f"phase_{phase_index}" / "run_manifest.json"),
+                    "best_checkpoint_path": str(best_checkpoint),
+                    "last_checkpoint_path": str(root / f"phase_{phase_index}_last.pt"),
+                    "completed_epochs": phase_index,
+                    "best_metric_value": 1.0 / phase_index,
+                    "best_epoch": phase_index,
+                    "promotion_reason": "completed",
+                    "phase_state": {"phase_index": phase_index},
+                    "selection": {"metric_path": "val.losses.total.mean"},
+                    "backbone": {"variant": "s", "weights": None},
+                    "postprocess": {},
+                    "head_channels": [128, 128, 256, 512],
+                    "preview": {"best": None, "last": None},
+                    "phase_train_config": {},
+                    "run_summary": {"completed_epochs": phase_index},
+                }
+
+            result = train_runtime.run_meta_train_scenario(
+                scenario,
+                scenario_path=scenario_path,
+                configure_torch_multiprocessing=lambda: logs.append("configured"),
+                log_meta_train=logs.append,
+                canonical_dataset_cls=_FakeDataset,
+                resolve_meta_run_dir=lambda scenario, *, scenario_path: run_dir,
+                sample_preview_selection_with_logging=lambda dataset, preview, *, progress_callback: [
+                    {"meta": {"sample_id": "preview-1", "dataset_key": "aihub_lane_seoul"}}
+                ],
+                load_or_init_meta_manifest=fake_load_or_init_meta_manifest,
+                phase_entry_is_completed=lambda entry, phase: entry.get("status") == "completed",
+                recover_phase_entry_from_run_dir=lambda entry, phase: None,
+                scenario_snapshot_for_run=lambda scenario, *, run_dir: {"snapshot_run_dir": str(run_dir)},
+                write_meta_manifest=fake_write_meta_manifest,
+                write_meta_summary=fake_write_meta_summary,
+                resolve_phase_selection=lambda selection, phase: phase.selection or selection,
+                execute_phase=fake_execute_phase,
+                phase_entry_is_terminal=lambda entry, phase: entry.get("status") in {"completed", "skipped"},
+                selected_phase_indices=(2, 3),
+                initial_best_checkpoint=seed_checkpoint,
+                lineage={"mode": "derived_run", "source_run_dir": str(root / "source")},
+            )
+
+        self.assertIn("configured", logs)
+        self.assertEqual(len(execute_calls), 2)
+        self.assertEqual(execute_calls[0]["phase_index"], 2)
+        self.assertEqual(execute_calls[0]["previous_best_checkpoint"], seed_checkpoint)
+        self.assertEqual(execute_calls[1]["phase_index"], 3)
+        self.assertEqual(execute_calls[1]["previous_best_checkpoint"], root / "phase_2_best.pt")
+        self.assertEqual(execute_calls[0]["preview_samples"][0]["meta"]["sample_id"], "preview-1")
+        self.assertGreaterEqual(len(manifest_writes), 6)
+        self.assertEqual(manifest_writes[0]["phases"][0]["status"], "skipped")
+        self.assertEqual(manifest_writes[0]["phases"][0]["promotion_reason"], "window_excluded")
+        phase2_running = next(write for write in manifest_writes if write.get("active_phase_index") == 2)
+        self.assertEqual(phase2_running["active_phase_name"], "unfreeze")
+        self.assertEqual(phase2_running["phases"][1]["status"], "running")
+        phase3_running = next(write for write in manifest_writes if write.get("active_phase_index") == 3)
+        self.assertEqual(phase3_running["active_phase_name"], "lane")
+        final_manifest = manifest_writes[-1]
+        self.assertEqual(final_manifest["status"], "completed")
+        self.assertIsNone(final_manifest["active_phase_index"])
+        self.assertIsNone(final_manifest["active_phase_name"])
+        self.assertEqual([phase["status"] for phase in final_manifest["phases"]], ["skipped", "completed", "completed"])
+        self.assertEqual(final_manifest["selected_phase_window"]["selected_phase_indices"], [2, 3])
+        self.assertEqual(final_manifest["lineage"]["mode"], "derived_run")
+        self.assertEqual(summary_writes[-1]["status"], "completed")
+        self.assertEqual(result["completed_phases"], 2)
+        self.assertEqual(result["skipped_phases"], 1)
+        self.assertEqual(result["selected_phase_window"]["start_phase_index"], 2)
+        self.assertEqual(result["lineage"]["mode"], "derived_run")
+        self.assertEqual(result["final_checkpoint_path"], root / "phase_3_best.pt")
 
     def test_load_meta_train_scenario_applies_user_yaml_overrides(self) -> None:
         user_paths_config = {
@@ -1332,6 +1533,466 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertTrue(all(item["dataset_key"] == "aihub_lane_seoul" for item in train_batch["meta"]))
         self.assertTrue(all(item["dataset_key"] == "aihub_lane_seoul" for item in val_batch["meta"]))
 
+    def test_build_phase_train_loaders_propagates_encoded_loader_flags(self) -> None:
+        train_config = TrainDefaultsConfig(
+            batch_size=3,
+            train_batches=7,
+            val_batches=5,
+            num_workers=2,
+            pin_memory=True,
+            encode_train_batches_in_loader=False,
+            encode_val_batches_in_loader=True,
+            persistent_workers=True,
+            prefetch_factor=4,
+            task_positive_task="multi:lane,stopline",
+            task_positive_fraction=0.5,
+        )
+        dataset = object()
+
+        with patch("tools.run_pv26_train.build_pv26_train_dataloader", return_value="train-loader") as train_mock:
+            with patch("tools.run_pv26_train.build_pv26_eval_dataloader", return_value="val-loader") as val_mock:
+                train_loader, val_loader = _build_phase_train_loaders(
+                    dataset,  # type: ignore[arg-type]
+                    train_config=train_config,
+                    phase=None,
+                )
+
+        self.assertEqual(train_loader, "train-loader")
+        self.assertEqual(val_loader, "val-loader")
+        train_kwargs = train_mock.call_args.kwargs
+        val_kwargs = val_mock.call_args.kwargs
+        self.assertIs(train_mock.call_args.args[0], dataset)
+        self.assertIs(val_mock.call_args.args[0], dataset)
+        self.assertEqual(train_kwargs["batch_size"], 3)
+        self.assertEqual(train_kwargs["num_batches"], 7)
+        self.assertEqual(train_kwargs["split"], "train")
+        self.assertEqual(train_kwargs["encode_batches"], False)
+        self.assertEqual(train_kwargs["num_workers"], 2)
+        self.assertEqual(train_kwargs["pin_memory"], True)
+        self.assertEqual(train_kwargs["persistent_workers"], True)
+        self.assertEqual(train_kwargs["prefetch_factor"], 4)
+        self.assertEqual(train_kwargs["task_positive_task"], "multi:lane,stopline")
+        self.assertEqual(train_kwargs["task_positive_fraction"], 0.5)
+        self.assertEqual(val_kwargs["batch_size"], 3)
+        self.assertEqual(val_kwargs["num_batches"], 5)
+        self.assertEqual(val_kwargs["split"], "val")
+        self.assertEqual(val_kwargs["encode_batches"], True)
+        self.assertEqual(val_kwargs["num_workers"], 2)
+        self.assertEqual(val_kwargs["pin_memory"], True)
+        self.assertEqual(val_kwargs["persistent_workers"], True)
+        self.assertEqual(val_kwargs["prefetch_factor"], 4)
+
+    def test_build_phase_trainer_propagates_model_loss_and_runtime_config(self) -> None:
+        class _FakeEvaluator:
+            def __init__(self) -> None:
+                self.evaluate_config = None
+                self.predict_config = None
+
+            def evaluate_batch(
+                self,
+                batch,
+                *,
+                include_predictions=False,
+                compute_loss=True,
+                config=None,
+            ):
+                self.evaluate_config = config
+                return {
+                    "batch": batch,
+                    "include_predictions": include_predictions,
+                    "compute_loss": compute_loss,
+                }
+
+            def predict_batch(self, batch, *, config=None):
+                self.predict_config = config
+                return [{"batch": batch}]
+
+        class _FakeTrainer:
+            def __init__(self) -> None:
+                self.optimizer = object()
+                self.scheduler = None
+
+            def build_evaluator(self) -> _FakeEvaluator:
+                return _FakeEvaluator()
+
+        phase = PhaseConfig(
+            name="stage4",
+            stage="stage_4_lane_family_finetune",
+            min_epochs=1,
+            max_epochs=9,
+            patience=2,
+            loss_weights={"lane": 1.5, "stop_line": 2.5},
+            freeze_policy="heads_only",
+        )
+        train_config = TrainDefaultsConfig(
+            device="cpu",
+            trunk_lr=1.0e-5,
+            head_lr=2.0e-4,
+            criterion_lr=3.0e-4,
+            weight_decay=4.0e-5,
+            schedule="linear",
+            amp=True,
+            amp_init_scale=512.0,
+            accumulate_steps=3,
+            grad_clip_norm=4.5,
+            skip_non_finite_loss=True,
+            oom_guard=True,
+            task_mode="roadmark_only",
+            roadmark_architecture="current_family_dense_seed_sigmoid",
+            lane_head_mode="row_native",
+            lane_conditional_row_coordinate_mode="delta",
+            lane_conditional_row_max_delta_px=12.5,
+            lane_conditional_denoise_hard_negative_count=6,
+            lane_conditional_denoise_hard_negative_offset_px=8.0,
+            lane_family_shared_adapter_enabled=True,
+            lane_family_task_adapter_enabled=True,
+            lane_family_cross_stitch_enabled=True,
+            stopline_lane_context_fusion_enabled=True,
+            stopline_lane_context_detach=True,
+            stopline_crosswalk_context_fusion_enabled=True,
+            stopline_crosswalk_context_detach=True,
+            lane_assignment_mode="hungarian",
+            lane_objectness_target_mode="quality",
+            lane_family_query_objectness_target_mode="quality",
+            lane_family_query_target_source="dense",
+            lane_objectness_quality_min=0.2,
+            lane_objectness_quality_tau=0.7,
+            lane_dynamic_coverage_weight=0.11,
+            lane_centerline_focal_weight=0.12,
+            lane_centerline_dice_weight=0.13,
+            lane_segfirst_loss_weights={"centerline": 1.2},
+            lane_segfirst_centerline_target_mode="thick",
+            lane_segfirst_centerline_max_positive_weight=3.5,
+            lane_segfirst_residual_risk_core_weight=0.21,
+            lane_segfirst_residual_risk_ring_weight=0.22,
+            lane_segfirst_residual_risk_ring_margin=5.0,
+            lane_segfirst_center_offset_aux_weight=0.23,
+            lane_segfirst_anchor_offset_aux_weight=0.24,
+            lane_segfirst_task_conflict_negative_mode="margin",
+            lane_segfirst_task_conflict_negative_weight=0.25,
+            lane_segfirst_task_conflict_negative_margin=0.26,
+            lane_conditional_row_aux_weight=0.27,
+            lane_segfirst_row_link_aux_weight=0.28,
+            lane_conditional_seed_aux_weight=0.29,
+            lane_conditional_seed_target_mode="dense",
+            lane_conditional_objectness_target_mode="quality",
+            lane_conditional_row_x_weight=0.31,
+            lane_conditional_denoise_aux_weight=0.32,
+            lane_segfirst_instance_embedding_aux_weight=0.33,
+            lane_segfirst_color_class_weights={"white": 1.1},
+            stopline_local_x_aux_weight=0.41,
+            stopline_selector_aux_weight=0.42,
+            stopline_selector_target_mode="quality",
+            stopline_geometry_aux_weight=0.43,
+            stopline_center_target_mode="thick",
+            stopline_centerline_target_weight=0.44,
+            stopline_midpoint_aux_weight=0.45,
+            stopline_haf_aux_weight=0.46,
+            stopline_axis_distance_aux_weight=0.47,
+            stopline_endpoint_pair_aux_weight=0.48,
+            stopline_endpoint_pair_segment_aux_weight=0.49,
+            stopline_endpoint_pair_verifier_aux_weight=0.50,
+            stopline_segment_set_aux_weight=0.51,
+            stopline_segment_verifier_aux_weight=0.52,
+            stopline_segment_denoise_aux_weight=0.53,
+            stopline_context_segment_set_aux_weight=0.54,
+            stopline_context_segment_verifier_aux_weight=0.55,
+            stopline_axis_segment_set_aux_weight=0.56,
+            stopline_axis_segment_verifier_aux_weight=0.57,
+            stopline_patch_segment_set_aux_weight=0.58,
+            stopline_patch_segment_verifier_aux_weight=0.59,
+            stopline_segment_verifier_target_mode="quality",
+            stopline_segment_objectness_target_mode="quality",
+            stopline_segment_verifier_quality_tau_px=18.0,
+            stopline_empty_sample_mode="ignore",
+            lane_family_unlabeled_negative_mode="ignore",
+            stopline_task_conflict_negative_mode="margin",
+            stopline_task_conflict_negative_weight=0.61,
+            stopline_task_conflict_negative_margin=0.62,
+            distill_enabled=True,
+            distill_teacher_mode="cache",
+            distill_sample_mode="positive",
+            distill_confidence_mode="threshold",
+            distill_confidence_threshold=0.77,
+            distill_loss_weights={"lane": 0.8},
+            distill_normalize_mode="teacher",
+            distill_ema_decay=0.91,
+            distill_ema_warmup_steps=7,
+            distill_ema_eps=1.0e-5,
+            task_loss_normalize_mode="ema",
+            task_loss_normalize_tasks=("lane", "stop_line"),
+            task_loss_ema_decay=0.92,
+            task_loss_ema_warmup_steps=11,
+            task_loss_ema_eps=2.0e-5,
+            task_loss_scale_min=0.4,
+            task_loss_scale_max=2.2,
+            task_uncertainty_weighting_enabled=True,
+            task_uncertainty_tasks=("lane", "crosswalk"),
+            task_uncertainty_init_log_vars={"lane": -0.2},
+            task_uncertainty_log_var_min=-2.0,
+            task_uncertainty_log_var_max=2.0,
+            multitask_conflict={"enabled": True, "mode": "pcgrad", "tasks": ["lane"]},
+        )
+        adapter = object()
+        heads = object()
+        criterion = object()
+        distill_teacher = object()
+        scheduler = object()
+        postprocess_config = object()
+        fake_trainer = _FakeTrainer()
+
+        with patch("tools.run_pv26_train._build_backbone_adapter", return_value=adapter) as adapter_mock:
+            with patch("tools.run_pv26_train._resolve_head_channels", return_value=(11, 22, 33, 44)) as channels_mock:
+                with patch("tools.run_pv26_train.PV26Heads", return_value=heads) as heads_mock:
+                    with patch("tools.run_pv26_train.PV26MultiTaskLoss", return_value=criterion) as loss_mock:
+                        with patch("tools.run_pv26_train._build_distill_teacher", return_value=distill_teacher) as distill_mock:
+                            with patch("tools.run_pv26_train.PV26Trainer", return_value=fake_trainer) as trainer_mock:
+                                with patch("tools.run_pv26_train.build_pv26_scheduler", return_value=scheduler) as scheduler_mock:
+                                    with patch(
+                                        "tools.run_pv26_train._build_postprocess_config",
+                                        return_value=postprocess_config,
+                                    ) as postprocess_mock:
+                                        trainer = _build_phase_trainer(phase, train_config)
+
+        self.assertIs(trainer, fake_trainer)
+        adapter_mock.assert_called_once_with(train_config)
+        channels_mock.assert_called_once_with(adapter, train_config)
+        heads_kwargs = heads_mock.call_args.kwargs
+        for key, expected in {
+            "in_channels": (11, 22, 33, 44),
+            "roadmark_architecture": "current_family_dense_seed_sigmoid",
+            "lane_head_mode": "row_native",
+            "lane_conditional_row_coordinate_mode": "delta",
+            "lane_conditional_row_max_delta_px": 12.5,
+            "lane_conditional_denoise_hard_negative_count": 6,
+            "lane_conditional_denoise_hard_negative_offset_px": 8.0,
+            "lane_family_shared_adapter_enabled": True,
+            "lane_family_task_adapter_enabled": True,
+            "lane_family_cross_stitch_enabled": True,
+            "stopline_lane_context_fusion_enabled": True,
+            "stopline_lane_context_detach": True,
+            "stopline_crosswalk_context_fusion_enabled": True,
+            "stopline_crosswalk_context_detach": True,
+        }.items():
+            self.assertEqual(heads_kwargs[key], expected)
+
+        loss_kwargs = loss_mock.call_args.kwargs
+        for key, expected in {
+            "stage": "stage_4_lane_family_finetune",
+            "loss_weights": {"lane": 1.5, "stop_line": 2.5},
+            "task_mode": "roadmark_only",
+            "lane_segfirst_loss_weights": {"centerline": 1.2},
+            "lane_segfirst_color_class_weights": {"white": 1.1},
+            "stopline_segment_verifier_quality_tau_px": 18.0,
+            "distill_enabled": True,
+            "distill_loss_weights": {"lane": 0.8},
+            "task_loss_normalize_mode": "ema",
+            "task_uncertainty_weighting_enabled": True,
+            "task_uncertainty_init_log_vars": {"lane": -0.2},
+        }.items():
+            self.assertEqual(loss_kwargs[key], expected)
+
+        distill_mock.assert_called_once_with(train_config)
+        trainer_kwargs = trainer_mock.call_args.kwargs
+        self.assertIs(trainer_mock.call_args.args[0], adapter)
+        self.assertIs(trainer_mock.call_args.args[1], heads)
+        for key, expected in {
+            "stage": "stage_4_lane_family_finetune",
+            "device": "cpu",
+            "loss_weights": {"lane": 1.5, "stop_line": 2.5},
+            "freeze_policy": "heads_only",
+            "trunk_lr": 1.0e-5,
+            "head_lr": 2.0e-4,
+            "criterion_lr": 3.0e-4,
+            "weight_decay": 4.0e-5,
+            "amp": True,
+            "amp_init_scale": 512.0,
+            "accumulate_steps": 3,
+            "grad_clip_norm": 4.5,
+            "skip_non_finite_loss": True,
+            "oom_guard": True,
+            "multitask_conflict": {"enabled": True, "mode": "pcgrad", "tasks": ["lane"]},
+        }.items():
+            self.assertEqual(trainer_kwargs[key], expected)
+        self.assertIs(trainer_kwargs["criterion"], criterion)
+        self.assertIs(trainer_kwargs["distill_teacher"], distill_teacher)
+        scheduler_mock.assert_called_once_with(fake_trainer.optimizer, epochs=9, schedule="linear")
+        self.assertIs(fake_trainer.scheduler, scheduler)
+        postprocess_mock.assert_called_once_with(train_config)
+        self.assertIs(getattr(fake_trainer, "postprocess_config"), postprocess_config)
+
+        evaluator = fake_trainer.build_evaluator()
+        eval_result = evaluator.evaluate_batch({"image": "batch"}, include_predictions=True, compute_loss=False)
+        predictions = evaluator.predict_batch({"image": "batch"})
+        self.assertEqual(eval_result["include_predictions"], True)
+        self.assertEqual(eval_result["compute_loss"], False)
+        self.assertEqual(predictions, [{"batch": {"image": "batch"}}])
+        self.assertIs(evaluator.evaluate_config, postprocess_config)
+        self.assertIs(evaluator.predict_config, postprocess_config)
+        self.assertIs(getattr(evaluator, "postprocess_config"), postprocess_config)
+
+    def test_execute_phase_propagates_fit_io_and_returns_manifest_ready_result(self) -> None:
+        class _FakeTrainer:
+            def __init__(self) -> None:
+                self.loaded_weights: list[tuple[Path, str]] = []
+                self.fit_train_loader = None
+                self.fit_kwargs = None
+                self.heads = SimpleNamespace(in_channels=(11, 22, 33, 44))
+
+            def load_model_weights(self, checkpoint_path: Path, *, map_location: str) -> None:
+                self.loaded_weights.append((checkpoint_path, map_location))
+
+            def fit(self, train_loader, **kwargs):
+                self.fit_train_loader = train_loader
+                self.fit_kwargs = kwargs
+                checkpoint_dir = Path(kwargs["run_dir"]) / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                best_checkpoint = checkpoint_dir / "best.pt"
+                last_checkpoint = checkpoint_dir / "last.pt"
+                best_checkpoint.write_text("best", encoding="utf-8")
+                last_checkpoint.write_text("last", encoding="utf-8")
+                return {
+                    "completed_epochs": 3,
+                    "best_metric_value": 0.812,
+                    "best_epoch": 2,
+                    "checkpoint_paths": {
+                        "best": str(best_checkpoint),
+                        "last": str(last_checkpoint),
+                    },
+                    "early_exit": {
+                        "reason": "plateau",
+                        "phase_state": {"best_phase_objective": 0.812},
+                    },
+                    "history_paths": {
+                        "train_steps": str(Path(kwargs["run_dir"]) / "history" / "train_steps.jsonl"),
+                        "epochs": str(Path(kwargs["run_dir"]) / "history" / "epochs.jsonl"),
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "runs" / "audit"
+            previous_best_checkpoint = root / "previous" / "best.pt"
+            previous_best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            previous_best_checkpoint.write_text("previous", encoding="utf-8")
+            phase = PhaseConfig(
+                name="lane_finetune",
+                stage="stage_4_lane_family_finetune",
+                min_epochs=1,
+                max_epochs=5,
+                patience=2,
+                selection=SelectionConfig(metric_path="val.custom_metric", mode="max"),
+                loss_weights={"lane": 1.5},
+                freeze_policy="heads_only",
+                overrides={
+                    "batch_size": 6,
+                    "checkpoint_every": 3,
+                    "train_batches": 4,
+                    "val_batches": 2,
+                    "log_every_n_steps": 7,
+                    "profile_window": 8,
+                    "profile_device_sync": False,
+                    "step_history_enabled": True,
+                    "step_history_every_n_steps": 9,
+                    "step_history_include_grad_details": True,
+                    "pcgrad_diagnostics_enabled": True,
+                    "pcgrad_aggregate_every_n_steps": 10,
+                    "pcgrad_keep_raw_every_n_steps": 11,
+                },
+            )
+            scenario = MetaTrainScenario(
+                dataset=DatasetConfig(root=root / "dataset"),
+                run=RunConfig(run_root=root / "runs"),
+                train_defaults=TrainDefaultsConfig(device="cpu", batch_size=2, checkpoint_every=1),
+                selection=SelectionConfig(metric_path="val.losses.total.mean", mode="min"),
+                preview=ScenarioPreviewConfig(enabled=True),
+                phases=(phase,),
+            )
+            fake_trainer = _FakeTrainer()
+
+            with patch("tools.run_pv26_train._build_phase_train_loaders", return_value=("train-loader", "val-loader")) as loaders_mock:
+                with patch("tools.run_pv26_train._build_phase_trainer", return_value=fake_trainer) as trainer_mock:
+                    with patch("tools.run_pv26_train.build_epoch_comparison_grid_callback", return_value="epoch-callback") as callback_mock:
+                        with patch(
+                            "tools.run_pv26_train._generate_phase_preview_bundle",
+                            side_effect=lambda **kwargs: {
+                                "enabled": True,
+                                "kind": kwargs["preview_kind"],
+                                "checkpoint": str(kwargs["checkpoint_path"]),
+                            },
+                        ) as preview_mock:
+                            result = _execute_phase(
+                                scenario=scenario,
+                                scenario_path=root / "default.yaml",
+                                dataset=object(),  # type: ignore[arg-type]
+                                preview_samples=[{"meta": {"sample_id": "sample-1", "dataset_key": "aihub_lane_seoul"}}],
+                                phase_index=1,
+                                phase=phase,
+                                run_dir=run_dir,
+                                previous_best_checkpoint=previous_best_checkpoint,
+                            )
+
+        phase_train_config = loaders_mock.call_args.kwargs["train_config"]
+        self.assertEqual(phase_train_config.batch_size, 6)
+        self.assertEqual(phase_train_config.checkpoint_every, 3)
+        self.assertEqual(phase_train_config.train_batches, 4)
+        self.assertEqual(phase_train_config.val_batches, 2)
+        loaders_mock.assert_called_once()
+        trainer_mock.assert_called_once_with(phase, phase_train_config)
+        self.assertEqual(fake_trainer.loaded_weights, [(previous_best_checkpoint, "cpu")])
+        self.assertEqual(fake_trainer.fit_train_loader, "train-loader")
+
+        fit_kwargs = fake_trainer.fit_kwargs
+        self.assertEqual(fit_kwargs["epochs"], 5)
+        self.assertEqual(fit_kwargs["phase_index"], 1)
+        self.assertEqual(fit_kwargs["phase_count"], 1)
+        self.assertEqual(fit_kwargs["phase_name"], "lane_finetune")
+        self.assertEqual(fit_kwargs["val_loader"], "val-loader")
+        self.assertEqual(fit_kwargs["run_dir"], run_dir / "phase_1")
+        self.assertEqual(fit_kwargs["checkpoint_every"], 3)
+        self.assertEqual(fit_kwargs["max_train_batches"], 4)
+        self.assertEqual(fit_kwargs["max_val_batches"], 2)
+        self.assertEqual(fit_kwargs["best_metric"], "val.custom_metric")
+        self.assertEqual(fit_kwargs["best_mode"], "max")
+        self.assertEqual(fit_kwargs["auto_resume"], True)
+        self.assertEqual(fit_kwargs["enable_tensorboard"], True)
+        self.assertEqual(fit_kwargs["epoch_end_callback"], "epoch-callback")
+        for key, expected in {
+            "log_every_n_steps": 7,
+            "profile_window": 8,
+            "profile_device_sync": False,
+            "step_history_enabled": True,
+            "step_history_every_n_steps": 9,
+            "step_history_include_grad_details": True,
+            "pcgrad_diagnostics_enabled": True,
+            "pcgrad_aggregate_every_n_steps": 10,
+            "pcgrad_keep_raw_every_n_steps": 11,
+        }.items():
+            self.assertEqual(fit_kwargs[key], expected)
+        self.assertEqual(fit_kwargs["run_manifest_extra"]["phase_train_config"]["batch_size"], 6)
+        self.assertEqual(fit_kwargs["run_manifest_extra"]["phase"]["selection"]["metric_path"], "val.custom_metric")
+        self.assertEqual(fit_kwargs["run_manifest_extra"]["head_channels"], [11, 22, 33, 44])
+        callback_mock.assert_called_once()
+        self.assertEqual(preview_mock.call_count, 2)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["run_dir"], str(run_dir / "phase_1"))
+        self.assertEqual(result["summary_path"], str(run_dir / "phase_1" / "summary.json"))
+        self.assertEqual(result["run_manifest_path"], str(run_dir / "phase_1" / "run_manifest.json"))
+        self.assertTrue(str(result["best_checkpoint_path"]).endswith("/phase_1/checkpoints/best.pt"))
+        self.assertTrue(str(result["last_checkpoint_path"]).endswith("/phase_1/checkpoints/last.pt"))
+        self.assertEqual(result["completed_epochs"], 3)
+        self.assertEqual(result["best_metric_value"], 0.812)
+        self.assertEqual(result["best_epoch"], 2)
+        self.assertEqual(result["promotion_reason"], "plateau")
+        self.assertEqual(result["phase_state"], {"best_phase_objective": 0.812})
+        self.assertEqual(result["selection"]["metric_path"], "val.custom_metric")
+        self.assertEqual(result["head_channels"], [11, 22, 33, 44])
+        self.assertEqual(result["phase_train_config"]["checkpoint_every"], 3)
+        self.assertEqual(result["run_summary"]["completed_epochs"], 3)
+        self.assertEqual(result["preview"]["best"]["kind"], "best")
+        self.assertEqual(result["preview"]["last"]["kind"], "last")
+
     def test_epoch_comparison_ground_truth_overlay_uses_raw_coordinates(self) -> None:
         sample = {
             "det_targets": {
@@ -1491,6 +2152,68 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
         self.assertEqual(dataset.loaded_indices, [1])
         self.assertEqual([item["meta"]["sample_id"] for item in selected], ["rich"])
 
+    def test_sample_preview_selection_tolerates_non_object_scene_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bad_scene = root / "bad.json"
+            rich_scene = root / "rich.json"
+            bad_scene.write_text("[]\n", encoding="utf-8")
+            rich_scene.write_text(
+                json.dumps(
+                    {
+                        "tasks": {"has_lane": 1, "has_stop_line": 1, "has_crosswalk": 1},
+                        "lanes": [{}],
+                        "stop_lines": [{}],
+                        "crosswalks": [{}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class _FakeDataset:
+                def __init__(self) -> None:
+                    self.records = [
+                        SimpleNamespace(
+                            dataset_key="aihub_lane_seoul",
+                            split="val",
+                            sample_id="bad",
+                            scene_path=bad_scene,
+                        ),
+                        SimpleNamespace(
+                            dataset_key="aihub_lane_seoul",
+                            split="val",
+                            sample_id="rich",
+                            scene_path=rich_scene,
+                        ),
+                    ]
+                    self.loaded_indices: list[int] = []
+
+                def __getitem__(self, index: int) -> dict:
+                    self.loaded_indices.append(index)
+                    record = self.records[index]
+                    return {
+                        "meta": {
+                            "sample_id": record.sample_id,
+                            "dataset_key": record.dataset_key,
+                            "split": record.split,
+                        }
+                    }
+
+            dataset = _FakeDataset()
+            selected = _sample_preview_selection(
+                dataset,
+                PreviewConfig(
+                    enabled=True,
+                    split="val",
+                    dataset_keys=("aihub_lane_seoul",),
+                    max_samples_per_dataset=1,
+                    write_overlay=False,
+                ),
+            )
+
+        self.assertEqual(dataset.loaded_indices, [1])
+        self.assertEqual([item["meta"]["sample_id"] for item in selected], ["rich"])
+
     def test_sample_preview_selection_tolerates_missing_dataset_keys(self) -> None:
         class _FakeDataset:
             def __init__(self) -> None:
@@ -1589,6 +2312,49 @@ class RunPV26TrainScenarioTests(unittest.TestCase):
             lineage=None,
         )
         self.assertIn('"status": "ok"', buffer.getvalue())
+
+    def test_main_resume_run_forwards_manifest_window_and_seed_checkpoint(self) -> None:
+        loaded_scenario = SimpleNamespace(run=SimpleNamespace(run_dir="/tmp/existing_run"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            seed_checkpoint = Path(temp_dir) / "source_run" / "phase_2" / "checkpoints" / "best.pt"
+            resume_context = {
+                "selected_phase_window": {
+                    "start_phase_index": 2,
+                    "end_phase_index": 4,
+                    "selected_phase_indices": [2, 3, 4],
+                    "total_phases": 4,
+                },
+                "lineage": {
+                    "mode": "derived_run",
+                    "source_run_dir": str(Path(temp_dir) / "source_run"),
+                    "seed_checkpoint_path": str(seed_checkpoint),
+                },
+            }
+            with patch(
+                "tools.run_pv26_train.load_meta_train_resume_scenario",
+                return_value=(loaded_scenario, PRESET_PATH_ROOT / "default"),
+            ):
+                with patch(
+                    "tools.run_pv26_train.load_meta_train_resume_context",
+                    return_value=resume_context,
+                ):
+                    with patch(
+                        "tools.run_pv26_train.run_meta_train_scenario",
+                        return_value={"status": "ok", "scenario_path": str(PRESET_PATH_ROOT / "default")},
+                    ) as mocked_run:
+                        buffer = io.StringIO()
+                        with redirect_stdout(buffer):
+                            main(["--resume-run", "/tmp/existing_run"])
+
+            mocked_run.assert_called_once_with(
+                loaded_scenario,
+                scenario_path=PRESET_PATH_ROOT / "default",
+                selected_phase_indices=(2, 3, 4),
+                initial_best_checkpoint=seed_checkpoint.resolve(),
+                lineage=resume_context["lineage"],
+            )
+            self.assertIn('"status": "ok"', buffer.getvalue())
 
     def test_main_accepts_derive_run_argument(self) -> None:
         loaded_scenario = SimpleNamespace()

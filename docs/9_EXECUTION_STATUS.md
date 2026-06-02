@@ -8,9 +8,9 @@
 
 ## 현재 기준
 
-- 날짜: `2026-05-02`
-- phase: `phase 19 pv26-derived-retrain-runtime`
-- current focus: `OD bootstrap teacher/eval/calibration/exhaustive-OD/final dataset 경로는 구현 완료 상태이며, main code cleanliness wave 12 기준으로 rank-6/7 runtime cleanup도 마감했다. `tools/od_bootstrap/teacher/runtime/trainer.py`가 dataloader/callback/trainer runtime family를 맡아 `ultralytics_runner.py`를 thin orchestration facade로 줄였고, `common/train_runtime.py`는 duration formatting, device sync timing, tensorboard writer/scalar, rolling timing summary, `join_status_segments()`, `progress_meter()`, `build_progress_status()`를 담당한다. teacher/runtime/progress.py와 model/engine/trainer_progress.py는 framework-specific renderer만 local로 남기고 공용 progress status helper를 재사용한다. source internals는 `tools/od_bootstrap/source/aihub/` + `shared/` 패키지로, tool internals는 `tools/check_env/` + `tools/pv26_train/` 패키지로 정리됐고 stable entrypoint는 `tools/check_env.py`, `tools/run_pv26_train.py`만 유지한다. 남은 리스크는 `source/raw_common.py` UTC timestamp contract, `teacher/calibrate.py` default=str JSON 직렬화 call-site, `build/final_dataset.py` overwrite 금지 publish semantics 같은 policy-sensitive local surface이며, `link_or_copy`도 `common/io.py`, `source/shared/io.py`, `source/aihub/pipeline.py`, `build/teacher_dataset.py`, `build/final_dataset.py`, `teacher/runtime/artifacts.py`, `teacher/data_yaml.py`의 local 정책 차이를 그대로 유지한다. phase A에서는 lane pooled MLP를 shared spatial fusion stem + row-anchor query decoder로 교체했고, phase B 이후 현재 stop_line은 geometry memory + dense/direct decode 위의 `8 x 9` 4-point canonical centerline contract를 사용하며, phase C 이후 현재 crosswalk는 mask head 위의 16-point contour sequence contract를 사용한다. phase D에서는 checkpoint metadata/architecture generation gate, shape-aware partial weight migration, crosswalk-inclusive raw-head TorchScript export metadata를 추가해 road-marking rewrite wave를 마감했다. phase 19에서는 completed/incomplete source run을 seed로 새 derived run을 만들고 선택한 stage window만 current preset/user config로 다시 학습하는 retrain/fine-tune 경로를 `tools/run_pv26_train.py --derive-run ...`과 `tools/check_env/launch.py` interactive action으로 추가했다. exact resume는 same run dir contract를 그대로 유지하고, retrain은 lineage/selected phase window를 manifest/summary에 기록하는 별도 flow로 분리했다.`
+- 날짜: `2026-06-02`
+- phase: `repo-wide codebase refactor map / boundary hardening / obsolete probe retirement / E2E connection audit`
+- current focus: `refactor/tools-expired-probe-prune` branch에서 repo-wide 리팩토링을 문서-first로 진행 중이다. `docs/10_CODEBASE_REFACTORING_MAP_AND_PLAN.md`가 active refactor map이며, README는 stable entrypoint 중심을 유지하고 이 문서만 참조한다. baseline drift 4건은 current contract 기준으로 정렬했다: `PV26Heads` 테스트는 P2/P3/P4/P5 roadmark trunk path를 사용하고, sampler fail-fast는 task-positive multi sampler 메시지를 따른다. boundary hardening 1차로 raw-batch merge helper를 `model.engine.batch.merge_raw_batches` public helper로 승격했고, durable analysis는 `model.engine._trainer_epochs._merge_raw_batches` private import를 사용하지 않는다. obsolete `tools/probe_pv26_*`, lane60 replay, checkpoint-surgery scripts는 active code surface에서 retire했고, probe-owned helper tests도 제거했다. `modal/`은 `tools/modal/`로 이동해 tools-owned runtime surface에 맞췄다. 현재 focus는 raw source standardization부터 final dataset, loader/target encoder, model heads, loss, postprocess, trainer/tests까지 E2E 연결과 회귀 리스크를 code-grounded audit로 고정하는 것이다. 과거 실험 증거는 `docs/legacy/`, `docs/00B_STATUS_HISTORY.md`, and concise status summaries에 보존하며, current runtime 계약은 `model/engine`, `model/data`, `model/net`, `tools/check_env.py`, `tools/run_pv26_train.py`, `python -m tools.od_bootstrap`, `tools/modal/`, `tools/analyze_pv26_run.py` 쪽 테스트로 유지한다.
 
 ## 완료된 항목
 
@@ -118,6 +118,27 @@
 - [x] `common.io.write_json_sorted`, `append_jsonl_sorted`, `write_jsonl_sorted`를 추가하고 `model/engine/_trainer_io.py`, `tools/od_bootstrap/source/shared/io.py`가 이를 재사용하도록 정리
 - [x] `model/engine/det_geometry.py`, `model/engine/train_summary.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_runtime.py` public/shared surface를 추가하고 `loss.py`, `postprocess.py`, trainer runtime/tests가 private module 대신 이를 우선 사용하도록 정리
 - [x] `model/engine/trainer.py` compatibility alias를 core trainer facade만 남기고 줄여 rank-4 public/internal surface 정리를 마감
+- [x] obsolete probe/lane60 replay/checkpoint-surgery scripts를 active `tools/` surface에서 retire하고 probe-owned tests를 제거
+- [x] `modal/`을 `tools/modal/`로 이동하고 Modal runbook/import guard/module layout tests를 tools-owned package 기준으로 정렬
+- [x] raw source standardization -> teacher/exhaustive/final dataset -> loader/target encoder -> model/loss/postprocess/trainer E2E 연결 audit를 `docs/10_CODEBASE_REFACTORING_MAP_AND_PLAN.md`에 기록
+- [x] dataset key contract가 `SOURCE_MASK_BY_DATASET`, `DET_SUPERVISION_BY_DATASET`, sampler group mapping을 모두 덮도록 regression guard 추가
+- [x] shared OD/TL schema와 loss spec model contract가 함께 움직이도록 regression guard 추가
+- [x] final dataset publication output이 `PV26CanonicalDataset`과 encoded eval batch까지 같은 manifest path/sample-id/dataset-key/shape 계약으로 이어지는 regression guard 추가
+- [x] `encode_pv26_batch(..., include_lane_segfirst_targets=True)`가 loss가 소비하는 `roadmark_v2` dense lane/stop_line/crosswalk aux key와 shape/dtype 계약을 모두 방출하는 regression guard 추가
+- [x] worker-side `collate_pv26_encoded_batch()`가 manual seg-first encode와 동일한 nested `roadmark_v2` payload를 내는 regression guard 추가
+- [x] trainer/evaluator `prepare_batch()`가 seg-first head 모드에서 `_raw_batch`가 붙은 encoded batch를 dense `roadmark_v2` targets로 재구성하고 metrics raw bundle을 보존하는 regression guard 추가
+- [x] train config의 `encode_train_batches_in_loader` / `encode_val_batches_in_loader`와 worker/prefetch 설정이 phase DataLoader factory로 그대로 전달되는 regression guard 추가
+- [x] train config와 phase policy가 phase trainer factory에서 heads/loss/trainer/scheduler/evaluator postprocess wrapper로 전달되는 regression guard 추가
+- [x] phase execution이 loader/trainer/fit 옵션, weights-only handoff, checkpoint preview bundle, manifest-ready phase result를 연결하는 regression guard 추가
+- [x] meta-train runtime manifest lifecycle이 selected phase window, active phase state, skipped/completed status, lineage, final checkpoint handoff를 유지하는 regression guard 추가
+- [x] `--resume-run` CLI가 manifest selected phase window와 lineage seed checkpoint를 runtime meta-train 옵션으로 보존하는 regression guard 추가
+- [x] train runtime backbone adapter가 roadmark trunk를 우선 사용하고 detect-only 3채널 추론 결과를 4-level head channel contract로 복원하는 regression guard/fix 추가
+- [x] `check_env --check-yolo-runtime`가 current roadmark trunk의 4-level source/stride/channel contract를 확인하도록 regression guard/fix 추가
+- [x] PV26 TorchScript raw-head export metadata가 current loss spec의 lane/stop_line/crosswalk shape/format/schema와 동기화되도록 regression guard 추가
+- [x] PV26 TorchScript export가 current 4-level P2/P3/P4/P5 head channel contract와 roadmark trunk를 사용하도록 regression guard/fix 추가
+- [x] `PV26Heads.describe()` checkpoint metadata, evaluator `prediction_shapes`, and trainer checkpoint state가 current loss spec의 det/TL/lane/stop_line/crosswalk raw-head shape 계약을 함께 추적하도록 regression guard 추가
+- [x] exact resume checkpoint gate가 architecture generation뿐 아니라 checkpoint format, spec version, head summary shape mismatch도 거부하도록 regression guard 추가
+- [x] postprocess letterbox inverse가 det box뿐 아니라 lane/stop_line/crosswalk point output까지 raw image coordinate로 복원되는 regression guard 추가
 - [x] `tools/od_bootstrap/build/artifacts.py`, `build/sweep_types.py`, `build/exhaustive_od.py`, `source/types.py`, `build/final_dataset.py`에 image-list/run/job/prediction/source manifest typed surface를 고정하고 `final_dataset.py` publish marker/source/image row 계약을 `Literal`/`TypedDict`로 마감
 - [x] `docs/13_ROAD_MARKING_HEAD_REWRITE_DESIGN.md`로 lane row-anchor + road-marking spatial geometry rewrite 설계 고정
 - [x] `docs/13A_ROAD_MARKING_HEAD_REWRITE_CHECKLIST.md`로 sequential implementation / validation checklist 고정
@@ -167,10 +188,10 @@
 
 ## rank-3 잔여 리스크 기준
 
-- local helper implementation residue는 `now_iso` 2곳, `timestamp_token` 1곳, `write_json` 2곳, `append_jsonl` 1곳이다.
-- 상세 위치는 `now_iso` 2곳 (`common/io.py`, `tools/od_bootstrap/source/raw_common.py`), `timestamp_token` 1곳 (`common/io.py`), `write_json` 2곳 (`common/io.py`, `tools/od_bootstrap/build/final_dataset.py`), `append_jsonl` 1곳 (`common/io.py`)이다.
+- low-level helper duplication은 `write_json`을 `common/io.py`로 수렴했고, final dataset overwrite 금지 JSON publish는 `common.io.write_json(overwrite=False)`로 표현한다. exhaustive OD materialization scene/manifest/summary JSON은 `common.io.write_json(...)`, teacher/exhaustive/final label/class-map/data-yaml text는 `common.io.write_text(...)`로 표현한다. teacher train/eval/calibrate summary/report의 `default=str` 직렬화도 `common.io.write_json(default=str)` 호출로 표현하고, calibration prediction JSONL은 `common.io.write_jsonl(...)`로 표현한다.
+- 남은 의도적 helper 차이는 `now_iso` 2곳 (`common/io.py`, `tools/od_bootstrap/source/raw_common.py`), `timestamp_token` 1곳 (`common/io.py`), `append_jsonl` 1곳 (`common/io.py`)이다.
 - `model/engine/_trainer_io.py`, `tools/od_bootstrap/teacher/runtime/progress.py`, `tools/od_bootstrap/source/shared/io.py`는 이제 thin compatibility shim이 아니라 common helper direct re-export surface다. 테스트는 `_trainer_io`, `runtime_progress`, `shared_io`가 common helper identity를 그대로 유지하는지 고정한다.
-- 실제 contract 차이는 `tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract, `tools/od_bootstrap/teacher/calibrate.py`의 `default=str` JSON 직렬화 call-site, `tools/od_bootstrap/build/final_dataset.py`의 overwrite 금지 publish semantics에 남아 있다.
+- 실제 contract 차이는 `tools/od_bootstrap/source/raw_common.py`의 UTC timestamp contract에 남아 있다. teacher summary/report JSON 직렬화는 direct `json.dumps(..., default=str)` call-site가 아니라 common helper 호출 인자로 고정한다.
 - policy-sensitive `link_or_copy`는 `common/io.py`, `tools/od_bootstrap/source/shared/io.py`, `tools/od_bootstrap/source/aihub/pipeline.py`, `tools/od_bootstrap/build/teacher_dataset.py`, `tools/od_bootstrap/build/final_dataset.py`, `tools/od_bootstrap/teacher/runtime/artifacts.py`, `tools/od_bootstrap/teacher/data_yaml.py`에 걸쳐 서로 다른 overwrite/existing/symlink/hardlink/tree-staging 정책을 가진다. 이 차이는 local 유지가 맞고, 공통화 대상은 low-level atomic/json helper까지만 제한한다.
 
 ## 최근 검증
@@ -251,7 +272,7 @@
 
 ## 최근 결정
 
-- trunk는 official pretrained `yolo26n.pt` 기준
+- trunk는 official pretrained YOLO26 roadmark trunk 기준이며 기본 variant는 `yolo26s.pt`
 - head는 PV26 custom implementation
 - raw-space standardized dataset 유지
 - `800x608` transform은 loader 단계 온라인 적용
@@ -268,12 +289,12 @@
 - target encoder는 `det padded GT + TL GT bits/mask + lane family fixed query tensor`를 만든다
 - trunk adapter는 `ultralytics>=8.4.0` 가드, detect-head 분리, partial state load helper를 기준선으로 둔다
 - current verification env is `ultralytics 8.4.25 + torch 2.10.0 + torchvision 0.25.0 + numpy 1.26.4`
-- current custom heads skeleton uses `P3/P4/P5 = 64/128/256 channels` and `Q_det=9975` at `800x608`
-- current trunk feature extractor returns detect-source pyramid directly from Ultralytics detect head의 `f` indices를 따라 동작한다
+- current custom heads use default `yolo26s` `P2/P3/P4/P5 = 128/128/256/512 channels`; detector/TL rows still use P3/P4/P5 and `Q_det=9975` at `800x608`
+- current trunk feature extractor uses the roadmark-source P2/P3/P4/P5 pyramid; detector metadata remains P3/P4/P5
 - current detector loss runtime uses task-aligned assignment on real trunk/head outputs
 - current synthetic `q_det != canonical` tests use deterministic task-aligned assigner fixtures
 - current lane/stop-line/crosswalk loss runtime uses Hungarian matching against valid GT rows
-- build_yolo26n_trunk returns trunk parameters with `requires_grad=True` by default
+- build_yolo26_roadmark_trunk returns four roadmark feature sources with trunk parameters `requires_grad=True`; build_yolo26n_trunk remains a compatibility wrapper
 - current trainer skeleton can run `encoded batch -> backward -> optimizer.step` on real trunk+heads
 - current trainer runtime includes balanced sampler helper, checkpoint save/load, and history JSONL logging
 - current trainer runtime also writes `run_manifest.json`, step/epoch JSONL logs, and TensorBoard scalars under `runs/.../tensorboard` with default `curated` / optional `full` verbosity

@@ -6,7 +6,13 @@ import torch
 
 from ..data.target_encoder import encode_pv26_batch
 from common.task_mode import LANE_FAMILY_TASK_MODE
-from .batch import augment_lane_family_metrics, move_batch_to_device, raw_batch_for_metrics
+from .batch import (
+    augment_lane_family_metrics,
+    move_batch_to_device,
+    raw_batch_for_metrics,
+    validate_prediction_batch_matches_image,
+    validate_raw_batch_matches_image,
+)
 from ..net.trunk import forward_pyramid_features
 from .metrics import PV26MetricConfig, summarize_pv26_metrics
 from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
@@ -69,6 +75,8 @@ class PV26Evaluator:
         if "det_gt" in batch:
             encoded = batch
             raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
+            if raw_batch is not None:
+                validate_raw_batch_matches_image(raw_batch, encoded["image"], context="encoded")
             has_segfirst = isinstance(encoded.get("roadmark_v2"), dict) and "lane_seg_centerline_core" in encoded["roadmark_v2"]
             if include_segfirst and not has_segfirst and raw_batch is not None:
                 encoded = encode_pv26_batch(
@@ -108,6 +116,7 @@ class PV26Evaluator:
         encoded = self.prepare_batch(batch)
         with torch.no_grad():
             predictions = self.forward_encoded_batch(encoded)
+            validate_prediction_batch_matches_image(predictions, encoded["image"])
             losses = {}
             if compute_loss:
                 losses = self.criterion(predictions, encoded)

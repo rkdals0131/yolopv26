@@ -5,9 +5,7 @@ import math
 import time
 from typing import Any
 
-import torch
-
-from .batch import augment_lane_family_metrics, raw_batch_for_metrics
+from .batch import augment_lane_family_metrics, merge_raw_batches, raw_batch_for_metrics
 from ._trainer_io import _append_jsonl, _now_iso
 from .metrics import PV26MetricConfig, summarize_pv26_metrics, summarize_pv26_tensorboard_histograms
 from .trainer_reporting import (
@@ -43,20 +41,7 @@ from .trainer_progress import (
     update_timing_window,
 )
 
-def _merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
-    if not batches:
-        raise ValueError("cannot merge zero raw batches")
-    merged = {
-        "det_targets": [item for batch in batches for item in batch["det_targets"]],
-        "tl_attr_targets": [item for batch in batches for item in batch["tl_attr_targets"]],
-        "lane_targets": [item for batch in batches for item in batch["lane_targets"]],
-        "source_mask": [item for batch in batches for item in batch["source_mask"]],
-        "valid_mask": [item for batch in batches for item in batch["valid_mask"]],
-        "meta": [item for batch in batches for item in batch["meta"]],
-    }
-    if all("image" in batch for batch in batches):
-        merged["image"] = torch.cat([batch["image"] for batch in batches], dim=0)
-    return merged
+_merge_raw_batches = merge_raw_batches
 
 
 def _is_step_anomaly(summary: dict[str, Any]) -> bool:
@@ -546,7 +531,7 @@ def run_validate_epoch(
         metrics = {}
         merged_raw_batch: dict[str, Any] | None = None
         if raw_batches:
-            merged_raw_batch = _merge_raw_batches(raw_batches)
+            merged_raw_batch = merge_raw_batches(raw_batches)
             metrics = summarize_pv26_metrics(epoch_predictions, merged_raw_batch)
         else:
             metric_summaries = [item["metrics"] for item in batch_summaries if item.get("metrics")]

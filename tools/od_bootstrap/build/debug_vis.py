@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -17,6 +16,8 @@ except Exception:  # pragma: no cover - Pillow is expected in the repo test env.
     Image = None
 
 from common.io import now_iso as _now_iso
+from common.io import read_json as _read_json
+from common.io import read_text as _read_text
 from common.io import write_json as _write_json
 from common.overlay import render_overlay
 from .review import canonical_scene_to_overlay_scene
@@ -56,6 +57,7 @@ class DebugSelectionRow(TypedDict, total=False):
     scene_path: str
     source_dataset_key: str
     source_image_path: str
+    source_label_path: str
     split: str
 
 class OverlayImage(TypedDict):
@@ -290,7 +292,7 @@ def _teacher_overlay_scene(*, image_path: Path, label_path: Path, class_names: S
     overlay_scene = _empty_overlay_scene(image_path=image_path)
     if not label_path.is_file():
         return overlay_scene
-    for raw_line in label_path.read_text(encoding="utf-8").splitlines():
+    for raw_line in _read_text(label_path).splitlines():
         parts = raw_line.strip().split()
         if len(parts) != 5:
             continue
@@ -338,7 +340,7 @@ def _render_canonical_debug_item(row: DebugSelectionRow, *, output_root: Path) -
     image_path = Path(str(row["image_path"])).resolve()
     scene_path = Path(str(row["scene_path"])).resolve()
     overlay_path = _overlay_path_for_row(output_root, row)
-    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene = _load_scene_payload(scene_path)
     render_overlay(canonical_scene_to_overlay_scene(scene, image_path=image_path), overlay_path)
     return {
         "sample_id": str(row.get("sample_id") or ""),
@@ -696,7 +698,7 @@ def _resolve_source_group_name(*, dataset_key: str, split: str, source_image_pat
 
 
 def _load_scene_payload(scene_path: Path) -> dict[str, object]:
-    payload = json.loads(scene_path.read_text(encoding="utf-8"))
+    payload = _read_json(scene_path)
     if not isinstance(payload, dict):
         raise TypeError(f"scene JSON root must be a mapping: {scene_path}")
     return payload

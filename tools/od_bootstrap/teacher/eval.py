@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import json
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
 import torch
+
+from common.io import write_json, write_jsonl
 
 try:
     from ultralytics import YOLO
@@ -179,10 +180,7 @@ def eval_teacher_checkpoint(
     output_dir = scenario.run.output_root / scenario.teacher_name
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = output_dir / "predictions.jsonl"
-    predictions_path.write_text(
-        "\n".join(json.dumps(row, ensure_ascii=True) for row in predict_rows) + ("\n" if predict_rows else ""),
-        encoding="utf-8",
-    )
+    write_jsonl(predictions_path, predict_rows)
 
     summary = {
         "scenario_path": str(scenario_path),
@@ -199,7 +197,7 @@ def eval_teacher_checkpoint(
         "resolved_runtime": _build_resolved_runtime_summary(scenario),
     }
     summary_path = output_dir / "checkpoint_eval_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")
+    write_json(summary_path, summary, default=str)
     _log_eval(f"teacher={scenario.teacher_name} summary={summary_path}")
     return summary
 

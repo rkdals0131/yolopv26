@@ -30,15 +30,23 @@ OD_CLASSES = tuple(SPEC["model_contract"]["od_classes"])
 TL_BITS = tuple(SPEC["model_contract"]["tl_bits"])
 LANE_CLASSES = ("white_lane", "yellow_lane", "blue_lane")
 LANE_TYPES = ("solid", "dotted")
+DET_VECTOR_DIM = 5 + len(OD_CLASSES)
+TL_ATTR_VECTOR_DIM = len(TL_BITS)
 LANE_COLOR_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["color_logits"])
 LANE_TYPE_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["type_logits"])
 LANE_ANCHOR_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["anchor_rows"])
+LANE_QUERY_COUNT = int(SPEC["heads"]["lane"]["query_count"])
+LANE_VECTOR_DIM = 1 + LANE_COLOR_DIM + LANE_TYPE_DIM + (2 * LANE_ANCHOR_COUNT)
 LANE_COLOR_SLICE = slice(1, 1 + LANE_COLOR_DIM)
 LANE_TYPE_SLICE = slice(LANE_COLOR_SLICE.stop, LANE_COLOR_SLICE.stop + LANE_TYPE_DIM)
 LANE_X_SLICE = slice(LANE_TYPE_SLICE.stop, LANE_TYPE_SLICE.stop + LANE_ANCHOR_COUNT)
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 STOP_LINE_POINT_COUNT = int(SPEC["heads"]["stop_line"]["target_encoding"]["polyline_points"])
+STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
+STOP_LINE_VECTOR_DIM = 1 + int(SPEC["heads"]["stop_line"]["target_encoding"]["point_coordinates"])
 CROSSWALK_POINT_COUNT = int(SPEC["heads"]["crosswalk"]["target_encoding"]["sequence_points"])
+CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
+CROSSWALK_VECTOR_DIM = 1 + int(SPEC["heads"]["crosswalk"]["target_encoding"]["point_coordinates"])
 STOPLINE_MIN_COMPONENT_PIXELS = 4
 STOPLINE_MIN_COMPONENT_LENGTH = 3.0
 STOPLINE_BINARY_DILATION_ITERATIONS = 1
@@ -3609,6 +3617,40 @@ def _decode_crosswalk_rows(
     return _dedupe_crosswalk_predictions(predictions)
 
 
+def _det_query_count_from_feature_shapes(feature_shapes: list[Any]) -> int:
+    query_count = 0
+    for shape in feature_shapes:
+        if not isinstance(shape, (list, tuple)) or len(shape) != 2:
+            raise ValueError("postprocess requires det_feature_shapes entries as (height, width)")
+        height = int(shape[0])
+        width = int(shape[1])
+        if height <= 0 or width <= 0:
+            raise ValueError("postprocess requires positive det_feature_shapes entries")
+        query_count += height * width
+    return query_count
+
+
+def _require_prediction_tensor(
+    predictions: dict[str, torch.Tensor | list[Any]],
+    name: str,
+    *,
+    batch_size: int,
+    query_count: int,
+    vector_dim: int,
+) -> torch.Tensor:
+    value = predictions.get(name)
+    if not isinstance(value, torch.Tensor):
+        raise ValueError(f"{name} prediction tensor must be a torch.Tensor")
+    expected_shape = (int(batch_size), int(query_count), int(vector_dim))
+    if value.ndim == 3 and int(value.shape[0]) != int(batch_size):
+        raise ValueError(
+            f"meta batch size {int(batch_size)} does not match {name} prediction batch size {int(value.shape[0])}"
+        )
+    if value.ndim != 3 or tuple(value.shape) != expected_shape:
+        raise ValueError(f"{name} prediction tensor must have shape {expected_shape}, got {tuple(value.shape)}")
+    return value
+
+
 def postprocess_pv26_batch(
     predictions: dict[str, torch.Tensor | list[Any]],
     meta: list[dict[str, Any]],
@@ -3616,11 +3658,6 @@ def postprocess_pv26_batch(
     config: PV26PostprocessConfig | None = None,
 ) -> list[dict[str, Any]]:
     config = config or PV26PostprocessConfig()
-    det_pred = predictions["det"]
-    tl_attr_pred = predictions["tl_attr"]
-    lane_pred = predictions["lane"]
-    stop_line_pred = predictions["stop_line"]
-    crosswalk_pred = predictions["crosswalk"]
     stop_line_mask_logits = predictions.get("stop_line_mask_logits")
     stop_line_row_logits = predictions.get("stop_line_row_logits")
     stop_line_x_logits = predictions.get("stop_line_x_logits")
@@ -3660,6 +3697,45 @@ def postprocess_pv26_batch(
 
     if not isinstance(feature_shapes, list) or not isinstance(feature_strides, list):
         raise ValueError("postprocess requires det_feature_shapes and det_feature_strides metadata")
+    if len(feature_shapes) != len(feature_strides):
+        raise ValueError("postprocess requires det_feature_shapes and det_feature_strides with matching lengths")
+    batch_size = len(meta)
+    det_query_count = _det_query_count_from_feature_shapes(feature_shapes)
+    det_pred = _require_prediction_tensor(
+        predictions,
+        "det",
+        batch_size=batch_size,
+        query_count=det_query_count,
+        vector_dim=DET_VECTOR_DIM,
+    )
+    tl_attr_pred = _require_prediction_tensor(
+        predictions,
+        "tl_attr",
+        batch_size=batch_size,
+        query_count=det_query_count,
+        vector_dim=TL_ATTR_VECTOR_DIM,
+    )
+    lane_pred = _require_prediction_tensor(
+        predictions,
+        "lane",
+        batch_size=batch_size,
+        query_count=LANE_QUERY_COUNT,
+        vector_dim=LANE_VECTOR_DIM,
+    )
+    stop_line_pred = _require_prediction_tensor(
+        predictions,
+        "stop_line",
+        batch_size=batch_size,
+        query_count=STOP_LINE_QUERY_COUNT,
+        vector_dim=STOP_LINE_VECTOR_DIM,
+    )
+    crosswalk_pred = _require_prediction_tensor(
+        predictions,
+        "crosswalk",
+        batch_size=batch_size,
+        query_count=CROSSWALK_QUERY_COUNT,
+        vector_dim=CROSSWALK_VECTOR_DIM,
+    )
 
     batch_predictions: list[dict[str, Any]] = []
     for batch_index, sample_meta in enumerate(meta):

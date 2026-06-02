@@ -80,10 +80,10 @@ class AIHubWorkerModuleCleanupTests(unittest.TestCase):
                     "iter_task_chunks",
                     "parallel_chunk_size",
                 ),
-                "shared.raw": ("env_path", "now_iso", "probe_image_size", "repo_root", "safe_slug", "seg_dataset_root"),
+                "shared.raw": ("env_path", "now_iso", "repo_root", "safe_slug", "seg_dataset_root"),
                 "shared.resume": ("count_held_annotation_reasons", "load_existing_scene_output"),
                 "shared.reports": ("det_class_map_yaml",),
-                "shared.scene": ("bbox_to_yolo_line",),
+                "shared.scene": ("bbox_to_yolo_line", "build_base_scene"),
                 "shared.source_meta": (
                     "bdd_readme",
                     "bdd_source_inventory_markdown",

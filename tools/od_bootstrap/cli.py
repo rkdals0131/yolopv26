@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from common.io import read_json
 from tools.od_bootstrap.build.debug_vis import (
     DEFAULT_DEBUG_VIS_COUNT,
     DEFAULT_DEBUG_VIS_SEED,
@@ -57,7 +58,7 @@ def _resolve_output_root(args: argparse.Namespace, default: Path) -> Path:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     if not isinstance(payload, dict):
         raise TypeError(f"JSON root must be a mapping: {path}")
     return payload

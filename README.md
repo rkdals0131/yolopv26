@@ -181,7 +181,7 @@ python3 tools/run_pv26_train.py --preset default
 ## 저장소 구성
 
 - [model/](model/): PV26 runtime data/net/engine 코드
-- [tools/](tools/): stable entrypoint(`check_env.py`, `run_pv26_train.py`)와 package-based internal tooling(`tools/check_env/`, `tools/pv26_train/`, `tools/od_bootstrap/source/aihub/`, `tools/od_bootstrap/source/shared/`, `tools/od_bootstrap/teacher/runtime/`)
+- [tools/](tools/): stable entrypoint(`check_env.py`, `run_pv26_train.py`)와 package-based internal tooling(`tools/check_env/`, `tools/pv26_train/`, `tools/od_bootstrap/source/aihub/`, `tools/od_bootstrap/source/shared/`, `tools/od_bootstrap/teacher/runtime/`, `tools/modal/`)
 - [docs/](docs/): 번호가 붙은 설계/상태 문서
 - [test/](test/): 테스트 코드
 
@@ -191,6 +191,7 @@ python3 tools/run_pv26_train.py --preset default
 - [docs/00A_CURRENT_STATUS.md](docs/00A_CURRENT_STATUS.md): 현재 상태 snapshot
 - [docs/00B_STATUS_HISTORY.md](docs/00B_STATUS_HISTORY.md): 실패/수정/결과 오답노트
 - [docs/00C_NEXT_GATES.md](docs/00C_NEXT_GATES.md): 다음 gate와 금지사항
+- [docs/10_CODEBASE_REFACTORING_MAP_AND_PLAN.md](docs/10_CODEBASE_REFACTORING_MAP_AND_PLAN.md): repo-wide 리팩토링 지도와 public/internal boundary
 - [docs/legacy/3_DATA_AND_STANDARDIZATION.md](docs/legacy/3_DATA_AND_STANDARDIZATION.md): 데이터 구조와 전처리 방향 원문
 - [docs/legacy/3A_RAW_DATASET_LAYOUTS.md](docs/legacy/3A_RAW_DATASET_LAYOUTS.md): 원본 데이터셋 배치와 로컬 레이아웃 원문
 - [docs/legacy/4_MODEL_ARCHITECTURE.md](docs/legacy/4_MODEL_ARCHITECTURE.md): 모델 구조 원문

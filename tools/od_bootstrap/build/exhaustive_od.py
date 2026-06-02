@@ -4,7 +4,6 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +12,7 @@ from typing import Any, Iterable, TypedDict
 
 import yaml
 
+from common.io import read_json, write_json, write_text
 from common.pv26_schema import EXHAUSTIVE_DATASET_KEY_BY_SOURCE, OD_CLASS_TO_ID, OD_CLASSES
 
 from .artifacts import BoxProvenance
@@ -57,6 +57,9 @@ class ExhaustiveSampleRow(TypedDict):
     source_dataset_key: str
     exhaustive_dataset_key: str
     split: str
+    source_scene_path: str
+    source_image_path: str
+    source_det_path: str | None
     scene_path: str
     det_path: str
     image_path: str
@@ -156,6 +159,17 @@ def _default_io_workers() -> int:
     return max(1, min(8, os.cpu_count() or 1))
 
 
+def _validate_materialization_entries(entries: tuple[ImageListEntry, ...]) -> None:
+    seen_sample_uids: set[str] = set()
+    for entry in entries:
+        sample_uid = str(entry.sample_uid).strip()
+        if not sample_uid:
+            raise ValueError("materialization entry sample_uid must not be empty")
+        if sample_uid in seen_sample_uids:
+            raise ValueError(f"duplicate sample_uid in materialization entries: {sample_uid}")
+        seen_sample_uids.add(sample_uid)
+
+
 def _raw_provenance(*, run_id: str, created_at: str) -> BoxProvenance:
     return BoxProvenance(
         label_origin="raw_source",
@@ -165,6 +179,47 @@ def _raw_provenance(*, run_id: str, created_at: str) -> BoxProvenance:
         run_id=run_id,
         created_at=created_at,
     )
+
+
+def _load_scene(scene_path: Path) -> dict[str, Any]:
+    payload = read_json(scene_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"scene root must be an object: {scene_path}")
+    return payload
+
+
+def _resolve_entry_source_metadata(scene: dict[str, Any], entry: ImageListEntry) -> tuple[str, str]:
+    source = scene.get("source") if isinstance(scene.get("source"), dict) else {}
+    source_dataset_key = str(source.get("dataset") or "").strip()
+    if not source_dataset_key:
+        raise ValueError(f"scene source.dataset missing: {entry.scene_path}")
+    if source_dataset_key != entry.dataset_key:
+        raise ValueError(
+            f"scene source.dataset must match image list dataset_key: {source_dataset_key} != {entry.dataset_key} ({entry.scene_path})"
+        )
+    if source_dataset_key not in EXHAUSTIVE_DATASET_KEY_BY_SOURCE:
+        raise ValueError(f"unsupported exhaustive OD source dataset: {source_dataset_key} ({entry.scene_path})")
+
+    split = str(source.get("split") or "").strip()
+    if not split:
+        raise ValueError(f"scene source.split missing: {entry.scene_path}")
+    if split != entry.split:
+        raise ValueError(f"scene source.split must match image list split: {split} != {entry.split} ({entry.scene_path})")
+    return source_dataset_key, split
+
+
+def _assert_raw_detection_row_ids(raw_detections: list[Any], *, scene_path: Path) -> None:
+    for row_index, detection in enumerate(raw_detections):
+        if not isinstance(detection, dict):
+            raise TypeError(f"scene detections[{row_index}] must be an object: {scene_path}")
+        detection_id = detection.get("id")
+        if isinstance(detection_id, bool) or not isinstance(detection_id, int):
+            raise ValueError(f"scene detections[{row_index}].id must match detection row order: {scene_path}")
+        if detection_id != row_index:
+            raise ValueError(
+                f"scene detections[{row_index}].id must match detection row order: "
+                f"id={detection_id} expected={row_index} ({scene_path})"
+            )
 
 
 def _materialize_sample(
@@ -178,13 +233,13 @@ def _materialize_sample(
     copy_images: bool,
 ) -> tuple[MaterializedSample, dict[str, int], ExhaustiveSampleRow]:
     class_counts = Counter()
-    scene = json.loads(entry.scene_path.read_text(encoding="utf-8"))
-    source_dataset_key = str(scene.get("source", {}).get("dataset") or entry.dataset_key)
+    scene = _load_scene(entry.scene_path)
+    source_dataset_key, split = _resolve_entry_source_metadata(scene, entry)
     exhaustive_dataset_key = EXHAUSTIVE_DATASET_KEY_BY_SOURCE[source_dataset_key]
-    split = str(scene.get("source", {}).get("split") or entry.split)
     original_image_name = str(scene.get("image", {}).get("file_name") or entry.image_path.name)
     materialized_image_name = f"{entry.sample_uid}{entry.image_path.suffix.lower()}"
     raw_detections = list(scene.get("detections") or [])
+    _assert_raw_detection_row_ids(raw_detections, scene_path=entry.scene_path)
 
     final_scene = deepcopy(scene)
     final_scene["source"]["dataset"] = exhaustive_dataset_key
@@ -258,7 +313,7 @@ def _materialize_sample(
     det_output_path.parent.mkdir(parents=True, exist_ok=True)
     final_scene["image"]["original_file_name"] = original_image_name
     final_scene["image"]["file_name"] = image_output_path.name
-    scene_output_path.write_text(json.dumps(final_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_json(scene_output_path, final_scene)
     det_lines = [
         _bbox_to_yolo_line(
             str(detection["class_name"]),
@@ -268,7 +323,7 @@ def _materialize_sample(
         )
         for detection in final_detections
     ]
-    det_output_path.write_text(("\n".join(det_lines) + "\n") if det_lines else "", encoding="utf-8")
+    write_text(det_output_path, ("\n".join(det_lines) + "\n") if det_lines else "")
     _materialize_image(entry.image_path, image_output_path, copy_images=copy_images)
 
     materialized = MaterializedSample(
@@ -286,6 +341,9 @@ def _materialize_sample(
         "source_dataset_key": source_dataset_key,
         "exhaustive_dataset_key": exhaustive_dataset_key,
         "split": split,
+        "source_scene_path": str(entry.scene_path),
+        "source_image_path": str(entry.image_path),
+        "source_det_path": str(entry.det_path) if entry.det_path is not None else None,
         "scene_path": str(scene_output_path),
         "det_path": str(det_output_path),
         "image_path": str(image_output_path),
@@ -313,6 +371,7 @@ def materialize_exhaustive_od_dataset(
     sample_rows: list[ExhaustiveSampleRow] = []
     materialized: list[MaterializedSample] = []
     entries = tuple(image_entries)
+    _validate_materialization_entries(entries)
     total_entries = len(entries)
     workers = _default_io_workers()
     completed = 0
@@ -359,9 +418,9 @@ def materialize_exhaustive_od_dataset(
 
     meta_root = dataset_root / "meta"
     meta_root.mkdir(parents=True, exist_ok=True)
-    (meta_root / "class_map_det.yaml").write_text(
+    write_text(
+        meta_root / "class_map_det.yaml",
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
-        encoding="utf-8",
     )
     manifest_payload: ExhaustiveMaterializationManifest = {
         "version": "od-bootstrap-exhaustive-od-v1",
@@ -373,7 +432,7 @@ def materialize_exhaustive_od_dataset(
         "samples": sample_rows,
     }
     manifest_path = meta_root / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
-    manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_json(manifest_path, manifest_payload)
     summary_payload = _build_materialization_summary(
         dataset_root=dataset_root,
         run_id=run_id,
@@ -382,5 +441,5 @@ def materialize_exhaustive_od_dataset(
         class_counts=dict(class_counts),
     )
     summary_path = meta_root / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
-    summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    write_json(summary_path, summary_payload)
     return summary_payload

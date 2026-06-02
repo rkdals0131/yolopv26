@@ -18,6 +18,8 @@
 
 따라서 지금 “best”는 `develop`에 보존된 runtime/composite frontier다. 최종 목표는 여전히 broader validation에서 lane, stop_line, crosswalk F1이 모두 `>= 0.60`인 것이고 아직 달성되지 않았다.
 
+Refactor note on 2026-06-02: on `refactor/tools-expired-probe-prune`, obsolete probe/lane60 replay/checkpoint-surgery code is retired from active `tools/`. Probe references below are retained as historical experiment evidence; current executable surfaces are the stable train/env/bootstrap tools and maintained model/runtime modules.
+
 Branch cleanup on 2026-06-02: local and remote `exp/lane-family-f1/*` refs were removed after `develop` integration. Fixed historical anchors are preserved as tags instead of live branches:
 
 - `archive/lane-family-current-frontier-20260602`: current frontier, docs, artifact cleanup, and negative-result ledger before exp branch deletion.

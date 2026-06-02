@@ -666,6 +666,17 @@ class PV26TrainerTests(unittest.TestCase):
 
         self.assertEqual(resolve_summary_path(summary, "train.losses.total.mean"), 1.25)
 
+    def test_restore_task_best_state_rejects_non_object_summary_roots(self) -> None:
+        from model.engine import _trainer_fit
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir)
+            summary_path = run_dir / "summary.json"
+            summary_path.write_text("[]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(TypeError, "summary root must be an object"):
+                _trainer_fit._restore_task_best_state(run_dir, run_dir / "checkpoints")
+
     def test_stage_configuration_freezes_and_unfreezes_expected_modules(self) -> None:
         from model.engine.trainer import configure_pv26_train_stage
 
@@ -1016,6 +1027,76 @@ class PV26TrainerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "exact resume unsupported"):
                 reloaded.load_checkpoint(checkpoint_path, map_location="cpu")
 
+    def test_load_checkpoint_rejects_incompatible_spec_version_for_exact_resume(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        trainer = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = trainer.save_checkpoint(Path(temp_dir) / "resume_spec_break.pt")
+            payload = torch.load(checkpoint_path, map_location="cpu")
+            payload["checkpoint_metadata"]["spec_version"] = "pv26-stale-spec"
+            torch.save(payload, checkpoint_path)
+
+            reloaded = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
+            with self.assertRaisesRegex(RuntimeError, "checkpoint spec version"):
+                reloaded.load_checkpoint(checkpoint_path, map_location="cpu")
+
+    def test_load_checkpoint_rejects_incompatible_head_summary_for_exact_resume(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        trainer = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
+        stale_values = {
+            "det_dim": len(OD_CLASSES) + 6,
+            "tl_attr_dim": 5,
+            "lane_queries": LANE_QUERY_COUNT + 1,
+            "lane_dim": LANE_VECTOR_DIM + 1,
+            "stop_line_queries": STOP_LINE_QUERY_COUNT + 1,
+            "stop_line_dim": STOP_LINE_VECTOR_DIM + 1,
+            "crosswalk_queries": CROSSWALK_QUERY_COUNT + 1,
+            "crosswalk_dim": CROSSWALK_VECTOR_DIM + 1,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = trainer.save_checkpoint(Path(temp_dir) / "resume_head_break.pt")
+            base_payload = torch.load(checkpoint_path, map_location="cpu")
+            for key, stale_value in stale_values.items():
+                with self.subTest(head_summary_key=key):
+                    payload = dict(base_payload)
+                    metadata = dict(base_payload["checkpoint_metadata"])
+                    metadata["head_summary"] = dict(metadata["head_summary"])
+                    metadata["head_summary"][key] = stale_value
+                    payload["checkpoint_metadata"] = metadata
+                    torch.save(payload, checkpoint_path)
+
+                    reloaded = PV26Trainer(
+                        _DummyAdapter(),
+                        _make_pv26_heads_for_trainer_tests(),
+                        stage="stage_1_frozen_trunk_warmup",
+                    )
+                    with self.assertRaisesRegex(RuntimeError, f"checkpoint head_summary {key}"):
+                        reloaded.load_checkpoint(checkpoint_path, map_location="cpu")
+
+    def test_checkpoint_metadata_tracks_current_loss_spec_and_head_summary(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        trainer = PV26Trainer(_DummyAdapter(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
+
+        metadata = trainer.checkpoint_state()["checkpoint_metadata"]
+        head_summary = metadata["head_summary"]
+
+        self.assertEqual(metadata["checkpoint_format_version"], _trainer_checkpoint.CHECKPOINT_FORMAT_VERSION)
+        self.assertEqual(metadata["architecture_generation"], _trainer_checkpoint.ARCHITECTURE_GENERATION)
+        self.assertEqual(metadata["spec_version"], str(build_loss_spec()["version"]))
+        self.assertEqual(head_summary["det_dim"], len(OD_CLASSES) + 5)
+        self.assertEqual(head_summary["tl_attr_dim"], 4)
+        self.assertEqual(head_summary["lane_queries"], LANE_QUERY_COUNT)
+        self.assertEqual(head_summary["lane_dim"], LANE_VECTOR_DIM)
+        self.assertEqual(head_summary["stop_line_queries"], STOP_LINE_QUERY_COUNT)
+        self.assertEqual(head_summary["stop_line_dim"], STOP_LINE_VECTOR_DIM)
+        self.assertEqual(head_summary["crosswalk_queries"], CROSSWALK_QUERY_COUNT)
+        self.assertEqual(head_summary["crosswalk_dim"], CROSSWALK_VECTOR_DIM)
+
     def test_load_model_weights_uses_shape_aware_partial_load_for_migration(self) -> None:
         from model.engine.trainer import PV26Trainer
         from model.net import PV26Heads
@@ -1252,6 +1333,70 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertIn("detector", summary["metrics"])
         evaluator.evaluate_batch.assert_called_once_with(encoded_batch, include_predictions=True)
 
+    def test_prepare_batch_rehydrates_segfirst_targets_from_encoded_raw_bundle(self) -> None:
+        from model.data import encode_pv26_batch
+        from model.engine.trainer import PV26Trainer
+        from test_pv26_eval_metrics import make_raw_sample_batch
+
+        heads = nn.Identity()
+        heads.lane_head_mode = "seg_first"  # type: ignore[attr-defined]
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            heads,
+            criterion=_FiniteCriterion(),
+            stage="stage_1_frozen_trunk_warmup",
+            optimizer=_dummy_optimizer(),
+        )
+        raw_batch = make_raw_sample_batch()
+        encoded_batch = encode_pv26_batch(raw_batch)
+        self.assertNotIn("lane_seg_centerline_core", encoded_batch["roadmark_v2"])
+        encoded_batch["_raw_batch"] = {
+            "det_targets": list(raw_batch["det_targets"]),
+            "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+            "lane_targets": list(raw_batch["lane_targets"]),
+            "source_mask": list(raw_batch["source_mask"]),
+            "valid_mask": list(raw_batch["valid_mask"]),
+            "meta": list(raw_batch["meta"]),
+        }
+        raw_bundle = encoded_batch["_raw_batch"]
+
+        prepared = trainer.prepare_batch(encoded_batch)
+
+        self.assertIn("lane_seg_centerline_core", prepared["roadmark_v2"])
+        self.assertIn("_raw_batch", prepared)
+        self.assertIs(prepared["_raw_batch"], raw_bundle)
+        self.assertNotIn("image", prepared["_raw_batch"])
+        self.assertEqual(prepared["meta"], raw_bundle["meta"])
+        self.assertEqual(
+            [item["sample_id"] for item in prepared["meta"]],
+            [item["sample_id"] for item in prepared["_raw_batch"]["meta"]],
+        )
+
+    def test_prepare_batch_rejects_encoded_raw_bundle_batch_mismatch(self) -> None:
+        from model.engine.trainer import PV26Trainer
+        from test_pv26_eval_metrics import make_raw_sample_batch
+
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            nn.Identity(),
+            criterion=_FiniteCriterion(),
+            stage="stage_1_frozen_trunk_warmup",
+            optimizer=_dummy_optimizer(),
+        )
+        encoded_batch = _make_encoded_batch(batch_size=2, q_det=9975)
+        raw_batch = make_raw_sample_batch()
+        encoded_batch["_raw_batch"] = {
+            "det_targets": list(raw_batch["det_targets"]),
+            "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
+            "lane_targets": list(raw_batch["lane_targets"]),
+            "source_mask": list(raw_batch["source_mask"]),
+            "valid_mask": list(raw_batch["valid_mask"]),
+            "meta": list(raw_batch["meta"]),
+        }
+
+        with self.assertRaisesRegex(ValueError, "encoded _raw_batch length must match image batch size"):
+            trainer.prepare_batch(encoded_batch)
+
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
     def test_train_step_supports_grad_accumulation(self) -> None:
         from model.net import PV26Heads
@@ -1315,6 +1460,22 @@ class PV26TrainerTests(unittest.TestCase):
         self.assertEqual(criterion.seen_phase, "train")
         self.assertIsInstance(criterion.seen_cache, dict)
         self.assertIn("stop_line_mask_logits", criterion.seen_cache)
+
+    def test_train_step_rejects_prediction_batch_mismatch_before_loss(self) -> None:
+        from model.engine.trainer import PV26Trainer
+
+        trainer = PV26Trainer(
+            _DummyAdapter(),
+            nn.Identity(),
+            criterion=_FiniteCriterion(),
+            optimizer=_dummy_optimizer(),
+        )
+        trainer.forward_encoded_batch = lambda encoded: {  # type: ignore[method-assign]
+            "det": torch.zeros((2, 2, 12), requires_grad=True)
+        }
+
+        with self.assertRaisesRegex(ValueError, "prediction batch size must match image batch size"):
+            trainer.train_step(_make_encoded_batch(batch_size=1, q_det=2))
 
     def test_task_routed_distill_teacher_replaces_only_requested_task_cache(self) -> None:
         from model.engine.trainer import PV26TaskRoutedDistillTeacher

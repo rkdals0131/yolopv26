@@ -3,8 +3,10 @@ from __future__ import annotations
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import Any
 
-from constants import DATASET_ARCHIVE_NAME, DATASET_ROOT_DIRNAME, REQUIRED_DATASET_DIRS
+from common.io import read_json
+from tools.modal.constants import DATASET_ARCHIVE_NAME, DATASET_ROOT_DIRNAME, REQUIRED_DATASET_DIRS
 
 
 def _log(message: str) -> None:
@@ -72,6 +74,13 @@ def verify_archive_contract(archive_path: Path) -> dict[str, object]:
         f"name={archive_path.name} size_bytes={payload['archive_size_bytes']} top_level={DATASET_ROOT_DIRNAME}/"
     )
     return payload
+
+
+def read_final_dataset_stats_sample_count(stats_path: Path) -> Any:
+    payload = read_json(stats_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"final dataset stats root must be a mapping: {stats_path}")
+    return payload.get("sample_count")
 
 
 def extract_archive(archive_path: Path, destination: Path) -> None:

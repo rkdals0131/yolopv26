@@ -43,6 +43,35 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(outputs["det_feature_shapes"], [(76, 100), (38, 50), (19, 25)])
         self.assertEqual(outputs["det_feature_strides"], [8, 16, 32])
 
+    def test_heads_raw_contract_matches_loss_spec_and_feature_metadata(self) -> None:
+        from model.net import PV26Heads
+
+        heads = PV26Heads(in_channels=(64, 64, 128, 256))
+        features = [
+            torch.randn(1, 64, 152, 200),
+            torch.randn(1, 64, 76, 100),
+            torch.randn(1, 128, 38, 50),
+            torch.randn(1, 256, 19, 25),
+        ]
+
+        outputs = heads(features)
+        summary = heads.describe()
+        det_query_count = sum(height * width for height, width in outputs["det_feature_shapes"])
+        expected_det_dim = 5 + len(SPEC["model_contract"]["od_classes"])
+        expected_tl_attr_dim = len(SPEC["model_contract"]["tl_bits"])
+
+        self.assertEqual(summary["det_dim"], expected_det_dim)
+        self.assertEqual(summary["tl_attr_dim"], expected_tl_attr_dim)
+        self.assertEqual(tuple(outputs["det"].shape), (1, det_query_count, expected_det_dim))
+        self.assertEqual(tuple(outputs["tl_attr"].shape), (1, det_query_count, expected_tl_attr_dim))
+        self.assertEqual(outputs["det_feature_strides"], summary["det_feature_strides"])
+        self.assertEqual(summary["lane_queries"], SPEC["heads"]["lane"]["query_count"])
+        self.assertEqual(summary["lane_dim"], LANE_VECTOR_DIM)
+        self.assertEqual(summary["stop_line_queries"], SPEC["heads"]["stop_line"]["query_count"])
+        self.assertEqual(summary["stop_line_dim"], STOP_LINE_VECTOR_DIM)
+        self.assertEqual(summary["crosswalk_queries"], SPEC["heads"]["crosswalk"]["query_count"])
+        self.assertEqual(summary["crosswalk_dim"], CROSSWALK_VECTOR_DIM)
+
     def test_heads_expose_feature_contract_metadata(self) -> None:
         from model.net import PV26Heads
 
@@ -57,8 +86,11 @@ class PV26HeadsTests(unittest.TestCase):
         self.assertEqual(summary["det_dim"], 12)
         self.assertEqual(summary["tl_attr_dim"], 4)
         self.assertEqual(summary["lane_queries"], LANE_QUERY_COUNT)
+        self.assertEqual(summary["lane_dim"], LANE_VECTOR_DIM)
         self.assertEqual(summary["stop_line_queries"], STOP_LINE_QUERY_COUNT)
+        self.assertEqual(summary["stop_line_dim"], STOP_LINE_VECTOR_DIM)
         self.assertEqual(summary["crosswalk_queries"], CROSSWALK_QUERY_COUNT)
+        self.assertEqual(summary["crosswalk_dim"], CROSSWALK_VECTOR_DIM)
         self.assertEqual(summary["roadmark"]["lane_head_mode"], "seg_first")
         self.assertEqual(summary["roadmark"]["lane_family_shared_adapter"], "disabled")
         self.assertEqual(summary["roadmark"]["lane_family_cross_stitch"], "disabled")

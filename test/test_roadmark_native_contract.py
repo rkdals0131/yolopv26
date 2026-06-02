@@ -4,8 +4,10 @@ import unittest
 
 import torch
 
+from common.pv26_schema import LANE_CLASSES, LANE_TYPES
 from model.data.target_encoder import encode_pv26_batch
 from model.engine.loss import PV26MultiTaskLoss
+from model.engine.postprocess import PV26PostprocessConfig, postprocess_pv26_batch
 from model.net.heads import PV26Heads
 from model.net.trunk import (
     YOLO26_ROADMARK_SOURCE_INDICES,
@@ -76,13 +78,73 @@ class RoadmarkNativeContractTest(unittest.TestCase):
             "meta": [{"dataset_key": "unit", "sample_id": "roadmark_contract"}],
         }
 
-        encoded = encode_pv26_batch(batch)
+        encoded = encode_pv26_batch(batch, include_lane_segfirst_targets=True)
 
         self.assertEqual(tuple(encoded["lane"].shape), (1, 24, 38))
         self.assertEqual(tuple(encoded["stop_line"].shape), (1, 8, 9))
         self.assertEqual(tuple(encoded["crosswalk"].shape), (1, 8, 33))
         self.assertIn("roadmark_v2", encoded)
-        self.assertEqual(tuple(encoded["roadmark_v2"]["crosswalk_mask"].shape), (1, 1, 152, 200))
+        roadmark_v2 = encoded["roadmark_v2"]
+        expected_shapes = {
+            "lane_seed_heatmap": (1, 16, 100),
+            "lane_seed_offset": (1, 16, 100),
+            "lane_seed_positive_rows": (1, 24),
+            "lane_seed_positive_cols": (1, 24),
+            "lane_slot_valid": (1, 8),
+            "lane_centerline": (1, 1, 76, 100),
+            "lane_row_exists": (1, 8, 16),
+            "lane_row_col_index": (1, 8, 16),
+            "lane_row_col_target": (1, 8, 16),
+            "lane_row_soft_target": (1, 8, 16, 200),
+            "lane_slot_color": (1, 8),
+            "lane_slot_type": (1, 8),
+            "stop_line_center_heatmap": (1, 1, 152, 200),
+            "stop_line_distance_heatmap": (1, 1, 152, 200),
+            "stop_line_center_offset": (1, 2, 152, 200),
+            "stop_line_angle": (1, 2, 152, 200),
+            "stop_line_half_length": (1, 1, 152, 200),
+            "stop_line_haf_endpoint": (1, 4, 152, 200),
+            "stop_line_haf_valid": (1, 1, 152, 200),
+            "stop_line_haf_ignore": (1, 1, 152, 200),
+            "stop_line_axis_distance": (1, 3, 152, 200),
+            "stop_line_axis_direction": (1, 2, 152, 200),
+            "stop_line_axis_valid": (1, 1, 152, 200),
+            "stop_line_axis_ignore": (1, 1, 152, 200),
+            "stop_line_endpoint_heatmap": (1, 2, 152, 200),
+            "stop_line_endpoint_offset": (1, 4, 152, 200),
+            "stop_line_mask": (1, 1, 152, 200),
+            "stop_line_centerline": (1, 1, 152, 200),
+            "crosswalk_mask": (1, 1, 152, 200),
+            "crosswalk_boundary": (1, 1, 152, 200),
+            "crosswalk_center": (1, 1, 152, 200),
+            "lane_seg_centerline_core": (1, 1, 152, 200),
+            "lane_seg_centerline_soft": (1, 1, 152, 200),
+            "lane_seg_support": (1, 1, 152, 200),
+            "lane_seg_center_offset": (1, 2, 152, 200),
+            "lane_seg_center_offset_valid": (1, 1, 152, 200),
+            "lane_seg_anchor_offset": (1, 1, 152, 200),
+            "lane_seg_anchor_offset_valid": (1, 1, 152, 200),
+            "lane_seg_row_link_delta": (1, 1, 152, 200),
+            "lane_seg_row_link_valid": (1, 1, 152, 200),
+            "lane_seg_residual_risk_core": (1, 1, 152, 200),
+            "lane_seg_residual_risk_ring_negative": (1, 1, 152, 200),
+            "lane_seg_tangent_axis": (1, 2, 152, 200),
+            "lane_seg_instance_id": (1, 152, 200),
+            "lane_seg_instance_ignore": (1, 1, 152, 200),
+            "lane_seg_color": (1, len(LANE_CLASSES), 152, 200),
+            "lane_seg_type": (1, len(LANE_TYPES), 152, 200),
+            "lane_seg_ignore": (1, 1, 152, 200),
+            "lane_seg_negative": (1, 1, 152, 200),
+            "lane_seg_stop_line_ignore": (1, 1, 152, 200),
+            "lane_seg_crosswalk_ignore": (1, 1, 152, 200),
+            "lane_seg_tangent_count": (1, 1, 152, 200),
+        }
+        self.assertEqual(set(roadmark_v2), set(expected_shapes))
+        for key, shape in expected_shapes.items():
+            self.assertEqual(tuple(roadmark_v2[key].shape), shape, key)
+        self.assertEqual(roadmark_v2["lane_row_col_index"].dtype, torch.long)
+        self.assertEqual(roadmark_v2["lane_slot_valid"].dtype, torch.bool)
+        self.assertEqual(roadmark_v2["lane_seg_instance_id"].dtype, torch.long)
         self.assertGreaterEqual(int(encoded["mask"]["lane_supervised_count"][0]), 1)
 
     def test_loss_exports_dynamic_coverage_knob_and_keeps_unified_task_mode(self) -> None:
@@ -136,7 +198,22 @@ class RoadmarkNativeContractTest(unittest.TestCase):
                     "crosswalk": torch.ones((1,), dtype=torch.bool),
                 }
             ],
-            "meta": [{"dataset_key": "unit", "sample_id": "segfirst_numeric_contract"}],
+            "meta": [
+                {
+                    "dataset_key": "unit",
+                    "sample_id": "segfirst_numeric_contract",
+                    "raw_hw": (608, 800),
+                    "network_hw": (608, 800),
+                    "transform": {
+                        "scale": 1.0,
+                        "pad_left": 0,
+                        "pad_top": 0,
+                        "pad_right": 0,
+                        "pad_bottom": 0,
+                        "resized_hw": (608, 800),
+                    },
+                }
+            ],
         }
         encoded = encode_pv26_batch(batch, include_lane_segfirst_targets=True)
         heads = PV26Heads((64, 64, 128, 256), lane_head_mode="seg_first")
@@ -163,9 +240,25 @@ class RoadmarkNativeContractTest(unittest.TestCase):
 
         losses = criterion(predictions, encoded)
         losses["total"].backward()
+        postprocessed = postprocess_pv26_batch(
+            predictions,
+            encoded["meta"],
+            config=PV26PostprocessConfig(
+                det_conf_threshold=1.1,
+                lane_obj_threshold=1.1,
+                stop_line_obj_threshold=1.1,
+                crosswalk_obj_threshold=1.1,
+            ),
+        )
 
         self.assertTrue(torch.isfinite(losses["total"]).item())
         self.assertEqual(criterion.last_lane_assignment_modes["lane"], "seg_first_dense")
+        self.assertEqual(len(postprocessed), 1)
+        self.assertEqual(postprocessed[0]["meta"]["sample_id"], "segfirst_numeric_contract")
+        self.assertEqual(postprocessed[0]["detections"], [])
+        self.assertEqual(postprocessed[0]["lanes"], [])
+        self.assertEqual(postprocessed[0]["stop_lines"], [])
+        self.assertEqual(postprocessed[0]["crosswalks"], [])
 
 
 if __name__ == "__main__":

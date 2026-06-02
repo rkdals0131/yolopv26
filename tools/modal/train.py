@@ -6,9 +6,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from sdk_import import modal
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from constants import (
+from tools.modal.sdk_import import modal
+
+from common.io import read_text, write_text
+from tools.modal.constants import (
     APP_NAME,
     DATASET_ARCHIVE_IN_VOLUME,
     DATA_VOLUME_MOUNT,
@@ -30,7 +35,7 @@ from constants import (
     TRAIN_PRESET,
     validate_modal_constants,
 )
-from dataset_archive import extract_archive, verify_archive_contract, verify_layout
+from tools.modal.dataset_archive import extract_archive, verify_archive_contract, verify_layout
 
 
 def _log(message: str) -> None:
@@ -38,7 +43,7 @@ def _log(message: str) -> None:
 
 
 def _image() -> modal.Image:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = REPO_ROOT
     return (
         modal.Image.debian_slim(python_version="3.10")
         .apt_install("git", "zstd", "libgl1", "libglib2.0-0")
@@ -60,8 +65,8 @@ def _write_modal_path_config() -> None:
         f"  dataset_root: {LOCAL_DATASET_ROOT}\n"
         f"  run_root: {REMOTE_RUN_ROOT}\n"
     )
-    config_path.write_text(payload, encoding="utf-8")
-    written = config_path.read_text(encoding="utf-8")
+    write_text(config_path, payload)
+    written = read_text(config_path)
     if written != payload:
         raise RuntimeError(f"failed to write expected Modal path config: {config_path}")
     _log(f"OK wrote path config path={config_path} dataset_root={LOCAL_DATASET_ROOT} run_root={REMOTE_RUN_ROOT}")

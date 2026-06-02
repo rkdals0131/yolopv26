@@ -5,7 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from common.io import append_jsonl_sorted, link_or_copy, remove_path, write_json_sorted, write_jsonl_sorted
+from common.io import (
+    append_jsonl_sorted,
+    iter_jsonl,
+    link_or_copy,
+    read_text,
+    remove_path,
+    write_json_sorted,
+    write_jsonl_sorted,
+)
 
 
 class CommonIOTests(unittest.TestCase):
@@ -31,6 +39,20 @@ class CommonIOTests(unittest.TestCase):
             write_jsonl_sorted(path, [{"b": 1, "a": 2}, {"d": 4, "c": 3}])
             rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(rows, [{"a": 2, "b": 1}, {"c": 3, "d": 4}])
+
+    def test_read_text_uses_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "payload.txt"
+            path.write_text("lane-label\n", encoding="utf-8")
+
+            self.assertEqual(read_text(path), "lane-label\n")
+
+    def test_iter_jsonl_preserves_physical_line_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "rows.jsonl"
+            path.write_text('\n{"a": 1}\n\n{"b": 2}\n', encoding="utf-8")
+
+            self.assertEqual(list(iter_jsonl(path)), [(2, {"a": 1}), (4, {"b": 2})])
 
     def test_remove_path_handles_files_symlinks_and_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

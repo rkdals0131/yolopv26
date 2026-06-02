@@ -13,17 +13,29 @@ from common.io import (
     link_or_copy as common_link_or_copy,
     now_iso as common_now_iso,
     read_json as common_read_json,
+    write_json as common_write_json,
     write_json_sorted as common_write_json_sorted,
     write_text as common_write_text,
 )
 from tools.od_bootstrap.source import __all__ as SOURCE_EXPORTS
 from tools.od_bootstrap.source.constants import DEFAULT_AIHUB_OUTPUT_ROOT, DEFAULT_BDD_ROOT
 from tools.od_bootstrap.source.defaults import build_default_source_prep_config, resolve_source_path
-from tools.od_bootstrap.source.raw_common import PairRecord, _now_iso as raw_now_iso
+from tools.od_bootstrap.source.raw_common import (
+    LANE_DATASET_KEY,
+    PairRecord,
+    _load_json as raw_load_json,
+    _now_iso as raw_now_iso,
+)
 from tools.od_bootstrap.source.shared.debug import build_debug_vis_manifest
 from tools.od_bootstrap.source.shared.io import link_or_copy, load_json, now_iso, write_json, write_text
 from tools.od_bootstrap.source.shared.parallel import LiveLogger, default_workers, iter_task_chunks, parallel_chunk_size
-from tools.od_bootstrap.source.shared.raw import extract_annotations, now_iso as shared_raw_now_iso, normalize_text, safe_slug
+from tools.od_bootstrap.source.shared.raw import (
+    discover_pairs,
+    extract_annotations,
+    now_iso as shared_raw_now_iso,
+    normalize_text,
+    safe_slug,
+)
 from tools.od_bootstrap.source.shared.resume import count_held_annotation_reasons, load_existing_scene_output
 from tools.od_bootstrap.source.shared.scene import bbox_to_yolo_line, build_base_scene, sample_id
 from tools.od_bootstrap.source.shared.source_meta import build_bdd_inventory, build_bdd_source_inventory, tree_markdown
@@ -86,6 +98,7 @@ class SharedSourceHelpersTests(unittest.TestCase):
         self.assertIs(write_json, common_write_json_sorted)
         self.assertIs(write_text, common_write_text)
         self.assertIs(shared_raw_now_iso, raw_now_iso)
+        self.assertIs(raw_load_json, common_read_json)
 
     def test_shared_link_policy_stays_distinct_from_common_io_overwrite_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -102,6 +115,17 @@ class SharedSourceHelpersTests(unittest.TestCase):
 
             common_link_or_copy(second_source, target_path)
             self.assertEqual(target_path.read_text(encoding="utf-8"), "second\n")
+
+    def test_common_write_json_can_preserve_existing_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "payload.json"
+
+            common_write_json(output_path, {"version": 1}, overwrite=False)
+            with self.assertRaisesRegex(FileExistsError, "target path already exists"):
+                common_write_json(output_path, {"version": 2}, overwrite=False)
+            common_write_json(output_path, {"version": 3})
+
+            self.assertEqual(json.loads(output_path.read_text(encoding="utf-8")), {"version": 3})
 
     def test_shared_parallel_helpers_log_progress_and_chunk_work(self) -> None:
         stream = io.StringIO()
@@ -183,6 +207,8 @@ class SharedSourceHelpersTests(unittest.TestCase):
             self.assertEqual((width, height), (640, 480))
             self.assertEqual(scene["image"]["file_name"], "sample.png")
             self.assertEqual(scene["image"]["original_file_name"], "source-name.png")
+            self.assertEqual(scene["source"]["dataset"], "aihub_traffic_seoul")
+            self.assertEqual(scene["source"]["split"], "val")
             self.assertEqual(scene["source"]["raw_id"], "folder/source name")
             self.assertEqual(sample_id("aihub_traffic_seoul", pair, safe_slug=safe_slug), "aihub_traffic_seoul_val_folder_source_name")
             self.assertEqual(bbox_to_yolo_line(2, [10, 20, 110, 220], 200, 400), "2 0.300000 0.300000 0.500000 0.500000")
@@ -196,6 +222,26 @@ class SharedSourceHelpersTests(unittest.TestCase):
                 ],
             )
         self.assertEqual(counter_to_dict(Counter({"z": 1, "a": 2})), {"a": 2, "z": 1})
+
+    def test_discover_pairs_does_not_cross_split_match_same_named_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            train_label = root / "Training" / "labels" / "sample.json"
+            val_image = root / "Validation" / "images" / "sample.jpg"
+            train_label.parent.mkdir(parents=True, exist_ok=True)
+            val_image.parent.mkdir(parents=True, exist_ok=True)
+            train_label.write_text(
+                json.dumps({"image": {"file_name": "sample.jpg", "image_size": [16, 8]}}),
+                encoding="utf-8",
+            )
+            val_image.write_bytes(b"jpg")
+
+            report = discover_pairs(LANE_DATASET_KEY, root)
+
+            self.assertEqual(report.pairs, [])
+            self.assertEqual(len(report.missing_images), 1)
+            self.assertEqual(report.missing_images[0]["split"], "train")
+            self.assertEqual(report.missing_labels[0]["split"], "val")
 
     def test_shared_resume_and_bdd_source_meta_helpers_cover_public_source_cleanup_api(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -234,6 +280,7 @@ class SharedSourceHelpersTests(unittest.TestCase):
             image_path.write_bytes(b"jpg")
             payload = {
                 "version": "scene-v1",
+                "source": {"dataset": "bdd100k_det_100k", "split": "train"},
                 "detections": [],
                 "held_annotations": [{"reason": "Traffic Light"}],
             }
@@ -246,11 +293,37 @@ class SharedSourceHelpersTests(unittest.TestCase):
                 image_suffix=".jpg",
                 load_json_fn=load_json,
                 scene_version="scene-v1",
+                expected_dataset_key="bdd100k_det_100k",
+                expected_split="train",
             )
 
             self.assertIsNotNone(bundle)
             assert bundle is not None
             self.assertEqual(bundle["scene"]["version"], "scene-v1")
+            self.assertIsNone(
+                load_existing_scene_output(
+                    output_root=output_root,
+                    split="train",
+                    sample_id=sample_id_value,
+                    image_suffix=".jpg",
+                    load_json_fn=load_json,
+                    scene_version="scene-v1",
+                    expected_dataset_key="aihub_lane_seoul",
+                    expected_split="train",
+                )
+            )
+            self.assertIsNone(
+                load_existing_scene_output(
+                    output_root=output_root,
+                    split="train",
+                    sample_id=sample_id_value,
+                    image_suffix=".jpg",
+                    load_json_fn=load_json,
+                    scene_version="scene-v1",
+                    expected_dataset_key="bdd100k_det_100k",
+                    expected_split="val",
+                )
+            )
             self.assertEqual(count_held_annotation_reasons(payload["held_annotations"]), {"traffic light": 1})
             self.assertEqual(
                 count_held_annotation_reasons(payload["held_annotations"], normalize_reason=normalize_text),

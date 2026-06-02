@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from common.pv26_schema import OD_CLASS_TO_ID
 from tools.od_bootstrap.source.aihub import (
     TL_BITS,
     _prepare_debug_scene_for_overlay,
@@ -188,22 +189,57 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(len(debug_vis), 5)
 
             lane_scene = json.loads(lane_scenes[0].read_text(encoding="utf-8"))
-            self.assertEqual(lane_scene["tasks"]["has_lane"], 1)
-            self.assertEqual(lane_scene["tasks"]["has_stop_line"], 1)
-            self.assertEqual(lane_scene["tasks"]["has_crosswalk"], 1)
+            self.assertEqual(lane_scene["source"]["dataset"], "aihub_lane_seoul")
+            self.assertEqual(lane_scene["source"]["split"], "train")
+            self.assertTrue(lane_scene["image"]["file_name"].startswith("aihub_lane_seoul_train_"))
+            self.assertTrue(lane_scene["image"]["file_name"].endswith(".jpg"))
+            self.assertEqual(
+                lane_scene["tasks"],
+                {"has_det": 0, "has_lane": 1, "has_stop_line": 1, "has_crosswalk": 1, "has_tl_attr": 0},
+            )
+            lane_det_path = output_root / "labels_det" / lane_scene["source"]["split"] / f"{lane_scenes[0].stem}.txt"
+            self.assertFalse(lane_det_path.exists())
+            self.assertEqual(lane_scene["detections"], [])
+            self.assertEqual(lane_scene["traffic_lights"], [])
+            self.assertEqual(lane_scene["traffic_signs"], [])
             self.assertIn("blue_lane", {item["class_name"] for item in lane_scene["lanes"]})
 
             obstacle_scene = json.loads(obstacle_scenes[0].read_text(encoding="utf-8"))
-            self.assertEqual(obstacle_scene["tasks"]["has_det"], 1)
-            self.assertEqual(obstacle_scene["tasks"]["has_tl_attr"], 0)
+            self.assertEqual(obstacle_scene["source"]["dataset"], "aihub_obstacle_seoul")
+            self.assertIn(obstacle_scene["source"]["split"], {"train", "val"})
+            self.assertTrue(obstacle_scene["image"]["file_name"].startswith("aihub_obstacle_seoul_"))
+            self.assertEqual(
+                obstacle_scene["tasks"],
+                {"has_det": 1, "has_lane": 0, "has_stop_line": 0, "has_crosswalk": 0, "has_tl_attr": 0},
+            )
             self.assertEqual(obstacle_scene["traffic_lights"], [])
             self.assertEqual(obstacle_scene["traffic_signs"], [])
             self.assertEqual([item["class_name"] for item in obstacle_scene["detections"]], ["traffic_cone", "obstacle"])
+            for scene_path in obstacle_scenes + traffic_scenes:
+                with self.subTest(scene_path=scene_path.name):
+                    self._assert_labels_det_matches_detection_order(scene_path, output_root)
 
             traffic_bits = []
             for traffic_scene_path in traffic_scenes:
                 traffic_scene = json.loads(traffic_scene_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    traffic_scene["tasks"],
+                    {"has_det": 1, "has_lane": 0, "has_stop_line": 0, "has_crosswalk": 0, "has_tl_attr": 1},
+                )
+                self.assertEqual(
+                    [item["detection_id"] for item in traffic_scene["traffic_lights"]],
+                    [
+                        detection["id"]
+                        for detection in traffic_scene["detections"]
+                        if detection["class_name"] == "traffic_light"
+                    ],
+                )
+                self.assertEqual(traffic_scene["lanes"], [])
+                self.assertEqual(traffic_scene["stop_lines"], [])
+                self.assertEqual(traffic_scene["crosswalks"], [])
                 traffic_bits.extend(traffic_scene["traffic_lights"])
+                if traffic_scene["source"]["split"] == "train":
+                    self.assertEqual([item["class_name"] for item in traffic_scene["auxiliary_annotations"]], ["traffic_information"])
             combo_to_valid = {
                 "+".join(bit for bit in TL_BITS if item["tl_bits"].get(bit)) or "off": item["tl_attr_valid"]
                 for item in traffic_bits
@@ -322,6 +358,68 @@ class AIHubStandardizationTests(unittest.TestCase):
             self.assertEqual(second_datasets["aihub_obstacle_seoul"]["fresh_processed_count"], 0)
             self.assertEqual(second_datasets["aihub_traffic_seoul"]["resume_skipped_count"], 1)
             self.assertEqual(second_datasets["aihub_traffic_seoul"]["fresh_processed_count"], 1)
+
+    def test_resume_reprocesses_stale_lane_scene_with_detector_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_root = root / "docs"
+            lane_root = root / "lane"
+            obstacle_root = root / "obstacle"
+            traffic_root = root / "traffic"
+            output_root = root / "standardized"
+
+            self._create_docs_fixture(docs_root)
+            self._create_lane_fixture(lane_root)
+            self._create_obstacle_fixture(obstacle_root)
+            self._create_traffic_fixture(traffic_root)
+
+            run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+            lane_scene_path = sorted((output_root / "labels_scene").rglob("aihub_lane_seoul*.json"))[0]
+            stale_scene = json.loads(lane_scene_path.read_text(encoding="utf-8"))
+            stale_scene["tasks"]["has_det"] = 1
+            stale_scene["detections"] = [
+                {
+                    "id": 0,
+                    "class_name": "vehicle",
+                    "bbox": [10.0, 10.0, 80.0, 80.0],
+                    "score": None,
+                    "meta": {"dataset_label": "stale"},
+                }
+            ]
+            lane_scene_path.write_text(json.dumps(stale_scene, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+            stale_det_path = output_root / "labels_det" / stale_scene["source"]["split"] / f"{lane_scene_path.stem}.txt"
+            stale_det_path.parent.mkdir(parents=True, exist_ok=True)
+            stale_det_path.write_text("0 0.050000 0.050000 0.050000 0.050000\n", encoding="utf-8")
+
+            outputs = run_standardization(
+                lane_root=lane_root,
+                obstacle_root=obstacle_root,
+                traffic_root=traffic_root,
+                docs_root=docs_root,
+                output_root=output_root,
+                workers=1,
+                debug_vis_count=0,
+            )
+
+            report = json.loads(outputs["conversion_json"].read_text(encoding="utf-8"))
+            datasets = {item["dataset_key"]: item for item in report["datasets"]}
+            repaired_scene = json.loads(lane_scene_path.read_text(encoding="utf-8"))
+            self.assertEqual(datasets["aihub_lane_seoul"]["resume_skipped_count"], 0)
+            self.assertEqual(datasets["aihub_lane_seoul"]["fresh_processed_count"], 1)
+            self.assertEqual(
+                repaired_scene["tasks"],
+                {"has_det": 0, "has_lane": 1, "has_stop_line": 1, "has_crosswalk": 1, "has_tl_attr": 0},
+            )
+            self.assertEqual(repaired_scene["detections"], [])
+            self.assertFalse(stale_det_path.exists())
 
     def test_parallel_standardize_logs_submit_progress_before_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -530,6 +628,19 @@ class AIHubStandardizationTests(unittest.TestCase):
                     },
                 ],
             },
+        )
+
+    def _assert_labels_det_matches_detection_order(self, scene_path: Path, output_root: Path) -> None:
+        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+        detections = scene["detections"]
+        self.assertEqual([item["id"] for item in detections], list(range(len(detections))))
+
+        det_path = output_root / "labels_det" / scene["source"]["split"] / f"{scene_path.stem}.txt"
+        det_rows = [line.split() for line in det_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(len(det_rows), len(detections))
+        self.assertEqual(
+            [int(row[0]) for row in det_rows],
+            [OD_CLASS_TO_ID[item["class_name"]] for item in detections],
         )
 
 

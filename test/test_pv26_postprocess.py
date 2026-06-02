@@ -128,6 +128,12 @@ def _make_prediction_batch() -> dict[str, torch.Tensor | list]:
     }
 
 
+def _point_bounds(points_xy: list[list[float]]) -> tuple[float, float, float, float]:
+    xs = [float(point[0]) for point in points_xy]
+    ys = [float(point[1]) for point in points_xy]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 class PV26PostprocessTests(unittest.TestCase):
     def test_postprocess_decodes_detection_tl_and_lane_family_outputs(self) -> None:
         predictions = postprocess_pv26_batch(
@@ -151,8 +157,50 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertEqual(len(sample["crosswalks"]), 1)
 
     def test_postprocess_restores_raw_space_coordinates_from_letterbox_meta(self) -> None:
+        prediction_batch = _make_prediction_batch()
+        prediction_batch["stop_line"][0, 0, 1:] = torch.tensor(
+            [100.0, 500.0, 180.0, 500.0, 260.0, 500.0, 340.0, 500.0],
+            dtype=torch.float32,
+        )
+        prediction_batch["crosswalk"][0, 0, 1:] = torch.tensor(
+            [
+                200.0,
+                400.0,
+                260.0,
+                400.0,
+                320.0,
+                400.0,
+                380.0,
+                400.0,
+                380.0,
+                420.0,
+                380.0,
+                440.0,
+                380.0,
+                460.0,
+                380.0,
+                480.0,
+                320.0,
+                480.0,
+                260.0,
+                480.0,
+                200.0,
+                480.0,
+                200.0,
+                460.0,
+                200.0,
+                440.0,
+                200.0,
+                420.0,
+                200.0,
+                400.0,
+                260.0,
+                400.0,
+            ],
+            dtype=torch.float32,
+        )
         predictions = postprocess_pv26_batch(
-            _make_prediction_batch(),
+            prediction_batch,
             _meta_letterboxed(),
             config=PV26PostprocessConfig(det_iou_threshold=0.5),
         )
@@ -163,6 +211,23 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertAlmostEqual(box[1], 0.0, places=1)
         self.assertAlmostEqual(box[2], 326.4, places=1)
         self.assertAlmostEqual(box[3], 72.0, places=1)
+        lane = predictions[0]["lanes"][0]["points_xy"]
+        self.assertAlmostEqual(lane[0][0], 192.0, places=1)
+        self.assertAlmostEqual(lane[0][1], 719.0, places=1)
+        self.assertAlmostEqual(lane[-1][0], 432.0, places=1)
+        self.assertAlmostEqual(lane[-1][1], 0.0, places=1)
+
+        stop_line = predictions[0]["stop_lines"][0]["points_xy"]
+        self.assertAlmostEqual(stop_line[0][0], 160.0, places=1)
+        self.assertAlmostEqual(stop_line[0][1], 673.6, places=1)
+        self.assertAlmostEqual(stop_line[-1][0], 544.0, places=1)
+        self.assertAlmostEqual(stop_line[-1][1], 673.6, places=1)
+
+        crosswalk_bounds = _point_bounds(predictions[0]["crosswalks"][0]["points_xy"])
+        self.assertAlmostEqual(crosswalk_bounds[0], 320.0, places=1)
+        self.assertAlmostEqual(crosswalk_bounds[1], 513.6, places=1)
+        self.assertAlmostEqual(crosswalk_bounds[2], 608.0, places=1)
+        self.assertAlmostEqual(crosswalk_bounds[3], 641.6, places=1)
 
     def test_postprocess_thresholds_filter_detection_and_lane_predictions(self) -> None:
         predictions = _make_prediction_batch()
@@ -183,6 +248,34 @@ class PV26PostprocessTests(unittest.TestCase):
         self.assertEqual(sample["lanes"], [])
         self.assertEqual(sample["stop_lines"], [])
         self.assertEqual(sample["crosswalks"], [])
+
+    def test_postprocess_rejects_core_head_shape_mismatch(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["lane"] = torch.zeros((1, LANE_QUERY_COUNT, LANE_VECTOR_DIM - 1), dtype=torch.float32)
+
+        with self.assertRaisesRegex(ValueError, "lane prediction tensor"):
+            postprocess_pv26_batch(predictions, _meta_identity())
+
+    def test_postprocess_requires_detector_feature_metadata(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions.pop("det_feature_shapes")
+
+        with self.assertRaisesRegex(ValueError, "det_feature_shapes and det_feature_strides metadata"):
+            postprocess_pv26_batch(predictions, _meta_identity())
+
+    def test_postprocess_rejects_detector_query_count_metadata_drift(self) -> None:
+        predictions = _make_prediction_batch()
+        predictions["det_feature_shapes"] = [(76, 100), (38, 50)]
+        predictions["det_feature_strides"] = [8, 16]
+
+        with self.assertRaisesRegex(ValueError, "det prediction tensor must have shape"):
+            postprocess_pv26_batch(predictions, _meta_identity())
+
+    def test_postprocess_rejects_meta_batch_size_mismatch(self) -> None:
+        predictions = _make_prediction_batch()
+
+        with self.assertRaisesRegex(ValueError, "meta batch size"):
+            postprocess_pv26_batch(predictions, [*_meta_identity(), *_meta_identity()])
 
     def test_crosswalk_hull_polygon_mode_decodes_mask_component(self) -> None:
         predictions = _make_prediction_batch()

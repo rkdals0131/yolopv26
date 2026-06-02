@@ -8,7 +8,12 @@ from pathlib import Path
 
 import torch
 
-from common.pv26_schema import OD_CLASSES
+from common.pv26_schema import (
+    DET_SUPERVISION_BY_DATASET,
+    EXHAUSTIVE_DATASET_KEY_BY_SOURCE,
+    OD_CLASSES,
+    SOURCE_MASK_BY_DATASET,
+)
 from model.data import (
     PV26BalancedBatchSampler,
     PV26SampleIdPositiveBatchSampler,
@@ -18,6 +23,7 @@ from model.data import (
     build_pv26_train_dataloader,
     dataset_group_for_key,
 )
+from model.data.sampler import DATASET_GROUP_BY_KEY
 from model.data.dataset import SampleRecord
 
 
@@ -136,6 +142,31 @@ def _scene_flags(scene_path: Path) -> dict[str, bool]:
 
 
 class PV26BalancedSamplerTests(unittest.TestCase):
+    def test_dataset_key_contracts_cover_loader_and_sampler_surfaces(self) -> None:
+        expected_keys = {
+            "bdd100k_det_100k",
+            "aihub_traffic_seoul",
+            "aihub_obstacle_seoul",
+            "aihub_lane_seoul",
+            *EXHAUSTIVE_DATASET_KEY_BY_SOURCE.values(),
+        }
+
+        self.assertEqual(set(SOURCE_MASK_BY_DATASET), expected_keys)
+        self.assertEqual(set(DET_SUPERVISION_BY_DATASET), expected_keys)
+        self.assertEqual(set(DATASET_GROUP_BY_KEY), expected_keys)
+
+        for dataset_key in expected_keys:
+            source_mask = SOURCE_MASK_BY_DATASET[dataset_key]
+            det_policy = DET_SUPERVISION_BY_DATASET[dataset_key]
+            self.assertEqual(
+                set(source_mask),
+                {"det", "tl_attr", "lane", "stop_line", "crosswalk"},
+            )
+            if source_mask["det"]:
+                self.assertGreater(len(det_policy["class_names"]), 0, msg=dataset_key)
+            else:
+                self.assertEqual(tuple(det_policy["class_names"]), (), msg=dataset_key)
+
     def test_dataset_group_mapping_is_stable(self) -> None:
         self.assertEqual(dataset_group_for_key("bdd100k_det_100k"), "bdd100k")
         self.assertEqual(dataset_group_for_key("aihub_traffic_seoul"), "aihub_traffic")

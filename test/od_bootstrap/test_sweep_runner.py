@@ -11,7 +11,13 @@ from unittest.mock import patch
 
 import torch
 
-from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
+from common.pv26_schema import OD_CLASS_TO_ID
+from tools.od_bootstrap.build.exhaustive_od import (
+    EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
+    EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME,
+    _load_scene,
+    materialize_exhaustive_od_dataset,
+)
 from tools.od_bootstrap.build.image_list import ImageListEntry, build_sample_uid
 from tools.od_bootstrap.build.sweep import _extract_teacher_rows, run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.artifacts import JOB_MANIFEST_VERSION
@@ -43,6 +49,16 @@ def _build_isolated_sweep_preset(*, calibration_root: Path):
         return_value={"od_bootstrap": {"exhaustive_od": {"allow_default_class_policy": True}}},
     ):
         return build_sweep_preset()
+
+
+def _assert_det_rows_match_scene_detections(test_case: unittest.TestCase, *, scene: dict, det_path: Path) -> None:
+    det_rows = [line.split() for line in det_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    detections = scene["detections"]
+    test_case.assertEqual(len(det_rows), len(detections))
+    test_case.assertEqual(
+        [int(row[0]) for row in det_rows],
+        [OD_CLASS_TO_ID[item["class_name"]] for item in detections],
+    )
 
 
 class _FakeYOLO:
@@ -83,6 +99,14 @@ class _FakeYOLO:
 
 
 class ODBootstrapRunnerTests(unittest.TestCase):
+    def test_exhaustive_od_load_scene_rejects_non_object_json_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scene_path = Path(temp_dir) / "scene.json"
+            scene_path.write_text("[]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(TypeError, "scene root must be an object"):
+                _load_scene(scene_path)
+
     def test_extract_teacher_rows_falls_back_to_batch_position_when_result_path_is_rewritten(self) -> None:
         entry = ImageListEntry(
             sample_id="frame_001",
@@ -125,6 +149,207 @@ class ODBootstrapRunnerTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["sample_uid"], entry.sample_uid)
         self.assertEqual(rows[0]["class_name"], "vehicle")
+
+    def test_exhaustive_od_materialization_rejects_duplicate_sample_uids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "canonical" / "bdd100k_det_100k"
+            for name in ("one", "two"):
+                image_path = source_root / "images" / "train" / f"{name}.png"
+                scene_path = source_root / "labels_scene" / "train" / f"{name}.json"
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                scene_path.parent.mkdir(parents=True, exist_ok=True)
+                image_path.write_bytes(_ONE_BY_ONE_PNG)
+                scene_path.write_text(
+                    json.dumps(
+                        {
+                            "version": "test",
+                            "image": {"file_name": f"{name}.png", "width": 640, "height": 480},
+                            "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                            "tasks": {"has_det": 0},
+                            "detections": [],
+                            "traffic_lights": [],
+                            "traffic_signs": [],
+                            "lanes": [],
+                            "stop_lines": [],
+                            "crosswalks": [],
+                        },
+                        ensure_ascii=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+            duplicate_uid = build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="shared")
+            entries = (
+                ImageListEntry(
+                    sample_id="one",
+                    sample_uid=duplicate_uid,
+                    image_path=source_root / "images" / "train" / "one.png",
+                    scene_path=source_root / "labels_scene" / "train" / "one.json",
+                    dataset_root=source_root,
+                    dataset_key="bdd100k_det_100k",
+                    split="train",
+                ),
+                ImageListEntry(
+                    sample_id="two",
+                    sample_uid=duplicate_uid,
+                    image_path=source_root / "images" / "train" / "two.png",
+                    scene_path=source_root / "labels_scene" / "train" / "two.json",
+                    dataset_root=source_root,
+                    dataset_key="bdd100k_det_100k",
+                    split="train",
+                ),
+            )
+
+            with self.assertRaisesRegex(ValueError, "duplicate sample_uid"):
+                materialize_exhaustive_od_dataset(
+                    image_entries=entries,
+                    predictions_by_sample_uid={},
+                    class_policy=TEST_CLASS_POLICY,
+                    output_root=root / "exhaustive_od",
+                    run_id="test_run",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    copy_images=False,
+                )
+
+    def test_exhaustive_od_materialization_rejects_scene_dataset_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "canonical" / "bdd100k_det_100k"
+            image_path = source_root / "images" / "train" / "sample.png"
+            scene_path = source_root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(_ONE_BY_ONE_PNG)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "version": "test",
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_traffic_seoul", "split": "train"},
+                        "tasks": {"has_det": 0},
+                        "detections": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            entry = ImageListEntry(
+                sample_id="sample",
+                sample_uid=build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="sample"),
+                image_path=image_path,
+                scene_path=scene_path,
+                dataset_root=source_root,
+                dataset_key="bdd100k_det_100k",
+                split="train",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.dataset must match image list dataset_key"):
+                materialize_exhaustive_od_dataset(
+                    image_entries=(entry,),
+                    predictions_by_sample_uid={},
+                    class_policy=TEST_CLASS_POLICY,
+                    output_root=root / "exhaustive_od",
+                    run_id="test_run",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    copy_images=False,
+                )
+
+    def test_exhaustive_od_materialization_rejects_scene_split_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "canonical" / "bdd100k_det_100k"
+            image_path = source_root / "images" / "train" / "sample.png"
+            scene_path = source_root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(_ONE_BY_ONE_PNG)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "version": "test",
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "val"},
+                        "tasks": {"has_det": 0},
+                        "detections": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            entry = ImageListEntry(
+                sample_id="sample",
+                sample_uid=build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="sample"),
+                image_path=image_path,
+                scene_path=scene_path,
+                dataset_root=source_root,
+                dataset_key="bdd100k_det_100k",
+                split="train",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.split must match image list split"):
+                materialize_exhaustive_od_dataset(
+                    image_entries=(entry,),
+                    predictions_by_sample_uid={},
+                    class_policy=TEST_CLASS_POLICY,
+                    output_root=root / "exhaustive_od",
+                    run_id="test_run",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    copy_images=False,
+                )
+
+    def test_exhaustive_od_materialization_rejects_raw_detection_id_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "canonical" / "bdd100k_det_100k"
+            image_path = source_root / "images" / "train" / "sample.png"
+            scene_path = source_root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            image_path.write_bytes(_ONE_BY_ONE_PNG)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "version": "test",
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "tasks": {"has_det": 1},
+                        "detections": [
+                            {
+                                "id": 3,
+                                "class_name": "vehicle",
+                                "bbox": [10.0, 10.0, 30.0, 30.0],
+                            }
+                        ],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            entry = ImageListEntry(
+                sample_id="sample",
+                sample_uid=build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="sample"),
+                image_path=image_path,
+                scene_path=scene_path,
+                dataset_root=source_root,
+                dataset_key="bdd100k_det_100k",
+                split="train",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene detections\\[0\\].id must match detection row order"):
+                materialize_exhaustive_od_dataset(
+                    image_entries=(entry,),
+                    predictions_by_sample_uid={},
+                    class_policy=TEST_CLASS_POLICY,
+                    output_root=root / "exhaustive_od",
+                    run_id="test_run",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    copy_images=False,
+                )
 
     def test_run_model_centric_sweep_writes_manifests_and_materializes_exhaustive_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -282,6 +507,9 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             materialization_summary = json.loads(
                 (materialized_root / "meta" / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME).read_text(encoding="utf-8")
             )
+            materialization_manifest = json.loads(
+                (materialized_root / "meta" / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
             bdd_uid = build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="frame_001")
             traffic_uid = build_sample_uid(dataset_key="aihub_traffic_seoul", split="train", sample_id="frame_001")
             bdd_scene = json.loads(
@@ -296,6 +524,8 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertEqual(traffic_scene["source"]["bootstrap_sample_uid"], traffic_uid)
             self.assertEqual(len(bdd_scene["detections"]), 5)
             self.assertEqual(len(traffic_scene["detections"]), 5)
+            self.assertEqual([item["id"] for item in bdd_scene["detections"]], [0, 1, 2, 3, 4])
+            self.assertEqual([item["id"] for item in traffic_scene["detections"]], [0, 1, 2, 3, 4])
             self.assertEqual(bdd_scene["detections"][0]["provenance"]["label_origin"], "raw_source")
             self.assertEqual(bdd_scene["detections"][1]["provenance"]["label_origin"], "bootstrap")
             traffic_classes = [item["class_name"] for item in traffic_scene["detections"]]
@@ -304,9 +534,56 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertIn("vehicle", traffic_classes)
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{bdd_uid}.txt").is_file())
             self.assertTrue((materialized_root / "labels_det" / "train" / f"{traffic_uid}.txt").is_file())
+            _assert_det_rows_match_scene_detections(
+                self,
+                scene=bdd_scene,
+                det_path=materialized_root / "labels_det" / "train" / f"{bdd_uid}.txt",
+            )
+            _assert_det_rows_match_scene_detections(
+                self,
+                scene=traffic_scene,
+                det_path=materialized_root / "labels_det" / "train" / f"{traffic_uid}.txt",
+            )
             self.assertEqual(materialization_summary, summary["materialization"])
             self.assertEqual(materialization_summary["run_id"], materialized_root.name)
             self.assertEqual(
                 materialization_summary["summary_path"],
                 str(materialized_root / "meta" / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME),
+            )
+            self.assertEqual(
+                materialization_summary["manifest_path"],
+                str(materialized_root / "meta" / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME),
+            )
+            self.assertEqual(materialization_manifest["run_id"], materialized_root.name)
+            self.assertEqual(materialization_manifest["sample_count"], 2)
+            self.assertEqual(
+                sorted(row["sample_uid"] for row in materialization_manifest["samples"]),
+                sorted([bdd_uid, traffic_uid]),
+            )
+            materialization_rows_by_uid = {
+                str(row["sample_uid"]): row for row in materialization_manifest["samples"]
+            }
+            bdd_manifest_row = materialization_rows_by_uid[bdd_uid]
+            traffic_manifest_row = materialization_rows_by_uid[traffic_uid]
+            self.assertEqual(bdd_manifest_row["source_scene_path"], str(bdd_scene_dir / "frame_001.json"))
+            self.assertEqual(bdd_manifest_row["source_image_path"], str(bdd_image_root / "frame_001.png"))
+            self.assertEqual(bdd_manifest_row["source_det_path"], str(bdd_det_dir / "frame_001.txt"))
+            self.assertEqual(
+                bdd_manifest_row["scene_path"],
+                str(materialized_root / "labels_scene" / "train" / f"{bdd_uid}.json"),
+            )
+            self.assertEqual(
+                bdd_manifest_row["det_path"],
+                str(materialized_root / "labels_det" / "train" / f"{bdd_uid}.txt"),
+            )
+            self.assertEqual(
+                bdd_manifest_row["image_path"],
+                str(materialized_root / "images" / "train" / f"{bdd_uid}.png"),
+            )
+            self.assertEqual(traffic_manifest_row["source_scene_path"], str(traffic_scene_dir / "frame_001.json"))
+            self.assertEqual(traffic_manifest_row["source_image_path"], str(traffic_image_root / "frame_001.png"))
+            self.assertEqual(traffic_manifest_row["source_det_path"], str(traffic_det_dir / "frame_001.txt"))
+            self.assertIn(
+                "'0': vehicle",
+                (materialized_root / "meta" / "class_map_det.yaml").read_text(encoding="utf-8"),
             )

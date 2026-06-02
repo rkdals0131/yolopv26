@@ -115,4 +115,14 @@ class CheckpointEvalTests(unittest.TestCase):
             self.assertEqual(summary["resolved_runtime"]["imgsz"], scenario.eval.imgsz)
             self.assertEqual(summary["resolved_runtime"]["batch"], scenario.eval.batch)
             self.assertFalse((root / "runs" / "mobility" / "dataset").exists())
-            self.assertTrue((root / "runs" / "mobility" / "checkpoint_eval_summary.json").is_file())
+            summary_path = root / "runs" / "mobility" / "checkpoint_eval_summary.json"
+            self.assertTrue(summary_path.is_file())
+            expected_summary = json.loads(json.dumps(summary, default=str))
+            self.assertEqual(json.loads(summary_path.read_text(encoding="utf-8")), expected_summary)
+            prediction_rows = [
+                json.loads(line)
+                for line in Path(summary["predictions_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(prediction_rows), 3)
+            self.assertEqual(prediction_rows[0]["class_name"], "vehicle")

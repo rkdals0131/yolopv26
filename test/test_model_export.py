@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import unittest
 
 import numpy as np
 import pytest
 import torch
 
+from model.engine.spec import build_loss_spec
 from tools.model_export.common import artifact_paths_for_checkpoint
 from tools.model_export import pv26_torchscript as pv26_exporter
 from tools.model_export import teacher_torchscript as teacher_exporter
@@ -53,7 +55,17 @@ def test_resolve_trunk_weights_rejects_explicit_variant_mismatch(tmp_path: Path)
 
 
 def test_infer_backbone_variant_from_head_channels_supports_yolo26s() -> None:
-    assert pv26_exporter.infer_backbone_variant_from_head_channels((128, 256, 512)) == "s"
+    assert pv26_exporter.infer_backbone_variant_from_head_channels((128, 128, 256, 512)) == "s"
+
+
+def test_infer_head_channels_reconstructs_current_four_level_contract() -> None:
+    state_dict = {
+        "det_heads.0.block.0.weight": torch.zeros((128, 128, 3, 3)),
+        "det_heads.1.block.0.weight": torch.zeros((256, 256, 3, 3)),
+        "det_heads.2.block.0.weight": torch.zeros((512, 512, 3, 3)),
+    }
+
+    assert pv26_exporter.infer_head_channels(state_dict) == (128, 128, 256, 512)
 
 
 def test_build_example_input_random_seed_is_reproducible() -> None:
@@ -178,8 +190,8 @@ def test_pv26_export_metadata_includes_crosswalk_and_checkpoint_metadata(tmp_pat
         det_shape=[1, 9975, 12],
         tl_attr_shape=[1, 9975, 4],
         lane_shape=[1, 24, 38],
-        stop_line_shape=[1, 8, 6],
-        crosswalk_shape=[1, 8, 9],
+        stop_line_shape=[1, 8, 9],
+        crosswalk_shape=[1, 8, 33],
         od_classes=["vehicle"],
         tl_bits=["red"],
         lane_classes=["white_lane"],
@@ -191,6 +203,90 @@ def test_pv26_export_metadata_includes_crosswalk_and_checkpoint_metadata(tmp_pat
         checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
     )
 
-    assert metadata["outputs"]["crosswalk"]["shape"] == ["batch", 8, 9]
-    assert metadata["outputs"]["crosswalk"]["format"] == "score_quad"
+    assert metadata["outputs"]["crosswalk"]["shape"] == ["batch", 8, 33]
+    assert metadata["outputs"]["crosswalk"]["format"] == "score_contour_16_points_xy"
     assert metadata["checkpoint_metadata"]["architecture_generation"] == "pv26-road-marking-v3"
+
+
+class PV26ExportMetadataContractTests(unittest.TestCase):
+    def test_export_head_channel_inference_tracks_current_four_level_contract(self) -> None:
+        state_dict = {
+            "det_heads.0.block.0.weight": torch.zeros((128, 128, 3, 3)),
+            "det_heads.1.block.0.weight": torch.zeros((256, 256, 3, 3)),
+            "det_heads.2.block.0.weight": torch.zeros((512, 512, 3, 3)),
+        }
+
+        self.assertEqual(pv26_exporter.infer_head_channels(state_dict), (128, 128, 256, 512))
+        self.assertEqual(pv26_exporter.infer_backbone_variant_from_head_channels((128, 128, 256, 512)), "s")
+
+    def test_raw_head_metadata_tracks_current_loss_spec_shapes_and_formats(self) -> None:
+        spec = build_loss_spec()
+        metadata = pv26_exporter.export_metadata(
+            checkpoint_path=Path("/tmp/best.pt"),
+            output_path=Path("/tmp/best.torchscript.pt"),
+            trunk_weights=Path("/tmp/yolo26s.pt"),
+            input_height=608,
+            input_width=800,
+            det_shape=[1, 9975, 12],
+            tl_attr_shape=[1, 9975, 4],
+            lane_shape=[1, 24, 38],
+            stop_line_shape=[1, 8, 9],
+            crosswalk_shape=[1, 8, 33],
+            od_classes=list(spec["model_contract"]["od_classes"]),
+            tl_bits=list(spec["model_contract"]["tl_bits"]),
+            lane_classes=list(spec["model_contract"]["lane_classes"]),
+            lane_types=list(spec["model_contract"]["lane_types"]),
+            det_feature_shapes=[[76, 100], [38, 50], [19, 25]],
+            det_feature_strides=[8, 16, 32],
+            example_info={"kind": "random"},
+            verification=[],
+            checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
+        )
+
+        self.assertEqual(metadata["outputs"]["det"]["shape"], ["batch", 9975, 12])
+        self.assertEqual(metadata["outputs"]["tl_attr"]["shape"], ["batch", 9975, 4])
+        self.assertEqual(
+            metadata["outputs"]["lane"]["shape"],
+            ["batch", int(spec["heads"]["lane"]["query_count"]), 38],
+        )
+        self.assertEqual(
+            metadata["outputs"]["stop_line"]["shape"],
+            ["batch", int(spec["heads"]["stop_line"]["query_count"]), 9],
+        )
+        self.assertEqual(
+            metadata["outputs"]["crosswalk"]["shape"],
+            ["batch", int(spec["heads"]["crosswalk"]["query_count"]), 33],
+        )
+        self.assertEqual(metadata["outputs"]["lane"]["format"], "score_lane_class_lane_type_anchor_row_x_visibility")
+        self.assertEqual(metadata["outputs"]["stop_line"]["format"], "score_polyline_4_points_xy")
+        self.assertEqual(metadata["outputs"]["crosswalk"]["format"], "score_contour_16_points_xy")
+        self.assertEqual(metadata["od_classes"], list(spec["model_contract"]["od_classes"]))
+        self.assertEqual(metadata["tl_bits"], list(spec["model_contract"]["tl_bits"]))
+        self.assertEqual(metadata["lane_classes"], list(spec["model_contract"]["lane_classes"]))
+        self.assertEqual(metadata["lane_types"], list(spec["model_contract"]["lane_types"]))
+
+    def test_export_metadata_rejects_detector_feature_shape_drift(self) -> None:
+        spec = build_loss_spec()
+
+        with self.assertRaisesRegex(ValueError, "detector feature metadata"):
+            pv26_exporter.export_metadata(
+                checkpoint_path=Path("/tmp/best.pt"),
+                output_path=Path("/tmp/best.torchscript.pt"),
+                trunk_weights=Path("/tmp/yolo26s.pt"),
+                input_height=608,
+                input_width=800,
+                det_shape=[1, 9974, 12],
+                tl_attr_shape=[1, 9975, 4],
+                lane_shape=[1, 24, 38],
+                stop_line_shape=[1, 8, 9],
+                crosswalk_shape=[1, 8, 33],
+                od_classes=list(spec["model_contract"]["od_classes"]),
+                tl_bits=list(spec["model_contract"]["tl_bits"]),
+                lane_classes=list(spec["model_contract"]["lane_classes"]),
+                lane_types=list(spec["model_contract"]["lane_types"]),
+                det_feature_shapes=[[76, 100], [38, 50], [19, 25]],
+                det_feature_strides=[8, 16, 32],
+                example_info={"kind": "random"},
+                verification=[],
+                checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
+            )

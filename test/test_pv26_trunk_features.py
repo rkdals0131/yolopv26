@@ -9,20 +9,21 @@ from runtime_support import has_yolo26_runtime
 
 class PV26TrunkFeatureTests(unittest.TestCase):
     @unittest.skipUnless(has_yolo26_runtime(), "requires ultralytics yolo26 runtime")
-    def test_real_trunk_feature_extractor_returns_p3_p4_p5(self) -> None:
+    def test_real_trunk_feature_extractor_returns_p2_p3_p4_p5_for_roadmarks(self) -> None:
         from model.net import PV26Heads
-        from model.net import build_yolo26n_trunk
+        from model.net import build_yolo26_roadmark_trunk
         from model.net.trunk import forward_pyramid_features, infer_pyramid_channels
 
-        adapter = build_yolo26n_trunk()
+        adapter = build_yolo26_roadmark_trunk(weights="yolo26n.pt")
         with torch.no_grad():
             features = forward_pyramid_features(adapter, torch.zeros(1, 3, 608, 800))
 
-        self.assertEqual(len(features), 3)
-        self.assertEqual(tuple(features[0].shape), (1, 64, 76, 100))
-        self.assertEqual(tuple(features[1].shape), (1, 128, 38, 50))
-        self.assertEqual(tuple(features[2].shape), (1, 256, 19, 25))
-        self.assertEqual(infer_pyramid_channels(adapter), (64, 128, 256))
+        self.assertEqual(len(features), 4)
+        self.assertEqual(tuple(features[0].shape), (1, 64, 152, 200))
+        self.assertEqual(tuple(features[1].shape), (1, 64, 76, 100))
+        self.assertEqual(tuple(features[2].shape), (1, 128, 38, 50))
+        self.assertEqual(tuple(features[3].shape), (1, 256, 19, 25))
+        self.assertEqual(infer_pyramid_channels(adapter), (64, 64, 128, 256))
 
         heads = PV26Heads(in_channels=infer_pyramid_channels(adapter))
         outputs = heads(features)

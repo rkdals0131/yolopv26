@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-import json
 import os
 from pathlib import Path
 import shutil
@@ -12,9 +11,12 @@ from typing import Any, Literal, TypedDict
 
 import yaml
 
+from common.io import read_json as _read_common_json
+from common.io import read_text as _read_common_text
 from common.io import write_json as _write_common_json
+from common.io import write_text as _write_common_text
 from common.paths import resolve_latest_root
-from common.pv26_schema import OD_CLASSES
+from common.pv26_schema import OD_CLASSES, SOURCE_MASK_BY_DATASET
 from .final_dataset_stats import (
     FINAL_DATASET_STATS_MARKDOWN_NAME,
     FINAL_DATASET_STATS_NAME,
@@ -45,6 +47,7 @@ class FinalSampleOwner(TypedDict):
 
 
 class FinalizeSampleTask(TypedDict):
+    source_scene_path: Path
     scene_output_path: Path
     final_scene: dict[str, Any]
     det_source_path: Path | None
@@ -63,6 +66,9 @@ class FinalDatasetSampleRow(TypedDict):
     source_kind: FinalDatasetSourceKind
     source_dataset_key: str
     split: str
+    source_scene_path: str
+    source_image_path: str
+    source_det_path: str | None
     scene_path: str
     det_path: str | None
     image_path: str
@@ -113,26 +119,15 @@ def _link_or_copy(source_path: Path, target_path: Path, *, copy_images: bool) ->
         shutil.copy2(source_path, target_path)
 
 
-def _copy_json(source_path: Path, target_path: Path) -> None:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+def _copy_text_no_overwrite(source_path: Path, target_path: Path) -> None:
     if target_path.exists():
         raise FileExistsError(f"target path already exists: {target_path}")
-    target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    if path.exists():
-        raise FileExistsError(f"target path already exists: {path}")
-    _write_common_json(path, payload)
-
-
-def _write_json_replace(path: Path, payload: Any) -> None:
-    _write_common_json(path, payload)
+    _write_common_text(target_path, _read_common_text(source_path))
 
 
 def _copy_optional(source_path: Path, target_path: Path) -> bool:
     if source_path.is_file():
-        _copy_json(source_path, target_path)
+        _copy_text_no_overwrite(source_path, target_path)
         return True
     if target_path.exists():
         raise FileExistsError(f"target path already exists without source file: {target_path}")
@@ -181,7 +176,7 @@ def _write_publish_marker(
         payload["sample_count"] = int(sample_count)
     if dataset_counts is not None:
         payload["dataset_counts"] = dict(sorted(dataset_counts.items()))
-    _write_json_replace(marker_path, payload)
+    _write_common_json(marker_path, payload)
     return marker_path
 
 
@@ -252,7 +247,7 @@ def _reserve_final_sample_id(
 
 
 def _load_scene(scene_path: Path) -> dict[str, Any]:
-    payload = json.loads(scene_path.read_text(encoding="utf-8"))
+    payload = _read_common_json(scene_path)
     if not isinstance(payload, dict):
         raise TypeError(f"scene root must be an object: {scene_path}")
     return payload
@@ -262,6 +257,11 @@ def _coerce_split(scene: dict[str, Any], *, scene_path: Path) -> str:
     split = str(scene.get("source", {}).get("split") or scene_path.parent.name).strip()
     if not split:
         raise ValueError(f"scene split must not be empty: {scene_path}")
+    path_split = scene_path.parent.name
+    if split != path_split:
+        raise ValueError(
+            f"scene source.split must match labels_scene split: {split} != {path_split} ({scene_path})"
+        )
     return split
 
 
@@ -272,10 +272,26 @@ def _coerce_dataset_key(scene: dict[str, Any], *, scene_path: Path) -> str:
     return dataset_key
 
 
+def _assert_required_det_label_exists(*, dataset_key: str, det_path: Path, scene_path: Path) -> None:
+    source_mask = SOURCE_MASK_BY_DATASET.get(dataset_key)
+    if source_mask is None:
+        raise KeyError(f"unsupported dataset key for final dataset publication: {dataset_key}")
+    if bool(source_mask.get("det")) and not det_path.is_file():
+        raise FileNotFoundError(f"det label file not found for final dataset sample: {det_path} ({scene_path})")
+
+
 def _coerce_image_name(scene: dict[str, Any], *, scene_path: Path) -> str:
     image_name = str(scene.get("image", {}).get("file_name") or "").strip()
     if not image_name:
         raise ValueError(f"scene image.file_name must not be empty: {scene_path}")
+    image_path = Path(image_name)
+    if (
+        image_path.is_absolute()
+        or image_path.name != image_name
+        or "/" in image_name
+        or "\\" in image_name
+    ):
+        raise ValueError(f"scene image.file_name must be a basename: {scene_path}")
     return image_name
 
 
@@ -300,6 +316,7 @@ def _build_final_scene(
 
 def _finalize_sample_task(
     *,
+    source_scene_path: Path,
     scene_output_path: Path,
     final_scene: dict[str, Any],
     det_source_path: Path | None,
@@ -312,7 +329,7 @@ def _finalize_sample_task(
     dataset_key: str,
     split: str,
 ) -> FinalDatasetSampleRow:
-    _write_json(scene_output_path, final_scene)
+    _write_common_json(scene_output_path, final_scene, overwrite=False)
     has_det = False
     if det_source_path is not None:
         has_det = _copy_optional(det_source_path, det_output_path)
@@ -322,6 +339,9 @@ def _finalize_sample_task(
         "source_kind": source_kind,
         "source_dataset_key": dataset_key,
         "split": split,
+        "source_scene_path": str(source_scene_path),
+        "source_image_path": str(source_image_path),
+        "source_det_path": str(det_source_path) if det_source_path is not None else None,
         "scene_path": str(scene_output_path),
         "det_path": str(det_output_path) if has_det else None,
         "image_path": str(image_output_path),
@@ -337,6 +357,9 @@ def _manifest_row_for_output_root(*, row: FinalDatasetSampleRow, output_root: Pa
         "source_kind": row["source_kind"],
         "source_dataset_key": str(row["source_dataset_key"]),
         "split": split,
+        "source_scene_path": str(row["source_scene_path"]),
+        "source_image_path": str(row["source_image_path"]),
+        "source_det_path": str(row["source_det_path"]) if row["source_det_path"] is not None else None,
         "scene_path": str((output_root / "labels_scene" / split / f"{final_sample_id}.json").resolve()),
         "det_path": None,
         "image_path": str((output_root / "images" / split / f"{final_sample_id}{image_suffix}").resolve()),
@@ -394,6 +417,12 @@ def build_pv26_exhaustive_od_lane_dataset(
             scene_path=scene_path,
             source_kind="exhaustive_od",
         )
+        det_source_path = resolved_exhaustive_root / "labels_det" / split / f"{final_sample_id}.txt"
+        _assert_required_det_label_exists(
+            dataset_key=dataset_key,
+            det_path=det_source_path,
+            scene_path=scene_path,
+        )
         source_image_path = resolved_exhaustive_root / "images" / split / image_name
         final_image_name = f"{final_sample_id}{source_image_path.suffix.lower()}"
         scene_output_path = staging_root / "labels_scene" / split / f"{final_sample_id}.json"
@@ -408,9 +437,10 @@ def build_pv26_exhaustive_od_lane_dataset(
         )
         exhaustive_tasks.append(
             {
+                "source_scene_path": scene_path,
                 "scene_output_path": scene_output_path,
                 "final_scene": final_scene,
-                "det_source_path": resolved_exhaustive_root / "labels_det" / split / f"{final_sample_id}.txt",
+                "det_source_path": det_source_path,
                 "det_output_path": det_output_path,
                 "source_image_path": source_image_path,
                 "image_output_path": image_output_path,
@@ -450,9 +480,10 @@ def build_pv26_exhaustive_od_lane_dataset(
         )
         lane_tasks.append(
             {
+                "source_scene_path": scene_path,
                 "scene_output_path": scene_output_path,
                 "final_scene": final_scene,
-                "det_source_path": resolved_aihub_root / "labels_det" / split / f"{final_sample_id}.txt",
+                "det_source_path": None,
                 "det_output_path": det_output_path,
                 "source_image_path": source_image_path,
                 "image_output_path": image_output_path,
@@ -502,9 +533,9 @@ def build_pv26_exhaustive_od_lane_dataset(
 
     meta_root = staging_root / "meta"
     meta_root.mkdir(parents=True, exist_ok=True)
-    (meta_root / "class_map_det.yaml").write_text(
+    _write_common_text(
+        meta_root / "class_map_det.yaml",
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
-        encoding="utf-8",
     )
     manifest_payload: FinalDatasetManifest = {
         "version": "pv26-exhaustive-od-lane-v2",
@@ -517,7 +548,7 @@ def build_pv26_exhaustive_od_lane_dataset(
         "samples": manifest_rows,
     }
     manifest_path = meta_root / FINAL_DATASET_MANIFEST_NAME
-    manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    _write_common_json(manifest_path, manifest_payload, overwrite=False)
     _write_publish_marker(
         staging_root,
         status="ready",
@@ -545,5 +576,5 @@ def build_pv26_exhaustive_od_lane_dataset(
         dataset_counts=dict(dataset_counts),
         warnings=list(stats_payload.get("warnings", [])),
     )
-    _write_json_replace(resolved_output_root / "meta" / FINAL_DATASET_SUMMARY_NAME, build_summary)
+    _write_common_json(resolved_output_root / "meta" / FINAL_DATASET_SUMMARY_NAME, build_summary)
     return build_summary

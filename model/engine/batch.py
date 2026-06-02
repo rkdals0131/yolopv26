@@ -5,6 +5,9 @@ from typing import Any
 import torch
 
 
+RAW_BATCH_FIELDS = ("det_targets", "tl_attr_targets", "lane_targets", "source_mask", "valid_mask", "meta")
+
+
 def move_batch_to_device(item: Any, device: torch.device, *, non_blocking: bool = False) -> Any:
     if isinstance(item, torch.Tensor):
         return item.to(device, non_blocking=non_blocking)
@@ -24,6 +27,64 @@ def raw_batch_for_metrics(batch: dict[str, Any]) -> dict[str, Any] | None:
     if "det_targets" in batch:
         return batch
     return None
+
+
+def validate_raw_batch_matches_image(
+    raw_batch: dict[str, Any],
+    image: torch.Tensor,
+    *,
+    context: str,
+) -> None:
+    expected_length = int(image.shape[0])
+    field_lengths = {field: len(raw_batch[field]) for field in RAW_BATCH_FIELDS}
+    mismatched = {field: length for field, length in field_lengths.items() if length != expected_length}
+    if mismatched:
+        raise ValueError(
+            f"{context} _raw_batch length must match image batch size: "
+            f"batch_size={expected_length} mismatched={mismatched}"
+        )
+
+
+def validate_prediction_batch_matches_image(
+    predictions: dict[str, Any],
+    image: torch.Tensor,
+) -> None:
+    expected_length = int(image.shape[0])
+    mismatched = {
+        name: int(value.shape[0])
+        for name, value in predictions.items()
+        if isinstance(value, torch.Tensor) and value.ndim > 0 and int(value.shape[0]) != expected_length
+    }
+    if mismatched:
+        raise ValueError(
+            "prediction batch size must match image batch size: "
+            f"batch_size={expected_length} mismatched={mismatched}"
+        )
+
+
+def merge_raw_batches(batches: list[dict[str, Any]]) -> dict[str, Any]:
+    if not batches:
+        raise ValueError("cannot merge zero raw batches")
+    for batch_index, batch in enumerate(batches):
+        field_lengths = {field: len(batch[field]) for field in RAW_BATCH_FIELDS}
+        expected_length = field_lengths["meta"]
+        mismatched = {field: length for field, length in field_lengths.items() if length != expected_length}
+        if mismatched:
+            raise ValueError(
+                "raw batch field lengths must match before merge: "
+                f"batch_index={batch_index} meta={expected_length} mismatched={mismatched}"
+            )
+    merged = {
+        "det_targets": [item for batch in batches for item in batch["det_targets"]],
+        "tl_attr_targets": [item for batch in batches for item in batch["tl_attr_targets"]],
+        "lane_targets": [item for batch in batches for item in batch["lane_targets"]],
+        "source_mask": [item for batch in batches for item in batch["source_mask"]],
+        "valid_mask": [item for batch in batches for item in batch["valid_mask"]],
+        "meta": [item for batch in batches for item in batch["meta"]],
+    }
+    if all("image" in batch for batch in batches):
+        merged["image"] = torch.cat([batch["image"] for batch in batches], dim=0)
+    return merged
 
 
 def augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +111,9 @@ def augment_lane_family_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "augment_lane_family_metrics",
+    "merge_raw_batches",
     "move_batch_to_device",
     "raw_batch_for_metrics",
+    "validate_prediction_batch_matches_image",
+    "validate_raw_batch_matches_image",
 ]

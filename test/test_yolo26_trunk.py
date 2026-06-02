@@ -68,6 +68,23 @@ class YOLO26TrunkTests(unittest.TestCase):
         self.assertEqual(resolve_yolo26_weights(variant="s"), "yolo26s.pt")
         self.assertEqual(resolve_yolo26_weights(variant="n"), "yolo26n.pt")
 
+    def test_roadmark_trunk_builder_resolves_four_level_head_channels_without_forward(self) -> None:
+        from model.net.trunk import build_yolo26_roadmark_trunk
+
+        with patch("model.net.trunk.ULTRALYTICS_VERSION", "8.4.2"):
+            with patch("model.net.trunk.YOLO", _DummyYOLO):
+                default_adapter = build_yolo26_roadmark_trunk()
+                nano_adapter = build_yolo26_roadmark_trunk(variant="n")
+
+        self.assertEqual(default_adapter.weights, "yolo26s.pt")
+        self.assertEqual(default_adapter.feature_source_indices, (2, 16, 19, 22))
+        self.assertEqual(default_adapter.feature_source_strides, (4, 8, 16, 32))
+        self.assertEqual(default_adapter.resolved_feature_channels, (128, 128, 256, 512))
+        self.assertEqual(nano_adapter.weights, "yolo26n.pt")
+        self.assertEqual(nano_adapter.feature_source_indices, (2, 16, 19, 22))
+        self.assertEqual(nano_adapter.feature_source_strides, (4, 8, 16, 32))
+        self.assertEqual(nano_adapter.resolved_feature_channels, (64, 64, 128, 256))
+
     def test_summary_reports_resolved_feature_channels(self) -> None:
         from model.net.trunk import UltralyticsYOLO26TrunkAdapter, summarize_trunk_adapter
 

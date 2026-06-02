@@ -15,6 +15,20 @@ ARCHITECTURE_GENERATION = "pv26-road-marking-v3"
 SPEC_VERSION = str(build_loss_spec()["version"])
 
 
+def _expected_head_summary_contract() -> dict[str, int]:
+    spec = build_loss_spec()
+    return {
+        "det_dim": len(tuple(spec["model_contract"]["od_classes"])) + 5,
+        "tl_attr_dim": len(tuple(spec["model_contract"]["tl_bits"])),
+        "lane_queries": int(spec["heads"]["lane"]["query_count"]),
+        "lane_dim": int(str(spec["heads"]["lane"]["shape"]).split(" x ")[-1]),
+        "stop_line_queries": int(spec["heads"]["stop_line"]["query_count"]),
+        "stop_line_dim": int(str(spec["heads"]["stop_line"]["shape"]).split(" x ")[-1]),
+        "crosswalk_queries": int(spec["heads"]["crosswalk"]["query_count"]),
+        "crosswalk_dim": int(str(spec["heads"]["crosswalk"]["shape"]).split(" x ")[-1]),
+    }
+
+
 def _checkpoint_metadata(trainer: Any) -> dict[str, Any]:
     describe = getattr(trainer.heads, "describe", None)
     head_summary = describe() if callable(describe) else None
@@ -40,6 +54,40 @@ def _require_exact_resume_compatible(checkpoint: dict[str, Any], path: str | Pat
             f"{generation or 'unknown'}; expected {ARCHITECTURE_GENERATION}. "
             f"Use weights-only migration instead: {path}"
         )
+    try:
+        format_version = int(metadata.get("checkpoint_format_version") or -1)
+    except (TypeError, ValueError):
+        format_version = -1
+    if format_version != CHECKPOINT_FORMAT_VERSION:
+        raise RuntimeError(
+            "exact resume unsupported for checkpoint format version "
+            f"{format_version if format_version >= 0 else 'unknown'}; expected {CHECKPOINT_FORMAT_VERSION}. "
+            f"Use weights-only migration instead: {path}"
+        )
+    spec_version = str(metadata.get("spec_version") or "")
+    if spec_version != SPEC_VERSION:
+        raise RuntimeError(
+            "exact resume unsupported for checkpoint spec version "
+            f"{spec_version or 'unknown'}; expected {SPEC_VERSION}. "
+            f"Use weights-only migration instead: {path}"
+        )
+    head_summary = metadata.get("head_summary")
+    if not isinstance(head_summary, dict):
+        raise RuntimeError(
+            "exact resume unsupported for checkpoints without head_summary metadata; "
+            f"use weights-only migration instead: {path}"
+        )
+    for key, expected in _expected_head_summary_contract().items():
+        try:
+            actual = int(head_summary[key])
+        except (KeyError, TypeError, ValueError):
+            actual = None
+        if actual != expected:
+            raise RuntimeError(
+                "exact resume unsupported for checkpoint head_summary "
+                f"{key}={actual if actual is not None else 'unknown'}; expected {expected}. "
+                f"Use weights-only migration instead: {path}"
+            )
 
 
 def checkpoint_state(

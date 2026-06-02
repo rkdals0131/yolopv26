@@ -25,6 +25,11 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
+def _write_text(path: Path, contents: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents, encoding="utf-8")
+
+
 def _write_dummy_pdf(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"%PDF-1.4\n%stub\n")
@@ -41,6 +46,492 @@ def _rewrite_scene_dataset_keys(root: Path, mapping: dict[str, str]) -> None:
 
 
 class PV26LoaderTests(unittest.TestCase):
+    def test_loader_rejects_non_object_scene_roots(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_text(root / "labels_scene" / "train" / "bad.json", "[]\n")
+
+            with self.assertRaisesRegex(TypeError, "scene root must be an object"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_missing_scene_image_file_name(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "labels_scene" / "train" / "bad.json",
+                {
+                    "image": {"width": 640, "height": 480},
+                    "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene image.file_name must not be empty"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_scene_image_file_name_path_traversal(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "labels_scene" / "train" / "bad.json",
+                {
+                    "image": {"file_name": "../outside.png", "width": 640, "height": 480},
+                    "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene image.file_name must be a basename"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_missing_scene_source_dataset(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "labels_scene" / "train" / "bad.json",
+                {
+                    "image": {"file_name": "bad.png", "width": 640, "height": 480},
+                    "source": {"split": "train"},
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.dataset must not be empty"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_unsupported_scene_source_dataset(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "labels_scene" / "train" / "bad.json",
+                {
+                    "image": {"file_name": "bad.png", "width": 640, "height": 480},
+                    "source": {"dataset": "unknown_dataset", "split": "train"},
+                },
+            )
+
+            with self.assertRaisesRegex(KeyError, "unsupported dataset key for loader"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_scene_source_split_mismatch(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_json(
+                root / "labels_scene" / "train" / "bad.json",
+                {
+                    "image": {"file_name": "bad.png", "width": 640, "height": 480},
+                    "source": {"dataset": "aihub_lane_seoul", "split": "val"},
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "scene source.split must match labels_scene split"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_final_dataset_manifest_record_drift(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for sample_id in ("kept", "extra"):
+                _make_image(root / "images" / "train" / f"{sample_id}.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / f"{sample_id}.json",
+                    {
+                        "image": {"file_name": f"{sample_id}.png", "width": 640, "height": 480},
+                        "source": {
+                            "dataset": "aihub_lane_seoul",
+                            "split": "train",
+                            "final_sample_id": sample_id,
+                        },
+                        "detections": [],
+                        "lanes": [],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                    },
+                )
+            _write_json(
+                root / "meta" / "final_dataset_manifest.json",
+                {
+                    "version": "pv26-exhaustive-od-lane-v2",
+                    "sample_count": 1,
+                    "dataset_counts": {"aihub_lane_seoul": 1},
+                    "samples": [
+                        {
+                            "final_sample_id": "kept",
+                            "source_kind": "lane",
+                            "source_dataset_key": "aihub_lane_seoul",
+                            "split": "train",
+                            "source_scene_path": str(root / "source" / "kept.json"),
+                            "source_image_path": str(root / "source" / "kept.png"),
+                            "source_det_path": None,
+                            "scene_path": str((root / "labels_scene" / "train" / "kept.json").resolve()),
+                            "det_path": None,
+                            "image_path": str((root / "images" / "train" / "kept.png").resolve()),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "final dataset manifest samples must match discovered records"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_final_dataset_manifest_path_drift(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+            _write_json(
+                root / "labels_scene" / "train" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {
+                        "dataset": "aihub_lane_seoul",
+                        "split": "train",
+                        "final_sample_id": "sample",
+                    },
+                    "detections": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+            _write_json(
+                root / "meta" / "final_dataset_manifest.json",
+                {
+                    "version": "pv26-exhaustive-od-lane-v2",
+                    "sample_count": 1,
+                    "dataset_counts": {"aihub_lane_seoul": 1},
+                    "samples": [
+                        {
+                            "final_sample_id": "sample",
+                            "source_kind": "lane",
+                            "source_dataset_key": "aihub_lane_seoul",
+                            "split": "train",
+                            "source_scene_path": str(root / "source" / "sample.json"),
+                            "source_image_path": str(root / "source" / "sample.png"),
+                            "source_det_path": None,
+                            "scene_path": str((root / ".staging" / "labels_scene" / "train" / "sample.json").resolve()),
+                            "det_path": None,
+                            "image_path": str((root / "images" / "train" / "sample.png").resolve()),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "final dataset manifest scene_path must match discovered record"):
+                PV26CanonicalDataset([root])
+
+    def test_loader_rejects_scene_image_size_mismatch(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "train" / "sample.png", 320, 240, "#202020")
+            _write_json(
+                root / "labels_scene" / "train" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                    "detections": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+
+            dataset = PV26CanonicalDataset([root])
+            with self.assertRaisesRegex(ValueError, "scene image size must match image file size"):
+                dataset[0]
+
+    def test_loader_rejects_invalid_scene_image_dimensions(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            ("missing_height", {"file_name": "sample.png", "width": 640}),
+            ("zero_width", {"file_name": "sample.png", "width": 0, "height": 480}),
+        ]
+        for case_name, image_payload in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": image_payload,
+                        "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                        "detections": [],
+                        "lanes": [],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                    },
+                )
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(ValueError, "scene image dimensions must be positive integers"):
+                    dataset[0]
+
+    def test_loader_rejects_malformed_scene_geometry_collections(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            ("non_list", {"lanes": {"points": []}}, ValueError, "scene lanes must be a list"),
+            ("non_object_item", {"lanes": ["bad"]}, TypeError, "scene lanes\\[0\\] must be an object"),
+        ]
+        for case_name, geometry_payload, error_type, error_message in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                        **geometry_payload,
+                    },
+                )
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(error_type, error_message):
+                    dataset[0]
+
+    def test_loader_rejects_malformed_scene_geometry_points(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            (
+                "points_not_list",
+                {"lanes": [{"points": "bad"}]},
+                "scene lanes\\[0\\].points must be a list",
+            ),
+            (
+                "wrong_point_arity",
+                {"stop_lines": [{"points": [[1.0, 2.0, 3.0]]}]},
+                "scene stop_lines\\[0\\].points\\[0\\] must be \\[x, y\\]",
+            ),
+            (
+                "non_finite_point",
+                {"crosswalks": [{"points": [[1.0, 2.0], [float("nan"), 3.0], [4.0, 5.0]]}]},
+                "scene crosswalks\\[0\\].points\\[1\\] coordinates must be finite",
+            ),
+        ]
+        for case_name, geometry_payload, error_message in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                        **geometry_payload,
+                    },
+                )
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(ValueError, error_message):
+                    dataset[0]
+
+    def test_loader_rejects_malformed_lane_visibility(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            ("length_mismatch", [1], "scene lanes\\[0\\].visibility length must match points"),
+            ("non_finite", [1, float("nan")], "scene lanes\\[0\\].visibility must be finite values"),
+            ("wrong_type", "bad", "scene lanes\\[0\\].visibility must be a list"),
+        ]
+        for case_name, visibility, error_message in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_lane_seoul", "split": "train"},
+                        "lanes": [
+                            {
+                                "class_name": "white_lane",
+                                "source_style": "solid",
+                                "points": [[10.0, 400.0], [120.0, 120.0]],
+                                "visibility": visibility,
+                            }
+                        ],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                    },
+                )
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(ValueError, error_message):
+                    dataset[0]
+
+    def test_loader_rejects_malformed_scene_traffic_light_payload(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            (
+                "traffic_lights_not_list",
+                {"traffic_lights": {"detection_id": 0}},
+                ValueError,
+                "scene traffic_lights must be a list",
+            ),
+            (
+                "traffic_light_not_object",
+                {"traffic_lights": ["bad"]},
+                TypeError,
+                "scene traffic_lights\\[0\\] must be an object",
+            ),
+            (
+                "traffic_light_bad_detection_id",
+                {
+                    "traffic_lights": [
+                        {
+                            "detection_id": "bad",
+                            "tl_bits": {"red": 1, "yellow": 0, "green": 0, "arrow": 1},
+                            "tl_attr_valid": True,
+                        }
+                    ]
+                },
+                ValueError,
+                "scene traffic_lights\\[0\\].detection_id must be a non-negative integer",
+            ),
+            (
+                "traffic_light_non_finite_bit",
+                {
+                    "traffic_lights": [
+                        {
+                            "detection_id": 0,
+                            "tl_bits": {"red": float("nan"), "yellow": 0, "green": 0, "arrow": 1},
+                            "tl_attr_valid": True,
+                        }
+                    ]
+                },
+                ValueError,
+                "scene traffic_lights\\[0\\].tl_bits.red must be finite 0/1",
+            ),
+        ]
+        for case_name, traffic_payload, error_type, error_message in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_traffic_seoul", "split": "train"},
+                        "lanes": [],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                        **traffic_payload,
+                    },
+                )
+                _write_text(root / "labels_det" / "train" / "sample.txt", "5 0.5 0.5 0.1 0.1\n")
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(error_type, error_message):
+                    dataset[0]
+
+    def test_loader_rejects_traffic_light_detection_id_drift(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        malformed_cases = [
+            (
+                "duplicate_detection_id",
+                [
+                    {
+                        "detection_id": 0,
+                        "tl_bits": {"red": 1, "yellow": 0, "green": 0, "arrow": 0},
+                        "tl_attr_valid": True,
+                    },
+                    {
+                        "detection_id": 0,
+                        "tl_bits": {"red": 0, "yellow": 1, "green": 0, "arrow": 0},
+                        "tl_attr_valid": True,
+                    },
+                ],
+                "scene traffic_lights detection_id must be unique",
+            ),
+            (
+                "out_of_range_detection_id",
+                [
+                    {
+                        "detection_id": 1,
+                        "tl_bits": {"red": 1, "yellow": 0, "green": 0, "arrow": 0},
+                        "tl_attr_valid": True,
+                    }
+                ],
+                "scene traffic_lights detection_id must reference a detection row",
+            ),
+        ]
+        for case_name, traffic_lights, error_message in malformed_cases:
+            with self.subTest(case_name=case_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+                _write_json(
+                    root / "labels_scene" / "train" / "sample.json",
+                    {
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "aihub_traffic_seoul", "split": "train"},
+                        "lanes": [],
+                        "stop_lines": [],
+                        "crosswalks": [],
+                        "traffic_lights": traffic_lights,
+                    },
+                )
+                _write_text(root / "labels_det" / "train" / "sample.txt", "5 0.5 0.5 0.1 0.1\n")
+
+                dataset = PV26CanonicalDataset([root])
+                with self.assertRaisesRegex(ValueError, error_message):
+                    dataset[0]
+
+    def test_loader_uses_labels_det_not_scene_detections_for_detector_targets(self) -> None:
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "train" / "sample.png", 640, 480, "#202020")
+            _write_json(
+                root / "labels_scene" / "train" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                    "detections": [
+                        {
+                            "id": 0,
+                            "class_name": "traffic_light",
+                            "bbox": [1.0, 1.0, 2.0, 2.0],
+                        }
+                    ],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                    "traffic_lights": [],
+                },
+            )
+            _write_text(root / "labels_det" / "train" / "sample.txt", "0 0.5 0.5 0.25 0.5\n")
+
+            sample = PV26CanonicalDataset([root])[0]
+
+            self.assertEqual(sample["det_targets"]["classes"].tolist(), [0])
+            self.assertEqual(sample["meta"]["det_supervised_classes"], ["vehicle", "bike", "pedestrian"])
+            self.assertFalse(sample["tl_attr_targets"]["is_traffic_light"][0].item())
+            self.assertEqual(sample["tl_attr_targets"]["collapse_reason"][0], "not_traffic_light")
+            box = sample["det_targets"]["boxes_xyxy"][0].tolist()
+            self.assertAlmostEqual(box[0], 300.0, places=4)
+            self.assertAlmostEqual(box[1], 154.0, places=4)
+            self.assertAlmostEqual(box[2], 500.0, places=4)
+            self.assertAlmostEqual(box[3], 454.0, places=4)
+
     def test_loader_returns_sample_contract_for_aihub_and_bdd_sources(self) -> None:
         from model.data.dataset import PV26CanonicalDataset
 
@@ -299,6 +790,61 @@ class PV26LoaderTests(unittest.TestCase):
             self.assertEqual(len(batch["source_mask"]), 3)
             self.assertEqual(len(batch["valid_mask"]), 3)
             self.assertEqual(len(batch["meta"]), 3)
+
+    def test_collate_rejects_empty_sample_list(self) -> None:
+        from model.data.dataset import collate_pv26_samples
+
+        with self.assertRaisesRegex(ValueError, "cannot collate zero PV26 samples"):
+            collate_pv26_samples([])
+
+    def test_collate_rejects_sample_image_shape_drift(self) -> None:
+        from model.data.dataset import collate_pv26_samples
+
+        sample = self._minimal_collate_sample()
+        sample["image"] = torch.zeros((3, 607, 800), dtype=torch.float32)
+
+        with self.assertRaisesRegex(ValueError, "PV26 sample image must be float32"):
+            collate_pv26_samples([sample])
+
+    def test_collate_rejects_sample_image_dtype_drift(self) -> None:
+        from model.data.dataset import collate_pv26_samples
+
+        sample = self._minimal_collate_sample()
+        sample["image"] = torch.zeros((3, 608, 800), dtype=torch.uint8)
+
+        with self.assertRaisesRegex(ValueError, "PV26 sample image must be float32"):
+            collate_pv26_samples([sample])
+
+    def _minimal_collate_sample(self) -> dict:
+        empty_bool = torch.zeros((0,), dtype=torch.bool)
+        return {
+            "image": torch.zeros((3, 608, 800), dtype=torch.float32),
+            "det_targets": {
+                "boxes_xyxy": torch.zeros((0, 4), dtype=torch.float32),
+                "classes": torch.zeros((0,), dtype=torch.long),
+            },
+            "tl_attr_targets": {
+                "bits": torch.zeros((0, 4), dtype=torch.float32),
+                "is_traffic_light": empty_bool,
+                "collapse_reason": [],
+            },
+            "lane_targets": {"lanes": [], "stop_lines": [], "crosswalks": []},
+            "source_mask": {
+                "det": False,
+                "tl_attr": False,
+                "lane": False,
+                "stop_line": False,
+                "crosswalk": False,
+            },
+            "valid_mask": {
+                "det": empty_bool,
+                "tl_attr": empty_bool,
+                "lane": empty_bool,
+                "stop_line": empty_bool,
+                "crosswalk": empty_bool,
+            },
+            "meta": {"sample_id": "synthetic_sample"},
+        }
 
     def _create_docs_fixture(self, docs_root: Path) -> None:
         _write_dummy_pdf(docs_root / "차선_횡단보도_인지_영상(수도권)_데이터_구축_가이드라인.pdf")

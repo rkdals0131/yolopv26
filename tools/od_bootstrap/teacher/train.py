@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from common.io import write_json
 from .data_yaml import build_teacher_data_yaml, resolve_teacher_dataset_root
 from .train_types import TeacherTrainScenario
 from .ultralytics_runner import train_teacher_with_ultralytics
@@ -97,8 +97,7 @@ def run_teacher_train_scenario(scenario: TeacherTrainScenario, *, scenario_path:
     }
     _log_teacher_train(f"trained {scenario.teacher_name} -> {train_summary['best_checkpoint']}")
     summary_path = scenario.run.output_root / scenario.teacher_name / "run_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=True, default=str) + "\n", encoding="utf-8")
+    write_json(summary_path, summary, default=str)
     return summary
 
 

@@ -9,8 +9,14 @@ from pathlib import Path
 import torch
 
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES
+from common.task_mode import LANE_ONLY_TASK_MODE
 from model.engine.loss import build_loss_spec
-from model.data import PV26CanonicalDataset, collate_pv26_encoded_batch, collate_pv26_samples
+from model.data import (
+    PV26CanonicalDataset,
+    collate_pv26_encoded_batch,
+    collate_pv26_encoded_eval_batch,
+    collate_pv26_samples,
+)
 from tools.od_bootstrap.source.aihub import run_standardization as run_aihub_standardization
 from tools.od_bootstrap.source.bdd100k import run_standardization as run_bdd_standardization
 
@@ -19,12 +25,16 @@ SPEC = build_loss_spec()
 LANE_QUERY_COUNT = int(SPEC["heads"]["lane"]["query_count"])
 LANE_ANCHOR_COUNT = int(SPEC["heads"]["lane"]["target_encoding"]["anchor_rows"])
 LANE_VECTOR_DIM = int(SPEC["heads"]["lane"]["shape"].split(" x ")[-1])
+LANE_COLOR_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["color_logits"])
+LANE_TYPE_DIM = int(SPEC["heads"]["lane"]["target_encoding"]["type_logits"])
 STOP_LINE_QUERY_COUNT = int(SPEC["heads"]["stop_line"]["query_count"])
 STOP_LINE_POINT_COUNT = int(SPEC["heads"]["stop_line"]["target_encoding"]["polyline_points"])
 STOP_LINE_VECTOR_DIM = int(SPEC["heads"]["stop_line"]["shape"].split(" x ")[-1])
 CROSSWALK_QUERY_COUNT = int(SPEC["heads"]["crosswalk"]["query_count"])
 CROSSWALK_VECTOR_DIM = int(SPEC["heads"]["crosswalk"]["shape"].split(" x ")[-1])
-LANE_X_SLICE = slice(6, 6 + LANE_ANCHOR_COUNT)
+LANE_COLOR_SLICE = slice(1, 1 + LANE_COLOR_DIM)
+LANE_TYPE_SLICE = slice(LANE_COLOR_SLICE.stop, LANE_COLOR_SLICE.stop + LANE_TYPE_DIM)
+LANE_X_SLICE = slice(LANE_TYPE_SLICE.stop, LANE_TYPE_SLICE.stop + LANE_ANCHOR_COUNT)
 LANE_VIS_SLICE = slice(LANE_X_SLICE.stop, LANE_X_SLICE.stop + LANE_ANCHOR_COUNT)
 
 
@@ -289,7 +299,7 @@ class PV26TargetEncoderTests(unittest.TestCase):
             selected = self._select_mixed_task_samples(dataset)
 
             encoded_direct = collate_pv26_encoded_batch(selected)
-            encoded_manual = encode_pv26_batch(collate_pv26_samples(selected))
+            encoded_manual = encode_pv26_batch(collate_pv26_samples(selected), include_lane_segfirst_targets=True)
 
             self.assertTrue(torch.equal(encoded_direct["image"], encoded_manual["image"]))
             self.assertTrue(torch.equal(encoded_direct["det_gt"]["boxes_xyxy"], encoded_manual["det_gt"]["boxes_xyxy"]))
@@ -298,13 +308,397 @@ class PV26TargetEncoderTests(unittest.TestCase):
             self.assertTrue(torch.equal(encoded_direct["lane"], encoded_manual["lane"]))
             self.assertTrue(torch.equal(encoded_direct["stop_line"], encoded_manual["stop_line"]))
             self.assertTrue(torch.equal(encoded_direct["crosswalk"], encoded_manual["crosswalk"]))
+            self.assertEqual(set(encoded_direct["roadmark_v2"]), set(encoded_manual["roadmark_v2"]))
+            self.assertIn("lane_seg_centerline_core", encoded_direct["roadmark_v2"])
+            for key in encoded_direct["roadmark_v2"]:
+                self.assertTrue(torch.equal(encoded_direct["roadmark_v2"][key], encoded_manual["roadmark_v2"][key]), key)
             self.assertEqual(encoded_direct["meta"], encoded_manual["meta"])
+
+    def test_encoded_eval_collate_matches_manual_encode_and_preserves_raw_bundle(self) -> None:
+        from model.data import encode_pv26_batch
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset = self._build_dataset(Path(temp_dir))
+            selected = self._select_mixed_task_samples(dataset)
+
+            raw_manual = collate_pv26_samples(selected)
+            encoded_eval = collate_pv26_encoded_eval_batch(selected)
+            raw_bundle = encoded_eval["_raw_batch"]
+            encoded_payload = {key: value for key, value in encoded_eval.items() if key != "_raw_batch"}
+            encoded_manual = encode_pv26_batch(raw_manual, include_lane_segfirst_targets=True)
+
+            self.assertNotIn("image", raw_bundle)
+            self.assertEqual(
+                set(raw_bundle),
+                {"det_targets", "tl_attr_targets", "lane_targets", "source_mask", "valid_mask", "meta"},
+            )
+            self.assertEqual(encoded_payload["meta"], encoded_manual["meta"])
+            self.assertEqual(raw_bundle["meta"], raw_manual["meta"])
+            self.assertEqual(
+                [item["sample_id"] for item in encoded_payload["meta"]],
+                [item["sample_id"] for item in raw_bundle["meta"]],
+            )
+            for key in ("image", "lane", "stop_line", "crosswalk"):
+                self.assertTrue(torch.equal(encoded_payload[key], encoded_manual[key]), key)
+            for key in ("boxes_xyxy", "classes", "valid_mask"):
+                self.assertTrue(torch.equal(encoded_payload["det_gt"][key], encoded_manual["det_gt"][key]), key)
+            for key in encoded_payload["roadmark_v2"]:
+                self.assertTrue(torch.equal(encoded_payload["roadmark_v2"][key], encoded_manual["roadmark_v2"][key]), key)
+            for index, manual_det in enumerate(raw_manual["det_targets"]):
+                self.assertTrue(
+                    torch.equal(raw_bundle["det_targets"][index]["boxes_xyxy"], manual_det["boxes_xyxy"]),
+                    f"det boxes index={index}",
+                )
+                self.assertTrue(
+                    torch.equal(raw_bundle["det_targets"][index]["classes"], manual_det["classes"]),
+                    f"det classes index={index}",
+                )
 
     def test_encode_batch_requires_det_supervision_meta_for_det_sources(self) -> None:
         from model.data import encode_pv26_batch
 
         with self.assertRaisesRegex(ValueError, "missing meta.det_supervised_class_ids"):
             encode_pv26_batch(_minimal_raw_batch(det_source=True))
+
+    def test_encode_batch_rejects_raw_batch_list_length_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["image"] = torch.randn(2, 3, 608, 800)
+
+        with self.assertRaisesRegex(ValueError, "raw batch field length must match image batch size"):
+            encode_pv26_batch(batch)
+
+    def test_runtime_prediction_encoding_rejects_meta_length_mismatch(self) -> None:
+        from model.data.target_encoder import encode_lane_family_runtime_predictions
+
+        with self.assertRaisesRegex(ValueError, "runtime prediction batch length must match meta length"):
+            encode_lane_family_runtime_predictions([{}, {}], [{"sample_id": "one"}])
+
+    def test_encode_batch_rejects_detection_payload_length_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["det_targets"][0] = {
+            "boxes_xyxy": torch.zeros((2, 4), dtype=torch.float32),
+            "classes": torch.zeros((1,), dtype=torch.long),
+        }
+        batch["tl_attr_targets"][0] = {
+            "bits": torch.zeros((2, 4), dtype=torch.float32),
+            "is_traffic_light": torch.zeros((2,), dtype=torch.bool),
+            "collapse_reason": ["valid", "valid"],
+        }
+        batch["valid_mask"][0]["det"] = torch.ones((2,), dtype=torch.bool)
+        batch["valid_mask"][0]["tl_attr"] = torch.ones((2,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw sample field length must match detection boxes"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_detection_box_shape_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["det_targets"][0] = {
+            "boxes_xyxy": torch.zeros((2, 3), dtype=torch.float32),
+            "classes": torch.zeros((2,), dtype=torch.long),
+        }
+        batch["tl_attr_targets"][0] = {
+            "bits": torch.zeros((2, 4), dtype=torch.float32),
+            "is_traffic_light": torch.zeros((2,), dtype=torch.bool),
+            "collapse_reason": ["valid", "valid"],
+        }
+        batch["valid_mask"][0]["det"] = torch.ones((2,), dtype=torch.bool)
+        batch["valid_mask"][0]["tl_attr"] = torch.ones((2,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw sample tensor shape must match"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_tl_bits_shape_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["det_targets"][0] = {
+            "boxes_xyxy": torch.zeros((2, 4), dtype=torch.float32),
+            "classes": torch.zeros((2,), dtype=torch.long),
+        }
+        batch["tl_attr_targets"][0] = {
+            "bits": torch.zeros((2, 3), dtype=torch.float32),
+            "is_traffic_light": torch.zeros((2,), dtype=torch.bool),
+            "collapse_reason": ["valid", "valid"],
+        }
+        batch["valid_mask"][0]["det"] = torch.ones((2,), dtype=torch.bool)
+        batch["valid_mask"][0]["tl_attr"] = torch.ones((2,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw sample tensor shape must match"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_tl_bits_value_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        malformed_cases = [
+            ("non_finite", torch.tensor([[1.0, float("nan"), 0.0, 1.0]], dtype=torch.float32)),
+            ("non_binary", torch.tensor([[1.0, 0.5, 0.0, 1.0]], dtype=torch.float32)),
+        ]
+        for case_name, bits in malformed_cases:
+            with self.subTest(case_name=case_name):
+                batch = _minimal_raw_batch(det_source=False)
+                batch["det_targets"][0] = {
+                    "boxes_xyxy": torch.zeros((1, 4), dtype=torch.float32),
+                    "classes": torch.zeros((1,), dtype=torch.long),
+                }
+                batch["tl_attr_targets"][0] = {
+                    "bits": bits,
+                    "is_traffic_light": torch.ones((1,), dtype=torch.bool),
+                    "collapse_reason": ["valid"],
+                }
+                batch["valid_mask"][0]["det"] = torch.ones((1,), dtype=torch.bool)
+                batch["valid_mask"][0]["tl_attr"] = torch.ones((1,), dtype=torch.bool)
+
+                with self.assertRaisesRegex(ValueError, "raw TL bit targets must be finite binary"):
+                    encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_tl_is_traffic_light_shape_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["det_targets"][0] = {
+            "boxes_xyxy": torch.zeros((2, 4), dtype=torch.float32),
+            "classes": torch.zeros((2,), dtype=torch.long),
+        }
+        batch["tl_attr_targets"][0] = {
+            "bits": torch.zeros((2, 4), dtype=torch.float32),
+            "is_traffic_light": torch.zeros((2, 1), dtype=torch.bool),
+            "collapse_reason": ["valid", "valid"],
+        }
+        batch["valid_mask"][0]["det"] = torch.ones((2,), dtype=torch.bool)
+        batch["valid_mask"][0]["tl_attr"] = torch.ones((2,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw sample tensor shape must match"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_detection_valid_mask_rank_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["det_targets"][0] = {
+            "boxes_xyxy": torch.zeros((2, 4), dtype=torch.float32),
+            "classes": torch.zeros((2,), dtype=torch.long),
+        }
+        batch["tl_attr_targets"][0] = {
+            "bits": torch.zeros((2, 4), dtype=torch.float32),
+            "is_traffic_light": torch.zeros((2,), dtype=torch.bool),
+            "collapse_reason": ["valid", "valid"],
+        }
+        batch["valid_mask"][0]["det"] = torch.ones((2, 1), dtype=torch.bool)
+        batch["valid_mask"][0]["tl_attr"] = torch.ones((2,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw sample tensor shape must match"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_roadmark_valid_mask_length_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["stop_line"] = True
+        batch["lane_targets"][0]["stop_lines"] = [
+            {"points_xy": torch.tensor([[10.0, 100.0], [60.0, 100.0]], dtype=torch.float32)},
+            {"points_xy": torch.tensor([[20.0, 200.0], [70.0, 200.0]], dtype=torch.float32)},
+        ]
+        batch["valid_mask"][0]["stop_line"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw sample field length must match stop_line rows"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_roadmark_valid_mask_rank_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        malformed_cases = [
+            (
+                "lane",
+                "lanes",
+                {
+                    "points_xy": torch.tensor([[10.0, 100.0], [60.0, 100.0]], dtype=torch.float32),
+                    "visibility": torch.ones((2,), dtype=torch.float32),
+                    "color": 0,
+                    "lane_type": 0,
+                },
+            ),
+            (
+                "stop_line",
+                "stop_lines",
+                {"points_xy": torch.tensor([[10.0, 100.0], [60.0, 100.0]], dtype=torch.float32)},
+            ),
+            (
+                "crosswalk",
+                "crosswalks",
+                {
+                    "points_xy": torch.tensor(
+                        [[10.0, 100.0], [60.0, 100.0], [60.0, 200.0]],
+                        dtype=torch.float32,
+                    )
+                },
+            ),
+        ]
+        for mask_key, target_key, row in malformed_cases:
+            with self.subTest(mask_key=mask_key):
+                batch = _minimal_raw_batch(det_source=False)
+                batch["source_mask"][0][mask_key] = True
+                batch["lane_targets"][0][target_key] = [row]
+                batch["valid_mask"][0][mask_key] = torch.ones((1, 1), dtype=torch.bool)
+
+                with self.assertRaisesRegex(ValueError, "raw sample tensor shape must match"):
+                    encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_non_finite_roadmark_points(self) -> None:
+        from model.data import encode_pv26_batch
+
+        malformed_cases = [
+            (
+                "lane",
+                "lanes",
+                {
+                    "points_xy": torch.tensor([[10.0, 100.0], [float("nan"), 120.0]], dtype=torch.float32),
+                    "visibility": torch.ones((2,), dtype=torch.float32),
+                    "color": 0,
+                    "lane_type": 0,
+                },
+            ),
+            (
+                "stop_line",
+                "stop_lines",
+                {"points_xy": torch.tensor([[10.0, 100.0], [float("inf"), 100.0]], dtype=torch.float32)},
+            ),
+            (
+                "crosswalk",
+                "crosswalks",
+                {
+                    "points_xy": torch.tensor(
+                        [[10.0, 100.0], [60.0, float("nan")], [60.0, 200.0]],
+                        dtype=torch.float32,
+                    )
+                },
+            ),
+        ]
+        for mask_key, target_key, row in malformed_cases:
+            with self.subTest(mask_key=mask_key):
+                batch = _minimal_raw_batch(det_source=False)
+                batch["source_mask"][0][mask_key] = True
+                batch["lane_targets"][0][target_key] = [row]
+                batch["valid_mask"][0][mask_key] = torch.ones((1,), dtype=torch.bool)
+
+                with self.assertRaisesRegex(ValueError, "raw geometry points must be finite"):
+                    encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_lane_semantic_index_out_of_range(self) -> None:
+        from model.data import encode_pv26_batch
+
+        malformed_cases = [
+            ("color", len(LANE_CLASSES), 0),
+            ("lane_type", 0, len(LANE_TYPES)),
+        ]
+        for case_name, color_index, lane_type_index in malformed_cases:
+            with self.subTest(case_name=case_name):
+                batch = _minimal_raw_batch(det_source=False)
+                batch["source_mask"][0]["lane"] = True
+                batch["lane_targets"][0]["lanes"] = [
+                    {
+                        "points_xy": torch.tensor([[10.0, 500.0], [60.0, 100.0]], dtype=torch.float32),
+                        "visibility": torch.ones((2,), dtype=torch.float32),
+                        "color": color_index,
+                        "lane_type": lane_type_index,
+                    }
+                ]
+                batch["valid_mask"][0]["lane"] = torch.ones((1,), dtype=torch.bool)
+
+                with self.assertRaisesRegex(ValueError, "raw lane semantic index out of range"):
+                    encode_pv26_batch(batch)
+
+    def test_lane_only_mode_encodes_semanticless_lane_queries(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False, meta={"dataset_key": "aihub_lane_seoul"})
+        batch["source_mask"][0]["lane"] = True
+        batch["lane_targets"][0]["lanes"] = [
+            {
+                "points_xy": torch.tensor([[120.0, 560.0], [180.0, 360.0], [260.0, 160.0]], dtype=torch.float32),
+                "visibility": torch.ones((3,), dtype=torch.float32),
+                "color": -1,
+                "lane_type": -1,
+            }
+        ]
+        batch["valid_mask"][0]["lane"] = torch.ones((1,), dtype=torch.bool)
+
+        encoded = encode_pv26_batch(batch, task_mode=LANE_ONLY_TASK_MODE)
+
+        self.assertEqual(int(encoded["mask"]["lane_input_valid_count"][0].item()), 1)
+        self.assertEqual(int(encoded["mask"]["lane_supervised_count"][0].item()), 1)
+        self.assertTrue(bool(encoded["mask"]["lane_valid"][0, 0]))
+        self.assertEqual(float(encoded["lane"][0, 0, 0].item()), 1.0)
+        self.assertTrue(bool((encoded["lane"][0, 0, LANE_VIS_SLICE] > 0.5).any()))
+        self.assertTrue(torch.all(encoded["lane"][0, 0, LANE_COLOR_SLICE] == 0.0))
+        self.assertTrue(torch.all(encoded["lane"][0, 0, LANE_TYPE_SLICE] == 0.0))
+
+    def test_encode_batch_rejects_lane_visibility_length_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["lane"] = True
+        batch["lane_targets"][0]["lanes"] = [
+            {
+                "points_xy": torch.tensor([[10.0, 500.0], [60.0, 100.0]], dtype=torch.float32),
+                "visibility": torch.ones((1,), dtype=torch.float32),
+                "color": 0,
+                "lane_type": 0,
+            }
+        ]
+        batch["valid_mask"][0]["lane"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw lane visibility length must match points"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_lane_points_shape_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["lane"] = True
+        batch["lane_targets"][0]["lanes"] = [
+            {
+                "points_xy": torch.tensor([10.0, 100.0, 60.0, 100.0], dtype=torch.float32),
+                "visibility": torch.ones((2,), dtype=torch.float32),
+                "color": 0,
+                "lane_type": 0,
+            }
+        ]
+        batch["valid_mask"][0]["lane"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw geometry points shape must match"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_stop_line_points_shape_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["stop_line"] = True
+        batch["lane_targets"][0]["stop_lines"] = [
+            {"points_xy": torch.tensor([10.0, 100.0, 60.0, 100.0], dtype=torch.float32)}
+        ]
+        batch["valid_mask"][0]["stop_line"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw geometry points shape must match"):
+            encode_pv26_batch(batch)
+
+    def test_encode_batch_rejects_crosswalk_points_shape_mismatch(self) -> None:
+        from model.data import encode_pv26_batch
+
+        batch = _minimal_raw_batch(det_source=False)
+        batch["source_mask"][0]["crosswalk"] = True
+        batch["lane_targets"][0]["crosswalks"] = [
+            {"points_xy": torch.tensor([10.0, 100.0, 60.0, 100.0, 60.0, 200.0], dtype=torch.float32)}
+        ]
+        batch["valid_mask"][0]["crosswalk"] = torch.ones((1,), dtype=torch.bool)
+
+        with self.assertRaisesRegex(ValueError, "raw geometry points shape must match"):
+            encode_pv26_batch(batch)
 
     def test_encode_batch_accepts_det_source_false_without_det_supervision_meta(self) -> None:
         from model.data import encode_pv26_batch

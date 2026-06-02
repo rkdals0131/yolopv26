@@ -4,10 +4,15 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-from constants import (
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.modal.constants import (
     ARCHIVE_EXCLUDE_PATHS,
     DATASET_ARCHIVE_NAME,
     DATASET_ARCHIVE_REMOTE_PATH,
@@ -20,7 +25,7 @@ from constants import (
     TRAIN_PRESET,
     validate_modal_constants,
 )
-from dataset_archive import verify_archive_contract
+from tools.modal.dataset_archive import read_final_dataset_stats_sample_count, verify_archive_contract
 
 
 def _log(message: str) -> None:
@@ -28,7 +33,7 @@ def _log(message: str) -> None:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -75,7 +80,7 @@ def _check_dataset(dataset_root: Path) -> dict[str, Any]:
     stats_path = dataset_root / "meta" / "final_dataset_stats.json"
     sample_count = None
     if stats_path.is_file():
-        sample_count = json.loads(stats_path.read_text(encoding="utf-8")).get("sample_count")
+        sample_count = read_final_dataset_stats_sample_count(stats_path)
     payload = {
         "dataset_root": str(dataset_root),
         "stats_path": str(stats_path),

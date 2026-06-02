@@ -6,6 +6,7 @@ from typing import Any
 import torch
 
 from common.train_runtime import sync_timing_device as _common_sync_timing_device
+from .batch import validate_prediction_batch_matches_image
 from .trainer_reporting import _tensorboard_train_step_payload, _write_tensorboard_scalars
 from .multitask_conflict import (
     accumulate_pcgrad_trunk_update,
@@ -255,6 +256,7 @@ def run_train_step(
         forward_started_at = time.perf_counter()
         with trainer._autocast_context():
             predictions = trainer.forward_encoded_batch(encoded)
+        validate_prediction_batch_matches_image(predictions, encoded["image"])
         sync_timing_device(trainer.device, profile_device_sync)
         forward_ended_at = time.perf_counter()
         loss_started_at = forward_ended_at

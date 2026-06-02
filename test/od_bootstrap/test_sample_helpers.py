@@ -10,7 +10,12 @@ import torch
 
 from tools.od_bootstrap.build.checkpoint_audit import TeacherCheckpointSpec, audit_teacher_checkpoints
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_MANIFEST_NAME
-from tools.od_bootstrap.build.review import canonical_scene_to_overlay_scene, render_overlay, render_review_bundle, select_review_rows
+from tools.od_bootstrap.build.review import (
+    canonical_scene_to_overlay_scene,
+    render_overlay,
+    render_review_bundle,
+    select_review_rows,
+)
 from tools.od_bootstrap.build.sample_manifest import select_sample_entries, summarize_entries
 from tools.od_bootstrap.build.image_list import ImageListEntry
 
@@ -243,6 +248,50 @@ class ODBootstrapSampleHelpersTests(unittest.TestCase):
             self.assertTrue((output_root / "index.json").is_file())
             index_payload = json.loads((output_root / "index.json").read_text(encoding="utf-8"))
             self.assertEqual(len(index_payload["entries"]), 4)
+
+    def test_render_review_bundle_rejects_non_mapping_manifest_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "meta" / FINAL_DATASET_MANIFEST_NAME
+            _write_text(manifest_path, "[]\n")
+
+            with self.assertRaisesRegex(TypeError, "manifest JSON root must be a mapping"):
+                render_review_bundle(
+                    manifest_path=manifest_path,
+                    output_root=root / "review",
+                    quotas={"pv26_exhaustive_bdd100k_det_100k": 1},
+                )
+
+    def test_render_review_bundle_rejects_non_mapping_scene_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "meta" / FINAL_DATASET_MANIFEST_NAME
+            scene_path = root / "labels_scene" / "val" / "sample.json"
+            image_path = root / "images" / "val" / "sample.jpg"
+            _write_text(scene_path, "[]\n")
+            _write_text(image_path, "img")
+            _write_json(
+                manifest_path,
+                {
+                    "version": "pv26-exhaustive-od-lane-v2",
+                    "samples": [
+                        {
+                            "final_sample_id": "sample",
+                            "source_dataset_key": "pv26_exhaustive_bdd100k_det_100k",
+                            "split": "val",
+                            "scene_path": str(scene_path),
+                            "image_path": str(image_path),
+                        }
+                    ],
+                },
+            )
+
+            with self.assertRaisesRegex(TypeError, "scene JSON root must be a mapping"):
+                render_review_bundle(
+                    manifest_path=manifest_path,
+                    output_root=root / "review",
+                    quotas={"pv26_exhaustive_bdd100k_det_100k": 1},
+                )
 
     def test_select_review_rows_applies_seeded_dataset_sampling(self) -> None:
         samples = []

@@ -79,8 +79,12 @@ def compute_letterbox_transform(
     raw_hw: tuple[int, int],
     network_hw: tuple[int, int] = NETWORK_HW,
 ) -> LetterboxTransform:
-    raw_h, raw_w = raw_hw
-    net_h, net_w = network_hw
+    raw_h, raw_w = (int(raw_hw[0]), int(raw_hw[1]))
+    net_h, net_w = (int(network_hw[0]), int(network_hw[1]))
+    if raw_h <= 0 or raw_w <= 0 or net_h <= 0 or net_w <= 0:
+        raise ValueError(
+            f"letterbox dimensions must be positive: raw_hw={(raw_h, raw_w)} network_hw={(net_h, net_w)}"
+        )
     scale = min(net_w / raw_w, net_h / raw_h)
     resized_w = int(round(raw_w * scale))
     resized_h = int(round(raw_h * scale))
@@ -91,8 +95,8 @@ def compute_letterbox_transform(
     pad_top = pad_h // 2
     pad_bottom = pad_h - pad_top
     return LetterboxTransform(
-        raw_hw=raw_hw,
-        network_hw=network_hw,
+        raw_hw=(raw_h, raw_w),
+        network_hw=(net_h, net_w),
         scale=scale,
         pad_left=pad_left,
         pad_top=pad_top,
@@ -105,6 +109,12 @@ def compute_letterbox_transform(
 def load_letterboxed_image(path: Path, transform: LetterboxTransform) -> torch.FloatTensor:
     with Image.open(path) as raw_image:
         image = raw_image.convert("RGB")
+    actual_hw = (int(image.height), int(image.width))
+    if actual_hw != tuple(int(value) for value in transform.raw_hw):
+        raise ValueError(
+            f"scene image size must match image file size: {path} "
+            f"scene_hw={transform.raw_hw} file_hw={actual_hw}"
+        )
     resized = image.resize((transform.resized_hw[1], transform.resized_hw[0]), Image.Resampling.BILINEAR)
     canvas = Image.new("RGB", (transform.network_hw[1], transform.network_hw[0]), (PADDING_FILL_UINT8,) * 3)
     canvas.paste(resized, (transform.pad_left, transform.pad_top))

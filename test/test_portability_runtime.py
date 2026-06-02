@@ -57,6 +57,31 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         self.assertIn("torchvision_nms", report["checks"])
         self.assertIn("yolo26", report["checks"])
 
+    def test_check_env_yolo_runtime_uses_current_roadmark_trunk_contract(self) -> None:
+        from tools.check_env import scan as check_scan
+
+        adapter = SimpleNamespace(
+            detect_head=object(),
+            feature_source_indices=(2, 16, 19, 22),
+            feature_source_strides=(4, 8, 16, 32),
+            resolved_feature_channels=(128, 128, 256, 512),
+        )
+
+        with unittest.mock.patch("model.net.trunk.ULTRALYTICS_VERSION", "8.4.2"):
+            with unittest.mock.patch("model.net.trunk.ensure_yolo26_support") as support_mock:
+                with unittest.mock.patch(
+                    "model.net.trunk.build_yolo26_roadmark_trunk",
+                    return_value=adapter,
+                ) as roadmark_mock:
+                    result = check_scan._check_yolo26(check_runtime=True)
+
+        support_mock.assert_called_once_with()
+        roadmark_mock.assert_called_once_with()
+        self.assertTrue(result["runtime_load_ok"])
+        self.assertEqual(result["runtime_source_indices"], [2, 16, 19, 22])
+        self.assertEqual(result["runtime_source_strides"], [4, 8, 16, 32])
+        self.assertEqual(result["runtime_feature_channels"], [128, 128, 256, 512])
+
     def test_check_env_interactive_mode_requires_tty_without_strict_or_json(self) -> None:
         from tools.check_env import _should_run_interactive
 

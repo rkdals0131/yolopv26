@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import hashlib
-import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TypedDict
 
-from common.io import now_iso, write_json, write_text
+from common.io import now_iso, read_json, write_json, write_text
 from common.pv26_schema import LANE_CLASSES, LANE_TYPES, OD_CLASSES, TL_BITS
 
 FINAL_DATASET_STATS_NAME = "final_dataset_stats.json"
@@ -74,7 +73,7 @@ class FinalDatasetStats(TypedDict):
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = read_json(path)
     if not isinstance(payload, dict):
         raise TypeError(f"JSON root must be a mapping: {path}")
     return payload

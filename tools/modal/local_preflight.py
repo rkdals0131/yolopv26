@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
+import sys
 
-from constants import (
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.modal.constants import (
     ARCHIVE_EXCLUDE_PATHS,
     DATASET_ARCHIVE_IN_VOLUME,
     DATASET_ARCHIVE_NAME,
@@ -17,6 +21,7 @@ from constants import (
     TRAIN_PRESET,
     validate_modal_constants,
 )
+from tools.modal.dataset_archive import read_final_dataset_stats_sample_count
 
 
 def _log(message: str) -> None:
@@ -24,7 +29,7 @@ def _log(message: str) -> None:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _dataset_status(dataset_root: Path) -> dict[str, object]:
@@ -32,7 +37,7 @@ def _dataset_status(dataset_root: Path) -> dict[str, object]:
     stats_path = dataset_root / "meta" / "final_dataset_stats.json"
     sample_count = None
     if stats_path.is_file():
-        sample_count = json.loads(stats_path.read_text(encoding="utf-8")).get("sample_count")
+        sample_count = read_final_dataset_stats_sample_count(stats_path)
     return {
         "dataset_root": str(dataset_root),
         "exists": dataset_root.is_dir(),
@@ -71,7 +76,7 @@ def main() -> None:
     exclude_flags = "".join(f"  --exclude='{path}' \\\n" for path in ARCHIVE_EXCLUDE_PATHS)
     print(
         "\n# preferred: one checked local prepare/upload script\n"
-        ".venv/bin/python modal/prepare_dataset_volume.py --create-archive --ensure-volumes --upload\n\n"
+        ".venv/bin/python -m tools.modal.prepare_dataset_volume --create-archive --ensure-volumes --upload\n\n"
         "# manual equivalent, if you want to run each command yourself\n"
         "# 1. create dataset archive if missing\n"
         f"tar --zstd -cf {DATASET_ARCHIVE_NAME} \\\n"
@@ -85,9 +90,9 @@ def main() -> None:
         f".venv/bin/modal volume put -f {DATA_VOLUME_NAME} {DATASET_ARCHIVE_NAME} {DATASET_ARCHIVE_REMOTE_PATH}\n\n"
         "# 4. verify upload and Modal extraction/CUDA/layout\n"
         f".venv/bin/modal volume ls {DATA_VOLUME_NAME} /\n"
-        ".venv/bin/modal run modal/check.py\n\n"
+        ".venv/bin/modal run tools/modal/check.py\n\n"
         "# 5. launch detached training\n"
-        ".venv/bin/modal run --detach modal/train.py\n\n"
+        ".venv/bin/modal run --detach tools/modal/train.py\n\n"
         "# expected Modal archive path:\n"
         f"# {DATASET_ARCHIVE_IN_VOLUME}\n"
         "# preset:\n"

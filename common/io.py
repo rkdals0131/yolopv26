@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import yaml
 
@@ -22,10 +22,18 @@ def read_json(path: str | Path) -> dict[str, Any]:
 
 
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    return [payload for _, payload in iter_jsonl(path)]
+
+
+def iter_jsonl(path: str | Path) -> Iterator[tuple[int, Any]]:
     input_path = Path(path)
     if not input_path.is_file():
-        return []
-    return [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return
+    for line_index, raw_line in enumerate(read_text(input_path).splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        yield line_index, json.loads(line)
 
 
 def read_yaml(path: str | Path) -> dict[str, Any]:
@@ -35,6 +43,10 @@ def read_yaml(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError(f"YAML root must be a mapping: {path}")
     return payload
+
+
+def read_text(path: str | Path) -> str:
+    return Path(path).read_text(encoding="utf-8")
 
 
 def ensure_parent_dir(path: str | Path) -> Path:
@@ -60,8 +72,11 @@ def write_json(
     ensure_ascii: bool = True,
     default: Any | None = None,
     sort_keys: bool = False,
+    overwrite: bool = True,
 ) -> Path:
     output_path = ensure_parent_dir(path)
+    if not overwrite and output_path.exists():
+        raise FileExistsError(f"target path already exists: {output_path}")
     output_path.write_text(
         json.dumps(
             payload,
@@ -83,6 +98,7 @@ def write_json_sorted(
     indent: int | None = 2,
     ensure_ascii: bool = True,
     default: Any | None = None,
+    overwrite: bool = True,
 ) -> Path:
     return write_json(
         path,
@@ -91,6 +107,7 @@ def write_json_sorted(
         ensure_ascii=ensure_ascii,
         default=default,
         sort_keys=True,
+        overwrite=overwrite,
     )
 
 

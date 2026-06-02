@@ -98,7 +98,7 @@ class PV26TinyOverfitTests(unittest.TestCase):
         from model.net import PV26Heads
         from model.data import PV26CanonicalDataset, collate_pv26_samples
         from model.engine.trainer import PV26Trainer, run_pv26_tiny_overfit
-        from model.net import build_yolo26n_trunk
+        from model.net import build_yolo26_roadmark_trunk, infer_pyramid_channels
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -135,8 +135,8 @@ class PV26TinyOverfitTests(unittest.TestCase):
             self.assertEqual(seen, {"aihub_traffic_seoul", "aihub_obstacle_seoul", "aihub_lane_seoul"})
 
             batch = collate_pv26_samples(selected)
-            adapter = build_yolo26n_trunk()
-            heads = PV26Heads(in_channels=(64, 128, 256))
+            adapter = build_yolo26_roadmark_trunk(weights="yolo26n.pt")
+            heads = PV26Heads(in_channels=infer_pyramid_channels(adapter))
             trainer = PV26Trainer(
                 adapter,
                 heads,

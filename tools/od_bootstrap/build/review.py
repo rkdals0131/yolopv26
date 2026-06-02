@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from collections import Counter
 import hashlib
-import json
 from pathlib import Path
 from typing import Any, Mapping, TypedDict
 
-from common.io import write_json
+from common.io import read_json, write_json
 from common.overlay import render_overlay
 from .final_dataset_stats import FINAL_DATASET_FOCUS_NAMES, select_final_dataset_focus_rows
 
@@ -53,6 +52,13 @@ class ReviewBundleSummary(TypedDict):
 class FinalDatasetReviewSummary(ReviewBundleSummary):
     dataset_root: str
     focus: str
+
+
+def _load_mapping_json(path: Path, *, description: str) -> dict[str, Any]:
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"{description} JSON root must be a mapping: {path}")
+    return payload
 
 
 def _coerce_bbox(value: Any) -> list[float]:
@@ -227,7 +233,7 @@ def render_review_bundle(
     seed: int | None = None,
 ) -> ReviewBundleSummary:
     resolved_manifest_path = Path(manifest_path).resolve()
-    manifest = json.loads(resolved_manifest_path.read_text(encoding="utf-8"))
+    manifest = _load_mapping_json(resolved_manifest_path, description="manifest")
     selected_rows = select_review_rows(manifest, split=split, quotas=quotas, seed=seed)
     resolved_output_root = Path(output_root).resolve()
     resolved_output_root.mkdir(parents=True, exist_ok=True)
@@ -236,7 +242,7 @@ def render_review_bundle(
     for row in selected_rows:
         scene_path = Path(str(row["scene_path"])).resolve()
         image_path = Path(str(row["image_path"])).resolve()
-        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+        scene = _load_mapping_json(scene_path, description="scene")
         overlay_scene = canonical_scene_to_overlay_scene(scene, image_path=image_path)
         dataset_key = str(row["source_dataset_key"])
         sample_id = str(row["final_sample_id"])
@@ -297,7 +303,7 @@ def render_final_dataset_review_bundle(
     for row in selected_rows:
         scene_path = Path(str(row["scene_path"])).resolve()
         image_path = Path(str(row["image_path"])).resolve()
-        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+        scene = _load_mapping_json(scene_path, description="scene")
         overlay_scene = canonical_scene_to_overlay_scene(scene, image_path=image_path)
         dataset_key = str(row["source_dataset_key"])
         sample_id = str(row["final_sample_id"])

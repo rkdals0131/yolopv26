@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from common.io import iter_jsonl
+from common.io import read_json
 from common.io import write_jsonl
 from common.paths import resolve_optional_path, resolve_path
 
@@ -50,6 +51,21 @@ def _coerce_str(value: Any, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must not be empty")
     return normalized
 
+
+def _load_scene(scene_path: Path) -> dict[str, Any]:
+    payload = read_json(scene_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"scene root must be an object: {scene_path}")
+    return payload
+
+
+def _det_label_state_from_tasks(scene: dict[str, Any]) -> bool | None:
+    tasks = scene.get("tasks")
+    if not isinstance(tasks, dict) or "has_det" not in tasks:
+        return None
+    return bool(tasks.get("has_det"))
+
+
 def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
     manifest_path = Path(path).resolve()
     if not manifest_path.is_file():
@@ -58,11 +74,7 @@ def load_image_list(path: str | Path) -> tuple[ImageListEntry, ...]:
     entries: list[ImageListEntry] = []
     seen_paths: set[str] = set()
     seen_sample_uids: set[str] = set()
-    for line_index, raw_line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        payload = json.loads(line)
+    for line_index, payload in iter_jsonl(manifest_path):
         if not isinstance(payload, dict):
             raise TypeError(f"image_list[{line_index}] must be a JSON object")
 
@@ -131,23 +143,37 @@ def discover_image_list_entries(
         if not labels_scene_root.is_dir():
             continue
         for scene_path in sorted(labels_scene_root.rglob("*.json"), key=lambda item: (item.parent.name, item.stem)):
-            scene = json.loads(scene_path.read_text(encoding="utf-8"))
-            dataset_key = str(scene.get("source", {}).get("dataset") or "").strip()
+            scene = _load_scene(scene_path)
+            source = scene.get("source") if isinstance(scene.get("source"), dict) else {}
+            dataset_key = str(source.get("dataset") or "").strip()
             if dataset_key not in allowed:
                 continue
-            split = str(scene.get("source", {}).get("split") or scene_path.parent.name).strip()
+            labels_scene_split = scene_path.parent.name
+            split = str(source.get("split") or labels_scene_split).strip()
+            if split != labels_scene_split:
+                raise ValueError(f"scene source.split must match labels_scene split: {scene_path}")
             image_file_name = _coerce_str(
                 scene.get("image", {}).get("file_name"),
                 field_name=f"{scene_path}.image.file_name",
             )
+            if Path(image_file_name).is_absolute() or Path(image_file_name).name != image_file_name:
+                raise ValueError(f"{scene_path}.image.file_name must be a file name, not a path")
             sample_id = scene_path.stem
+            image_path = resolved_root / "images" / split / image_file_name
+            if not image_path.is_file():
+                raise FileNotFoundError(f"image_list image not found: {image_path}")
             det_path = resolved_root / "labels_det" / split / f"{sample_id}.txt"
+            det_required = _det_label_state_from_tasks(scene)
+            if det_required is True and not det_path.is_file():
+                raise FileNotFoundError(f"image_list det label not found: {det_path} ({scene_path})")
+            if det_required is False and det_path.is_file():
+                raise ValueError(f"image_list stale det label for non-det scene: {det_path} ({scene_path})")
             sample_uid = build_sample_uid(dataset_key=dataset_key, split=split, sample_id=sample_id)
             entries.append(
                 ImageListEntry(
                     sample_id=sample_id,
                     sample_uid=sample_uid,
-                    image_path=resolved_root / "images" / split / image_file_name,
+                    image_path=image_path,
                     scene_path=scene_path,
                     dataset_root=resolved_root,
                     dataset_key=dataset_key,

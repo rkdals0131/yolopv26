@@ -21,6 +21,7 @@ def _ensure_repo_root_on_path() -> None:
 
 _ensure_repo_root_on_path()
 
+from common.io import read_json
 from common.overlay import render_overlay
 from common.pv26_schema import SOURCE_MASK_BY_DATASET
 from common.user_config import (
@@ -214,8 +215,10 @@ def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeac
 def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, ...]:
     if infer_pyramid_channels is not None:
         channels = tuple(int(value) for value in infer_pyramid_channels(adapter))
-        if len(channels) in {3, 4}:
+        if len(channels) == 4:
             return channels
+        if len(channels) == 3:
+            return (channels[0], *channels)
     return _configured_head_channels(train_config)
 
 
@@ -891,8 +894,10 @@ def _preview_scene_signal_score(record: Any) -> tuple[int, int, int, int, int, i
     if scene_path is None:
         return (0, 0, 0, 0, 0, 0, 0)
     try:
-        scene = json.loads(Path(scene_path).read_text(encoding="utf-8"))
+        scene = read_json(Path(scene_path))
     except Exception:
+        return (0, 0, 0, 0, 0, 0, 0)
+    if not isinstance(scene, dict):
         return (0, 0, 0, 0, 0, 0, 0)
 
     tasks = scene.get("tasks") if isinstance(scene.get("tasks"), dict) else {}
@@ -1089,10 +1094,15 @@ def _phase_manifest_extra(
     phase: PhaseConfig,
     train_config: TrainDefaultsConfig,
     scenario: MetaTrainScenario,
+    head_channels: tuple[int, ...] | list[int] | None = None,
 ) -> dict[str, Any]:
     phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
     backbone_weights = _resolve_backbone_weights(train_config)
-    head_channels = _configured_head_channels(train_config)
+    resolved_head_channels = (
+        tuple(int(value) for value in head_channels)
+        if head_channels is not None
+        else _configured_head_channels(train_config)
+    )
     postprocess_config = _build_postprocess_config(train_config)
     return {
         "entry_script": "tools/run_pv26_train.py",
@@ -1120,7 +1130,7 @@ def _phase_manifest_extra(
             "weights": backbone_weights,
         },
         "postprocess": train_artifacts.json_ready(asdict(postprocess_config)),
-        "head_channels": list(head_channels),
+        "head_channels": list(resolved_head_channels),
     }
 
 
@@ -1144,6 +1154,10 @@ def _execute_phase(
     controller.replay(train_artifacts.read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
 
     trainer = _build_phase_trainer(phase, phase_train_config)
+    phase_head_channels = tuple(
+        int(value)
+        for value in getattr(getattr(trainer, "heads", None), "in_channels", _configured_head_channels(phase_train_config))
+    )
     last_checkpoint_path = phase_run_dir / "checkpoints" / "last.pt"
     if previous_best_checkpoint is not None and not last_checkpoint_path.is_file():
         _log_meta_train(
@@ -1193,6 +1207,7 @@ def _execute_phase(
             phase=phase,
             train_config=phase_train_config,
             scenario=scenario,
+            head_channels=phase_head_channels,
         ),
     )
 
@@ -1248,7 +1263,7 @@ def _execute_phase(
             "weights": _resolve_backbone_weights(phase_train_config),
         },
         "postprocess": train_artifacts.json_ready(asdict(_build_postprocess_config(phase_train_config))),
-        "head_channels": list(_configured_head_channels(phase_train_config)),
+        "head_channels": list(phase_head_channels),
         "preview": train_artifacts.json_ready(preview_payload),
         "phase_train_config": train_artifacts.json_ready(asdict(phase_train_config)),
         "run_summary": train_artifacts.json_ready(phase_summary),

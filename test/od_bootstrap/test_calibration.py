@@ -18,7 +18,7 @@ from tools.od_bootstrap.teacher.calibration_types import (
     HardNegativeConfig,
 )
 from tools.od_bootstrap.presets import build_calibration_preset
-from tools.od_bootstrap.teacher.calibrate import calibrate_class_policy_scenario
+from tools.od_bootstrap.teacher.calibrate import _load_hard_negative_manifest, calibrate_class_policy_scenario
 from tools.od_bootstrap.build.sweep_types import ClassPolicy
 
 
@@ -91,6 +91,14 @@ class _HardNegativeAwareFakeYOLO:
 
 
 class ODBootstrapCalibrationTests(unittest.TestCase):
+    def test_load_hard_negative_manifest_rejects_non_mapping_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "hard_negative_manifest.json"
+            manifest_path.write_text("[]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(TypeError, "hard negative manifest root must be a mapping"):
+                _load_hard_negative_manifest(manifest_path)
+
     def test_build_calibration_preset_allows_teacher_specific_imgsz_override(self) -> None:
         hyperparameters = {
             "od_bootstrap": {
@@ -190,7 +198,20 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             self.assertEqual(class_policy["vehicle"]["center_y_range"], [0.0, 0.8])
             self.assertTrue(report["classes"]["vehicle"]["meets_precision_floor"])
             self.assertAlmostEqual(report["classes"]["vehicle"]["metrics"]["precision"], 1.0, places=6)
-            self.assertTrue((Path(summary["output_root"]) / "teachers" / "mobility" / "predictions.jsonl").is_file())
+            predictions_path = Path(summary["output_root"]) / "teachers" / "mobility" / "predictions.jsonl"
+            self.assertTrue(predictions_path.is_file())
+            prediction_rows = [
+                json.loads(line)
+                for line in predictions_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(prediction_rows), 3)
+            self.assertEqual(prediction_rows[0]["teacher_name"], "mobility")
+            self.assertEqual(prediction_rows[0]["class_name"], "vehicle")
+            teacher_summary = json.loads(
+                (Path(summary["output_root"]) / "teachers" / "mobility" / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(teacher_summary["prediction_count"], 3)
             self.assertTrue(Path(summary["hard_negative_manifest_path"]).is_file())
             self.assertEqual(summary["teachers"][0]["resolved_runtime"]["imgsz"], 960)
 

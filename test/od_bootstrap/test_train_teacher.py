@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
+import torch
+import yaml
 
 from tools.od_bootstrap.teacher.data_yaml import (
     TeacherDatasetLayout,
@@ -24,6 +26,23 @@ from tools.od_bootstrap.teacher.train import run_teacher_train_scenario
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_checkpoint(path: Path, *, epoch: int, total_epochs: int, resumable: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch if resumable else -1,
+            "optimizer": {"state": {}, "param_groups": []} if resumable else None,
+            "train_args": {
+                "data": "dataset.yaml",
+                "epochs": total_epochs,
+                "batch": 2,
+                "imgsz": 640,
+            },
+        },
+        path,
+    )
 
 
 def _make_image(path: Path, width: int = 64, height: int = 64, color: str = "#224466") -> None:
@@ -115,6 +134,58 @@ class TeacherTrainTests(unittest.TestCase):
             content = data_yaml.read_text(encoding="utf-8")
             self.assertIn("vehicle", content)
             self.assertIn("images/train", content)
+            payload = yaml.safe_load(content)
+            self.assertEqual(
+                payload,
+                {
+                    "path": str(dataset_root),
+                    "train": "images/train",
+                    "val": "images/val",
+                    "nc": 3,
+                    "names": ["vehicle", "bike", "pedestrian"],
+                },
+            )
+
+    def test_build_teacher_data_yaml_rejects_empty_class_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            with self.assertRaisesRegex(ValueError, "teacher class_names must not be empty"):
+                build_teacher_data_yaml(
+                    dataset_root=root / "dataset",
+                    class_names=(),
+                    output_path=root / "data.yaml",
+                )
+
+    def test_build_teacher_data_yaml_rejects_blank_or_duplicate_class_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            with self.assertRaisesRegex(ValueError, "teacher class_names must not contain blank names"):
+                build_teacher_data_yaml(
+                    dataset_root=root / "dataset",
+                    class_names=("vehicle", " "),
+                    output_path=root / "blank.yaml",
+                )
+
+            with self.assertRaisesRegex(ValueError, "teacher class_names must be unique"):
+                build_teacher_data_yaml(
+                    dataset_root=root / "dataset",
+                    class_names=("vehicle", "vehicle"),
+                    output_path=root / "duplicate.yaml",
+                )
+
+    def test_build_teacher_data_yaml_rejects_split_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            with self.assertRaisesRegex(ValueError, "teacher train_split must be a name"):
+                build_teacher_data_yaml(
+                    dataset_root=root / "dataset",
+                    class_names=("vehicle",),
+                    output_path=root / "data.yaml",
+                    train_split="../train",
+                )
 
     def test_stage_teacher_dataset_layout_replaces_stale_paths_and_copies_without_symlink_support(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -197,7 +268,10 @@ class TeacherTrainTests(unittest.TestCase):
             self.assertEqual(latest_run_payload["run_dir"], str(run_dir))
             self.assertTrue(Path(summary["data_yaml_path"]).is_file())
             self.assertFalse((root / "runs" / "mobility" / "dataset").exists())
-            self.assertTrue((root / "runs" / "mobility" / "run_summary.json").is_file())
+            run_summary_path = root / "runs" / "mobility" / "run_summary.json"
+            self.assertTrue(run_summary_path.is_file())
+            expected_summary = json.loads(json.dumps(summary, default=str))
+            self.assertEqual(json.loads(run_summary_path.read_text(encoding="utf-8")), expected_summary)
             self.assertNotIn("pin_memory", _FakeYOLO.last_instance.last_train_kwargs)
             self.assertNotIn("prefetch_factor", _FakeYOLO.last_instance.last_train_kwargs)
             self.assertEqual(_FakeYOLO.last_instance.last_train_kwargs["project"], str(root / "runs" / "mobility"))
@@ -215,8 +289,9 @@ class TeacherTrainTests(unittest.TestCase):
             older_signal = teacher_root / "20260328_040148" / "weights" / "last.pt"
             newer_signal = teacher_root / "20260328_050148" / "weights" / "last.pt"
             unrelated_newest = root / "runs" / "obstacle" / "20260328_060148" / "weights" / "last.pt"
-            for path in (older_signal, newer_signal, unrelated_newest):
-                _write_text(path, "last")
+            _write_checkpoint(older_signal, epoch=69, total_epochs=72, resumable=True)
+            _write_checkpoint(newer_signal, epoch=70, total_epochs=72, resumable=True)
+            _write_checkpoint(unrelated_newest, epoch=71, total_epochs=72, resumable=True)
             os.utime(older_signal, (100, 100))
             os.utime(newer_signal, (200, 200))
             os.utime(unrelated_newest, (300, 300))
@@ -291,5 +366,5 @@ class TeacherTrainTests(unittest.TestCase):
                 },
             )
             with patch("tools.od_bootstrap.teacher.ultralytics_runner.YOLO", _FakeYOLO):
-                with self.assertRaisesRegex(FileNotFoundError, "no last.pt exists under"):
+                with self.assertRaisesRegex(FileNotFoundError, "no resumable checkpoint exists under"):
                     run_teacher_train_scenario(scenario, scenario_path=root / "preset_train")

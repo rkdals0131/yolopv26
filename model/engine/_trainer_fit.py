@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import time
 from typing import Any, Callable
+
+from common.io import iter_jsonl as _iter_common_jsonl
+from common.io import read_json as _read_common_json
 
 from .trainer_reporting import _format_epoch_completion_log
 
@@ -143,6 +145,22 @@ def _build_run_manifest(
     }
 
 
+def _load_summary_object(summary_path: Path) -> dict[str, Any]:
+    payload = _read_common_json(summary_path)
+    if not isinstance(payload, dict):
+        raise TypeError(f"summary root must be an object: {summary_path}")
+    return payload
+
+
+def _load_epoch_history(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line_number, payload in _iter_common_jsonl(path):
+        if not isinstance(payload, dict):
+            raise TypeError(f"epoch history row must be an object: {path}:{line_number}")
+        rows.append(payload)
+    return rows
+
+
 def _restore_resume_state(
     *,
     trainer: Any,
@@ -163,13 +181,9 @@ def _restore_resume_state(
     summary_path = output_dir / "summary.json"
     epoch_history_path = output_dir / "history" / "epochs.jsonl"
     if epoch_history_path.is_file():
-        trainer.epoch_history = [
-            json.loads(line)
-            for line in epoch_history_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        trainer.epoch_history = _load_epoch_history(epoch_history_path)
     if summary_path.is_file():
-        prior_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        prior_summary = _load_summary_object(summary_path)
         if prior_summary.get("best_metric_value") is not None:
             best_metric_value = float(prior_summary["best_metric_value"])
         if prior_summary.get("best_epoch") is not None:
@@ -189,7 +203,7 @@ def _restore_task_best_state(output_dir: Path, checkpoint_dir: Path) -> dict[str
     summary_path = output_dir / "summary.json"
     prior_state: dict[str, Any] = {}
     if summary_path.is_file():
-        prior_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        prior_summary = _load_summary_object(summary_path)
         if isinstance(prior_summary.get("task_best_metrics"), dict):
             prior_state = prior_summary["task_best_metrics"]
     state: dict[str, dict[str, Any]] = {}

@@ -52,43 +52,43 @@ OK meta
 cd /home/kai/yolopv26
 
 # 0. 로컬 preflight: 경로/파일명/script constant가 서로 맞는지 확인합니다.
-.venv/bin/python modal/local_preflight.py
+.venv/bin/python -m tools.modal.local_preflight
 
 # 1. archive 생성, archive contract 검증, Modal Volume 생성, 업로드 확인을 한 번에 수행합니다.
-.venv/bin/python modal/prepare_dataset_volume.py --create-archive --ensure-volumes --upload
+.venv/bin/python -m tools.modal.prepare_dataset_volume --create-archive --ensure-volumes --upload
 
 # 2. 업로드 확인
 .venv/bin/modal volume ls pv26-dataset-archives /
 
 # 3. Modal A100 환경에서 archive/extract/layout/CUDA를 먼저 검증합니다.
-.venv/bin/modal run modal/check.py
+.venv/bin/modal run tools/modal/check.py
 
 # 4. 검증 통과 후 detached 학습 시작
-.venv/bin/modal run --detach modal/train.py
+.venv/bin/modal run --detach tools/modal/train.py
 
 # 5. 결과 Volume 확인
 .venv/bin/modal volume ls pv26-training-runs /
 .venv/bin/modal volume ls pv26-training-runs /pv26_unified_roadmark_segfirst_a100
 ```
 
-`modal/local_preflight.py`, `modal/check.py`, `modal/train.py`는 모두 내부에서 hardcoded dataset 이름, archive 파일명, Volume mount 경로, preset 이름이 서로 일치하는지 검사합니다. 맞으면 `OK ...` 로그를 찍고 다음 단계로 넘어가며, 틀리면 즉시 실패합니다.
-`modal/prepare_dataset_volume.py`는 로컬 archive 생성부터 Modal Volume 업로드 확인까지 같은 계획값을 사용해 단계별 `OK` 로그를 찍습니다.
+`tools/modal/local_preflight.py`, `tools/modal/check.py`, `tools/modal/train.py`는 모두 내부에서 hardcoded dataset 이름, archive 파일명, Volume mount 경로, preset 이름이 서로 일치하는지 검사합니다. 맞으면 `OK ...` 로그를 찍고 다음 단계로 넘어가며, 틀리면 즉시 실패합니다.
+`tools/modal/prepare_dataset_volume.py`는 로컬 archive 생성부터 Modal Volume 업로드 확인까지 같은 계획값을 사용해 단계별 `OK` 로그를 찍습니다.
 
 ---
 
 ## 1. 현재 코드 구조
 
-Modal 실행 파일은 `modal/` 디렉토리에 있습니다.
+Modal 실행 파일은 `tools/modal/` 디렉토리에 있습니다.
 
 | 파일 | 역할 |
 | --- | --- |
-| `modal/constants.py` | GPU, CPU, memory, Volume 이름, archive 경로, preset 이름을 정의합니다. CLI 인자 대신 이 파일을 수정합니다. |
-| `modal/local_preflight.py` | 로컬에서 dataset 경로, archive 파일명, Modal constant 일치 여부를 확인하고 다음 실행 command를 출력합니다. |
-| `modal/prepare_dataset_volume.py` | 로컬 archive 생성, archive top-level 검증, Modal Volume 생성, 업로드 확인을 수행합니다. |
-| `modal/check.py` | Modal 환경에서 dataset archive 존재 여부, 압축 해제, layout, CUDA 장치를 확인합니다. |
-| `modal/train.py` | Modal 환경에서 dataset archive를 압축 해제하고 PV26 학습을 실행합니다. |
-| `modal/dataset_archive.py` | `.tar.zst`, `.tar.gz`, `.tar`, `.zip` 압축 해제와 dataset layout 검증을 담당합니다. |
-| `modal/sdk_import.py` | 레포 안의 `modal/` 디렉토리와 외부 Modal SDK 이름 충돌을 피하기 위한 import helper입니다. |
+| `tools/modal/constants.py` | GPU, CPU, memory, Volume 이름, archive 경로, preset 이름을 정의합니다. CLI 인자 대신 이 파일을 수정합니다. |
+| `tools/modal/local_preflight.py` | 로컬에서 dataset 경로, archive 파일명, Modal constant 일치 여부를 확인하고 다음 실행 command를 출력합니다. |
+| `tools/modal/prepare_dataset_volume.py` | 로컬 archive 생성, archive top-level 검증, Modal Volume 생성, 업로드 확인을 수행합니다. |
+| `tools/modal/check.py` | Modal 환경에서 dataset archive 존재 여부, 압축 해제, layout, CUDA 장치를 확인합니다. |
+| `tools/modal/train.py` | Modal 환경에서 dataset archive를 압축 해제하고 PV26 학습을 실행합니다. |
+| `tools/modal/dataset_archive.py` | `.tar.zst`, `.tar.gz`, `.tar`, `.zip` 압축 해제와 dataset layout 검증을 담당합니다. |
+| `tools/modal/sdk_import.py` | 레포 안의 `tools/modal/` 디렉토리와 외부 Modal SDK 이름 충돌을 피하기 위한 import helper입니다. |
 
 현재 학습 command는 Modal 컨테이너 내부에서 다음과 같이 실행됩니다.
 
@@ -124,7 +124,7 @@ YOLO26 trunk P2/P3/P4/P5
 | `crosswalk` | `float32[B, 8, 33]` |
 
 따라서 Modal에서 학습이 시작되면 구조상 OD, TL attr, lane, stopline, crosswalk가 모두 같은 모델에서 학습됩니다.
-`modal/train.py`는 학습 시작 직전에 실제 preset을 다시 로드해서 `task_mode=roadmark_joint`, run root, run name prefix, phase별 loss weight를 확인합니다.
+`tools/modal/train.py`는 학습 시작 직전에 실제 preset을 다시 로드해서 `task_mode=roadmark_joint`, run root, run name prefix, phase별 loss weight를 확인합니다.
 단, 이것은 **학습 경로가 연결되었다는 뜻**이지, 성능이 충분하다는 뜻은 아닙니다. 실제 품질은 Modal run 결과로 확인해야 합니다.
 
 ---
@@ -183,7 +183,7 @@ for d in \
 
 ## 4. Modal 설정값
 
-현재 `modal/constants.py` 기준 설정입니다.
+현재 `tools/modal/constants.py` 기준 설정입니다.
 
 ```python
 APP_NAME = "pv26-unified-roadmark-segfirst-a100"
@@ -216,7 +216,7 @@ TRAIN_PRESET = "pv26_unified_roadmark_segfirst_a100"
 ```bash
 cd /home/kai/yolopv26
 
-.venv/bin/python modal/local_preflight.py
+.venv/bin/python -m tools.modal.local_preflight
 ```
 
 현재 정상 출력의 핵심은 다음입니다.
@@ -276,7 +276,7 @@ pv26_exhaustive_od_lane_dataset/meta/
 ```bash
 cd /home/kai/yolopv26
 
-.venv/bin/python modal/prepare_dataset_volume.py --create-archive
+.venv/bin/python -m tools.modal.prepare_dataset_volume --create-archive
 ```
 
 이 스크립트는 archive 파일명이 `pv26_exhaustive_od_lane_dataset.tar.zst`인지, archive 최상위가 `pv26_exhaustive_od_lane_dataset/`인지 확인한 뒤에만 `OK archive ready ...`를 출력합니다.
@@ -310,7 +310,7 @@ cd /home/kai/yolopv26
 ```bash
 cd /home/kai/yolopv26
 
-.venv/bin/python modal/prepare_dataset_volume.py --ensure-volumes
+.venv/bin/python -m tools.modal.prepare_dataset_volume --ensure-volumes
 ```
 
 이 스크립트는 `modal volume list --json`으로 두 Volume 이름을 확인하고, 없으면 생성한 뒤 다시 확인합니다.
@@ -319,7 +319,7 @@ cd /home/kai/yolopv26
 
 ## 8. Dataset archive를 Modal Volume에 업로드
 
-`modal/constants.py`는 Volume 내부 archive 경로를 다음으로 기대합니다.
+`tools/modal/constants.py`는 Volume 내부 archive 경로를 다음으로 기대합니다.
 
 ```text
 /pv26_exhaustive_od_lane_dataset.tar.zst
@@ -353,7 +353,7 @@ pv26_exhaustive_od_lane_dataset.tar.zst
 ```bash
 cd /home/kai/yolopv26
 
-.venv/bin/python modal/prepare_dataset_volume.py --create-archive --ensure-volumes --upload
+.venv/bin/python -m tools.modal.prepare_dataset_volume --create-archive --ensure-volumes --upload
 ```
 
 이 스크립트는 업로드 후 `modal volume ls pv26-dataset-archives / --json` 결과에 `pv26_exhaustive_od_lane_dataset.tar.zst`가 확인되어야 `OK uploaded archive ...`를 출력합니다.
@@ -367,7 +367,7 @@ cd /home/kai/yolopv26
 ```bash
 cd /home/kai/yolopv26
 
-.venv/bin/modal run modal/check.py
+.venv/bin/modal run tools/modal/check.py
 ```
 
 이 command가 하는 일은 다음입니다.
@@ -399,12 +399,12 @@ check가 통과하면 학습을 실행합니다.
 ```bash
 cd /home/kai/yolopv26
 
-.venv/bin/modal run --detach modal/train.py
+.venv/bin/modal run --detach tools/modal/train.py
 ```
 
 `--detach`를 붙이는 이유는 로컬 터미널 연결이 끊겨도 Modal run이 계속 돌게 하기 위해서입니다.
 
-`modal/train.py`가 하는 일은 다음입니다.
+`tools/modal/train.py`가 하는 일은 다음입니다.
 
 1. A100-40GB, CPU 24 cores, memory 96 GiB, local SSD 768 GiB function을 띄웁니다.
 2. repo 코드를 `/root/yolopv26`에 올립니다.
@@ -580,7 +580,7 @@ memory: 96 GiB
 
 현재 source constant 위치:
 
-- Modal resource: `modal/constants.py`
+- Modal resource: `tools/modal/constants.py`
 - batch/worker/prefetch preset: `tools/pv26_train/scenarios.py`
 
 ---
@@ -611,7 +611,7 @@ pv26_exhaustive_od_lane_dataset/meta
 
 ### local SSD 부족
 
-`modal/constants.py`에서 다음 값을 늘립니다.
+`tools/modal/constants.py`에서 다음 값을 늘립니다.
 
 ```python
 MODAL_EPHEMERAL_DISK_MB = 786_432
@@ -621,7 +621,7 @@ Modal 문서 기준 `ephemeral_disk`는 MiB 단위이며, 기본 per-container d
 
 ### CPU/RAM 부족
 
-`modal/constants.py`에서 다음 값을 조정합니다.
+`tools/modal/constants.py`에서 다음 값을 조정합니다.
 
 ```python
 MODAL_CPU_CORES = 24
@@ -662,19 +662,19 @@ Modal `memory`는 MB 단위입니다.
 cd /home/kai/yolopv26
 
 # 0. 로컬 상태와 script constant 확인
-.venv/bin/python modal/local_preflight.py
+.venv/bin/python -m tools.modal.local_preflight
 
 # 1. dataset archive 생성, Volume 생성, upload 확인
-.venv/bin/python modal/prepare_dataset_volume.py --create-archive --ensure-volumes --upload
+.venv/bin/python -m tools.modal.prepare_dataset_volume --create-archive --ensure-volumes --upload
 
 # 2. 업로드 확인
 .venv/bin/modal volume ls pv26-dataset-archives /
 
 # 3. Modal 원격 check
-.venv/bin/modal run modal/check.py
+.venv/bin/modal run tools/modal/check.py
 
 # 4. detached 학습 시작
-.venv/bin/modal run --detach modal/train.py
+.venv/bin/modal run --detach tools/modal/train.py
 
 # 5. 결과 Volume 확인
 .venv/bin/modal volume ls pv26-training-runs /

@@ -67,6 +67,8 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
         sample_id=sample_id_value,
         image_suffix=task.pair.image_path.suffix.lower(),
         load_json_fn=load_json,
+        expected_dataset_key=task.output_dataset_key,
+        expected_split=task.pair.split,
     )
     if bundle is None:
         return None
@@ -75,14 +77,58 @@ def _existing_output_summary(task: StandardizeTask) -> dict[str, Any] | None:
     det_path = bundle["det_path"]
     scene = bundle["scene"]
 
-    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
-    lanes = scene.get("lanes") if isinstance(scene.get("lanes"), list) else []
-    stop_lines = scene.get("stop_lines") if isinstance(scene.get("stop_lines"), list) else []
-    crosswalks = scene.get("crosswalks") if isinstance(scene.get("crosswalks"), list) else []
-    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
-    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+    scene_lists: dict[str, list[Any]] = {}
+    for field_name in ("detections", "lanes", "stop_lines", "crosswalks", "traffic_lights", "traffic_signs"):
+        field_value = scene.get(field_name)
+        if not isinstance(field_value, list):
+            return None
+        scene_lists[field_name] = field_value
+    tasks = scene.get("tasks")
+    if not isinstance(tasks, dict):
+        return None
 
-    if detections and not det_path.is_file():
+    detections = scene_lists["detections"]
+    lanes = scene_lists["lanes"]
+    stop_lines = scene_lists["stop_lines"]
+    crosswalks = scene_lists["crosswalks"]
+    traffic_lights = scene_lists["traffic_lights"]
+    traffic_signs = scene_lists["traffic_signs"]
+
+    if task.dataset_kind == "lane":
+        expected_tasks = {
+            "has_det": 0,
+            "has_lane": int(bool(lanes)),
+            "has_stop_line": int(bool(stop_lines)),
+            "has_crosswalk": int(bool(crosswalks)),
+            "has_tl_attr": 0,
+        }
+        if tasks != expected_tasks or detections or traffic_lights or traffic_signs or det_path.is_file():
+            return None
+    elif task.dataset_kind == "obstacle":
+        expected_tasks = {
+            "has_det": int(bool(detections)),
+            "has_lane": 0,
+            "has_stop_line": 0,
+            "has_crosswalk": 0,
+            "has_tl_attr": 0,
+        }
+        if tasks != expected_tasks or lanes or stop_lines or crosswalks or traffic_lights or traffic_signs:
+            return None
+        if bool(detections) != det_path.is_file():
+            return None
+    elif task.dataset_kind == "traffic":
+        expected_tasks = {
+            "has_det": int(bool(detections)),
+            "has_lane": 0,
+            "has_stop_line": 0,
+            "has_crosswalk": 0,
+            "has_tl_attr": int(any(item.get("tl_attr_valid") for item in traffic_lights if isinstance(item, dict))),
+        }
+        if tasks != expected_tasks or lanes or stop_lines or crosswalks:
+            return None
+        if bool(detections) != det_path.is_file():
+            return None
+    else:
         return None
 
     det_class_counts = Counter()
