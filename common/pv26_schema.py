@@ -27,6 +27,12 @@ EXHAUSTIVE_DATASET_KEY_BY_SOURCE = {
     AIHUB_OBSTACLE_DATASET_KEY: "pv26_exhaustive_aihub_obstacle_seoul",
 }
 
+ATTRPSEUDO_DATASET_KEY_BY_SOURCE = {
+    BDD100K_DATASET_KEY: "pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1",
+    AIHUB_TRAFFIC_DATASET_KEY: "pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1",
+    AIHUB_OBSTACLE_DATASET_KEY: "pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1",
+}
+
 SOURCE_MASK_BY_DATASET = {
     "pv26_exhaustive_bdd100k_det_100k": {
         "det": True,
@@ -45,6 +51,27 @@ SOURCE_MASK_BY_DATASET = {
     "pv26_exhaustive_aihub_obstacle_seoul": {
         "det": True,
         "tl_attr": False,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
+    "pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1": {
+        "det": True,
+        "tl_attr": True,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
+    "pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1": {
+        "det": True,
+        "tl_attr": True,
+        "lane": False,
+        "stop_line": False,
+        "crosswalk": False,
+    },
+    "pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1": {
+        "det": True,
+        "tl_attr": True,
         "lane": False,
         "stop_line": False,
         "crosswalk": False,
@@ -105,6 +132,21 @@ DET_SUPERVISION_BY_DATASET = {
         "allow_unmatched_class_negatives": True,
     },
     "pv26_exhaustive_aihub_obstacle_seoul": {
+        "class_names": OD_CLASSES,
+        "allow_objectness_negatives": True,
+        "allow_unmatched_class_negatives": True,
+    },
+    "pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1": {
+        "class_names": OD_CLASSES,
+        "allow_objectness_negatives": True,
+        "allow_unmatched_class_negatives": True,
+    },
+    "pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1": {
+        "class_names": OD_CLASSES,
+        "allow_objectness_negatives": True,
+        "allow_unmatched_class_negatives": True,
+    },
+    "pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1": {
         "class_names": OD_CLASSES,
         "allow_objectness_negatives": True,
         "allow_unmatched_class_negatives": True,

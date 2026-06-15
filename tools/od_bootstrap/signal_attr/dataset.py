@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+import time
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from PIL import Image
 
@@ -54,6 +56,9 @@ def materialize_aihub_signal_attr_crop_dataset_from_root(
     source_dataset: str = AIHUB_TRAFFIC_DATASET_KEY,
     crop_config: SignalAttrCropConfig = DEFAULT_SIGNAL_ATTR_CROP_CONFIG,
     splits: Sequence[str] = SIGNAL_ATTR_DATASET_SPLITS,
+    workers: int = 1,
+    log_every: int = 500,
+    log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     report = discover_pairs(TRAFFIC_DATASET_KEY, Path(dataset_root))
     return materialize_aihub_signal_attr_crop_dataset(
@@ -62,6 +67,9 @@ def materialize_aihub_signal_attr_crop_dataset_from_root(
         source_dataset=source_dataset,
         crop_config=crop_config,
         splits=splits,
+        workers=workers,
+        log_every=log_every,
+        log_fn=log_fn,
     )
 
 
@@ -72,30 +80,93 @@ def materialize_aihub_signal_attr_crop_dataset_from_canonical_root(
     source_dataset: str = AIHUB_TRAFFIC_DATASET_KEY,
     crop_config: SignalAttrCropConfig = DEFAULT_SIGNAL_ATTR_CROP_CONFIG,
     splits: Sequence[str] = SIGNAL_ATTR_DATASET_SPLITS,
+    workers: int = 1,
+    log_every: int = 500,
+    log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     output = Path(output_root)
     split_names = _normalize_splits(splits)
+    worker_count = _positive_int(workers, field_name="signal_attr.workers")
+    progress_every = _positive_int(log_every, field_name="signal_attr.log_every")
     label_rows_by_split: dict[str, list[dict[str, Any]]] = {split: [] for split in split_names}
     rejected_rows: list[dict[str, Any]] = []
 
     for split in split_names:
         (output / "images" / split).mkdir(parents=True, exist_ok=True)
 
-    for scene_path in _iter_canonical_scene_paths(Path(canonical_root), split_names):
-        label_rows, scene_rejections = _materialize_canonical_scene_rows(
-            scene_path,
-            Path(canonical_root),
-            output,
-            source_dataset=source_dataset,
-            crop_config=crop_config,
+    scene_paths = _iter_canonical_scene_paths(Path(canonical_root), split_names)
+    total_items = len(scene_paths)
+    if log_fn is not None:
+        log_fn(
+            f"[teacher:signal_attr] dataset start input=canonical_scene samples={total_items} "
+            f"workers={worker_count}"
         )
+    start_time = time.monotonic()
+    completed = 0
+    accepted_total = 0
+    rejected_total = 0
+
+    def _consume(scene_path: Path, label_rows: list[dict[str, Any]], scene_rejections: list[dict[str, Any]]) -> None:
+        nonlocal accepted_total, rejected_total
         split = scene_path.parent.name
         label_rows_by_split[split].extend(label_rows)
         rejected_rows.extend(scene_rejections)
+        accepted_total += len(label_rows)
+        rejected_total += len(scene_rejections)
+
+    if total_items:
+        if worker_count == 1:
+            for scene_path in scene_paths:
+                label_rows, scene_rejections = _materialize_canonical_scene_rows(
+                    scene_path,
+                    Path(canonical_root),
+                    output,
+                    source_dataset=source_dataset,
+                    crop_config=crop_config,
+                )
+                _consume(scene_path, label_rows, scene_rejections)
+                completed += 1
+                _log_dataset_progress(
+                    log_fn,
+                    completed=completed,
+                    total=total_items,
+                    accepted=accepted_total,
+                    rejected=rejected_total,
+                    started_at=start_time,
+                    log_every=progress_every,
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="signal_attr_dataset") as executor:
+                future_to_scene = {
+                    executor.submit(
+                        _materialize_canonical_scene_rows,
+                        scene_path,
+                        Path(canonical_root),
+                        output,
+                        source_dataset=source_dataset,
+                        crop_config=crop_config,
+                    ): scene_path
+                    for scene_path in scene_paths
+                }
+                for future in as_completed(future_to_scene):
+                    scene_path = future_to_scene[future]
+                    label_rows, scene_rejections = future.result()
+                    _consume(scene_path, label_rows, scene_rejections)
+                    completed += 1
+                    _log_dataset_progress(
+                        log_fn,
+                        completed=completed,
+                        total=total_items,
+                        accepted=accepted_total,
+                        rejected=rejected_total,
+                        started_at=start_time,
+                        log_every=progress_every,
+                    )
 
     crop_config_payload = signal_attr_crop_config_to_dict(crop_config)
     paths = _dataset_paths(output, split_names)
 
+    _sort_materialized_rows(label_rows_by_split, rejected_rows)
     for split, rows in label_rows_by_split.items():
         write_jsonl_sorted(paths.label_paths[split], rows)
     write_jsonl_sorted(paths.rejected_rows_path, rejected_rows)
@@ -113,6 +184,12 @@ def materialize_aihub_signal_attr_crop_dataset_from_canonical_root(
         input_format="canonical_scene",
     )
     write_json_sorted(paths.manifest_path, manifest)
+    if log_fn is not None:
+        elapsed = max(time.monotonic() - start_time, 1.0e-6)
+        log_fn(
+            f"[teacher:signal_attr] dataset done samples={total_items} accepted={manifest['accepted_count']} "
+            f"rejected={manifest['rejected_count']} elapsed={elapsed:.1f}s"
+        )
     return manifest
 
 
@@ -123,9 +200,14 @@ def materialize_aihub_signal_attr_crop_dataset(
     source_dataset: str = AIHUB_TRAFFIC_DATASET_KEY,
     crop_config: SignalAttrCropConfig = DEFAULT_SIGNAL_ATTR_CROP_CONFIG,
     splits: Sequence[str] = SIGNAL_ATTR_DATASET_SPLITS,
+    workers: int = 1,
+    log_every: int = 500,
+    log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     output = Path(output_root)
     split_names = _normalize_splits(splits)
+    worker_count = _positive_int(workers, field_name="signal_attr.workers")
+    progress_every = _positive_int(log_every, field_name="signal_attr.log_every")
     split_set = set(split_names)
     label_rows_by_split: dict[str, list[dict[str, Any]]] = {split: [] for split in split_names}
     rejected_rows: list[dict[str, Any]] = []
@@ -133,19 +215,76 @@ def materialize_aihub_signal_attr_crop_dataset(
     for split in split_names:
         (output / "images" / split).mkdir(parents=True, exist_ok=True)
 
-    for pair in _sorted_pairs(pair for pair in pairs if pair.split in split_set):
-        label_rows, pair_rejections = _materialize_pair_rows(
-            pair,
-            output,
-            source_dataset=source_dataset,
-            crop_config=crop_config,
+    sorted_pairs = _sorted_pairs(pair for pair in pairs if pair.split in split_set)
+    total_items = len(sorted_pairs)
+    if log_fn is not None:
+        log_fn(
+            f"[teacher:signal_attr] dataset start input=raw_pairs samples={total_items} "
+            f"workers={worker_count}"
         )
+    start_time = time.monotonic()
+    completed = 0
+    accepted_total = 0
+    rejected_total = 0
+
+    def _consume(pair: PairRecord, label_rows: list[dict[str, Any]], pair_rejections: list[dict[str, Any]]) -> None:
+        nonlocal accepted_total, rejected_total
         label_rows_by_split[pair.split].extend(label_rows)
         rejected_rows.extend(pair_rejections)
+        accepted_total += len(label_rows)
+        rejected_total += len(pair_rejections)
+
+    if total_items:
+        if worker_count == 1:
+            for pair in sorted_pairs:
+                label_rows, pair_rejections = _materialize_pair_rows(
+                    pair,
+                    output,
+                    source_dataset=source_dataset,
+                    crop_config=crop_config,
+                )
+                _consume(pair, label_rows, pair_rejections)
+                completed += 1
+                _log_dataset_progress(
+                    log_fn,
+                    completed=completed,
+                    total=total_items,
+                    accepted=accepted_total,
+                    rejected=rejected_total,
+                    started_at=start_time,
+                    log_every=progress_every,
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="signal_attr_dataset") as executor:
+                future_to_pair = {
+                    executor.submit(
+                        _materialize_pair_rows,
+                        pair,
+                        output,
+                        source_dataset=source_dataset,
+                        crop_config=crop_config,
+                    ): pair
+                    for pair in sorted_pairs
+                }
+                for future in as_completed(future_to_pair):
+                    pair = future_to_pair[future]
+                    label_rows, pair_rejections = future.result()
+                    _consume(pair, label_rows, pair_rejections)
+                    completed += 1
+                    _log_dataset_progress(
+                        log_fn,
+                        completed=completed,
+                        total=total_items,
+                        accepted=accepted_total,
+                        rejected=rejected_total,
+                        started_at=start_time,
+                        log_every=progress_every,
+                    )
 
     crop_config_payload = signal_attr_crop_config_to_dict(crop_config)
     paths = _dataset_paths(output, split_names)
 
+    _sort_materialized_rows(label_rows_by_split, rejected_rows)
     for split, rows in label_rows_by_split.items():
         write_jsonl_sorted(paths.label_paths[split], rows)
     write_jsonl_sorted(paths.rejected_rows_path, rejected_rows)
@@ -162,6 +301,12 @@ def materialize_aihub_signal_attr_crop_dataset(
         input_format="raw_pairs",
     )
     write_json_sorted(paths.manifest_path, manifest)
+    if log_fn is not None:
+        elapsed = max(time.monotonic() - start_time, 1.0e-6)
+        log_fn(
+            f"[teacher:signal_attr] dataset done samples={total_items} accepted={manifest['accepted_count']} "
+            f"rejected={manifest['rejected_count']} elapsed={elapsed:.1f}s"
+        )
     return manifest
 
 
@@ -572,6 +717,54 @@ def _dataset_paths(output_root: Path, splits: Sequence[str]) -> SignalAttrDatase
         crop_config_path=output_root / "meta" / "crop_config.json",
         rejected_rows_path=output_root / "meta" / "rejected_rows.jsonl",
         label_paths={split: output_root / "labels" / f"{split}.jsonl" for split in splits},
+    )
+
+
+def _positive_int(value: int, *, field_name: str) -> int:
+    resolved = int(value)
+    if resolved < 1:
+        raise ValueError(f"{field_name} must be >= 1")
+    return resolved
+
+
+def _log_dataset_progress(
+    log_fn: Callable[[str], None] | None,
+    *,
+    completed: int,
+    total: int,
+    accepted: int,
+    rejected: int,
+    started_at: float,
+    log_every: int,
+) -> None:
+    if log_fn is None:
+        return
+    if completed != 1 and completed != total and completed % log_every != 0:
+        return
+    elapsed = max(time.monotonic() - started_at, 1.0e-6)
+    rate = completed / elapsed
+    log_fn(
+        f"[teacher:signal_attr] dataset progress {completed}/{total} samples "
+        f"({rate:.1f} samples/s, accepted={accepted}, rejected={rejected})"
+    )
+
+
+def _sort_materialized_rows(
+    label_rows_by_split: Mapping[str, list[dict[str, Any]]],
+    rejected_rows: list[dict[str, Any]],
+) -> None:
+    for rows in label_rows_by_split.values():
+        rows.sort(key=_signal_attr_row_sort_key)
+    rejected_rows.sort(key=_signal_attr_row_sort_key)
+
+
+def _signal_attr_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str, int, str, str]:
+    return (
+        str(row.get("split") or ""),
+        str(row.get("source_sample_id") or ""),
+        int(row.get("traffic_light_index") or 0),
+        str(row.get("reject_reason") or ""),
+        str(row.get("sample_id") or ""),
     )
 
 

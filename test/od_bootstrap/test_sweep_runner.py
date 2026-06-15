@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from PIL import Image
 import torch
 
 from common.pv26_schema import OD_CLASS_TO_ID
@@ -96,6 +97,33 @@ class _FakeYOLO:
                 )
             results.append(SimpleNamespace(path=str(image_path), names=names, boxes=boxes, orig_shape=(480, 640)))
         return results
+
+
+class _FakeSignalAttrSidecar:
+    def apply_to_scene(self, scene, image_path, *, run_id: str, created_at: str):
+        rows = []
+        for detection_index, detection in enumerate(scene["detections"]):
+            if detection["class_name"] != "traffic_light":
+                continue
+            rows.append(
+                {
+                    "id": len(rows),
+                    "detection_id": detection_index,
+                    "bbox": detection["bbox"],
+                    "tl_bits": {"red": 1, "yellow": 0, "green": 0, "arrow": 1},
+                    "tl_attr_valid": 1,
+                    "collapse_reason": "valid",
+                    "meta": {"label_origin": "signal_attr_sidecar", "image_path": str(image_path)},
+                }
+            )
+        scene["traffic_lights"] = rows
+        scene.setdefault("tasks", {})["has_tl_attr"] = int(bool(rows))
+        return SimpleNamespace(
+            traffic_light_count=len(rows),
+            valid_count=len(rows),
+            invalid_count=0,
+            reason_counts={"valid": len(rows)} if rows else {},
+        )
 
 
 class ODBootstrapRunnerTests(unittest.TestCase):
@@ -221,7 +249,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             scene_path = source_root / "labels_scene" / "train" / "sample.json"
             image_path.parent.mkdir(parents=True, exist_ok=True)
             scene_path.parent.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(_ONE_BY_ONE_PNG)
+            Image.new("RGB", (640, 480), "black").save(image_path)
             scene_path.write_text(
                 json.dumps(
                     {
@@ -265,7 +293,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             scene_path = source_root / "labels_scene" / "train" / "sample.json"
             image_path.parent.mkdir(parents=True, exist_ok=True)
             scene_path.parent.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(_ONE_BY_ONE_PNG)
+            Image.new("RGB", (640, 480), "black").save(image_path)
             scene_path.write_text(
                 json.dumps(
                     {
@@ -309,7 +337,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             scene_path = source_root / "labels_scene" / "train" / "sample.json"
             image_path.parent.mkdir(parents=True, exist_ok=True)
             scene_path.parent.mkdir(parents=True, exist_ok=True)
-            image_path.write_bytes(_ONE_BY_ONE_PNG)
+            Image.new("RGB", (640, 480), "black").save(image_path)
             scene_path.write_text(
                 json.dumps(
                     {
@@ -350,6 +378,89 @@ class ODBootstrapRunnerTests(unittest.TestCase):
                     created_at="2026-01-01T00:00:00+00:00",
                     copy_images=False,
                 )
+
+    def test_exhaustive_od_materialization_can_apply_signal_attr_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = root / "canonical" / "bdd100k_det_100k"
+            image_path = source_root / "images" / "train" / "sample.png"
+            scene_path = source_root / "labels_scene" / "train" / "sample.json"
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            scene_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (640, 480), "black").save(image_path)
+            scene_path.write_text(
+                json.dumps(
+                    {
+                        "version": "test",
+                        "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                        "source": {"dataset": "bdd100k_det_100k", "split": "train"},
+                        "tasks": {"has_det": 0, "has_tl_attr": 0},
+                        "detections": [],
+                        "traffic_lights": [],
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            sample_uid = build_sample_uid(dataset_key="bdd100k_det_100k", split="train", sample_id="sample")
+            entry = ImageListEntry(
+                sample_id="sample",
+                sample_uid=sample_uid,
+                image_path=image_path,
+                scene_path=scene_path,
+                dataset_root=source_root,
+                dataset_key="bdd100k_det_100k",
+                split="train",
+            )
+            prediction = {
+                "sample_id": "sample",
+                "sample_uid": sample_uid,
+                "image_path": str(image_path),
+                "scene_path": str(scene_path),
+                "dataset_key": "bdd100k_det_100k",
+                "split": "train",
+                "teacher_name": "signal",
+                "model_version": "test_signal",
+                "class_name": "traffic_light",
+                "confidence": 0.99,
+                "xyxy": [20.0, 20.0, 40.0, 60.0],
+                "box_index": 0,
+                "image_width": 640,
+                "image_height": 480,
+            }
+
+            summary = materialize_exhaustive_od_dataset(
+                image_entries=(entry,),
+                predictions_by_sample_uid={sample_uid: [prediction]},
+                class_policy=TEST_CLASS_POLICY,
+                output_root=root / "exhaustive_od",
+                run_id="test_run",
+                created_at="2026-01-01T00:00:00+00:00",
+                copy_images=False,
+                signal_attr_sidecar=_FakeSignalAttrSidecar(),
+            )
+
+            materialized_root = Path(summary["dataset_root"])
+            scene = json.loads((materialized_root / "labels_scene" / "train" / f"{sample_uid}.json").read_text(encoding="utf-8"))
+            self.assertEqual(scene["source"]["dataset"], "pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1")
+            self.assertEqual(scene["traffic_lights"][0]["detection_id"], 0)
+            self.assertEqual(scene["traffic_lights"][0]["tl_bits"], {"red": 1, "yellow": 0, "green": 0, "arrow": 1})
+            self.assertEqual(scene["tasks"]["has_tl_attr"], 1)
+            self.assertEqual(summary["traffic_light_count"], 1)
+            self.assertEqual(summary["tl_attr_valid_count"], 1)
+            self.assertEqual(summary["tl_attr_reason_counts"], {"valid": 1})
+            self.assertTrue(summary["attr_teacher"]["enabled"])
+            self.assertEqual(summary["attr_teacher"]["teacher_name"], "signal_attr")
+
+            from model.data.dataset import PV26CanonicalDataset
+
+            dataset = PV26CanonicalDataset([materialized_root])
+            sample = dataset[0]
+            self.assertEqual(sample["meta"]["dataset_key"], "pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1")
+            self.assertTrue(sample["source_mask"]["tl_attr"])
+            self.assertEqual(sample["valid_mask"]["tl_attr"].tolist(), [True])
+            self.assertEqual(sample["tl_attr_targets"]["bits"][0].tolist(), [1.0, 0.0, 0.0, 1.0])
 
     def test_run_model_centric_sweep_writes_manifests_and_materializes_exhaustive_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -486,6 +597,7 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             run_dir = Path(summary["run_dir"])
 
             self.assertEqual(summary["teacher_names"], ["mobility", "signal", "obstacle"])
+            self.assertFalse(summary["attr_teacher"]["enabled"])
             self.assertEqual(summary["class_policy_source"], "calibration")
             self.assertEqual([row["teacher_name"] for row in summary["teacher_jobs"]], ["mobility", "signal", "obstacle"])
             self.assertEqual(summary["teacher_jobs"][0]["manifest_version"], JOB_MANIFEST_VERSION)

@@ -4,9 +4,13 @@ from dataclasses import dataclass
 import sys
 
 from tools.model_export import artifact_paths_for_checkpoint
-from .scan import PipelinePaths, TEACHER_NAMES, WorkspaceSnapshot
+from .scan import PipelinePaths, WorkspaceSnapshot
 from tools.od_bootstrap.presets import build_teacher_train_preset
 from tools.od_bootstrap.presets import build_teacher_eval_preset
+from tools.od_bootstrap.teacher.registry import (
+    OD_TEACHER_NAMES,
+    teacher_definition,
+)
 
 
 @dataclass(frozen=True)
@@ -23,13 +27,14 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
     python_exe = sys.executable
     return (
         ActionSpec("1", "OD bootstrap 소스 준비", "python -m tools.od_bootstrap prepare-sources", (python_exe, "-m", "tools.od_bootstrap", "prepare-sources"), str(paths.bootstrap_root)),
-        ActionSpec("2", "Teacher dataset 생성", "python -m tools.od_bootstrap build-teacher-datasets", (python_exe, "-m", "tools.od_bootstrap", "build-teacher-datasets"), str(paths.teacher_dataset_root)),
-        ActionSpec("2A", "Signal attr crop dataset 생성", "python -m tools.od_bootstrap build-signal-attr-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-signal-attr-dataset"), str(paths.teacher_dataset_root / "signal_attr")),
+        ActionSpec("2", "Teacher dataset 4종 생성", "python -m tools.od_bootstrap build-teacher-datasets", (python_exe, "-m", "tools.od_bootstrap", "build-teacher-datasets"), str(paths.teacher_dataset_root)),
         ActionSpec("3", "Mobility teacher 학습", "python -m tools.od_bootstrap train --teacher mobility", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "mobility"), str(paths.teacher_train_root / "mobility")),
         ActionSpec("4", "Signal teacher 학습", "python -m tools.od_bootstrap train --teacher signal", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "signal"), str(paths.teacher_train_root / "signal")),
+        ActionSpec("4A", "Signal attr teacher 학습", "python -m tools.od_bootstrap train --teacher signal_attr", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "signal_attr"), str(paths.teacher_train_root / "signal_attr")),
         ActionSpec("5", "Obstacle teacher 학습", "python -m tools.od_bootstrap train --teacher obstacle", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "obstacle"), str(paths.teacher_train_root / "obstacle")),
         ActionSpec("6", "Mobility teacher 평가", "python -m tools.od_bootstrap eval --teacher mobility", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "mobility"), str(paths.teacher_eval_root / "mobility")),
         ActionSpec("7", "Signal teacher 평가", "python -m tools.od_bootstrap eval --teacher signal", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "signal"), str(paths.teacher_eval_root / "signal")),
+        ActionSpec("7A", "Signal attr teacher 평가", "python -m tools.od_bootstrap eval --teacher signal_attr", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "signal_attr"), str(paths.teacher_eval_root / "signal_attr")),
         ActionSpec("8", "Obstacle teacher 평가", "python -m tools.od_bootstrap eval --teacher obstacle", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "obstacle"), str(paths.teacher_eval_root / "obstacle")),
         ActionSpec("9", "Calibration", "python -m tools.od_bootstrap calibrate", (python_exe, "-m", "tools.od_bootstrap", "calibrate"), str(paths.calibration_root)),
         ActionSpec("A", "Exhaustive OD 생성", "python -m tools.od_bootstrap build-exhaustive-od", (python_exe, "-m", "tools.od_bootstrap", "build-exhaustive-od"), str(paths.exhaustive_dataset_root)),
@@ -56,9 +61,16 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
     elif action.key == "2":
         if not flags.get("source_prep", False):
             blockers.append("source prep이 아직 준비되지 않았습니다.")
-    elif action.key == "2A":
-        if not flags.get("source_prep", False):
-            blockers.append("source prep canonical AIHUB traffic scene이 먼저 필요합니다.")
+    elif action.key == "4A":
+        if not flags.get("runtime_core", False):
+            blockers.append("signal_attr teacher 학습에 필요한 torch 환경이 아직 깨져 있습니다.")
+        if not flags.get("teacher_dataset.signal_attr", False):
+            blockers.append("signal_attr teacher dataset이 아직 없습니다.")
+    elif action.key == "7A":
+        if not flags.get("runtime_core", False):
+            blockers.append("signal_attr teacher 평가에 필요한 torch 환경이 아직 깨져 있습니다.")
+        if not flags.get("teacher_train.signal_attr", False):
+            blockers.append("best_signal_attr.pt가 아직 없습니다.")
     elif action.key in {"3", "4", "5"}:
         teacher_name = {"3": "mobility", "4": "signal", "5": "obstacle"}[action.key]
         if not flags.get("runtime_core", False):
@@ -74,7 +86,7 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
     elif action.key == "9":
         if not flags.get("runtime_core", False):
             blockers.append("calibration에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
-        missing = [name for name in TEACHER_NAMES if not flags.get(f"teacher_train.{name}", False)]
+        missing = [name for name in OD_TEACHER_NAMES if not flags.get(f"teacher_train.{name}", False)]
         if missing:
             blockers.append(f"teacher checkpoint가 부족합니다: {', '.join(missing)}")
     elif action.key == "A":
@@ -82,9 +94,13 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
             blockers.append("exhaustive OD에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
         if not flags.get("source_prep", False):
             blockers.append("source prep이 먼저 준비되어야 합니다.")
-        missing = [name for name in TEACHER_NAMES if not flags.get(f"teacher_train.{name}", False)]
+        missing = [name for name in OD_TEACHER_NAMES if not flags.get(f"teacher_train.{name}", False)]
         if missing:
             blockers.append(f"teacher checkpoint가 부족합니다: {', '.join(missing)}")
+        if not flags.get("teacher_train.signal_attr", False):
+            blockers.append("best_signal_attr.pt가 아직 없습니다.")
+        if not flags.get("teacher_eval.signal_attr", False):
+            blockers.append("signal attr eval report를 먼저 확인하세요.")
     elif action.key == "B":
         if not flags.get("source_prep", False):
             blockers.append("lane canonical/source prep이 먼저 필요합니다.")
@@ -122,7 +138,7 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
 
 def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | None:
     if action.key == "A" and not snapshot.flags.get("calibration", False):
-        return "calibration이 없어서 fallback class policy로 진행될 수 있습니다."
+        return "calibration이 없으면 OD class policy는 fallback이고, TL attr은 best_signal_attr.pt threshold policy로 materialize됩니다."
     if action.key == "B":
         return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
     if action.key == "D":
@@ -147,9 +163,24 @@ def _bool_flag(value: bool) -> str:
 
 
 def _teacher_action_config_lines(action: ActionSpec) -> list[str]:
-    if action.key not in {"3", "4", "5"}:
+    if action.key not in {"3", "4", "4A", "5"}:
         return []
-    teacher_name = {"3": "mobility", "4": "signal", "5": "obstacle"}[action.key]
+    teacher_name = {"3": "mobility", "4": "signal", "4A": "signal_attr", "5": "obstacle"}[action.key]
+    definition = teacher_definition(teacher_name)
+    if definition.kind == "signal_attr":
+        from tools.od_bootstrap.signal_attr import SignalAttrClassifierConfig, SignalAttrTrainConfig
+
+        train_config = SignalAttrTrainConfig()
+        model_config = SignalAttrClassifierConfig()
+        return [
+            "- config: teacher=signal_attr, model=SignalAttrCropClassifier, checkpoint=best_signal_attr.pt",
+            "- labels: base_color=off/red/yellow/green + arrow bit",
+            f"- train: epochs={train_config.epochs}, batch={train_config.batch_size}, device={train_config.device}, lr={train_config.learning_rate}",
+            f"- loader: workers={train_config.num_workers}, pin_memory={_bool_flag(train_config.pin_memory)}, persistent_workers={_bool_flag(train_config.persistent_workers)}, prefetch_factor={train_config.prefetch_factor}",
+            f"- model: input_size={model_config.input_size}, width={model_config.width}, dropout={model_config.dropout}",
+            "- input: accepted AIHUB traffic-light ROI crops from teacher_datasets/signal_attr",
+            "- output: hard TL bits for exhaustive attrpseudo materialization",
+        ]
     scenario = build_teacher_train_preset(teacher_name)
     return [
         f"- config: teacher={scenario.teacher_name}, model=yolo26{scenario.model.model_size}, weights={scenario.model.weights}",
@@ -196,10 +227,11 @@ def _teacher_export_config_lines(action: ActionSpec) -> list[str]:
     teacher_name = {"G": "mobility", "I": "signal", "J": "obstacle"}[action.key]
     train_scenario = build_teacher_train_preset(teacher_name)
     eval_scenario = build_teacher_eval_preset(teacher_name)
-    artifact_path, meta_path = artifact_paths_for_checkpoint(eval_scenario.model.checkpoint_path)
+    checkpoint_path = eval_scenario.model.checkpoint_path
+    artifact_path, meta_path = artifact_paths_for_checkpoint(checkpoint_path)
     return [
         f"- teacher={teacher_name}, classes={', '.join(train_scenario.model.class_names)}",
-        f"- checkpoint: {eval_scenario.model.checkpoint_path}",
+        f"- checkpoint: {checkpoint_path}",
         f"- export: {artifact_path}",
         f"- meta: {meta_path}",
         f"- imgsz={eval_scenario.eval.imgsz}, device=auto, format=torchscript",
@@ -207,7 +239,7 @@ def _teacher_export_config_lines(action: ActionSpec) -> list[str]:
 
 
 def _action_config_lines(action: ActionSpec) -> list[str]:
-    if action.key in {"3", "4", "5"}:
+    if action.key in {"3", "4", "4A", "5"}:
         return _teacher_action_config_lines(action)
     if action.key in {"C", "K"}:
         return _pv26_action_config_lines()

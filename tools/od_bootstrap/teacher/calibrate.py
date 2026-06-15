@@ -168,16 +168,21 @@ def _append_prediction_rows(
     teacher: CalibrationTeacherConfig,
     result: Any,
     samples: dict[str, dict[str, Any]],
+    image_path: Path | None = None,
 ) -> int:
-    image_path = Path(str(getattr(result, "path", ""))).resolve()
-    sample_id = image_path.stem
-    sample_key = str(image_path)
+    resolved_image_path = (
+        Path(image_path).resolve()
+        if image_path is not None
+        else Path(str(getattr(result, "path", ""))).resolve()
+    )
+    sample_id = resolved_image_path.stem
+    sample_key = str(resolved_image_path)
     width, height = _coerce_shape(result)
     sample_record = samples.setdefault(
         sample_key,
         {
             "sample_id": sample_id,
-            "image_path": str(image_path),
+            "image_path": str(resolved_image_path),
             "width": width,
             "height": height,
             "predictions": [],
@@ -205,7 +210,7 @@ def _append_prediction_rows(
             "teacher_name": teacher.name,
             "model_version": teacher.model_version,
             "sample_id": sample_id,
-            "image_path": str(image_path),
+            "image_path": str(resolved_image_path),
             "width": width,
             "height": height,
             "class_name": class_name,
@@ -246,7 +251,7 @@ def _run_teacher_predictions_for_images(
     for batch_start in range(0, total_images, batch_size):
         batch = ordered_images[batch_start : batch_start + batch_size]
         batch_prediction_count = 0
-        for result in model.predict(
+        for result_index, result in enumerate(model.predict(
             source=[str(path) for path in batch],
             imgsz=effective_imgsz,
             device=scenario.run.device,
@@ -255,11 +260,12 @@ def _run_teacher_predictions_for_images(
             verbose=False,
             save=False,
             stream=True,
-        ):
+        )):
             batch_prediction_count += _append_prediction_rows(
                 teacher=teacher,
                 result=result,
                 samples=samples,
+                image_path=batch[result_index] if result_index < len(batch) else None,
             )
         processed_images += len(batch)
         prediction_count += batch_prediction_count

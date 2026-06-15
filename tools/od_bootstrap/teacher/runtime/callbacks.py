@@ -76,7 +76,12 @@ def build_teacher_runtime_callbacks(
         started_at = trainer.od_batch_started_at or ended_at
         iteration_sec = max(0.0, ended_at - started_at)
         wait_sec = max(0.0, float(trainer.od_pending_wait_sec))
-        compute_sec = max(0.0, iteration_sec)
+        preprocess_sec = max(0.0, float(getattr(trainer, "od_preprocess_sec", 0.0) or 0.0))
+        forward_loss_sec = max(0.0, float(getattr(trainer, "od_forward_loss_sec", 0.0) or 0.0))
+        backward_sec = max(0.0, float(getattr(trainer, "od_backward_sec", 0.0) or 0.0))
+        optimizer_sec = max(0.0, float(getattr(trainer, "od_optimizer_sec", 0.0) or 0.0))
+        measured_compute_sec = preprocess_sec + forward_loss_sec + backward_sec + optimizer_sec
+        compute_sec = max(0.0, measured_compute_sec or iteration_sec)
         trainer.od_last_batch_end_at = ended_at
         trainer.od_epoch_step += 1
         trainer.od_global_step += 1
@@ -84,6 +89,10 @@ def build_teacher_runtime_callbacks(
             "iteration_sec": iteration_sec,
             "wait_sec": wait_sec,
             "compute_sec": compute_sec,
+            "preprocess_sec": preprocess_sec,
+            "forward_loss_sec": forward_loss_sec,
+            "backward_sec": backward_sec,
+            "optimizer_sec": optimizer_sec,
         }
         trainer.od_epoch_timing_window.append(timing_row)
 

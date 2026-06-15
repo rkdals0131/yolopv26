@@ -69,7 +69,7 @@ G4는 세 독립 project track으로 나눈다. 한 track의 artifact를 다른 
 
 | Track | 상태 | 첫 구현 범위 | 주요 파일 | 검증 |
 | --- | --- | --- | --- | --- |
-| A. `signal_attr` sidecar | ready | AIHUB traffic TL policy 추출, ROI crop dataset, crop classifier output adapter | `tools/od_bootstrap/signal_attr/`, `tools/od_bootstrap/source/aihub/traffic_worker.py`, `common/pv26_schema.py` | `test_signal_attr_label_extractor_matches_traffic_worker_policy`, `test_signal_attr_crop_rejects_empty_or_nonfinite_roi`, `test_signal_attr_model_outputs_canonical_tl_bits` |
+| A. `signal_attr` sidecar | implementation in progress | canonical AIHUB crop dataset, crop classifier train/eval, attrpseudo exhaustive sidecar hook | `tools/od_bootstrap/signal_attr/`, `tools/od_bootstrap/build/exhaustive_od.py`, `tools/check_env/actions.py` | `test_signal_attr_*`, `test_exhaustive_od_materialization_can_apply_signal_attr_sidecar` |
 | B. lane-val OD pseudo eval | ready with source/loader guard | `pv26_eval_lane_val_odpseudo_v1` source registration, eval-only builder, rejected/accepted candidate manifest | `common/pv26_schema.py`, `tools/od_bootstrap/build/lane_val_odpseudo.py`, `model/engine/metrics.py` | `test_lane_val_odpseudo_preserves_base_val_sample_ids_and_count`, `test_lane_val_odpseudo_missing_checkpoint_fails_before_writing_ready_manifest`, `test_lane_val_odpseudo_disables_tl_attr_metrics_in_evaluator_report` |
 | C. ETRI KCity leftImg | dry-run ready only | `leftImg` raw scan, image/semantic-label pairing, raw class inventory, ignored vs excluded manifest | `tools/od_bootstrap/source/etri_kcity/`, `common/pv26_schema.py`, `test/od_bootstrap/test_etri_kcity_dry_run.py` | `test_etri_dry_run_includes_only_leftimg_paths`, `test_etri_dry_run_manifest_separates_raw_scan_ignored_from_candidate_excluded`, `test_etri_materialization_fails_release_on_zero_samples` |
 
@@ -85,9 +85,10 @@ Shared rules:
 
 Immediate next work:
 
-1. Start Track A first: extract/reuse the traffic-light attribute policy and crop primitive, then build the crop dataset.
-2. Start Track B in parallel once source registration tests are written; use a dedicated eval-root builder instead of forcing `final_dataset.py`.
-3. Start Track C as dry-run only; do not create PV26 labels until raw semantic format and materialization policy are audited.
+1. Build teacher datasets through `check_env` action `2`; this materializes all four teacher datasets, including canonical AIHUB `signal_attr` crops.
+2. Train and evaluate `best_signal_attr.pt` as the fourth teacher through `check_env` actions `4A` and `7A` (`train/eval --teacher signal_attr`).
+3. Use `A` for exhaustive OD once OD teachers, calibration, and signal_attr eval are ready; `build-exhaustive-od` auto-enables the sidecar when the default `best_signal_attr.pt` and eval report exist.
+4. Keep ETRI KCity at dry-run only; do not create PV26 labels until raw semantic format and materialization policy are audited.
 
 ## 5. Export / ROS Gate
 

@@ -86,7 +86,7 @@ L_total = λ_det * L_det
 ### TL attr loss
 
 - type
-  - masked sigmoid focal BCE
+  - masked weighted `BCEWithLogits`
 - 적용 대상
   - detector assignment 기준 matched `traffic_light` positive
   - valid AIHUB car signal only

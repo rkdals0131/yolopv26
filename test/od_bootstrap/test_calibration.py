@@ -18,7 +18,11 @@ from tools.od_bootstrap.teacher.calibration_types import (
     HardNegativeConfig,
 )
 from tools.od_bootstrap.presets import build_calibration_preset
-from tools.od_bootstrap.teacher.calibrate import _load_hard_negative_manifest, calibrate_class_policy_scenario
+from tools.od_bootstrap.teacher.calibrate import (
+    _load_hard_negative_manifest,
+    _run_teacher_predictions_for_images,
+    calibrate_class_policy_scenario,
+)
 from tools.od_bootstrap.build.sweep_types import ClassPolicy
 
 
@@ -90,6 +94,28 @@ class _HardNegativeAwareFakeYOLO:
         return results
 
 
+class _TempNameFakeYOLO:
+    def __init__(self, checkpoint_path: str) -> None:
+        self.checkpoint_path = checkpoint_path
+
+    def predict(self, **kwargs):
+        results = []
+        for index, _ in enumerate(kwargs["source"]):
+            results.append(
+                SimpleNamespace(
+                    path=f"image{index}.jpg",
+                    names={0: "vehicle"},
+                    boxes=SimpleNamespace(
+                        xyxy=torch.tensor([[10.0, 10.0, 30.0, 30.0]]),
+                        cls=torch.tensor([0]),
+                        conf=torch.tensor([0.95]),
+                    ),
+                    orig_shape=(100, 100),
+                )
+            )
+        return results
+
+
 class ODBootstrapCalibrationTests(unittest.TestCase):
     def test_load_hard_negative_manifest_rejects_non_mapping_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -140,6 +166,48 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             policy_template=policy_template,
             hard_negative=hard_negative,
         )
+
+    def test_prediction_collection_keeps_source_paths_when_ultralytics_uses_temp_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "teacher_dataset"
+            image_paths = []
+            for sample_id in ("frame_001", "frame_002"):
+                image_path = dataset_root / "images" / "val" / f"{sample_id}.jpg"
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                image_path.write_bytes(b"img")
+                image_paths.append(image_path)
+            checkpoint_path = root / "weights" / "mobility.pt"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_text("checkpoint", encoding="utf-8")
+            teacher = CalibrationTeacherConfig(
+                name="mobility",
+                checkpoint_path=checkpoint_path,
+                model_version="mobility_v1",
+                dataset=CalibrationDatasetConfig(
+                    root=dataset_root,
+                    source_dataset_key="bdd100k_det_100k",
+                    image_dir="images",
+                    label_dir="labels",
+                    split="val",
+                ),
+                classes=("vehicle",),
+            )
+            scenario = self._build_scenario(output_root=root / "calibration", teachers=(teacher,))
+
+            with patch("tools.od_bootstrap.teacher.calibrate.YOLO", _TempNameFakeYOLO):
+                prediction_count, samples = _run_teacher_predictions_for_images(
+                    teacher=teacher,
+                    scenario=scenario,
+                    image_paths=image_paths,
+                )
+
+            self.assertEqual(prediction_count, 2)
+            self.assertEqual(set(samples), {str(path.resolve()) for path in image_paths})
+            self.assertEqual(
+                sorted(sample["sample_id"] for sample in samples.values()),
+                ["frame_001", "frame_002"],
+            )
 
     def test_calibration_selects_precision_constrained_policy_and_writes_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

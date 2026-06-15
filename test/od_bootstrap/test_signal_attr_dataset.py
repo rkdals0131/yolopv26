@@ -139,7 +139,14 @@ class SignalAttrDatasetMaterializationTests(unittest.TestCase):
                 },
             )
 
-            manifest = materialize_aihub_signal_attr_crop_dataset_from_canonical_root(canonical_root, output_root)
+            logs: list[str] = []
+            manifest = materialize_aihub_signal_attr_crop_dataset_from_canonical_root(
+                canonical_root,
+                output_root,
+                workers=2,
+                log_every=1,
+                log_fn=logs.append,
+            )
 
             rows = read_jsonl(output_root / "labels" / "train.jsonl")
             rejected_rows = read_jsonl(output_root / "meta" / "rejected_rows.jsonl")
@@ -161,6 +168,10 @@ class SignalAttrDatasetMaterializationTests(unittest.TestCase):
                 [row["reject_reason"] for row in rejected_rows],
                 [SIGNAL_ATTR_CANONICAL_INVALID_REASON, "missing_attribute_map"],
             )
+            joined_logs = "\n".join(logs)
+            self.assertIn("[teacher:signal_attr] dataset start", joined_logs)
+            self.assertIn("[teacher:signal_attr] dataset progress", joined_logs)
+            self.assertIn("[teacher:signal_attr] dataset done", joined_logs)
 
     def test_signal_attr_dataset_uses_only_traffic_worker_valid_rows(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -292,8 +303,8 @@ class SignalAttrDatasetMaterializationTests(unittest.TestCase):
                 annotations=[_traffic_light([10.0, 10.0, 30.0, 30.0])],
             )
 
-            materialize_aihub_signal_attr_crop_dataset([pair_b, pair_a], output_a)
-            materialize_aihub_signal_attr_crop_dataset([pair_a, pair_b], output_b)
+            materialize_aihub_signal_attr_crop_dataset([pair_b, pair_a], output_a, workers=2, log_every=1)
+            materialize_aihub_signal_attr_crop_dataset([pair_a, pair_b], output_b, workers=1, log_every=1)
 
             rows_a = read_jsonl(output_a / "labels" / "train.jsonl")
             rows_b = read_jsonl(output_b / "labels" / "train.jsonl")

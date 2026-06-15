@@ -36,6 +36,15 @@ from tools.od_bootstrap.presets import (
     build_teacher_dataset_preset,
     build_teacher_eval_preset,
 )
+from tools.od_bootstrap.teacher.registry import (
+    ALL_TEACHER_NAMES,
+    OD_TEACHER_NAMES,
+    legacy_stage_flag,
+    teacher_checkpoint_path,
+    teacher_definition,
+    teacher_eval_summary_path,
+    teacher_train_summary_path,
+)
 from tools.od_bootstrap.source.constants import (
     AIHUB_LANE_DIRNAME,
     AIHUB_OBSTACLE_DIRNAME,
@@ -43,7 +52,7 @@ from tools.od_bootstrap.source.constants import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEACHER_NAMES = ("mobility", "signal", "obstacle")
+TEACHER_NAMES = OD_TEACHER_NAMES
 STAGE_ICON = {
     "OK": "✅",
     "WARN": "⚠️",
@@ -580,29 +589,62 @@ def _teacher_stage_state(prefix: str, root: Path, *, summary_name: str | None = 
     ready_map: dict[str, bool] = {}
     parts: list[str] = []
     done = 0
-    for teacher_name in TEACHER_NAMES:
+    for teacher_name in ALL_TEACHER_NAMES:
+        definition = teacher_definition(teacher_name)
         ready = False
         if summary_name == "dataset":
-            summary = _teacher_dataset_summary(root / teacher_name)
-            if summary is not None and _safe_int(summary.get("sample_count")) > 0:
-                ready = True
-                parts.append(f"{teacher_name} {_safe_int(summary.get('sample_count'))}")
+            if definition.kind == "signal_attr":
+                summary = _signal_attr_dataset_summary(root / teacher_name)
+                if summary is not None:
+                    accepted_count = _safe_int(summary.get("accepted_count"))
+                    rejected_count = _safe_int(summary.get("rejected_count"))
+                    status = str(summary.get("status") or "unknown")
+                    ready = status == "ready" and accepted_count > 0
+                    parts.append(
+                        f"{teacher_name} {accepted_count}"
+                        if ready
+                        else f"{teacher_name} status={status} accepted={accepted_count} rejected={rejected_count}"
+                    )
+            else:
+                summary = _teacher_dataset_summary(root / teacher_name)
+                if summary is not None and _safe_int(summary.get("sample_count")) > 0:
+                    ready = True
+                    parts.append(f"{teacher_name} {_safe_int(summary.get('sample_count'))}")
         elif summary_name == "train":
-            checkpoint_path = root / teacher_name / "weights" / "best.pt"
-            run_summary_path = root / teacher_name / "run_summary.json"
+            run_root = root / teacher_name
+            checkpoint_path = teacher_checkpoint_path(root, teacher_name)
+            run_summary_path = teacher_train_summary_path(root, teacher_name)
             ready = checkpoint_path.is_file() and run_summary_path.is_file()
             if ready:
                 parts.append(teacher_name)
+            elif run_root.is_dir() and any(run_root.iterdir()):
+                parts.append(f"{teacher_name} incomplete")
         elif summary_name == "eval":
-            eval_summary = _json_load_if_exists(root / teacher_name / "checkpoint_eval_summary.json")
+            eval_summary = _json_load_if_exists(teacher_eval_summary_path(root, teacher_name))
             ready = eval_summary is not None
-            if ready:
+            if definition.kind == "signal_attr":
+                if eval_summary is not None:
+                    sample_count = _safe_int(eval_summary.get("sample_count"))
+                    valid_count = _safe_int(eval_summary.get("valid_prediction_count"))
+                    ready = sample_count > 0 and valid_count > 0
+                    parts.append(
+                        f"{teacher_name} {sample_count}"
+                        if ready
+                        else f"{teacher_name} samples={sample_count} valid={valid_count}"
+                    )
+                elif (root / teacher_name).is_dir() and any((root / teacher_name).iterdir()):
+                    parts.append(f"{teacher_name} incomplete")
+            elif ready:
                 prediction_summary = eval_summary.get("prediction_summary", {})
                 parts.append(f"{teacher_name} {_safe_int(prediction_summary.get('sample_count'))}")
         ready_map[f"{prefix}.{teacher_name}"] = ready
+        legacy_flag = legacy_stage_flag(str(summary_name), teacher_name) if summary_name in {"dataset", "train", "eval"} else None
+        if legacy_flag is not None:
+            ready_map[legacy_flag] = ready
         done += int(ready)
     detail = " | ".join(parts) if parts else "없음"
-    return f"{done}/{len(TEACHER_NAMES)} 완료 | {detail}", done == len(TEACHER_NAMES), ready_map
+    total = len(ALL_TEACHER_NAMES)
+    return f"{done}/{total} 완료 | {detail}", done == total, ready_map
 
 
 def _build_teacher_rows(paths: PipelinePaths) -> tuple[tuple[StageRow, StageRow, StageRow], dict[str, bool]]:
@@ -624,19 +666,19 @@ def _build_teacher_rows(paths: PipelinePaths) -> tuple[tuple[StageRow, StageRow,
     rows = (
         StageRow(
             stage="Teacher dataset",
-            success_condition="mobility / signal / obstacle dataset 3종이 모두 생성",
+            success_condition="teacher 4종(mobility / signal / signal_attr / obstacle) dataset이 모두 생성",
             current_state=dataset_state,
             verdict="OK" if dataset_ready else ("WARN" if any(dataset_map.values()) else "TODO"),
         ),
         StageRow(
             stage="Teacher 학습",
-            success_condition="teacher별 `weights/best.pt`와 `run_summary.json`이 모두 존재",
+            success_condition="teacher 4종의 best checkpoint와 train summary가 모두 존재",
             current_state=train_state,
             verdict="OK" if train_ready else ("WARN" if any(train_map.values()) else "TODO"),
         ),
         StageRow(
             stage="Teacher 평가",
-            success_condition="teacher별 `checkpoint_eval_summary.json`이 모두 존재",
+            success_condition="teacher 4종의 eval summary/report가 모두 존재",
             current_state=eval_state,
             verdict="OK" if eval_ready else ("WARN" if any(eval_map.values()) else "TODO"),
         ),
@@ -646,37 +688,6 @@ def _build_teacher_rows(paths: PipelinePaths) -> tuple[tuple[StageRow, StageRow,
     flags.update(train_map)
     flags.update(eval_map)
     return rows, flags
-
-
-def _build_signal_attr_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
-    dataset_root = paths.teacher_dataset_root / "signal_attr"
-    summary = _signal_attr_dataset_summary(dataset_root)
-    if summary is not None:
-        accepted_count = _safe_int(summary.get("accepted_count"))
-        rejected_count = _safe_int(summary.get("rejected_count"))
-        status = str(summary.get("status") or "unknown")
-        input_format = str(summary.get("input_format") or "unknown")
-        current_state = (
-            f"status={status} | accepted={accepted_count} | rejected={rejected_count} | "
-            f"input={input_format}"
-        )
-        ready = status == "ready" and accepted_count > 0
-        verdict = "OK" if ready else "WARN"
-    else:
-        current_state = "없음"
-        ready = False
-        verdict = "TODO"
-    return (
-        StageRow(
-            stage="Signal attr crop dataset",
-            success_condition="canonical AIHUB traffic scene에서 TL attr crop dataset manifest가 생성",
-            current_state=current_state,
-            verdict=verdict,
-        ),
-        {
-            "signal_attr_dataset": ready,
-        },
-    )
 
 
 def _build_calibration_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
@@ -900,8 +911,8 @@ def _artifact_pair_exists(checkpoint_path: Path) -> tuple[bool, Path, Path]:
 
 def _teacher_export_status(paths: PipelinePaths) -> dict[str, bool]:
     status: dict[str, bool] = {}
-    for teacher_name in TEACHER_NAMES:
-        checkpoint_path = paths.teacher_train_root / teacher_name / "weights" / "best.pt"
+    for teacher_name in OD_TEACHER_NAMES:
+        checkpoint_path = teacher_checkpoint_path(paths.teacher_train_root, teacher_name)
         exported, _, _ = _artifact_pair_exists(checkpoint_path)
         status[f"teacher_export.{teacher_name}"] = exported
     return status
@@ -1156,23 +1167,29 @@ def _recommendation(flags: dict[str, bool]) -> str:
     if not flags.get("source_prep", False):
         return "1번 source prep부터 시작하는 편이 안전합니다."
     if not flags.get("teacher_dataset.mobility", False):
-        return "2번으로 teacher dataset을 먼저 맞추세요."
+        return "2번으로 teacher dataset과 signal attr crop dataset을 먼저 맞추세요."
+    if not flags.get("teacher_dataset.signal_attr", False):
+        return "2번을 재실행해서 signal attr crop dataset까지 맞추세요."
     if not flags.get("teacher_train.mobility", False):
         return "3번 mobility teacher 학습이 다음 순서입니다."
     if not flags.get("teacher_train.signal", False):
         return "4번 signal teacher 학습이 다음 순서입니다."
+    if not flags.get("teacher_train.signal_attr", False):
+        return "4A로 signal_attr teacher를 학습하세요."
     if not flags.get("teacher_train.obstacle", False):
         return "5번 obstacle teacher 학습이 다음 순서입니다."
     if not flags.get("teacher_eval.mobility", False):
         return "6번 mobility teacher 평가를 돌려 상태를 확인하세요."
     if not flags.get("teacher_eval.signal", False):
         return "7번 signal teacher 평가를 돌려 상태를 확인하세요."
+    if not flags.get("teacher_eval.signal_attr", False):
+        return "7A로 signal_attr teacher 평가를 돌려 threshold/report 상태를 확인하세요."
     if not flags.get("teacher_eval.obstacle", False):
         return "8번 obstacle teacher 평가를 돌려 상태를 확인하세요."
     if not flags.get("calibration", False):
         return "9번 calibration으로 class policy를 먼저 고정하세요."
     if not flags.get("exhaustive", False):
-        return "A로 exhaustive OD를 만들 차례입니다."
+        return "A로 signal attr sidecar가 붙은 exhaustive OD를 만들 차례입니다."
     if not flags.get("final_dataset", False):
         return "B로 최종 병합 데이터셋을 만드세요."
     if not flags.get("pv26_train", False):
@@ -1206,10 +1223,6 @@ def scan_workspace_status(report: dict[str, Any], *, paths: PipelinePaths | None
     source_prep_row, source_prep_flags = _build_source_prep_row(resolved_paths, source_counts)
     rows.append(source_prep_row)
     flags.update(source_prep_flags)
-
-    signal_attr_dataset_row, signal_attr_dataset_flags = _build_signal_attr_dataset_row(resolved_paths)
-    rows.append(signal_attr_dataset_row)
-    flags.update(signal_attr_dataset_flags)
 
     teacher_rows, teacher_flags = _build_teacher_rows(resolved_paths)
     rows.extend(teacher_rows)
@@ -1248,7 +1261,7 @@ def scan_workspace_status(report: dict[str, Any], *, paths: PipelinePaths | None
         notes.append("calibration이 없어도 exhaustive OD는 fallback class policy로 실행할 수 있습니다.")
     missing_teacher_exports = [
         teacher_name
-        for teacher_name in TEACHER_NAMES
+        for teacher_name in OD_TEACHER_NAMES
         if flags.get(f"teacher_train.{teacher_name}", False) and not flags.get(f"teacher_export.{teacher_name}", False)
     ]
     if missing_teacher_exports:

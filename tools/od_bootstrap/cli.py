@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,13 @@ from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
 from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
 from tools.od_bootstrap.source.types import CanonicalSourceBundle
-from tools.od_bootstrap.signal_attr import materialize_aihub_signal_attr_crop_dataset_from_canonical_root
+from tools.od_bootstrap.signal_attr import (
+    SignalAttrClassifierConfig,
+    SignalAttrTrainConfig,
+    evaluate_signal_attr_checkpoint,
+    materialize_aihub_signal_attr_crop_dataset_from_canonical_root,
+    train_signal_attr_classifier,
+)
 from tools.od_bootstrap.presets import (
     build_calibration_preset,
     build_default_source_preset,
@@ -41,11 +48,47 @@ from tools.od_bootstrap.presets import (
 )
 from tools.od_bootstrap.teacher.calibrate import calibrate_class_policy_scenario
 from tools.od_bootstrap.teacher.eval import eval_teacher_checkpoint
+from tools.od_bootstrap.teacher.registry import teacher_choices, teacher_definition
 from tools.od_bootstrap.teacher.train import run_teacher_train_scenario
 
 
 def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=True, default=str))
+
+
+class _InlineProgressPrinter:
+    def __init__(self) -> None:
+        self._active = False
+        self._rendered_lines = 1
+        self._enabled = bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+    def __call__(self, message: str) -> None:
+        text = str(message)
+        if self._enabled and " progress " in text:
+            self._clear_active()
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            self._active = True
+            self._rendered_lines = max(1, text.count("\n") + 1)
+            return
+        self.finish()
+        print(text, flush=True)
+
+    def finish(self) -> None:
+        if self._active:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self._active = False
+            self._rendered_lines = 1
+
+    def _clear_active(self) -> None:
+        if not self._active:
+            sys.stdout.write("\r\033[K")
+            return
+        for line_index in range(max(1, int(self._rendered_lines))):
+            if line_index:
+                sys.stdout.write("\r\033[1A")
+            sys.stdout.write("\r\033[K")
 
 
 def _add_common_path_overrides(parser: argparse.ArgumentParser) -> None:
@@ -115,8 +158,37 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_common_path_overrides(signal_attr_dataset)
     signal_attr_dataset.set_defaults(handler=_run_signal_attr_dataset)
 
+    signal_attr_train = subparsers.add_parser("train-signal-attr", help="Train the TL attribute crop classifier.")
+    signal_attr_train.add_argument("--dataset-root", type=Path, default=None, help="Override signal_attr crop dataset root.")
+    signal_attr_train.add_argument("--epochs", type=int, default=SignalAttrTrainConfig.epochs)
+    signal_attr_train.add_argument("--batch", type=int, default=SignalAttrTrainConfig.batch_size)
+    signal_attr_train.add_argument("--device", type=str, default=SignalAttrTrainConfig.device)
+    signal_attr_train.add_argument("--num-workers", type=int, default=SignalAttrTrainConfig.num_workers)
+    signal_attr_train.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=SignalAttrTrainConfig.pin_memory)
+    signal_attr_train.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=SignalAttrTrainConfig.persistent_workers,
+    )
+    signal_attr_train.add_argument("--prefetch-factor", type=int, default=SignalAttrTrainConfig.prefetch_factor)
+    signal_attr_train.add_argument("--learning-rate", type=float, default=SignalAttrTrainConfig.learning_rate)
+    signal_attr_train.add_argument("--width", type=int, default=SignalAttrClassifierConfig.width)
+    signal_attr_train.add_argument("--dropout", type=float, default=SignalAttrClassifierConfig.dropout)
+    _add_common_path_overrides(signal_attr_train)
+    signal_attr_train.set_defaults(handler=_run_signal_attr_train, teacher="signal_attr")
+
+    signal_attr_eval = subparsers.add_parser("eval-signal-attr", help="Evaluate the TL attribute crop classifier.")
+    signal_attr_eval.add_argument("--dataset-root", type=Path, default=None, help="Override signal_attr crop dataset root.")
+    signal_attr_eval.add_argument("--checkpoint", type=Path, default=None, help="Override best_signal_attr.pt path.")
+    signal_attr_eval.add_argument("--split", default="val", help="Dataset split to evaluate.")
+    signal_attr_eval.add_argument("--batch", type=int, default=SignalAttrTrainConfig.batch_size)
+    signal_attr_eval.add_argument("--device", type=str, default=SignalAttrTrainConfig.device)
+    signal_attr_eval.add_argument("--num-workers", type=int, default=SignalAttrTrainConfig.num_workers)
+    _add_common_path_overrides(signal_attr_eval)
+    signal_attr_eval.set_defaults(handler=_run_signal_attr_eval, teacher="signal_attr")
+
     train = subparsers.add_parser("train", help="Train a teacher preset.")
-    train.add_argument("--teacher", choices=("mobility", "signal", "obstacle"), default="mobility")
+    train.add_argument("--teacher", choices=teacher_choices(), default="mobility")
     train.add_argument(
         "--resume",
         nargs="?",
@@ -124,11 +196,38 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Resume from the latest resumable checkpoint, or provide an exact checkpoint path.",
     )
+    train.add_argument("--dataset-root", type=Path, default=None, help="signal_attr only: override crop dataset root.")
+    train.add_argument("--epochs", type=int, default=None, help="signal_attr only: training epochs.")
+    train.add_argument("--batch", type=int, default=None, help="signal_attr only: training batch size.")
+    train.add_argument("--device", type=str, default=None, help="signal_attr only: torch device.")
+    train.add_argument("--num-workers", type=int, default=None, help="signal_attr only: dataloader workers.")
+    train.add_argument(
+        "--pin-memory",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="signal_attr only: enable or disable pinned host memory.",
+    )
+    train.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="signal_attr only: keep dataloader workers alive across epochs.",
+    )
+    train.add_argument("--prefetch-factor", type=int, default=None, help="signal_attr only: dataloader prefetch factor.")
+    train.add_argument("--learning-rate", type=float, default=None, help="signal_attr only: optimizer learning rate.")
+    train.add_argument("--width", type=int, default=None, help="signal_attr only: classifier width.")
+    train.add_argument("--dropout", type=float, default=None, help="signal_attr only: classifier dropout.")
     _add_common_path_overrides(train)
     train.set_defaults(handler=_run_teacher_train)
 
     eval_parser = subparsers.add_parser("eval", help="Evaluate a teacher checkpoint preset.")
-    eval_parser.add_argument("--teacher", choices=("mobility", "signal", "obstacle"), default="mobility")
+    eval_parser.add_argument("--teacher", choices=teacher_choices(), default="mobility")
+    eval_parser.add_argument("--dataset-root", type=Path, default=None, help="signal_attr only: override crop dataset root.")
+    eval_parser.add_argument("--checkpoint", type=Path, default=None, help="signal_attr only: override best_signal_attr.pt path.")
+    eval_parser.add_argument("--split", default=None, help="signal_attr only: dataset split to evaluate.")
+    eval_parser.add_argument("--batch", type=int, default=None, help="signal_attr only: evaluation batch size.")
+    eval_parser.add_argument("--device", type=str, default=None, help="signal_attr only: torch device.")
+    eval_parser.add_argument("--num-workers", type=int, default=None, help="signal_attr only: dataloader workers.")
     _add_common_path_overrides(eval_parser)
     eval_parser.set_defaults(handler=_run_teacher_eval)
 
@@ -141,6 +240,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-default-class-policy",
         action="store_true",
         help="Allow exhaustive OD build to run without calibration/class_policy.yaml by using config defaults.",
+    )
+    exhaustive_od.add_argument(
+        "--signal-attr-checkpoint",
+        type=Path,
+        default=None,
+        help="Override the best_signal_attr.pt checkpoint used for attrpseudo materialization.",
+    )
+    exhaustive_od.add_argument(
+        "--no-signal-attr-sidecar",
+        action="store_true",
+        help="Disable automatic signal_attr sidecar discovery for legacy OD-only materialization.",
     )
     _add_common_path_overrides(exhaustive_od)
     exhaustive_od.set_defaults(handler=_run_exhaustive_od)
@@ -218,6 +328,7 @@ def _run_prepare_sources(args: argparse.Namespace) -> int:
 
 
 def _run_teacher_datasets(args: argparse.Namespace) -> int:
+    log_printer = _InlineProgressPrinter()
     preset = replace(
         build_teacher_dataset_preset(),
         output_root=_resolve_output_root(args, build_teacher_dataset_preset().output_root),
@@ -237,25 +348,37 @@ def _run_teacher_datasets(args: argparse.Namespace) -> int:
         log_every=preset.log_every,
         debug_vis_count=preset.debug_vis_count,
         debug_vis_seed=preset.debug_vis_seed,
-        log_fn=lambda message: print(message, flush=True),
+        log_fn=log_printer,
     )
+    signal_attr_manifest = materialize_aihub_signal_attr_crop_dataset_from_canonical_root(
+        preset.canonical_root / "canonical" / "aihub_standardized",
+        (preset.output_root / "signal_attr").resolve(),
+        workers=preset.workers,
+        log_every=preset.log_every,
+        log_fn=log_printer,
+    )
+    log_printer.finish()
     _print_json(
         {
-            teacher_name: {
-                "dataset_root": str(result.dataset_root),
-                "manifest_path": str(result.manifest_path),
-                "debug_vis_manifest_path": str(result.debug_vis_manifest_path),
-                "sample_count": result.sample_count,
-                "detection_count": result.detection_count,
-                "class_counts": result.class_counts,
-            }
-            for teacher_name, result in results.items()
+            "teachers": {
+                teacher_name: {
+                    "dataset_root": str(result.dataset_root),
+                    "manifest_path": str(result.manifest_path),
+                    "debug_vis_manifest_path": str(result.debug_vis_manifest_path),
+                    "sample_count": result.sample_count,
+                    "detection_count": result.detection_count,
+                    "class_counts": result.class_counts,
+                }
+                for teacher_name, result in results.items()
+            },
+            "signal_attr": signal_attr_manifest,
         }
     )
     return 0
 
 
 def _run_signal_attr_dataset(args: argparse.Namespace) -> int:
+    log_printer = _InlineProgressPrinter()
     preset = build_teacher_dataset_preset()
     canonical_root = (
         Path(args.canonical_root).resolve()
@@ -270,12 +393,127 @@ def _run_signal_attr_dataset(args: argparse.Namespace) -> int:
     manifest = materialize_aihub_signal_attr_crop_dataset_from_canonical_root(
         canonical_root,
         output_root,
+        workers=preset.workers,
+        log_every=preset.log_every,
+        log_fn=log_printer,
     )
+    log_printer.finish()
     _print_json(manifest)
     return 0
 
 
+def _signal_attr_dataset_root_override(path: Path | None) -> Path:
+    if path is not None:
+        return Path(path).resolve()
+    return (build_teacher_dataset_preset().output_root / "signal_attr").resolve()
+
+
+def _value_or_default(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
+def _signal_attr_train_output_root(args: argparse.Namespace) -> Path:
+    default_root = build_teacher_train_preset("signal").run.output_root / "signal_attr"
+    if args.output_root is not None:
+        return _resolve_output_root(args, default_root)
+    return default_root.resolve()
+
+
+def _signal_attr_eval_output_root(args: argparse.Namespace) -> Path:
+    default_root = build_teacher_eval_preset("signal").run.output_root / "signal_attr"
+    if args.output_root is not None:
+        return _resolve_output_root(args, default_root)
+    return default_root.resolve()
+
+
+def _run_signal_attr_train(args: argparse.Namespace) -> int:
+    log_printer = _InlineProgressPrinter()
+    dataset_root = _signal_attr_dataset_root_override(args.dataset_root)
+    train_output_root = _signal_attr_train_output_root(args)
+    summary = train_signal_attr_classifier(
+        dataset_root,
+        train_output_root,
+        train_config=SignalAttrTrainConfig(
+            epochs=int(_value_or_default(args.epochs, SignalAttrTrainConfig.epochs)),
+            batch_size=int(_value_or_default(args.batch, SignalAttrTrainConfig.batch_size)),
+            learning_rate=float(_value_or_default(args.learning_rate, SignalAttrTrainConfig.learning_rate)),
+            device=str(_value_or_default(args.device, SignalAttrTrainConfig.device)),
+            num_workers=int(_value_or_default(args.num_workers, SignalAttrTrainConfig.num_workers)),
+            pin_memory=bool(_value_or_default(args.pin_memory, SignalAttrTrainConfig.pin_memory)),
+            persistent_workers=bool(
+                _value_or_default(args.persistent_workers, SignalAttrTrainConfig.persistent_workers)
+            ),
+            prefetch_factor=int(_value_or_default(args.prefetch_factor, SignalAttrTrainConfig.prefetch_factor)),
+        ),
+        model_config=SignalAttrClassifierConfig(
+            width=int(_value_or_default(args.width, SignalAttrClassifierConfig.width)),
+            dropout=float(_value_or_default(args.dropout, SignalAttrClassifierConfig.dropout)),
+        ),
+        log_fn=log_printer,
+    )
+    log_printer.finish()
+    _print_json(summary)
+    return 0
+
+
+def _run_signal_attr_eval(args: argparse.Namespace) -> int:
+    log_printer = _InlineProgressPrinter()
+    dataset_root = _signal_attr_dataset_root_override(args.dataset_root)
+    train_root = build_teacher_train_preset("signal").run.output_root / "signal_attr"
+    checkpoint_path = Path(args.checkpoint).resolve() if args.checkpoint is not None else (train_root / "best_signal_attr.pt").resolve()
+    output_root = _signal_attr_eval_output_root(args)
+    report = evaluate_signal_attr_checkpoint(
+        dataset_root,
+        checkpoint_path,
+        output_root,
+        split=str(_value_or_default(args.split, "val")),
+        batch_size=int(_value_or_default(args.batch, SignalAttrTrainConfig.batch_size)),
+        device=str(_value_or_default(args.device, SignalAttrTrainConfig.device)),
+        num_workers=int(_value_or_default(args.num_workers, SignalAttrTrainConfig.num_workers)),
+        log_fn=log_printer,
+    )
+    log_printer.finish()
+    _print_json(report)
+    return 0
+
+
+def _reject_signal_attr_only_train_overrides(args: argparse.Namespace) -> None:
+    signal_attr_only = {
+        "dataset_root": args.dataset_root,
+        "epochs": args.epochs,
+        "batch": args.batch,
+        "device": args.device,
+        "num_workers": args.num_workers,
+        "pin_memory": args.pin_memory,
+        "persistent_workers": args.persistent_workers,
+        "prefetch_factor": args.prefetch_factor,
+        "learning_rate": args.learning_rate,
+        "width": args.width,
+        "dropout": args.dropout,
+    }
+    used = sorted(name for name, value in signal_attr_only.items() if value is not None)
+    if used:
+        raise ValueError(f"{', '.join(used)} are only supported with --teacher signal_attr")
+
+
+def _reject_signal_attr_only_eval_overrides(args: argparse.Namespace) -> None:
+    signal_attr_only = {
+        "dataset_root": args.dataset_root,
+        "checkpoint": args.checkpoint,
+        "split": args.split,
+        "batch": args.batch,
+        "device": args.device,
+        "num_workers": args.num_workers,
+    }
+    used = sorted(name for name, value in signal_attr_only.items() if value is not None)
+    if used:
+        raise ValueError(f"{', '.join(used)} are only supported with --teacher signal_attr")
+
+
 def _run_teacher_train(args: argparse.Namespace) -> int:
+    if teacher_definition(args.teacher).kind == "signal_attr":
+        return _run_signal_attr_train(args)
+    _reject_signal_attr_only_train_overrides(args)
     scenario = build_teacher_train_preset(args.teacher)
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))
@@ -286,6 +524,9 @@ def _run_teacher_train(args: argparse.Namespace) -> int:
 
 
 def _run_teacher_eval(args: argparse.Namespace) -> int:
+    if teacher_definition(args.teacher).kind == "signal_attr":
+        return _run_signal_attr_eval(args)
+    _reject_signal_attr_only_eval_overrides(args)
     scenario = build_teacher_eval_preset(args.teacher)
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))
@@ -297,7 +538,7 @@ def _run_calibration(args: argparse.Namespace) -> int:
     scenario = build_calibration_preset()
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))
-    calibrate_class_policy_scenario(scenario)
+    calibrate_class_policy_scenario(scenario, scenario_path=Path("preset_calibration"))
     return 0
 
 
@@ -305,8 +546,25 @@ def _run_exhaustive_od(args: argparse.Namespace) -> int:
     scenario = build_sweep_preset(allow_default_class_policy=bool(args.allow_default_class_policy))
     if args.output_root is not None:
         scenario = replace(scenario, run=replace(scenario.run, output_root=_resolve_output_root(args, scenario.run.output_root)))
-    run_model_centric_sweep_scenario(scenario, scenario_path=Path("preset_model_centric"))
+    signal_attr_checkpoint_path = _resolve_signal_attr_sidecar_checkpoint(args)
+    run_model_centric_sweep_scenario(
+        scenario,
+        scenario_path=Path("preset_model_centric"),
+        signal_attr_checkpoint_path=signal_attr_checkpoint_path,
+    )
     return 0
+
+
+def _resolve_signal_attr_sidecar_checkpoint(args: argparse.Namespace) -> Path | None:
+    if bool(getattr(args, "no_signal_attr_sidecar", False)):
+        return None
+    if args.signal_attr_checkpoint is not None:
+        return Path(args.signal_attr_checkpoint).resolve()
+    default_checkpoint = (build_teacher_train_preset("signal").run.output_root / "signal_attr" / "best_signal_attr.pt").resolve()
+    default_eval_report = (build_teacher_eval_preset("signal").run.output_root / "signal_attr" / "signal_attr_eval_report.json").resolve()
+    if default_checkpoint.is_file() and default_eval_report.is_file():
+        return default_checkpoint
+    return None
 
 
 def _run_final_dataset(args: argparse.Namespace) -> int:

@@ -10,6 +10,7 @@ import torch
 
 from common.pv26_schema import (
     DET_SUPERVISION_BY_DATASET,
+    ATTRPSEUDO_DATASET_KEY_BY_SOURCE,
     ETRI_KCITY_LEFTIMG_DATASET_KEY,
     EXHAUSTIVE_DATASET_KEY_BY_SOURCE,
     LANE_VAL_ODPSEUDO_DATASET_KEY,
@@ -144,6 +145,7 @@ class PV26BalancedSamplerTests(unittest.TestCase):
             ETRI_KCITY_LEFTIMG_DATASET_KEY,
             LANE_VAL_ODPSEUDO_DATASET_KEY,
             *EXHAUSTIVE_DATASET_KEY_BY_SOURCE.values(),
+            *ATTRPSEUDO_DATASET_KEY_BY_SOURCE.values(),
         }
         expected_train_sampler_keys = expected_loader_keys - {
             ETRI_KCITY_LEFTIMG_DATASET_KEY,
@@ -184,6 +186,9 @@ class PV26BalancedSamplerTests(unittest.TestCase):
         self.assertEqual(dataset_group_for_key("pv26_exhaustive_bdd100k_det_100k"), "bdd100k")
         self.assertEqual(dataset_group_for_key("pv26_exhaustive_aihub_traffic_seoul"), "aihub_traffic")
         self.assertEqual(dataset_group_for_key("pv26_exhaustive_aihub_obstacle_seoul"), "aihub_obstacle")
+        self.assertEqual(dataset_group_for_key("pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1"), "bdd100k")
+        self.assertEqual(dataset_group_for_key("pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1"), "aihub_traffic")
+        self.assertEqual(dataset_group_for_key("pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1"), "aihub_obstacle")
 
     def test_balanced_batch_sampler_supports_exhaustive_dataset_keys(self) -> None:
         dataset = _ToyCanonicalDataset(

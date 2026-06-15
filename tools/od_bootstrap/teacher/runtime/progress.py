@@ -26,7 +26,18 @@ def sync_timing_device(torch_module: Any, device: Any, enabled: bool) -> None:
 
 
 def timing_profile(window: list[dict[str, float]]) -> dict[str, Any]:
-    return _common_timing_profile(window, keys=("iteration_sec", "wait_sec", "compute_sec"))
+    return _common_timing_profile(
+        window,
+        keys=(
+            "iteration_sec",
+            "wait_sec",
+            "compute_sec",
+            "preprocess_sec",
+            "forward_loss_sec",
+            "backward_sec",
+            "optimizer_sec",
+        ),
+    )
 
 
 def format_duration(seconds: float | None) -> str:
@@ -149,13 +160,40 @@ def build_live_postfix(
     eta_sec: float | None,
     profile_summary: dict[str, Any],
 ) -> str:
-    return _common_join_status_segments(
+    iteration_mean = _profile_mean(profile_summary, "iteration_sec")
+    wait_mean = _profile_mean(profile_summary, "wait_sec")
+    compute_mean = _profile_mean(profile_summary, "compute_sec")
+    summary = _common_join_status_segments(
         f"elapsed={format_duration(elapsed_sec)}",
         f"eta={format_duration(eta_sec)}",
-        f"iter={profile_summary['iteration_sec']['mean'] * 1000.0:.1f}ms",
-        f"wait={profile_summary['wait_sec']['mean'] * 1000.0:.1f}ms",
-        f"compute={profile_summary['compute_sec']['mean'] * 1000.0:.1f}ms",
+        f"iter={iteration_mean * 1000.0:.1f}ms",
+        f"wait={wait_mean * 1000.0:.1f}ms",
+        f"compute={compute_mean * 1000.0:.1f}ms",
     )
+    stages = _common_join_status_segments(
+        _stage_segment(profile_summary, "preprocess_sec", "prep"),
+        _stage_segment(profile_summary, "forward_loss_sec", "fwd_loss"),
+        _stage_segment(profile_summary, "backward_sec", "bwd"),
+        _stage_segment(profile_summary, "optimizer_sec", "opt"),
+    )
+    return "\n".join(segment for segment in (summary, stages) if segment)
+
+
+def _profile_mean(profile_summary: dict[str, Any], key: str) -> float:
+    group = profile_summary.get(key)
+    if isinstance(group, dict):
+        try:
+            return float(group.get("mean", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _stage_segment(profile_summary: dict[str, Any], key: str, label: str) -> str | None:
+    value = _profile_mean(profile_summary, key)
+    if value <= 0.0:
+        return None
+    return f"{label}={value * 1000.0:.1f}ms"
 
 
 def set_progress_postfix(pbar: Any, postfix: str) -> bool:
@@ -256,19 +294,19 @@ def install_ultralytics_postfix_renderer(
         try:
             if self.noninteractive:
                 if postfix:
-                    self.file.write(f"{progress_str} | {postfix}")
+                    self.file.write(f"{progress_str}\n{postfix}")
                 else:
                     self.file.write(progress_str)
             else:
                 prior_line_count = int(getattr(self, "_od_bootstrap_rendered_lines", 1))
-                if prior_line_count > 1:
-                    self.file.write("\r\033[1A\r\033[K")
-                else:
+                for line_index in range(max(1, prior_line_count)):
+                    if line_index:
+                        self.file.write("\r\033[1A")
                     self.file.write("\r\033[K")
                 self.file.write(progress_str)
                 if postfix:
                     self.file.write(f"\n\033[K{postfix}")
-                    self._od_bootstrap_rendered_lines = 2
+                    self._od_bootstrap_rendered_lines = 1 + postfix.count("\n") + 1
                 else:
                     self._od_bootstrap_rendered_lines = 1
             self.file.flush()

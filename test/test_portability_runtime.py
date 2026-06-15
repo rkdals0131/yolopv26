@@ -169,10 +169,21 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
 
         actions = _action_catalog(paths)
 
-        signal_attr_action = next(item for item in actions if item.key == "2A")
-        self.assertIn("Signal attr", signal_attr_action.label)
-        self.assertIn("build-signal-attr-dataset", signal_attr_action.command_display)
-        self.assertTrue(str(signal_attr_action.output_hint).endswith("/teacher_datasets/signal_attr"))
+        teacher_dataset_action = next(item for item in actions if item.key == "2")
+        self.assertIn("4종", teacher_dataset_action.label)
+        self.assertIn("build-teacher-datasets", teacher_dataset_action.command_display)
+        signal_attr_train_action = next(item for item in actions if item.key == "4A")
+        self.assertIn("train --teacher signal_attr", signal_attr_train_action.command_display)
+        self.assertTrue(str(signal_attr_train_action.output_hint).endswith("/teacher_train/signal_attr"))
+        signal_attr_eval_action = next(item for item in actions if item.key == "7A")
+        self.assertIn("eval --teacher signal_attr", signal_attr_eval_action.command_display)
+        action_keys = {item.key for item in actions}
+        self.assertNotIn("2A", action_keys)
+        self.assertNotIn("2B", action_keys)
+        self.assertNotIn("2C", action_keys)
+        self.assertNotIn("A1", action_keys)
+        exhaustive_action = next(item for item in actions if item.key == "A")
+        self.assertEqual(exhaustive_action.argv, (sys.executable, "-m", "tools.od_bootstrap", "build-exhaustive-od"))
         stress_action = next(item for item in actions if item.key == "D")
         self.assertIn("interactive", stress_action.command_display)
         self.assertEqual(stress_action.argv, ())
@@ -193,6 +204,14 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         teacher_export_action = next(item for item in actions if item.key == "G")
         self.assertIn("Mobility", teacher_export_action.label)
         self.assertEqual(teacher_export_action.argv, ())
+
+    def test_teacher_registry_defines_signal_attr_as_fourth_teacher(self) -> None:
+        from tools.od_bootstrap.teacher.registry import ALL_TEACHER_NAMES, OD_TEACHER_NAMES, teacher_definition
+
+        self.assertEqual(ALL_TEACHER_NAMES, ("mobility", "signal", "signal_attr", "obstacle"))
+        self.assertEqual(OD_TEACHER_NAMES, ("mobility", "signal", "obstacle"))
+        self.assertEqual(teacher_definition("signal_attr").kind, "signal_attr")
+        self.assertFalse(teacher_definition("signal_attr").supports_calibration)
 
     def test_check_env_path_resolution_does_not_require_calibration_policy(self) -> None:
         from tools.check_env import scan
@@ -742,6 +761,16 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                 (train_root / teacher_name / "weights" / "best.pt").write_text("checkpoint", encoding="utf-8")
                 (train_root / teacher_name / "run_summary.json").write_text("{}", encoding="utf-8")
 
+            signal_attr_meta = teacher_root / "signal_attr" / "meta"
+            signal_attr_meta.mkdir(parents=True, exist_ok=True)
+            (signal_attr_meta / "signal_attr_dataset_manifest.json").write_text(
+                json.dumps({"status": "ready", "accepted_count": 50, "rejected_count": 5}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (train_root / "signal_attr").mkdir(parents=True, exist_ok=True)
+            (train_root / "signal_attr" / "best_signal_attr.pt").write_text("checkpoint", encoding="utf-8")
+            (train_root / "signal_attr" / "train_summary.json").write_text("{}", encoding="utf-8")
+
             (calibration_root).mkdir(parents=True, exist_ok=True)
             (calibration_root / "class_policy.yaml").write_text("vehicle: {}\n", encoding="utf-8")
             (calibration_root / "hard_negative_manifest.json").write_text("{}", encoding="utf-8")
@@ -856,6 +885,10 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         row_map = {row.stage: row for row in snapshot.rows}
         self.assertEqual(row_map["Teacher dataset"].verdict, "OK")
         self.assertIn("mobility 100", row_map["Teacher dataset"].current_state)
+        self.assertIn("signal_attr 50", row_map["Teacher dataset"].current_state)
+        self.assertNotIn("Signal attr crop dataset", row_map)
+        self.assertNotIn("Signal attr classifier 학습", row_map)
+        self.assertNotIn("Signal attr classifier 평가", row_map)
         self.assertEqual(row_map["Calibration"].verdict, "OK")
         self.assertEqual(row_map["PV26 학습 run"].verdict, "OK")
         self.assertEqual(row_map["최종 병합 데이터셋"].verdict, "WARN")

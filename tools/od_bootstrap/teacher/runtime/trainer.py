@@ -381,6 +381,10 @@ def make_teacher_trainer(
                     for i, batch in pbar:
                         self.run_callbacks("on_train_batch_start")
                         ni = i + nb * epoch
+                        self.od_preprocess_sec = 0.0
+                        self.od_forward_loss_sec = 0.0
+                        self.od_backward_sec = 0.0
+                        self.od_optimizer_sec = 0.0
                         if ni <= nw:
                             xi = [0, nw]
                             self.accumulate = max(
@@ -405,19 +409,25 @@ def make_teacher_trainer(
 
                         try:
                             with ultra_trainer.autocast(self.amp):
+                                stage_started_at = time.perf_counter()
                                 batch = self.preprocess_batch(batch)
+                                self.od_preprocess_sec = max(0.0, time.perf_counter() - stage_started_at)
+                                stage_started_at = time.perf_counter()
                                 if self.args.compile:
                                     preds = self.model(batch["img"])
                                     loss, self.loss_items = ultra_trainer.unwrap_model(self.model).loss(batch, preds)
                                 else:
                                     loss, self.loss_items = self.model(batch)
+                                self.od_forward_loss_sec = max(0.0, time.perf_counter() - stage_started_at)
                                 self.loss = loss.sum()
                                 if ultra_trainer.RANK != -1:
                                     self.loss *= self.world_size
                                 self.tloss = (
                                     self.loss_items if self.tloss is None else (self.tloss * i + self.loss_items) / (i + 1)
                                 )
+                            stage_started_at = time.perf_counter()
                             self.scaler.scale(self.loss).backward()
+                            self.od_backward_sec = max(0.0, time.perf_counter() - stage_started_at)
                         except torch.cuda.OutOfMemoryError:
                             if epoch > self.start_epoch or self._oom_retries >= 3 or ultra_trainer.RANK != -1:
                                 raise
@@ -437,7 +447,9 @@ def make_teacher_trainer(
                             self.optimizer.zero_grad()
                             break
                         if ni - last_opt_step >= self.accumulate:
+                            stage_started_at = time.perf_counter()
                             self.optimizer_step()
+                            self.od_optimizer_sec = max(0.0, time.perf_counter() - stage_started_at)
                             last_opt_step = ni
                             if self.args.time:
                                 self.stop = (ultra_trainer.time.time() - self.train_time_start) > (self.args.time * 3600)

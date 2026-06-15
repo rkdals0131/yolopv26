@@ -13,10 +13,11 @@ from typing import Any, Iterable, TypedDict
 import yaml
 
 from common.io import read_json, write_json, write_text
-from common.pv26_schema import EXHAUSTIVE_DATASET_KEY_BY_SOURCE, OD_CLASS_TO_ID, OD_CLASSES
+from common.pv26_schema import ATTRPSEUDO_DATASET_KEY_BY_SOURCE, EXHAUSTIVE_DATASET_KEY_BY_SOURCE, OD_CLASS_TO_ID, OD_CLASSES
 
 from .artifacts import BoxProvenance
 from .image_list import ImageListEntry
+from ..signal_attr import SignalAttrSidecarTeacher
 from ..teacher.policy import apply_policy_to_predictions
 
 EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME = "materialization_manifest.json"
@@ -32,6 +33,9 @@ class MaterializedSample:
     image_path: Path
     raw_detection_count: int
     bootstrap_detection_count: int
+    traffic_light_count: int
+    tl_attr_valid_count: int
+    tl_attr_invalid_count: int
 
 
 class TeacherPredictionRow(TypedDict):
@@ -65,6 +69,10 @@ class ExhaustiveSampleRow(TypedDict):
     image_path: str
     raw_detection_count: int
     bootstrap_detection_count: int
+    traffic_light_count: int
+    tl_attr_valid_count: int
+    tl_attr_invalid_count: int
+    tl_attr_reason_counts: dict[str, int]
 
 
 class ExhaustiveMaterializationManifest(TypedDict):
@@ -74,6 +82,11 @@ class ExhaustiveMaterializationManifest(TypedDict):
     dataset_root: str
     sample_count: int
     class_counts: dict[str, int]
+    traffic_light_count: int
+    tl_attr_valid_count: int
+    tl_attr_invalid_count: int
+    tl_attr_reason_counts: dict[str, int]
+    attr_teacher: dict[str, Any]
     samples: list[ExhaustiveSampleRow]
 
 
@@ -85,6 +98,11 @@ class ExhaustiveMaterializationSummary(TypedDict):
     generated_at: str
     sample_count: int
     class_counts: dict[str, int]
+    traffic_light_count: int
+    tl_attr_valid_count: int
+    tl_attr_invalid_count: int
+    tl_attr_reason_counts: dict[str, int]
+    attr_teacher: dict[str, Any]
 
 
 def _build_materialization_summary(
@@ -94,6 +112,11 @@ def _build_materialization_summary(
     created_at: str,
     sample_count: int,
     class_counts: dict[str, int],
+    traffic_light_count: int,
+    tl_attr_valid_count: int,
+    tl_attr_invalid_count: int,
+    tl_attr_reason_counts: dict[str, int],
+    attr_teacher: dict[str, Any],
 ) -> ExhaustiveMaterializationSummary:
     manifest_path = dataset_root / "meta" / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
     summary_path = dataset_root / "meta" / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
@@ -105,6 +128,27 @@ def _build_materialization_summary(
         "generated_at": created_at,
         "sample_count": sample_count,
         "class_counts": dict(sorted(class_counts.items())),
+        "traffic_light_count": int(traffic_light_count),
+        "tl_attr_valid_count": int(tl_attr_valid_count),
+        "tl_attr_invalid_count": int(tl_attr_invalid_count),
+        "tl_attr_reason_counts": dict(sorted(tl_attr_reason_counts.items())),
+        "attr_teacher": attr_teacher,
+    }
+
+
+def _attr_teacher_payload(signal_attr_teacher: SignalAttrSidecarTeacher | None) -> dict[str, Any]:
+    if signal_attr_teacher is None:
+        return {
+            "enabled": False,
+            "teacher_name": "signal_attr",
+            "checkpoint_path": None,
+            "threshold_policy": None,
+        }
+    return {
+        "enabled": True,
+        "teacher_name": "signal_attr",
+        "checkpoint_path": str(getattr(signal_attr_teacher, "checkpoint_path", "")) or None,
+        "threshold_policy": getattr(getattr(signal_attr_teacher, "threshold_policy", None), "name", None),
     }
 
 
@@ -231,11 +275,16 @@ def _materialize_sample(
     run_id: str,
     created_at: str,
     copy_images: bool,
+    signal_attr_sidecar: SignalAttrSidecarTeacher | None,
 ) -> tuple[MaterializedSample, dict[str, int], ExhaustiveSampleRow]:
     class_counts = Counter()
     scene = _load_scene(entry.scene_path)
     source_dataset_key, split = _resolve_entry_source_metadata(scene, entry)
-    exhaustive_dataset_key = EXHAUSTIVE_DATASET_KEY_BY_SOURCE[source_dataset_key]
+    exhaustive_dataset_key = (
+        ATTRPSEUDO_DATASET_KEY_BY_SOURCE[source_dataset_key]
+        if signal_attr_sidecar is not None
+        else EXHAUSTIVE_DATASET_KEY_BY_SOURCE[source_dataset_key]
+    )
     original_image_name = str(scene.get("image", {}).get("file_name") or entry.image_path.name)
     materialized_image_name = f"{entry.sample_uid}{entry.image_path.suffix.lower()}"
     raw_detections = list(scene.get("detections") or [])
@@ -305,6 +354,15 @@ def _materialize_sample(
     final_scene["notes"].append("OD bootstrap exhaustive detector labels were materialized from raw source labels plus teacher predictions.")
     final_scene.setdefault("tasks", {})
     final_scene["tasks"]["has_det"] = int(bool(final_detections))
+    if signal_attr_sidecar is not None:
+        sidecar_stats = signal_attr_sidecar.apply_to_scene(
+            final_scene,
+            entry.image_path,
+            run_id=run_id,
+            created_at=created_at,
+        )
+    else:
+        sidecar_stats = None
 
     scene_output_path = dataset_root / "labels_scene" / split / f"{entry.sample_uid}.json"
     det_output_path = dataset_root / "labels_det" / split / f"{entry.sample_uid}.txt"
@@ -334,6 +392,9 @@ def _materialize_sample(
         image_path=image_output_path,
         raw_detection_count=len(raw_detections),
         bootstrap_detection_count=len(kept_predictions),
+        traffic_light_count=sidecar_stats.traffic_light_count if sidecar_stats is not None else 0,
+        tl_attr_valid_count=sidecar_stats.valid_count if sidecar_stats is not None else 0,
+        tl_attr_invalid_count=sidecar_stats.invalid_count if sidecar_stats is not None else 0,
     )
     sample_row: ExhaustiveSampleRow = {
         "sample_id": entry.sample_id,
@@ -349,6 +410,10 @@ def _materialize_sample(
         "image_path": str(image_output_path),
         "raw_detection_count": len(raw_detections),
         "bootstrap_detection_count": len(kept_predictions),
+        "traffic_light_count": sidecar_stats.traffic_light_count if sidecar_stats is not None else 0,
+        "tl_attr_valid_count": sidecar_stats.valid_count if sidecar_stats is not None else 0,
+        "tl_attr_invalid_count": sidecar_stats.invalid_count if sidecar_stats is not None else 0,
+        "tl_attr_reason_counts": sidecar_stats.reason_counts if sidecar_stats is not None else {},
     }
     return materialized, dict(class_counts), sample_row
 
@@ -362,6 +427,7 @@ def materialize_exhaustive_od_dataset(
     run_id: str,
     created_at: str,
     copy_images: bool,
+    signal_attr_sidecar: SignalAttrSidecarTeacher | None = None,
     log_fn: Any | None = None,
 ) -> ExhaustiveMaterializationSummary:
     dataset_root = output_root.resolve() / run_id
@@ -376,6 +442,8 @@ def materialize_exhaustive_od_dataset(
     workers = _default_io_workers()
     completed = 0
     bootstrap_boxes = 0
+    tl_attr_reason_counts: Counter[str] = Counter()
+    attr_teacher = _attr_teacher_payload(signal_attr_sidecar)
     start_time = time.monotonic()
     log_every = max(250, workers * 50)
     if log_fn is not None:
@@ -392,6 +460,7 @@ def materialize_exhaustive_od_dataset(
                     run_id=run_id,
                     created_at=created_at,
                     copy_images=copy_images,
+                    signal_attr_sidecar=signal_attr_sidecar,
                 )
                 for entry in entries
             ]
@@ -400,6 +469,7 @@ def materialize_exhaustive_od_dataset(
                 materialized.append(materialized_sample)
                 sample_rows.append(sample_row)
                 class_counts.update(sample_class_counts)
+                tl_attr_reason_counts.update(sample_row["tl_attr_reason_counts"])
                 bootstrap_boxes += int(sample_row["bootstrap_detection_count"])
                 completed += 1
                 if (
@@ -422,6 +492,9 @@ def materialize_exhaustive_od_dataset(
         meta_root / "class_map_det.yaml",
         yaml.safe_dump({str(index): class_name for index, class_name in enumerate(OD_CLASSES)}, sort_keys=False),
     )
+    traffic_light_count = sum(int(row["traffic_light_count"]) for row in sample_rows)
+    tl_attr_valid_count = sum(int(row["tl_attr_valid_count"]) for row in sample_rows)
+    tl_attr_invalid_count = sum(int(row["tl_attr_invalid_count"]) for row in sample_rows)
     manifest_payload: ExhaustiveMaterializationManifest = {
         "version": "od-bootstrap-exhaustive-od-v1",
         "run_id": run_id,
@@ -429,6 +502,11 @@ def materialize_exhaustive_od_dataset(
         "dataset_root": str(dataset_root),
         "sample_count": len(materialized),
         "class_counts": dict(sorted(class_counts.items())),
+        "traffic_light_count": traffic_light_count,
+        "tl_attr_valid_count": tl_attr_valid_count,
+        "tl_attr_invalid_count": tl_attr_invalid_count,
+        "tl_attr_reason_counts": dict(sorted(tl_attr_reason_counts.items())),
+        "attr_teacher": attr_teacher,
         "samples": sample_rows,
     }
     manifest_path = meta_root / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME
@@ -439,6 +517,11 @@ def materialize_exhaustive_od_dataset(
         created_at=created_at,
         sample_count=len(materialized),
         class_counts=dict(class_counts),
+        traffic_light_count=traffic_light_count,
+        tl_attr_valid_count=tl_attr_valid_count,
+        tl_attr_invalid_count=tl_attr_invalid_count,
+        tl_attr_reason_counts=dict(tl_attr_reason_counts),
+        attr_teacher=attr_teacher,
     )
     summary_path = meta_root / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
     write_json(summary_path, summary_payload)

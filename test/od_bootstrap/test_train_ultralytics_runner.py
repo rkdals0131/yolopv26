@@ -180,7 +180,8 @@ class UltralyticsRunnerTests(unittest.TestCase):
         install_ultralytics_postfix_renderer(pbar)
         with patch("tools.od_bootstrap.teacher.ultralytics_runner.time.time", return_value=123.9):
             pbar.set_bootstrap_postfix(
-                "elapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms"
+                "elapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms\n"
+                "prep=1.0ms  |  fwd_loss=120.0ms  |  bwd=100.0ms  |  opt=10.0ms"
             )
         rendered = pbar.file.getvalue()
         self.assertIn("58/4375", rendered)
@@ -189,6 +190,7 @@ class UltralyticsRunnerTests(unittest.TestCase):
             "\n\033[Kelapsed=00:24  |  eta=20:25  |  iter=283.7ms  |  wait=0.3ms  |  compute=283.7ms",
             rendered,
         )
+        self.assertIn("prep=1.0ms  |  fwd_loss=120.0ms  |  bwd=100.0ms  |  opt=10.0ms", rendered)
 
     def test_rich_progress_bar_uses_task_description_without_field_conflict(self) -> None:
         progress_bar = build_rich_progress_bar(
@@ -234,6 +236,10 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 od_epoch_timing_window=deque(maxlen=runtime_params["profile_window"]),
                 train_loader=_FakeTrainLoader(),
                 od_epoch_started_at=10.000,
+                od_preprocess_sec=0.010,
+                od_forward_loss_sec=0.040,
+                od_backward_sec=0.030,
+                od_optimizer_sec=0.020,
                 od_profile_log_path=Path(temp_dir) / "profile_log.jsonl",
                 od_tensorboard_writer=None,
                 od_pbar=pbar,
@@ -250,10 +256,15 @@ class UltralyticsRunnerTests(unittest.TestCase):
             self.assertEqual(trainer.od_epoch_step, 1)
             self.assertEqual(trainer.od_global_step, 1)
             self.assertEqual(len(pbar.values), 1)
-            self.assertIn("  |  elapsed=", pbar.values[0])
+            self.assertIn("elapsed=", pbar.values[0])
             self.assertIn("iter=", pbar.values[0])
             self.assertIn("wait=", pbar.values[0])
             self.assertIn("compute=", pbar.values[0])
+            self.assertIn("\n", pbar.values[0])
+            self.assertIn("prep=", pbar.values[0])
+            self.assertIn("fwd_loss=", pbar.values[0])
+            self.assertIn("bwd=", pbar.values[0])
+            self.assertIn("opt=", pbar.values[0])
             self.assertFalse(trainer.od_profile_log_path.exists())
 
     def test_make_teacher_trainer_groups_callback_support_dependencies(self) -> None:
@@ -300,6 +311,10 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 "iteration_sec": {"mean": 0.31, "p50": 0.3, "p99": 0.4},
                 "wait_sec": {"mean": 0.02, "p50": 0.01, "p99": 0.05},
                 "compute_sec": {"mean": 0.29, "p50": 0.28, "p99": 0.38},
+                "preprocess_sec": {"mean": 0.01, "p50": 0.01, "p99": 0.02},
+                "forward_loss_sec": {"mean": 0.11, "p50": 0.10, "p99": 0.13},
+                "backward_sec": {"mean": 0.12, "p50": 0.11, "p99": 0.14},
+                "optimizer_sec": {"mean": 0.05, "p50": 0.05, "p99": 0.06},
             },
             lr_values={"lr/pg0": 0.001, "lr/pg1": 0.002, "lr/pg2": 0.003},
             metrics={
@@ -326,6 +341,10 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 "epoch/profile_sec/iteration_mean",
                 "epoch/profile_sec/wait_mean",
                 "epoch/profile_sec/compute_mean",
+                "epoch/profile_sec/preprocess_mean",
+                "epoch/profile_sec/forward_loss_mean",
+                "epoch/profile_sec/backward_mean",
+                "epoch/profile_sec/optimizer_mean",
                 "epoch/precision",
                 "epoch/recall",
                 "epoch/f1",
@@ -349,6 +368,10 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 "iteration_sec": {"mean": 0.31, "p50": 0.3, "p99": 0.4},
                 "wait_sec": {"mean": 0.02, "p50": 0.01, "p99": 0.05},
                 "compute_sec": {"mean": 0.29, "p50": 0.28, "p99": 0.38},
+                "preprocess_sec": {"mean": 0.01, "p50": 0.01, "p99": 0.02},
+                "forward_loss_sec": {"mean": 0.11, "p50": 0.10, "p99": 0.13},
+                "backward_sec": {"mean": 0.12, "p50": 0.11, "p99": 0.14},
+                "optimizer_sec": {"mean": 0.05, "p50": 0.05, "p99": 0.06},
             },
             elapsed_sec=12.5,
         )
@@ -366,6 +389,10 @@ class UltralyticsRunnerTests(unittest.TestCase):
                 "train_step/profile_sec/iteration_p99",
                 "train_step/profile_sec/wait_mean",
                 "train_step/profile_sec/compute_mean",
+                "train_step/profile_sec/preprocess_mean",
+                "train_step/profile_sec/forward_loss_mean",
+                "train_step/profile_sec/backward_mean",
+                "train_step/profile_sec/optimizer_mean",
                 "train_step/elapsed_sec",
             },
         )

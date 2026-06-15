@@ -127,6 +127,10 @@ def _epoch_profile_payload(profile_summary: dict[str, Any]) -> dict[str, float]:
         ("iteration_mean", "iteration_sec"),
         ("wait_mean", "wait_sec"),
         ("compute_mean", "compute_sec"),
+        ("preprocess_mean", "preprocess_sec"),
+        ("forward_loss_mean", "forward_loss_sec"),
+        ("backward_mean", "backward_sec"),
+        ("optimizer_mean", "optimizer_sec"),
     ):
         if isinstance(profile_summary.get(source_group), dict):
             value = _first_scalar(profile_summary[source_group], "mean")
@@ -143,6 +147,10 @@ def _train_step_profile_payload(profile_summary: dict[str, Any]) -> dict[str, fl
         ("iteration_p99", "iteration_sec", "p99"),
         ("wait_mean", "wait_sec", "mean"),
         ("compute_mean", "compute_sec", "mean"),
+        ("preprocess_mean", "preprocess_sec", "mean"),
+        ("forward_loss_mean", "forward_loss_sec", "mean"),
+        ("backward_mean", "backward_sec", "mean"),
+        ("optimizer_mean", "optimizer_sec", "mean"),
     ):
         if isinstance(profile_summary.get(source_group), dict):
             value = _first_scalar(profile_summary[source_group], stat_key)

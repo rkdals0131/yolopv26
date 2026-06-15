@@ -303,6 +303,25 @@ tasks.has_tl_attr = int(any traffic_lights row has tl_attr_valid == 1)
 
 Sidecar 실행 여부와 checkpoint provenance는 manifest에 따로 둔다.
 
+Current HMI/CLI surface:
+
+```text
+check_env 2  -> python -m tools.od_bootstrap build-teacher-datasets
+                # materializes all four teacher datasets, including signal_attr crops
+check_env 4A -> python -m tools.od_bootstrap train --teacher signal_attr
+check_env 7A -> python -m tools.od_bootstrap eval --teacher signal_attr
+check_env A  -> python -m tools.od_bootstrap build-exhaustive-od
+                # auto-enables signal_attr sidecar when best_signal_attr.pt and its eval report are ready
+```
+
+The `4A` default is intentionally throughput-biased for 128 px ROI crops:
+`epochs=20`, `batch=384`, `num_workers=4`, `pin_memory=true`,
+`persistent_workers=true`, and `prefetch_factor=2` for the train loader. The
+per-epoch validation loader uses `num_workers=0` to avoid keeping a second
+persistent worker pool alive across the run.
+
+`train-signal-attr`, `eval-signal-attr`, and `build-signal-attr-dataset` remain debug/rerun aliases. The HMI path treats `signal_attr` as the fourth teacher, not a separate stage.
+
 ```json
 {
   "signal_attr_sidecar": {

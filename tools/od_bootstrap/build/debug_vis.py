@@ -37,11 +37,18 @@ DEFAULT_FINAL_LANE_AUDIT_OVERVIEW_QUOTAS: tuple[tuple[str, str, int], ...] = (
     ("aihub_lane_seoul", "val", 24),
     ("pv26_exhaustive_aihub_traffic_seoul", "train", 16),
     ("pv26_exhaustive_aihub_traffic_seoul", "val", 8),
+    ("pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1", "train", 16),
+    ("pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1", "val", 8),
     ("pv26_exhaustive_aihub_obstacle_seoul", "train", 16),
     ("pv26_exhaustive_aihub_obstacle_seoul", "val", 8),
+    ("pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1", "train", 16),
+    ("pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1", "val", 8),
     ("pv26_exhaustive_bdd100k_det_100k", "train", 8),
     ("pv26_exhaustive_bdd100k_det_100k", "val", 8),
     ("pv26_exhaustive_bdd100k_det_100k", "test", 8),
+    ("pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1", "train", 8),
+    ("pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1", "val", 8),
+    ("pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1", "test", 8),
 )
 _TRAILING_DIGITS_RE = re.compile(r"(\d+)(?!.*\d)")
 
@@ -683,7 +690,7 @@ def _extract_frame_id(*values: str) -> int | None:
 
 
 def _resolve_source_group_name(*, dataset_key: str, split: str, source_image_path: str, sample_id: str) -> str:
-    if dataset_key == "pv26_exhaustive_bdd100k_det_100k":
+    if dataset_key in {"pv26_exhaustive_bdd100k_det_100k", "pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1"}:
         return split or "unknown"
     if source_image_path:
         parent_name = Path(source_image_path).parent.name.strip()

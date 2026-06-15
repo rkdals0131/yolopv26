@@ -34,6 +34,7 @@ from .exhaustive_od import (
     materialize_exhaustive_od_dataset,
 )
 from .image_list import ImageListEntry, load_image_list
+from ..signal_attr import SignalAttrSidecarTeacher
 from ..teacher.policy import row_passes_policy
 from .sweep_types import BootstrapSweepScenario, ClassPolicy, TeacherConfig, TeacherPredictionRow
 
@@ -43,6 +44,7 @@ class ModelCentricSweepSummary(TypedDict):
     run_dir: str
     image_count: int
     teacher_names: list[str]
+    attr_teacher: dict[str, object]
     class_policy_path: str
     class_policy_source: str
     teacher_jobs: list[TeacherJobManifestPayload]
@@ -299,6 +301,7 @@ def run_model_centric_sweep_scenario(
     scenario: BootstrapSweepScenario,
     *,
     scenario_path: Path,
+    signal_attr_checkpoint_path: Path | None = None,
 ) -> ModelCentricSweepSummary:
     entries = load_image_list(scenario.image_list.manifest_path)
     created_at = _now_iso()
@@ -341,6 +344,14 @@ def run_model_centric_sweep_scenario(
             predictions_by_sample_uid.setdefault(str(row["sample_uid"]), []).append(row)
         _log_bootstrap(f"teacher={teacher.name} predictions={len(teacher_rows)}")
 
+    signal_attr_sidecar = None
+    if signal_attr_checkpoint_path is not None:
+        signal_attr_sidecar = SignalAttrSidecarTeacher.from_checkpoint(
+            signal_attr_checkpoint_path,
+            device=scenario.run.device,
+        )
+        _log_bootstrap(f"signal_attr sidecar enabled checkpoint={signal_attr_checkpoint_path}")
+
     materialization_summary = materialize_exhaustive_od_dataset(
         image_entries=entries,
         predictions_by_sample_uid=predictions_by_sample_uid,
@@ -349,6 +360,7 @@ def run_model_centric_sweep_scenario(
         run_id=run_id,
         created_at=created_at,
         copy_images=scenario.materialization.copy_images,
+        signal_attr_sidecar=signal_attr_sidecar,
         log_fn=_log_bootstrap,
     )
 
@@ -357,6 +369,11 @@ def run_model_centric_sweep_scenario(
         "run_dir": str(run_dir),
         "image_count": len(entries),
         "teacher_names": list(teacher_names),
+        "attr_teacher": {
+            "enabled": signal_attr_checkpoint_path is not None,
+            "teacher_name": "signal_attr",
+            "checkpoint_path": str(signal_attr_checkpoint_path) if signal_attr_checkpoint_path is not None else None,
+        },
         "class_policy_path": str(scenario.class_policy_path),
         "class_policy_source": str(scenario.class_policy_source),
         "teacher_jobs": teacher_jobs,

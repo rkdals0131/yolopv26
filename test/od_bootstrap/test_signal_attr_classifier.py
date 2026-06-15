@@ -20,6 +20,8 @@ from tools.od_bootstrap.signal_attr import (
     SignalAttrCropTorchDataset,
     SignalAttrThresholdPolicy,
     SignalAttrTrainConfig,
+    evaluate_signal_attr_checkpoint,
+    load_signal_attr_classifier_checkpoint,
     signal_attr_collate,
     signal_attr_prediction_from_logits,
     train_signal_attr_classifier,
@@ -92,6 +94,7 @@ class SignalAttrClassifierTests(unittest.TestCase):
             dataset_root = root / "dataset"
             output_root = root / "run"
             _write_signal_attr_dataset(dataset_root)
+            logs: list[str] = []
 
             summary = train_signal_attr_classifier(
                 dataset_root,
@@ -106,6 +109,7 @@ class SignalAttrClassifierTests(unittest.TestCase):
                 ),
                 model_config=SignalAttrClassifierConfig(input_size=32, width=4, dropout=0.0),
                 threshold_policy=SignalAttrThresholdPolicy(base_color_min_confidence=0.60),
+                log_fn=logs.append,
             )
 
             best_checkpoint = output_root / "best_signal_attr.pt"
@@ -120,6 +124,38 @@ class SignalAttrClassifierTests(unittest.TestCase):
             self.assertEqual(checkpoint["model_type"], "SignalAttrCropClassifier")
             self.assertEqual(checkpoint["base_colors"], ["off", "red", "yellow", "green"])
             self.assertEqual(checkpoint["tl_bits"], ["red", "yellow", "green", "arrow"])
+            joined_logs = "\n".join(logs)
+            self.assertIn("[teacher:signal_attr] train start", joined_logs)
+            self.assertIn("[teacher:signal_attr] epoch 1/1 train start", joined_logs)
+            self.assertIn("wait=", joined_logs)
+            self.assertIn("compute=", joined_logs)
+            self.assertIn("\n", joined_logs)
+            self.assertIn("fwd=", joined_logs)
+            self.assertIn("bwd=", joined_logs)
+            self.assertIn("opt=", joined_logs)
+            self.assertIn("[teacher:signal_attr] train done", joined_logs)
+
+            loaded = load_signal_attr_classifier_checkpoint(best_checkpoint, device="cpu")
+            self.assertEqual(loaded["model_config"].input_size, 32)
+
+            eval_logs: list[str] = []
+            eval_summary = evaluate_signal_attr_checkpoint(
+                dataset_root,
+                best_checkpoint,
+                output_root / "eval",
+                split="val",
+                batch_size=2,
+                device="cpu",
+                num_workers=0,
+                log_fn=eval_logs.append,
+            )
+            self.assertEqual(eval_summary["sample_count"], 4)
+            self.assertEqual(set(eval_summary["bit_metrics"]), {"red", "yellow", "green", "arrow"})
+            self.assertTrue((output_root / "eval" / "signal_attr_eval_report.json").is_file())
+            self.assertTrue((output_root / "eval" / "signal_attr_predictions.jsonl").is_file())
+            joined_eval_logs = "\n".join(eval_logs)
+            self.assertIn("[teacher:signal_attr] eval start", joined_eval_logs)
+            self.assertIn("[teacher:signal_attr] eval done", joined_eval_logs)
 
 
 def _write_signal_attr_dataset(root: Path) -> None:

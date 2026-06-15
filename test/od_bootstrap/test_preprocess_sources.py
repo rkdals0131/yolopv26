@@ -339,9 +339,20 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
                 )
             }
 
+        def _fake_signal_attr_materialize(canonical_root: Path, output_root: Path, **kwargs):
+            captured["signal_attr_canonical_root"] = canonical_root
+            captured["signal_attr_output_root"] = output_root
+            captured["signal_attr_workers"] = kwargs.get("workers")
+            captured["signal_attr_log_fn"] = kwargs.get("log_fn")
+            return {"status": "ready", "accepted_count": 1, "rejected_count": 0}
+
         with (
             patch("tools.od_bootstrap.cli.prepare_od_bootstrap_sources") as mock_prepare,
             patch("tools.od_bootstrap.cli.build_teacher_datasets") as mock_build,
+            patch(
+                "tools.od_bootstrap.cli.materialize_aihub_signal_attr_crop_dataset_from_canonical_root",
+                side_effect=_fake_signal_attr_materialize,
+            ),
         ):
             mock_prepare.side_effect = _fake_prepare
             mock_build.side_effect = _fake_build
@@ -360,13 +371,18 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertEqual(build_call["debug_vis_count"], 20)
         self.assertEqual(build_call["debug_vis_seed"], 26)
         self.assertIsNotNone(build_call["log_fn"])
+        self.assertTrue(str(captured["signal_attr_canonical_root"]).endswith("/seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized"))
+        self.assertTrue(str(captured["signal_attr_output_root"]).endswith("/seg_dataset/pv26_od_bootstrap/teacher_datasets/signal_attr"))
+        self.assertEqual(captured["signal_attr_workers"], 8)
+        self.assertIsNotNone(captured["signal_attr_log_fn"])
 
     def test_signal_attr_dataset_entrypoint_uses_canonical_root(self) -> None:
-        captured: dict[str, Path] = {}
+        captured: dict[str, object] = {}
 
-        def _fake_materialize(canonical_root: Path, output_root: Path):
+        def _fake_materialize(canonical_root: Path, output_root: Path, **kwargs):
             captured["canonical_root"] = canonical_root
             captured["output_root"] = output_root
+            captured["log_fn"] = kwargs.get("log_fn")
             return {"status": "ready", "accepted_count": 1, "rejected_count": 0}
 
         with patch(
@@ -377,6 +393,118 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
 
         self.assertTrue(str(captured["canonical_root"]).endswith("/seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized"))
         self.assertTrue(str(captured["output_root"]).endswith("/seg_dataset/pv26_od_bootstrap/teacher_datasets/signal_attr"))
+        self.assertIsNotNone(captured["log_fn"])
+
+    def test_signal_attr_train_and_eval_entrypoints_use_default_roots(self) -> None:
+        train_calls: list[dict[str, object]] = []
+        eval_calls: list[dict[str, object]] = []
+
+        def _fake_train(dataset_root, output_root, *, train_config, model_config, threshold_policy=None, log_fn=None):
+            train_calls.append(
+                {
+                    "dataset_root": dataset_root,
+                    "output_root": output_root,
+                    "train_config": train_config,
+                    "model_config": model_config,
+                    "log_fn": log_fn,
+                }
+            )
+            return {"status": "ok"}
+
+        def _fake_eval(dataset_root, checkpoint_path, output_root, *, split, batch_size, device, num_workers, log_fn=None):
+            eval_calls.append(
+                {
+                    "dataset_root": dataset_root,
+                    "checkpoint_path": checkpoint_path,
+                    "output_root": output_root,
+                    "split": split,
+                    "log_fn": log_fn,
+                }
+            )
+            return {"status": "ok"}
+
+        with (
+            patch("tools.od_bootstrap.cli.train_signal_attr_classifier", side_effect=_fake_train),
+            patch("tools.od_bootstrap.cli.evaluate_signal_attr_checkpoint", side_effect=_fake_eval),
+        ):
+            od_bootstrap_main(
+                [
+                    "train",
+                    "--teacher",
+                    "signal_attr",
+                    "--epochs",
+                    "1",
+                    "--batch",
+                    "2",
+                    "--device",
+                    "cpu",
+                    "--num-workers",
+                    "0",
+                    "--no-pin-memory",
+                    "--no-persistent-workers",
+                    "--prefetch-factor",
+                    "2",
+                ]
+            )
+            od_bootstrap_main(["eval", "--teacher", "signal_attr", "--split", "val", "--batch", "2", "--device", "cpu", "--num-workers", "0"])
+            od_bootstrap_main(["train-signal-attr", "--epochs", "1", "--batch", "2", "--device", "cpu", "--num-workers", "0"])
+            od_bootstrap_main(["eval-signal-attr", "--split", "val", "--batch", "2", "--device", "cpu", "--num-workers", "0"])
+
+        self.assertEqual(len(train_calls), 2)
+        self.assertEqual(len(eval_calls), 2)
+        for index, call in enumerate(train_calls):
+            self.assertTrue(str(call["dataset_root"]).endswith("/seg_dataset/pv26_od_bootstrap/teacher_datasets/signal_attr"))
+            self.assertTrue(str(call["output_root"]).endswith("/runs/od_bootstrap/train/signal_attr"))
+            self.assertEqual(call["train_config"].epochs, 1)
+            self.assertEqual(call["train_config"].batch_size, 2)
+            if index == 0:
+                self.assertFalse(call["train_config"].pin_memory)
+                self.assertFalse(call["train_config"].persistent_workers)
+                self.assertEqual(call["train_config"].prefetch_factor, 2)
+            self.assertIsNotNone(call["log_fn"])
+        for call in eval_calls:
+            self.assertTrue(str(call["dataset_root"]).endswith("/seg_dataset/pv26_od_bootstrap/teacher_datasets/signal_attr"))
+            self.assertTrue(str(call["checkpoint_path"]).endswith("/runs/od_bootstrap/train/signal_attr/best_signal_attr.pt"))
+            self.assertTrue(str(call["output_root"]).endswith("/runs/od_bootstrap/eval/signal_attr"))
+            self.assertEqual(call["split"], "val")
+            self.assertIsNotNone(call["log_fn"])
+
+    def test_exhaustive_od_entrypoint_auto_discovers_signal_attr_sidecar(self) -> None:
+        captured_paths: list[Path | None] = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            train_root = root / "train"
+            eval_root = root / "eval"
+            checkpoint_path = train_root / "signal_attr" / "best_signal_attr.pt"
+            eval_report_path = eval_root / "signal_attr" / "signal_attr_eval_report.json"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            eval_report_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_bytes(b"checkpoint")
+            eval_report_path.write_text("{}\n", encoding="utf-8")
+
+            def _fake_run_sweep(scenario, *, scenario_path, signal_attr_checkpoint_path=None):
+                captured_paths.append(signal_attr_checkpoint_path)
+                return {"status": "ok"}
+
+            with (
+                patch("tools.od_bootstrap.cli.build_sweep_preset", return_value=SimpleNamespace(run=SimpleNamespace(output_root=root / "sweep"))),
+                patch("tools.od_bootstrap.cli.build_teacher_train_preset", return_value=SimpleNamespace(run=SimpleNamespace(output_root=train_root))),
+                patch("tools.od_bootstrap.cli.build_teacher_eval_preset", return_value=SimpleNamespace(run=SimpleNamespace(output_root=eval_root))),
+                patch("tools.od_bootstrap.cli.run_model_centric_sweep_scenario", side_effect=_fake_run_sweep),
+            ):
+                od_bootstrap_main(["build-exhaustive-od"])
+                od_bootstrap_main(["build-exhaustive-od", "--no-signal-attr-sidecar"])
+
+        self.assertEqual(captured_paths[0], checkpoint_path.resolve())
+        self.assertIsNone(captured_paths[1])
+
+    def test_calibration_entrypoint_passes_preset_scenario_path(self) -> None:
+        with patch("tools.od_bootstrap.cli.calibrate_class_policy_scenario") as mock_calibrate:
+            self.assertEqual(od_bootstrap_main(["calibrate"]), 0)
+
+        mock_calibrate.assert_called_once()
+        self.assertEqual(mock_calibrate.call_args.kwargs["scenario_path"], Path("preset_calibration"))
 
     @staticmethod
     def _make_image(path: Path, width: int, height: int, color: str) -> None:
