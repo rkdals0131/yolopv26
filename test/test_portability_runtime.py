@@ -167,8 +167,12 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
                 pv26_hyperparameters_config_path=root / "config" / "pv26.yaml",
             )
 
-            actions = _action_catalog(paths)
+        actions = _action_catalog(paths)
 
+        signal_attr_action = next(item for item in actions if item.key == "2A")
+        self.assertIn("Signal attr", signal_attr_action.label)
+        self.assertIn("build-signal-attr-dataset", signal_attr_action.command_display)
+        self.assertTrue(str(signal_attr_action.output_hint).endswith("/teacher_datasets/signal_attr"))
         stress_action = next(item for item in actions if item.key == "D")
         self.assertIn("interactive", stress_action.command_display)
         self.assertEqual(stress_action.argv, ())

@@ -361,6 +361,23 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertEqual(build_call["debug_vis_seed"], 26)
         self.assertIsNotNone(build_call["log_fn"])
 
+    def test_signal_attr_dataset_entrypoint_uses_canonical_root(self) -> None:
+        captured: dict[str, Path] = {}
+
+        def _fake_materialize(canonical_root: Path, output_root: Path):
+            captured["canonical_root"] = canonical_root
+            captured["output_root"] = output_root
+            return {"status": "ready", "accepted_count": 1, "rejected_count": 0}
+
+        with patch(
+            "tools.od_bootstrap.cli.materialize_aihub_signal_attr_crop_dataset_from_canonical_root",
+            side_effect=_fake_materialize,
+        ):
+            od_bootstrap_main(["build-signal-attr-dataset"])
+
+        self.assertTrue(str(captured["canonical_root"]).endswith("/seg_dataset/pv26_od_bootstrap/canonical/aihub_standardized"))
+        self.assertTrue(str(captured["output_root"]).endswith("/seg_dataset/pv26_od_bootstrap/teacher_datasets/signal_attr"))
+
     @staticmethod
     def _make_image(path: Path, width: int, height: int, color: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

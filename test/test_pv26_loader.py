@@ -136,6 +136,75 @@ class PV26LoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "scene source.split must match labels_scene split"):
                 PV26CanonicalDataset([root])
 
+    def test_loader_accepts_empty_det_file_for_detector_supervised_new_source(self) -> None:
+        from common.pv26_schema import LANE_VAL_ODPSEUDO_DATASET_KEY, OD_CLASSES
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "val" / "sample.png", 640, 480, "#202020")
+            _write_json(
+                root / "labels_scene" / "val" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {"dataset": LANE_VAL_ODPSEUDO_DATASET_KEY, "split": "val"},
+                    "tasks": {
+                        "has_det": 0,
+                        "has_lane": 0,
+                        "has_stop_line": 0,
+                        "has_crosswalk": 0,
+                        "has_tl_attr": 0,
+                    },
+                    "detections": [],
+                    "traffic_lights": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+            _write_text(root / "labels_det" / "val" / "sample.txt", "")
+
+            sample = PV26CanonicalDataset([root])[0]
+
+            self.assertTrue(sample["source_mask"]["det"])
+            self.assertFalse(sample["source_mask"]["tl_attr"])
+            self.assertEqual(sample["det_targets"]["boxes_xyxy"].shape, (0, 4))
+            self.assertEqual(sample["det_targets"]["classes"].shape, (0,))
+            self.assertEqual(sample["meta"]["det_supervised_classes"], list(OD_CLASSES))
+            self.assertFalse(sample["meta"]["det_allow_objectness_negatives"])
+            self.assertFalse(sample["meta"]["det_allow_unmatched_class_negatives"])
+
+    def test_loader_rejects_missing_det_file_for_detector_supervised_new_source(self) -> None:
+        from common.pv26_schema import LANE_VAL_ODPSEUDO_DATASET_KEY
+        from model.data.dataset import PV26CanonicalDataset
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _make_image(root / "images" / "val" / "sample.png", 640, 480, "#202020")
+            _write_json(
+                root / "labels_scene" / "val" / "sample.json",
+                {
+                    "image": {"file_name": "sample.png", "width": 640, "height": 480},
+                    "source": {"dataset": LANE_VAL_ODPSEUDO_DATASET_KEY, "split": "val"},
+                    "tasks": {
+                        "has_det": 0,
+                        "has_lane": 0,
+                        "has_stop_line": 0,
+                        "has_crosswalk": 0,
+                        "has_tl_attr": 0,
+                    },
+                    "detections": [],
+                    "traffic_lights": [],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+
+            dataset = PV26CanonicalDataset([root])
+            with self.assertRaisesRegex(FileNotFoundError, "det label file not found"):
+                dataset[0]
+
     def test_loader_revalidates_runtime_scene_record_identity(self) -> None:
         from model.data.dataset import PV26CanonicalDataset
 

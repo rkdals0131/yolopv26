@@ -18,6 +18,8 @@ AIHUB_LANE_DATASET_KEY = "aihub_lane_seoul"
 AIHUB_OBSTACLE_DATASET_KEY = "aihub_obstacle_seoul"
 AIHUB_TRAFFIC_DATASET_KEY = "aihub_traffic_seoul"
 BDD100K_DATASET_KEY = "bdd100k_det_100k"
+ETRI_KCITY_LEFTIMG_DATASET_KEY = "etri_kcity_multicamera_leftimg"
+LANE_VAL_ODPSEUDO_DATASET_KEY = "pv26_eval_lane_val_odpseudo_v1"
 
 EXHAUSTIVE_DATASET_KEY_BY_SOURCE = {
     BDD100K_DATASET_KEY: "pv26_exhaustive_bdd100k_det_100k",
@@ -75,6 +77,20 @@ SOURCE_MASK_BY_DATASET = {
         "stop_line": False,
         "crosswalk": False,
     },
+    ETRI_KCITY_LEFTIMG_DATASET_KEY: {
+        "det": True,
+        "tl_attr": False,
+        "lane": True,
+        "stop_line": True,
+        "crosswalk": True,
+    },
+    LANE_VAL_ODPSEUDO_DATASET_KEY: {
+        "det": True,
+        "tl_attr": False,
+        "lane": True,
+        "stop_line": True,
+        "crosswalk": True,
+    },
 }
 
 DET_SUPERVISION_BY_DATASET = {
@@ -112,5 +128,15 @@ DET_SUPERVISION_BY_DATASET = {
         "class_names": ("vehicle", "bike", "pedestrian"),
         "allow_objectness_negatives": False,
         "allow_unmatched_class_negatives": True,
+    },
+    ETRI_KCITY_LEFTIMG_DATASET_KEY: {
+        "class_names": OD_CLASSES,
+        "allow_objectness_negatives": False,
+        "allow_unmatched_class_negatives": False,
+    },
+    LANE_VAL_ODPSEUDO_DATASET_KEY: {
+        "class_names": OD_CLASSES,
+        "allow_objectness_negatives": False,
+        "allow_unmatched_class_negatives": False,
     },
 }

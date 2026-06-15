@@ -4,8 +4,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from common.pv26_schema import OD_CLASS_TO_ID, TL_BITS
+from common.pv26_schema import OD_CLASS_TO_ID, TL_BITS as _TL_BITS
 
+from ...signal_attr.aihub_policy import (
+    collapse_aihub_traffic_light_attr as _collapse_aihub_traffic_light_attr,
+    combo_name as _signal_attr_combo_name,
+)
 from .worker_common import StandardizeTask
 from ..shared.io import (
     link_or_copy as _link_or_copy,
@@ -42,46 +46,15 @@ bbox_to_yolo_line = _bbox_to_yolo_line
 build_base_scene = _base_scene
 sample_id = _sample_id
 counter_to_dict = _counter_to_dict
+TL_BITS = _TL_BITS
 
 
 def _tl_bits_from_annotation(annotation: dict[str, Any]) -> tuple[dict[str, int], int, str]:
-    bits = {bit: 0 for bit in TL_BITS}
-    light_type = normalize_text(annotation.get("type"))
-    if light_type != "car":
-        return bits, 0, "non_car_traffic_light"
-
-    raw_attribute = annotation.get("attribute")
-    candidate_items = raw_attribute if isinstance(raw_attribute, list) else [raw_attribute]
-    attribute_map: dict[str, str] | None = None
-    for item in candidate_items:
-        if isinstance(item, dict):
-            attribute_map = {str(key): str(value).strip().lower() for key, value in item.items()}
-            break
-    if attribute_map is None:
-        return bits, 0, "missing_attribute_map"
-
-    red_on = attribute_map.get("red") == "on"
-    yellow_on = attribute_map.get("yellow") == "on"
-    green_on = attribute_map.get("green") == "on"
-    arrow_on = attribute_map.get("left_arrow") == "on" or attribute_map.get("others_arrow") == "on"
-    x_light_on = attribute_map.get("x_light") == "on"
-
-    bits["red"] = int(red_on)
-    bits["yellow"] = int(yellow_on)
-    bits["green"] = int(green_on)
-    bits["arrow"] = int(arrow_on)
-
-    base_on_count = sum(int(flag) for flag in (red_on, yellow_on, green_on))
-    if x_light_on:
-        return bits, 0, "x_light_active"
-    if base_on_count > 1:
-        return bits, 0, "multi_color_active"
-    return bits, 1, "valid"
+    return _collapse_aihub_traffic_light_attr(annotation).as_traffic_worker_tuple()
 
 
 def combo_name(bits: dict[str, int]) -> str:
-    active = [key for key, value in bits.items() if value]
-    return "+".join(active) if active else "off"
+    return _signal_attr_combo_name(bits)
 
 
 def traffic_worker(task: StandardizeTask) -> dict[str, Any]:

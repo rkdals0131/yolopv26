@@ -10,7 +10,9 @@ import torch
 
 from common.pv26_schema import (
     DET_SUPERVISION_BY_DATASET,
+    ETRI_KCITY_LEFTIMG_DATASET_KEY,
     EXHAUSTIVE_DATASET_KEY_BY_SOURCE,
+    LANE_VAL_ODPSEUDO_DATASET_KEY,
     OD_CLASSES,
     SOURCE_MASK_BY_DATASET,
 )
@@ -116,16 +118,7 @@ class _ToyCanonicalDataset:
 
     @staticmethod
     def _det_supervised_classes(dataset_key: str) -> list[str]:
-        mapping = {
-            "pv26_exhaustive_bdd100k_det_100k": ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
-            "pv26_exhaustive_aihub_traffic_seoul": ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
-            "pv26_exhaustive_aihub_obstacle_seoul": ["vehicle", "bike", "pedestrian", "traffic_cone", "obstacle", "traffic_light", "sign"],
-            "bdd100k_det_100k": ["vehicle", "bike", "pedestrian"],
-            "aihub_traffic_seoul": ["traffic_light", "sign"],
-            "aihub_obstacle_seoul": ["traffic_cone", "obstacle"],
-            "aihub_lane_seoul": [],
-        }
-        return list(mapping[dataset_key])
+        return list(DET_SUPERVISION_BY_DATASET[dataset_key]["class_names"])
 
     @classmethod
     def _det_supervised_class_ids(cls, dataset_key: str) -> list[int]:
@@ -143,19 +136,25 @@ def _scene_flags(scene_path: Path) -> dict[str, bool]:
 
 class PV26BalancedSamplerTests(unittest.TestCase):
     def test_dataset_key_contracts_cover_loader_and_sampler_surfaces(self) -> None:
-        expected_keys = {
+        expected_loader_keys = {
             "bdd100k_det_100k",
             "aihub_traffic_seoul",
             "aihub_obstacle_seoul",
             "aihub_lane_seoul",
+            ETRI_KCITY_LEFTIMG_DATASET_KEY,
+            LANE_VAL_ODPSEUDO_DATASET_KEY,
             *EXHAUSTIVE_DATASET_KEY_BY_SOURCE.values(),
         }
+        expected_train_sampler_keys = expected_loader_keys - {
+            ETRI_KCITY_LEFTIMG_DATASET_KEY,
+            LANE_VAL_ODPSEUDO_DATASET_KEY,
+        }
 
-        self.assertEqual(set(SOURCE_MASK_BY_DATASET), expected_keys)
-        self.assertEqual(set(DET_SUPERVISION_BY_DATASET), expected_keys)
-        self.assertEqual(set(DATASET_GROUP_BY_KEY), expected_keys)
+        self.assertEqual(set(SOURCE_MASK_BY_DATASET), expected_loader_keys)
+        self.assertEqual(set(DET_SUPERVISION_BY_DATASET), expected_loader_keys)
+        self.assertEqual(set(DATASET_GROUP_BY_KEY), expected_train_sampler_keys)
 
-        for dataset_key in expected_keys:
+        for dataset_key in expected_loader_keys:
             source_mask = SOURCE_MASK_BY_DATASET[dataset_key]
             det_policy = DET_SUPERVISION_BY_DATASET[dataset_key]
             self.assertEqual(
@@ -166,6 +165,14 @@ class PV26BalancedSamplerTests(unittest.TestCase):
                 self.assertGreater(len(det_policy["class_names"]), 0, msg=dataset_key)
             else:
                 self.assertEqual(tuple(det_policy["class_names"]), (), msg=dataset_key)
+
+    def test_eval_and_dry_run_sources_are_not_train_sampler_groups(self) -> None:
+        self.assertNotIn(ETRI_KCITY_LEFTIMG_DATASET_KEY, DATASET_GROUP_BY_KEY)
+        self.assertNotIn(LANE_VAL_ODPSEUDO_DATASET_KEY, DATASET_GROUP_BY_KEY)
+        with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
+            dataset_group_for_key(ETRI_KCITY_LEFTIMG_DATASET_KEY)
+        with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
+            dataset_group_for_key(LANE_VAL_ODPSEUDO_DATASET_KEY)
 
     def test_dataset_group_mapping_is_stable(self) -> None:
         self.assertEqual(dataset_group_for_key("bdd100k_det_100k"), "bdd100k")

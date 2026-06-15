@@ -364,6 +364,10 @@ def _teacher_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
     )
 
 
+def _signal_attr_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
+    return _json_load_if_exists(dataset_root / "meta" / "signal_attr_dataset_manifest.json")
+
+
 def _exhaustive_summary(dataset_root: Path) -> dict[str, Any] | None:
     meta_root = dataset_root / "meta"
     return _compact_or_manifest(
@@ -642,6 +646,37 @@ def _build_teacher_rows(paths: PipelinePaths) -> tuple[tuple[StageRow, StageRow,
     flags.update(train_map)
     flags.update(eval_map)
     return rows, flags
+
+
+def _build_signal_attr_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
+    dataset_root = paths.teacher_dataset_root / "signal_attr"
+    summary = _signal_attr_dataset_summary(dataset_root)
+    if summary is not None:
+        accepted_count = _safe_int(summary.get("accepted_count"))
+        rejected_count = _safe_int(summary.get("rejected_count"))
+        status = str(summary.get("status") or "unknown")
+        input_format = str(summary.get("input_format") or "unknown")
+        current_state = (
+            f"status={status} | accepted={accepted_count} | rejected={rejected_count} | "
+            f"input={input_format}"
+        )
+        ready = status == "ready" and accepted_count > 0
+        verdict = "OK" if ready else "WARN"
+    else:
+        current_state = "없음"
+        ready = False
+        verdict = "TODO"
+    return (
+        StageRow(
+            stage="Signal attr crop dataset",
+            success_condition="canonical AIHUB traffic scene에서 TL attr crop dataset manifest가 생성",
+            current_state=current_state,
+            verdict=verdict,
+        ),
+        {
+            "signal_attr_dataset": ready,
+        },
+    )
 
 
 def _build_calibration_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
@@ -1171,6 +1206,10 @@ def scan_workspace_status(report: dict[str, Any], *, paths: PipelinePaths | None
     source_prep_row, source_prep_flags = _build_source_prep_row(resolved_paths, source_counts)
     rows.append(source_prep_row)
     flags.update(source_prep_flags)
+
+    signal_attr_dataset_row, signal_attr_dataset_flags = _build_signal_attr_dataset_row(resolved_paths)
+    rows.append(signal_attr_dataset_row)
+    flags.update(signal_attr_dataset_flags)
 
     teacher_rows, teacher_flags = _build_teacher_rows(resolved_paths)
     rows.extend(teacher_rows)

@@ -24,6 +24,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
     return (
         ActionSpec("1", "OD bootstrap 소스 준비", "python -m tools.od_bootstrap prepare-sources", (python_exe, "-m", "tools.od_bootstrap", "prepare-sources"), str(paths.bootstrap_root)),
         ActionSpec("2", "Teacher dataset 생성", "python -m tools.od_bootstrap build-teacher-datasets", (python_exe, "-m", "tools.od_bootstrap", "build-teacher-datasets"), str(paths.teacher_dataset_root)),
+        ActionSpec("2A", "Signal attr crop dataset 생성", "python -m tools.od_bootstrap build-signal-attr-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-signal-attr-dataset"), str(paths.teacher_dataset_root / "signal_attr")),
         ActionSpec("3", "Mobility teacher 학습", "python -m tools.od_bootstrap train --teacher mobility", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "mobility"), str(paths.teacher_train_root / "mobility")),
         ActionSpec("4", "Signal teacher 학습", "python -m tools.od_bootstrap train --teacher signal", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "signal"), str(paths.teacher_train_root / "signal")),
         ActionSpec("5", "Obstacle teacher 학습", "python -m tools.od_bootstrap train --teacher obstacle", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "obstacle"), str(paths.teacher_train_root / "obstacle")),
@@ -55,6 +56,9 @@ def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[st
     elif action.key == "2":
         if not flags.get("source_prep", False):
             blockers.append("source prep이 아직 준비되지 않았습니다.")
+    elif action.key == "2A":
+        if not flags.get("source_prep", False):
+            blockers.append("source prep canonical AIHUB traffic scene이 먼저 필요합니다.")
     elif action.key in {"3", "4", "5"}:
         teacher_name = {"3": "mobility", "4": "signal", "5": "obstacle"}[action.key]
         if not flags.get("runtime_core", False):

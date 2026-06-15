@@ -19,7 +19,7 @@
 | G1 maintained runtime smoke | next | `check_env`, train CLI smoke, export metadata tests를 현재 runtime surface 기준으로 통과시킨다. |
 | G2 export/TorchScript | next | current PV26 raw/dense head output names, metadata, roadmark trunk P2/P3/P4/P5 contract를 검증한다. |
 | G3 lane-family metric improvement | blocked on new signal | 기존 closed axis 반복 없이 lane/stop-line을 동시에 올릴 새 instance-quality/candidate contract가 필요하다. |
-| G4 source contract implementation | optional | ETRI, lane-val OD pseudo, signal attr teacher 중 하나를 고르면 source key/schema/manifest/loader/test를 함께 구현한다. |
+| G4 source contract implementation | active / parallel | Signal attr, lane-val OD pseudo, ETRI dry-run을 서로 다른 track으로 진행한다. 공통 source/manifest/loader/test contract만 공유한다. |
 | G5 ROS2 runtime check | after export candidate | latency, GPU memory, frame rate, output schema, overlay/sample replay를 확인한다. |
 
 ## 2. Do Not Repeat
@@ -62,6 +62,32 @@ Specifics:
 - ETRI KCity v1은 `leftImg` only다. `rightImg`, `MonoCamera`, LiDAR, fusion output은 제외한다.
 - `pv26_eval_lane_val_odpseudo_v1`은 eval-only다. train에 쓰지 않고 TL attr은 off다.
 - `best_signal_attr.pt`는 ROI crop 기반 sidecar teacher가 필요하다. `best_signal.pt`는 box teacher다.
+
+### 4A. Parallel Track Orchestration
+
+G4는 세 독립 project track으로 나눈다. 한 track의 artifact를 다른 track의 input으로 기다리지 않는다.
+
+| Track | 상태 | 첫 구현 범위 | 주요 파일 | 검증 |
+| --- | --- | --- | --- | --- |
+| A. `signal_attr` sidecar | ready | AIHUB traffic TL policy 추출, ROI crop dataset, crop classifier output adapter | `tools/od_bootstrap/signal_attr/`, `tools/od_bootstrap/source/aihub/traffic_worker.py`, `common/pv26_schema.py` | `test_signal_attr_label_extractor_matches_traffic_worker_policy`, `test_signal_attr_crop_rejects_empty_or_nonfinite_roi`, `test_signal_attr_model_outputs_canonical_tl_bits` |
+| B. lane-val OD pseudo eval | ready with source/loader guard | `pv26_eval_lane_val_odpseudo_v1` source registration, eval-only builder, rejected/accepted candidate manifest | `common/pv26_schema.py`, `tools/od_bootstrap/build/lane_val_odpseudo.py`, `model/engine/metrics.py` | `test_lane_val_odpseudo_preserves_base_val_sample_ids_and_count`, `test_lane_val_odpseudo_missing_checkpoint_fails_before_writing_ready_manifest`, `test_lane_val_odpseudo_disables_tl_attr_metrics_in_evaluator_report` |
+| C. ETRI KCity leftImg | dry-run ready only | `leftImg` raw scan, image/semantic-label pairing, raw class inventory, ignored vs excluded manifest | `tools/od_bootstrap/source/etri_kcity/`, `common/pv26_schema.py`, `test/od_bootstrap/test_etri_kcity_dry_run.py` | `test_etri_dry_run_includes_only_leftimg_paths`, `test_etri_dry_run_manifest_separates_raw_scan_ignored_from_candidate_excluded`, `test_etri_materialization_fails_release_on_zero_samples` |
+
+Shared rules:
+
+- Add any new loader source key to both `SOURCE_MASK_BY_DATASET` and `DET_SUPERVISION_BY_DATASET`.
+- Do not add eval-only or dry-run-only keys to `DATASET_GROUP_BY_KEY` until train usage is explicitly approved.
+- Keep `tasks.has_*` as positive-content flags. Put audit/materialization completion in manifests.
+- Empty `labels_det` means completed detector materialization with zero accepted boxes. Missing `labels_det` means failure.
+- `traffic_lights[].detection_id` must match final `labels_det` row order.
+- `best_signal.pt` remains a box teacher; `best_signal_attr.pt` is the only TL state sidecar.
+- Existing `pv26_exhaustive_*` source-key semantics must not be silently changed. Attr pseudo outputs need new `*_attrpseudo_v1` or `*_v2` keys.
+
+Immediate next work:
+
+1. Start Track A first: extract/reuse the traffic-light attribute policy and crop primitive, then build the crop dataset.
+2. Start Track B in parallel once source registration tests are written; use a dedicated eval-root builder instead of forcing `final_dataset.py`.
+3. Start Track C as dry-run only; do not create PV26 labels until raw semantic format and materialization policy are audited.
 
 ## 5. Export / ROS Gate
 

@@ -29,6 +29,7 @@ from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
 from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
 from tools.od_bootstrap.source.types import CanonicalSourceBundle
+from tools.od_bootstrap.signal_attr import materialize_aihub_signal_attr_crop_dataset_from_canonical_root
 from tools.od_bootstrap.presets import (
     build_calibration_preset,
     build_default_source_preset,
@@ -100,6 +101,19 @@ def _build_parser() -> argparse.ArgumentParser:
     teacher_datasets = subparsers.add_parser("build-teacher-datasets", help="Build teacher datasets.")
     _add_common_path_overrides(teacher_datasets)
     teacher_datasets.set_defaults(handler=_run_teacher_datasets)
+
+    signal_attr_dataset = subparsers.add_parser(
+        "build-signal-attr-dataset",
+        help="Build the TL attribute crop dataset from canonical AIHUB traffic scenes.",
+    )
+    signal_attr_dataset.add_argument(
+        "--canonical-root",
+        type=Path,
+        default=None,
+        help="Override canonical AIHUB standardized root.",
+    )
+    _add_common_path_overrides(signal_attr_dataset)
+    signal_attr_dataset.set_defaults(handler=_run_signal_attr_dataset)
 
     train = subparsers.add_parser("train", help="Train a teacher preset.")
     train.add_argument("--teacher", choices=("mobility", "signal", "obstacle"), default="mobility")
@@ -238,6 +252,26 @@ def _run_teacher_datasets(args: argparse.Namespace) -> int:
             for teacher_name, result in results.items()
         }
     )
+    return 0
+
+
+def _run_signal_attr_dataset(args: argparse.Namespace) -> int:
+    preset = build_teacher_dataset_preset()
+    canonical_root = (
+        Path(args.canonical_root).resolve()
+        if args.canonical_root is not None
+        else preset.canonical_root / "canonical" / "aihub_standardized"
+    )
+    output_root = (
+        _resolve_output_root(args, preset.output_root / "signal_attr")
+        if args.output_root is not None
+        else (preset.output_root / "signal_attr").resolve()
+    )
+    manifest = materialize_aihub_signal_attr_crop_dataset_from_canonical_root(
+        canonical_root,
+        output_root,
+    )
+    _print_json(manifest)
     return 0
 
 
