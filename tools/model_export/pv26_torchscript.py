@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import cv2
 import numpy as np
@@ -40,6 +40,125 @@ DEFAULT_LANE_TYPES = [
     "solid",
     "dotted",
 ]
+PV26_TORCHSCRIPT_OUTPUT_NAMES = [
+    "det",
+    "tl_attr",
+    "lane",
+    "stop_line",
+    "crosswalk",
+    "lane_seg_centerline_logits",
+    "lane_seg_support_logits",
+    "lane_seg_center_offset",
+    "lane_seg_anchor_offset",
+    "lane_seg_row_link_delta",
+    "lane_seg_tangent_axis",
+    "lane_seg_instance_embedding",
+    "lane_seg_color_logits",
+    "lane_seg_type_logits",
+    "lane_conditional_seed_logits",
+    "lane_conditional_rows",
+    "stop_line_mask_logits",
+    "stop_line_row_logits",
+    "stop_line_x_logits",
+    "stop_line_selector_map_logits",
+    "stop_line_center_logits",
+    "stop_line_midpoint_logits",
+    "stop_line_center_offset",
+    "stop_line_angle",
+    "stop_line_half_length",
+    "stop_line_haf_endpoint",
+    "stop_line_haf_valid_logits",
+    "stop_line_axis_distance",
+    "stop_line_axis_direction",
+    "stop_line_axis_valid_logits",
+    "stop_line_endpoint_logits",
+    "stop_line_endpoint_offset",
+    "stop_line_endpoint_pair_logits",
+    "stop_line_endpoint_pair_points",
+    "stop_line_endpoint_pair_verifier_logits",
+    "stop_line_segment_seed_logits",
+    "stop_line_segment_logits",
+    "stop_line_segment_points",
+    "stop_line_segment_verifier_logits",
+    "stop_line_context_segment_seed_logits",
+    "stop_line_context_segment_logits",
+    "stop_line_context_segment_points",
+    "stop_line_context_segment_verifier_logits",
+    "stop_line_axis_segment_seed_logits",
+    "stop_line_axis_segment_logits",
+    "stop_line_axis_segment_points",
+    "stop_line_axis_segment_verifier_logits",
+    "stop_line_patch_segment_seed_logits",
+    "stop_line_patch_segment_logits",
+    "stop_line_patch_segment_points",
+    "stop_line_patch_segment_verifier_logits",
+    "crosswalk_mask_logits",
+    "crosswalk_boundary_logits",
+    "crosswalk_center_logits",
+]
+PV26_LEGACY_RAW_OUTPUT_NAMES = [
+    "det",
+    "tl_attr",
+    "lane",
+    "stop_line",
+    "crosswalk",
+]
+PV26_TORCHSCRIPT_OUTPUT_FORMATS = {
+    "det": "ltrb_obj_cls_logits",
+    "tl_attr": "traffic_light_attribute_logits",
+    "lane": "score_lane_class_lane_type_anchor_row_x_visibility",
+    "stop_line": "score_polyline_4_points_xy",
+    "crosswalk": "score_contour_16_points_xy",
+    "lane_seg_centerline_logits": "lane_dense_centerline_logits",
+    "lane_seg_support_logits": "lane_dense_support_logits",
+    "lane_seg_center_offset": "lane_dense_center_offset_xy",
+    "lane_seg_anchor_offset": "lane_dense_anchor_x_offset",
+    "lane_seg_row_link_delta": "lane_dense_row_link_delta",
+    "lane_seg_tangent_axis": "lane_dense_tangent_axis_xy",
+    "lane_seg_instance_embedding": "lane_dense_instance_embedding",
+    "lane_seg_color_logits": "lane_dense_color_logits",
+    "lane_seg_type_logits": "lane_dense_type_logits",
+    "lane_conditional_seed_logits": "lane_conditional_seed_logits",
+    "lane_conditional_rows": "lane_conditional_rows",
+    "stop_line_mask_logits": "stop_line_dense_mask_logits",
+    "stop_line_row_logits": "stop_line_dense_row_logits",
+    "stop_line_x_logits": "stop_line_dense_x_logits",
+    "stop_line_selector_map_logits": "stop_line_dense_selector_map_logits",
+    "stop_line_center_logits": "stop_line_dense_center_logits",
+    "stop_line_midpoint_logits": "stop_line_dense_midpoint_logits",
+    "stop_line_center_offset": "stop_line_dense_center_offset_xy",
+    "stop_line_angle": "stop_line_dense_angle_unit_vector",
+    "stop_line_half_length": "stop_line_dense_half_length",
+    "stop_line_haf_endpoint": "stop_line_haf_endpoint",
+    "stop_line_haf_valid_logits": "stop_line_haf_valid_logits",
+    "stop_line_axis_distance": "stop_line_axis_distance",
+    "stop_line_axis_direction": "stop_line_axis_direction",
+    "stop_line_axis_valid_logits": "stop_line_axis_valid_logits",
+    "stop_line_endpoint_logits": "stop_line_endpoint_logits",
+    "stop_line_endpoint_offset": "stop_line_endpoint_offset",
+    "stop_line_endpoint_pair_logits": "stop_line_endpoint_pair_logits",
+    "stop_line_endpoint_pair_points": "stop_line_endpoint_pair_points",
+    "stop_line_endpoint_pair_verifier_logits": "stop_line_endpoint_pair_verifier_logits",
+    "stop_line_segment_seed_logits": "stop_line_segment_seed_logits",
+    "stop_line_segment_logits": "stop_line_segment_logits",
+    "stop_line_segment_points": "stop_line_segment_points",
+    "stop_line_segment_verifier_logits": "stop_line_segment_verifier_logits",
+    "stop_line_context_segment_seed_logits": "stop_line_context_segment_seed_logits",
+    "stop_line_context_segment_logits": "stop_line_context_segment_logits",
+    "stop_line_context_segment_points": "stop_line_context_segment_points",
+    "stop_line_context_segment_verifier_logits": "stop_line_context_segment_verifier_logits",
+    "stop_line_axis_segment_seed_logits": "stop_line_axis_segment_seed_logits",
+    "stop_line_axis_segment_logits": "stop_line_axis_segment_logits",
+    "stop_line_axis_segment_points": "stop_line_axis_segment_points",
+    "stop_line_axis_segment_verifier_logits": "stop_line_axis_segment_verifier_logits",
+    "stop_line_patch_segment_seed_logits": "stop_line_patch_segment_seed_logits",
+    "stop_line_patch_segment_logits": "stop_line_patch_segment_logits",
+    "stop_line_patch_segment_points": "stop_line_patch_segment_points",
+    "stop_line_patch_segment_verifier_logits": "stop_line_patch_segment_verifier_logits",
+    "crosswalk_mask_logits": "crosswalk_dense_mask_logits",
+    "crosswalk_boundary_logits": "crosswalk_dense_boundary_logits",
+    "crosswalk_center_logits": "crosswalk_dense_center_logits",
+}
 YOLO26_VARIANT_BY_HEAD_CHANNELS = {
     (64, 64, 128, 256): "n",
     (64, 128, 256): "n",
@@ -63,12 +182,14 @@ class Pv26TorchscriptExportWrapper(torch.nn.Module):
         trunk_layers: list[torch.nn.Module],
         feature_source_indices: tuple[int, ...],
         heads: torch.nn.Module,
+        output_names: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
         self.trunk_layers = torch.nn.ModuleList(trunk_layers)
         self.feature_source_indices = tuple(int(index) for index in feature_source_indices)
         self.max_feature_index = max(self.feature_source_indices)
         self.heads = heads
+        self.output_names = tuple(output_names or PV26_LEGACY_RAW_OUTPUT_NAMES)
 
     def _forward_pyramid_features(self, image: torch.Tensor) -> list[torch.Tensor]:
         outputs: list[torch.Tensor] = []
@@ -85,15 +206,9 @@ class Pv26TorchscriptExportWrapper(torch.nn.Module):
             outputs.append(current)
         return [outputs[index] for index in self.feature_source_indices]
 
-    def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, image: torch.Tensor) -> tuple[torch.Tensor, ...]:
         predictions = self.heads(self._forward_pyramid_features(image))
-        return (
-            predictions["det"],
-            predictions["tl_attr"],
-            predictions["lane"],
-            predictions["stop_line"],
-            predictions["crosswalk"],
-        )
+        return tuple(predictions[name] for name in self.output_names)
 
 
 def setup_pv26_imports(repo_root: Path) -> None:
@@ -198,6 +313,54 @@ def infer_head_channels(heads_state_dict: dict[str, Any]) -> tuple[int, int, int
     return (p2_channels, *det_channels)
 
 
+def infer_feature_channels_from_checkpoint(
+    checkpoint: dict[str, Any],
+    heads_state_dict: dict[str, Any],
+) -> tuple[int, int, int, int]:
+    metadata = checkpoint.get("checkpoint_metadata")
+    if isinstance(metadata, dict):
+        head_summary = metadata.get("head_summary")
+        if isinstance(head_summary, dict):
+            raw_channels = head_summary.get("feature_channels")
+            if isinstance(raw_channels, list) and len(raw_channels) == 4:
+                channels = tuple(int(value) for value in raw_channels)
+                if all(value > 0 for value in channels):
+                    return channels  # type: ignore[return-value]
+
+    det_channels = tuple(int(value) for value in infer_head_channels(heads_state_dict))
+    if len(det_channels) == 4:
+        return det_channels  # type: ignore[return-value]
+    if len(det_channels) == 3:
+        # Legacy checkpoints only expose detector P3/P4/P5 channels. Current
+        # roadmark trunks expose P2/P3/P4/P5, with P2 matching P3 for n/s variants.
+        return (int(det_channels[0]), *det_channels)
+    raise ValueError(f"unexpected detector channel contract: {det_channels}")
+
+
+def lane_head_mode_from_checkpoint(checkpoint: dict[str, Any]) -> str:
+    metadata = checkpoint.get("checkpoint_metadata")
+    if isinstance(metadata, dict):
+        head_summary = metadata.get("head_summary")
+        if isinstance(head_summary, dict):
+            roadmark = head_summary.get("roadmark")
+            if isinstance(roadmark, dict):
+                mode = roadmark.get("lane_head_mode")
+                if isinstance(mode, str) and mode.strip():
+                    return mode
+    return "seg_first"
+
+
+def select_torchscript_output_names(predictions: Mapping[str, Any]) -> tuple[str, ...]:
+    missing_legacy = [
+        name
+        for name in PV26_LEGACY_RAW_OUTPUT_NAMES
+        if not isinstance(predictions.get(name), torch.Tensor)
+    ]
+    if missing_legacy:
+        raise KeyError("PV26 export predictions missing required raw heads: " + ", ".join(missing_legacy))
+    return tuple(name for name in PV26_TORCHSCRIPT_OUTPUT_NAMES if isinstance(predictions.get(name), torch.Tensor))
+
+
 def letterbox_example_image(image_bgr: np.ndarray, *, input_height: int, input_width: int) -> torch.Tensor:
     orig_h, orig_w = image_bgr.shape[:2]
     if orig_h <= 0 or orig_w <= 0:
@@ -240,7 +403,14 @@ def build_example_input(
     return tensor.to(device), {"kind": "random", "seed": int(seed)}
 
 
-def tensor_report(name: str, eager: torch.Tensor, scripted: torch.Tensor, *, atol: float, rtol: float) -> ExportVerification:
+def tensor_report(
+    name: str,
+    eager: torch.Tensor,
+    scripted: torch.Tensor,
+    *,
+    atol: float,
+    rtol: float,
+) -> ExportVerification:
     return ExportVerification(
         name=name,
         shape=[int(v) for v in eager.shape],
@@ -315,6 +485,18 @@ def _validate_raw_head_metadata_shapes(
         raise ValueError("raw head metadata shape mismatch: " + "; ".join(violations))
 
 
+def _output_metadata(output_shapes: Mapping[str, list[int]]) -> dict[str, dict[str, Any]]:
+    outputs: dict[str, dict[str, Any]] = {}
+    for name in output_shapes:
+        shape = [int(value) for value in output_shapes[name]]
+        outputs[name] = {
+            "shape": ["batch"] + shape[1:],
+            "dtype": "float32",
+            "format": PV26_TORCHSCRIPT_OUTPUT_FORMATS.get(name, "raw_tensor"),
+        }
+    return outputs
+
+
 def export_metadata(
     *,
     checkpoint_path: Path,
@@ -336,6 +518,8 @@ def export_metadata(
     example_info: dict[str, Any],
     verification: list[ExportVerification],
     checkpoint_metadata: dict[str, Any] | None,
+    output_names: list[str] | tuple[str, ...] | None = None,
+    output_shapes: Mapping[str, list[int]] | None = None,
 ) -> dict[str, Any]:
     _validate_detector_feature_metadata(
         det_shape=det_shape,
@@ -348,6 +532,18 @@ def export_metadata(
         stop_line_shape=stop_line_shape,
         crosswalk_shape=crosswalk_shape,
     )
+    output_names = tuple(output_names or PV26_LEGACY_RAW_OUTPUT_NAMES)
+    if output_shapes is None:
+        output_shapes = {
+            "det": det_shape,
+            "tl_attr": tl_attr_shape,
+            "lane": lane_shape,
+            "stop_line": stop_line_shape,
+            "crosswalk": crosswalk_shape,
+        }
+    missing_output_shapes = [name for name in output_names if name not in output_shapes]
+    if missing_output_shapes:
+        raise ValueError("missing output shape metadata for: " + ", ".join(missing_output_shapes))
     return {
         "format_version": 2,
         "artifact_type": "pv26_torchscript_raw_heads",
@@ -355,6 +551,7 @@ def export_metadata(
         "source_checkpoint": str(checkpoint_path),
         "artifact_path": str(output_path),
         "trunk_weights": str(trunk_weights),
+        "output_names": list(output_names),
         "input": {
             "layout": "NCHW",
             "dtype": "float32",
@@ -364,33 +561,7 @@ def export_metadata(
             "width": int(input_width),
             "preprocess": "letterbox_bgr_to_rgb_normalize_01",
         },
-        "outputs": {
-            "det": {
-                "shape": ["batch"] + det_shape[1:],
-                "dtype": "float32",
-                "format": "ltrb_obj_cls_logits",
-            },
-            "tl_attr": {
-                "shape": ["batch"] + tl_attr_shape[1:],
-                "dtype": "float32",
-                "format": "traffic_light_attribute_logits",
-            },
-            "lane": {
-                "shape": ["batch"] + lane_shape[1:],
-                "dtype": "float32",
-                "format": "score_lane_class_lane_type_anchor_row_x_visibility",
-            },
-            "stop_line": {
-                "shape": ["batch"] + stop_line_shape[1:],
-                "dtype": "float32",
-                "format": "score_polyline_4_points_xy",
-            },
-            "crosswalk": {
-                "shape": ["batch"] + crosswalk_shape[1:],
-                "dtype": "float32",
-                "format": "score_contour_16_points_xy",
-            },
-        },
+        "outputs": _output_metadata({name: output_shapes[name] for name in output_names}),
         "od_classes": od_classes,
         "tl_bits": tl_bits,
         "lane_classes": lane_classes,
@@ -459,8 +630,10 @@ def export_pv26_torchscript(
     tl_bits = list(spec["model_contract"]["tl_bits"])
     lane_classes = list(spec["model_contract"].get("lane_classes", DEFAULT_LANE_CLASSES))
     lane_types = list(spec["model_contract"].get("lane_types", DEFAULT_LANE_TYPES))
-    head_channels = infer_head_channels(checkpoint["heads_state_dict"])
+    feature_channels = infer_feature_channels_from_checkpoint(checkpoint, checkpoint["heads_state_dict"])
+    head_channels = tuple(feature_channels[1:])
     checkpoint_variant = infer_backbone_variant_from_head_channels(head_channels)
+    lane_head_mode = lane_head_mode_from_checkpoint(checkpoint)
     resolved_trunk_weights = resolve_trunk_weights(
         repo_root,
         trunk_weights,
@@ -479,7 +652,7 @@ def export_pv26_torchscript(
         ) from exc
     adapter.raw_model = adapter.raw_model.to(device).eval()
 
-    heads = PV26Heads(in_channels=head_channels).to(device).eval()
+    heads = PV26Heads(in_channels=feature_channels, lane_head_mode=lane_head_mode).to(device).eval()
     heads.load_state_dict(checkpoint["heads_state_dict"])
 
     wrapper = Pv26TorchscriptExportWrapper(
@@ -498,7 +671,14 @@ def export_pv26_torchscript(
 
     with torch.no_grad():
         feature_maps = wrapper._forward_pyramid_features(example_input)
+        predictions = heads(feature_maps)
+        output_names = select_torchscript_output_names(predictions)
+        wrapper.output_names = output_names
         eager_out = wrapper(example_input)
+    output_shapes = {
+        name: [int(value) for value in tensor.shape]
+        for name, tensor in zip(output_names, eager_out)
+    }
 
     feature_shapes = [[int(feature.shape[-2]), int(feature.shape[-1])] for feature in feature_maps]
     if len(feature_shapes) != 4:
@@ -524,11 +704,8 @@ def export_pv26_torchscript(
         scripted_out = scripted(example_input)
 
     verification = [
-        tensor_report("det", eager_out[0], scripted_out[0], atol=atol, rtol=rtol),
-        tensor_report("tl_attr", eager_out[1], scripted_out[1], atol=atol, rtol=rtol),
-        tensor_report("lane", eager_out[2], scripted_out[2], atol=atol, rtol=rtol),
-        tensor_report("stop_line", eager_out[3], scripted_out[3], atol=atol, rtol=rtol),
-        tensor_report("crosswalk", eager_out[4], scripted_out[4], atol=atol, rtol=rtol),
+        tensor_report(name, eager_item, scripted_item, atol=atol, rtol=rtol)
+        for name, eager_item, scripted_item in zip(output_names, eager_out, scripted_out)
     ]
     failed = [item for item in verification if not item.allclose]
     if failed:
@@ -557,7 +734,13 @@ def export_pv26_torchscript(
         det_feature_strides=feature_strides,
         example_info=example_info,
         verification=verification,
-        checkpoint_metadata=checkpoint.get("checkpoint_metadata") if isinstance(checkpoint.get("checkpoint_metadata"), dict) else None,
+        checkpoint_metadata=(
+            checkpoint.get("checkpoint_metadata")
+            if isinstance(checkpoint.get("checkpoint_metadata"), dict)
+            else None
+        ),
+        output_names=output_names,
+        output_shapes=output_shapes,
     )
     with meta_path.open("w", encoding="utf-8") as fp:
         json.dump(meta, fp, indent=2)
@@ -568,8 +751,10 @@ def export_pv26_torchscript(
         "artifact_path": str(output_path),
         "meta_path": str(meta_path),
         "trunk_weights": str(resolved_trunk_weights),
+        "feature_channels": list(feature_channels),
         "head_channels": list(head_channels),
         "checkpoint_variant": checkpoint_variant,
+        "lane_head_mode": lane_head_mode,
         "verification": [
             {
                 "name": item.name,

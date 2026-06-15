@@ -107,12 +107,23 @@ def test_torchscript_export_wrapper_trace_matches_eager_outputs() -> None:
                 "lane": p5.amin(dim=(2, 3)).unsqueeze(1),
                 "stop_line": (p3 + p4).mean(dim=(2, 3)).unsqueeze(1),
                 "crosswalk": (p4 + p5).mean(dim=(2, 3)).unsqueeze(1),
+                "lane_seg_centerline_logits": p3[:, :1],
+                "crosswalk_mask_logits": p4[:, :1],
             }
 
     wrapper = pv26_exporter.Pv26TorchscriptExportWrapper(
         trunk_layers=[AddConstant(1.0), AddConstant(2.0), AddConstant(3.0)],
         feature_source_indices=(0, 1, 2),
         heads=ToyHeads(),
+        output_names=(
+            "det",
+            "tl_attr",
+            "lane",
+            "stop_line",
+            "crosswalk",
+            "lane_seg_centerline_logits",
+            "crosswalk_mask_logits",
+        ),
     ).eval()
     example_input = torch.rand((1, 3, 8, 10), dtype=torch.float32)
 
@@ -121,11 +132,48 @@ def test_torchscript_export_wrapper_trace_matches_eager_outputs() -> None:
     scripted = torch.jit.freeze(scripted.eval())
     scripted_outputs = scripted(example_input)
 
-    assert len(eager_outputs) == 5
-    assert len(scripted_outputs) == 5
+    assert len(eager_outputs) == 7
+    assert len(scripted_outputs) == 7
     for eager, scripted_tensor in zip(eager_outputs, scripted_outputs):
         assert eager.shape == scripted_tensor.shape
         assert torch.allclose(eager, scripted_tensor, atol=1.0e-6, rtol=1.0e-6)
+
+
+def test_select_torchscript_output_names_filters_to_available_tensors() -> None:
+    predictions = {
+        "det": torch.zeros((1, 1, 12)),
+        "tl_attr": torch.zeros((1, 1, 4)),
+        "lane": torch.zeros((1, 24, 38)),
+        "stop_line": torch.zeros((1, 8, 9)),
+        "crosswalk": torch.zeros((1, 8, 33)),
+        "lane_seg_centerline_logits": torch.zeros((1, 1, 2, 3)),
+        "lane_conditional_rows": torch.zeros((1, 24, 38)),
+        "det_feature_shapes": [(2, 3)],
+    }
+
+    output_names = pv26_exporter.select_torchscript_output_names(predictions)
+
+    assert output_names == (
+        "det",
+        "tl_attr",
+        "lane",
+        "stop_line",
+        "crosswalk",
+        "lane_seg_centerline_logits",
+        "lane_conditional_rows",
+    )
+
+
+def test_select_torchscript_output_names_requires_legacy_raw_heads() -> None:
+    predictions = {
+        "det": torch.zeros((1, 1, 12)),
+        "tl_attr": torch.zeros((1, 1, 4)),
+        "lane": torch.zeros((1, 24, 38)),
+        "stop_line": torch.zeros((1, 8, 9)),
+    }
+
+    with pytest.raises(KeyError, match="missing required raw heads: crosswalk"):
+        pv26_exporter.select_torchscript_output_names(predictions)
 
 
 def test_letterbox_example_image_rejects_invalid_image_shape() -> None:
@@ -201,10 +249,29 @@ def test_pv26_export_metadata_includes_crosswalk_and_checkpoint_metadata(tmp_pat
         example_info={"kind": "random"},
         verification=[],
         checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
+        output_names=(
+            "det",
+            "tl_attr",
+            "lane",
+            "stop_line",
+            "crosswalk",
+            "lane_seg_centerline_logits",
+        ),
+        output_shapes={
+            "det": [1, 9975, 12],
+            "tl_attr": [1, 9975, 4],
+            "lane": [1, 24, 38],
+            "stop_line": [1, 8, 9],
+            "crosswalk": [1, 8, 33],
+            "lane_seg_centerline_logits": [1, 1, 152, 200],
+        },
     )
 
+    assert metadata["output_names"][-1] == "lane_seg_centerline_logits"
     assert metadata["outputs"]["crosswalk"]["shape"] == ["batch", 8, 33]
     assert metadata["outputs"]["crosswalk"]["format"] == "score_contour_16_points_xy"
+    assert metadata["outputs"]["lane_seg_centerline_logits"]["shape"] == ["batch", 1, 152, 200]
+    assert metadata["outputs"]["lane_seg_centerline_logits"]["format"] == "lane_dense_centerline_logits"
     assert metadata["checkpoint_metadata"]["architecture_generation"] == "pv26-road-marking-v3"
 
 
