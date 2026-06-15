@@ -113,7 +113,6 @@
 - [x] `python3 -m unittest discover -s test -v`
 - [x] `python3 -m tools.od_bootstrap prepare-sources`
 - [x] `python3 -m tools.od_bootstrap build-teacher-datasets`
-- [x] `python3 -m unittest discover -s test -v`가 docs sync test까지 포함해 통과
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_target_encoder.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_yolo26_trunk.py' -v`
 - [x] `python3 -m unittest discover -s test -p 'test_pv26_heads.py' -v`

@@ -42,7 +42,7 @@ python3 tools/check_env.py --strict --check-yolo-runtime
 
 ### 0A. 원본 데이터셋 배치 확인
 
-- AIHUB와 BDD100K 원본 폴더 구조는 [docs/3A_RAW_DATASET_LAYOUTS.md](docs/3A_RAW_DATASET_LAYOUTS.md)를 기준으로 맞춘다.
+- AIHUB와 BDD100K 원본 폴더 구조는 [docs/legacy/3A_RAW_DATASET_LAYOUTS.md](docs/legacy/3A_RAW_DATASET_LAYOUTS.md)를 기준으로 맞춘다.
 - 기본 preset은 `seg_dataset/AIHUB`, `seg_dataset/BDD100K`를 가정한다.
 - 경로는 [config/user_paths.yaml](config/user_paths.yaml)에서 먼저 수정한다.
 - bootstrap 숫자 파라미터는 [config/od_bootstrap_hyperparameters.yaml](config/od_bootstrap_hyperparameters.yaml)에서 수정한다.
@@ -189,14 +189,16 @@ python3 tools/run_pv26_train.py --preset default
 
 - [docs/0_PRD.md](docs/0_PRD.md): 저장소 목표와 전체 범위
 - [docs/00A_CURRENT_STATUS.md](docs/00A_CURRENT_STATUS.md): 현재 상태 snapshot
-- [docs/00B_STATUS_HISTORY.md](docs/00B_STATUS_HISTORY.md): 실패/수정/결과 오답노트
 - [docs/00C_NEXT_GATES.md](docs/00C_NEXT_GATES.md): 다음 gate와 금지사항
-- [docs/10_CODEBASE_REFACTORING_MAP_AND_PLAN.md](docs/10_CODEBASE_REFACTORING_MAP_AND_PLAN.md): repo-wide 리팩토링 지도와 public/internal boundary
+- [docs/history/README.md](docs/history/README.md): 실패/수정/결과 오답노트 index
 - [docs/legacy/3_DATA_AND_STANDARDIZATION.md](docs/legacy/3_DATA_AND_STANDARDIZATION.md): 데이터 구조와 전처리 방향 원문
 - [docs/legacy/3A_RAW_DATASET_LAYOUTS.md](docs/legacy/3A_RAW_DATASET_LAYOUTS.md): 원본 데이터셋 배치와 로컬 레이아웃 원문
 - [docs/legacy/4_MODEL_ARCHITECTURE.md](docs/legacy/4_MODEL_ARCHITECTURE.md): 모델 구조 원문
 - [docs/5_TARGETS_AND_LOSS.md](docs/5_TARGETS_AND_LOSS.md): 타깃 인코딩과 loss 설계
 - [docs/6_TRAINING_AND_EVALUATION.md](docs/6_TRAINING_AND_EVALUATION.md): 학습/평가 정책
+- [docs/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](docs/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI KCity source 계약
+- [docs/19_LANE_VAL_OD_TEACHER_EVALSET.md](docs/19_LANE_VAL_OD_TEACHER_EVALSET.md): lane-val OD pseudo eval 계약
+- [docs/20_SIGNAL_ATTR_TEACHER_PLAN.md](docs/20_SIGNAL_ATTR_TEACHER_PLAN.md): traffic-light attr teacher 계약
 
 ## 실행 전 메모
 
