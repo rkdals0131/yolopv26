@@ -62,16 +62,21 @@ Maintained ownership checkpoints:
 - `pv26_exhaustive_bdd100k_det_100k`
 - `pv26_exhaustive_aihub_traffic_seoul`
 - `pv26_exhaustive_aihub_obstacle_seoul`
+- `pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1`
+- `pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1`
+- `pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1`
 - `aihub_traffic_seoul`
 - `aihub_obstacle_seoul`
 - `aihub_lane_seoul`
 - `bdd100k_det_100k`
+- `etri_kcity_multicamera_leftimg`
+- `pv26_eval_lane_val_odpseudo_v1`
 
-새 문서 `18`, `19`, `20`은 구현 완료가 아니라 계약 고정 문서다.
+구현 전 계약 문서였던 `18`, `19`, `20`은 source/teacher/runtime 구현이 들어온 뒤 legacy 원문으로 보존한다.
 
-- [18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI KCity `leftImg` 변환 계약. 아직 source key가 코드에 등록되지 않았다.
-- [19_LANE_VAL_OD_TEACHER_EVALSET.md](19_LANE_VAL_OD_TEACHER_EVALSET.md): lane validation + OD teacher pseudo eval root 계약. train source가 아니다.
-- [20_SIGNAL_ATTR_TEACHER_PLAN.md](20_SIGNAL_ATTR_TEACHER_PLAN.md): `best_signal.pt`는 box teacher이고, TL attr은 별도 `best_signal_attr.pt` sidecar가 필요하다는 경계.
+- [legacy/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](legacy/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI KCity `leftImg` 변환 계약 원문.
+- [legacy/19_LANE_VAL_OD_TEACHER_EVALSET.md](legacy/19_LANE_VAL_OD_TEACHER_EVALSET.md): lane validation + OD teacher pseudo eval root 계약 원문. train source가 아니다.
+- [legacy/20_SIGNAL_ATTR_TEACHER_PLAN.md](legacy/20_SIGNAL_ATTR_TEACHER_PLAN.md): `best_signal.pt`는 box teacher이고, TL attr은 별도 `best_signal_attr.pt` sidecar가 필요하다는 경계 원문.
 
 최종 dataset count checkpoint는 `seg_dataset/pv26_exhaustive_od_lane_dataset/meta/final_dataset_stats.json` 기준이다.
 
@@ -95,9 +100,6 @@ Maintained ownership checkpoints:
 - [5_TARGETS_AND_LOSS.md](5_TARGETS_AND_LOSS.md): target/loss/selection contract.
 - [6_TRAINING_AND_EVALUATION.md](6_TRAINING_AND_EVALUATION.md): stage schedule, sampler, eval 정책.
 - [8_TEST_PLAN_AND_CHECKLIST.md](8_TEST_PLAN_AND_CHECKLIST.md): 검증 기준.
-- [18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI source 계약.
-- [19_LANE_VAL_OD_TEACHER_EVALSET.md](19_LANE_VAL_OD_TEACHER_EVALSET.md): lane-val OD pseudo eval 계약.
-- [20_SIGNAL_ATTR_TEACHER_PLAN.md](20_SIGNAL_ATTR_TEACHER_PLAN.md): traffic-light attr teacher 계약.
 - [legacy/](legacy/): 긴 과거 설계 원문.
 
 ## 5. Operating Rules

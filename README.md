@@ -196,9 +196,9 @@ python3 tools/run_pv26_train.py --preset default
 - [docs/legacy/4_MODEL_ARCHITECTURE.md](docs/legacy/4_MODEL_ARCHITECTURE.md): 모델 구조 원문
 - [docs/5_TARGETS_AND_LOSS.md](docs/5_TARGETS_AND_LOSS.md): 타깃 인코딩과 loss 설계
 - [docs/6_TRAINING_AND_EVALUATION.md](docs/6_TRAINING_AND_EVALUATION.md): 학습/평가 정책
-- [docs/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](docs/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI KCity source 계약
-- [docs/19_LANE_VAL_OD_TEACHER_EVALSET.md](docs/19_LANE_VAL_OD_TEACHER_EVALSET.md): lane-val OD pseudo eval 계약
-- [docs/20_SIGNAL_ATTR_TEACHER_PLAN.md](docs/20_SIGNAL_ATTR_TEACHER_PLAN.md): traffic-light attr teacher 계약
+- [docs/legacy/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](docs/legacy/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI KCity source 계약 원문
+- [docs/legacy/19_LANE_VAL_OD_TEACHER_EVALSET.md](docs/legacy/19_LANE_VAL_OD_TEACHER_EVALSET.md): lane-val OD pseudo eval 계약 원문
+- [docs/legacy/20_SIGNAL_ATTR_TEACHER_PLAN.md](docs/legacy/20_SIGNAL_ATTR_TEACHER_PLAN.md): traffic-light attr teacher 계약 원문
 
 ## 실행 전 메모
 
