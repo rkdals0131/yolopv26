@@ -35,7 +35,7 @@ class TeacherJobManifestPayload(TypedDict):
     checkpoint_path: str
     classes: tuple[str, ...]
     image_count: int
-    predictions_path: str
+    predictions_path: str | None
     manifest_version: str
 
 
@@ -92,7 +92,7 @@ class TeacherJobManifest:
     checkpoint_path: str
     classes: tuple[str, ...]
     image_count: int
-    predictions_path: str
+    predictions_path: str | None
     manifest_version: str = JOB_MANIFEST_VERSION
 
     def to_dict(self) -> dict[str, object]:

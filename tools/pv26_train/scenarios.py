@@ -71,6 +71,8 @@ def build_meta_train_presets(
         accumulate_steps=1,
         grad_clip_norm=5.0,
         checkpoint_every=10,
+        save_last_checkpoint=True,
+        save_task_best_checkpoints=True,
         num_workers=6,
         pin_memory=True,
         log_every_n_steps=20,
@@ -202,9 +204,10 @@ def build_meta_train_presets(
         default_preview,
         max_samples_per_dataset=3,
         epoch_comparison_grid=True,
-        epoch_comparison_every_n_epochs=1,
+        epoch_comparison_every_n_epochs=5,
         epoch_comparison_sample_count=12,
         epoch_comparison_columns=3,
+        epoch_comparison_keep_tiles=False,
     )
     a100_phases = tuple(
         replace(phase_config, max_epochs=max(phase_config.max_epochs, 25), patience=max(phase_config.patience, 5))

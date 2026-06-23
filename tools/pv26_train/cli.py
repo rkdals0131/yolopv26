@@ -1192,6 +1192,8 @@ def _execute_phase(
         val_loader=val_loader,
         run_dir=phase_run_dir,
         checkpoint_every=phase_train_config.checkpoint_every,
+        save_last_checkpoint=phase_train_config.save_last_checkpoint,
+        save_task_best_checkpoints=phase_train_config.save_task_best_checkpoints,
         max_train_batches=train_config_api.resolve_train_batch_limit(phase_train_config.train_batches),
         max_val_batches=train_config_api.resolve_val_batch_limit(phase_train_config.val_batches),
         best_metric=phase_selection.metric_path,

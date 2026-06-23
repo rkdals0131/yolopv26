@@ -179,8 +179,9 @@ def eval_teacher_checkpoint(
 
     output_dir = scenario.run.output_root / scenario.teacher_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    predictions_path = output_dir / "predictions.jsonl"
-    write_jsonl(predictions_path, predict_rows)
+    predictions_path = output_dir / "predictions.jsonl" if scenario.eval.write_predictions_jsonl else None
+    if predictions_path is not None:
+        write_jsonl(predictions_path, predict_rows)
 
     summary = {
         "scenario_path": str(scenario_path),
@@ -190,7 +191,7 @@ def eval_teacher_checkpoint(
         "data_yaml_path": str(data_yaml_path),
         "prediction_summary": asdict(prediction_summary),
         "val_summary": val_summary,
-        "predictions_path": str(predictions_path),
+        "predictions_path": str(predictions_path) if predictions_path is not None else None,
         "eval": asdict(scenario.eval),
         "model": asdict(scenario.model),
         "run": asdict(scenario.run),

@@ -100,7 +100,9 @@ class TrainDefaultsConfig:
     grad_clip_norm: float = 5.0
     skip_non_finite_loss: bool = False
     oom_guard: bool = False
-    checkpoint_every: int = 1
+    checkpoint_every: int = 0
+    save_last_checkpoint: bool = False
+    save_task_best_checkpoints: bool = False
     num_workers: int = 6
     pin_memory: bool = True
     log_every_n_steps: int = 20
@@ -346,9 +348,10 @@ class PreviewConfig:
     max_samples_per_dataset: int = 1
     write_overlay: bool = True
     epoch_comparison_grid: bool = False
-    epoch_comparison_every_n_epochs: int = 1
+    epoch_comparison_every_n_epochs: int = 5
     epoch_comparison_sample_count: int = 12
     epoch_comparison_columns: int = 3
+    epoch_comparison_keep_tiles: bool = False
 
 
 @dataclass(frozen=True)
@@ -447,6 +450,7 @@ def scenario_to_mapping(scenario: MetaTrainScenario) -> dict[str, Any]:
             "epoch_comparison_every_n_epochs": scenario.preview.epoch_comparison_every_n_epochs,
             "epoch_comparison_sample_count": scenario.preview.epoch_comparison_sample_count,
             "epoch_comparison_columns": scenario.preview.epoch_comparison_columns,
+            "epoch_comparison_keep_tiles": scenario.preview.epoch_comparison_keep_tiles,
         },
         "phases": [phase_to_mapping(phase_config) for phase_config in scenario.phases],
     }
@@ -704,6 +708,14 @@ def train_defaults_from_mapping(payload: dict[str, Any]) -> TrainDefaultsConfig:
         checkpoint_every=_coerce_int(
             data.get("checkpoint_every", defaults.checkpoint_every),
             field_name="train_defaults.checkpoint_every",
+        ),
+        save_last_checkpoint=_coerce_bool(
+            data.get("save_last_checkpoint", defaults.save_last_checkpoint),
+            field_name="train_defaults.save_last_checkpoint",
+        ),
+        save_task_best_checkpoints=_coerce_bool(
+            data.get("save_task_best_checkpoints", defaults.save_task_best_checkpoints),
+            field_name="train_defaults.save_task_best_checkpoints",
         ),
         num_workers=_coerce_int(data.get("num_workers", defaults.num_workers), field_name="train_defaults.num_workers"),
         pin_memory=_coerce_bool(data.get("pin_memory", defaults.pin_memory), field_name="train_defaults.pin_memory"),
@@ -1821,7 +1833,7 @@ def preview_config_from_mapping(payload: dict[str, Any]) -> PreviewConfig:
             field_name="preview.epoch_comparison_grid",
         ),
         epoch_comparison_every_n_epochs=_coerce_int(
-            data.get("epoch_comparison_every_n_epochs", 1),
+            data.get("epoch_comparison_every_n_epochs", 5),
             field_name="preview.epoch_comparison_every_n_epochs",
         ),
         epoch_comparison_sample_count=_coerce_int(
@@ -1831,6 +1843,10 @@ def preview_config_from_mapping(payload: dict[str, Any]) -> PreviewConfig:
         epoch_comparison_columns=_coerce_int(
             data.get("epoch_comparison_columns", 3),
             field_name="preview.epoch_comparison_columns",
+        ),
+        epoch_comparison_keep_tiles=_coerce_bool(
+            data.get("epoch_comparison_keep_tiles", False),
+            field_name="preview.epoch_comparison_keep_tiles",
         ),
     )
 

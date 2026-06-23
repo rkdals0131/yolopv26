@@ -59,7 +59,7 @@ def _build_run_summary(
             "pcgrad_diagnostics": str(history_dir / "pcgrad_diagnostics.jsonl"),
         },
         "checkpoint_paths": {
-            "last": str(checkpoint_dir / "last.pt"),
+            "last": str(checkpoint_dir / "last.pt") if (checkpoint_dir / "last.pt").is_file() else None,
             "best": str(best_checkpoint_path) if best_checkpoint_path is not None else None,
             "task_best": {
                 task_name: str(payload["path"])
@@ -274,7 +274,9 @@ def run_fit(
     phase_name: str | None = None,
     val_loader: Any = None,
     run_dir: str | Path | None = None,
-    checkpoint_every: int = 1,
+    checkpoint_every: int = 0,
+    save_last_checkpoint: bool = False,
+    save_task_best_checkpoints: bool = False,
     max_train_batches: int | None = None,
     max_val_batches: int | None = None,
     best_metric: str | None = None,
@@ -347,7 +349,7 @@ def run_fit(
     best_metric_value: float | None = None
     best_epoch: int | None = None
     best_checkpoint_path: Path | None = None
-    task_best_state = _restore_task_best_state(output_dir, checkpoint_dir)
+    task_best_state = _restore_task_best_state(output_dir, checkpoint_dir) if save_task_best_checkpoints else {}
     run_started_at = time.perf_counter()
     run_started_at_iso = now_iso_fn()
     run_summary: dict[str, Any] = {}
@@ -503,11 +505,12 @@ def run_fit(
                     early_exit_state.setdefault("should_stop", True)
 
             trainer.epoch_history.append(epoch_summary)
-            last_checkpoint_path = trainer.save_checkpoint(
-                checkpoint_dir / "last.pt",
-                extra_state={"epoch": epoch, "metric_value": metric_value, "best_epoch": best_epoch},
-            )
-            epoch_summary["checkpoint_last"] = str(last_checkpoint_path)
+            if save_last_checkpoint:
+                last_checkpoint_path = trainer.save_checkpoint(
+                    checkpoint_dir / "last.pt",
+                    extra_state={"epoch": epoch, "metric_value": metric_value, "best_epoch": best_epoch},
+                )
+                epoch_summary["checkpoint_last"] = str(last_checkpoint_path)
             if checkpoint_every > 0 and epoch % checkpoint_every == 0:
                 epoch_checkpoint_path = trainer.save_checkpoint(
                     checkpoint_dir / f"epoch_{epoch:03d}.pt",
@@ -520,17 +523,18 @@ def run_fit(
                     extra_state={"epoch": epoch, "metric_value": metric_value, "best_epoch": best_epoch},
                 )
                 epoch_summary["checkpoint_best"] = str(best_checkpoint_path)
-            task_best_updates = _update_task_best_checkpoints(
-                trainer=trainer,
-                epoch=epoch,
-                epoch_summary=epoch_summary,
-                checkpoint_dir=checkpoint_dir,
-                task_best_state=task_best_state,
-                resolve_summary_path_fn=resolve_summary_path_fn,
-                is_better_fn=is_better_fn,
-            )
-            if task_best_updates:
-                epoch_summary["checkpoint_task_best"] = task_best_updates
+            if save_task_best_checkpoints:
+                task_best_updates = _update_task_best_checkpoints(
+                    trainer=trainer,
+                    epoch=epoch,
+                    epoch_summary=epoch_summary,
+                    checkpoint_dir=checkpoint_dir,
+                    task_best_state=task_best_state,
+                    resolve_summary_path_fn=resolve_summary_path_fn,
+                    is_better_fn=is_better_fn,
+                )
+                if task_best_updates:
+                    epoch_summary["checkpoint_task_best"] = task_best_updates
             if epoch_end_callback is not None:
                 epoch_end_callback(epoch_summary)
 

@@ -93,7 +93,7 @@ def _build_teacher_job_manifest(
     run_id: str,
     created_at: str,
     image_count: int,
-    predictions_path: Path,
+    predictions_path: Path | None,
 ) -> TeacherJobManifest:
     return TeacherJobManifest(
         run_id=run_id,
@@ -104,7 +104,7 @@ def _build_teacher_job_manifest(
         checkpoint_path=str(teacher.checkpoint_path),
         classes=teacher.classes,
         image_count=image_count,
-        predictions_path=str(predictions_path),
+        predictions_path=str(predictions_path) if predictions_path is not None else None,
     )
 
 
@@ -323,12 +323,17 @@ def run_model_centric_sweep_scenario(
         teacher_names=teacher_names,
     )
     write_run_manifest(run_dir, run_manifest)
-    write_image_list_snapshot(run_dir, entries)
+    if scenario.run.write_image_list_snapshot:
+        write_image_list_snapshot(run_dir, entries)
 
     predictions_by_sample_uid: dict[str, list[TeacherPredictionRow]] = {}
     teacher_jobs: list[TeacherJobManifestPayload] = []
     for teacher in scenario.teachers:
-        predictions_path = teacher_output_dir(run_dir, teacher.name) / "predictions.jsonl"
+        predictions_path = (
+            teacher_output_dir(run_dir, teacher.name) / "predictions.jsonl"
+            if scenario.run.write_teacher_predictions
+            else None
+        )
         job_manifest = _build_teacher_job_manifest(
             teacher=teacher,
             run_id=run_id,
@@ -339,7 +344,8 @@ def run_model_centric_sweep_scenario(
         write_teacher_job_manifest(run_dir, job_manifest)
         teacher_jobs.append(job_manifest.to_dict())
         teacher_rows = _run_teacher_inference(teacher=teacher, entries=entries, scenario=scenario)
-        write_teacher_predictions(run_dir, teacher.name, teacher_rows)
+        if predictions_path is not None:
+            write_teacher_predictions(run_dir, teacher.name, teacher_rows)
         for row in teacher_rows:
             predictions_by_sample_uid.setdefault(str(row["sample_uid"]), []).append(row)
         _log_bootstrap(f"teacher={teacher.name} predictions={len(teacher_rows)}")

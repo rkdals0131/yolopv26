@@ -597,6 +597,10 @@ def build_teacher_eval_preset(teacher_name: str) -> CheckpointEvalScenario:
                 eval_common.get("verbose", False),
                 field_name="od_bootstrap.teacher_eval.common.verbose",
             ),
+            write_predictions_jsonl=_coerce_bool(
+                eval_common.get("write_predictions_jsonl", False),
+                field_name="od_bootstrap.teacher_eval.common.write_predictions_jsonl",
+            ),
         ),
     )
 
@@ -720,6 +724,10 @@ def build_calibration_preset() -> CalibrationScenario:
             predict_iou=_coerce_float(
                 calibration_run.get("predict_iou", 0.99),
                 field_name="od_bootstrap.calibration.run.predict_iou",
+            ),
+            write_predictions_jsonl=_coerce_bool(
+                calibration_run.get("write_predictions_jsonl", False),
+                field_name="od_bootstrap.calibration.run.write_predictions_jsonl",
             ),
         ),
         search=CalibrationSearchConfig(
@@ -900,6 +908,14 @@ def build_sweep_preset(*, allow_default_class_policy: bool = False) -> Bootstrap
             predict_iou=_coerce_float(
                 exhaustive_run.get("predict_iou", 0.99),
                 field_name="od_bootstrap.exhaustive_od.run.predict_iou",
+            ),
+            write_image_list_snapshot=_coerce_bool(
+                exhaustive_run.get("write_image_list_snapshot", False),
+                field_name="od_bootstrap.exhaustive_od.run.write_image_list_snapshot",
+            ),
+            write_teacher_predictions=_coerce_bool(
+                exhaustive_run.get("write_teacher_predictions", False),
+                field_name="od_bootstrap.exhaustive_od.run.write_teacher_predictions",
             ),
         ),
         image_list=ImageListConfig(manifest_path=bootstrap_image_list_manifest),

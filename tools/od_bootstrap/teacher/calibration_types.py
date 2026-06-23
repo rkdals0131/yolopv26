@@ -14,6 +14,7 @@ class CalibrationRunConfig:
     batch_size: int = 8
     predict_conf: float = 0.001
     predict_iou: float = 0.99
+    write_predictions_jsonl: bool = False
 
 
 @dataclass(frozen=True)

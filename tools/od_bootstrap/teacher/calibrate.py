@@ -550,7 +550,7 @@ def _prepare_teacher_calibration_inputs(
     for teacher in scenario.teachers:
         teacher_dir = output_root / "teachers" / teacher.name
         teacher_dir.mkdir(parents=True, exist_ok=True)
-        predictions_path = teacher_dir / "predictions.jsonl"
+        predictions_path = teacher_dir / "predictions.jsonl" if scenario.run.write_predictions_jsonl else None
         resolved_imgsz = int(teacher.imgsz) if teacher.imgsz is not None else int(scenario.run.imgsz)
         _log_calibration(f"teacher={teacher.name} calibration start checkpoint={teacher.checkpoint_path}")
         prediction_count, samples = _run_teacher_predictions_for_images(
@@ -576,7 +576,7 @@ def _prepare_teacher_calibration_inputs(
             "split": teacher.dataset.split,
             "sample_count": len(samples),
             "prediction_count": int(prediction_count),
-            "predictions_path": str(predictions_path),
+            "predictions_path": str(predictions_path) if predictions_path is not None else None,
             "resolved_runtime": {
                 "imgsz": resolved_imgsz,
                 "batch_size": int(scenario.run.batch_size),

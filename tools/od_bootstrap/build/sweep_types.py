@@ -19,6 +19,8 @@ class RunConfig:
     profile_window: int = 20
     predict_conf: float = 0.001
     predict_iou: float = 0.99
+    write_image_list_snapshot: bool = False
+    write_teacher_predictions: bool = False
 
 
 @dataclass(frozen=True)

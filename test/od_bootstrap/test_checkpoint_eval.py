@@ -79,7 +79,7 @@ class CheckpointEvalTests(unittest.TestCase):
             (Path(__file__).resolve().parents[2] / "runs" / "od_bootstrap" / "train" / "mobility" / "weights" / "best.pt").resolve(),
         )
 
-    def test_eval_teacher_checkpoint_writes_summary_and_predictions(self) -> None:
+    def test_eval_teacher_checkpoint_writes_summary_without_prediction_jsonl_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_root = root / "teacher_source"
@@ -110,7 +110,7 @@ class CheckpointEvalTests(unittest.TestCase):
             self.assertEqual(summary["prediction_summary"]["class_counts"]["vehicle"], 2)
             self.assertAlmostEqual(summary["prediction_summary"]["confidence"]["max"], 0.91, places=6)
             self.assertIn("box.map50", summary["val_summary"]["results_dict"])
-            self.assertTrue(Path(summary["predictions_path"]).is_file())
+            self.assertIsNone(summary["predictions_path"])
             self.assertEqual(summary["dataset_root"], str(source_root.resolve()))
             self.assertEqual(summary["resolved_runtime"]["imgsz"], scenario.eval.imgsz)
             self.assertEqual(summary["resolved_runtime"]["batch"], scenario.eval.batch)
@@ -119,10 +119,4 @@ class CheckpointEvalTests(unittest.TestCase):
             self.assertTrue(summary_path.is_file())
             expected_summary = json.loads(json.dumps(summary, default=str))
             self.assertEqual(json.loads(summary_path.read_text(encoding="utf-8")), expected_summary)
-            prediction_rows = [
-                json.loads(line)
-                for line in Path(summary["predictions_path"]).read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            self.assertEqual(len(prediction_rows), 3)
-            self.assertEqual(prediction_rows[0]["class_name"], "vehicle")
+            self.assertFalse((root / "runs" / "mobility" / "predictions.jsonl").exists())

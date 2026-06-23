@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import shutil
 from typing import Any, Callable
 
 try:
@@ -205,6 +206,7 @@ def build_epoch_comparison_grid_callback(
     every_n_epochs = max(1, int(preview_config.epoch_comparison_every_n_epochs))
     sample_count = max(1, int(preview_config.epoch_comparison_sample_count))
     columns = max(1, int(preview_config.epoch_comparison_columns))
+    keep_tiles = bool(preview_config.epoch_comparison_keep_tiles)
     fixed_samples = list(preview_samples[:sample_count])
     output_root = phase_dir / "epoch_comparison_grids"
     _write_json(
@@ -216,6 +218,7 @@ def build_epoch_comparison_grid_callback(
             "every_n_epochs": every_n_epochs,
             "sample_count": len(fixed_samples),
             "columns": columns,
+            "keep_tiles": keep_tiles,
             "split": preview_config.split,
             "sample_ids": [str(sample["meta"].get("sample_id")) for sample in fixed_samples],
         },
@@ -253,12 +256,23 @@ def build_epoch_comparison_grid_callback(
                         "sample_id": sample_id,
                         "dataset_key": str(sample_meta.get("dataset_key")),
                         "image_path": str(sample_meta.get("image_path")),
-                        "comparison_path": str(tile_path),
+                        "comparison_path": str(tile_path) if keep_tiles else None,
                     }
                 )
             grid_path = epoch_dir / "comparison_grid.png"
             _compose_grid(tile_paths, columns=columns, output_path=grid_path)
-            _write_json(epoch_dir / "summary.json", {"epoch": epoch, "grid_path": str(grid_path), "samples": entries})
+            if not keep_tiles:
+                for sample_dir in sorted({path.parent for path in tile_paths}):
+                    shutil.rmtree(sample_dir, ignore_errors=True)
+            _write_json(
+                epoch_dir / "summary.json",
+                {
+                    "epoch": epoch,
+                    "grid_path": str(grid_path),
+                    "tiles_retained": keep_tiles,
+                    "samples": entries,
+                },
+            )
             epoch_summary.setdefault("artifacts", {})["epoch_comparison_grid"] = str(grid_path)
             log_fn(f"epoch comparison grid saved epoch={epoch} path={grid_path} samples={len(entries)}")
         except Exception as exc:  # pragma: no cover - visualization must not kill training.

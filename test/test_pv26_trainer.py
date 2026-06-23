@@ -1263,9 +1263,10 @@ class PV26TrainerTests(unittest.TestCase):
             self.assertEqual(len(trainer.epoch_history), 1)
             self.assertTrue((run_dir / "history" / "train_steps.jsonl").is_file())
             self.assertTrue((run_dir / "history" / "epochs.jsonl").is_file())
-            self.assertTrue((run_dir / "checkpoints" / "last.pt").is_file())
             self.assertTrue((run_dir / "checkpoints" / "best.pt").is_file())
-            self.assertTrue((run_dir / "checkpoints" / "epoch_001.pt").is_file())
+            self.assertFalse((run_dir / "checkpoints" / "last.pt").exists())
+            self.assertFalse((run_dir / "checkpoints" / "epoch_001.pt").exists())
+            self.assertFalse((run_dir / "checkpoints" / "best_lane.pt").exists())
             self.assertTrue((run_dir / "summary.json").is_file())
             self.assertTrue((run_dir / "run_manifest.json").is_file())
 
@@ -2132,11 +2133,11 @@ class PV26TrainerTests(unittest.TestCase):
             run_dir = Path(temp_dir) / "resume_fit"
 
             trainer = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
-            first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir)
+            first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, save_last_checkpoint=True)
             self.assertEqual(first["completed_epochs"], 1)
 
             resumed = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
-            second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True)
+            second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True, save_last_checkpoint=True)
 
             self.assertTrue(second["auto_resumed"])
             self.assertEqual(second["resume_start_epoch"], 2)
@@ -2167,10 +2168,10 @@ class PV26TrainerTests(unittest.TestCase):
             run_dir = Path(temp_dir) / "resume_fit_tb"
             with mock.patch.object(trainer_io, "_maybe_build_summary_writer", side_effect=_fake_build_summary_writer):
                 trainer = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
-                first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, enable_tensorboard=True)
+                first = trainer.fit([batch], epochs=1, val_loader=None, run_dir=run_dir, enable_tensorboard=True, save_last_checkpoint=True)
 
                 resumed = PV26Trainer(_build_yolo26n_roadmark_trunk(), _make_pv26_heads_for_trainer_tests(), stage="stage_1_frozen_trunk_warmup")
-                second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True, enable_tensorboard=True)
+                second = resumed.fit([batch], epochs=2, val_loader=None, run_dir=run_dir, auto_resume=True, enable_tensorboard=True, save_last_checkpoint=True)
 
         self.assertEqual(first["completed_epochs"], 1)
         self.assertEqual(second["completed_epochs"], 2)

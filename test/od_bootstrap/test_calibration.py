@@ -267,19 +267,12 @@ class ODBootstrapCalibrationTests(unittest.TestCase):
             self.assertTrue(report["classes"]["vehicle"]["meets_precision_floor"])
             self.assertAlmostEqual(report["classes"]["vehicle"]["metrics"]["precision"], 1.0, places=6)
             predictions_path = Path(summary["output_root"]) / "teachers" / "mobility" / "predictions.jsonl"
-            self.assertTrue(predictions_path.is_file())
-            prediction_rows = [
-                json.loads(line)
-                for line in predictions_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            self.assertEqual(len(prediction_rows), 3)
-            self.assertEqual(prediction_rows[0]["teacher_name"], "mobility")
-            self.assertEqual(prediction_rows[0]["class_name"], "vehicle")
+            self.assertFalse(predictions_path.exists())
             teacher_summary = json.loads(
                 (Path(summary["output_root"]) / "teachers" / "mobility" / "summary.json").read_text(encoding="utf-8")
             )
             self.assertEqual(teacher_summary["prediction_count"], 3)
+            self.assertIsNone(teacher_summary["predictions_path"])
             self.assertTrue(Path(summary["hard_negative_manifest_path"]).is_file())
             self.assertEqual(summary["teachers"][0]["resolved_runtime"]["imgsz"], 960)
 

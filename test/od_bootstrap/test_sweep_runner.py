@@ -601,20 +601,13 @@ class ODBootstrapRunnerTests(unittest.TestCase):
             self.assertEqual(summary["class_policy_source"], "calibration")
             self.assertEqual([row["teacher_name"] for row in summary["teacher_jobs"]], ["mobility", "signal", "obstacle"])
             self.assertEqual(summary["teacher_jobs"][0]["manifest_version"], JOB_MANIFEST_VERSION)
-            self.assertEqual(
-                summary["teacher_jobs"][0]["predictions_path"],
-                str(run_dir / "teachers" / "mobility" / "predictions.jsonl"),
-            )
+            self.assertIsNone(summary["teacher_jobs"][0]["predictions_path"])
             self.assertTrue((run_dir / "manifest.json").is_file())
-            self.assertTrue((run_dir / "image_list.jsonl").is_file())
+            self.assertFalse((run_dir / "image_list.jsonl").exists())
             self.assertTrue((run_dir / "teachers" / "mobility" / "job_manifest.json").is_file())
             self.assertTrue((run_dir / "teachers" / "signal" / "job_manifest.json").is_file())
             self.assertTrue((run_dir / "teachers" / "obstacle" / "job_manifest.json").is_file())
-            self.assertTrue((run_dir / "teachers" / "mobility" / "predictions.jsonl").is_file())
-
-            snapshot_lines = (run_dir / "image_list.jsonl").read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(snapshot_lines), 2)
-            self.assertIn("sample_uid", snapshot_lines[0])
+            self.assertFalse((run_dir / "teachers" / "mobility" / "predictions.jsonl").exists())
             materialized_root = Path(summary["materialization"]["dataset_root"])
             materialization_summary = json.loads(
                 (materialized_root / "meta" / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME).read_text(encoding="utf-8")

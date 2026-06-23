@@ -67,7 +67,7 @@ class PV26PreparedDatasetE2ETests(unittest.TestCase):
             self.assertTrue(Path(phase_summary["summary_path"]).is_file())
             self.assertTrue(Path(phase_summary["run_manifest_path"]).is_file())
             self.assertTrue(Path(phase_summary["best_checkpoint_path"]).is_file())
-            self.assertTrue(Path(phase_summary["last_checkpoint_path"]).is_file())
+            self.assertIsNone(phase_summary["last_checkpoint_path"])
 
             run_summary = phase_summary["run_summary"]
             self.assertEqual(run_summary["completed_epochs"], 1)

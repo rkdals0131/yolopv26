@@ -36,6 +36,7 @@ class CheckpointEvalParams:
     val: bool = True
     save_conf: bool = False
     verbose: bool = False
+    write_predictions_jsonl: bool = False
 
 
 @dataclass(frozen=True)
