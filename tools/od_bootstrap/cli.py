@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from common.io import read_json
+from tools.od_bootstrap.build.lane_val_odpseudo import (
+    DEFAULT_EXPECTED_BASE_VAL_COUNT,
+    DEFAULT_MAX_REJECTED_CANDIDATES_PER_SAMPLE,
+    VARIANTS_BY_NAME as LANE_VAL_ODPSEUDO_VARIANTS_BY_NAME,
+    build_lane_val_odpseudo_eval_root,
+    resolve_lane_val_odpseudo_variant,
+    run_lane_val_odpseudo_teacher_sample_results,
+)
 from tools.od_bootstrap.build.debug_vis import (
     DEFAULT_DEBUG_VIS_COUNT,
     DEFAULT_DEBUG_VIS_SEED,
@@ -32,6 +40,7 @@ from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
 from tools.od_bootstrap.source.types import CanonicalSourceBundle
 from tools.od_bootstrap.signal_attr import (
     SignalAttrClassifierConfig,
+    SignalAttrSidecarTeacher,
     SignalAttrTrainConfig,
     evaluate_signal_attr_checkpoint,
     materialize_aihub_signal_attr_crop_dataset_from_canonical_root,
@@ -48,7 +57,7 @@ from tools.od_bootstrap.presets import (
 )
 from tools.od_bootstrap.teacher.calibrate import calibrate_class_policy_scenario
 from tools.od_bootstrap.teacher.eval import eval_teacher_checkpoint
-from tools.od_bootstrap.teacher.registry import teacher_choices, teacher_definition
+from tools.od_bootstrap.teacher.registry import teacher_checkpoint_path, teacher_choices, teacher_definition
 from tools.od_bootstrap.teacher.train import run_teacher_train_scenario
 
 
@@ -254,6 +263,101 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_common_path_overrides(exhaustive_od)
     exhaustive_od.set_defaults(handler=_run_exhaustive_od)
+
+    lane_val_odpseudo = subparsers.add_parser(
+        "build-lane-val-odpseudo",
+        help="Materialize the lane validation OD pseudo eval root from teacher/audit sample results.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--variant",
+        choices=tuple(LANE_VAL_ODPSEUDO_VARIANTS_BY_NAME),
+        default="v1",
+        help="Eval-root contract variant to materialize.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--base-lane-root",
+        type=Path,
+        default=None,
+        help="Override canonical AIHUB standardized lane root.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--sample-results",
+        type=Path,
+        default=None,
+        help="JSON/JSONL sample results from the OD teacher/audit pass. Defaults to output_root/meta/sample_results.jsonl.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--generate-sample-results",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Generate missing sample_results.jsonl by running OD teachers over the lane-val set.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--overwrite-sample-results",
+        action="store_true",
+        help="Regenerate sample_results.jsonl even when it already exists.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--allow-default-class-policy",
+        action="store_true",
+        help="Allow OD teacher sweep to use default class policy when calibration class_policy.yaml is absent.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--expected-base-count",
+        type=int,
+        default=None,
+        help=f"Expected base val sample count. Default: {DEFAULT_EXPECTED_BASE_VAL_COUNT}.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--signal-attr-checkpoint",
+        type=Path,
+        default=None,
+        help="attr_v2 only: override the best_signal_attr.pt sidecar checkpoint.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device for OD teacher sweep and attr_v2 signal_attr sidecar. Defaults to the sweep preset.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--batch",
+        type=int,
+        default=None,
+        help="Override OD teacher sweep batch size.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--imgsz",
+        type=int,
+        default=None,
+        help="Override OD teacher sweep image size.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--predict-conf",
+        type=float,
+        default=None,
+        help="Override OD teacher sweep raw prediction confidence floor.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--predict-iou",
+        type=float,
+        default=None,
+        help="Override OD teacher sweep raw prediction IoU setting.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--max-rejected-candidates-per-sample",
+        type=int,
+        default=DEFAULT_MAX_REJECTED_CANDIDATES_PER_SAMPLE,
+        help=f"Maximum rejected candidate audit rows to emit per sample. Default: {DEFAULT_MAX_REJECTED_CANDIDATES_PER_SAMPLE}.",
+    )
+    lane_val_odpseudo.add_argument(
+        "--copy-images",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Copy images instead of the default hardlink-with-copy-fallback behavior.",
+    )
+    _add_common_path_overrides(lane_val_odpseudo)
+    lane_val_odpseudo.set_defaults(handler=_run_lane_val_odpseudo)
 
     finalize = subparsers.add_parser("build-final-dataset", help="Build the final exhaustive OD lane dataset.")
     _add_common_path_overrides(finalize)
@@ -565,6 +669,121 @@ def _resolve_signal_attr_sidecar_checkpoint(args: argparse.Namespace) -> Path | 
     if default_checkpoint.is_file() and default_eval_report.is_file():
         return default_checkpoint
     return None
+
+
+def _load_lane_val_sample_results(path: Path) -> list[dict[str, Any]] | dict[str, dict[str, Any]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"lane-val OD pseudo sample results not found: {path}")
+    if path.suffix.lower() == ".jsonl":
+        rows: list[dict[str, Any]] = []
+        for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise TypeError(f"sample results row must be an object: {path}:{line_number}")
+            rows.append(payload)
+        return rows
+    payload = read_json(path)
+    if isinstance(payload.get("sample_results"), list):
+        return [dict(item) for item in payload["sample_results"]]
+    if isinstance(payload.get("sample_results"), dict):
+        return {str(key): dict(value) for key, value in payload["sample_results"].items()}
+    if isinstance(payload.get("samples"), list):
+        return [dict(item) for item in payload["samples"]]
+    return {str(key): dict(value) for key, value in payload.items()}
+
+
+def _lane_val_teacher_checkpoints() -> dict[str, Path]:
+    train_root = build_teacher_train_preset("signal").run.output_root
+    return {
+        teacher_name: teacher_checkpoint_path(train_root, teacher_name)
+        for teacher_name in ("mobility", "signal", "obstacle")
+    }
+
+
+def _run_lane_val_odpseudo(args: argparse.Namespace) -> int:
+    variant = resolve_lane_val_odpseudo_variant(args.variant)
+    teacher_dataset_preset = build_teacher_dataset_preset()
+    base_lane_root = (
+        Path(args.base_lane_root).resolve()
+        if args.base_lane_root is not None
+        else teacher_dataset_preset.canonical_root / "canonical" / "aihub_standardized"
+    )
+    default_output_root = Path(__file__).resolve().parents[2] / "seg_dataset" / variant.dataset_key
+    output_root = _resolve_output_root(args, default_output_root)
+    sample_results_path = (
+        Path(args.sample_results).resolve()
+        if args.sample_results is not None
+        else output_root / "meta" / "sample_results.jsonl"
+    )
+    expected_base_count = (
+        DEFAULT_EXPECTED_BASE_VAL_COUNT
+        if args.expected_base_count is None
+        else int(args.expected_base_count)
+    )
+    sweep_scenario = None
+    if bool(args.generate_sample_results) and (bool(args.overwrite_sample_results) or not sample_results_path.is_file()):
+        sweep_scenario = build_sweep_preset(allow_default_class_policy=bool(args.allow_default_class_policy))
+        run_config = sweep_scenario.run
+        if args.device is not None:
+            run_config = replace(run_config, device=str(args.device))
+        if args.batch is not None:
+            run_config = replace(run_config, batch_size=int(args.batch))
+        if args.imgsz is not None:
+            run_config = replace(run_config, imgsz=int(args.imgsz))
+        if args.predict_conf is not None:
+            run_config = replace(run_config, predict_conf=float(args.predict_conf))
+        if args.predict_iou is not None:
+            run_config = replace(run_config, predict_iou=float(args.predict_iou))
+        sample_summary = run_lane_val_odpseudo_teacher_sample_results(
+            base_lane_root=base_lane_root,
+            output_root=output_root,
+            teachers=sweep_scenario.teachers,
+            class_policy=sweep_scenario.class_policy,
+            run_config=run_config,
+            expected_base_count=expected_base_count,
+            sample_results_path=sample_results_path,
+            max_rejected_candidates_per_sample=args.max_rejected_candidates_per_sample,
+            overwrite=bool(args.overwrite_sample_results),
+            log_fn=lambda message: print(message, flush=True),
+        )
+        print(json.dumps({"sample_results": sample_summary}, indent=2, ensure_ascii=True, default=str), flush=True)
+
+    signal_attr_checkpoint = None
+    signal_attr_sidecar = None
+    if variant.tl_attr_enabled:
+        train_root = build_teacher_train_preset("signal").run.output_root
+        signal_attr_checkpoint = (
+            Path(args.signal_attr_checkpoint).resolve()
+            if args.signal_attr_checkpoint is not None
+            else teacher_checkpoint_path(train_root, "signal_attr")
+        )
+        sidecar_device = str(args.device or (sweep_scenario.run.device if sweep_scenario is not None else "cuda:0"))
+        signal_attr_sidecar = SignalAttrSidecarTeacher.from_checkpoint(
+            signal_attr_checkpoint,
+            device=sidecar_device,
+        )
+    teacher_checkpoints = (
+        {teacher.name: teacher.checkpoint_path for teacher in sweep_scenario.teachers}
+        if sweep_scenario is not None
+        else _lane_val_teacher_checkpoints()
+    )
+
+    summary = build_lane_val_odpseudo_eval_root(
+        base_lane_root=base_lane_root,
+        output_root=output_root,
+        sample_results=_load_lane_val_sample_results(sample_results_path),
+        teacher_checkpoints=teacher_checkpoints,
+        signal_attr_checkpoint=signal_attr_checkpoint,
+        signal_attr_sidecar=signal_attr_sidecar,
+        copy_images=bool(args.copy_images),
+        variant=variant,
+        expected_base_count=expected_base_count,
+    )
+    _print_json(summary)
+    return 0
 
 
 def _run_final_dataset(args: argparse.Namespace) -> int:

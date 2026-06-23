@@ -499,6 +499,77 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertEqual(captured_paths[0], checkpoint_path.resolve())
         self.assertIsNone(captured_paths[1])
 
+    def test_lane_val_odpseudo_entrypoint_generates_missing_sample_results_before_materialization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_root = root / "lane_val_eval"
+            checkpoint_path = root / "weights" / "best.pt"
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_text("checkpoint\n", encoding="utf-8")
+            calls: dict[str, object] = {}
+
+            def _fake_generate(**kwargs):
+                calls["generate"] = kwargs
+                kwargs["sample_results_path"].parent.mkdir(parents=True, exist_ok=True)
+                kwargs["sample_results_path"].write_text("{}\n", encoding="utf-8")
+                return {
+                    "sample_results_path": str(kwargs["sample_results_path"]),
+                    "sample_count": 1,
+                    "accepted_detection_count": 0,
+                    "rejected_candidate_count": 0,
+                    "prediction_count_by_teacher": {},
+                    "output_root": str(output_root),
+                    "sample_results_manifest_path": str(output_root / "meta" / "sample_results_manifest.json"),
+                    "run_id": "test_run",
+                }
+
+            def _fake_load(path: Path):
+                calls["load_path"] = path
+                return [{"sample_id": "lane_a"}]
+
+            def _fake_build(**kwargs):
+                calls["build"] = kwargs
+                return {
+                    "output_root": str(kwargs["output_root"]),
+                    "manifest_path": str(kwargs["output_root"] / "meta" / "final_dataset_manifest.json"),
+                    "rejected_candidates_path": str(kwargs["output_root"] / "meta" / "rejected_detections.jsonl"),
+                    "sample_count": 1,
+                    "nonfinite_candidate_count": 0,
+                }
+
+            sweep = SimpleNamespace(
+                run=SimpleNamespace(output_root=root / "runs", device="cpu", batch_size=2),
+                teachers=(
+                    SimpleNamespace(name="mobility", checkpoint_path=checkpoint_path),
+                    SimpleNamespace(name="signal", checkpoint_path=checkpoint_path),
+                    SimpleNamespace(name="obstacle", checkpoint_path=checkpoint_path),
+                ),
+                class_policy={},
+            )
+            with (
+                patch("tools.od_bootstrap.cli.build_teacher_dataset_preset", return_value=SimpleNamespace(canonical_root=root / "bootstrap")),
+                patch("tools.od_bootstrap.cli.build_sweep_preset", return_value=sweep),
+                patch("tools.od_bootstrap.cli.run_lane_val_odpseudo_teacher_sample_results", side_effect=_fake_generate),
+                patch("tools.od_bootstrap.cli._load_lane_val_sample_results", side_effect=_fake_load),
+                patch("tools.od_bootstrap.cli.build_lane_val_odpseudo_eval_root", side_effect=_fake_build),
+            ):
+                self.assertEqual(
+                    od_bootstrap_main(
+                        [
+                            "build-lane-val-odpseudo",
+                            "--output-root",
+                            str(output_root),
+                            "--expected-base-count",
+                            "1",
+                        ]
+                    ),
+                    0,
+                )
+
+            self.assertEqual(calls["load_path"], output_root / "meta" / "sample_results.jsonl")
+            self.assertEqual(calls["generate"]["expected_base_count"], 1)
+            self.assertEqual(calls["build"]["sample_results"], [{"sample_id": "lane_a"}])
+
     def test_calibration_entrypoint_passes_preset_scenario_path(self) -> None:
         with patch("tools.od_bootstrap.cli.calibrate_class_policy_scenario") as mock_calibrate:
             self.assertEqual(od_bootstrap_main(["calibrate"]), 0)

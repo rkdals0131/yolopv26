@@ -11,8 +11,12 @@ import torch
 from common.pv26_schema import (
     DET_SUPERVISION_BY_DATASET,
     ATTRPSEUDO_DATASET_KEY_BY_SOURCE,
+    ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
     ETRI_KCITY_LEFTIMG_DATASET_KEY,
+    ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
+    ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY,
     EXHAUSTIVE_DATASET_KEY_BY_SOURCE,
+    LANE_VAL_ODPSEUDO_ATTR_DATASET_KEY,
     LANE_VAL_ODPSEUDO_DATASET_KEY,
     OD_CLASSES,
     SOURCE_MASK_BY_DATASET,
@@ -143,13 +147,21 @@ class PV26BalancedSamplerTests(unittest.TestCase):
             "aihub_obstacle_seoul",
             "aihub_lane_seoul",
             ETRI_KCITY_LEFTIMG_DATASET_KEY,
+            ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
+            ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY,
+            ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
             LANE_VAL_ODPSEUDO_DATASET_KEY,
+            LANE_VAL_ODPSEUDO_ATTR_DATASET_KEY,
             *EXHAUSTIVE_DATASET_KEY_BY_SOURCE.values(),
             *ATTRPSEUDO_DATASET_KEY_BY_SOURCE.values(),
         }
         expected_train_sampler_keys = expected_loader_keys - {
             ETRI_KCITY_LEFTIMG_DATASET_KEY,
+            ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
+            ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY,
+            ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
             LANE_VAL_ODPSEUDO_DATASET_KEY,
+            LANE_VAL_ODPSEUDO_ATTR_DATASET_KEY,
         }
 
         self.assertEqual(set(SOURCE_MASK_BY_DATASET), expected_loader_keys)
@@ -170,11 +182,23 @@ class PV26BalancedSamplerTests(unittest.TestCase):
 
     def test_eval_and_dry_run_sources_are_not_train_sampler_groups(self) -> None:
         self.assertNotIn(ETRI_KCITY_LEFTIMG_DATASET_KEY, DATASET_GROUP_BY_KEY)
+        self.assertNotIn(ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY, DATASET_GROUP_BY_KEY)
+        self.assertNotIn(ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY, DATASET_GROUP_BY_KEY)
+        self.assertNotIn(ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY, DATASET_GROUP_BY_KEY)
         self.assertNotIn(LANE_VAL_ODPSEUDO_DATASET_KEY, DATASET_GROUP_BY_KEY)
+        self.assertNotIn(LANE_VAL_ODPSEUDO_ATTR_DATASET_KEY, DATASET_GROUP_BY_KEY)
         with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
             dataset_group_for_key(ETRI_KCITY_LEFTIMG_DATASET_KEY)
         with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
+            dataset_group_for_key(ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY)
+        with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
+            dataset_group_for_key(ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY)
+        with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
+            dataset_group_for_key(ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY)
+        with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
             dataset_group_for_key(LANE_VAL_ODPSEUDO_DATASET_KEY)
+        with self.assertRaisesRegex(KeyError, "unsupported dataset key for balanced sampler"):
+            dataset_group_for_key(LANE_VAL_ODPSEUDO_ATTR_DATASET_KEY)
 
     def test_dataset_group_mapping_is_stable(self) -> None:
         self.assertEqual(dataset_group_for_key("bdd100k_det_100k"), "bdd100k")

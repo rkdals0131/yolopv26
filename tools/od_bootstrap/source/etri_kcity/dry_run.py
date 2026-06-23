@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
-from ..shared.io import now_iso, write_json
-from ..shared.raw import normalize_text, probe_image_size, safe_slug
+from common.io import write_jsonl_sorted
+from common.pv26_schema import (
+    ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
+    ETRI_KCITY_LEFTIMG_DATASET_KEY,
+    ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY,
+    ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY,
+    OD_CLASS_TO_ID,
+)
+from common.geometry import canonicalize_stop_line_points
+
+from ..shared.io import link_or_copy, now_iso, write_json, write_text
+from ..shared.raw import extract_annotations, extract_bbox, extract_points, normalize_text, probe_image_size, safe_slug
 from ..shared.summary import counter_to_dict
 
 try:
@@ -18,7 +29,16 @@ except ImportError:  # pragma: no cover - covered by environments without PIL.
     Image = None
 
 
-DATASET_KEY = "etri_kcity_multicamera_leftimg"
+DATASET_KEY = ETRI_KCITY_LEFTIMG_DATASET_KEY
+ATTRPSEUDO_DATASET_KEY = ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY
+MULTICAMERA_DATASET_KEY = ETRI_MULTICAMERA_LEFTIMG_DATASET_KEY
+MULTICAMERA_ATTRPSEUDO_DATASET_KEY = ETRI_MULTICAMERA_LEFTIMG_ATTRPSEUDO_DATASET_KEY
+SOURCE_KIND = "etri_kcity_leftimg"
+ATTRPSEUDO_SOURCE_KIND = "etri_kcity_leftimg_attrpseudo"
+MULTICAMERA_SOURCE_KIND = "etri_multicamera_leftimg"
+MULTICAMERA_ATTRPSEUDO_SOURCE_KIND = "etri_multicamera_leftimg_attrpseudo"
+FINAL_DATASET_MANIFEST_NAME = "final_dataset_manifest.json"
+HELD_LABELS_NAME = "held_labels.jsonl"
 VALID_SPLITS = ("train", "val", "test")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".ppm"}
 SEMANTIC_LABEL_EXTENSIONS = {".json", ".png", ".bmp", ".tif", ".tiff"}
@@ -26,6 +46,7 @@ SEMANTIC_LABEL_EXTENSIONS = {".json", ".png", ".bmp", ".tif", ".tiff"}
 RAW_SCAN_REASON_RIGHT_IMG = "rightImg"
 RAW_SCAN_REASON_MONO_CAMERA = "MonoCamera"
 RAW_SCAN_REASON_LIDAR = "lidar_annotation"
+RAW_SCAN_REASON_PV26_OUTPUT = "pv26_output"
 
 CANDIDATE_REASON_MISSING_SEMANTIC_LABEL = "missing_semantic_label"
 CANDIDATE_REASON_SAMPLE_ID_MISMATCH = "image_label_sample_id_mismatch"
@@ -63,6 +84,7 @@ _SAMPLE_ID_SUFFIXES = (
     "-mask",
 )
 _CLASS_KEYS = (
+    "label",
     "raw_class",
     "class_name",
     "class",
@@ -71,6 +93,40 @@ _CLASS_KEYS = (
     "semantic_class",
     "semantic_label",
 )
+HELD_LABEL_REASON_UNMAPPED = "unmapped_label"
+RELEASE_VERSION = "etri-kcity-leftimg-release-v1"
+ATTRPSEUDO_RELEASE_VERSION = "etri-kcity-leftimg-attrpseudo-v1"
+RELEASE_PATH_TOKEN = "20221124_kcity"
+ETRI_LANE_CENTERLINE_POLICY = "etri_lane_polygon_row_slice_centerline_v1"
+ETRI_STOP_LINE_CENTERLINE_POLICY = "etri_stop_line_polygon_centerline_v1"
+ETRI_CROSSWALK_AREA_POLICY = "etri_crosswalk_area_polygon_v1"
+ETRI_LANE_CENTERLINE_MAX_POINTS = 48
+ETRI_LANE_CENTERLINE_SAMPLE_STEP_PX = 20.0
+ETRI_SAFE_LABEL_MAPPING = {
+    "car": "vehicle",
+    "truck": "vehicle",
+    "bus": "vehicle",
+    "caravan": "vehicle",
+    "person": "pedestrian",
+    "rubber_cone": "traffic_cone",
+    "traffic_light": "traffic_light",
+    "traffic_sign": "sign",
+    "sign": "sign",
+    "whsol": "lane",
+    "whdot": "lane",
+    "yesol": "lane",
+    "blsol": "lane",
+    "bldot": "lane",
+    "stop_line": "stop_line",
+    "crosswalk": "crosswalk",
+}
+ETRI_LANE_STYLE_BY_LABEL = {
+    "whsol": ("white_lane", "solid"),
+    "whdot": ("white_lane", "dotted"),
+    "yesol": ("yellow_lane", "solid"),
+    "blsol": ("blue_lane", "solid"),
+    "bldot": ("blue_lane", "dotted"),
+}
 _IMAGE_SIZE_KEYS = ("image_size", "imsize", "size")
 _IMAGE_SECTION_KEYS = ("image", "images", "metadata")
 _LABEL_SAMPLE_ID_KEYS = ("sample_id", "raw_id", "frame_id", "image_id")
@@ -187,7 +243,13 @@ def require_dry_run_ready(result: EtriDryRunResult) -> EtriDryRunResult:
     return result
 
 
-def scan_dry_run(dataset_root: Path, *, default_split: str | None = None) -> EtriDryRunResult:
+def scan_dry_run(
+    dataset_root: Path,
+    *,
+    default_split: str | None = None,
+    required_path_token: str | None = "kcity",
+    sample_id_dataset_key: str = DATASET_KEY,
+) -> EtriDryRunResult:
     root = dataset_root.expanduser().resolve()
     resolved_default_split = _resolve_default_split(default_split)
     raw_scan_ignored = Counter()
@@ -205,9 +267,9 @@ def scan_dry_run(dataset_root: Path, *, default_split: str | None = None) -> Etr
         if ignored_reason is not None:
             raw_scan_ignored[ignored_reason] += 1
             continue
-        if is_kcity_leftimg_candidate(path):
+        if is_leftimg_candidate(path, required_path_token=required_path_token):
             image_candidates.append(path)
-        elif is_semantic_label_candidate(path):
+        elif is_semantic_label_candidate(path, required_path_token=required_path_token):
             sample_id = sample_id_from_path(path)
             semantic_labels.setdefault(sample_id, []).append(path)
 
@@ -230,6 +292,7 @@ def scan_dry_run(dataset_root: Path, *, default_split: str | None = None) -> Etr
                 semantic_label_path=label_path,
                 dataset_root=root,
                 default_split=resolved_default_split,
+                sample_id_dataset_key=sample_id_dataset_key,
             )
         except EtriCandidateError as exc:
             _append_candidate_failure(
@@ -258,12 +321,30 @@ def scan_dry_run(dataset_root: Path, *, default_split: str | None = None) -> Etr
     )
 
 
-def build_dry_run_manifest(dataset_root: Path, *, default_split: str | None = None) -> dict[str, Any]:
-    return scan_dry_run(dataset_root, default_split=default_split).to_manifest()
+def build_dry_run_manifest(
+    dataset_root: Path,
+    *,
+    default_split: str | None = None,
+    required_path_token: str | None = "kcity",
+) -> dict[str, Any]:
+    return scan_dry_run(
+        dataset_root,
+        default_split=default_split,
+        required_path_token=required_path_token,
+    ).to_manifest()
 
 
-def build_ready_dry_run_manifest(dataset_root: Path, *, default_split: str | None = None) -> dict[str, Any]:
-    result = scan_dry_run(dataset_root, default_split=default_split)
+def build_ready_dry_run_manifest(
+    dataset_root: Path,
+    *,
+    default_split: str | None = None,
+    required_path_token: str | None = "kcity",
+) -> dict[str, Any]:
+    result = scan_dry_run(
+        dataset_root,
+        default_split=default_split,
+        required_path_token=required_path_token,
+    )
     require_dry_run_ready(result)
     return result.to_manifest()
 
@@ -273,8 +354,13 @@ def write_dry_run_manifest(
     output_path: Path,
     *,
     default_split: str | None = None,
+    required_path_token: str | None = "kcity",
 ) -> Path:
-    manifest = build_dry_run_manifest(dataset_root, default_split=default_split)
+    manifest = build_dry_run_manifest(
+        dataset_root,
+        default_split=default_split,
+        required_path_token=required_path_token,
+    )
     return write_json(output_path, manifest)
 
 
@@ -283,8 +369,13 @@ def write_ready_dry_run_manifest(
     output_path: Path,
     *,
     default_split: str | None = None,
+    required_path_token: str | None = "kcity",
 ) -> Path:
-    manifest = build_ready_dry_run_manifest(dataset_root, default_split=default_split)
+    manifest = build_ready_dry_run_manifest(
+        dataset_root,
+        default_split=default_split,
+        required_path_token=required_path_token,
+    )
     return write_json(output_path, manifest)
 
 
@@ -294,6 +385,7 @@ def build_dry_run_sample(
     semantic_label_path: Path | None,
     dataset_root: Path,
     default_split: str | None = None,
+    sample_id_dataset_key: str = DATASET_KEY,
 ) -> EtriDryRunSample:
     if semantic_label_path is None:
         raise EtriCandidateError(
@@ -337,7 +429,7 @@ def build_dry_run_sample(
     width, height = image_size
     raw_class_counts = _extract_raw_class_counts(label, label_raw)
     sample_relative_id = _safe_relative_stem(image, root)
-    sample_id = safe_slug(f"{DATASET_KEY}_{split}_{sample_relative_id}")
+    sample_id = safe_slug(f"{sample_id_dataset_key}_{split}_{sample_relative_id}")
     return EtriDryRunSample(
         sample_id=sample_id,
         split=split,
@@ -352,6 +444,8 @@ def build_dry_run_sample(
 def raw_scan_ignored_reason(path: Path) -> str | None:
     normalized_parts = [normalize_text(part) for part in path.parts]
     joined = "/".join(normalized_parts)
+    if any(part.startswith("pv26_") for part in normalized_parts):
+        return RAW_SCAN_REASON_PV26_OUTPUT
     if "lidar" in joined or path.suffix.lower() in {".pcd", ".bin"}:
         return RAW_SCAN_REASON_LIDAR
     if "monocamera" in joined or "mono_camera" in joined or "mono-camera" in joined:
@@ -362,11 +456,16 @@ def raw_scan_ignored_reason(path: Path) -> str | None:
 
 
 def is_kcity_leftimg_candidate(path: Path) -> bool:
+    return is_leftimg_candidate(path, required_path_token="kcity")
+
+
+def is_leftimg_candidate(path: Path, *, required_path_token: str | None = "kcity") -> bool:
     if path.suffix.lower() not in IMAGE_EXTENSIONS:
         return False
     normalized_parts = [normalize_text(part) for part in path.parts]
     joined = "/".join(normalized_parts)
-    if "kcity" not in joined:
+    required = normalize_text(required_path_token) if required_path_token is not None else None
+    if required is not None and required not in joined:
         return False
     if "leftimg" not in joined and "left_img" not in joined:
         return False
@@ -375,14 +474,15 @@ def is_kcity_leftimg_candidate(path: Path) -> bool:
     return raw_scan_ignored_reason(path) is None
 
 
-def is_semantic_label_candidate(path: Path) -> bool:
+def is_semantic_label_candidate(path: Path, *, required_path_token: str | None = "kcity") -> bool:
     if path.suffix.lower() not in SEMANTIC_LABEL_EXTENSIONS:
         return False
     if raw_scan_ignored_reason(path) is not None:
         return False
     normalized_parts = [normalize_text(part) for part in path.parts]
     joined = "/".join(normalized_parts)
-    if "kcity" not in joined:
+    required = normalize_text(required_path_token) if required_path_token is not None else None
+    if required is not None and required not in joined:
         return False
     return _has_semantic_label_marker(path)
 
@@ -403,6 +503,697 @@ class EtriCandidateError(ValueError):
         super().__init__(f"{reason}: {detail}")
         self.reason = reason
         self.detail = detail
+
+
+class EtriMaterializationError(ValueError):
+    """Raised when a mapped ETRI label cannot be safely converted to PV26 geometry."""
+
+
+def materialize_kcity_val_release(
+    dataset_root: Path,
+    output_root: Path,
+    *,
+    copy_images: bool = False,
+    expected_sample_count: int | None = None,
+    release_path_token: str | Sequence[str] | None = RELEASE_PATH_TOKEN,
+    exclude_path_tokens: Sequence[str] = (),
+    allowed_splits: Iterable[str] | None = ("val",),
+    output_split: str = "val",
+    scan_required_path_token: str | None = "kcity",
+    sample_limit: int | None = None,
+    signal_attr_sidecar: Any | None = None,
+    signal_attr_checkpoint_path: Path | None = None,
+    dataset_key_override: str | None = None,
+    attrpseudo_dataset_key_override: str | None = None,
+    source_kind_override: str | None = None,
+    attrpseudo_source_kind_override: str | None = None,
+    sample_id_dataset_key: str = DATASET_KEY,
+) -> dict[str, Any]:
+    root = dataset_root.expanduser().resolve()
+    output = output_root.expanduser().resolve()
+    generated_at = now_iso()
+    attrpseudo_enabled = signal_attr_sidecar is not None
+    if attrpseudo_enabled:
+        dataset_key = attrpseudo_dataset_key_override or ATTRPSEUDO_DATASET_KEY
+        source_kind = attrpseudo_source_kind_override or ATTRPSEUDO_SOURCE_KIND
+    else:
+        dataset_key = dataset_key_override or DATASET_KEY
+        source_kind = source_kind_override or SOURCE_KIND
+    manifest_version = ATTRPSEUDO_RELEASE_VERSION if attrpseudo_enabled else RELEASE_VERSION
+    sidecar_checkpoint = _sidecar_checkpoint_path(signal_attr_sidecar, signal_attr_checkpoint_path)
+    split = _resolve_default_split(output_split)
+    if split is None:
+        raise ValueError("output_split must be provided")
+    dry_run = scan_dry_run(
+        root,
+        default_split=split,
+        required_path_token=scan_required_path_token,
+        sample_id_dataset_key=sample_id_dataset_key,
+    )
+    samples = tuple(
+        sample
+        for sample in dry_run.samples
+        if _is_release_sample(
+            sample,
+            release_path_token=release_path_token,
+            exclude_path_tokens=exclude_path_tokens,
+            allowed_splits=allowed_splits,
+        )
+    )
+    samples = tuple(sorted(samples, key=lambda item: item.sample_id))
+    if sample_limit is not None:
+        limit = int(sample_limit)
+        if limit <= 0:
+            raise ValueError("sample_limit must be > 0")
+        samples = samples[:limit]
+    if expected_sample_count is not None and len(samples) != int(expected_sample_count):
+        raise EtriMaterializationError(
+            f"ETRI KCity release sample count must be exactly {int(expected_sample_count)}: {len(samples)}"
+        )
+    if not samples:
+        raise EtriMaterializationError("ETRI KCity release has no val leftImg samples")
+
+    held_rows: list[dict[str, Any]] = []
+    manifest_rows: list[dict[str, Any]] = []
+    class_counts: Counter[str] = Counter()
+    geometry_counts: Counter[str] = Counter()
+    sidecar_reason_counts: Counter[str] = Counter()
+    sidecar_traffic_light_count = 0
+    sidecar_valid_count = 0
+    sidecar_invalid_count = 0
+    for sample in samples:
+        row, sample_counts, sample_held, sidecar_stats = _materialize_release_sample(
+            sample=sample,
+            output_root=output,
+            copy_images=copy_images,
+            dataset_key=dataset_key,
+            source_kind=source_kind,
+            output_split=split,
+            signal_attr_sidecar=signal_attr_sidecar,
+            run_id=f"{source_kind}:{generated_at}",
+            created_at=generated_at,
+        )
+        manifest_rows.append(row)
+        class_counts.update(sample_counts)
+        held_rows.extend(sample_held)
+        if sidecar_stats is not None:
+            sidecar_traffic_light_count += int(sidecar_stats.traffic_light_count)
+            sidecar_valid_count += int(sidecar_stats.valid_count)
+            sidecar_invalid_count += int(sidecar_stats.invalid_count)
+            sidecar_reason_counts.update(dict(sidecar_stats.reason_counts))
+        geometry_counts.update(
+            {
+                "detections": int(row["accepted_detection_count"]),
+                "lanes": int(row["lane_count"]),
+                "stop_lines": int(row["stop_line_count"]),
+                "crosswalks": int(row["crosswalk_count"]),
+                "traffic_lights": int(row["traffic_light_count"]),
+            }
+        )
+
+    manifest_rows.sort(key=lambda item: (str(item["split"]), str(item["final_sample_id"])))
+    held_rows.sort(key=lambda item: (str(item["sample_id"]), int(item["annotation_index"]), str(item["raw_label"])))
+    manifest_path = output / "meta" / FINAL_DATASET_MANIFEST_NAME
+    held_path = output / "meta" / HELD_LABELS_NAME
+    manifest = {
+        "version": manifest_version,
+        "generated_at": generated_at,
+        "dataset_key": dataset_key,
+        "split": split,
+        "status": READY_STATUS,
+        "source_kind": source_kind,
+        "dataset_root": str(root),
+        "output_root": str(output),
+        "release_path_token": release_path_token,
+        "exclude_path_tokens": list(exclude_path_tokens),
+        "allowed_source_splits": sorted(_normalized_split_set(allowed_splits) or []),
+        "output_split": split,
+        "sample_count": len(manifest_rows),
+        "failure_count": 0,
+        "dataset_counts": {dataset_key: len(manifest_rows)},
+        "class_counts": counter_to_dict(class_counts),
+        "geometry_counts": counter_to_dict(geometry_counts),
+        "held_label_count": len(held_rows),
+        "held_label_counts": counter_to_dict(Counter(str(row["raw_label"]) for row in held_rows)),
+        "held_labels_path": str(held_path),
+        "metric_semantics": {
+            "det": "human_polygon_bbox_gt",
+            "tl_attr": "signal_attr_teacher_pseudo" if attrpseudo_enabled else "not_available",
+            "lane": "human_polygon_centerline_gt",
+            "stop_line": "human_polygon_centerline_gt",
+            "crosswalk": "human_polygon_area_gt",
+        },
+        "signal_attr_sidecar": {
+            "enabled": attrpseudo_enabled,
+            "teacher_name": "signal_attr" if attrpseudo_enabled else None,
+            "checkpoint_path": str(sidecar_checkpoint) if sidecar_checkpoint is not None else None,
+            "traffic_light_count": sidecar_traffic_light_count,
+            "valid_count": sidecar_valid_count,
+            "invalid_count": sidecar_invalid_count,
+            "reason_counts": counter_to_dict(sidecar_reason_counts),
+        },
+        "samples": manifest_rows,
+    }
+    write_jsonl_sorted(held_path, held_rows)
+    write_json(manifest_path, manifest)
+    return {
+        "output_root": str(output),
+        "manifest_path": str(manifest_path),
+        "held_labels_path": str(held_path),
+        "sample_count": len(manifest_rows),
+        "held_label_count": len(held_rows),
+        "class_counts": counter_to_dict(class_counts),
+        "signal_attr_sidecar": manifest["signal_attr_sidecar"],
+    }
+
+
+def _is_release_sample(
+    sample: EtriDryRunSample,
+    *,
+    release_path_token: str | Sequence[str] | None,
+    exclude_path_tokens: Sequence[str],
+    allowed_splits: Iterable[str] | None,
+) -> bool:
+    allowed = _normalized_split_set(allowed_splits)
+    if allowed is not None and sample.split not in allowed:
+        return False
+    for token in exclude_path_tokens:
+        if _sample_path_has_token(sample, token):
+            return False
+    if release_path_token is None:
+        return True
+    tokens = [release_path_token] if isinstance(release_path_token, str) else list(release_path_token)
+    return any(_sample_path_has_token(sample, token) for token in tokens)
+
+
+def _normalized_split_set(splits: Iterable[str] | None) -> set[str] | None:
+    if splits is None:
+        return None
+    normalized: set[str] = set()
+    for split in splits:
+        resolved = _resolve_default_split(str(split))
+        if resolved is not None:
+            normalized.add(resolved)
+    return normalized
+
+
+def _sample_path_has_token(sample: EtriDryRunSample, token: str) -> bool:
+    normalized_token = normalize_text(token)
+    if not normalized_token:
+        return False
+    joined = "/".join(normalize_text(part) for part in (*sample.image_path.parts, *sample.semantic_label_path.parts))
+    return normalized_token in joined
+
+
+def _materialize_release_sample(
+    *,
+    sample: EtriDryRunSample,
+    output_root: Path,
+    copy_images: bool,
+    dataset_key: str,
+    source_kind: str,
+    output_split: str,
+    signal_attr_sidecar: Any | None,
+    run_id: str,
+    created_at: str,
+) -> tuple[dict[str, Any], Counter[str], list[dict[str, Any]], Any | None]:
+    raw = _load_json_label(sample.semantic_label_path)
+    if raw is None:
+        raise EtriMaterializationError(f"ETRI KCity release requires JSON semantic labels: {sample.semantic_label_path}")
+    annotations = extract_annotations(raw)
+    detections: list[dict[str, Any]] = []
+    lanes: list[dict[str, Any]] = []
+    stop_lines: list[dict[str, Any]] = []
+    crosswalks: list[dict[str, Any]] = []
+    held_rows: list[dict[str, Any]] = []
+    class_counts: Counter[str] = Counter()
+
+    for annotation_index, annotation in enumerate(annotations):
+        if bool(annotation.get("deleted", 0)):
+            continue
+        raw_label = _annotation_raw_label(annotation)
+        normalized_label = normalize_text(raw_label)
+        mapped = ETRI_SAFE_LABEL_MAPPING.get(normalized_label)
+        if mapped is None:
+            held_rows.append(
+                {
+                    "sample_id": sample.sample_id,
+                    "annotation_index": annotation_index,
+                    "raw_label": raw_label,
+                    "reason": HELD_LABEL_REASON_UNMAPPED,
+                }
+            )
+            continue
+        if mapped in OD_CLASS_TO_ID:
+            bbox = _annotation_bbox(annotation, width=sample.width, height=sample.height, sample=sample, raw_label=raw_label)
+            detections.append(
+                {
+                    "id": len(detections),
+                    "class_name": mapped,
+                    "bbox": _bbox_to_mapping(bbox),
+                    "meta": {"raw_label": raw_label, "label_origin": "etri_kcity_raw"},
+                }
+            )
+            class_counts[mapped] += 1
+            continue
+        points = _annotation_points(
+            annotation,
+            width=sample.width,
+            height=sample.height,
+            sample=sample,
+            raw_label=raw_label,
+            min_points=3 if mapped == "crosswalk" else 2,
+        )
+        if mapped == "lane":
+            lane_class, lane_type = ETRI_LANE_STYLE_BY_LABEL[normalized_label]
+            centerline_points = _lane_centerline_points(
+                points,
+                width=sample.width,
+                height=sample.height,
+                sample=sample,
+                raw_label=raw_label,
+            )
+            lanes.append(
+                {
+                    "id": len(lanes),
+                    "class_name": lane_class,
+                    "source_style": lane_type,
+                    "points": centerline_points,
+                    "meta": {
+                        "raw_label": raw_label,
+                        "label_origin": "etri_kcity_raw",
+                        "geometry_policy": ETRI_LANE_CENTERLINE_POLICY,
+                        "source_polygon_point_count": len(points),
+                    },
+                }
+            )
+            class_counts["lane"] += 1
+        elif mapped == "stop_line":
+            centerline_points = _stop_line_centerline_points(
+                points,
+                width=sample.width,
+                height=sample.height,
+                sample=sample,
+                raw_label=raw_label,
+            )
+            stop_lines.append(
+                {
+                    "id": len(stop_lines),
+                    "class_name": "stop_line",
+                    "points": centerline_points,
+                    "meta": {
+                        "raw_label": raw_label,
+                        "label_origin": "etri_kcity_raw",
+                        "geometry_policy": ETRI_STOP_LINE_CENTERLINE_POLICY,
+                        "source_polygon_point_count": len(points),
+                    },
+                }
+            )
+            class_counts["stop_line"] += 1
+        elif mapped == "crosswalk":
+            crosswalks.append(
+                {
+                    "id": len(crosswalks),
+                    "class_name": "crosswalk",
+                    "points": points,
+                    "meta": {
+                        "raw_label": raw_label,
+                        "label_origin": "etri_kcity_raw",
+                        "geometry_policy": ETRI_CROSSWALK_AREA_POLICY,
+                        "source_polygon_point_count": len(points),
+                    },
+                }
+            )
+            class_counts["crosswalk"] += 1
+
+    image_output_name = f"{sample.sample_id}{sample.image_path.suffix.lower()}"
+    scene_path = output_root / "labels_scene" / output_split / f"{sample.sample_id}.json"
+    det_path = output_root / "labels_det" / output_split / f"{sample.sample_id}.txt"
+    image_path = output_root / "images" / output_split / image_output_name
+    scene = {
+        "image": {
+            "file_name": image_output_name,
+            "original_file_name": sample.image_path.name,
+            "width": int(sample.width),
+            "height": int(sample.height),
+        },
+        "source": {
+            "dataset": dataset_key,
+            "split": output_split,
+            "raw_split": sample.split,
+            "source_kind": source_kind,
+            "source_image_path": str(sample.image_path),
+            "source_label_path": str(sample.semantic_label_path),
+        },
+        "tasks": {
+            "has_det": int(bool(detections)),
+            "has_lane": int(bool(lanes)),
+            "has_stop_line": int(bool(stop_lines)),
+            "has_crosswalk": int(bool(crosswalks)),
+            "has_tl_attr": 0,
+        },
+        "detections": detections,
+        "lanes": lanes,
+        "stop_lines": stop_lines,
+        "crosswalks": crosswalks,
+        "traffic_lights": [],
+    }
+    sidecar_stats = None
+    if signal_attr_sidecar is not None:
+        sidecar_stats = signal_attr_sidecar.apply_to_scene(
+            scene,
+            sample.image_path,
+            run_id=run_id,
+            created_at=created_at,
+        )
+    write_json(scene_path, scene)
+    write_text(det_path, _det_label_text(detections, width=sample.width, height=sample.height))
+    if copy_images:
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(sample.image_path.read_bytes())
+    else:
+        link_or_copy(sample.image_path, image_path)
+
+    manifest_row = {
+        "final_sample_id": sample.sample_id,
+        "source_dataset_key": dataset_key,
+        "split": output_split,
+        "source_raw_split": sample.split,
+        "source_kind": source_kind,
+        "scene_path": str(scene_path.resolve()),
+        "image_path": str(image_path.resolve()),
+        "det_path": str(det_path.resolve()),
+        "source_scene_path": str(sample.semantic_label_path),
+        "source_image_path": str(sample.image_path),
+        "source_det_path": None,
+        "teacher_run_status": "signal_attr_sidecar_applied" if sidecar_stats is not None else "not_applicable_raw_source",
+        "accepted_detection_count": len(detections),
+        "det_file_status": "nonempty" if detections else "empty",
+        "lane_count": len(lanes),
+        "stop_line_count": len(stop_lines),
+        "crosswalk_count": len(crosswalks),
+        "traffic_light_count": (
+            int(sidecar_stats.traffic_light_count)
+            if sidecar_stats is not None
+            else sum(1 for detection in detections if str(detection.get("class_name")) == "traffic_light")
+        ),
+        "tl_attr_valid_count": int(sidecar_stats.valid_count) if sidecar_stats is not None else 0,
+        "tl_attr_invalid_count": int(sidecar_stats.invalid_count) if sidecar_stats is not None else 0,
+        "tl_attr_reason_counts": dict(sidecar_stats.reason_counts) if sidecar_stats is not None else {},
+        "held_label_count": len(held_rows),
+        "failure_count": 0,
+    }
+    return manifest_row, class_counts, held_rows, sidecar_stats
+
+
+def _sidecar_checkpoint_path(signal_attr_sidecar: Any | None, fallback: Path | None) -> Path | None:
+    if fallback is not None:
+        return Path(fallback).resolve()
+    if signal_attr_sidecar is None:
+        return None
+    checkpoint_path = getattr(signal_attr_sidecar, "checkpoint_path", None)
+    if checkpoint_path is None:
+        return None
+    return Path(checkpoint_path).resolve()
+
+
+def _annotation_raw_label(annotation: Mapping[str, Any]) -> str:
+    for key in _CLASS_KEYS:
+        value = annotation.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raise EtriMaterializationError("ETRI annotation is missing objects[].label/class field")
+
+
+def _annotation_bbox(
+    annotation: dict[str, Any],
+    *,
+    width: int,
+    height: int,
+    sample: EtriDryRunSample,
+    raw_label: str,
+) -> list[float]:
+    bbox = extract_bbox(annotation, width, height)
+    if bbox is not None:
+        return bbox
+    points = _annotation_points(
+        annotation,
+        width=width,
+        height=height,
+        sample=sample,
+        raw_label=raw_label,
+        min_points=2,
+    )
+    x_values = [point[0] for point in points]
+    y_values = [point[1] for point in points]
+    bbox = [min(x_values), min(y_values), max(x_values), max(y_values)]
+    if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        raise EtriMaterializationError(f"invalid bbox geometry for {sample.sample_id} label={raw_label!r}")
+    return [round(value, 3) for value in bbox]
+
+
+def _annotation_points(
+    annotation: dict[str, Any],
+    *,
+    width: int,
+    height: int,
+    sample: EtriDryRunSample,
+    raw_label: str,
+    min_points: int,
+) -> list[list[float]]:
+    points = extract_points(annotation)
+    if not points:
+        for geometry_key in ("polyline", "polygon"):
+            geometry = annotation.get(geometry_key)
+            if isinstance(geometry, list):
+                points = geometry
+                break
+    if not points:
+        bbox = extract_bbox(annotation, width, height)
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            points = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+    if len(points) < min_points:
+        raise EtriMaterializationError(
+            f"invalid vector geometry for {sample.sample_id} label={raw_label!r}: "
+            f"expected at least {min_points} points"
+        )
+    cleaned: list[list[float]] = []
+    for point_index, point in enumerate(points):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise EtriMaterializationError(
+                f"invalid point geometry for {sample.sample_id} label={raw_label!r} point={point_index}"
+            )
+        try:
+            x_value = float(point[0])
+            y_value = float(point[1])
+        except (TypeError, ValueError) as exc:
+            raise EtriMaterializationError(
+                f"nonfinite point geometry for {sample.sample_id} label={raw_label!r} point={point_index}"
+            ) from exc
+        if not math.isfinite(x_value) or not math.isfinite(y_value):
+            raise EtriMaterializationError(
+                f"nonfinite point geometry for {sample.sample_id} label={raw_label!r} point={point_index}"
+            )
+        cleaned.append([
+            round(max(0.0, min(x_value, float(width))), 3),
+            round(max(0.0, min(y_value, float(height))), 3),
+        ])
+    return cleaned
+
+
+def _lane_centerline_points(
+    points: list[list[float]],
+    *,
+    width: int,
+    height: int,
+    sample: EtriDryRunSample,
+    raw_label: str,
+) -> list[list[float]]:
+    polygon = _dedupe_consecutive_points(points)
+    if len(polygon) < 3:
+        if len(polygon) < 2:
+            raise EtriMaterializationError(
+                f"invalid lane centerline geometry for {sample.sample_id} label={raw_label!r}: "
+                "expected at least 2 points"
+            )
+        return polygon
+    centerline = _polygon_row_slice_centerline(polygon, width=width, height=height)
+    if len(centerline) < 2:
+        centerline = _bbox_centerline_points(polygon, width=width, height=height)
+    if len(centerline) < 2:
+        raise EtriMaterializationError(
+            f"invalid lane centerline geometry for {sample.sample_id} label={raw_label!r}: "
+            "could not derive centerline from polygon"
+        )
+    return centerline
+
+
+def _stop_line_centerline_points(
+    points: list[list[float]],
+    *,
+    width: int,
+    height: int,
+    sample: EtriDryRunSample,
+    raw_label: str,
+) -> list[list[float]]:
+    centerline = [
+        _clamped_point(float(point[0]), float(point[1]), width=width, height=height)
+        for point in canonicalize_stop_line_points(points).reshape(-1, 2).tolist()
+    ]
+    centerline = _dedupe_consecutive_points(centerline)
+    if len(centerline) < 2:
+        raise EtriMaterializationError(
+            f"invalid stop_line centerline geometry for {sample.sample_id} label={raw_label!r}: "
+            "expected at least 2 points"
+        )
+    return centerline[:2]
+
+
+def _dedupe_consecutive_points(points: list[list[float]]) -> list[list[float]]:
+    cleaned: list[list[float]] = []
+    for point in points:
+        if cleaned and abs(cleaned[-1][0] - point[0]) <= 1.0e-6 and abs(cleaned[-1][1] - point[1]) <= 1.0e-6:
+            continue
+        cleaned.append([float(point[0]), float(point[1])])
+    if len(cleaned) > 1 and abs(cleaned[0][0] - cleaned[-1][0]) <= 1.0e-6 and abs(cleaned[0][1] - cleaned[-1][1]) <= 1.0e-6:
+        cleaned.pop()
+    return cleaned
+
+
+def _polygon_row_slice_centerline(
+    polygon: list[list[float]],
+    *,
+    width: int,
+    height: int,
+) -> list[list[float]]:
+    x_values = [point[0] for point in polygon]
+    y_values = [point[1] for point in polygon]
+    x_span = max(x_values) - min(x_values)
+    y_span = max(y_values) - min(y_values)
+    axis = "y" if y_span >= 1.0 else "x"
+    span = y_span if axis == "y" else x_span
+    if span <= 1.0e-6:
+        return []
+    target_count = min(
+        ETRI_LANE_CENTERLINE_MAX_POINTS,
+        max(2, int(math.ceil(span / ETRI_LANE_CENTERLINE_SAMPLE_STEP_PX)) + 1),
+    )
+    coordinates = _scan_coordinates(min(y_values) if axis == "y" else min(x_values), max(y_values) if axis == "y" else max(x_values), target_count)
+    centerline: list[list[float]] = []
+    for coordinate in coordinates:
+        intersections = _polygon_scanline_intersections(polygon, coordinate, axis=axis)
+        if len(intersections) < 2:
+            continue
+        if len(intersections) % 2:
+            intersections = intersections[:-1]
+        if len(intersections) < 2:
+            continue
+        intervals = [
+            (intersections[index], intersections[index + 1])
+            for index in range(0, len(intersections) - 1, 2)
+        ]
+        start, end = max(intervals, key=lambda item: item[1] - item[0])
+        midpoint = (start + end) * 0.5
+        if axis == "y":
+            centerline.append(_clamped_point(midpoint, coordinate, width=width, height=height))
+        else:
+            centerline.append(_clamped_point(coordinate, midpoint, width=width, height=height))
+    centerline = _dedupe_consecutive_points(centerline)
+    centerline.sort(key=lambda point: (-point[1], point[0]))
+    return centerline
+
+
+def _scan_coordinates(min_value: float, max_value: float, target_count: int) -> list[float]:
+    if target_count <= 1:
+        return [(min_value + max_value) * 0.5]
+    span = max_value - min_value
+    if span <= 1.0e-6:
+        return [(min_value + max_value) * 0.5]
+    margin = min(max(span * 0.02, 1.0e-3), span * 0.25)
+    start = min_value + margin
+    end = max_value - margin
+    if end <= start:
+        return [(min_value + max_value) * 0.5]
+    step = (end - start) / float(target_count - 1)
+    return [start + step * float(index) for index in range(target_count)]
+
+
+def _polygon_scanline_intersections(
+    polygon: list[list[float]],
+    coordinate: float,
+    *,
+    axis: str,
+) -> list[float]:
+    intersections: list[float] = []
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        start_axis = start[1] if axis == "y" else start[0]
+        end_axis = end[1] if axis == "y" else end[0]
+        if abs(start_axis - end_axis) <= 1.0e-9:
+            continue
+        if not ((start_axis <= coordinate < end_axis) or (end_axis <= coordinate < start_axis)):
+            continue
+        ratio = (coordinate - start_axis) / (end_axis - start_axis)
+        start_cross = start[0] if axis == "y" else start[1]
+        end_cross = end[0] if axis == "y" else end[1]
+        intersections.append(start_cross + ratio * (end_cross - start_cross))
+    intersections.sort()
+    return intersections
+
+
+def _bbox_centerline_points(
+    points: list[list[float]],
+    *,
+    width: int,
+    height: int,
+) -> list[list[float]]:
+    x_values = [point[0] for point in points]
+    y_values = [point[1] for point in points]
+    x1, x2 = min(x_values), max(x_values)
+    y1, y2 = min(y_values), max(y_values)
+    if y2 - y1 >= 1.0:
+        x = (x1 + x2) * 0.5
+        return [_clamped_point(x, y2, width=width, height=height), _clamped_point(x, y1, width=width, height=height)]
+    if x2 - x1 >= 1.0:
+        y = (y1 + y2) * 0.5
+        return [_clamped_point(x1, y, width=width, height=height), _clamped_point(x2, y, width=width, height=height)]
+    return []
+
+
+def _clamped_point(x_value: float, y_value: float, *, width: int, height: int) -> list[float]:
+    return [
+        round(max(0.0, min(float(x_value), float(width))), 3),
+        round(max(0.0, min(float(y_value), float(height))), 3),
+    ]
+
+
+def _bbox_to_mapping(bbox: list[float]) -> dict[str, float]:
+    return {
+        "x1": float(bbox[0]),
+        "y1": float(bbox[1]),
+        "x2": float(bbox[2]),
+        "y2": float(bbox[3]),
+    }
+
+
+def _det_label_text(detections: list[dict[str, Any]], *, width: int, height: int) -> str:
+    rows = []
+    for detection in detections:
+        bbox = detection["bbox"]
+        x1 = float(bbox["x1"])
+        y1 = float(bbox["y1"])
+        x2 = float(bbox["x2"])
+        y2 = float(bbox["y2"])
+        center_x = ((x1 + x2) * 0.5) / float(width)
+        center_y = ((y1 + y2) * 0.5) / float(height)
+        box_w = (x2 - x1) / float(width)
+        box_h = (y2 - y1) / float(height)
+        rows.append(
+            f"{OD_CLASS_TO_ID[str(detection['class_name'])]} "
+            f"{center_x:.6f} {center_y:.6f} {box_w:.6f} {box_h:.6f}"
+        )
+    return ("\n".join(rows) + "\n") if rows else ""
 
 
 def _resolve_default_split(default_split: str | None) -> str | None:
@@ -640,13 +1431,26 @@ __all__ = [
     "CANDIDATE_REASON_MISSING_SEMANTIC_LABEL",
     "CANDIDATE_REASON_SAMPLE_ID_MISMATCH",
     "DATASET_KEY",
+    "ATTRPSEUDO_DATASET_KEY",
+    "MULTICAMERA_ATTRPSEUDO_DATASET_KEY",
+    "MULTICAMERA_DATASET_KEY",
+    "ETRI_SAFE_LABEL_MAPPING",
+    "EtriMaterializationError",
     "EtriCandidateError",
     "EtriDryRunNotReadyError",
     "EtriDryRunResult",
     "EtriDryRunSample",
+    "HELD_LABEL_REASON_UNMAPPED",
+    "HELD_LABELS_NAME",
     "RAW_SCAN_REASON_LIDAR",
     "RAW_SCAN_REASON_MONO_CAMERA",
+    "RAW_SCAN_REASON_PV26_OUTPUT",
     "RAW_SCAN_REASON_RIGHT_IMG",
+    "MULTICAMERA_ATTRPSEUDO_SOURCE_KIND",
+    "MULTICAMERA_SOURCE_KIND",
+    "RELEASE_PATH_TOKEN",
+    "ATTRPSEUDO_RELEASE_VERSION",
+    "RELEASE_VERSION",
     "READY_STATUS",
     "RELEASE_BLOCKER_ZERO_SAMPLES",
     "VALID_SPLITS",
@@ -656,8 +1460,10 @@ __all__ = [
     "dry_run_release_blockers",
     "is_dry_run_ready",
     "is_kcity_leftimg_candidate",
+    "is_leftimg_candidate",
     "is_semantic_label_candidate",
     "main",
+    "materialize_kcity_val_release",
     "raw_scan_ignored_reason",
     "require_dry_run_ready",
     "sample_id_from_path",
