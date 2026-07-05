@@ -157,12 +157,12 @@ def _render_overlay_with_pillow(scene: dict[str, Any], image_path: Path, output_
     for light in scene.get("traffic_lights", []):
         bbox = light.get("bbox", [])
         draw_rectangle(bbox, "#00ff99")
-        draw_label(_label_anchor_from_bbox(bbox), "traffic_light", "#00ff99")
+        draw_label(_label_anchor_from_bbox(bbox), str(light.get("label") or "traffic_light"), "#00ff99")
 
     for sign in scene.get("traffic_signs", []):
         bbox = sign.get("bbox", [])
         draw_rectangle(bbox, "#00b7ff")
-        draw_label(_label_anchor_from_bbox(bbox), "sign", "#00b7ff")
+        draw_label(_label_anchor_from_bbox(bbox), str(sign.get("label") or "sign"), "#00b7ff")
 
     for debug_rectangle in scene.get("debug_rectangles", []):
         color = str(debug_rectangle.get("color") or DEBUG_RECTANGLE_DEFAULT_COLOR)
@@ -226,14 +226,14 @@ def render_overlay(scene: dict[str, Any], output_path: Path) -> None:
         _append_rectangle(command, bbox, "#00ff99")
         anchor = _label_anchor_from_bbox(bbox)
         if anchor is not None:
-            _append_text(command, anchor[0], anchor[1], "traffic_light", "#00ff99")
+            _append_text(command, anchor[0], anchor[1], str(light.get("label") or "traffic_light"), "#00ff99")
 
     for sign in scene.get("traffic_signs", []):
         bbox = sign.get("bbox", [])
         _append_rectangle(command, bbox, "#00b7ff")
         anchor = _label_anchor_from_bbox(bbox)
         if anchor is not None:
-            _append_text(command, anchor[0], anchor[1], "sign", "#00b7ff")
+            _append_text(command, anchor[0], anchor[1], str(sign.get("label") or "sign"), "#00b7ff")
 
     for debug_rectangle in scene.get("debug_rectangles", []):
         color = str(debug_rectangle.get("color") or DEBUG_RECTANGLE_DEFAULT_COLOR)

@@ -9,6 +9,7 @@ from PIL import Image
 
 from tools.od_bootstrap.build.debug_vis import (
     generate_canonical_debug_vis,
+    generate_etri_tl_attr_sequence_debug_vis,
     generate_final_dataset_debug_vis,
     generate_final_lane_label_audit,
 )
@@ -282,6 +283,58 @@ class ODBootstrapBuildDebugVisTests(unittest.TestCase):
                 ["index.json", "lane_train", "lane_val", "overview", "summary.json"],
             )
 
+    def test_generate_etri_tl_attr_sequence_debug_vis_replaces_flat_kcity_overlays(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "pv26_etri_kcity_leftimg_attrpseudo_eval_v1"
+            old_overlay = dataset_root / "meta" / "debug_vis" / "old_kcity_overlay.png"
+            _make_image(old_overlay, 8, 8, "#000000")
+            manifest_rows = [
+                self._make_etri_tl_attr_sample(
+                    dataset_root=dataset_root,
+                    sample_id="etri_kcity_multicamera_leftimg_val_leftImg_val_20221124_kcity_000123_leftImg8bit",
+                    source_image_path="/raw/leftImg/val/20221124_kcity/000123_leftImg8bit.png",
+                    color="#202020",
+                    valid_count=1,
+                    invalid_count=0,
+                ),
+                self._make_etri_tl_attr_sample(
+                    dataset_root=dataset_root,
+                    sample_id="etri_kcity_multicamera_leftimg_val_leftImg_val_20221124_kcity_000456_leftImg8bit",
+                    source_image_path="/raw/leftImg/val/20221124_kcity/000456_leftImg8bit.png",
+                    color="#303030",
+                    valid_count=0,
+                    invalid_count=1,
+                ),
+            ]
+
+            result = generate_etri_tl_attr_sequence_debug_vis(
+                dataset_root=dataset_root,
+                manifest_rows=manifest_rows,
+                sequence_name="sequence__etri_kcity_test",
+                overview_count=1,
+                tl_attr_valid_count=1,
+                tl_attr_invalid_count=1,
+                debug_vis_seed=7,
+                workers=2,
+            )
+
+            sequence_root = dataset_root / "meta" / "debug_vis" / "sequence__etri_kcity_test"
+            index_payload = json.loads((sequence_root / "index.json").read_text(encoding="utf-8"))
+            summary_payload = json.loads((sequence_root / "summary.json").read_text(encoding="utf-8"))
+
+            self.assertFalse(old_overlay.exists())
+            self.assertEqual(result["selection_count"], 3)
+            self.assertEqual(index_payload["selection_count"], 3)
+            self.assertEqual(summary_payload["bucket_counts"], {"overview": 1, "tl_attr_invalid": 1, "tl_attr_valid": 1})
+            self.assertTrue((sequence_root / "overview").is_dir())
+            self.assertTrue((sequence_root / "tl_attr_valid" / "001__frame123__123.png").is_file())
+            self.assertTrue((sequence_root / "tl_attr_invalid" / "001__frame456__456.png").is_file())
+            self.assertEqual(sorted(path.name for path in (dataset_root / "meta" / "debug_vis").iterdir()), ["sequence__etri_kcity_test"])
+            with Image.open(sequence_root / "tl_attr_valid" / "001__frame123__123.png") as overlay:
+                self.assertGreater(overlay.width, 320)
+                self.assertEqual(overlay.height, 180)
+
     def _make_canonical_entry(
         self,
         *,
@@ -370,6 +423,67 @@ class ODBootstrapBuildDebugVisTests(unittest.TestCase):
             "split": split,
             "scene_path": str(scene_path),
             "image_path": str(image_path),
+        }
+
+    def _make_etri_tl_attr_sample(
+        self,
+        *,
+        dataset_root: Path,
+        sample_id: str,
+        source_image_path: str,
+        color: str,
+        valid_count: int,
+        invalid_count: int,
+    ) -> dict[str, object]:
+        image_path = dataset_root / "images" / "val" / f"{sample_id}.png"
+        scene_path = dataset_root / "labels_scene" / "val" / f"{sample_id}.json"
+        _make_image(image_path, 320, 180, color)
+        traffic_lights = []
+        detections = []
+        for index in range(valid_count + invalid_count):
+            bbox = [10 + index * 20, 20, 20 + index * 20, 40]
+            detections.append({"id": index, "class_name": "traffic_light", "bbox": bbox})
+            traffic_lights.append(
+                {
+                    "id": index,
+                    "detection_id": index,
+                    "bbox": bbox,
+                    "tl_attr_valid": 1 if index < valid_count else 0,
+                }
+            )
+        _write_json(
+            scene_path,
+            {
+                "version": "test",
+                "image": {
+                    "file_name": image_path.name,
+                    "width": 320,
+                    "height": 180,
+                },
+                "source": {
+                    "dataset": "etri_kcity_multicamera_leftimg_attrpseudo_v1",
+                    "split": "val",
+                    "final_sample_id": sample_id,
+                    "image_path": source_image_path,
+                    "raw_id": sample_id,
+                    "source_kind": "etri_kcity_leftimg_attrpseudo",
+                },
+                "detections": detections,
+                "lanes": [],
+                "stop_lines": [],
+                "crosswalks": [],
+                "traffic_lights": traffic_lights,
+            },
+        )
+        return {
+            "final_sample_id": sample_id,
+            "source_dataset_key": "etri_kcity_multicamera_leftimg_attrpseudo_v1",
+            "split": "val",
+            "scene_path": str(scene_path),
+            "image_path": str(image_path),
+            "source_image_path": source_image_path,
+            "tl_attr_valid_count": valid_count,
+            "tl_attr_invalid_count": invalid_count,
         }
 
 

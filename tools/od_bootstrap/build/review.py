@@ -92,6 +92,16 @@ def _box_key(bbox: list[float]) -> tuple[float, float, float, float] | None:
     return tuple(round(float(value), 3) for value in bbox)
 
 
+def _tl_attr_overlay_label(item: Mapping[str, Any]) -> str:
+    valid = bool(item.get("tl_attr_valid"))
+    bits = item.get("tl_bits") if isinstance(item.get("tl_bits"), Mapping) else {}
+    active_bits = [key[0].upper() for key in ("red", "yellow", "green", "arrow") if int(bits.get(key) or 0)]
+    if valid:
+        combo = "".join(active_bits) or str(item.get("base_color") or "on").upper()
+        return f"TL {combo}"
+    return "TL inv"
+
+
 def canonical_scene_to_overlay_scene(scene: dict[str, Any], *, image_path: Path) -> dict[str, Any]:
     overlay_scene: dict[str, Any] = {
         "image": {"source_path": str(Path(image_path).resolve())},
@@ -112,7 +122,7 @@ def canonical_scene_to_overlay_scene(scene: dict[str, Any], *, image_path: Path)
         key = _box_key(bbox)
         if key is None or key in traffic_light_keys:
             continue
-        overlay_scene["traffic_lights"].append({"bbox": bbox})
+        overlay_scene["traffic_lights"].append({"bbox": bbox, "label": _tl_attr_overlay_label(light)})
         traffic_light_keys.add(key)
 
     for sign in scene.get("traffic_signs", []):
@@ -120,7 +130,7 @@ def canonical_scene_to_overlay_scene(scene: dict[str, Any], *, image_path: Path)
         key = _box_key(bbox)
         if key is None or key in traffic_sign_keys:
             continue
-        overlay_scene["traffic_signs"].append({"bbox": bbox})
+        overlay_scene["traffic_signs"].append({"bbox": bbox, "label": "sign"})
         traffic_sign_keys.add(key)
 
     for detection in scene.get("detections", []):

@@ -39,6 +39,7 @@ MULTICAMERA_SOURCE_KIND = "etri_multicamera_leftimg"
 MULTICAMERA_ATTRPSEUDO_SOURCE_KIND = "etri_multicamera_leftimg_attrpseudo"
 FINAL_DATASET_MANIFEST_NAME = "final_dataset_manifest.json"
 HELD_LABELS_NAME = "held_labels.jsonl"
+TL_ATTR_TEACHER_DEBUG_NAME = "tl_attr_teacher_debug.jsonl"
 VALID_SPLITS = ("train", "val", "test")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".ppm"}
 SEMANTIC_LABEL_EXTENSIONS = {".json", ".png", ".bmp", ".tif", ".tiff"}
@@ -581,8 +582,9 @@ def materialize_kcity_val_release(
     sidecar_traffic_light_count = 0
     sidecar_valid_count = 0
     sidecar_invalid_count = 0
+    tl_attr_debug_rows: list[dict[str, Any]] = []
     for sample in samples:
-        row, sample_counts, sample_held, sidecar_stats = _materialize_release_sample(
+        row, sample_counts, sample_held, sidecar_stats, sample_debug_rows = _materialize_release_sample(
             sample=sample,
             output_root=output,
             copy_images=copy_images,
@@ -596,6 +598,7 @@ def materialize_kcity_val_release(
         manifest_rows.append(row)
         class_counts.update(sample_counts)
         held_rows.extend(sample_held)
+        tl_attr_debug_rows.extend(sample_debug_rows)
         if sidecar_stats is not None:
             sidecar_traffic_light_count += int(sidecar_stats.traffic_light_count)
             sidecar_valid_count += int(sidecar_stats.valid_count)
@@ -613,8 +616,32 @@ def materialize_kcity_val_release(
 
     manifest_rows.sort(key=lambda item: (str(item["split"]), str(item["final_sample_id"])))
     held_rows.sort(key=lambda item: (str(item["sample_id"]), int(item["annotation_index"]), str(item["raw_label"])))
+    tl_attr_debug_rows.sort(key=lambda item: (str(item["sample_id"]), int(item["detection_id"])))
     manifest_path = output / "meta" / FINAL_DATASET_MANIFEST_NAME
     held_path = output / "meta" / HELD_LABELS_NAME
+    tl_attr_debug_path = output / "meta" / TL_ATTR_TEACHER_DEBUG_NAME
+    tl_attr_coverage_count = sidecar_traffic_light_count if attrpseudo_enabled else 0
+    tl_attr_status = (
+        "not_available"
+        if not attrpseudo_enabled
+        else "complete"
+        if sidecar_invalid_count == 0
+        else "partial"
+    )
+    tl_attr_teacher = {
+        "enabled": attrpseudo_enabled,
+        "teacher_name": "signal_attr" if attrpseudo_enabled else None,
+        "checkpoint_path": str(sidecar_checkpoint) if sidecar_checkpoint is not None else None,
+        "traffic_light_count": sidecar_traffic_light_count,
+        "coverage_count": tl_attr_coverage_count,
+        "coverage_gap_count": 0 if attrpseudo_enabled else sidecar_traffic_light_count,
+        "valid_count": sidecar_valid_count,
+        "invalid_count": sidecar_invalid_count,
+        "status": tl_attr_status,
+        "validity_policy": "conservative_thresholded",
+        "debug_rows_path": str(tl_attr_debug_path) if attrpseudo_enabled else None,
+        "reason_counts": counter_to_dict(sidecar_reason_counts),
+    }
     manifest = {
         "version": manifest_version,
         "generated_at": generated_at,
@@ -636,6 +663,7 @@ def materialize_kcity_val_release(
         "held_label_count": len(held_rows),
         "held_label_counts": counter_to_dict(Counter(str(row["raw_label"]) for row in held_rows)),
         "held_labels_path": str(held_path),
+        "tl_attr_teacher": tl_attr_teacher,
         "metric_semantics": {
             "det": "human_polygon_bbox_gt",
             "tl_attr": "signal_attr_teacher_pseudo" if attrpseudo_enabled else "not_available",
@@ -648,21 +676,30 @@ def materialize_kcity_val_release(
             "teacher_name": "signal_attr" if attrpseudo_enabled else None,
             "checkpoint_path": str(sidecar_checkpoint) if sidecar_checkpoint is not None else None,
             "traffic_light_count": sidecar_traffic_light_count,
+            "coverage_count": tl_attr_coverage_count,
+            "coverage_gap_count": tl_attr_teacher["coverage_gap_count"],
             "valid_count": sidecar_valid_count,
             "invalid_count": sidecar_invalid_count,
+            "status": tl_attr_status,
+            "validity_policy": "conservative_thresholded",
+            "debug_rows_path": str(tl_attr_debug_path) if attrpseudo_enabled else None,
             "reason_counts": counter_to_dict(sidecar_reason_counts),
         },
         "samples": manifest_rows,
     }
     write_jsonl_sorted(held_path, held_rows)
+    if attrpseudo_enabled:
+        write_jsonl_sorted(tl_attr_debug_path, tl_attr_debug_rows)
     write_json(manifest_path, manifest)
     return {
         "output_root": str(output),
         "manifest_path": str(manifest_path),
         "held_labels_path": str(held_path),
+        "tl_attr_debug_rows_path": str(tl_attr_debug_path) if attrpseudo_enabled else None,
         "sample_count": len(manifest_rows),
         "held_label_count": len(held_rows),
         "class_counts": counter_to_dict(class_counts),
+        "tl_attr_teacher": manifest["tl_attr_teacher"],
         "signal_attr_sidecar": manifest["signal_attr_sidecar"],
     }
 
@@ -716,7 +753,7 @@ def _materialize_release_sample(
     signal_attr_sidecar: Any | None,
     run_id: str,
     created_at: str,
-) -> tuple[dict[str, Any], Counter[str], list[dict[str, Any]], Any | None]:
+) -> tuple[dict[str, Any], Counter[str], list[dict[str, Any]], Any | None, list[dict[str, Any]]]:
     raw = _load_json_label(sample.semantic_label_path)
     if raw is None:
         raise EtriMaterializationError(f"ETRI KCity release requires JSON semantic labels: {sample.semantic_label_path}")
@@ -859,6 +896,7 @@ def _materialize_release_sample(
         "traffic_lights": [],
     }
     sidecar_stats = None
+    tl_attr_debug_rows: list[dict[str, Any]] = []
     if signal_attr_sidecar is not None:
         sidecar_stats = signal_attr_sidecar.apply_to_scene(
             scene,
@@ -866,6 +904,8 @@ def _materialize_release_sample(
             run_id=run_id,
             created_at=created_at,
         )
+        tl_attr_debug_rows = _validate_and_summarize_tl_attr_rows(scene, sample=sample)
+        _assert_tl_attr_stats_match_rows(sidecar_stats, tl_attr_debug_rows, sample=sample)
     write_json(scene_path, scene)
     write_text(det_path, _det_label_text(detections, width=sample.width, height=sample.height))
     if copy_images:
@@ -897,13 +937,94 @@ def _materialize_release_sample(
             if sidecar_stats is not None
             else sum(1 for detection in detections if str(detection.get("class_name")) == "traffic_light")
         ),
+        "tl_attr_coverage_count": int(sidecar_stats.traffic_light_count) if sidecar_stats is not None else 0,
         "tl_attr_valid_count": int(sidecar_stats.valid_count) if sidecar_stats is not None else 0,
         "tl_attr_invalid_count": int(sidecar_stats.invalid_count) if sidecar_stats is not None else 0,
         "tl_attr_reason_counts": dict(sidecar_stats.reason_counts) if sidecar_stats is not None else {},
+        "tl_attr_status": (
+            "not_available"
+            if sidecar_stats is None
+            else "complete"
+            if int(sidecar_stats.invalid_count) == 0
+            else "partial"
+        ),
         "held_label_count": len(held_rows),
         "failure_count": 0,
     }
-    return manifest_row, class_counts, held_rows, sidecar_stats
+    return manifest_row, class_counts, held_rows, sidecar_stats, tl_attr_debug_rows
+
+
+def _validate_and_summarize_tl_attr_rows(scene: Mapping[str, Any], *, sample: EtriDryRunSample) -> list[dict[str, Any]]:
+    detections = scene.get("detections")
+    traffic_lights = scene.get("traffic_lights")
+    if not isinstance(detections, list):
+        raise EtriMaterializationError(f"ETRI scene detections must be a list: {sample.sample_id}")
+    if not isinstance(traffic_lights, list):
+        raise EtriMaterializationError(f"ETRI scene traffic_lights must be a list after tl_attr teacher: {sample.sample_id}")
+    traffic_detection_ids = {
+        index for index, detection in enumerate(detections) if str(detection.get("class_name") or "") == "traffic_light"
+    }
+    seen_detection_ids: set[int] = set()
+    rows: list[dict[str, Any]] = []
+    for row_index, item in enumerate(traffic_lights):
+        if not isinstance(item, Mapping):
+            raise EtriMaterializationError(f"ETRI traffic_lights[{row_index}] must be an object: {sample.sample_id}")
+        try:
+            detection_id = int(item.get("detection_id"))
+        except (TypeError, ValueError) as exc:
+            raise EtriMaterializationError(
+                f"ETRI traffic_lights[{row_index}].detection_id must be an integer: {sample.sample_id}"
+            ) from exc
+        if detection_id not in traffic_detection_ids:
+            raise EtriMaterializationError(
+                f"ETRI traffic_lights[{row_index}].detection_id must point to traffic_light detection: {sample.sample_id}"
+            )
+        if detection_id in seen_detection_ids:
+            raise EtriMaterializationError(f"duplicate ETRI tl_attr detection_id: {sample.sample_id}:{detection_id}")
+        seen_detection_ids.add(detection_id)
+        meta = item.get("meta") if isinstance(item.get("meta"), Mapping) else {}
+        rows.append(
+            {
+                "sample_id": sample.sample_id,
+                "source_image_path": str(sample.image_path),
+                "source_label_path": str(sample.semantic_label_path),
+                "detection_id": detection_id,
+                "bbox": item.get("bbox"),
+                "tl_attr_valid": int(item.get("tl_attr_valid", 0)),
+                "collapse_reason": str(item.get("collapse_reason") or ""),
+                "tl_bits": item.get("tl_bits"),
+                "base_color": item.get("base_color"),
+                "arrow": item.get("arrow"),
+                "base_color_confidence": item.get("base_color_confidence"),
+                "arrow_probability": item.get("arrow_probability"),
+                "crop_box": meta.get("crop_box"),
+                "clipped_box": meta.get("clipped_box"),
+            }
+        )
+    missing_detection_ids = sorted(traffic_detection_ids - seen_detection_ids)
+    if missing_detection_ids:
+        raise EtriMaterializationError(
+            f"ETRI tl_attr teacher must emit one row per traffic_light detection: "
+            f"{sample.sample_id} missing={missing_detection_ids}"
+        )
+    return rows
+
+
+def _assert_tl_attr_stats_match_rows(stats: Any, rows: Sequence[Mapping[str, Any]], *, sample: EtriDryRunSample) -> None:
+    traffic_light_count = int(getattr(stats, "traffic_light_count"))
+    valid_count = int(getattr(stats, "valid_count"))
+    invalid_count = int(getattr(stats, "invalid_count"))
+    row_valid_count = sum(int(row.get("tl_attr_valid", 0)) for row in rows)
+    if traffic_light_count != len(rows):
+        raise EtriMaterializationError(
+            f"ETRI tl_attr teacher stats traffic_light_count mismatch: "
+            f"{sample.sample_id} stats={traffic_light_count} rows={len(rows)}"
+        )
+    if valid_count != row_valid_count or invalid_count != len(rows) - row_valid_count:
+        raise EtriMaterializationError(
+            f"ETRI tl_attr teacher stats valid/invalid mismatch: "
+            f"{sample.sample_id} stats=({valid_count},{invalid_count}) rows=({row_valid_count},{len(rows) - row_valid_count})"
+        )
 
 
 def _sidecar_checkpoint_path(signal_attr_sidecar: Any | None, fallback: Path | None) -> Path | None:
@@ -1432,6 +1553,7 @@ __all__ = [
     "CANDIDATE_REASON_SAMPLE_ID_MISMATCH",
     "DATASET_KEY",
     "ATTRPSEUDO_DATASET_KEY",
+    "ATTRPSEUDO_SOURCE_KIND",
     "MULTICAMERA_ATTRPSEUDO_DATASET_KEY",
     "MULTICAMERA_DATASET_KEY",
     "ETRI_SAFE_LABEL_MAPPING",
@@ -1442,6 +1564,7 @@ __all__ = [
     "EtriDryRunSample",
     "HELD_LABEL_REASON_UNMAPPED",
     "HELD_LABELS_NAME",
+    "TL_ATTR_TEACHER_DEBUG_NAME",
     "RAW_SCAN_REASON_LIDAR",
     "RAW_SCAN_REASON_MONO_CAMERA",
     "RAW_SCAN_REASON_PV26_OUTPUT",

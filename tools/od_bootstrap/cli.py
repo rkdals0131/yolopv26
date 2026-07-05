@@ -19,12 +19,17 @@ from tools.od_bootstrap.build.lane_val_odpseudo import (
 from tools.od_bootstrap.build.debug_vis import (
     DEFAULT_DEBUG_VIS_COUNT,
     DEFAULT_DEBUG_VIS_SEED,
+    DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_INVALID_COUNT,
+    DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_OVERVIEW_COUNT,
+    DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_SEQUENCE_NAME,
+    DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_VALID_COUNT,
     DEFAULT_FINAL_LANE_AUDIT_BIN_COUNT,
     DEFAULT_FINAL_LANE_AUDIT_DIRNAME,
     DEFAULT_FINAL_LANE_AUDIT_OVERVIEW_COUNT,
     DEFAULT_FINAL_LANE_AUDIT_SAMPLES_PER_BIN,
     DEFAULT_FINAL_LANE_AUDIT_WORKERS,
     generate_canonical_debug_vis,
+    generate_etri_tl_attr_sequence_debug_vis,
     generate_exhaustive_debug_vis,
     generate_final_dataset_debug_vis,
     generate_final_lane_label_audit,
@@ -37,6 +42,12 @@ from tools.od_bootstrap.build.review import render_final_dataset_review_bundle
 from tools.od_bootstrap.build.sweep import run_model_centric_sweep_scenario
 from tools.od_bootstrap.build.teacher_dataset import build_teacher_datasets
 from tools.od_bootstrap.source.prepare import prepare_od_bootstrap_sources
+from tools.od_bootstrap.source.etri_kcity import (
+    ATTRPSEUDO_DATASET_KEY as ETRI_KCITY_ATTRPSEUDO_DATASET_KEY,
+    ATTRPSEUDO_SOURCE_KIND as ETRI_KCITY_ATTRPSEUDO_SOURCE_KIND,
+    RELEASE_PATH_TOKEN as ETRI_KCITY_RELEASE_PATH_TOKEN,
+    materialize_kcity_val_release,
+)
 from tools.od_bootstrap.source.types import CanonicalSourceBundle
 from tools.od_bootstrap.signal_attr import (
     SignalAttrClassifierConfig,
@@ -264,6 +275,45 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_common_path_overrides(exhaustive_od)
     exhaustive_od.set_defaults(handler=_run_exhaustive_od)
 
+    etri_kcity_tlattr = subparsers.add_parser(
+        "build-etri-kcity-tlattr",
+        help="Add TL attribute teacher pseudo labels to the ETRI KCity leftImg release.",
+    )
+    etri_kcity_tlattr.add_argument("dataset_root", type=Path, help="Raw ETRI Multi Camera Semantic Segmentation root.")
+    etri_kcity_tlattr.add_argument(
+        "--signal-attr-checkpoint",
+        type=Path,
+        default=None,
+        help="Override the best_signal_attr.pt checkpoint used for TL attr materialization.",
+    )
+    etri_kcity_tlattr.add_argument("--device", type=str, default="cuda:0", help="Torch device for the TL attr teacher.")
+    etri_kcity_tlattr.add_argument(
+        "--expected-sample-count",
+        type=int,
+        default=None,
+        help="Fail unless the selected KCity release contains exactly this many samples.",
+    )
+    etri_kcity_tlattr.add_argument(
+        "--source-splits",
+        nargs="+",
+        default=["train", "val"],
+        help="Raw ETRI splits to include. Default: train val.",
+    )
+    etri_kcity_tlattr.add_argument(
+        "--output-split",
+        default="val",
+        help="PV26 output split for the materialized eval root. Default: val.",
+    )
+    etri_kcity_tlattr.add_argument(
+        "--release-path-token",
+        default=ETRI_KCITY_RELEASE_PATH_TOKEN,
+        help=f"Path token selecting KCity samples. Default: {ETRI_KCITY_RELEASE_PATH_TOKEN}.",
+    )
+    etri_kcity_tlattr.add_argument("--sample-limit", type=int, default=None, help="Optional sample limit for smoke runs.")
+    etri_kcity_tlattr.add_argument("--copy-images", action="store_true", help="Copy images instead of hardlink/symlink fallback.")
+    _add_common_path_overrides(etri_kcity_tlattr)
+    etri_kcity_tlattr.set_defaults(handler=_run_etri_kcity_tlattr)
+
     lane_val_odpseudo = subparsers.add_parser(
         "build-lane-val-odpseudo",
         help="Materialize the lane validation OD pseudo eval root from teacher/audit sample results.",
@@ -376,6 +426,23 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_final.add_argument("--workers", type=int, default=DEFAULT_FINAL_LANE_AUDIT_WORKERS, help="Maximum parallel overlay render workers.")
     audit_final.add_argument("--seed", type=int, default=DEFAULT_DEBUG_VIS_SEED, help="Sampling seed.")
     audit_final.set_defaults(handler=_run_audit_final_lane_labels)
+
+    audit_etri_tlattr = subparsers.add_parser(
+        "audit-etri-tlattr-debug-vis",
+        help="Render ETRI KCity TL-attr overlays under meta/debug_vis/sequence__*/.",
+    )
+    audit_etri_tlattr.add_argument("--dataset-root", type=Path, required=True, help="ETRI KCity attrpseudo dataset root.")
+    audit_etri_tlattr.add_argument(
+        "--sequence-name",
+        default=DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_SEQUENCE_NAME,
+        help=f"Output sequence directory name. Default: {DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_SEQUENCE_NAME}.",
+    )
+    audit_etri_tlattr.add_argument("--overview-count", type=int, default=DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_OVERVIEW_COUNT)
+    audit_etri_tlattr.add_argument("--tl-attr-valid-count", type=int, default=DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_VALID_COUNT)
+    audit_etri_tlattr.add_argument("--tl-attr-invalid-count", type=int, default=DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_INVALID_COUNT)
+    audit_etri_tlattr.add_argument("--workers", type=int, default=DEFAULT_FINAL_LANE_AUDIT_WORKERS, help="Maximum parallel overlay render workers.")
+    audit_etri_tlattr.add_argument("--seed", type=int, default=DEFAULT_DEBUG_VIS_SEED, help="Sampling seed.")
+    audit_etri_tlattr.set_defaults(handler=_run_audit_etri_tlattr_debug_vis)
 
     review_final = subparsers.add_parser("review-final-dataset", help="Render focused final-dataset overlay review samples.")
     review_final.add_argument("--final-root", type=Path, default=None, help="Override the final dataset root.")
@@ -671,6 +738,37 @@ def _resolve_signal_attr_sidecar_checkpoint(args: argparse.Namespace) -> Path | 
     return None
 
 
+def _default_etri_kcity_tlattr_output_root() -> Path:
+    return (Path(__file__).resolve().parents[2] / "seg_dataset" / "pv26_etri_kcity_leftimg_attrpseudo_v1").resolve()
+
+
+def _run_etri_kcity_tlattr(args: argparse.Namespace) -> int:
+    checkpoint_path = (
+        Path(args.signal_attr_checkpoint).resolve()
+        if args.signal_attr_checkpoint is not None
+        else teacher_checkpoint_path(build_teacher_train_preset("signal").run.output_root, "signal_attr")
+    )
+    sidecar = SignalAttrSidecarTeacher.from_checkpoint(checkpoint_path, device=str(args.device))
+    output_root = _resolve_output_root(args, _default_etri_kcity_tlattr_output_root())
+    summary = materialize_kcity_val_release(
+        Path(args.dataset_root).resolve(),
+        output_root,
+        copy_images=bool(args.copy_images),
+        expected_sample_count=args.expected_sample_count,
+        release_path_token=args.release_path_token,
+        allowed_splits=tuple(str(item) for item in args.source_splits),
+        output_split=str(args.output_split),
+        scan_required_path_token="kcity",
+        sample_limit=args.sample_limit,
+        signal_attr_sidecar=sidecar,
+        signal_attr_checkpoint_path=checkpoint_path,
+        attrpseudo_dataset_key_override=ETRI_KCITY_ATTRPSEUDO_DATASET_KEY,
+        attrpseudo_source_kind_override=ETRI_KCITY_ATTRPSEUDO_SOURCE_KIND,
+    )
+    _print_json(summary)
+    return 0
+
+
 def _load_lane_val_sample_results(path: Path) -> list[dict[str, Any]] | dict[str, dict[str, Any]]:
     if not path.is_file():
         raise FileNotFoundError(f"lane-val OD pseudo sample results not found: {path}")
@@ -839,6 +937,37 @@ def _run_audit_final_lane_labels(args: argparse.Namespace) -> int:
         {
             "dataset_root": str(final_root),
             "output_root": str(result["output_root"]),
+            "index_path": str(result["index_path"]),
+            "summary_path": str(result["summary_path"]),
+            "selection_count": int(result["selection_count"]),
+        }
+    )
+    return 0
+
+
+def _run_audit_etri_tlattr_debug_vis(args: argparse.Namespace) -> int:
+    dataset_root = Path(args.dataset_root).resolve()
+    manifest_path = dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"ETRI KCity dataset manifest not found: {manifest_path}")
+    manifest = _load_json(manifest_path)
+    sample_rows = [dict(item) for item in manifest.get("samples") or []]
+    result = generate_etri_tl_attr_sequence_debug_vis(
+        dataset_root=dataset_root,
+        manifest_rows=sample_rows,
+        sequence_name=str(args.sequence_name),
+        overview_count=int(args.overview_count),
+        tl_attr_valid_count=int(args.tl_attr_valid_count),
+        tl_attr_invalid_count=int(args.tl_attr_invalid_count),
+        debug_vis_seed=int(args.seed),
+        workers=int(args.workers),
+        log_fn=lambda message: print(message, flush=True),
+    )
+    _print_json(
+        {
+            "dataset_root": str(dataset_root),
+            "debug_vis_root": str(result["debug_vis_root"]),
+            "sequence_root": str(result["sequence_root"]),
             "index_path": str(result["index_path"]),
             "summary_path": str(result["summary_path"]),
             "selection_count": int(result["selection_count"]),

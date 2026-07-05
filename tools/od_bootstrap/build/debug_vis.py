@@ -8,12 +8,14 @@ from pathlib import Path
 import re
 import shutil
 import time
-from typing import Callable, Mapping, Sequence, TypedDict
+from typing import Any, Callable, Mapping, Sequence, TypedDict
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFont
 except Exception:  # pragma: no cover - Pillow is expected in the repo test env.
     Image = None
+    ImageDraw = None
+    ImageFont = None
 
 from common.io import now_iso as _now_iso
 from common.io import read_json as _read_json
@@ -32,6 +34,10 @@ DEFAULT_FINAL_LANE_AUDIT_BIN_COUNT = 32
 DEFAULT_FINAL_LANE_AUDIT_SAMPLES_PER_BIN = 4
 DEFAULT_FINAL_LANE_AUDIT_WORKERS = max(1, os.cpu_count() or 1)
 DEFAULT_FINAL_LANE_AUDIT_DIRNAME = "debug_vis_lane_audit"
+DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_SEQUENCE_NAME = "sequence__etri_kcity_leftimg_attrpseudo_v1"
+DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_OVERVIEW_COUNT = 24
+DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_VALID_COUNT = 40
+DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_INVALID_COUNT = 16
 DEFAULT_FINAL_LANE_AUDIT_OVERVIEW_QUOTAS: tuple[tuple[str, str, int], ...] = (
     ("aihub_lane_seoul", "train", 24),
     ("aihub_lane_seoul", "val", 24),
@@ -158,6 +164,14 @@ class FinalLaneAuditItem(TypedDict, total=False):
 
 class FinalLaneAuditResult(TypedDict):
     output_root: Path
+    index_path: Path
+    summary_path: Path
+    selection_count: int
+
+
+class EtriTlAttrDebugVisResult(TypedDict):
+    debug_vis_root: Path
+    sequence_root: Path
     index_path: Path
     summary_path: Path
     selection_count: int
@@ -921,8 +935,381 @@ def _render_final_lane_audit_item(row: DebugSelectionRow) -> FinalLaneAuditItem:
     return item
 
 
+def _render_etri_tl_attr_debug_item(row: DebugSelectionRow) -> FinalLaneAuditItem:
+    image_path = Path(_selection_str(row, "image_path")).resolve()
+    scene_path = Path(_selection_str(row, "scene_path")).resolve()
+    overlay_path = Path(_selection_str(row, "overlay_path")).resolve()
+    scene = _load_scene_payload(scene_path)
+    temp_overlay_path = overlay_path.with_name(f".{overlay_path.stem}.overlay.tmp.png")
+    try:
+        render_overlay(canonical_scene_to_overlay_scene(scene, image_path=image_path), temp_overlay_path)
+        _compose_etri_tl_attr_panel(
+            overlay_path=temp_overlay_path,
+            output_path=overlay_path,
+            scene=scene,
+            row=row,
+            bucket_dir=_selection_str(row, "bucket_dir"),
+        )
+    finally:
+        if temp_overlay_path.exists():
+            temp_overlay_path.unlink()
+    item: FinalLaneAuditItem = {
+        "category": _selection_str(row, "category"),
+        "bucket_dir": _selection_str(row, "bucket_dir"),
+        "dataset_key": _selection_str(row, "dataset_key"),
+        "split": _selection_str(row, "split"),
+        "sample_id": _selection_str(row, "sample_id"),
+        "sample_uid": _selection_str(row, "sample_uid"),
+        "overlay_path": str(overlay_path),
+        "source_image_path": str(image_path),
+        "source_scene_path": str(scene_path),
+        "group_key": _selection_str(row, "group_key"),
+        "group_slug": _selection_str(row, "group_slug"),
+        "source_raw_id": _selection_str(row, "source_raw_id"),
+        "lane_count": int(row.get("lane_count") or 0),
+        "stop_line_count": int(row.get("stop_line_count") or 0),
+        "crosswalk_count": int(row.get("crosswalk_count") or 0),
+        "frame_id": int(row.get("frame_id") or -1),
+    }
+    return item
+
+
 def _counter_dict(counter: Counter[str]) -> dict[str, int]:
     return {str(key): int(counter[key]) for key in sorted(counter)}
+
+
+def _extract_etri_leftimg_frame_id(*texts: str) -> int | None:
+    for text in texts:
+        for candidate in (Path(str(text)).stem, str(text)):
+            normalized = re.sub(r"_(?:leftImg8bit|leftImg)$", "", candidate.strip())
+            if not normalized:
+                continue
+            match = _TRAILING_DIGITS_RE.search(normalized)
+            if match is None:
+                continue
+            try:
+                return int(match.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _tl_attr_row_counts(row: Mapping[str, object], scene: Mapping[str, object]) -> tuple[int, int]:
+    valid_from_row = row.get("tl_attr_valid_count")
+    invalid_from_row = row.get("tl_attr_invalid_count")
+    if valid_from_row is not None and invalid_from_row is not None:
+        return int(valid_from_row), int(invalid_from_row)
+    valid_count = 0
+    invalid_count = 0
+    for light in scene.get("traffic_lights") or []:
+        if not isinstance(light, Mapping):
+            continue
+        if int(light.get("tl_attr_valid") or 0) == 1:
+            valid_count += 1
+        else:
+            invalid_count += 1
+    return valid_count, invalid_count
+
+
+def _tl_attr_bits_text(item: Mapping[str, Any]) -> str:
+    bits = item.get("tl_bits") if isinstance(item.get("tl_bits"), Mapping) else {}
+    active = [name for name in ("red", "yellow", "green", "arrow") if int(bits.get(name) or 0)]
+    return "+".join(active) if active else str(item.get("base_color") or "off")
+
+
+def _tl_attr_panel_line(item: Mapping[str, Any]) -> str:
+    valid = int(item.get("tl_attr_valid") or 0)
+    det_id = item.get("detection_id")
+    bits = _tl_attr_bits_text(item)
+    base_conf = float(item.get("base_color_confidence") or 0.0)
+    arrow_prob = float(item.get("arrow_probability") or 0.0)
+    if valid:
+        return f"det={det_id} valid {bits} bc={base_conf:.2f} ar={arrow_prob:.2f}"
+    reason = str(item.get("collapse_reason") or "invalid").replace("signal_attr_teacher_", "")
+    return f"det={det_id} invalid {reason} bc={base_conf:.2f} ar={arrow_prob:.2f}"
+
+
+def _coerce_bbox_list(value: Any) -> list[float]:
+    if isinstance(value, Mapping):
+        return [
+            float(value.get("x1", 0.0)),
+            float(value.get("y1", 0.0)),
+            float(value.get("x2", 0.0)),
+            float(value.get("y2", 0.0)),
+        ]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [float(item) for item in list(value)[:4]]
+    return []
+
+
+def _safe_crop_box(bbox: list[float], *, width: int, height: int, pad: int = 12) -> tuple[int, int, int, int] | None:
+    if len(bbox) != 4:
+        return None
+    x1, y1, x2, y2 = bbox
+    left = max(0, int(min(x1, x2)) - pad)
+    top = max(0, int(min(y1, y2)) - pad)
+    right = min(width, int(max(x1, x2)) + pad)
+    bottom = min(height, int(max(y1, y2)) + pad)
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def _draw_text_block(draw: Any, xy: tuple[int, int], lines: Sequence[str], *, fill: str, line_height: int) -> int:
+    x_coord, y_coord = xy
+    for line in lines:
+        draw.text((x_coord, y_coord), str(line), fill=fill)
+        y_coord += line_height
+    return y_coord
+
+
+def _compose_etri_tl_attr_panel(
+    *,
+    overlay_path: Path,
+    output_path: Path,
+    scene: Mapping[str, Any],
+    row: Mapping[str, object],
+    bucket_dir: str,
+) -> None:
+    if Image is None or ImageDraw is None or ImageFont is None:  # pragma: no cover
+        raise RuntimeError("Pillow is required to render ETRI TL attr debug panels")
+    with Image.open(overlay_path).convert("RGB") as overlay_image:
+        overlay = overlay_image.copy()
+    image_width, image_height = overlay.size
+    panel_width = 460
+    canvas = Image.new("RGB", (image_width + panel_width, image_height), "#101418")
+    canvas.paste(overlay, (0, 0))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    draw.font = font
+
+    panel_x = image_width + 16
+    title = f"{bucket_dir} | ETRI KCity | frame {row.get('frame_id')}"
+    draw.rectangle([image_width + 8, 10, image_width + panel_width - 12, 34], outline="#ffffff", width=1)
+    draw.text((panel_x, 14), title[:64], fill="#ffffff")
+
+    traffic_lights = [item for item in scene.get("traffic_lights") or [] if isinstance(item, Mapping)]
+    valid_count = sum(1 for item in traffic_lights if int(item.get("tl_attr_valid") or 0) == 1)
+    invalid_count = len(traffic_lights) - valid_count
+    y_coord = _draw_text_block(
+        draw,
+        (panel_x, 52),
+        [
+            f"sample: {_selection_str(row, 'sample_id')}",
+            f"det={len(scene.get('detections') or [])} tl={len(traffic_lights)} valid={valid_count} invalid={invalid_count}",
+            f"lane={len(scene.get('lanes') or [])} stop={len(scene.get('stop_lines') or [])} cross={len(scene.get('crosswalks') or [])}",
+        ],
+        fill="#d8dee9",
+        line_height=18,
+    )
+    y_coord += 18
+
+    original_image_path = Path(_selection_str(row, "image_path"))
+    with Image.open(original_image_path).convert("RGB") as original:
+        original_image = original.copy()
+    source_width, source_height = original_image.size
+    thumb_width = 132
+    thumb_height = 88
+    gap_x = 22
+    gap_y = 52
+    grid_x = [panel_x, panel_x + thumb_width + gap_x]
+    ordered_lights = sorted(
+        traffic_lights,
+        key=lambda item: (
+            0 if int(item.get("tl_attr_valid") or 0) == 1 else 1,
+            int(item.get("detection_id") or 0),
+        ),
+    )
+    for index, item in enumerate(ordered_lights[:8]):
+        col = index % 2
+        row_index = index // 2
+        x_coord = grid_x[col]
+        y_thumb = y_coord + row_index * (thumb_height + gap_y)
+        if y_thumb + thumb_height + 40 > image_height - 70:
+            break
+        bbox = _coerce_bbox_list(item.get("bbox"))
+        crop_box = _safe_crop_box(bbox, width=source_width, height=source_height)
+        if crop_box is not None:
+            thumb = original_image.crop(crop_box)
+            thumb.thumbnail((thumb_width, thumb_height))
+            canvas.paste(thumb, (x_coord, y_thumb))
+            border_color = "#28ff85" if int(item.get("tl_attr_valid") or 0) == 1 else "#ff9f1a"
+            draw.rectangle([x_coord, y_thumb, x_coord + thumb_width, y_thumb + thumb_height], outline=border_color, width=3)
+        line = _tl_attr_panel_line(item)
+        text_color = "#28ff85" if int(item.get("tl_attr_valid") or 0) == 1 else "#ffbf69"
+        draw.text((x_coord, y_thumb + thumb_height + 6), line[:34], fill=text_color)
+
+    legend_lines = [
+        "TL attr labels are teacher-pseudo outputs",
+        "valid rows show predicted active bits",
+        "invalid rows show conservative reject reason",
+    ]
+    _draw_text_block(draw, (panel_x, image_height - 70), legend_lines, fill="#d8dee9", line_height=18)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path)
+
+
+def _build_etri_tl_attr_debug_row(
+    *,
+    dataset_root: Path,
+    row: Mapping[str, object],
+    bucket_dir: str,
+    ordinal: int,
+) -> DebugSelectionRow:
+    audit_row = _build_final_lane_audit_row(dataset_root=dataset_root, row=row, frame_index_fallback=ordinal)
+    scene = _load_scene_payload(Path(_selection_str(audit_row, "scene_path")))
+    valid_count, invalid_count = _tl_attr_row_counts(row, scene)
+    frame_id = _extract_etri_leftimg_frame_id(
+        _selection_str(audit_row, "sample_id"),
+        _selection_str(audit_row, "source_raw_id"),
+        _selection_str(audit_row, "source_image_path"),
+        _selection_str(audit_row, "image_path"),
+    )
+    if frame_id is not None:
+        audit_row["frame_id"] = int(frame_id)
+    audit_row["category"] = bucket_dir
+    audit_row["bucket_dir"] = bucket_dir
+    audit_row["tl_attr_valid_count"] = int(valid_count)
+    audit_row["tl_attr_invalid_count"] = int(invalid_count)
+    audit_row["traffic_light_count"] = int(valid_count + invalid_count)
+    frame_label = int(audit_row.get("frame_id") or ordinal)
+    audit_row["overlay_file_name"] = f"{ordinal:03d}__frame{frame_label}__{frame_label}.png"
+    return audit_row
+
+
+def _select_etri_tl_attr_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    count: int,
+    seed: int,
+    predicate: Callable[[Mapping[str, object]], bool] | None = None,
+) -> list[Mapping[str, object]]:
+    if count <= 0:
+        return []
+    candidates = [row for row in rows if predicate is None or predicate(row)]
+    candidates.sort(key=lambda item: _stable_final_dataset_order_key(seed, item))
+    return candidates[:count]
+
+
+def _normalize_etri_sequence_name(sequence_name: str) -> str:
+    raw_name = str(sequence_name).strip()
+    if raw_name.startswith("sequence__"):
+        suffix = _slugify_token(raw_name[len("sequence__"):], default="etri_kcity_leftimg_attrpseudo_v1", max_length=86)
+        return f"sequence__{suffix}"
+    suffix = _slugify_token(raw_name, default="etri_kcity_leftimg_attrpseudo_v1", max_length=86)
+    return f"sequence__{suffix}"
+
+
+def generate_etri_tl_attr_sequence_debug_vis(
+    *,
+    dataset_root: Path,
+    manifest_rows: Sequence[Mapping[str, object]],
+    sequence_name: str = DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_SEQUENCE_NAME,
+    overview_count: int = DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_OVERVIEW_COUNT,
+    tl_attr_valid_count: int = DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_VALID_COUNT,
+    tl_attr_invalid_count: int = DEFAULT_ETRI_TL_ATTR_DEBUG_VIS_INVALID_COUNT,
+    debug_vis_seed: int = DEFAULT_DEBUG_VIS_SEED,
+    workers: int = DEFAULT_FINAL_LANE_AUDIT_WORKERS,
+    log_fn: Callable[[str], None] | None = None,
+) -> EtriTlAttrDebugVisResult:
+    if overview_count < 0:
+        raise ValueError("overview_count must be >= 0")
+    if tl_attr_valid_count < 0:
+        raise ValueError("tl_attr_valid_count must be >= 0")
+    if tl_attr_invalid_count < 0:
+        raise ValueError("tl_attr_invalid_count must be >= 0")
+    if workers <= 0:
+        raise ValueError("workers must be > 0")
+    normalized_sequence_name = _normalize_etri_sequence_name(sequence_name)
+
+    dataset_root = dataset_root.resolve()
+    debug_vis_root = dataset_root / "meta" / "debug_vis"
+    sequence_root = debug_vis_root / normalized_sequence_name
+    _reset_debug_vis_dir(debug_vis_root)
+
+    ordered_rows = sorted(manifest_rows, key=lambda item: _stable_final_dataset_order_key(debug_vis_seed, item))
+    overview_rows = _select_etri_tl_attr_rows(ordered_rows, count=overview_count, seed=debug_vis_seed)
+    valid_rows = _select_etri_tl_attr_rows(
+        ordered_rows,
+        count=tl_attr_valid_count,
+        seed=debug_vis_seed,
+        predicate=lambda row: int(row.get("tl_attr_valid_count") or 0) > 0,
+    )
+    invalid_rows = _select_etri_tl_attr_rows(
+        ordered_rows,
+        count=tl_attr_invalid_count,
+        seed=debug_vis_seed,
+        predicate=lambda row: int(row.get("tl_attr_invalid_count") or 0) > 0,
+    )
+
+    selection_rows: list[DebugSelectionRow] = []
+    for bucket_dir, rows in (
+        ("overview", overview_rows),
+        ("tl_attr_valid", valid_rows),
+        ("tl_attr_invalid", invalid_rows),
+    ):
+        for ordinal, row in enumerate(rows, start=1):
+            audit_row = _build_etri_tl_attr_debug_row(
+                dataset_root=dataset_root,
+                row=row,
+                bucket_dir=bucket_dir,
+                ordinal=ordinal,
+            )
+            audit_row["overlay_path"] = str(
+                (sequence_root / bucket_dir / _selection_str(audit_row, "overlay_file_name")).resolve()
+            )
+            selection_rows.append(audit_row)
+
+    rendered_items_raw = _render_selected_rows(
+        selection_rows,
+        stage_name=f"etri-tlattr:{dataset_root.name}",
+        log_fn=log_fn,
+        render_fn=lambda row: _render_etri_tl_attr_debug_item(row),
+        max_workers=workers,
+    )
+    rendered_items: list[FinalLaneAuditItem] = [dict(item) for item in rendered_items_raw]
+    rendered_items.sort(key=lambda item: (str(item.get("bucket_dir") or ""), str(item.get("overlay_path") or "")))
+    bucket_counter = Counter(str(item.get("bucket_dir") or "unknown") for item in rendered_items)
+    index_path = sequence_root / "index.json"
+    summary_path = sequence_root / "summary.json"
+    _write_json(
+        index_path,
+        {
+            "version": "od-bootstrap-etri-tlattr-sequence-debug-vis-v1",
+            "generated_at": _now_iso(),
+            "dataset_root": str(dataset_root),
+            "debug_vis_root": str(debug_vis_root),
+            "sequence_root": str(sequence_root),
+            "seed": int(debug_vis_seed),
+            "workers": int(workers),
+            "selection_count": len(rendered_items),
+            "items": rendered_items,
+        },
+    )
+    _write_json(
+        summary_path,
+        {
+            "version": "od-bootstrap-etri-tlattr-sequence-debug-vis-v1",
+            "generated_at": _now_iso(),
+            "dataset_root": str(dataset_root),
+            "debug_vis_root": str(debug_vis_root),
+            "sequence_root": str(sequence_root),
+            "seed": int(debug_vis_seed),
+            "workers": int(workers),
+            "overview_count_requested": int(overview_count),
+            "tl_attr_valid_count_requested": int(tl_attr_valid_count),
+            "tl_attr_invalid_count_requested": int(tl_attr_invalid_count),
+            "selection_count": int(len(rendered_items)),
+            "bucket_counts": _counter_dict(bucket_counter),
+        },
+    )
+    return {
+        "debug_vis_root": debug_vis_root,
+        "sequence_root": sequence_root,
+        "index_path": index_path,
+        "summary_path": summary_path,
+        "selection_count": len(rendered_items),
+    }
 
 
 def generate_final_lane_label_audit(

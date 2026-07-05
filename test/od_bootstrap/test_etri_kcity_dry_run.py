@@ -92,6 +92,55 @@ class _FakeSignalAttrSidecar:
             raise AssertionError(f"{actual!r} != {expected!r}")
 
 
+class _PartialSignalAttrSidecar:
+    def __init__(self, expected_image_path: Path) -> None:
+        self.expected_image_path = expected_image_path.resolve()
+        self.checkpoint_path = Path("/tmp/fake_partial_best_signal_attr.pt")
+
+    def apply_to_scene(self, scene: dict, image_path: Path, *, run_id: str, created_at: str) -> SimpleNamespace:
+        if Path(image_path).resolve() != self.expected_image_path:
+            raise AssertionError(f"{image_path!r} != {self.expected_image_path!r}")
+        rows = []
+        for index, detection in enumerate(scene["detections"]):
+            if detection["class_name"] != "traffic_light":
+                continue
+            valid = int(len(rows) == 0)
+            rows.append(
+                {
+                    "id": len(rows),
+                    "detection_id": index,
+                    "bbox": [
+                        detection["bbox"]["x1"],
+                        detection["bbox"]["y1"],
+                        detection["bbox"]["x2"],
+                        detection["bbox"]["y2"],
+                    ],
+                    "tl_bits": {"red": valid, "yellow": 0, "green": 0, "arrow": 0},
+                    "tl_attr_valid": valid,
+                    "collapse_reason": "valid" if valid else "signal_attr_teacher_low_confidence",
+                    "base_color": "red" if valid else "off",
+                    "arrow": 0,
+                    "base_color_confidence": 0.95 if valid else 0.2,
+                    "arrow_probability": 0.1,
+                    "meta": {
+                        "label_origin": "signal_attr_sidecar",
+                        "run_id": run_id,
+                        "created_at": created_at,
+                        "crop_box": [1, 1, 6, 6] if valid else None,
+                        "clipped_box": [1.0, 1.0, 6.0, 6.0] if valid else None,
+                    },
+                }
+            )
+        scene["traffic_lights"] = rows
+        scene["tasks"]["has_tl_attr"] = int(any(row["tl_attr_valid"] for row in rows))
+        return SimpleNamespace(
+            traffic_light_count=len(rows),
+            valid_count=sum(int(row["tl_attr_valid"]) for row in rows),
+            invalid_count=sum(1 for row in rows if not int(row["tl_attr_valid"])),
+            reason_counts={"signal_attr_teacher_low_confidence": 1, "valid": 1},
+        )
+
+
 class EtriKCityDryRunTests(unittest.TestCase):
     def test_etri_dry_run_includes_only_leftimg_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -491,8 +540,17 @@ class EtriKCityDryRunTests(unittest.TestCase):
             self.assertEqual(ATTRPSEUDO_DATASET_KEY, ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY)
             self.assertEqual(summary["signal_attr_sidecar"]["enabled"], True)
             self.assertEqual(summary["signal_attr_sidecar"]["valid_count"], 1)
+            self.assertEqual(summary["tl_attr_teacher"]["coverage_count"], 1)
+            self.assertEqual(summary["tl_attr_teacher"]["status"], "complete")
             self.assertEqual(manifest["dataset_key"], ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY)
+            self.assertEqual(manifest["tl_attr_teacher"]["traffic_light_count"], 1)
+            self.assertEqual(manifest["tl_attr_teacher"]["coverage_count"], 1)
+            self.assertEqual(manifest["tl_attr_teacher"]["coverage_gap_count"], 0)
+            self.assertEqual(manifest["tl_attr_teacher"]["status"], "complete")
+            self.assertEqual(manifest["tl_attr_teacher"]["validity_policy"], "conservative_thresholded")
             self.assertEqual(manifest["signal_attr_sidecar"]["reason_counts"], {"valid": 1})
+            self.assertEqual(manifest["samples"][0]["tl_attr_coverage_count"], 1)
+            self.assertEqual(manifest["samples"][0]["tl_attr_status"], "complete")
             self.assertEqual(scene["source"]["dataset"], ETRI_KCITY_LEFTIMG_ATTRPSEUDO_DATASET_KEY)
             self.assertEqual(scene["tasks"]["has_tl_attr"], 1)
             self.assertEqual([item["class_name"] for item in scene["detections"]], ["vehicle", "traffic_light", "sign"])
@@ -502,6 +560,57 @@ class EtriKCityDryRunTests(unittest.TestCase):
             self.assertTrue(sample["source_mask"]["tl_attr"])
             self.assertEqual(sample["valid_mask"]["tl_attr"].tolist(), [False, True, False])
             self.assertEqual(sample["tl_attr_targets"]["bits"][1].tolist(), [1.0, 0.0, 0.0, 1.0])
+            debug_rows = [
+                json.loads(line)
+                for line in Path(manifest["tl_attr_teacher"]["debug_rows_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(debug_rows), 1)
+            self.assertEqual(debug_rows[0]["detection_id"], 1)
+            self.assertEqual(debug_rows[0]["tl_attr_valid"], 1)
+
+    def test_etri_attrpseudo_release_keeps_partial_tl_attr_conservative(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_root = root / "release"
+            image_path = root / "KCity" / "val" / "20221124_kcity" / "leftImg" / "kc_011_leftImg.png"
+            label_path = root / "KCity" / "val" / "20221124_kcity" / "semantic" / "kc_011_semantic.json"
+            self._make_image(image_path)
+            self._write_json(
+                label_path,
+                {
+                    "image": {"file_name": image_path.name, "image_size": {"width": 12, "height": 8}},
+                    "objects": [
+                        {"label": "traffic light", "polygon": [[1, 1], [4, 1], [4, 5], [1, 5]]},
+                        {"label": "traffic light", "polygon": [[7, 1], [10, 1], [10, 5], [7, 5]]},
+                    ],
+                },
+            )
+
+            summary = materialize_kcity_val_release(
+                root,
+                output_root,
+                expected_sample_count=1,
+                signal_attr_sidecar=_PartialSignalAttrSidecar(image_path),
+            )
+            manifest = json.loads((output_root / "meta" / "final_dataset_manifest.json").read_text(encoding="utf-8"))
+            dataset = PV26CanonicalDataset([output_root])
+            sample = dataset[0]
+
+            self.assertEqual(summary["tl_attr_teacher"]["coverage_count"], 2)
+            self.assertEqual(summary["tl_attr_teacher"]["valid_count"], 1)
+            self.assertEqual(summary["tl_attr_teacher"]["invalid_count"], 1)
+            self.assertEqual(summary["tl_attr_teacher"]["status"], "partial")
+            self.assertEqual(manifest["samples"][0]["tl_attr_coverage_count"], 2)
+            self.assertEqual(manifest["samples"][0]["tl_attr_status"], "partial")
+            self.assertEqual(sample["valid_mask"]["tl_attr"].tolist(), [True, False])
+            debug_rows = [
+                json.loads(line)
+                for line in Path(summary["tl_attr_debug_rows_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual([row["tl_attr_valid"] for row in debug_rows], [1, 0])
+            self.assertEqual(debug_rows[1]["collapse_reason"], "signal_attr_teacher_low_confidence")
 
     def test_etri_materialization_rejects_invalid_or_nonfinite_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

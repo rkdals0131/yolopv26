@@ -414,6 +414,80 @@ class GenerateDebugVisEntrypointTests(unittest.TestCase):
             self.assertTrue(index_payload["items"])
             self.assertIn('"selection_count"', buffer.getvalue())
 
+    def test_audit_etri_tlattr_debug_vis_renders_sequence_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "pv26_etri_kcity_leftimg_attrpseudo_eval_v1"
+            sample_id = "etri_kcity_multicamera_leftimg_val_leftImg_val_20221124_kcity_000123_leftImg8bit"
+            image_path = dataset_root / "images" / "val" / f"{sample_id}.png"
+            scene_path = dataset_root / "labels_scene" / "val" / f"{sample_id}.json"
+            _make_image(image_path, 64, 48, "#444444")
+            _write_json(
+                scene_path,
+                {
+                    "image": {"file_name": image_path.name, "width": 64, "height": 48},
+                    "source": {
+                        "dataset": "etri_kcity_multicamera_leftimg_attrpseudo_v1",
+                        "split": "val",
+                        "final_sample_id": sample_id,
+                        "image_path": "/raw/leftImg/val/20221124_kcity/000123_leftImg8bit.png",
+                        "raw_id": sample_id,
+                        "source_kind": "etri_kcity_leftimg_attrpseudo",
+                    },
+                    "detections": [{"id": 0, "class_name": "traffic_light", "bbox": [5, 5, 20, 20]}],
+                    "traffic_lights": [{"id": 0, "detection_id": 0, "bbox": [5, 5, 20, 20], "tl_attr_valid": 1}],
+                    "lanes": [],
+                    "stop_lines": [],
+                    "crosswalks": [],
+                },
+            )
+            _write_json(
+                dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME,
+                {
+                    "version": "test",
+                    "samples": [
+                        {
+                            "final_sample_id": sample_id,
+                            "source_dataset_key": "etri_kcity_multicamera_leftimg_attrpseudo_v1",
+                            "split": "val",
+                            "scene_path": str(scene_path),
+                            "image_path": str(image_path),
+                            "source_image_path": "/raw/leftImg/val/20221124_kcity/000123_leftImg8bit.png",
+                            "tl_attr_valid_count": 1,
+                            "tl_attr_invalid_count": 0,
+                        }
+                    ],
+                },
+            )
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = od_bootstrap_main(
+                    [
+                        "audit-etri-tlattr-debug-vis",
+                        "--dataset-root",
+                        str(dataset_root),
+                        "--sequence-name",
+                        "sequence__etri_kcity_test",
+                        "--overview-count",
+                        "1",
+                        "--tl-attr-valid-count",
+                        "1",
+                        "--tl-attr-invalid-count",
+                        "0",
+                        "--workers",
+                        "1",
+                        "--seed",
+                        "7",
+                    ]
+                )
+
+            sequence_root = dataset_root / "meta" / "debug_vis" / "sequence__etri_kcity_test"
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((sequence_root / "overview" / "001__frame123__123.png").is_file())
+            self.assertTrue((sequence_root / "tl_attr_valid" / "001__frame123__123.png").is_file())
+            self.assertIn('"sequence_root"', buffer.getvalue())
+
     def test_review_final_dataset_renders_focus_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

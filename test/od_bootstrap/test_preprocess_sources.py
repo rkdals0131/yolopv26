@@ -499,6 +499,65 @@ class ODBootstrapSourcePrepTests(unittest.TestCase):
         self.assertEqual(captured_paths[0], checkpoint_path.resolve())
         self.assertIsNone(captured_paths[1])
 
+    def test_etri_kcity_tlattr_entrypoint_materializes_attrpseudo_release(self) -> None:
+        calls: dict[str, object] = {}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dataset_root = root / "ETRI" / "Multi Camera Semantic Segmentation"
+            output_root = root / "pv26_etri_kcity_leftimg_attrpseudo_v1"
+            checkpoint_path = root / "best_signal_attr.pt"
+            checkpoint_path.write_bytes(b"checkpoint")
+            fake_sidecar = SimpleNamespace(checkpoint_path=checkpoint_path)
+
+            def _fake_materialize(*args, **kwargs):
+                calls["args"] = args
+                calls["kwargs"] = kwargs
+                return {
+                    "output_root": str(kwargs["output_root"] if "output_root" in kwargs else args[1]),
+                    "manifest_path": str(output_root / "meta" / "final_dataset_manifest.json"),
+                    "sample_count": 2,
+                    "tl_attr_teacher": {"status": "partial"},
+                }
+
+            with (
+                patch("tools.od_bootstrap.cli.SignalAttrSidecarTeacher.from_checkpoint", return_value=fake_sidecar) as mock_sidecar,
+                patch("tools.od_bootstrap.cli.materialize_kcity_val_release", side_effect=_fake_materialize),
+            ):
+                od_bootstrap_main(
+                    [
+                        "build-etri-kcity-tlattr",
+                        str(dataset_root),
+                        "--output-root",
+                        str(output_root),
+                        "--signal-attr-checkpoint",
+                        str(checkpoint_path),
+                        "--device",
+                        "cpu",
+                        "--expected-sample-count",
+                        "2",
+                        "--source-splits",
+                        "train",
+                        "val",
+                        "--output-split",
+                        "val",
+                        "--sample-limit",
+                        "2",
+                    ]
+                )
+
+        mock_sidecar.assert_called_once_with(checkpoint_path.resolve(), device="cpu")
+        args = calls["args"]
+        kwargs = calls["kwargs"]
+        self.assertEqual(args[0], dataset_root.resolve())
+        self.assertEqual(args[1], output_root.resolve())
+        self.assertEqual(kwargs["expected_sample_count"], 2)
+        self.assertEqual(kwargs["allowed_splits"], ("train", "val"))
+        self.assertEqual(kwargs["output_split"], "val")
+        self.assertEqual(kwargs["sample_limit"], 2)
+        self.assertIs(kwargs["signal_attr_sidecar"], fake_sidecar)
+        self.assertEqual(kwargs["signal_attr_checkpoint_path"], checkpoint_path.resolve())
+
     def test_lane_val_odpseudo_entrypoint_generates_missing_sample_results_before_materialization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
