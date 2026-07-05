@@ -121,6 +121,7 @@ def _render_help(console: Console, snapshot: WorkspaceSnapshot) -> None:
                     "- `K` retrain은 source run을 seed로 새 derived run을 만듭니다. stage window만 고르고 숫자 파라미터는 config에서 관리합니다.",
                     "- `L`은 최종 병합 데이터셋의 full stats를 보여줍니다. stats 파일이 없으면 labels_scene를 다시 스캔해 생성합니다.",
                     "- `F/G/I/J` export는 checkpoint 옆에 TorchScript artifact와 .meta.json을 씁니다.",
+                    "- `N`은 고정 eval dataset 하나와 ready TorchScript model 여러 개를 골라 metrics/plots/overlays를 생성합니다.",
                     "- 입력은 숫자/영문만 받습니다. yes/no 또는 y/n만 사용하세요.",
                 ]
             ),

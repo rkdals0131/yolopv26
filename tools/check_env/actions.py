@@ -49,6 +49,7 @@ def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
         ActionSpec("K", "PV26 retrain / fine-tune", "interactive: source run 선택 후 stage window derived run", (), str(paths.pv26_run_root), rerun_contract="derived run only: source run + selected stage window / current config"),
         ActionSpec("L", "최종 데이터셋 full stats", "interactive: final dataset class/task/audit 통계 표시", (), str(paths.final_dataset_root / "meta")),
         ActionSpec("M", "PV26 phase VRAM ceiling sweep", "interactive: phase 1-4 batch list probe", (), "stdout JSON summary (no checkpoints / no run dir)", rerun_contract="short probe only: phase별 batch 후보를 순차 확인"),
+        ActionSpec("N", "PV26 TorchScript eval", "interactive: dataset/model 선택 후 eval/plot/overlay 생성", (), str(paths.repo_root / "runs" / "pv26_torchscript_eval")),
     )
 
 
@@ -153,6 +154,8 @@ def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | N
         return "stats 파일이 있으면 그대로 읽고, 없으면 final dataset labels_scene를 다시 스캔해 생성합니다."
     if action.key == "F":
         return "선택한 run의 final checkpoint 옆에 best.torchscript.pt / .meta.json을 씁니다."
+    if action.key == "N":
+        return "평가는 export를 자동 수행하지 않습니다. 미export run은 F 메뉴로 먼저 export하세요."
     if action.key in {"G", "I", "J"}:
         return "teacher별 stable weights/best.pt 옆에 best.torchscript.pt / .meta.json을 씁니다."
     return None

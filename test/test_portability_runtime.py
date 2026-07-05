@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from datetime import datetime
 import io
 import json
 import sys
@@ -13,6 +14,49 @@ from types import SimpleNamespace
 from tools.od_bootstrap.build.exhaustive_od import EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME
 from tools.od_bootstrap.build.final_dataset import FINAL_DATASET_SUMMARY_NAME
 from tools.od_bootstrap.build.final_dataset_stats import FINAL_DATASET_STATS_NAME
+
+
+def _write_pv26_supported_meta(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "output_names": ["det", "tl_attr", "lane", "stop_line", "crosswalk"],
+                "tl_bits": ["red", "yellow", "green", "arrow"],
+                "outputs": {
+                    "det": {"shape": ["batch", 1, 12]},
+                    "tl_attr": {"shape": ["batch", 1, 4]},
+                    "lane": {"shape": ["batch", 12, 54]},
+                    "stop_line": {"shape": ["batch", 6, 9]},
+                    "crosswalk": {"shape": ["batch", 8, 33]},
+                },
+            },
+            indent=2,
+            ensure_ascii=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_pv26_incompatible_meta(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "output_names": ["det", "lane", "stop_line"],
+                "outputs": {
+                    "det": {"shape": ["batch", 1, 12]},
+                    "lane": {"shape": ["batch", 12, 54]},
+                    "stop_line": {"shape": ["batch", 6, 9]},
+                },
+            },
+            indent=2,
+            ensure_ascii=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 class PV26PortabilityRuntimeTests(unittest.TestCase):
@@ -204,6 +248,176 @@ class PV26PortabilityRuntimeTests(unittest.TestCase):
         teacher_export_action = next(item for item in actions if item.key == "G")
         self.assertIn("Mobility", teacher_export_action.label)
         self.assertEqual(teacher_export_action.argv, ())
+        eval_action = next(item for item in actions if item.key == "N")
+        self.assertIn("TorchScript eval", eval_action.label)
+        self.assertEqual(eval_action.argv, ())
+        self.assertTrue(str(eval_action.output_hint).endswith("/runs/pv26_torchscript_eval"))
+
+    def test_pv26_eval_dataset_candidates_use_fixed_roots_and_disable_missing(self) -> None:
+        from tools.check_env import _pv26_eval_dataset_candidates
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ready_root = root / "ready_dataset"
+            missing_root = root / "missing_dataset"
+            (ready_root / "labels_scene").mkdir(parents=True, exist_ok=True)
+            (ready_root / "labels_scene" / "a.json").write_text("{}", encoding="utf-8")
+            (ready_root / "labels_scene" / "b.json").write_text("{}", encoding="utf-8")
+
+            candidates = _pv26_eval_dataset_candidates(
+                (
+                    ("ready", ready_root),
+                    ("missing", missing_root),
+                    ("also_missing", root / "also_missing"),
+                )
+            )
+
+        self.assertEqual([item.label for item in candidates], ["ready", "missing", "also_missing"])
+        self.assertTrue(candidates[0].ready)
+        self.assertEqual(candidates[0].labels_scene_count, 2)
+        self.assertFalse(candidates[1].ready)
+        self.assertEqual(candidates[1].labels_scene_count, 0)
+
+    def test_pv26_eval_model_candidates_merge_spade_and_runs_with_disabled_rows(self) -> None:
+        from tools.check_env import _pv26_eval_model_candidates
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo_root = root / "src" / "yolopv26"
+            spade_weights = root / "src" / "spade" / "data" / "weights"
+            run_root = root / "runs" / "pv26"
+            spade_weights.mkdir(parents=True, exist_ok=True)
+
+            ready_spade = spade_weights / "best.torchscript.pt"
+            ready_spade.write_bytes(b"fake")
+            _write_pv26_supported_meta(spade_weights / "best.torchscript.meta.json")
+            teacher_like = spade_weights / "signal_teacher.torchscript.pt"
+            teacher_like.write_bytes(b"fake")
+            _write_pv26_incompatible_meta(spade_weights / "signal_teacher.torchscript.meta.json")
+
+            completed = run_root / "run_done"
+            run_checkpoint = completed / "phase_4" / "checkpoints" / "best.pt"
+            run_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            run_checkpoint.write_text("checkpoint", encoding="utf-8")
+            (completed / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "final_checkpoint_path": str(run_checkpoint),
+                        "updated_at": "2026-04-04T01:02:03",
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            run_artifact = run_checkpoint.with_suffix(".torchscript.pt")
+            run_meta = run_checkpoint.with_suffix(".torchscript.meta.json")
+            run_artifact.write_bytes(b"fake")
+            _write_pv26_supported_meta(run_meta)
+
+            unexported = run_root / "run_unexported"
+            missing_checkpoint = unexported / "phase_4" / "checkpoints" / "best.pt"
+            missing_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            missing_checkpoint.write_text("checkpoint", encoding="utf-8")
+            (unexported / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "final_checkpoint_path": str(missing_checkpoint),
+                        "updated_at": "2026-04-05T01:02:03",
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            snapshot = SimpleNamespace(paths=SimpleNamespace(repo_root=repo_root, pv26_run_root=run_root))
+            candidates = _pv26_eval_model_candidates(snapshot)
+
+        by_label = {item.label: item for item in candidates}
+        self.assertTrue(by_label["spade/best"].ready)
+        self.assertFalse(by_label["spade/signal_teacher"].ready)
+        self.assertIn("tl_attr", str(by_label["spade/signal_teacher"].reason))
+        self.assertTrue(by_label["run/run_done/best"].ready)
+        self.assertFalse(by_label["run/run_unexported/best"].ready)
+        self.assertIn("F 메뉴", str(by_label["run/run_unexported/best"].reason))
+
+    def test_pv26_eval_selection_builds_paired_model_argv_and_timestamp_output(self) -> None:
+        from tools.check_env import (
+            ActionSpec,
+            Pv26EvalDatasetCandidate,
+            Pv26EvalModelCandidate,
+            _parse_pv26_eval_model_selection,
+            _pv26_eval_action_for_selection,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo_root = root / "src" / "yolopv26"
+            dataset_root = root / "pv26_eval_lane_val_odpseudo_attr_v2"
+            dataset = Pv26EvalDatasetCandidate(
+                label="lane-val attr v2",
+                root=dataset_root,
+                exists=True,
+                labels_scene_count=27,
+            )
+            models = (
+                Pv26EvalModelCandidate(
+                    label="spade/best",
+                    provider="spade",
+                    weights=root / "spade_best.torchscript.pt",
+                    model_meta=root / "spade_best.torchscript.meta.json",
+                    ready=True,
+                ),
+                Pv26EvalModelCandidate(
+                    label="spade/teacher",
+                    provider="spade",
+                    weights=root / "teacher.torchscript.pt",
+                    model_meta=root / "teacher.torchscript.meta.json",
+                    ready=False,
+                    reason="missing required outputs: tl_attr",
+                ),
+                Pv26EvalModelCandidate(
+                    label="run/run_done/best",
+                    provider="runs",
+                    weights=root / "run_best.torchscript.pt",
+                    model_meta=root / "run_best.torchscript.meta.json",
+                    ready=True,
+                ),
+            )
+
+            selected = _parse_pv26_eval_model_selection("1,3", models)
+            all_ready = _parse_pv26_eval_model_selection("A", models)
+            action = _pv26_eval_action_for_selection(
+                SimpleNamespace(paths=SimpleNamespace(repo_root=repo_root)),
+                ActionSpec(
+                    key="N",
+                    label="PV26 TorchScript eval",
+                    command_display="interactive",
+                    argv=(),
+                    output_hint="unused",
+                ),
+                dataset,
+                selected,
+                now=datetime(2026, 7, 5, 12, 34, 56),
+            )
+
+        self.assertEqual([item.label for item in selected], ["spade/best", "run/run_done/best"])
+        self.assertEqual([item.label for item in all_ready], ["spade/best", "run/run_done/best"])
+        self.assertIn(
+            "runs/pv26_torchscript_eval/pv26_eval_lane_val_odpseudo_attr_v2_20260705_123456",
+            action.output_hint,
+        )
+        self.assertEqual(action.argv.count("--model-name"), 2)
+        self.assertEqual(action.argv.count("--weights"), 2)
+        self.assertEqual(action.argv.count("--model-meta"), 2)
+        name_indices = [index for index, value in enumerate(action.argv) if value == "--model-name"]
+        self.assertEqual(action.argv[name_indices[0] + 1], "spade/best")
+        self.assertEqual(action.argv[name_indices[1] + 1], "run/run_done/best")
 
     def test_teacher_registry_defines_signal_attr_as_fourth_teacher(self) -> None:
         from tools.od_bootstrap.teacher.registry import ALL_TEACHER_NAMES, OD_TEACHER_NAMES, teacher_definition
