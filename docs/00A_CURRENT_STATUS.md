@@ -3,9 +3,10 @@
 > 다음 작업자는 이 문서를 먼저 읽는다.
 > 상세 실패 이력은 [history/README.md](history/README.md), 다음 실행 gate는 [00C_NEXT_GATES.md](00C_NEXT_GATES.md)를 본다.
 
-## 0. 2026-06-15 기준
+## 0. 2026-07-10 기준
 
-- 현재 공식 작업선은 `develop` / `origin/develop`의 `ef18498` (`Align TorchScript export with PV26 runtime heads`)이다.
+- 현재 공식 작업선은 `develop` / `origin/develop`의 `9001b54` (`Expose ETRI TL-attr pseudo-label review bundles`)다.
+- 이전 문서 기준 `ef18498` 이후 source/evaluator/export 작업이 추가됐으므로, artifact를 branch 이름으로 식별하지 않고 weight SHA, metadata SHA, output contract version, evaluator config, dataset manifest를 함께 기록한다.
 - `origin/main`은 solid runtime-contract 기준선 `364c019`에 머문다. 로컬 `main`은 `be5106d`로 오래된 상태라 current 판단 기준으로 쓰지 않는다.
 - live `exp/lane-family-f1/*` branch는 남기지 않는다. 보존 anchor는 tag `archive/lane-family-current-frontier-20260602`, `archive/lane-family-router-best-20260529`다.
 - former 00B top-level file은 제거했다. 과거 실험 ledger는 `docs/history/00B_*.md`에 번호 범위별로 보존한다.
@@ -40,12 +41,13 @@ PV26의 exhaustive OD + lane-family 통합 학습/평가 경로는 구현되어 
 
 최근 반영된 runtime 기준:
 
-- TorchScript export는 current PV26 raw heads와 동기화되어야 한다. `det`, `tl_attr`, `lane`, `stop_line`, `crosswalk` legacy heads뿐 아니라 현재 dense/aux heads 중 실제 prediction에 있는 output names만 metadata에 기록한다.
+- TorchScript export는 current PV26 raw heads와 동기화되어야 한다. `det`, `tl_attr`, `lane`, `stop_line`, `crosswalk` legacy heads뿐 아니라 현재 dense/aux heads 중 실제 prediction에 있는 output names만 metadata에 기록하고, 저장된 artifact의 `artifact_sha256`을 함께 고정한다.
 - YOLO26 roadmark trunk는 4-level P2/P3/P4/P5 contract를 쓴다. `yolo26s` default channel은 `(128, 128, 256, 512)`다.
 - teacher bootstrap은 `check_env`에서 실행 가능한 방향으로 정리됐다.
 - teacher train 기본 batch는 local dense-head headroom 기준으로 낮춰졌다: mobility/signal `20`, obstacle `10`.
 - rich progress bar는 optional dependency/fallback을 안전하게 처리한다.
 - stale/malformed data handoff는 source, loader, transform, batch, loss, postprocess, export boundary에서 fail-fast해야 한다.
+- ROS 2 실행은 이 저장소가 아니라 `ros2_ws/src/pv26_ros_runtime`이 소유한다. 이 저장소는 학습, 평가, postprocess, TorchScript+metadata export까지만 책임진다.
 
 Maintained ownership checkpoints:
 

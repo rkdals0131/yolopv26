@@ -85,7 +85,13 @@ def test_build_example_input_random_seed_is_reproducible() -> None:
     )
 
     assert torch.allclose(first, second)
-    assert first_info == second_info == {"kind": "random", "seed": 1234}
+    assert first.shape == (2, 3, 32, 48)
+    assert first_info == second_info == {
+        "kind": "random",
+        "seed": 1234,
+        "batch_size": 2,
+        "slot_order": ["left_wide", "right_wide"],
+    }
 
 
 def test_torchscript_export_wrapper_trace_matches_eager_outputs() -> None:
@@ -125,7 +131,7 @@ def test_torchscript_export_wrapper_trace_matches_eager_outputs() -> None:
             "crosswalk_mask_logits",
         ),
     ).eval()
-    example_input = torch.rand((1, 3, 8, 10), dtype=torch.float32)
+    example_input = torch.rand((2, 3, 8, 10), dtype=torch.float32)
 
     eager_outputs = wrapper(example_input)
     scripted = torch.jit.trace(wrapper, example_input, strict=False, check_trace=False)
@@ -235,11 +241,11 @@ def test_pv26_export_metadata_includes_crosswalk_and_checkpoint_metadata(tmp_pat
         trunk_weights=tmp_path / "yolo26s.pt",
         input_height=608,
         input_width=800,
-        det_shape=[1, 9975, 12],
-        tl_attr_shape=[1, 9975, 4],
-        lane_shape=[1, 24, 38],
-        stop_line_shape=[1, 8, 9],
-        crosswalk_shape=[1, 8, 33],
+        det_shape=[2, 9975, 12],
+        tl_attr_shape=[2, 9975, 4],
+        lane_shape=[2, 24, 38],
+        stop_line_shape=[2, 8, 9],
+        crosswalk_shape=[2, 8, 33],
         od_classes=["vehicle"],
         tl_bits=["red"],
         lane_classes=["white_lane"],
@@ -258,21 +264,25 @@ def test_pv26_export_metadata_includes_crosswalk_and_checkpoint_metadata(tmp_pat
             "lane_seg_centerline_logits",
         ),
         output_shapes={
-            "det": [1, 9975, 12],
-            "tl_attr": [1, 9975, 4],
-            "lane": [1, 24, 38],
-            "stop_line": [1, 8, 9],
-            "crosswalk": [1, 8, 33],
-            "lane_seg_centerline_logits": [1, 1, 152, 200],
+            "det": [2, 9975, 12],
+            "tl_attr": [2, 9975, 4],
+            "lane": [2, 24, 38],
+            "stop_line": [2, 8, 9],
+            "crosswalk": [2, 8, 33],
+            "lane_seg_centerline_logits": [2, 1, 152, 200],
         },
+        artifact_sha256="a" * 64,
     )
 
     assert metadata["output_names"][-1] == "lane_seg_centerline_logits"
-    assert metadata["outputs"]["crosswalk"]["shape"] == ["batch", 8, 33]
+    assert metadata["input"]["batch_size"] == 2
+    assert metadata["input"]["slot_order"] == ["left_wide", "right_wide"]
+    assert metadata["outputs"]["crosswalk"]["shape"] == [2, 8, 33]
     assert metadata["outputs"]["crosswalk"]["format"] == "score_contour_16_points_xy"
-    assert metadata["outputs"]["lane_seg_centerline_logits"]["shape"] == ["batch", 1, 152, 200]
+    assert metadata["outputs"]["lane_seg_centerline_logits"]["shape"] == [2, 1, 152, 200]
     assert metadata["outputs"]["lane_seg_centerline_logits"]["format"] == "lane_dense_centerline_logits"
     assert metadata["checkpoint_metadata"]["architecture_generation"] == "pv26-road-marking-v3"
+    assert metadata["artifact_sha256"] == "a" * 64
 
 
 class PV26ExportMetadataContractTests(unittest.TestCase):
@@ -294,11 +304,11 @@ class PV26ExportMetadataContractTests(unittest.TestCase):
             trunk_weights=Path("/tmp/yolo26s.pt"),
             input_height=608,
             input_width=800,
-            det_shape=[1, 9975, 12],
-            tl_attr_shape=[1, 9975, 4],
-            lane_shape=[1, 24, 38],
-            stop_line_shape=[1, 8, 9],
-            crosswalk_shape=[1, 8, 33],
+            det_shape=[2, 9975, 12],
+            tl_attr_shape=[2, 9975, 4],
+            lane_shape=[2, 24, 38],
+            stop_line_shape=[2, 8, 9],
+            crosswalk_shape=[2, 8, 33],
             od_classes=list(spec["model_contract"]["od_classes"]),
             tl_bits=list(spec["model_contract"]["tl_bits"]),
             lane_classes=list(spec["model_contract"]["lane_classes"]),
@@ -310,19 +320,19 @@ class PV26ExportMetadataContractTests(unittest.TestCase):
             checkpoint_metadata={"architecture_generation": "pv26-road-marking-v3"},
         )
 
-        self.assertEqual(metadata["outputs"]["det"]["shape"], ["batch", 9975, 12])
-        self.assertEqual(metadata["outputs"]["tl_attr"]["shape"], ["batch", 9975, 4])
+        self.assertEqual(metadata["outputs"]["det"]["shape"], [2, 9975, 12])
+        self.assertEqual(metadata["outputs"]["tl_attr"]["shape"], [2, 9975, 4])
         self.assertEqual(
             metadata["outputs"]["lane"]["shape"],
-            ["batch", int(spec["heads"]["lane"]["query_count"]), 38],
+            [2, int(spec["heads"]["lane"]["query_count"]), 38],
         )
         self.assertEqual(
             metadata["outputs"]["stop_line"]["shape"],
-            ["batch", int(spec["heads"]["stop_line"]["query_count"]), 9],
+            [2, int(spec["heads"]["stop_line"]["query_count"]), 9],
         )
         self.assertEqual(
             metadata["outputs"]["crosswalk"]["shape"],
-            ["batch", int(spec["heads"]["crosswalk"]["query_count"]), 33],
+            [2, int(spec["heads"]["crosswalk"]["query_count"]), 33],
         )
         self.assertEqual(metadata["outputs"]["lane"]["format"], "score_lane_class_lane_type_anchor_row_x_visibility")
         self.assertEqual(metadata["outputs"]["stop_line"]["format"], "score_polyline_4_points_xy")
@@ -342,11 +352,11 @@ class PV26ExportMetadataContractTests(unittest.TestCase):
                 trunk_weights=Path("/tmp/yolo26s.pt"),
                 input_height=608,
                 input_width=800,
-                det_shape=[1, 9974, 12],
-                tl_attr_shape=[1, 9975, 4],
-                lane_shape=[1, 24, 38],
-                stop_line_shape=[1, 8, 9],
-                crosswalk_shape=[1, 8, 33],
+                det_shape=[2, 9974, 12],
+                tl_attr_shape=[2, 9975, 4],
+                lane_shape=[2, 24, 38],
+                stop_line_shape=[2, 8, 9],
+                crosswalk_shape=[2, 8, 33],
                 od_classes=list(spec["model_contract"]["od_classes"]),
                 tl_bits=list(spec["model_contract"]["tl_bits"]),
                 lane_classes=list(spec["model_contract"]["lane_classes"]),
@@ -362,15 +372,15 @@ class PV26ExportMetadataContractTests(unittest.TestCase):
         spec = build_loss_spec()
 
         for head_name, shape_overrides in (
-            ("lane", {"lane_shape": [1, 24, 37]}),
-            ("stop_line", {"stop_line_shape": [1, 8, 8]}),
-            ("crosswalk", {"crosswalk_shape": [1, 8, 32]}),
+            ("lane", {"lane_shape": [2, 24, 37]}),
+            ("stop_line", {"stop_line_shape": [2, 8, 8]}),
+            ("crosswalk", {"crosswalk_shape": [2, 8, 32]}),
         ):
             with self.subTest(head_name=head_name):
                 shapes = {
-                    "lane_shape": [1, 24, 38],
-                    "stop_line_shape": [1, 8, 9],
-                    "crosswalk_shape": [1, 8, 33],
+                    "lane_shape": [2, 24, 38],
+                    "stop_line_shape": [2, 8, 9],
+                    "crosswalk_shape": [2, 8, 33],
                 }
                 shapes.update(shape_overrides)
 
@@ -381,8 +391,8 @@ class PV26ExportMetadataContractTests(unittest.TestCase):
                         trunk_weights=Path("/tmp/yolo26s.pt"),
                         input_height=608,
                         input_width=800,
-                        det_shape=[1, 9975, 12],
-                        tl_attr_shape=[1, 9975, 4],
+                        det_shape=[2, 9975, 12],
+                        tl_attr_shape=[2, 9975, 4],
                         od_classes=list(spec["model_contract"]["od_classes"]),
                         tl_bits=list(spec["model_contract"]["tl_bits"]),
                         lane_classes=list(spec["model_contract"]["lane_classes"]),

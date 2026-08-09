@@ -12,7 +12,7 @@
 *.trt
 *.weights
 checkpoints/
-runs/
+/runs
 weights/
 .envrc
 .omx

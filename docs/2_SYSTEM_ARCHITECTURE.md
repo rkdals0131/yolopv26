@@ -182,9 +182,11 @@ AIHUB raw
 - debug overlay generation
 - loss design spec document + code mirror
 
-## 아직 구현되지 않은 것
+## 외부 runtime 경계
 
-- export / ROS prediction bundle 정교화
+- TorchScript와 adjacent metadata export는 `tools/model_export/pv26_torchscript.py`가 소유한다.
+- ROS prediction bundle은 별도 package `pv26_ros_runtime`이 소유하며 이 저장소는 ROS package로 전환하지 않는다.
+- 두 단계의 handoff identity는 weight SHA, metadata SHA, ordered output names, class order, source image header와 inverse-transform geometry다.
 
 ## 운영 규칙
 

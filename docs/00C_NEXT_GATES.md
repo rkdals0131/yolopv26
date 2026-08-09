@@ -5,7 +5,7 @@
 
 ## 0. 현재 기준
 
-- 기준 branch는 `develop` / `origin/develop` `ef18498`이다.
+- 기준 branch는 `develop` / `origin/develop` `9001b54`이다.
 - 최종 success는 broader validation에서 `lane`, `stop_line`, `crosswalk` F1이 모두 `>= 0.60`인 것이다.
 - 현재 best surface는 single raw checkpoint가 아니다. Router/composite/TTA/postprocess가 섞인 retained runtime surface다.
 - Practical playback utility는 benchmark success가 아니다.
@@ -20,7 +20,7 @@
 | G2 export/TorchScript | next | current PV26 raw/dense head output names, metadata, roadmark trunk P2/P3/P4/P5 contract를 검증한다. |
 | G3 lane-family metric improvement | blocked on new signal | 기존 closed axis 반복 없이 lane/stop-line을 동시에 올릴 새 instance-quality/candidate contract가 필요하다. |
 | G4 source contract implementation | active / parallel | Signal attr, lane-val OD pseudo, ETRI dry-run을 서로 다른 track으로 진행한다. 공통 source/manifest/loader/test contract만 공유한다. |
-| G5 ROS2 runtime check | after export candidate | latency, GPU memory, frame rate, output schema, overlay/sample replay를 확인한다. |
+| G5 ROS2 runtime check | active in `pv26_ros_runtime` | exported artifact를 `kaiev26_msgs/Perception2DFrame`으로 변환할 때 latency, GPU memory, frame rate, ID/class/geometry schema, overlay/sample replay를 확인한다. |
 
 ## 2. Do Not Repeat
 
@@ -94,11 +94,14 @@ Immediate next work:
 
 Export candidate가 생기면 아래를 확인한다.
 
-- TorchScript artifact and adjacent metadata are written next to checkpoint.
+- TorchScript artifact and adjacent metadata are written next to checkpoint; metadata includes the final artifact SHA256.
 - Metadata output names match actual prediction tensors.
 - Roadmark trunk/head channel contract is P2/P3/P4/P5.
 - Postprocess output stays in raw image coordinates for det/lane/stop_line/crosswalk.
 - ROS2 or sample replay sees the same output schema and practical latency/memory bounds.
+- ROS adapter 코드는 `yolopv26`에 넣지 않는다. `pv26_ros_runtime`이 metadata output name/shape/class order를 검증하고 `/perception/{left,right}_wide/frame_2d`를 발행한다.
+- Plan A artifact와 Plan B는 공통 evaluator 계약이 확정된 뒤 동일 dataset, rosbag,
+  metric 정의로 비교한다. 이 모델 저장소는 외부 orchestration 문서 경로에 의존하지 않는다.
 
 ## 6. Documentation Rule
 

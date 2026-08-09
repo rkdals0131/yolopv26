@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -40,6 +41,18 @@ DEFAULT_LANE_TYPES = [
     "solid",
     "dotted",
 ]
+PV26_FIXED_BATCH_SIZE = 2
+PV26_WIDE_SLOT_ORDER = ["left_wide", "right_wide"]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 PV26_TORCHSCRIPT_OUTPUT_NAMES = [
     "det",
     "tl_attr",
@@ -395,12 +408,27 @@ def build_example_input(
             input_height=input_height,
             input_width=input_width,
         )
-        return tensor.to(device), {"kind": "image", "path": str(image_path)}
+        batch = torch.cat((tensor, torch.flip(tensor, dims=(-1,))), dim=0)
+        return batch.to(device), {
+            "kind": "image",
+            "path": str(image_path),
+            "batch_size": PV26_FIXED_BATCH_SIZE,
+            "slot_order": list(PV26_WIDE_SLOT_ORDER),
+        }
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(int(seed))
-    tensor = torch.rand((1, 3, input_height, input_width), generator=generator, dtype=torch.float32)
-    return tensor.to(device), {"kind": "random", "seed": int(seed)}
+    tensor = torch.rand(
+        (PV26_FIXED_BATCH_SIZE, 3, input_height, input_width),
+        generator=generator,
+        dtype=torch.float32,
+    )
+    return tensor.to(device), {
+        "kind": "random",
+        "seed": int(seed),
+        "batch_size": PV26_FIXED_BATCH_SIZE,
+        "slot_order": list(PV26_WIDE_SLOT_ORDER),
+    }
 
 
 def tensor_report(
@@ -489,8 +517,12 @@ def _output_metadata(output_shapes: Mapping[str, list[int]]) -> dict[str, dict[s
     outputs: dict[str, dict[str, Any]] = {}
     for name in output_shapes:
         shape = [int(value) for value in output_shapes[name]]
+        if not shape or shape[0] != PV26_FIXED_BATCH_SIZE:
+            raise ValueError(
+                f"{name} export output batch must be {PV26_FIXED_BATCH_SIZE}, got {shape}"
+            )
         outputs[name] = {
-            "shape": ["batch"] + shape[1:],
+            "shape": shape,
             "dtype": "float32",
             "format": PV26_TORCHSCRIPT_OUTPUT_FORMATS.get(name, "raw_tensor"),
         }
@@ -520,6 +552,7 @@ def export_metadata(
     checkpoint_metadata: dict[str, Any] | None,
     output_names: list[str] | tuple[str, ...] | None = None,
     output_shapes: Mapping[str, list[int]] | None = None,
+    artifact_sha256: str | None = None,
 ) -> dict[str, Any]:
     _validate_detector_feature_metadata(
         det_shape=det_shape,
@@ -544,7 +577,7 @@ def export_metadata(
     missing_output_shapes = [name for name in output_names if name not in output_shapes]
     if missing_output_shapes:
         raise ValueError("missing output shape metadata for: " + ", ".join(missing_output_shapes))
-    return {
+    metadata = {
         "format_version": 2,
         "artifact_type": "pv26_torchscript_raw_heads",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -553,6 +586,9 @@ def export_metadata(
         "trunk_weights": str(trunk_weights),
         "output_names": list(output_names),
         "input": {
+            "batch_size": PV26_FIXED_BATCH_SIZE,
+            "slot_order": list(PV26_WIDE_SLOT_ORDER),
+            "invalid_slot_policy": "duplicate_valid_slot_and_discard_output",
             "layout": "NCHW",
             "dtype": "float32",
             "range": [0.0, 1.0],
@@ -580,6 +616,9 @@ def export_metadata(
             for item in verification
         ],
     }
+    if artifact_sha256 is not None:
+        metadata["artifact_sha256"] = str(artifact_sha256)
+    return metadata
 
 
 def export_pv26_torchscript(
@@ -715,6 +754,7 @@ def export_pv26_torchscript(
         )
 
     scripted.save(str(output_path))
+    artifact_sha256 = _sha256_file(output_path)
     meta = export_metadata(
         checkpoint_path=checkpoint_path,
         output_path=output_path,
@@ -741,6 +781,7 @@ def export_pv26_torchscript(
         ),
         output_names=output_names,
         output_shapes=output_shapes,
+        artifact_sha256=artifact_sha256,
     )
     with meta_path.open("w", encoding="utf-8") as fp:
         json.dump(meta, fp, indent=2)
