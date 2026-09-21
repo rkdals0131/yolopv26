@@ -1,0 +1,1708 @@
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import asdict
+import os
+from pathlib import Path
+import site
+import sys
+from types import MethodType
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _ensure_repo_root_on_path() -> None:
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        site.addsitedir(repo_root)
+
+
+_ensure_repo_root_on_path()
+
+from common.io import read_json
+from common.overlay import render_overlay
+from common.pv26_schema import SOURCE_MASK_BY_DATASET
+from common.user_config import (
+    load_user_hyperparameters_config,
+    load_user_paths_config,
+    nested_get,
+)
+from model.engine.evaluator import PV26Evaluator
+from model.engine.postprocess import PV26PostprocessConfig
+from model.data import (
+    PV26CanonicalDataset,
+    build_pv26_eval_dataloader,
+    build_pv26_train_dataloader,
+    collate_pv26_samples,
+)
+from model.engine.trainer import (
+    PV26DistillTeacher,
+    PV26TaskRoutedDistillTeacher,
+    PV26Trainer,
+    build_pv26_scheduler,
+)
+from model.engine.loss import PV26MultiTaskLoss
+from model.engine.train_summary import resolve_summary_path
+from model.net import PV26Heads
+from model.net import build_yolo26n_trunk
+try:
+    from model.net import build_yolo26_trunk, build_yolo26_roadmark_trunk
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    build_yolo26_trunk = None
+    build_yolo26_roadmark_trunk = None
+try:
+    from model.net import infer_pyramid_channels
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    infer_pyramid_channels = None
+try:
+    from model.net import load_matching_state_dict
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    load_matching_state_dict = None
+try:
+    from model.net import resolve_yolo26_weights
+except ImportError:  # pragma: no cover - compatibility while trunk API is being generalized.
+    resolve_yolo26_weights = None
+from . import artifacts as train_artifacts
+from . import runtime as _runtime_ops
+from . import scenarios as _scenario_ops
+from . import config as train_config_api
+from .epoch_visualization import build_epoch_comparison_grid_callback
+from .config import (
+    DEFAULT_DATASET_ROOT,
+    DEFAULT_PRESET_NAME,
+    DEFAULT_RUN_ROOT,
+    EntryConfig,
+    MetaTrainScenario,
+    PHASE_STAGE_ORDER,
+    PhaseConfig,
+    PreviewConfig,
+    SelectionConfig,
+    TrainDefaultsConfig,
+)
+
+
+PRESET_PATH_ROOT = REPO_ROOT / "presets" / "pv26_meta_train"
+BACKBONE_HEAD_CHANNELS = {
+    "n": (64, 64, 128, 256),
+    "s": (128, 128, 256, 512),
+}
+META_MANIFEST_VERSION = "pv26-meta-train-v1"
+# IDE에서 아래 검색어로 조절 지점을 바로 찾을 수 있다.
+# ===== USER CONFIG =====
+# ===== HYPERPARAMETERS =====
+# ===== PHASE HYPERPARAMETERS =====
+
+
+class _DatasetRecordView:
+    def __init__(self, dataset: Any, indices: list[int]) -> None:
+        self._dataset = dataset
+        self._indices = list(indices)
+        self.records = [dataset.records[index] for index in self._indices]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index: int) -> Any:
+        return self._dataset[self._indices[index]]
+
+
+def _resolve_backbone_weights(train_config: TrainDefaultsConfig) -> str:
+    if resolve_yolo26_weights is not None:
+        return resolve_yolo26_weights(
+            variant=train_config.backbone_variant,
+            weights=train_config.backbone_weights,
+        )
+    if train_config.backbone_weights:
+        return str(train_config.backbone_weights)
+    return f"yolo26{train_config.backbone_variant}.pt"
+
+
+def _build_backbone_adapter(train_config: TrainDefaultsConfig) -> Any:
+    weights = _resolve_backbone_weights(train_config)
+    if build_yolo26_roadmark_trunk is not None:
+        return build_yolo26_roadmark_trunk(
+            variant=train_config.backbone_variant,
+            weights=weights,
+        )
+    if build_yolo26_trunk is not None:
+        return build_yolo26_trunk(
+            variant=train_config.backbone_variant,
+            weights=weights,
+        )
+    return build_yolo26n_trunk(weights=weights)
+
+
+def _resolve_distill_teacher_checkpoint(train_config: TrainDefaultsConfig, checkpoint: str | None = None) -> Path:
+    checkpoint = train_config.distill_teacher_checkpoint if checkpoint is None else checkpoint
+    if checkpoint is None:
+        raise ValueError("distill_enabled requires train_defaults.distill_teacher_checkpoint")
+    checkpoint_path = Path(checkpoint).expanduser()
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = (REPO_ROOT / checkpoint_path).resolve()
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"distill teacher checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
+
+
+def _build_single_distill_teacher(train_config: TrainDefaultsConfig, checkpoint_path: Path) -> PV26DistillTeacher:
+    if load_matching_state_dict is None:
+        raise RuntimeError("load_matching_state_dict is required for distill teacher loading")
+    import torch
+
+    adapter = _build_backbone_adapter(train_config)
+    teacher_roadmark_architecture = (
+        train_config.distill_teacher_roadmark_architecture
+        if train_config.distill_teacher_roadmark_architecture
+        else train_config.roadmark_architecture
+    )
+    heads = PV26Heads(
+        in_channels=_resolve_head_channels(adapter, train_config),
+        roadmark_architecture=teacher_roadmark_architecture,
+        lane_head_mode=train_config.lane_head_mode,
+        lane_conditional_row_coordinate_mode=train_config.lane_conditional_row_coordinate_mode,
+        lane_conditional_row_max_delta_px=train_config.lane_conditional_row_max_delta_px,
+        lane_conditional_denoise_hard_negative_count=(
+            train_config.lane_conditional_denoise_hard_negative_count
+        ),
+        lane_conditional_denoise_hard_negative_offset_px=(
+            train_config.lane_conditional_denoise_hard_negative_offset_px
+        ),
+        lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
+        lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
+        lane_family_cross_stitch_enabled=train_config.lane_family_cross_stitch_enabled,
+        stopline_lane_context_fusion_enabled=train_config.stopline_lane_context_fusion_enabled,
+        stopline_lane_context_detach=train_config.stopline_lane_context_detach,
+        stopline_crosswalk_context_fusion_enabled=train_config.stopline_crosswalk_context_fusion_enabled,
+        stopline_crosswalk_context_detach=train_config.stopline_crosswalk_context_detach,
+    )
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"distill teacher checkpoint must be a dict: {checkpoint_path}")
+    adapter_state = checkpoint.get("adapter_state_dict")
+    heads_state = checkpoint.get("heads_state_dict")
+    if not isinstance(adapter_state, dict) or not isinstance(heads_state, dict):
+        raise KeyError("distill teacher checkpoint requires adapter_state_dict and heads_state_dict")
+    load_matching_state_dict(adapter.raw_model, adapter_state)
+    load_matching_state_dict(heads, heads_state)
+    runtime_target_config = _build_postprocess_config(train_config) if train_config.distill_teacher_runtime_targets_enabled else None
+    return PV26DistillTeacher(adapter, heads, runtime_target_postprocess_config=runtime_target_config)
+
+
+def _build_distill_teacher(train_config: TrainDefaultsConfig) -> PV26DistillTeacher | PV26TaskRoutedDistillTeacher | None:
+    if not train_config.distill_enabled:
+        return None
+    if str(train_config.distill_teacher_mode) != "cache":
+        raise ValueError("only distill_teacher_mode='cache' is supported")
+    default_teacher = _build_single_distill_teacher(
+        train_config,
+        _resolve_distill_teacher_checkpoint(train_config),
+    )
+    task_teacher_paths = dict(train_config.distill_task_teacher_checkpoints)
+    if not task_teacher_paths:
+        return default_teacher
+    task_teachers = {
+        task_name: _build_single_distill_teacher(
+            train_config,
+            _resolve_distill_teacher_checkpoint(train_config, checkpoint_path),
+        )
+        for task_name, checkpoint_path in task_teacher_paths.items()
+    }
+    return PV26TaskRoutedDistillTeacher(default_teacher, task_teachers)
+
+
+def _resolve_head_channels(adapter: Any, train_config: TrainDefaultsConfig) -> tuple[int, ...]:
+    if infer_pyramid_channels is not None:
+        channels = tuple(int(value) for value in infer_pyramid_channels(adapter))
+        if len(channels) == 4:
+            return channels
+        if len(channels) == 3:
+            return (channels[0], *channels)
+    return _configured_head_channels(train_config)
+
+
+def _configured_head_channels(train_config: TrainDefaultsConfig) -> tuple[int, ...]:
+    try:
+        return BACKBONE_HEAD_CHANNELS[str(train_config.backbone_variant)]
+    except KeyError as exc:
+        raise KeyError(
+            "unsupported backbone variant for fallback head-channel resolution: "
+            f"{train_config.backbone_variant!r}"
+        ) from exc
+
+
+def _build_postprocess_config(train_config: TrainDefaultsConfig) -> PV26PostprocessConfig:
+    return PV26PostprocessConfig(
+        det_conf_threshold=float(train_config.det_conf_threshold),
+        det_iou_threshold=float(train_config.det_iou_threshold),
+        lane_obj_threshold=float(train_config.lane_obj_threshold),
+        lane_segfirst_track_mode=str(train_config.lane_segfirst_track_mode),
+        lane_segfirst_max_row_gap=int(train_config.lane_segfirst_max_row_gap),
+        lane_segfirst_max_link_dx=float(train_config.lane_segfirst_max_link_dx),
+        lane_segfirst_seed_threshold=float(train_config.lane_segfirst_seed_threshold),
+        lane_segfirst_seed_trace_max_seeds=int(train_config.lane_segfirst_seed_trace_max_seeds),
+        lane_segfirst_center_offset_enabled=bool(train_config.lane_segfirst_center_offset_enabled),
+        lane_segfirst_center_offset_max_shift_px=float(train_config.lane_segfirst_center_offset_max_shift_px),
+        lane_segfirst_center_offset_min_support_score=float(
+            train_config.lane_segfirst_center_offset_min_support_score
+        ),
+        lane_conditional_row_enabled=bool(train_config.lane_conditional_row_enabled),
+        lane_conditional_row_merge_mode=str(train_config.lane_conditional_row_merge_mode),
+        lane_conditional_row_dense_gate_enabled=bool(train_config.lane_conditional_row_dense_gate_enabled),
+        lane_conditional_row_dense_min_mean_centerline=float(
+            train_config.lane_conditional_row_dense_min_mean_centerline
+        ),
+        lane_conditional_row_dense_min_mean_support=float(
+            train_config.lane_conditional_row_dense_min_mean_support
+        ),
+        lane_conditional_row_dense_min_points=int(train_config.lane_conditional_row_dense_min_points),
+        stop_line_obj_threshold=float(train_config.stop_line_obj_threshold),
+        stop_line_haf_enabled=bool(train_config.stop_line_haf_enabled),
+        stop_line_haf_valid_threshold=float(train_config.stop_line_haf_valid_threshold),
+        stop_line_haf_min_votes=int(train_config.stop_line_haf_min_votes),
+        stop_line_haf_cluster_endpoint_tolerance=float(train_config.stop_line_haf_cluster_endpoint_tolerance),
+        stop_line_haf_max_endpoint_covariance=float(train_config.stop_line_haf_max_endpoint_covariance),
+        stop_line_haf_max_segments=int(train_config.stop_line_haf_max_segments),
+        stop_line_axis_distance_enabled=bool(train_config.stop_line_axis_distance_enabled),
+        stop_line_axis_distance_valid_threshold=float(train_config.stop_line_axis_distance_valid_threshold),
+        stop_line_axis_distance_min_votes=int(train_config.stop_line_axis_distance_min_votes),
+        stop_line_axis_distance_cluster_endpoint_tolerance=float(
+            train_config.stop_line_axis_distance_cluster_endpoint_tolerance
+        ),
+        stop_line_axis_distance_max_endpoint_covariance=float(
+            train_config.stop_line_axis_distance_max_endpoint_covariance
+        ),
+        stop_line_axis_distance_min_support_score=float(train_config.stop_line_axis_distance_min_support_score),
+        stop_line_axis_distance_max_segments=int(train_config.stop_line_axis_distance_max_segments),
+        stop_line_endpoint_pair_enabled=bool(train_config.stop_line_endpoint_pair_enabled),
+        stop_line_endpoint_pair_score_threshold=float(train_config.stop_line_endpoint_pair_score_threshold),
+        stop_line_endpoint_pair_topk=int(train_config.stop_line_endpoint_pair_topk),
+        stop_line_endpoint_pair_max_segments=int(train_config.stop_line_endpoint_pair_max_segments),
+        stop_line_endpoint_haf_consensus_enabled=bool(
+            train_config.stop_line_endpoint_haf_consensus_enabled
+        ),
+        stop_line_endpoint_haf_consensus_score_threshold=float(
+            train_config.stop_line_endpoint_haf_consensus_score_threshold
+        ),
+        stop_line_endpoint_haf_consensus_topk=int(train_config.stop_line_endpoint_haf_consensus_topk),
+        stop_line_endpoint_haf_consensus_haf_valid_threshold=float(
+            train_config.stop_line_endpoint_haf_consensus_haf_valid_threshold
+        ),
+        stop_line_endpoint_haf_consensus_min_votes=int(train_config.stop_line_endpoint_haf_consensus_min_votes),
+        stop_line_endpoint_haf_consensus_max_endpoint_error=float(
+            train_config.stop_line_endpoint_haf_consensus_max_endpoint_error
+        ),
+        stop_line_endpoint_haf_consensus_max_endpoint_covariance=float(
+            train_config.stop_line_endpoint_haf_consensus_max_endpoint_covariance
+        ),
+        stop_line_endpoint_haf_consensus_max_segments=int(
+            train_config.stop_line_endpoint_haf_consensus_max_segments
+        ),
+        stop_line_endpoint_pair_segment_enabled=bool(train_config.stop_line_endpoint_pair_segment_enabled),
+        stop_line_endpoint_pair_segment_score_threshold=float(
+            train_config.stop_line_endpoint_pair_segment_score_threshold
+        ),
+        stop_line_endpoint_pair_segment_max_segments=int(train_config.stop_line_endpoint_pair_segment_max_segments),
+        stop_line_endpoint_pair_verifier_score_weight=float(train_config.stop_line_endpoint_pair_verifier_score_weight),
+        stop_line_segment_set_enabled=bool(train_config.stop_line_segment_set_enabled),
+        stop_line_segment_set_score_threshold=float(train_config.stop_line_segment_set_score_threshold),
+        stop_line_segment_set_max_segments=int(train_config.stop_line_segment_set_max_segments),
+        stop_line_segment_verifier_score_weight=float(train_config.stop_line_segment_verifier_score_weight),
+        stop_line_context_segment_set_enabled=bool(train_config.stop_line_context_segment_set_enabled),
+        stop_line_context_segment_set_score_threshold=float(
+            train_config.stop_line_context_segment_set_score_threshold
+        ),
+        stop_line_context_segment_set_max_segments=int(train_config.stop_line_context_segment_set_max_segments),
+        stop_line_context_segment_verifier_score_weight=float(
+            train_config.stop_line_context_segment_verifier_score_weight
+        ),
+        stop_line_axis_segment_set_enabled=bool(train_config.stop_line_axis_segment_set_enabled),
+        stop_line_axis_segment_set_score_threshold=float(train_config.stop_line_axis_segment_set_score_threshold),
+        stop_line_axis_segment_set_max_segments=int(train_config.stop_line_axis_segment_set_max_segments),
+        stop_line_axis_segment_verifier_score_weight=float(train_config.stop_line_axis_segment_verifier_score_weight),
+        stop_line_patch_segment_set_enabled=bool(train_config.stop_line_patch_segment_set_enabled),
+        stop_line_patch_segment_set_score_threshold=float(train_config.stop_line_patch_segment_set_score_threshold),
+        stop_line_patch_segment_set_max_segments=int(train_config.stop_line_patch_segment_set_max_segments),
+        stop_line_patch_segment_verifier_score_weight=float(train_config.stop_line_patch_segment_verifier_score_weight),
+        stop_line_projection_comp_enabled=bool(train_config.stop_line_projection_comp_enabled),
+        stop_line_projection_comp_proposal_source=str(train_config.stop_line_projection_comp_proposal_source),
+        stop_line_projection_comp_min_gap=float(train_config.stop_line_projection_comp_min_gap),
+        stop_line_projection_comp_topk=int(train_config.stop_line_projection_comp_topk),
+        stop_line_projection_comp_union_min_score=float(train_config.stop_line_projection_comp_union_min_score),
+        stop_line_projection_comp_single_min_score=float(train_config.stop_line_projection_comp_single_min_score),
+        stop_line_projection_comp_angle_threshold_deg=float(train_config.stop_line_projection_comp_angle_threshold_deg),
+        stop_line_projection_comp_offset_threshold_px=float(train_config.stop_line_projection_comp_offset_threshold_px),
+        stop_line_projection_comp_min_cluster_count=int(train_config.stop_line_projection_comp_min_cluster_count),
+        stop_line_projection_comp_projection_gap_px=float(train_config.stop_line_projection_comp_projection_gap_px),
+        stop_line_projection_comp_max_predictions=int(train_config.stop_line_projection_comp_max_predictions),
+        stop_line_projection_comp_second_min_score=float(train_config.stop_line_projection_comp_second_min_score),
+        stop_line_projection_comp_second_min_fragment_count=int(
+            train_config.stop_line_projection_comp_second_min_fragment_count
+        ),
+        stop_line_projection_comp_second_min_length_ratio=float(
+            train_config.stop_line_projection_comp_second_min_length_ratio
+        ),
+        stop_line_component_gate_source=str(train_config.stop_line_component_gate_source),
+        crosswalk_obj_threshold=float(train_config.crosswalk_obj_threshold),
+        crosswalk_polygon_mode=str(train_config.crosswalk_polygon_mode),
+        allow_python_nms_fallback=bool(train_config.allow_python_nms_fallback),
+    )
+
+
+def _wrap_evaluator_postprocess_config(
+    evaluator: PV26Evaluator,
+    *,
+    postprocess_config: PV26PostprocessConfig,
+) -> PV26Evaluator:
+    original_evaluate_batch = evaluator.evaluate_batch
+    original_predict_batch = evaluator.predict_batch
+
+    def evaluate_batch_with_default(
+        self: PV26Evaluator,
+        batch: dict[str, Any],
+        *,
+        include_predictions: bool = False,
+        compute_loss: bool = True,
+        config: PV26PostprocessConfig | None = None,
+    ) -> dict[str, Any]:
+        return original_evaluate_batch(
+            batch,
+            include_predictions=include_predictions,
+            compute_loss=compute_loss,
+            config=config or postprocess_config,
+        )
+
+    def predict_batch_with_default(
+        self: PV26Evaluator,
+        batch: dict[str, Any],
+        *,
+        config: PV26PostprocessConfig | None = None,
+    ) -> list[dict[str, Any]]:
+        return original_predict_batch(batch, config=config or postprocess_config)
+
+    evaluator.evaluate_batch = MethodType(evaluate_batch_with_default, evaluator)
+    evaluator.predict_batch = MethodType(predict_batch_with_default, evaluator)
+    setattr(evaluator, "postprocess_config", postprocess_config)
+    return evaluator
+
+
+def _build_meta_train_presets() -> dict[str, MetaTrainScenario]:
+    return _scenario_ops.build_meta_train_presets(
+        repo_root=REPO_ROOT,
+        default_dataset_root=DEFAULT_DATASET_ROOT,
+        default_run_root=DEFAULT_RUN_ROOT,
+        load_user_paths_config=load_user_paths_config,
+        load_user_hyperparameters_config=load_user_hyperparameters_config,
+        nested_get=nested_get,
+    )
+
+
+# Default CLI preset; override with `--preset`.
+ENTRY_CONFIG = EntryConfig()
+
+
+def _log_meta_train(message: str) -> None:
+    print(f"[meta_train] {message}", flush=True)
+
+
+def _preset_key(preset_name: str | Path) -> str:
+    return _scenario_ops.preset_key(preset_name)
+
+
+def _default_scenario_path(preset_name: str | Path) -> Path:
+    return _scenario_ops.default_scenario_path(
+        preset_name,
+        preset_path_root=PRESET_PATH_ROOT,
+    )
+
+
+def _validated_meta_train_scenario(scenario: MetaTrainScenario) -> MetaTrainScenario:
+    train_config_api.validate_meta_train_scenario(scenario)
+    return scenario
+
+
+def load_meta_train_scenario(preset_name: str | Path) -> MetaTrainScenario:
+    return _scenario_ops.load_meta_train_scenario(
+        preset_name,
+        repo_root=REPO_ROOT,
+        default_dataset_root=DEFAULT_DATASET_ROOT,
+        default_run_root=DEFAULT_RUN_ROOT,
+        load_user_paths_config=load_user_paths_config,
+        load_user_hyperparameters_config=load_user_hyperparameters_config,
+        nested_get=nested_get,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
+    )
+
+
+def _resolve_scenario_path(value: str | Path | None, *, fallback: Path) -> Path:
+    return _scenario_ops.resolve_scenario_path(
+        value,
+        fallback=fallback,
+        repo_root=REPO_ROOT,
+    )
+
+
+def _scenario_snapshot_for_run(
+    scenario: MetaTrainScenario,
+    *,
+    run_dir: Path,
+) -> dict[str, Any]:
+    return _scenario_ops.scenario_snapshot_for_run(
+        scenario,
+        run_dir=run_dir,
+        scenario_to_mapping=train_config_api.scenario_to_mapping,
+    )
+
+
+def _load_meta_resume_manifest(run_dir: Path) -> dict[str, Any]:
+    return _scenario_ops.load_meta_resume_manifest(
+        run_dir,
+        read_json=train_artifacts.read_json,
+    )
+
+
+def _manifest_phase_signature(phases: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
+    return _scenario_ops.manifest_phase_signature(phases)
+
+
+def _scenario_phase_signature(scenario: MetaTrainScenario) -> tuple[tuple[str, str], ...]:
+    return _scenario_ops.scenario_phase_signature(scenario)
+
+
+def _load_legacy_resume_scenario(
+    manifest: dict[str, Any],
+    *,
+    preset_name: str,
+    run_dir: Path,
+) -> tuple[MetaTrainScenario, Path]:
+    return _scenario_ops.load_legacy_resume_scenario(
+        manifest,
+        preset_name=preset_name,
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+        load_meta_train_scenario=load_meta_train_scenario,
+        scenario_to_mapping=train_config_api.scenario_to_mapping,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
+    )
+
+
+def _load_resume_scenario_from_snapshot(
+    scenario_snapshot: dict[str, Any],
+    *,
+    run_dir: Path,
+) -> MetaTrainScenario:
+    return _scenario_ops.load_resume_scenario_from_snapshot(
+        scenario_snapshot,
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
+    )
+
+
+def _resume_scenario_path(
+    manifest: dict[str, Any],
+    *,
+    preset_name: str,
+) -> Path:
+    return _scenario_ops.resume_scenario_path(
+        manifest,
+        preset_name=preset_name,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+    )
+
+
+def load_meta_train_resume_scenario(
+    run_dir: str | Path,
+    *,
+    preset_name: str,
+) -> tuple[MetaTrainScenario, Path]:
+    return _scenario_ops.load_meta_train_resume_scenario(
+        run_dir,
+        preset_name=preset_name,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+        load_meta_train_scenario=load_meta_train_scenario,
+        read_json=train_artifacts.read_json,
+        scenario_to_mapping=train_config_api.scenario_to_mapping,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
+    )
+
+
+def load_meta_train_resume_context(run_dir: str | Path) -> dict[str, Any]:
+    return _scenario_ops.load_meta_train_resume_context(
+        run_dir,
+        read_json=train_artifacts.read_json,
+    )
+
+
+def load_meta_train_derived_scenario(
+    source_run_dir: str | Path,
+    *,
+    preset_name: str,
+    start_stage: str,
+    end_stage: str,
+) -> tuple[MetaTrainScenario, Path, dict[str, Any]]:
+    return _scenario_ops.load_meta_train_derived_scenario(
+        source_run_dir,
+        preset_name=preset_name,
+        start_stage=start_stage,
+        end_stage=end_stage,
+        repo_root=REPO_ROOT,
+        preset_path_root=PRESET_PATH_ROOT,
+        load_meta_train_scenario=load_meta_train_scenario,
+        read_json=train_artifacts.read_json,
+        validate_meta_train_scenario=train_config_api.validate_meta_train_scenario,
+    )
+
+
+def _phase_entry_is_completed(entry: dict[str, Any], phase: Any) -> bool:
+    return train_artifacts.phase_entry_is_completed(entry, phase)
+
+
+def _recover_phase_entry_from_run_dir(entry: dict[str, Any], phase: Any) -> dict[str, Any] | None:
+    return train_artifacts.recover_phase_entry_from_run_dir(entry, phase)
+
+
+def _phase_entry_is_terminal(entry: dict[str, Any], phase: Any) -> bool:
+    return train_artifacts.phase_entry_is_terminal(entry, phase)
+
+
+def _scenario_phase_defaults(
+    defaults: TrainDefaultsConfig,
+    overrides: dict[str, Any],
+) -> TrainDefaultsConfig:
+    return train_config_api.scenario_phase_defaults(defaults, overrides)
+
+
+def _resolve_phase_selection(default_selection: SelectionConfig, phase: PhaseConfig) -> SelectionConfig:
+    return train_config_api.resolve_phase_selection(default_selection, phase)
+
+
+def _validate_meta_train_scenario(scenario: MetaTrainScenario) -> None:
+    train_config_api.validate_meta_train_scenario(scenario)
+
+
+class PhaseTransitionController:
+    def __init__(
+        self,
+        *,
+        phase: PhaseConfig,
+        selection: SelectionConfig,
+    ) -> None:
+        self._delegate = _runtime_ops.PhaseTransitionController(
+            phase=phase,
+            selection=selection,
+            resolve_summary_path=resolve_summary_path,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+def _configure_torch_multiprocessing() -> None:
+    try:
+        import torch
+
+        torch_module_path = getattr(torch, "__file__", None)
+        if torch_module_path:
+            torch_lib_dir = Path(torch_module_path).resolve().parent / "lib"
+            if torch_lib_dir.is_dir():
+                current_ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+                ld_library_entries = [entry for entry in current_ld_library_path.split(os.pathsep) if entry]
+                torch_lib_dir_str = str(torch_lib_dir)
+                if torch_lib_dir_str not in ld_library_entries:
+                    os.environ["LD_LIBRARY_PATH"] = (
+                        os.pathsep.join((torch_lib_dir_str, *ld_library_entries))
+                        if ld_library_entries
+                        else torch_lib_dir_str
+                    )
+
+        # Large encoded CPU batches can exhaust process file descriptors when
+        # PyTorch shares storages via duplicated FDs.
+        if torch.multiprocessing.get_sharing_strategy() != "file_system":
+            torch.multiprocessing.set_sharing_strategy("file_system")
+    except RuntimeError:
+        pass
+
+
+def _is_lane_family_only_phase(phase: PhaseConfig | None) -> bool:
+    if phase is None:
+        return False
+    if str(phase.freeze_policy or "") == "lane_family_heads_only":
+        return True
+    return str(phase.stage) == "stage_4_lane_family_finetune"
+
+
+def _dataset_for_phase(
+    dataset: PV26CanonicalDataset,
+    *,
+    phase: PhaseConfig | None,
+    train_config: TrainDefaultsConfig | None = None,
+    include_unlabeled_negatives: bool = False,
+) -> PV26CanonicalDataset:
+    if not _is_lane_family_only_phase(phase):
+        return dataset
+    allowed_dataset_keys = {
+        dataset_key
+        for dataset_key, source_mask in SOURCE_MASK_BY_DATASET.items()
+        if any(bool(source_mask.get(task_name, False)) for task_name in ("lane", "stop_line", "crosswalk"))
+    }
+    negative_mode = (
+        str(getattr(train_config, "lane_family_unlabeled_negative_mode", "none") or "none").strip().lower()
+        if train_config is not None
+        else "none"
+    )
+    include_det_source_distill_only = bool(
+        getattr(train_config, "lane_family_include_det_source_distill_only", False)
+    )
+    include_det_only = (
+        include_unlabeled_negatives
+        and (
+            (negative_mode.startswith("det_source_") and negative_mode != "none")
+            or include_det_source_distill_only
+        )
+    )
+    if include_det_only:
+        allowed_dataset_keys.update(
+            dataset_key
+            for dataset_key, source_mask in SOURCE_MASK_BY_DATASET.items()
+            if bool(source_mask.get("det", False))
+            and not any(bool(source_mask.get(task_name, False)) for task_name in ("lane", "stop_line", "crosswalk"))
+        )
+    selected_indices = [
+        index
+        for index, record in enumerate(dataset.records)
+        if str(record.dataset_key) in allowed_dataset_keys
+    ]
+    if not selected_indices:
+        raise ValueError(f"phase {phase.stage} requires lane-family samples, but none were found in the canonical dataset index")
+    if len(selected_indices) == len(dataset.records):
+        return dataset
+    return _DatasetRecordView(dataset, selected_indices)
+
+
+def _build_phase_train_loaders(
+    dataset: PV26CanonicalDataset,
+    *,
+    train_config: TrainDefaultsConfig,
+    phase: PhaseConfig | None = None,
+) -> tuple[Any, Any]:
+    train_dataset = _dataset_for_phase(
+        dataset,
+        phase=phase,
+        train_config=train_config,
+        include_unlabeled_negatives=True,
+    )
+    val_dataset = _dataset_for_phase(
+        dataset,
+        phase=phase,
+        train_config=train_config,
+        include_unlabeled_negatives=False,
+    )
+    train_batches = train_config_api.resolve_train_batch_limit(train_config.train_batches)
+    val_batches = train_config_api.resolve_val_batch_limit(train_config.val_batches)
+    train_loader = build_pv26_train_dataloader(
+        train_dataset,
+        batch_size=train_config.batch_size,
+        num_batches=train_batches,
+        ratios=train_config.sampler_ratios,
+        task_positive_task=train_config.task_positive_task,
+        task_positive_fraction=train_config.task_positive_fraction,
+        split="train",
+        seed=26,
+        num_workers=train_config.num_workers,
+        pin_memory=train_config.pin_memory,
+        encode_batches=train_config.encode_train_batches_in_loader,
+        persistent_workers=train_config.persistent_workers,
+        prefetch_factor=train_config.prefetch_factor,
+    )
+    val_loader = None
+    if val_batches != 0:
+        val_loader = build_pv26_eval_dataloader(
+            val_dataset,
+            batch_size=train_config.batch_size,
+            num_batches=val_batches,
+            split="val",
+            seed=26,
+            num_workers=train_config.num_workers,
+            pin_memory=train_config.pin_memory,
+            encode_batches=train_config.encode_val_batches_in_loader,
+            persistent_workers=train_config.persistent_workers,
+            prefetch_factor=train_config.prefetch_factor,
+        )
+    return train_loader, val_loader
+
+
+def _build_phase_trainer(phase: PhaseConfig, train_config: TrainDefaultsConfig) -> PV26Trainer:
+    adapter = _build_backbone_adapter(train_config)
+    head_channels = _resolve_head_channels(adapter, train_config)
+    heads = PV26Heads(
+        in_channels=head_channels,
+        roadmark_architecture=train_config.roadmark_architecture,
+        lane_head_mode=train_config.lane_head_mode,
+        lane_conditional_row_coordinate_mode=train_config.lane_conditional_row_coordinate_mode,
+        lane_conditional_row_max_delta_px=train_config.lane_conditional_row_max_delta_px,
+        lane_conditional_denoise_hard_negative_count=(
+            train_config.lane_conditional_denoise_hard_negative_count
+        ),
+        lane_conditional_denoise_hard_negative_offset_px=(
+            train_config.lane_conditional_denoise_hard_negative_offset_px
+        ),
+        lane_family_shared_adapter_enabled=train_config.lane_family_shared_adapter_enabled,
+        lane_family_task_adapter_enabled=train_config.lane_family_task_adapter_enabled,
+        lane_family_cross_stitch_enabled=train_config.lane_family_cross_stitch_enabled,
+        stopline_lane_context_fusion_enabled=train_config.stopline_lane_context_fusion_enabled,
+        stopline_lane_context_detach=train_config.stopline_lane_context_detach,
+        stopline_crosswalk_context_fusion_enabled=train_config.stopline_crosswalk_context_fusion_enabled,
+        stopline_crosswalk_context_detach=train_config.stopline_crosswalk_context_detach,
+    )
+    criterion = PV26MultiTaskLoss(
+        stage=phase.stage,
+        loss_weights=phase.loss_weights or None,
+        task_mode=train_config.task_mode,
+        lane_assignment_mode=train_config.lane_assignment_mode,
+        lane_objectness_target_mode=train_config.lane_objectness_target_mode,
+        lane_family_query_objectness_target_mode=train_config.lane_family_query_objectness_target_mode,
+        lane_family_query_target_source=train_config.lane_family_query_target_source,
+        lane_objectness_quality_min=train_config.lane_objectness_quality_min,
+        lane_objectness_quality_tau=train_config.lane_objectness_quality_tau,
+        lane_dynamic_coverage_weight=train_config.lane_dynamic_coverage_weight,
+        lane_centerline_focal_weight=train_config.lane_centerline_focal_weight,
+        lane_centerline_dice_weight=train_config.lane_centerline_dice_weight,
+        lane_segfirst_loss_weights=train_config.lane_segfirst_loss_weights,
+        lane_segfirst_centerline_target_mode=train_config.lane_segfirst_centerline_target_mode,
+        lane_segfirst_centerline_max_positive_weight=train_config.lane_segfirst_centerline_max_positive_weight,
+        lane_segfirst_residual_risk_core_weight=train_config.lane_segfirst_residual_risk_core_weight,
+        lane_segfirst_residual_risk_ring_weight=train_config.lane_segfirst_residual_risk_ring_weight,
+        lane_segfirst_residual_risk_ring_margin=train_config.lane_segfirst_residual_risk_ring_margin,
+        lane_segfirst_center_offset_aux_weight=train_config.lane_segfirst_center_offset_aux_weight,
+        lane_segfirst_anchor_offset_aux_weight=train_config.lane_segfirst_anchor_offset_aux_weight,
+        lane_segfirst_task_conflict_negative_mode=train_config.lane_segfirst_task_conflict_negative_mode,
+        lane_segfirst_task_conflict_negative_weight=train_config.lane_segfirst_task_conflict_negative_weight,
+        lane_segfirst_task_conflict_negative_margin=train_config.lane_segfirst_task_conflict_negative_margin,
+        lane_conditional_row_aux_weight=train_config.lane_conditional_row_aux_weight,
+        lane_segfirst_row_link_aux_weight=train_config.lane_segfirst_row_link_aux_weight,
+        lane_conditional_seed_aux_weight=train_config.lane_conditional_seed_aux_weight,
+        lane_conditional_seed_target_mode=train_config.lane_conditional_seed_target_mode,
+        lane_conditional_objectness_target_mode=train_config.lane_conditional_objectness_target_mode,
+        lane_conditional_row_x_weight=train_config.lane_conditional_row_x_weight,
+        lane_conditional_denoise_aux_weight=train_config.lane_conditional_denoise_aux_weight,
+        lane_segfirst_instance_embedding_aux_weight=train_config.lane_segfirst_instance_embedding_aux_weight,
+        lane_segfirst_color_class_weights=train_config.lane_segfirst_color_class_weights,
+        stopline_local_x_aux_weight=train_config.stopline_local_x_aux_weight,
+        stopline_selector_aux_weight=train_config.stopline_selector_aux_weight,
+        stopline_selector_target_mode=train_config.stopline_selector_target_mode,
+        stopline_geometry_aux_weight=train_config.stopline_geometry_aux_weight,
+        stopline_center_target_mode=train_config.stopline_center_target_mode,
+        stopline_centerline_target_weight=train_config.stopline_centerline_target_weight,
+        stopline_midpoint_aux_weight=train_config.stopline_midpoint_aux_weight,
+        stopline_haf_aux_weight=train_config.stopline_haf_aux_weight,
+        stopline_axis_distance_aux_weight=train_config.stopline_axis_distance_aux_weight,
+        stopline_endpoint_pair_aux_weight=train_config.stopline_endpoint_pair_aux_weight,
+        stopline_endpoint_pair_segment_aux_weight=train_config.stopline_endpoint_pair_segment_aux_weight,
+        stopline_endpoint_pair_verifier_aux_weight=train_config.stopline_endpoint_pair_verifier_aux_weight,
+        stopline_segment_set_aux_weight=train_config.stopline_segment_set_aux_weight,
+        stopline_segment_verifier_aux_weight=train_config.stopline_segment_verifier_aux_weight,
+        stopline_segment_denoise_aux_weight=train_config.stopline_segment_denoise_aux_weight,
+        stopline_context_segment_set_aux_weight=train_config.stopline_context_segment_set_aux_weight,
+        stopline_context_segment_verifier_aux_weight=train_config.stopline_context_segment_verifier_aux_weight,
+        stopline_axis_segment_set_aux_weight=train_config.stopline_axis_segment_set_aux_weight,
+        stopline_axis_segment_verifier_aux_weight=train_config.stopline_axis_segment_verifier_aux_weight,
+        stopline_patch_segment_set_aux_weight=train_config.stopline_patch_segment_set_aux_weight,
+        stopline_patch_segment_verifier_aux_weight=train_config.stopline_patch_segment_verifier_aux_weight,
+        stopline_segment_verifier_target_mode=train_config.stopline_segment_verifier_target_mode,
+        stopline_segment_objectness_target_mode=train_config.stopline_segment_objectness_target_mode,
+        stopline_segment_verifier_quality_tau_px=train_config.stopline_segment_verifier_quality_tau_px,
+        stopline_empty_sample_mode=train_config.stopline_empty_sample_mode,
+        lane_family_unlabeled_negative_mode=train_config.lane_family_unlabeled_negative_mode,
+        stopline_task_conflict_negative_mode=train_config.stopline_task_conflict_negative_mode,
+        stopline_task_conflict_negative_weight=train_config.stopline_task_conflict_negative_weight,
+        stopline_task_conflict_negative_margin=train_config.stopline_task_conflict_negative_margin,
+        distill_enabled=train_config.distill_enabled,
+        distill_teacher_mode=train_config.distill_teacher_mode,
+        distill_sample_mode=train_config.distill_sample_mode,
+        distill_confidence_mode=train_config.distill_confidence_mode,
+        distill_confidence_threshold=train_config.distill_confidence_threshold,
+        distill_loss_weights=train_config.distill_loss_weights,
+        distill_normalize_mode=train_config.distill_normalize_mode,
+        distill_ema_decay=train_config.distill_ema_decay,
+        distill_ema_warmup_steps=train_config.distill_ema_warmup_steps,
+        distill_ema_eps=train_config.distill_ema_eps,
+        task_loss_normalize_mode=train_config.task_loss_normalize_mode,
+        task_loss_normalize_tasks=train_config.task_loss_normalize_tasks,
+        task_loss_ema_decay=train_config.task_loss_ema_decay,
+        task_loss_ema_warmup_steps=train_config.task_loss_ema_warmup_steps,
+        task_loss_ema_eps=train_config.task_loss_ema_eps,
+        task_loss_scale_min=train_config.task_loss_scale_min,
+        task_loss_scale_max=train_config.task_loss_scale_max,
+        task_uncertainty_weighting_enabled=train_config.task_uncertainty_weighting_enabled,
+        task_uncertainty_tasks=train_config.task_uncertainty_tasks,
+        task_uncertainty_init_log_vars=train_config.task_uncertainty_init_log_vars,
+        task_uncertainty_log_var_min=train_config.task_uncertainty_log_var_min,
+        task_uncertainty_log_var_max=train_config.task_uncertainty_log_var_max,
+    )
+    trainer = PV26Trainer(
+        adapter,
+        heads,
+        stage=phase.stage,
+        device=train_config.device,
+        criterion=criterion,
+        loss_weights=phase.loss_weights or None,
+        freeze_policy=phase.freeze_policy,
+        trunk_lr=train_config.trunk_lr,
+        head_lr=train_config.head_lr,
+        criterion_lr=train_config.criterion_lr,
+        weight_decay=train_config.weight_decay,
+        amp=train_config.amp,
+        amp_init_scale=train_config.amp_init_scale,
+        accumulate_steps=train_config.accumulate_steps,
+        grad_clip_norm=train_config.grad_clip_norm,
+        skip_non_finite_loss=train_config.skip_non_finite_loss,
+        oom_guard=train_config.oom_guard,
+        multitask_conflict=train_config.multitask_conflict,
+        distill_teacher=_build_distill_teacher(train_config),
+    )
+    trainer.scheduler = build_pv26_scheduler(
+        trainer.optimizer,
+        epochs=phase.max_epochs,
+        schedule=train_config.schedule,
+    )
+    postprocess_config = _build_postprocess_config(train_config)
+    original_build_evaluator = trainer.build_evaluator
+
+    def build_evaluator_with_postprocess(self: PV26Trainer):
+        evaluator = original_build_evaluator()
+        return _wrap_evaluator_postprocess_config(
+            evaluator,
+            postprocess_config=postprocess_config,
+        )
+
+    trainer.build_evaluator = MethodType(build_evaluator_with_postprocess, trainer)
+    setattr(trainer, "postprocess_config", postprocess_config)
+    return trainer
+
+
+def _sample_preview_selection(dataset: PV26CanonicalDataset, preview: PreviewConfig) -> list[dict[str, Any]]:
+    return _sample_preview_selection_with_logging(dataset, preview, progress_callback=None)
+
+
+def _preview_scene_signal_score(record: Any) -> tuple[int, int, int, int, int, int, int]:
+    scene_path = getattr(record, "scene_path", None)
+    if scene_path is None:
+        return (0, 0, 0, 0, 0, 0, 0)
+    try:
+        scene = read_json(Path(scene_path))
+    except Exception:
+        return (0, 0, 0, 0, 0, 0, 0)
+    if not isinstance(scene, dict):
+        return (0, 0, 0, 0, 0, 0, 0)
+
+    tasks = scene.get("tasks") if isinstance(scene.get("tasks"), dict) else {}
+    detections = scene.get("detections") if isinstance(scene.get("detections"), list) else []
+    traffic_lights = scene.get("traffic_lights") if isinstance(scene.get("traffic_lights"), list) else []
+    traffic_signs = scene.get("traffic_signs") if isinstance(scene.get("traffic_signs"), list) else []
+    lanes = scene.get("lanes") if isinstance(scene.get("lanes"), list) else []
+    stop_lines = scene.get("stop_lines") if isinstance(scene.get("stop_lines"), list) else []
+    crosswalks = scene.get("crosswalks") if isinstance(scene.get("crosswalks"), list) else []
+
+    detection_classes = [
+        str(item.get("class_name"))
+        for item in detections
+        if isinstance(item, dict)
+    ]
+    traffic_light_count = sum(1 for class_name in detection_classes if class_name == "traffic_light")
+    traffic_light_count += len(traffic_lights)
+    obstacle_count = sum(1 for class_name in detection_classes if class_name in {"traffic_cone", "obstacle"})
+    generic_det_count = len(detections)
+    return (
+        int(bool(tasks.get("has_crosswalk")) or bool(crosswalks)),
+        int(bool(tasks.get("has_stop_line")) or bool(stop_lines)),
+        int(bool(tasks.get("has_lane")) or bool(lanes)),
+        int(bool(tasks.get("has_tl_attr")) or bool(traffic_lights)),
+        min(traffic_light_count + len(traffic_signs), 20),
+        min(obstacle_count, 20),
+        min(generic_det_count, 50),
+    )
+
+
+def _sample_preview_selection_with_logging(
+    dataset: PV26CanonicalDataset,
+    preview: PreviewConfig,
+    *,
+    progress_callback: Any = None,
+) -> list[dict[str, Any]]:
+    if not preview.enabled:
+        return []
+    selected: list[dict[str, Any]] = []
+    counts = {dataset_key: 0 for dataset_key in preview.dataset_keys}
+    candidates: dict[str, list[tuple[tuple[int, int, int, int, int, int, int], int]]] = {
+        dataset_key: [] for dataset_key in preview.dataset_keys
+    }
+    for index, record in enumerate(dataset.records):
+        dataset_key = str(record.dataset_key)
+        split = str(record.split)
+        if split != preview.split or dataset_key not in counts:
+            continue
+        candidates[dataset_key].append((_preview_scene_signal_score(record), index))
+    selected_indices: list[int] = []
+    for dataset_key in preview.dataset_keys:
+        ranked = sorted(candidates[dataset_key], key=lambda item: tuple(-value for value in item[0]) + (item[1],))
+        picked = [index for _, index in ranked[: preview.max_samples_per_dataset]]
+        selected_indices.extend(picked)
+        counts[dataset_key] = len(picked)
+    missing = [dataset_key for dataset_key, count in counts.items() if count < preview.max_samples_per_dataset]
+    if missing and progress_callback is not None:
+        available = {dataset_key: count for dataset_key, count in counts.items() if count > 0}
+        if available:
+            progress_callback(
+                "preview selection fallback: "
+                f"missing keys={missing}, available_counts={available}, split={preview.split}"
+            )
+        else:
+            progress_callback(
+                "preview selection skipped: "
+                f"no samples found for requested keys={list(preview.dataset_keys)} on split={preview.split}"
+            )
+    for index in selected_indices:
+        selected.append(dataset[index])
+    return selected
+
+
+def _prediction_to_overlay_scene(prediction: dict[str, Any], sample: dict[str, Any]) -> dict[str, Any]:
+    meta = sample["meta"]
+    scene: dict[str, Any] = {
+        "source": {"image_path": str(meta["image_path"])},
+        "detections": [],
+        "traffic_lights": [],
+        "traffic_signs": [],
+        "lanes": [],
+        "stop_lines": [],
+        "crosswalks": [],
+        "debug_rectangles": [],
+    }
+    for detection in prediction.get("detections", []):
+        item = {
+            "bbox": [float(value) for value in detection.get("box_xyxy", [])],
+            "class_name": str(detection.get("class_name") or "unknown"),
+        }
+        class_name = item["class_name"]
+        if class_name == "traffic_light":
+            scene["traffic_lights"].append(item)
+        elif class_name == "sign":
+            scene["traffic_signs"].append(item)
+        else:
+            scene["detections"].append(item)
+    for lane in prediction.get("lanes", []):
+        scene["lanes"].append(
+            {
+                "class_name": lane.get("class_name"),
+                "points": [[float(x), float(y)] for x, y in lane.get("points_xy", [])],
+            }
+        )
+    for stop_line in prediction.get("stop_lines", []):
+        scene["stop_lines"].append(
+            {"points": [[float(x), float(y)] for x, y in stop_line.get("points_xy", [])]}
+        )
+    for crosswalk in prediction.get("crosswalks", []):
+        scene["crosswalks"].append(
+            {"points": [[float(x), float(y)] for x, y in crosswalk.get("points_xy", [])]}
+        )
+    return scene
+
+
+def _build_preview_evaluator(
+    phase: PhaseConfig,
+    train_config: TrainDefaultsConfig,
+    checkpoint_path: Path,
+) -> PV26Evaluator:
+    trainer = _build_phase_trainer(phase, train_config)
+    trainer.load_model_weights(checkpoint_path, map_location=train_config.device)
+    return trainer.build_evaluator()
+
+
+def _generate_phase_preview_bundle(
+    *,
+    phase: PhaseConfig,
+    train_config: TrainDefaultsConfig,
+    checkpoint_path: Path,
+    preview_kind: str,
+    preview_dir: Path,
+    preview_samples: list[dict[str, Any]],
+    preview_config: PreviewConfig,
+) -> dict[str, Any]:
+    if not preview_config.enabled:
+        return {"enabled": False}
+    evaluator = _build_preview_evaluator(phase, train_config, checkpoint_path)
+    output_dir = preview_dir / preview_kind
+    output_dir.mkdir(parents=True, exist_ok=True)
+    preview_entries: list[dict[str, Any]] = []
+    for sample in preview_samples:
+        sample_meta = sample["meta"]
+        sample_id = train_artifacts.safe_name(str(sample_meta["sample_id"]))
+        dataset_key = train_artifacts.safe_name(str(sample_meta["dataset_key"]))
+        stem = f"{dataset_key}__{sample_id}"
+        batch = collate_pv26_samples([sample])
+        prediction = evaluator.predict_batch(batch)[0]
+        prediction_path = output_dir / f"{stem}.json"
+        prediction_payload = {
+            "phase_name": phase.name,
+            "phase_stage": phase.stage,
+            "preview_kind": preview_kind,
+            "sample_meta": train_artifacts.json_ready(sample_meta),
+            "prediction": train_artifacts.json_ready(prediction),
+        }
+        train_artifacts.write_json(prediction_path, prediction_payload)
+        overlay_path = output_dir / f"{stem}.png"
+        overlay_error = None
+        if preview_config.write_overlay:
+            try:
+                render_overlay(_prediction_to_overlay_scene(prediction, sample), overlay_path)
+            except Exception as exc:  # pragma: no cover - depends on local ImageMagick availability.
+                overlay_error = str(exc)
+        preview_entries.append(
+            {
+                "sample_id": str(sample_meta["sample_id"]),
+                "dataset_key": str(sample_meta["dataset_key"]),
+                "prediction_path": str(prediction_path),
+                "overlay_path": str(overlay_path) if preview_config.write_overlay and overlay_error is None else None,
+                "overlay_error": overlay_error,
+            }
+        )
+    index_payload = {
+        "phase_name": phase.name,
+        "phase_stage": phase.stage,
+        "preview_kind": preview_kind,
+        "entries": preview_entries,
+    }
+    index_path = output_dir / "index.json"
+    train_artifacts.write_json(index_path, index_payload)
+    return {
+        "enabled": True,
+        "index_path": str(index_path),
+        "output_dir": str(output_dir),
+        "entries": preview_entries,
+    }
+
+
+def _phase_manifest_extra(
+    *,
+    scenario_path: Path,
+    phase_index: int,
+    phase: PhaseConfig,
+    train_config: TrainDefaultsConfig,
+    scenario: MetaTrainScenario,
+    head_channels: tuple[int, ...] | list[int] | None = None,
+    postprocess_config: PV26PostprocessConfig | None = None,
+    weights_only_handoff: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
+    backbone_weights = _resolve_backbone_weights(train_config)
+    resolved_head_channels = (
+        tuple(int(value) for value in head_channels)
+        if head_channels is not None
+        else _configured_head_channels(train_config)
+    )
+    postprocess_config = postprocess_config or _build_postprocess_config(train_config)
+    payload = {
+        "entry_script": "tools/run_pv26_train.py",
+        "scenario_path": str(scenario_path),
+        "dataset_config": train_artifacts.json_ready(asdict(scenario.dataset)),
+        "selection": train_artifacts.json_ready(asdict(scenario.selection)),
+        "phase_selection": train_artifacts.json_ready(asdict(phase_selection)),
+        "preview": train_artifacts.json_ready(asdict(scenario.preview)),
+        "phase": {
+            "index": int(phase_index),
+            "name": phase.name,
+            "stage": phase.stage,
+            "min_epochs": int(phase.min_epochs),
+            "max_epochs": int(phase.max_epochs),
+            "patience": int(phase.patience),
+            "min_improvement_pct": float(phase.min_improvement_pct),
+            "min_delta_abs": phase.min_delta_abs,
+            "selection": train_artifacts.json_ready(asdict(phase_selection)),
+            "loss_weights": train_artifacts.json_ready(phase.loss_weights),
+            "freeze_policy": phase.freeze_policy,
+        },
+        "phase_train_config": train_artifacts.json_ready(asdict(train_config)),
+        "backbone": {
+            "variant": train_config.backbone_variant,
+            "weights": backbone_weights,
+        },
+        "postprocess": train_artifacts.json_ready(asdict(postprocess_config)),
+        "head_channels": list(resolved_head_channels),
+    }
+    if weights_only_handoff is not None:
+        payload["weights_only_handoff"] = train_artifacts.json_ready(weights_only_handoff)
+    return payload
+
+
+def _execute_phase(
+    *,
+    scenario: MetaTrainScenario,
+    scenario_path: Path,
+    dataset: PV26CanonicalDataset,
+    preview_samples: list[dict[str, Any]],
+    phase_index: int,
+    phase: PhaseConfig,
+    run_dir: Path,
+    previous_best_checkpoint: Path | None,
+) -> dict[str, Any]:
+    phase_run_dir = run_dir / f"phase_{phase_index}"
+    phase_train_config = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
+    phase_selection = train_config_api.resolve_phase_selection(scenario.selection, phase)
+    _log_meta_train(f"building loaders for phase_{phase_index} at {phase_run_dir}")
+    train_loader, val_loader = _build_phase_train_loaders(dataset, train_config=phase_train_config, phase=phase)
+    controller = PhaseTransitionController(phase=phase, selection=phase_selection)
+    controller.replay(train_artifacts.read_jsonl(phase_run_dir / "history" / "epochs.jsonl"))
+
+    trainer = _build_phase_trainer(phase, phase_train_config)
+    phase_postprocess_config = getattr(trainer, "postprocess_config", None)
+    if not isinstance(phase_postprocess_config, PV26PostprocessConfig):
+        phase_postprocess_config = _build_postprocess_config(phase_train_config)
+    phase_head_channels = tuple(
+        int(value)
+        for value in getattr(getattr(trainer, "heads", None), "in_channels", _configured_head_channels(phase_train_config))
+    )
+    weights_only_handoff: dict[str, Any] | None = None
+    last_checkpoint_path = phase_run_dir / "checkpoints" / "last.pt"
+    if previous_best_checkpoint is not None and not last_checkpoint_path.is_file():
+        _log_meta_train(
+            f"loading weights-only handoff for phase_{phase_index} from {previous_best_checkpoint}"
+        )
+        load_result = trainer.load_model_weights(previous_best_checkpoint, map_location=phase_train_config.device)
+        weights_only_handoff = {
+            "checkpoint_path": str(previous_best_checkpoint),
+            "load_policy": load_result.get("load_policy") if isinstance(load_result, dict) else None,
+            "adapter_load_report": load_result.get("adapter_load_report") if isinstance(load_result, dict) else None,
+            "heads_load_report": load_result.get("heads_load_report") if isinstance(load_result, dict) else None,
+            "checkpoint_metadata": load_result.get("checkpoint_metadata") if isinstance(load_result, dict) else None,
+        }
+    elif last_checkpoint_path.is_file():
+        _log_meta_train(f"auto-resume checkpoint found for phase_{phase_index}: {last_checkpoint_path}")
+
+    phase_summary = trainer.fit(
+        train_loader,
+        epochs=phase.max_epochs,
+        phase_index=phase_index,
+        phase_count=len(scenario.phases),
+        phase_name=phase.name,
+        val_loader=val_loader,
+        run_dir=phase_run_dir,
+        checkpoint_every=phase_train_config.checkpoint_every,
+        save_last_checkpoint=phase_train_config.save_last_checkpoint,
+        save_task_best_checkpoints=phase_train_config.save_task_best_checkpoints,
+        max_train_batches=train_config_api.resolve_train_batch_limit(phase_train_config.train_batches),
+        max_val_batches=train_config_api.resolve_val_batch_limit(phase_train_config.val_batches),
+        best_metric=phase_selection.metric_path,
+        best_mode=phase_selection.mode,
+        auto_resume=True,
+        enable_tensorboard=True,
+        selection_metric_callback=controller.annotate_epoch,
+        early_exit_callback=controller.observe_epoch,
+        epoch_end_callback=build_epoch_comparison_grid_callback(
+            trainer=trainer,
+            phase=phase,
+            phase_dir=phase_run_dir,
+            preview_samples=preview_samples,
+            preview_config=scenario.preview,
+            log_fn=_log_meta_train,
+        ),
+        log_every_n_steps=phase_train_config.log_every_n_steps,
+        profile_window=phase_train_config.profile_window,
+        profile_device_sync=phase_train_config.profile_device_sync,
+        step_history_enabled=phase_train_config.step_history_enabled,
+        step_history_every_n_steps=phase_train_config.step_history_every_n_steps,
+        step_history_include_grad_details=phase_train_config.step_history_include_grad_details,
+        pcgrad_diagnostics_enabled=phase_train_config.pcgrad_diagnostics_enabled,
+        pcgrad_aggregate_every_n_steps=phase_train_config.pcgrad_aggregate_every_n_steps,
+        pcgrad_keep_raw_every_n_steps=phase_train_config.pcgrad_keep_raw_every_n_steps,
+        run_manifest_extra=_phase_manifest_extra(
+            scenario_path=scenario_path,
+            phase_index=phase_index,
+            phase=phase,
+            train_config=phase_train_config,
+            scenario=scenario,
+            head_channels=phase_head_channels,
+            postprocess_config=phase_postprocess_config,
+            weights_only_handoff=weights_only_handoff,
+        ),
+    )
+
+    phase_preview_dir = run_dir / "preview" / f"phase_{phase_index}"
+    preview_payload = {
+        "best": None,
+        "last": None,
+    }
+    best_checkpoint = Path(phase_summary["checkpoint_paths"]["best"]) if phase_summary["checkpoint_paths"]["best"] else None
+    last_checkpoint = Path(phase_summary["checkpoint_paths"]["last"]) if phase_summary["checkpoint_paths"]["last"] else None
+    if best_checkpoint is not None and best_checkpoint.is_file():
+        _log_meta_train(f"writing best preview bundle for phase_{phase_index}: {best_checkpoint}")
+        preview_payload["best"] = _generate_phase_preview_bundle(
+            phase=phase,
+            train_config=phase_train_config,
+            checkpoint_path=best_checkpoint,
+            preview_kind="best",
+            preview_dir=phase_preview_dir,
+            preview_samples=preview_samples,
+            preview_config=scenario.preview,
+        )
+    if last_checkpoint is not None and last_checkpoint.is_file():
+        _log_meta_train(f"writing last preview bundle for phase_{phase_index}: {last_checkpoint}")
+        preview_payload["last"] = _generate_phase_preview_bundle(
+            phase=phase,
+            train_config=phase_train_config,
+            checkpoint_path=last_checkpoint,
+            preview_kind="last",
+            preview_dir=phase_preview_dir,
+            preview_samples=preview_samples,
+            preview_config=scenario.preview,
+        )
+
+    early_exit = phase_summary.get("early_exit", {})
+    return {
+        "index": int(phase_index),
+        "name": phase.name,
+        "stage": phase.stage,
+        "status": "completed",
+        "run_dir": str(phase_run_dir),
+        "summary_path": str(phase_run_dir / "summary.json"),
+        "run_manifest_path": str(phase_run_dir / "run_manifest.json"),
+        "best_checkpoint_path": str(best_checkpoint) if best_checkpoint is not None else None,
+        "last_checkpoint_path": str(last_checkpoint) if last_checkpoint is not None else None,
+        "completed_epochs": int(phase_summary["completed_epochs"]),
+        "best_metric_value": phase_summary.get("best_metric_value"),
+        "best_epoch": phase_summary.get("best_epoch"),
+        "promotion_reason": early_exit.get("reason", "completed"),
+        "phase_state": early_exit.get("phase_state"),
+        "selection": train_artifacts.json_ready(asdict(phase_selection)),
+        "backbone": {
+            "variant": phase_train_config.backbone_variant,
+            "weights": _resolve_backbone_weights(phase_train_config),
+        },
+        "postprocess": train_artifacts.json_ready(asdict(phase_postprocess_config)),
+        "head_channels": list(phase_head_channels),
+        "weights_only_handoff": train_artifacts.json_ready(weights_only_handoff),
+        "preview": train_artifacts.json_ready(preview_payload),
+        "phase_train_config": train_artifacts.json_ready(asdict(phase_train_config)),
+        "run_summary": train_artifacts.json_ready(phase_summary),
+    }
+
+
+def _find_phase_by_stage(
+    scenario: MetaTrainScenario,
+    *,
+    stage: str,
+) -> tuple[int, PhaseConfig]:
+    return _runtime_ops.find_phase_by_stage(scenario, stage=stage)
+
+
+def _is_oom_error(exc: RuntimeError) -> bool:
+    return _runtime_ops.is_oom_error(exc)
+
+
+def _cuda_memory_stats(device: Any) -> dict[str, Any]:
+    import torch
+
+    if getattr(device, "type", None) != "cuda":
+        return {
+            "device": str(device),
+            "current_allocated_bytes": None,
+            "current_allocated_gib": None,
+            "peak_allocated_bytes": None,
+            "peak_allocated_gib": None,
+            "current_reserved_bytes": None,
+            "current_reserved_gib": None,
+            "peak_reserved_bytes": None,
+            "peak_reserved_gib": None,
+        }
+    torch.cuda.synchronize(device)
+    current_allocated = int(torch.cuda.memory_allocated(device))
+    peak_allocated = int(torch.cuda.max_memory_allocated(device))
+    current_reserved = int(torch.cuda.memory_reserved(device))
+    peak_reserved = int(torch.cuda.max_memory_reserved(device))
+
+    def _to_gib(value: int) -> float:
+        return float(value) / float(1024**3)
+
+    return {
+        "device": str(device),
+        "current_allocated_bytes": current_allocated,
+        "current_allocated_gib": _to_gib(current_allocated),
+        "peak_allocated_bytes": peak_allocated,
+        "peak_allocated_gib": _to_gib(peak_allocated),
+        "current_reserved_bytes": current_reserved,
+        "current_reserved_gib": _to_gib(current_reserved),
+        "peak_reserved_bytes": peak_reserved,
+        "peak_reserved_gib": _to_gib(peak_reserved),
+    }
+
+
+def _existing_dataset_roots(scenario: MetaTrainScenario) -> list[Path]:
+    return _runtime_ops.existing_dataset_roots(scenario)
+
+
+def _stage3_stress_train_config(
+    scenario: MetaTrainScenario,
+    *,
+    batch_size: int,
+    stress_iters: int,
+) -> tuple[int, PhaseConfig, TrainDefaultsConfig]:
+    return _runtime_ops.stage3_stress_train_config(
+        scenario,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        scenario_phase_defaults=_scenario_phase_defaults,
+    )
+
+
+def _run_stage3_probe(
+    trainer: PV26Trainer,
+    train_loader: Any,
+    *,
+    scenario: MetaTrainScenario,
+    phase_index: int,
+    phase_name: str,
+    phase_train_config: TrainDefaultsConfig,
+    stress_iters: int,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    return _runtime_ops.run_stage3_probe(
+        trainer,
+        train_loader,
+        scenario=scenario,
+        phase_index=phase_index,
+        phase_name=phase_name,
+        phase_train_config=phase_train_config,
+        stress_iters=stress_iters,
+        is_oom_error=_is_oom_error,
+    )
+
+
+def _stage3_stress_summary(
+    *,
+    scenario_path: Path,
+    phase_index: int,
+    phase: PhaseConfig,
+    trainer: PV26Trainer,
+    train_config: TrainDefaultsConfig,
+    batch_size: int,
+    stress_iters: int,
+    duration_sec: float,
+    status: str,
+    train_summary: dict[str, Any] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    return _runtime_ops.stage3_stress_summary(
+        scenario_path=scenario_path,
+        phase_index=phase_index,
+        phase=phase,
+        trainer=trainer,
+        train_config=train_config,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        duration_sec=duration_sec,
+        status=status,
+        train_summary=train_summary,
+        error=error,
+        json_ready=train_artifacts.json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_stage3_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_stage3_vram_stress(
+        scenario,
+        scenario_path=scenario_path,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=train_artifacts.json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_phase_vram_stress(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    stage: str | None = None,
+    batch_size: int | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_phase_vram_stress(
+        scenario,
+        scenario_path=scenario_path,
+        stage=stage,
+        batch_size=batch_size,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=train_artifacts.json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_phase_vram_sweep(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    stages: str | list[str] | tuple[str, ...] | None = None,
+    batch_sizes: str | list[int] | tuple[int, ...] | None = None,
+    stress_iters: int | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_phase_vram_sweep(
+        scenario,
+        scenario_path=scenario_path,
+        stages=stages,
+        batch_sizes=batch_sizes,
+        stress_iters=stress_iters,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        build_phase_train_loaders=_build_phase_train_loaders,
+        build_phase_trainer=_build_phase_trainer,
+        scenario_phase_defaults=_scenario_phase_defaults,
+        json_ready=train_artifacts.json_ready,
+        cuda_memory_stats=_cuda_memory_stats,
+    )
+
+
+def run_meta_train_scenario(
+    scenario: MetaTrainScenario,
+    *,
+    scenario_path: Path,
+    selected_phase_indices: tuple[int, ...] | list[int] | None = None,
+    initial_best_checkpoint: Path | None = None,
+    lineage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _runtime_ops.run_meta_train_scenario(
+        scenario,
+        scenario_path=scenario_path,
+        configure_torch_multiprocessing=_configure_torch_multiprocessing,
+        log_meta_train=_log_meta_train,
+        canonical_dataset_cls=PV26CanonicalDataset,
+        resolve_meta_run_dir=train_artifacts.resolve_meta_run_dir,
+        sample_preview_selection_with_logging=_sample_preview_selection_with_logging,
+        load_or_init_meta_manifest=train_artifacts.load_or_init_meta_manifest,
+        phase_entry_is_completed=_phase_entry_is_completed,
+        recover_phase_entry_from_run_dir=_recover_phase_entry_from_run_dir,
+        phase_entry_is_terminal=_phase_entry_is_terminal,
+        scenario_snapshot_for_run=_scenario_snapshot_for_run,
+        write_meta_manifest=train_artifacts.write_meta_manifest,
+        write_meta_summary=train_artifacts.write_meta_summary,
+        resolve_phase_selection=train_config_api.resolve_phase_selection,
+        execute_phase=_execute_phase,
+        selected_phase_indices=selected_phase_indices,
+        initial_best_checkpoint=initial_best_checkpoint,
+        lineage=lineage,
+    )
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    preset_names = tuple(sorted(_build_meta_train_presets().keys()))
+    stage_names = tuple(str(stage) for stage in PHASE_STAGE_ORDER)
+    parser = argparse.ArgumentParser(description="Run the PV26 meta-train scenario.")
+    parser.add_argument(
+        "--preset",
+        choices=preset_names,
+        default=ENTRY_CONFIG.preset_name,
+        help="PV26 meta-train preset name.",
+    )
+    parser.add_argument(
+        "--stage3-vram-stress",
+        action="store_true",
+        help="Run a short phase training probe and report peak CUDA VRAM usage. Defaults to stage_3.",
+    )
+    parser.add_argument(
+        "--phase-vram-sweep",
+        action="store_true",
+        help="Run short VRAM probes across phase stages and batch sizes, reporting the largest successful batch per phase.",
+    )
+    parser.add_argument(
+        "--resume-run",
+        default=None,
+        help="Resume an existing incomplete meta-train run directory exactly in place.",
+    )
+    parser.add_argument(
+        "--derive-run",
+        default=None,
+        help="Start a new derived meta-train run from an existing source run directory.",
+    )
+    parser.add_argument(
+        "--start-stage",
+        choices=stage_names,
+        default=None,
+        help="Start stage for --derive-run.",
+    )
+    parser.add_argument(
+        "--end-stage",
+        choices=stage_names,
+        default=None,
+        help="End stage for --derive-run.",
+    )
+    parser.add_argument(
+        "--stress-batch-size",
+        type=int,
+        default=None,
+        help="Override batch size for --stage3-vram-stress.",
+    )
+    parser.add_argument(
+        "--stress-iters",
+        type=int,
+        default=None,
+        help="Number of short train iterations to run for --stage3-vram-stress.",
+    )
+    parser.add_argument(
+        "--stress-stage",
+        choices=stage_names,
+        default=None,
+        help="Override stage for --stage3-vram-stress. Defaults to stage_3_end_to_end_finetune.",
+    )
+    parser.add_argument(
+        "--stress-stages",
+        default=None,
+        help="Comma-separated stage list for --phase-vram-sweep. Defaults to all four phase stages.",
+    )
+    parser.add_argument(
+        "--stress-batch-sizes",
+        default=None,
+        help="Comma-separated batch sizes for --phase-vram-sweep. Defaults to 1,2,4,6,8,12,16,24,32.",
+    )
+    return parser
+
+
+def _validate_cli_args(args: argparse.Namespace) -> None:
+    if bool(args.stage3_vram_stress) and bool(args.phase_vram_sweep):
+        raise SystemExit("--stage3-vram-stress cannot be combined with --phase-vram-sweep")
+    if bool(args.stage3_vram_stress) or bool(args.phase_vram_sweep):
+        if args.resume_run is not None:
+            raise SystemExit("--resume-run cannot be combined with VRAM probe modes")
+        if args.derive_run is not None:
+            raise SystemExit("--derive-run cannot be combined with VRAM probe modes")
+    if args.resume_run is not None and args.derive_run is not None:
+        raise SystemExit("--resume-run cannot be combined with --derive-run")
+    if args.resume_run is None and (args.start_stage is not None or args.end_stage is not None) and args.derive_run is None:
+        raise SystemExit("--start-stage/--end-stage require --derive-run")
+
+
+def _load_cli_scenario(args: argparse.Namespace) -> tuple[MetaTrainScenario, Path, dict[str, Any]]:
+    preset_name = str(args.preset)
+    if args.resume_run is not None:
+        scenario, scenario_path = load_meta_train_resume_scenario(
+            args.resume_run,
+            preset_name=preset_name,
+        )
+        _log_meta_train(f"resuming exact meta-train run: {scenario.run.run_dir}")
+        resume_context = load_meta_train_resume_context(args.resume_run)
+        selected_window = resume_context.get("selected_phase_window")
+        selected_phase_indices = None
+        if isinstance(selected_window, dict):
+            raw_indices = selected_window.get("selected_phase_indices")
+            if isinstance(raw_indices, list):
+                selected_phase_indices = tuple(int(value) for value in raw_indices)
+        lineage = resume_context.get("lineage")
+        initial_best_checkpoint = None
+        if isinstance(lineage, dict):
+            seed_checkpoint = lineage.get("seed_checkpoint_path")
+            if seed_checkpoint not in {None, ""}:
+                initial_best_checkpoint = Path(str(seed_checkpoint)).expanduser().resolve()
+        return scenario, scenario_path, {
+            "selected_phase_indices": selected_phase_indices,
+            "initial_best_checkpoint": initial_best_checkpoint,
+            "lineage": lineage if isinstance(lineage, dict) else None,
+        }
+    if args.derive_run is not None:
+        start_stage = str(args.start_stage or PHASE_STAGE_ORDER[0])
+        end_stage = str(args.end_stage or PHASE_STAGE_ORDER[-1])
+        scenario, scenario_path, derived_options = load_meta_train_derived_scenario(
+            args.derive_run,
+            preset_name=preset_name,
+            start_stage=start_stage,
+            end_stage=end_stage,
+        )
+        _log_meta_train(
+            "starting derived meta-train run from "
+            f"{Path(args.derive_run).expanduser().resolve()} with stage window {start_stage} -> {end_stage}"
+        )
+        return scenario, scenario_path, derived_options
+    return load_meta_train_scenario(preset_name), _default_scenario_path(preset_name), {
+        "selected_phase_indices": None,
+        "initial_best_checkpoint": None,
+        "lineage": None,
+    }
+
+
+def _run_cli_command(
+    args: argparse.Namespace,
+    *,
+    scenario: MetaTrainScenario,
+    scenario_path: Path,
+    run_options: dict[str, Any],
+) -> dict[str, Any]:
+    if bool(args.stage3_vram_stress):
+        return run_phase_vram_stress(
+            scenario,
+            scenario_path=scenario_path,
+            stage=args.stress_stage,
+            batch_size=args.stress_batch_size,
+            stress_iters=args.stress_iters,
+        )
+    if bool(args.phase_vram_sweep):
+        return run_phase_vram_sweep(
+            scenario,
+            scenario_path=scenario_path,
+            stages=args.stress_stages,
+            batch_sizes=args.stress_batch_sizes,
+            stress_iters=args.stress_iters,
+        )
+    return run_meta_train_scenario(
+        scenario,
+        scenario_path=scenario_path,
+        selected_phase_indices=run_options.get("selected_phase_indices"),
+        initial_best_checkpoint=run_options.get("initial_best_checkpoint"),
+        lineage=run_options.get("lineage"),
+    )
+
+
+def _raise_for_cli_failure(
+    args: argparse.Namespace,
+    summary: dict[str, Any],
+) -> None:
+    if (bool(args.stage3_vram_stress) or bool(args.phase_vram_sweep)) and summary.get("status") != "ok":
+        raise SystemExit(2)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    _validate_cli_args(args)
+    scenario, scenario_path, run_options = _load_cli_scenario(args)
+    summary = _run_cli_command(
+        args,
+        scenario=scenario,
+        scenario_path=scenario_path,
+        run_options=run_options,
+    )
+    print(json.dumps(train_artifacts.json_ready(summary), indent=2, ensure_ascii=True))
+    _raise_for_cli_failure(args, summary)
+
+
+if __name__ == "__main__":
+    main()

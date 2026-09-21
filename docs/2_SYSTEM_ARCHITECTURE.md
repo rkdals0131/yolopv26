@@ -1,197 +1,66 @@
-# PV26 System Architecture
+# 모델 구조
 
-## 저장소 구조
+2026-09-21 기준 첫 구현이다. 공유 본체에는 YOLO26-s를 사용하고, 신호등 상태는 내부 SignalAttr로 읽는다. 도로표식은 중심선 확률맵을 예측한 뒤 선별 점열로 변환한다. 짧은 GPU 학습과 내보내기를 확인했으며, 본학습은 남아 있다.
 
-```text
-common/
-  boxes.py
-  io.py
-  overlay.py
-  paths.py
-  pv26_schema.py
-model/
-  data/
-    dataset.py
-    preview.py
-    sampler.py
-    target_encoder.py
-    transform.py
-  net/
-    heads.py
-    trunk.py
-  engine/
-    batch.py
-    det_geometry.py
-    trainer_progress.py
-    trainer_reporting.py
-    trainer_runtime.py
-    _loss_spec.py
-    _det_geometry.py
-    _trainer_checkpoint.py
-    _trainer_epochs.py
-    _trainer_fit.py
-    _trainer_io.py
-    _trainer_progress.py
-    _trainer_reporting.py
-    _trainer_step.py
-    evaluator.py
-    loss.py
-    metrics.py
-    postprocess.py
-    spec.py
-    trainer.py
-tools/
-  check_env/
-    __init__.py
-    actions.py
-    launch.py
-    scan.py
-    tui.py
-  check_env.py
-  pv26_train/
-    __init__.py
-    artifacts.py
-    cli.py
-    config.py
-    runtime.py
-    scenario.py
-    scenarios.py
-  run_pv26_train.py
-  od_bootstrap/
-    source/
-      aihub/
-        __init__.py
-        debug.py
-        lane_worker.py
-        obstacle_worker.py
-        reports.py
-        source_meta.py
-        traffic_worker.py
-        worker_common.py
-        workers.py
-      shared/
-        __init__.py
-        debug.py
-        io.py
-        parallel.py
-        raw.py
-        reports.py
-        resume.py
-        scene.py
-        source_meta.py
-        summary.py
-      bdd100k.py
-      constants.py
-      defaults.py
-      prepare.py
-      raw_common.py
-      types.py
-    build/
-      checkpoint_audit.py
-      debug_vis.py
-      exhaustive_od.py
-      final_dataset.py
-      image_list.py
-      review.py
-      sample_manifest.py
-      sweep.py
-      teacher_dataset.py
-    teacher/
-      calibrate.py
-      eval.py
-      policy.py
-      runtime/
-        __init__.py
-        artifacts.py
-        callbacks.py
-        progress.py
-        resume.py
-        tensorboard.py
-        trainer.py
-      train.py
-      ultralytics_runner.py
-    cli.py
-    presets.py
-test/
-docs/
+## 영상 처리
+
+```mermaid
+flowchart TD
+    A["좌우 RGB 영상"] --> B["YOLO26-s 본체"]
+    B --> C["차량용 / 보행자용 신호등 검출"]
+    B --> D["도로표식 디코더"]
+    A --> E["신호등 RGB crop"]
+    C --> E
+    E --> F["SignalAttr"]
+    C --> G["박스, 종류, 점등 상태"]
+    F --> G
+    D --> H["흰 차선 / 노란 차선 / 정지선 확률맵"]
+    H --> I["원본 영상 좌표의 선별 점열"]
 ```
 
-## 아키텍처 레이어
+좌우 영상에는 같은 가중치를 적용하며, 첫 실행안은 batch 2다. 도로표식과 신호등 검출은 본체의 특징을 함께 사용한다. 영상의 종횡비를 유지하고, 800×600 입력에는 여백을 넣어 800×608로 맞춘다.
 
-1. raw dataset layer
-   - AIHUB raw dataset
-   - BDD100K raw dataset
-2. bootstrap pipeline layer
-   - raw canonicalization
-   - teacher dataset materialization
-   - exhaustive OD materialization
-   - final dataset build
-3. runtime data layer
-   - canonical outputs -> training sample runtime
-   - variable dataset raw -> `800x608` online resize/pad
-4. network layer
-   - pretrained YOLOv26n backbone/neck
-   - PV26 custom heads
-5. engine layer
-   - multitask loss
-   - metrics / postprocess
-   - trainer / evaluator
+검출기는 공식 YOLO26 헤드와 E2ELoss를 사용한다. [새 모델](../model/net/pv26.py)은 차량용과 보행자용 두 클래스를 출력하고, 본체와 neck의 사전학습 가중치를 읽는다. 기본 P3/P4/P5 검출의 작은 신호등 재현율을 측정한 뒤 P2 검출 추가를 검토한다.
 
-- `model/net`은 `trunk.py`와 `heads.py`로 분리돼 있고, `model/engine/trainer.py`는 `_trainer_*` helper들에 구현을 위임한다.
-- `model/engine/det_geometry.py`, `model/engine/trainer_progress.py`, `model/engine/trainer_reporting.py`, `model/engine/trainer_runtime.py`는 public/shared engine helper surface고, underscore 파일은 implementation detail로 유지한다.
-- `tools/run_pv26_train.py`는 stable thin entrypoint이고, 실제 구현은 `tools/pv26_train/` 패키지에 둔다.
-- `tools/check_env.py`는 stable thin entrypoint이고, 실제 구현은 `tools/check_env/` 패키지에 둔다.
-- `tools/od_bootstrap/source`는 `aihub/`와 `shared/` 패키지에 실제 구현을 두고, `bdd100k.py` / `prepare.py`가 coordinator 역할을 맡는다.
-- `tools/od_bootstrap/teacher`는 `runtime/` 패키지에 runtime helper family를 두고, `ultralytics_runner.py`는 thin orchestration facade로 유지한다.
-- `tools/modal/`은 Modal A100 dataset archive, volume, remote check, training entrypoint를 담당하며 root-level `modal/` package를 만들지 않는다.
+## SignalAttr
 
-## 데이터 흐름
+SignalAttr의 모델과 학습 코드는 이미 저장소 안에 있다. Plan B에서 사용하던 가중치를 내부에 복사했고, 같은 분류기를 TorchScript로 내보내는 도구를 추가했다.
 
-```text
-AIHUB raw
-  -> tools.od_bootstrap.source.aihub / bdd100k
-  -> canonical bundle
-  -> teacher dataset build
-  -> teacher train / eval / calibrate
-  -> build-exhaustive-od
-  -> build-final-dataset
-  -> model.data dataset
-  -> model.net
-  -> model.engine
-```
+| 구성 | 위치 |
+| --- | --- |
+| 분류 모델과 체크포인트 로드 | [classifier.py](../model/signal_attr/classifier.py) |
+| 학습과 재개 | [training.py](../model/signal_attr/training.py) |
+| 검출 ID에 연결한 배치 판독 | [runtime.py](../model/signal_attr/runtime.py) |
+| 박스 여백과 crop 생성 | [crop.py](../model/signal_attr/crop.py) |
+| 데이터 생성과 라벨 변환 | [signal_attr/](../model/signal_attr/) |
+| 기존 학습 가중치 | [models/signal_attr](../models/signal_attr/README.md) |
+| TorchScript 내보내기 | [signal_attr_torchscript.py](../tools/model_export/signal_attr_torchscript.py) |
 
-## 현재 구현된 것
+검출 박스로 원본 RGB를 잘라 128×128 입력을 만든다. 작은 CNN이 색상 `off/red/yellow/green`과 화살표 여부를 출력한다. 색상과 화살표를 따로 예측하므로 빨강+좌회전 같은 조합을 표현할 수 있다.
 
-- bootstrap source prep / canonicalization pipeline
-- bootstrap teacher dataset materialization
-- bootstrap exhaustive OD materialization
-- bootstrap final dataset build
-- canonical dataset loader runtime
-- shared online letterbox transform runtime
-- target encoder runtime
-- Ultralytics YOLO26 trunk adapter baseline
-- PV26 custom heads skeleton
-- multitask loss runtime
-- task-aligned detector assignment runtime
-- lane family Hungarian matching runtime
-- trainer skeleton runtime
-- evaluator skeleton runtime
-- tiny overfit runtime
-- source README generation
-- source inventory / conversion report
-- debug overlay generation
-- loss design spec document + code mirror
+이 경로는 신호등 영역에 추가 연산을 집중한다. 원본 해상도가 낮아 불빛이 사라진 경우에는 crop을 확대해도 복원되지 않는다. 검출 누락과 상태 판독 오류는 각각 평가한다.
 
-## 외부 runtime 경계
+동봉한 가중치는 이전 라벨로 학습한 모델이다. 새 [라벨 변환](../model/signal_attr/aihub_policy.py)은 보행자 상태를 포함하고 좌회전과 기타 화살표를 구분한다. [제품용 학습](../model/signal_attr/training.py)으로 재학습한 체크포인트를 [내부 추론기](../model/signal_attr/runtime.py)에서 사용한다.
 
-- TorchScript와 adjacent metadata export는 `tools/model_export/pv26_torchscript.py`가 소유한다.
-- ROS prediction bundle은 별도 package `pv26_ros_runtime`이 소유하며 이 저장소는 ROS package로 전환하지 않는다.
-- 두 단계의 handoff identity는 weight SHA, metadata SHA, ordered output names, class order, source image header와 inverse-transform geometry다.
+모든 속성이 `off`인 표본의 처리 방식은 crop 생성 시 선택한다. 기타 화살표만 켜진 표본은 좌회전 음성 표적으로 학습한다. crop의 여백, 보간법, 정규화는 학습과 추론에 같은 설정을 적용한다. 검출기의 차량용과 보행자용 박스 모두 내부 SignalAttr로 전달한다.
 
-## 운영 규칙
+## 도로표식
 
-- `model/data`는 runtime dataset, transform, preview, sampler, target encoding을 다룬다.
-- `model/net`은 trunk/head 구조를 다룬다.
-- `model/engine`은 loss / metrics / postprocess / trainer / evaluator를 다룬다.
-- `tools/od_bootstrap/source`는 raw canonicalization과 source typing을 다룬다.
-- `tools/od_bootstrap/build`는 teacher dataset, exhaustive OD, final dataset, review/debug tooling을 다룬다.
+| 항목 | 첫 설계안 |
+| --- | --- |
+| 특징 | P2의 세부 정보와 P3/P4의 문맥 |
+| 특징 결합 | 단계적으로 확대하고 합산 |
+| 내부 폭 | 64채널의 경량 합성곱 |
+| 예측 | 흰 차선, 노란 차선, 정지선의 중심선 확률맵 |
+| 맵 크기 | 입력의 1/4, 800×608 입력에서 200×152 |
+| 최종 출력 | 원본 영상 좌표의 선별 2D 점열 |
+
+AIHub polyline으로 중심선 표적을 만든다. 선을 그리는 폭은 학습 표적의 폭이며, 실제 도색 폭을 뜻하지 않는다. 점선의 연결 범위는 원본 polyline을 따른다. 학습 입력 변환과 출력 점열의 역변환에는 같은 좌표 관계를 사용한다.
+
+새 [후처리](../model/engine/postprocess.py)는 맵의 국소 최대점을 연결해 선별 점열을 만든다. 차선은 행을 따라, 정지선은 열을 따라 연결하며 여백 영역을 제외한다. 서로 다른 선의 합쳐짐과 끊김은 [점열 평가](../model/engine/geometry_metrics.py)에서 확인한다.
+
+## 코드 배치
+
+`model/data`는 데이터와 표적을 만들고, `model/net`은 공유 본체와 헤드를 정의한다. 손실, 학습, 평가와 점열 생성은 `model/engine`에서 처리한다. SignalAttr는 `model/signal_attr`, 모델 내보내기는 `tools/model_export`에서 관리한다.
+
+학습과 추론은 YOLOPV26의 코드와 가중치로 실행한다. 외부 시스템은 출력된 관측과 모델 파일을 받아 사용한다. 연결 시 필요한 클래스 의미, 객체 ID, 영상 좌표와 출력 형식은 이 저장소에서 정의한다.

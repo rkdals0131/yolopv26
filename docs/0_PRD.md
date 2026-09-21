@@ -1,83 +1,63 @@
-# PV26 PRD
+# YOLOPV26 제품 요구사항
 
-## 문서 목적
+2026-09-21 기준. 대회에서 필요한 신호등과 도로표식을 카메라 영상으로 관측한다. 신호등 판독을 가장 우선한다.
 
-이 문서는 현재 `yolopv26` 저장소의 최상위 제품 요구사항 문서다. 이 문서와 같은 번호 체계의 문서들이 이전 pivot 문서 세트를 완전히 대체한다.
+## 관측 대상과 출력
 
-## 프로젝트 목표
+| 대상 | 출력 |
+| --- | --- |
+| 차량용 신호등 | 2D 박스, 차량용 구분, 빨강, 노랑, 원형 초록, 초록 좌회전의 점등 상태 |
+| 보행자용 신호등 | 2D 박스, 보행자용 구분, 빨강과 초록의 점등 상태 |
+| 흰 차선 | 선별 2D 점열, 색상, 신뢰도 |
+| 노란 차선 | 선별 2D 점열, 색상, 신뢰도 |
+| 정지선 | 선별 2D 점열, 정지선 구분, 신뢰도 |
 
-- PV26의 V1 목표는 단일 모델 학습 저장소를 만드는 것이다.
-- 모델은 다음을 동시에 다룬다.
-  - 7-class object detection
-  - traffic light 4-bit attribute prediction
-  - lane polyline prediction
-  - stop-line polyline prediction
-  - crosswalk polygon prediction
-- 실제 구현은 `Ultralytics YOLO v26 nano`의 공식 pretrained backbone/neck를 최대한 유지하면서, PV26 전용 head와 loss를 붙이는 방향으로 간다.
+신호등이 여러 개면 각각의 박스에 종류와 상태를 연결한다. 빨강과 좌회전, 원형 초록과 좌회전이 함께 켜진 상태도 표현한다. 위치를 찾은 신뢰도와 상태를 읽을 수 있는지는 별도 정보다. 판독할 수 없는 신호등은 상태 무효로 출력한다.
 
-## 제품 범위
+흰 점선과 흰 실선은 흰 차선으로, 노란 점선과 노란 실선은 노란 차선으로 학습한다. 정지선은 흰 차선과 구별한다. 점열은 원본 영상에서 도색의 중심 위치를 나타낸다.
 
-- 입력
-  - standardized dataset raw image는 다양한 원본 해상도를 허용한다.
-  - vehicle camera reference frame은 `800x600`이다.
-  - 학습/추론 network input은 `800x608`으로 고정한다.
-  - loader는 dataset raw에서 `800x608`으로 직접 변환한다.
-  - runtime camera가 이미 `800x600`이면 같은 transform은 `800x600 -> 800x608` pad-only로 축약된다.
-- 출력
-  - detector class: `vehicle / bike / pedestrian / traffic_cone / obstacle / traffic_light / sign`
-  - traffic light attribute: `red / yellow / green / arrow`
-  - lane geometry: `white_lane / yellow_lane / blue_lane`
-  - lane subtype metadata: `solid / dotted`
-  - extra geometry: `stop_line`, `crosswalk`
+범용 객체 분류, 도로표지판, 횡단보도, 도로 화살표, 점선/실선 구분은 출력 범위에서 제외한다. 이들이 등장하는 영상은 차선이나 정지선으로 잘못 인식하는 사례를 줄이는 데 사용한다.
 
-## 데이터 범위
+## 저장소 구성과 후단
 
-- OD
-  - 기본 7-class OD는 BDD100K와 AIHUB traffic 계열을 함께 사용한다.
-  - AIHUB OD source로 `도로장애물·표면 인지 영상(수도권)`을 함께 사용한다.
-  - 이 source는 V1에서 `traffic_cone / obstacle` 보강만 담당한다.
-  - `Person / Manhole / Pothole on road / Filled pothole`는 V1 detector supervision 범위에서 제외한다.
-- traffic light
-  - detection은 generic `traffic_light` bbox다.
-  - 상태는 bbox에 종속된 4-bit attribute로 예측한다.
-  - AIHUB traffic source가 핵심 supervision source다.
-- lane
-  - lane 학습과 추론은 AIHUB 기준 포맷을 중심으로 설계한다.
-  - AIHUB의 색상, 타입, 정지선, 횡단보도 richness를 유지한다.
+모델 정의부터 전처리, 학습, 추론, 후처리, 내보내기까지 필요한 코드는 YOLOPV26 안에 둔다. SignalAttr도 내부 코드와 가중치로 실행한다. 다른 프로젝트의 import, 소스 경로 또는 심볼릭 링크는 실행에 필요하지 않아야 한다. PyTorch 같은 일반 라이브러리와 설정한 데이터 경로를 사용한다.
 
-## 비목표
+YOLOPV26는 신호등 관측과 도로표식 점열을 출력한다. 후단은 이를 받아 IPM 등의 공간 변환을 수행하고 차로와 정지선의 관계를 계산한다. 주행 경로 생성과 신호에 따른 정지 판단도 후단이 담당한다. 드럼 등의 장애물은 LiDAR로 처리한다.
 
-- V1에서 차선을 segmentation mask나 dense row-anchor task로 다시 바꾸지 않는다.
-- V1에서 traffic light를 class explosion 방식으로 `tl_red_arrow`, `tl_green_arrow`처럼 detector class에 다 넣지 않는다.
-- V1에서 raw dataset 자체를 오프라인 리사이즈하여 새 canonical image set으로 다시 굽지 않는다.
-- V1에서 backbone/neck를 scratch로 처음부터 재학습하는 것을 기본 경로로 삼지 않는다.
+## 실행 조건
 
-## 핵심 결정
+| 항목 | 기준 |
+| --- | --- |
+| GPU | RTX 4060 |
+| 카메라 | 좌우 각각 800×600, 입력 30Hz |
+| 출력 속도 | 카메라별 목표 20Hz, 하한 10Hz |
+| 처리시간 목표 | 좌우 두 장 합계 33ms 미만 지향 |
+| 측정 범위 | 영상 전처리부터 모델 추론, 신호등 상태 판독, 최종 점열 생성까지 |
+| 함께 실행할 작업 | 후단 모듈과 20Hz LiDAR 처리 |
 
-- backbone/neck는 `yolo26n` pretrained trunk reuse가 기본이다.
-- custom task head는 PV26 쪽에서 새로 만든다.
-- AIHUB standardization은 raw-space canonical dataset을 만든다.
-- `800x608` letterbox/pad transform은 loader 단계에서 온라인으로 적용한다.
-- 구현 전에 문서를 먼저 고정하고, 문서와 상태 tracker를 계속 갱신하면서 개발한다.
+20Hz의 주기는 50ms, 10Hz의 주기는 100ms다. 33ms 목표는 후단 연산에 여유를 남기기 위해 정했다. 전체 처리시간의 평균과 p95, 카메라 대기시간, 실제 출력 속도를 측정한다. 소규모 가중치의 PyTorch 처리시간은 [별도 측정](8_INFERENCE_PERFORMANCE.md)에 기록했다. 최종 성능은 후단과 LiDAR를 함께 실행한 상태에서 확인한다.
 
-## 성공 조건
+## 학습 데이터
 
-- AIHUB standardized scene/det dataset에서 loader가 안정적으로 sample을 뽑는다.
-- loader sample contract와 transform contract가 문서와 코드에서 동일하다.
-- pretrained trunk를 부분 로드한 PV26 model이 forward/backward를 통과한다.
-- target encoder와 loss가 lane/TL/OD/stop-line/crosswalk를 동시에 처리한다.
-- small regression dataset에서 loss가 정상적으로 감소한다.
-- 문서와 구현 상태가 일치한다.
+초기 원본은 다음 두 경로에 있다.
 
-## 문서 맵
+- `/home/user1/Storage/seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)/`
+- `/home/user1/Storage/seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)/`
 
-- [00A_CURRENT_STATUS.md](00A_CURRENT_STATUS.md)
-- [00C_NEXT_GATES.md](00C_NEXT_GATES.md)
-- [history/README.md](history/README.md)
-- [1_DEVELOPMENT_PHILOSOPHY.md](1_DEVELOPMENT_PHILOSOPHY.md)
-- [2_SYSTEM_ARCHITECTURE.md](2_SYSTEM_ARCHITECTURE.md)
-- [5_TARGETS_AND_LOSS.md](5_TARGETS_AND_LOSS.md)
-- [6_TRAINING_AND_EVALUATION.md](6_TRAINING_AND_EVALUATION.md)
-- [8_TEST_PLAN_AND_CHECKLIST.md](8_TEST_PLAN_AND_CHECKLIST.md)
+신호등과 차선 데이터는 앞으로 모두 대량 추가한다. 데이터 출처마다 어떤 대상과 속성을 라벨링했는지 보존한다. 미라벨 태스크는 손실 계산에서 제외하고, 라벨링한 결과 대상이 없는 영상은 negative로 학습한다. 노출 비율은 태스크의 중요도와 실제 학습 결과에 따라 조정한다.
 
-세부 과거 설계/실험 원문은 [legacy/](legacy/) 아래에 보존한다.
+## 학습 운영
+
+mixed precision을 사용하고, 차선이나 정지선의 민감한 계산은 FP32로 처리한다. NaN/Inf가 발생한 업데이트는 가중치에 반영하지 않는다.
+
+피더는 CPU, RAM, VRAM과 저장장치 속도를 고려해 배치를 공급한다. 물리 배치 크기와 gradient accumulation을 조정하면서 태스크별 학습 비율을 유지한다. 복구 가능한 OOM은 배치를 줄여 다시 처리한다.
+
+학습이 중간에 종료되면 마지막 저장 시점의 모델, optimizer와 데이터 진행을 복구한다. 재개용 체크포인트와 평가용 가중치는 용도에 맞춰 보관량을 제한한다. 큰 학습 산출물은 외장 SSD의 `~/Storage/ROS2_Workspace_offload`에 실행별로 저장한다. 배포에 필요한 소형 기준 가중치는 저장소의 `models/`에 포함한다.
+
+## 평가
+
+신호등은 작은 대상의 누락, 차량용과 보행자용의 혼동, 상태별 오탐과 미탐을 평가한다. 원형 초록과 좌회전의 혼동도 따로 확인한다. 차선 점수가 좋아져도 신호등 성능이 나빠진 모델은 채택하지 않는다.
+
+도로표식은 최종 점열의 위치와 연속성, 색상, 정지선 검출 결과를 평가한다. 정확도 합격선과 위치 허용 오차는 평가 자료와 첫 학습 결과를 확보한 뒤 정한다.
+
+구조는 [모델 구조](2_SYSTEM_ARCHITECTURE.md), 운영 방식은 [학습과 평가](6_TRAINING_AND_EVALUATION.md), 구현 진척은 [현재 상태](00A_CURRENT_STATUS.md)에 적는다.

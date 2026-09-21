@@ -1,251 +1,280 @@
+"""Select current CLI inputs and preview the exact command to execute."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 import sys
+from typing import Any, Callable, Sequence
 
-from tools.model_export import artifact_paths_for_checkpoint
-from .scan import PipelinePaths, WorkspaceSnapshot
-from tools.od_bootstrap.presets import build_teacher_train_preset
-from tools.od_bootstrap.presets import build_teacher_eval_preset
-from tools.od_bootstrap.teacher.registry import (
-    OD_TEACHER_NAMES,
-    teacher_definition,
-)
+from rich.console import Console
+from rich.text import Text
+
+from common.paths import REPO_ROOT
+from .scan import scan_run
 
 
 @dataclass(frozen=True)
 class ActionSpec:
     key: str
     label: str
-    command_display: str
+    description: str
+
+
+@dataclass(frozen=True)
+class Command:
+    title: str
     argv: tuple[str, ...]
-    output_hint: str
-    rerun_contract: str | None = None
+    notes: tuple[str, ...] = ()
 
 
-def _action_catalog(paths: PipelinePaths) -> tuple[ActionSpec, ...]:
-    python_exe = sys.executable
-    return (
-        ActionSpec("1", "OD bootstrap 소스 준비", "python -m tools.od_bootstrap prepare-sources", (python_exe, "-m", "tools.od_bootstrap", "prepare-sources"), str(paths.bootstrap_root)),
-        ActionSpec("2", "Teacher dataset 4종 생성", "python -m tools.od_bootstrap build-teacher-datasets", (python_exe, "-m", "tools.od_bootstrap", "build-teacher-datasets"), str(paths.teacher_dataset_root)),
-        ActionSpec("3", "Mobility teacher 학습", "python -m tools.od_bootstrap train --teacher mobility", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "mobility"), str(paths.teacher_train_root / "mobility")),
-        ActionSpec("4", "Signal teacher 학습", "python -m tools.od_bootstrap train --teacher signal", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "signal"), str(paths.teacher_train_root / "signal")),
-        ActionSpec("4A", "Signal attr teacher 학습", "python -m tools.od_bootstrap train --teacher signal_attr", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "signal_attr"), str(paths.teacher_train_root / "signal_attr")),
-        ActionSpec("5", "Obstacle teacher 학습", "python -m tools.od_bootstrap train --teacher obstacle", (python_exe, "-m", "tools.od_bootstrap", "train", "--teacher", "obstacle"), str(paths.teacher_train_root / "obstacle")),
-        ActionSpec("6", "Mobility teacher 평가", "python -m tools.od_bootstrap eval --teacher mobility", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "mobility"), str(paths.teacher_eval_root / "mobility")),
-        ActionSpec("7", "Signal teacher 평가", "python -m tools.od_bootstrap eval --teacher signal", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "signal"), str(paths.teacher_eval_root / "signal")),
-        ActionSpec("7A", "Signal attr teacher 평가", "python -m tools.od_bootstrap eval --teacher signal_attr", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "signal_attr"), str(paths.teacher_eval_root / "signal_attr")),
-        ActionSpec("8", "Obstacle teacher 평가", "python -m tools.od_bootstrap eval --teacher obstacle", (python_exe, "-m", "tools.od_bootstrap", "eval", "--teacher", "obstacle"), str(paths.teacher_eval_root / "obstacle")),
-        ActionSpec("9", "Calibration", "python -m tools.od_bootstrap calibrate", (python_exe, "-m", "tools.od_bootstrap", "calibrate"), str(paths.calibration_root)),
-        ActionSpec("A", "Exhaustive OD 생성", "python -m tools.od_bootstrap build-exhaustive-od", (python_exe, "-m", "tools.od_bootstrap", "build-exhaustive-od"), str(paths.exhaustive_dataset_root)),
-        ActionSpec("B", "최종 병합 데이터셋 생성", "python -m tools.od_bootstrap build-final-dataset", (python_exe, "-m", "tools.od_bootstrap", "build-final-dataset"), str(paths.final_dataset_root), rerun_contract="overwrite: staging build 후 final root swap"),
-        ActionSpec("C", "PV26 기본 학습", "python3 tools/run_pv26_train.py --preset default", (python_exe, "tools/run_pv26_train.py", "--preset", "default"), str(paths.pv26_run_root)),
-        ActionSpec("D", "PV26 phase VRAM stress", "interactive: phase/batch/iter 입력 후 short VRAM probe", (), "TUI result panel only (no checkpoints / no run dir)", rerun_contract="short probe only: 선택한 phase train loop 일부만 실행"),
-        ActionSpec("E", "PV26 exact resume", "interactive: resumable run 목록에서 골라 same run dir exact resume", (), str(paths.pv26_run_root), rerun_contract="exact resume only: same run dir / same scenario"),
-        ActionSpec("F", "PV26 TorchScript export", "interactive: completed PV26 run 선택 후 adjacent TorchScript export", (), str(paths.pv26_run_root)),
-        ActionSpec("G", "Mobility teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "mobility" / "weights")),
-        ActionSpec("I", "Signal teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "signal" / "weights")),
-        ActionSpec("J", "Obstacle teacher TorchScript export", "interactive: stable weights/best.pt -> adjacent TorchScript export", (), str(paths.teacher_train_root / "obstacle" / "weights")),
-        ActionSpec("K", "PV26 retrain / fine-tune", "interactive: source run 선택 후 stage window derived run", (), str(paths.pv26_run_root), rerun_contract="derived run only: source run + selected stage window / current config"),
-        ActionSpec("L", "최종 데이터셋 full stats", "interactive: final dataset class/task/audit 통계 표시", (), str(paths.final_dataset_root / "meta")),
-        ActionSpec("M", "PV26 phase VRAM ceiling sweep", "interactive: phase 1-4 batch list probe", (), "stdout JSON summary (no checkpoints / no run dir)", rerun_contract="short probe only: phase별 batch 후보를 순차 확인"),
-        ActionSpec("N", "PV26 TorchScript eval", "interactive: dataset/model 선택 후 eval/plot/overlay 생성", (), str(paths.repo_root / "runs" / "pv26_torchscript_eval")),
-    )
+ACTIONS = (
+    ActionSpec("1", "SignalAttr crop 생성", "원본 신호등 라벨 → crop 데이터셋"),
+    ActionSpec("C", "PV26 학습", "현재 설정으로 본체의 새 실행"),
+    ActionSpec("A", "SignalAttr 학습", "crop 데이터셋으로 상태 분류 학습"),
+    ActionSpec("D", "짧은 학습 실행", "지정한 업데이트 수까지 실행 후 저장"),
+    ActionSpec("E", "기존 실행 재개", "선택한 실행의 설정과 학습 상태 복원"),
+    ActionSpec("K", "기존 가중치로 새 학습", "현재 설정과 새 optimizer로 시작"),
+    ActionSpec("F", "PV26 TorchScript 내보내기", "본체 체크포인트 선택"),
+    ActionSpec("G", "SignalAttr TorchScript 내보내기", "상태 분류 체크포인트 선택"),
+    ActionSpec("P", "이미지 추론", "박스·상태·점열 JSON과 overlay 저장"),
+    ActionSpec("L", "실행·평가 결과 보기", "저장된 진행도, 지표와 산출물"),
+)
 
 
-def _action_blockers(action: ActionSpec, snapshot: WorkspaceSnapshot) -> list[str]:
-    flags = snapshot.flags
-    blockers: list[str] = []
-    if action.key == "1":
-        if not flags.get("raw_roots", False):
-            blockers.append("raw dataset root가 config 기준으로 안 맞습니다.")
-    elif action.key == "2":
-        if not flags.get("source_prep", False):
-            blockers.append("source prep이 아직 준비되지 않았습니다.")
-    elif action.key == "4A":
-        if not flags.get("runtime_core", False):
-            blockers.append("signal_attr teacher 학습에 필요한 torch 환경이 아직 깨져 있습니다.")
-        if not flags.get("teacher_dataset.signal_attr", False):
-            blockers.append("signal_attr teacher dataset이 아직 없습니다.")
-    elif action.key == "7A":
-        if not flags.get("runtime_core", False):
-            blockers.append("signal_attr teacher 평가에 필요한 torch 환경이 아직 깨져 있습니다.")
-        if not flags.get("teacher_train.signal_attr", False):
-            blockers.append("best_signal_attr.pt가 아직 없습니다.")
-    elif action.key in {"3", "4", "5"}:
-        teacher_name = {"3": "mobility", "4": "signal", "5": "obstacle"}[action.key]
-        if not flags.get("runtime_core", False):
-            blockers.append("학습에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
-        if not flags.get(f"teacher_dataset.{teacher_name}", False):
-            blockers.append(f"{teacher_name} teacher dataset이 아직 없습니다.")
-    elif action.key in {"6", "7", "8"}:
-        teacher_name = {"6": "mobility", "7": "signal", "8": "obstacle"}[action.key]
-        if not flags.get("runtime_core", False):
-            blockers.append("평가에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
-        if not flags.get(f"teacher_train.{teacher_name}", False):
-            blockers.append(f"{teacher_name} teacher checkpoint가 아직 없습니다.")
-    elif action.key == "9":
-        if not flags.get("runtime_core", False):
-            blockers.append("calibration에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
-        missing = [name for name in OD_TEACHER_NAMES if not flags.get(f"teacher_train.{name}", False)]
-        if missing:
-            blockers.append(f"teacher checkpoint가 부족합니다: {', '.join(missing)}")
-    elif action.key == "A":
-        if not flags.get("runtime_core", False):
-            blockers.append("exhaustive OD에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
-        if not flags.get("source_prep", False):
-            blockers.append("source prep이 먼저 준비되어야 합니다.")
-        missing = [name for name in OD_TEACHER_NAMES if not flags.get(f"teacher_train.{name}", False)]
-        if missing:
-            blockers.append(f"teacher checkpoint가 부족합니다: {', '.join(missing)}")
-        if not flags.get("teacher_train.signal_attr", False):
-            blockers.append("best_signal_attr.pt가 아직 없습니다.")
-        if not flags.get("teacher_eval.signal_attr", False):
-            blockers.append("signal attr eval report를 먼저 확인하세요.")
-    elif action.key == "B":
-        if not flags.get("source_prep", False):
-            blockers.append("lane canonical/source prep이 먼저 필요합니다.")
-        if not flags.get("exhaustive", False):
-            blockers.append("최신 exhaustive OD run이 아직 없습니다.")
-    elif action.key in {"C", "D", "M"}:
-        if not flags.get("pv26_runtime", False):
-            blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
-        if not flags.get("final_dataset", False):
-            blockers.append("최종 병합 데이터셋이 아직 없습니다.")
-    elif action.key == "E":
-        if not flags.get("pv26_runtime", False):
-            blockers.append("PV26 학습에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
-    elif action.key == "K":
-        if not flags.get("pv26_runtime", False):
-            blockers.append("PV26 retrain/fine-tune에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
-        if not flags.get("final_dataset", False):
-            blockers.append("최종 병합 데이터셋이 아직 없습니다.")
-    elif action.key == "L":
-        if not flags.get("final_dataset", False):
-            blockers.append("최종 병합 데이터셋이 아직 없습니다.")
-    elif action.key == "F":
-        if not flags.get("pv26_runtime", False):
-            blockers.append("PV26 TorchScript export에 필요한 YOLO26 runtime이 아직 정상 로드되지 않습니다.")
-        if not flags.get("pv26_export_available", False):
-            blockers.append("export 가능한 completed PV26 run이 없습니다.")
-    elif action.key in {"G", "I", "J"}:
-        teacher_name = {"G": "mobility", "I": "signal", "J": "obstacle"}[action.key]
-        if not flags.get("runtime_core", False):
-            blockers.append("teacher TorchScript export에 필요한 torch / ultralytics 환경이 아직 깨져 있습니다.")
-        if not flags.get(f"teacher_train.{teacher_name}", False):
-            blockers.append(f"{teacher_name} teacher stable checkpoint가 아직 없습니다.")
-    return blockers
+class Cancelled(Exception):
+    pass
 
 
-def _action_advisory(action: ActionSpec, snapshot: WorkspaceSnapshot) -> str | None:
-    if action.key == "A" and not snapshot.flags.get("calibration", False):
-        return "calibration이 없으면 OD class policy는 fallback이고, TL attr은 best_signal_attr.pt threshold policy로 materialize됩니다."
-    if action.key == "B":
-        return "fixed output root를 직접 덮어쓰지 않고 staging build 후 atomic swap합니다."
-    if action.key == "D":
-        return "기본은 stage_3지만, 이제 phase별 probe를 실행할 수 있습니다. stage_3가 대체로 VRAM 상한 proxy이고 stage_4는 보통 더 가볍습니다."
-    if action.key == "M":
-        return "CUDA가 보이는 환경에서만 실행됩니다. 결과의 max_ok_batch_size는 ceiling_observed=false이면 하한값입니다."
-    if action.key == "E":
-        return "resume는 exact resume only입니다. batch_size 변경이나 best/epoch 재시작은 별도 흐름으로 다루는 편이 안전합니다."
-    if action.key == "K":
-        return "retrain은 새 derived run을 만듭니다. 숫자 파라미터는 config를 그대로 읽고, launcher에서는 source run과 stage window만 고릅니다."
-    if action.key == "L":
-        return "stats 파일이 있으면 그대로 읽고, 없으면 final dataset labels_scene를 다시 스캔해 생성합니다."
-    if action.key == "F":
-        return "선택한 run의 final checkpoint 옆에 best.torchscript.pt / .meta.json을 씁니다."
-    if action.key == "N":
-        return "평가는 export를 자동 수행하지 않습니다. 미export run은 F 메뉴로 먼저 export하세요."
-    if action.key in {"G", "I", "J"}:
-        return "teacher별 stable weights/best.pt 옆에 best.torchscript.pt / .meta.json을 씁니다."
-    return None
+def ask(console: Console, prompt: str, *, default: str | None = None) -> str:
+    suffix = f" [{default}]" if default is not None else ""
+    value = console.input(Text(f"{prompt}{suffix} > ")).strip()
+    if value.upper() == "B":
+        raise Cancelled
+    return value or (default if default is not None else "")
 
 
-def _bool_flag(value: bool) -> str:
-    return "true" if bool(value) else "false"
+def ask_path(console: Console, prompt: str, *, default: str | Path | None = None,
+             kind: str = "output", optional: bool = False) -> Path | None:
+    while True:
+        value = ask(console, prompt, default=str(default) if default is not None else None)
+        if not value:
+            if optional:
+                return None
+            raise Cancelled
+        if value[:1] in ("'", '"') and value[-1:] == value[:1]:
+            value = value[1:-1]
+        path = Path(value).expanduser()
+        path = path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
+        if kind == "file" and not path.is_file():
+            console.print(Text(f"파일을 찾을 수 없습니다: {path}", style="yellow"))
+        elif kind == "directory" and not path.is_dir():
+            console.print(Text(f"디렉터리를 찾을 수 없습니다: {path}", style="yellow"))
+        else:
+            return path
 
 
-def _teacher_action_config_lines(action: ActionSpec) -> list[str]:
-    if action.key not in {"3", "4", "4A", "5"}:
-        return []
-    teacher_name = {"3": "mobility", "4": "signal", "4A": "signal_attr", "5": "obstacle"}[action.key]
-    definition = teacher_definition(teacher_name)
-    if definition.kind == "signal_attr":
-        from tools.od_bootstrap.signal_attr import SignalAttrClassifierConfig, SignalAttrTrainConfig
-
-        train_config = SignalAttrTrainConfig()
-        model_config = SignalAttrClassifierConfig()
-        return [
-            "- config: teacher=signal_attr, model=SignalAttrCropClassifier, checkpoint=best_signal_attr.pt",
-            "- labels: base_color=off/red/yellow/green + arrow bit",
-            f"- train: epochs={train_config.epochs}, batch={train_config.batch_size}, device={train_config.device}, lr={train_config.learning_rate}",
-            f"- loader: workers={train_config.num_workers}, pin_memory={_bool_flag(train_config.pin_memory)}, persistent_workers={_bool_flag(train_config.persistent_workers)}, prefetch_factor={train_config.prefetch_factor}",
-            f"- model: input_size={model_config.input_size}, width={model_config.width}, dropout={model_config.dropout}",
-            "- input: accepted AIHUB traffic-light ROI crops from teacher_datasets/signal_attr",
-            "- output: hard TL bits for exhaustive attrpseudo materialization",
-        ]
-    scenario = build_teacher_train_preset(teacher_name)
-    return [
-        f"- config: teacher={scenario.teacher_name}, model=yolo26{scenario.model.model_size}, weights={scenario.model.weights}",
-        f"- classes: {', '.join(scenario.model.class_names)}",
-        f"- train: epochs={scenario.train.epochs}, batch={scenario.train.batch}, imgsz={scenario.train.imgsz}, device={scenario.train.device}",
-        f"- loader: workers={scenario.train.workers}, pin_memory={_bool_flag(scenario.train.pin_memory)}, persistent_workers={_bool_flag(scenario.train.persistent_workers)}, prefetch_factor={scenario.train.prefetch_factor}",
-        f"- runtime: amp={_bool_flag(scenario.train.amp)}, cache={_bool_flag(scenario.train.cache)}, optimizer={scenario.train.optimizer}, patience={scenario.train.patience}, save_period={scenario.train.save_period}",
-        f"- dataset root: {scenario.dataset.root}",
-    ]
+def ask_count(console: Console, prompt: str, *, default: int | None = None) -> int | None:
+    while True:
+        value = ask(console, prompt, default=str(default) if default is not None else None)
+        if not value:
+            return None
+        try:
+            count = int(value)
+            if count > 0:
+                return count
+        except ValueError:
+            pass
+        console.print("양의 정수를 입력하세요. B는 이전 화면입니다.", style="yellow")
 
 
-def _pv26_action_config_lines() -> list[str]:
-    from tools.run_pv26_train import (
-        _resolve_phase_selection,
-        _scenario_phase_defaults,
-        load_meta_train_scenario,
-    )
-
-    scenario = load_meta_train_scenario("default")
-    dataset_roots = [str(path) for path in scenario.dataset.roots]
-    train_defaults = scenario.train_defaults
-    lines = [
-        f"- dataset roots: {dataset_roots}",
-        f"- defaults: device={train_defaults.device}, backbone={train_defaults.backbone_variant}, batch={train_defaults.batch_size}, workers={train_defaults.num_workers}, amp={_bool_flag(train_defaults.amp)}",
-        f"- optimizer: trunk_lr={train_defaults.trunk_lr}, head_lr={train_defaults.head_lr}, weight_decay={train_defaults.weight_decay}, schedule={train_defaults.schedule}",
-        f"- runtime: checkpoint_every={train_defaults.checkpoint_every}, accumulate_steps={train_defaults.accumulate_steps}, grad_clip={train_defaults.grad_clip_norm}, amp_init_scale={train_defaults.amp_init_scale}, skip_non_finite={_bool_flag(train_defaults.skip_non_finite_loss)}, oom_guard={_bool_flag(train_defaults.oom_guard)}",
-        f"- preview: enabled={_bool_flag(scenario.preview.enabled)}, split={scenario.preview.split}, per_dataset={scenario.preview.max_samples_per_dataset}, keys={list(scenario.preview.dataset_keys)}",
-    ]
-    for phase_index, phase in enumerate(scenario.phases, start=1):
-        phase_train = _scenario_phase_defaults(scenario.train_defaults, phase.overrides)
-        phase_selection = _resolve_phase_selection(scenario.selection, phase)
-        stop_policy = (
-            f"min_delta_abs={float(phase.min_delta_abs):.4f}"
-            if phase.min_delta_abs is not None
-            else f"min_improvement_pct={float(phase.min_improvement_pct):.3f}"
-        )
-        lines.append(
-            f"- phase_{phase_index} {phase.name}: epochs={phase.min_epochs}-{phase.max_epochs}, patience={phase.patience}, {stop_policy}, metric={phase_selection.metric_path}({phase_selection.mode}), batch={phase_train.batch_size}, trunk_lr={phase_train.trunk_lr}, head_lr={phase_train.head_lr}"
-        )
-    return lines
+def choose(console: Console, title: str, items: Sequence[Any], label: Callable[[Any], str],
+           *, manual: bool = False, optional: bool = False) -> Any:
+    console.print(Text(title, style="bold cyan"))
+    for index, item in enumerate(items, 1):
+        console.print(Text(f"  {index}. {label(item)}"))
+    if manual:
+        console.print("  M. 경로 직접 입력")
+    if optional:
+        console.print("  0. 생략")
+    while True:
+        value = ask(console, "번호 선택 (Enter/B 취소)").upper()
+        if not value:
+            raise Cancelled
+        if value == "M" and manual:
+            return "manual"
+        if value == "0" and optional:
+            return None
+        if value.isdigit() and 1 <= int(value) <= len(items):
+            return items[int(value) - 1]
+        console.print("표시된 번호를 입력하세요.", style="yellow")
 
 
-def _teacher_export_config_lines(action: ActionSpec) -> list[str]:
-    teacher_name = {"G": "mobility", "I": "signal", "J": "obstacle"}[action.key]
-    train_scenario = build_teacher_train_preset(teacher_name)
-    eval_scenario = build_teacher_eval_preset(teacher_name)
-    checkpoint_path = eval_scenario.model.checkpoint_path
-    artifact_path, meta_path = artifact_paths_for_checkpoint(checkpoint_path)
-    return [
-        f"- teacher={teacher_name}, classes={', '.join(train_scenario.model.class_names)}",
-        f"- checkpoint: {checkpoint_path}",
-        f"- export: {artifact_path}",
-        f"- meta: {meta_path}",
-        f"- imgsz={eval_scenario.eval.imgsz}, device=auto, format=torchscript",
-    ]
+def select_run(console: Console, snapshot: dict, *, kind: str | None = None,
+               resumable: bool = False) -> dict:
+    runs = [run for run in snapshot["runs"] if kind is None or run["kind"] == kind]
+    if resumable:
+        runs = [run for run in runs if not run["running"] and not (
+            run["step"] is not None and run["max_steps"] is not None
+            and run["step"] >= run["max_steps"])]
+    selected = choose(console, "실행 선택", runs,
+        lambda run: f"{run['kind']} | {run['state']} | {run['path']}", manual=True)
+    if selected == "manual":
+        selected = scan_run(ask_path(console, "실행 폴더", kind="directory"))
+    if kind is not None and selected["kind"] != kind:
+        raise ValueError(f"{kind} 실행 폴더를 선택하세요.")
+    if resumable and selected["running"]:
+        raise ValueError("현재 다른 프로세스가 이 실행을 사용하고 있습니다.")
+    return selected
 
 
-def _action_config_lines(action: ActionSpec) -> list[str]:
-    if action.key in {"3", "4", "4A", "5"}:
-        return _teacher_action_config_lines(action)
-    if action.key in {"C", "K"}:
-        return _pv26_action_config_lines()
-    if action.key in {"G", "I", "J"}:
-        return _teacher_export_config_lines(action)
-    return []
+def _checkpoint(console: Console, snapshot: dict, kind: str, *, optional: bool = False) -> Path | None:
+    candidates = []
+    roles = ("published",) if kind == "signal_attr" else ("best", "latest", "previous")
+    for run in snapshot["runs"]:
+        if run["kind"] != kind:
+            continue
+        for role in roles:
+            path = run["checkpoints"].get(role)
+            if path:
+                candidates.append((Path(path), role, run))
+    selected = choose(console, f"{kind} 체크포인트", candidates,
+        lambda item: f"{item[1]} | {item[0]}", manual=True, optional=optional)
+    if selected is None:
+        return None
+    if selected == "manual":
+        return ask_path(console, "체크포인트 파일", kind="file")
+    return selected[0]
+
+
+def _crop_dataset(console: Console, snapshot: dict) -> Path:
+    choices = [item for item in snapshot["crop_datasets"] if item["usable"]]
+    selected = choose(console, "SignalAttr crop 데이터셋", choices,
+        lambda item: f"train {item['train_count']} / val {item['val_count']} | {item['path']}", manual=True)
+    return ask_path(console, "crop 데이터셋 폴더", kind="directory") if selected == "manual" else Path(selected["path"])
+
+
+def _settings(snapshot: dict, kind: str) -> dict:
+    config = snapshot["config" if kind == "pv26" else "signal_config"]
+    if not config:
+        raise ValueError("설정 파일을 읽지 못했습니다. S 메뉴에서 파일 경로를 선택하세요.")
+    return config
+
+
+def _root(snapshot: dict, kind: str) -> Path:
+    path = Path(_settings(snapshot, kind)["train"]["output_root"]).expanduser()
+    return path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
+
+
+def _new_output(console: Console, snapshot: dict, kind: str, suffix: str) -> Path:
+    proposed = _root(snapshot, kind) / f"{datetime.now():%Y%m%d_%H%M%S}_{suffix}"
+    path = ask_path(console, "새 출력 폴더", default=proposed)
+    if path.exists() and any(path.iterdir()):
+        raise ValueError("출력 폴더에 파일이 있습니다. 새 폴더를 선택하거나 E 메뉴로 재개하세요.")
+    return path
+
+
+def _argv(script: str, *args: Any) -> tuple[str, ...]:
+    return (sys.executable, str(REPO_ROOT / "tools" / script), *(str(arg) for arg in args))
+
+
+def _train(console: Console, snapshot: dict, kind: str, *, short: bool = False,
+           initial: Path | None = None) -> Command:
+    settings = _settings(snapshot, kind)
+    if kind == "pv26":
+        stage = ask(console, "학습 단계 (joint/detector/roadmark)", default=settings["train"]["stage"])
+        if stage not in ("joint", "detector", "roadmark"):
+            raise ValueError("학습 단계는 joint, detector, roadmark 중 하나입니다.")
+        output = _new_output(console, snapshot, kind, stage)
+        argv = _argv("run_pv26_train.py", "--config", snapshot["config_path"],
+                     "--stage", stage, "--output-dir", output)
+    else:
+        dataset = _crop_dataset(console, snapshot)
+        output = _new_output(console, snapshot, kind, "signal_attr")
+        argv = _argv("train_signal_attr.py", "train", "--config", snapshot["signal_config_path"],
+                     "--dataset", dataset, "--output-dir", output)
+    if initial is not None:
+        argv += ("--initial-checkpoint", str(initial))
+    if short:
+        steps = ask_count(console, "업데이트 수", default=2)
+        argv += ("--steps", str(steps))
+        if kind == "pv26":
+            limit = ask_count(console, "출처별 원본 수 제한", default=64)
+            argv += ("--sample-limit", str(limit))
+    train = settings["train"]
+    precision = train.get("amp_dtype", train.get("precision"))
+    notes = (f"출력: {output}", f"정밀도: {precision} | 논리/물리 배치: "
+             f"{train['logical_batch_size']}/{train['microbatch_size']} | 전체 계획: {train['max_steps']} step")
+    if short:
+        notes += ("짧은 실행은 전체 학습률 계획을 유지하고 지정한 업데이트 수에서 저장합니다.",)
+    return Command(f"{kind} {'짧은 실행' if short else '새 학습'}", argv, notes)
+
+
+def resolve_action(key: str, console: Console, snapshot: dict) -> Command:
+    if key == "1":
+        _settings(snapshot, "signal_attr")
+        policy = choose(console, "모든 램프가 off인 라벨의 처리", ("exclude", "off"),
+            lambda value: "상태 학습에서 제외" if value == "exclude" else "소등 상태로 학습")
+        output = _new_output(console, snapshot, "signal_attr", "signal_crops")
+        limit = ask_count(console, "split별 원본 수 제한 (Enter 전체)")
+        argv = _argv("train_signal_attr.py", "prepare", "--config", snapshot["signal_config_path"],
+                     "--output-dir", output, "--all-off-policy", policy)
+        if limit is not None:
+            argv += ("--sample-limit", str(limit))
+        return Command("SignalAttr crop 생성", argv, (f"출력: {output}", f"소등 라벨 정책: {policy}"))
+    if key in ("C", "A"):
+        return _train(console, snapshot, "pv26" if key == "C" else "signal_attr")
+    if key in ("D", "K"):
+        kind = choose(console, "학습 대상", ("pv26", "signal_attr"), str)
+        initial = _checkpoint(console, snapshot, kind) if key == "K" else None
+        return _train(console, snapshot, kind, short=key == "D", initial=initial)
+    if key == "E":
+        run = select_run(console, snapshot, resumable=True)
+        script = "run_pv26_train.py" if run["kind"] == "pv26" else "train_signal_attr.py"
+        prefix = () if run["kind"] == "pv26" else ("train",)
+        argv = _argv(script, *prefix, "--resume-run", run["path"])
+        steps = ask_count(console, "추가 업데이트 수 (Enter 저장된 계획 끝까지)")
+        micro = ask_count(console, "물리 배치 변경 (Enter 저장된 값)")
+        if steps is not None:
+            argv += ("--steps", str(steps))
+        if micro is not None:
+            argv += ("--microbatch-size", str(micro))
+        return Command("기존 실행 재개", argv, (f"실행: {run['path']}", "선택한 실행의 설정, optimizer와 데이터 위치를 복구합니다."))
+    if key in ("F", "G"):
+        kind = "pv26" if key == "F" else "signal_attr"
+        checkpoint = _checkpoint(console, snapshot, kind)
+        output_root = _root(snapshot, kind)
+        default = checkpoint.with_suffix(".torchscript.pt")
+        if not default.is_relative_to(output_root):
+            default = output_root / "exports" / f"{kind}_{checkpoint.stem}.torchscript.pt"
+        output = ask_path(console, "TorchScript 출력 파일", default=default)
+        script = "export_pv26_torchscript.py" if kind == "pv26" else "export_signal_attr_torchscript.py"
+        argv = _argv(script, "--checkpoint", checkpoint, "--output", output)
+        if kind == "pv26":
+            argv += ("--device", str(_settings(snapshot, kind)["train"]["device"]))
+        notes = (f"출력: {output}",)
+        if output.exists() or output.with_suffix(".meta.json").exists():
+            argv += ("--overwrite",)
+            notes += ("기존 TorchScript와 metadata를 이 출력 경로에서 교체합니다.",)
+        return Command(f"{kind} TorchScript 내보내기", argv, notes)
+    if key == "P":
+        checkpoint = _checkpoint(console, snapshot, "pv26")
+        signal = _checkpoint(console, snapshot, "signal_attr", optional=True)
+        images = []
+        while True:
+            path = ask_path(console, f"영상 {len(images) + 1} 경로 (Enter 입력 완료)",
+                            kind="file", optional=True)
+            if path is None:
+                break
+            images.append(path)
+        if not images:
+            raise Cancelled
+        output = _new_output(console, snapshot, "pv26", "inference")
+        argv = _argv("predict_pv26.py", "--checkpoint", checkpoint, "--images", *images,
+                     "--device", _settings(snapshot, "pv26")["train"]["device"],
+                     "--output", output / "observations.json", "--overlay", output / "overlays")
+        if signal is not None:
+            argv += ("--signal-checkpoint", str(signal))
+        return Command("이미지 추론", argv, (f"출력: {output}", f"영상 {len(images)}장 | 상태 판독 {'포함' if signal else '생략'}"))
+    raise ValueError(f"지원하지 않는 메뉴: {key}")

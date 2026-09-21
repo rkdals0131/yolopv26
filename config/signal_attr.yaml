@@ -1,0 +1,31 @@
+prepare:
+  raw_root: /home/user1/Storage/seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+  workers: 4
+  crop:
+    input_size: 128
+    padding_ratio: 0.15
+    min_crop_side_px: 4
+    clip_to_image: true
+    color_space: rgb
+    normalization: imagenet
+    interpolation: bilinear
+
+train:
+  output_root: /home/user1/Storage/ROS2_Workspace_offload/yolopv26
+  device: cuda:0
+  precision: bf16
+  max_steps: 5000
+  logical_batch_size: 256
+  microbatch_size: 128
+  num_workers: 4
+  validation_every: 200
+  validation_samples: 1024
+  log_every: 20
+  seed: 26
+  sampling: balanced
+  selection_metric: macro_state_f1
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  arrow_loss_weight: 1.0
+  checkpoint_interval_sec: 600
+  initial_checkpoint: models/signal_attr/best_signal_attr.pt

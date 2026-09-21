@@ -1,1114 +1,557 @@
+"""Step-based training for the focused traffic-light and road-marking model."""
+
 from __future__ import annotations
 
-from contextlib import nullcontext
+import gc
+import os
+import random
+import signal
+import tempfile
+import time
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
+import numpy as np
 import torch
 
-from ..data.target_encoder import encode_lane_family_runtime_predictions, encode_pv26_batch
-from common.task_mode import LANE_FAMILY_TASK_MODE
-from . import _trainer_checkpoint as _checkpoint
-from . import _trainer_epochs as _epochs
-from . import _trainer_fit as _fit
-from . import _trainer_io as _io
-from . import _trainer_step as _step
-from . import trainer_reporting as _reporting
-from .batch import (
-    move_batch_to_device,
-    validate_raw_batch_matches_image,
-)
-from .loss import PV26MultiTaskLoss
-from .multitask_conflict import init_multitask_conflict_state, normalize_multitask_conflict
-from .postprocess import PV26PostprocessConfig, postprocess_pv26_batch
-from .spec import build_loss_spec
-from .train_summary import resolve_summary_path
-from ..net.trunk import forward_pyramid_features
+from model.data.dataset import slice_focused_batch
 
 
-STAGE_NAMES = (
-    "stage_1_frozen_trunk_warmup",
-    "stage_2_partial_unfreeze",
-    "stage_3_end_to_end_finetune",
-    "stage_4_lane_family_finetune",
-)
-STAGE_ALIASES = {
-    "stage_1_head_warmup": "stage_1_frozen_trunk_warmup",
-}
-RUN_MANIFEST_VERSION = "pv26-train-run-v1"
-OD_CLASSES = tuple(build_loss_spec()["model_contract"]["od_classes"])
-TIMING_KEYS = _reporting.TIMING_KEYS
-TENSORBOARD_LOSS_KEYS = _reporting.TENSORBOARD_LOSS_KEYS
-DISTILL_TEACHER_CACHE_KEYS = (
-    "lane_row_logits",
-    "lane_exist_logits",
-    "lane_row_col_expectation",
-    "lane_seg_centerline_logits",
-    "lane_seg_support_logits",
-    "lane_seg_center_offset",
-    "lane_seg_tangent_axis",
-    "lane_seg_color_logits",
-    "lane_seg_type_logits",
-    "lane_feature",
-    "stop_line_mask_logits",
-    "stop_line_center_logits",
-    "stop_line_center_offset",
-    "stop_line_angle",
-    "stop_line_half_length",
-    "stop_line_feature",
-    "crosswalk_mask_logits",
-    "crosswalk_boundary_logits",
-    "crosswalk_center_logits",
-    "crosswalk_feature",
-)
+@dataclass(frozen=True)
+class FocusedTrainerConfig:
+    output_dir: Path
+    device: str = "cuda"
+    precision: str = "bf16"
+    microbatch_size: int = 4
+    min_microbatch_size: int = 1
+    checkpoint_interval_sec: float = 600.0
+    max_consecutive_failures: int = 3
+    grad_clip_norm: float | None = None
+    stage: str = "joint"
+
+    def __post_init__(self) -> None:
+        if self.precision not in {"bf16", "fp16", "fp32"}:
+            raise ValueError("precision must be bf16, fp16, or fp32")
+        if self.microbatch_size < 1 or self.min_microbatch_size < 1:
+            raise ValueError("microbatch sizes must be positive")
+        if self.min_microbatch_size > self.microbatch_size:
+            raise ValueError("min_microbatch_size exceeds microbatch_size")
+        if self.checkpoint_interval_sec <= 0 or self.max_consecutive_failures < 1:
+            raise ValueError("checkpoint interval and failure limit must be positive")
 
 
-def _canonical_stage(stage: str) -> str:
-    return STAGE_ALIASES.get(stage, stage)
+class FocusedBatchAdapter:
+    """The three supervised terms of the focused detector/roadmark batch."""
 
+    @staticmethod
+    def slice_batch(batch: dict[str, Any], start: int, stop: int) -> dict[str, Any]:
+        return slice_focused_batch(batch, start, stop)
 
-def _count_parameters(parameters: list[torch.nn.Parameter]) -> int:
-    return sum(parameter.numel() for parameter in parameters)
-
-
-class PV26DistillTeacher:
-    def __init__(
-        self,
-        adapter: Any,
-        heads: torch.nn.Module,
-        *,
-        runtime_target_postprocess_config: PV26PostprocessConfig | None = None,
-    ) -> None:
-        self.adapter = adapter
-        self.heads = heads
-        self.runtime_target_postprocess_config = runtime_target_postprocess_config
-        self.eval()
-        for parameter in self.adapter.raw_model.parameters():
-            parameter.requires_grad = False
-        for parameter in self.heads.parameters():
-            parameter.requires_grad = False
-
-    def to(self, device: str | torch.device) -> "PV26DistillTeacher":
-        resolved_device = torch.device(device)
-        self.adapter.raw_model.to(resolved_device)
-        self.heads.to(resolved_device)
-        return self
-
-    def eval(self) -> "PV26DistillTeacher":
-        self.adapter.raw_model.eval()
-        self.heads.eval()
-        return self
-
-    @torch.no_grad()
-    def build_cache(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
-        self.eval()
-        features = forward_pyramid_features(self.adapter, encoded["image"])
-        outputs = self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
-        cache = {
-            key: value.detach()
-            for key, value in outputs.items()
-            if key in DISTILL_TEACHER_CACHE_KEYS and isinstance(value, torch.Tensor)
+    @staticmethod
+    def term_counts(batch: dict[str, Any]) -> dict[str, int]:
+        positive = ((batch["roadmark_target"] > 0) & batch["roadmark_valid"]).flatten(2).any(dim=2)
+        return {
+            "det": int(batch["det_labeled"].sum().item()),
+            "roadmark_bce": int(batch["roadmark_valid"].sum().item()),
+            "roadmark_dice": int(positive.sum().item()),
         }
-        if self.runtime_target_postprocess_config is not None and isinstance(encoded.get("meta"), list):
-            runtime_predictions = postprocess_pv26_batch(
-                outputs,
-                encoded["meta"],
-                config=self.runtime_target_postprocess_config,
-            )
-            cache.update(encode_lane_family_runtime_predictions(runtime_predictions, encoded["meta"]))
-        return cache
+
+    @staticmethod
+    def weighted_terms(losses: dict[str, torch.Tensor], criterion: torch.nn.Module) -> dict[str, torch.Tensor]:
+        return {
+            "det": losses["det"] * float(getattr(criterion, "det_weight", 1.0)),
+            "roadmark_bce": losses["roadmark_bce"] * float(getattr(criterion, "roadmark_weight", 1.0)),
+            "roadmark_dice": losses["roadmark_dice"] * float(getattr(criterion, "roadmark_weight", 1.0)),
+        }
+
+    @staticmethod
+    def sample_ids(batch: dict[str, Any]) -> list[str]:
+        return [str(meta.get("sample_id", meta)) for meta in batch.get("meta", ())]
 
 
-_DISTILL_TASK_CACHE_PREFIXES = {
-    "lane": ("lane_", "teacher_runtime_lane"),
-    "stop_line": ("stop_line_", "teacher_runtime_stop_line"),
-    "crosswalk": ("crosswalk_", "teacher_runtime_crosswalk"),
-}
+def _rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
 
 
-class PV26TaskRoutedDistillTeacher:
+def _restore_rng(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def _atomic_save(payload: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
+        ) as output:
+            temporary = output.name
+            torch.save(payload, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        _fsync_directory(path.parent)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _is_oom(error: BaseException) -> bool:
+    return isinstance(error, torch.cuda.OutOfMemoryError) or (
+        isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
+    )
+
+
+def _model_config(model: torch.nn.Module) -> dict[str, Any] | None:
+    describe = getattr(model, "model_config", None)
+    if callable(describe):
+        return dict(describe())
+    config = getattr(model, "config", None)
+    if is_dataclass(config):
+        return asdict(config)
+    return dict(config) if isinstance(config, dict) else None
+
+
+def _snapshot_buffers(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    # Forward may update BatchNorm buffers before an OOM or nonfinite loss.
+    return {name: buffer.detach().cpu().clone() for name, buffer in model.named_buffers()}
+
+
+@torch.no_grad()
+def _restore_buffers(model: torch.nn.Module, snapshot: dict[str, torch.Tensor]) -> None:
+    for name, buffer in model.named_buffers():
+        buffer.copy_(snapshot[name].to(device=buffer.device))
+
+
+class FocusedTrainer:
     def __init__(
         self,
-        default_teacher: PV26DistillTeacher,
-        task_teachers: dict[str, PV26DistillTeacher],
-    ) -> None:
-        self.default_teacher = default_teacher
-        self.task_teachers = dict(task_teachers)
-
-    def to(self, device: str | torch.device) -> "PV26TaskRoutedDistillTeacher":
-        self.default_teacher.to(device)
-        for teacher in self.task_teachers.values():
-            teacher.to(device)
-        return self
-
-    def eval(self) -> "PV26TaskRoutedDistillTeacher":
-        self.default_teacher.eval()
-        for teacher in self.task_teachers.values():
-            teacher.eval()
-        return self
-
-    @torch.no_grad()
-    def build_cache(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
-        cache = dict(self.default_teacher.build_cache(encoded))
-        for task_name, teacher in self.task_teachers.items():
-            prefixes = _DISTILL_TASK_CACHE_PREFIXES.get(str(task_name), ())
-            if not prefixes:
-                continue
-            task_cache = teacher.build_cache(encoded)
-            for key, value in task_cache.items():
-                if key.startswith(prefixes):
-                    cache[key] = value
-        return cache
-
-
-def _trainable_parameters(module: torch.nn.Module) -> list[torch.nn.Parameter]:
-    return [parameter for parameter in module.parameters() if parameter.requires_grad]
-
-
-def _trainable_parameters_from_modules(modules: list[torch.nn.Module]) -> list[torch.nn.Parameter]:
-    parameters: list[torch.nn.Parameter] = []
-    seen: set[int] = set()
-    for module in modules:
-        for parameter in module.parameters():
-            if not parameter.requires_grad:
-                continue
-            parameter_id = id(parameter)
-            if parameter_id in seen:
-                continue
-            seen.add(parameter_id)
-            parameters.append(parameter)
-    return parameters
-
-
-def _set_module_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
-    for parameter in module.parameters():
-        parameter.requires_grad = requires_grad
-
-
-def _lane_family_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    lane_family_getter = getattr(heads, "lane_family_modules", None)
-    if callable(lane_family_getter):
-        modules = [module for module in lane_family_getter() if isinstance(module, torch.nn.Module)]
-        if modules:
-            return modules
-    return [
-        module
-        for module in (
-            getattr(heads, "lane_head", None),
-            getattr(heads, "stop_line_head", None),
-            getattr(heads, "crosswalk_head", None),
-        )
-        if isinstance(module, torch.nn.Module)
-    ]
-
-
-def _lane_family_adapter_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    adapter_getter = getattr(heads, "lane_family_adapter_modules", None)
-    if callable(adapter_getter):
-        return [module for module in adapter_getter() if isinstance(module, torch.nn.Module)]
-    roadmark_heads = getattr(heads, "roadmark_heads", None)
-    adapter_getter = getattr(roadmark_heads, "lane_family_adapter_modules", None)
-    if callable(adapter_getter):
-        return [module for module in adapter_getter() if isinstance(module, torch.nn.Module)]
-    return []
-
-
-def _stop_line_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    getter = getattr(heads, "stop_line_modules", None)
-    if callable(getter):
-        modules = [module for module in getter() if isinstance(module, torch.nn.Module)]
-        if modules:
-            return modules
-    roadmark_heads = getattr(heads, "roadmark_heads", None)
-    getter = getattr(roadmark_heads, "stop_line_modules", None)
-    if callable(getter):
-        modules = [module for module in getter() if isinstance(module, torch.nn.Module)]
-        if modules:
-            return modules
-    stop_line_head = getattr(heads, "stop_line_head", None)
-    return [stop_line_head] if isinstance(stop_line_head, torch.nn.Module) else []
-
-
-def _lane_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    getter = getattr(heads, "lane_modules", None)
-    if callable(getter):
-        modules = [module for module in getter() if isinstance(module, torch.nn.Module)]
-        if modules:
-            return modules
-    roadmark_heads = getattr(heads, "roadmark_heads", None)
-    getter = getattr(roadmark_heads, "lane_modules", None)
-    if callable(getter):
-        modules = [module for module in getter() if isinstance(module, torch.nn.Module)]
-        if modules:
-            return modules
-    lane_head = getattr(heads, "lane_head", None)
-    return [lane_head] if isinstance(lane_head, torch.nn.Module) else []
-
-
-def _lane_conditional_seed_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    lane_head = getattr(heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        roadmark_heads = getattr(heads, "roadmark_heads", None)
-        lane_head = getattr(roadmark_heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        return []
-    conditional_seed_logits = getattr(lane_head, "conditional_seed_logits", None)
-    return [conditional_seed_logits] if isinstance(conditional_seed_logits, torch.nn.Module) else []
-
-
-def _lane_conditional_row_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    lane_head = getattr(heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        roadmark_heads = getattr(heads, "roadmark_heads", None)
-        lane_head = getattr(roadmark_heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        return []
-    modules: list[torch.nn.Module] = []
-    for name in ("conditional_seed_logits", "conditional_query_mlp"):
-        module = getattr(lane_head, name, None)
-        if isinstance(module, torch.nn.Module):
-            modules.append(module)
-    return modules
-
-
-def _lane_row_link_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    lane_head = getattr(heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        roadmark_heads = getattr(heads, "roadmark_heads", None)
-        lane_head = getattr(roadmark_heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        return []
-    row_link_delta = getattr(lane_head, "row_link_delta", None)
-    return [row_link_delta] if isinstance(row_link_delta, torch.nn.Module) else []
-
-
-def _lane_anchor_offset_modules(heads: torch.nn.Module) -> list[torch.nn.Module]:
-    lane_head = getattr(heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        roadmark_heads = getattr(heads, "roadmark_heads", None)
-        lane_head = getattr(roadmark_heads, "lane_head", None)
-    if not isinstance(lane_head, torch.nn.Module):
-        return []
-    anchor_offset = getattr(lane_head, "anchor_offset", None)
-    return [anchor_offset] if isinstance(anchor_offset, torch.nn.Module) else []
-
-
-def _parameter_ids_from_modules(modules: list[torch.nn.Module]) -> set[int]:
-    parameter_ids: set[int] = set()
-    for module in modules:
-        for parameter in module.parameters():
-            parameter_ids.add(id(parameter))
-    return parameter_ids
-
-
-def _require_lane_family_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _lane_family_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires lane_head, stop_line_head, and crosswalk_head modules")
-    return modules
-
-
-def _require_named_head_modules(heads: torch.nn.Module, names: tuple[str, ...], *, policy: str) -> list[torch.nn.Module]:
-    modules: list[torch.nn.Module] = []
-    missing: list[str] = []
-    for name in names:
-        module = getattr(heads, name, None)
-        if isinstance(module, torch.nn.Module):
-            modules.append(module)
-        else:
-            missing.append(name)
-    if missing:
-        raise RuntimeError(f"{policy} requires {', '.join(missing)} modules")
-    return modules
-
-
-def _require_stop_line_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _stop_line_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires stop_line_head or stop_line_modules")
-    return modules
-
-
-def _require_lane_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _lane_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires lane_head or lane_modules")
-    return modules
-
-
-def _require_lane_conditional_seed_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _lane_conditional_seed_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires a seg-first lane_head with conditional_seed_logits")
-    return modules
-
-
-def _require_lane_conditional_row_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _lane_conditional_row_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires a seg-first lane_head with conditional row modules")
-    return modules
-
-
-def _require_lane_row_link_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _lane_row_link_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires a seg-first lane_head with row_link_delta")
-    return modules
-
-
-def _require_lane_anchor_offset_modules(heads: torch.nn.Module, *, policy: str) -> list[torch.nn.Module]:
-    modules = _lane_anchor_offset_modules(heads)
-    if not modules:
-        raise RuntimeError(f"{policy} requires a seg-first lane_head with anchor_offset")
-    return modules
-
-
-def _criterion_config_from_instance(criterion: torch.nn.Module, stage: str) -> dict[str, Any] | None:
-    export_config = getattr(criterion, "export_config", None)
-    if not callable(export_config):
-        return None
-    config = dict(export_config())
-    config["stage"] = _canonical_stage(str(config.get("stage", stage)))
-    return config
-
-
-def _optimizer_group_hparams(optimizer: torch.optim.Optimizer) -> dict[str, float]:
-    values = {
-        "trunk_lr": 1e-4,
-        "head_lr": 1e-3,
-        "criterion_lr": 1e-3,
-        "weight_decay": 1e-4,
-    }
-    for index, group in enumerate(optimizer.param_groups):
-        group_name = str(group.get("group_name", f"group_{index}"))
-        if group_name == "trunk":
-            values["trunk_lr"] = float(group.get("lr", values["trunk_lr"]))
-            values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
-        if group_name == "heads":
-            values["head_lr"] = float(group.get("lr", values["head_lr"]))
-            values["weight_decay"] = float(group.get("weight_decay", values["weight_decay"]))
-        if group_name == "criterion":
-            values["criterion_lr"] = float(group.get("lr", values["criterion_lr"]))
-    return values
-
-
-def _is_better(candidate: float, current_best: float | None, mode: str) -> bool:
-    if current_best is None:
-        return True
-    if mode == "min":
-        return candidate < current_best
-    if mode == "max":
-        return candidate > current_best
-    raise KeyError(f"unsupported comparison mode: {mode}")
-
-
-def _is_oom_error(exc: RuntimeError) -> bool:
-    message = str(exc).lower()
-    return "out of memory" in message or "cuda error: out of memory" in message
-
-
-def build_pv26_scheduler(
-    optimizer: torch.optim.Optimizer,
-    *,
-    epochs: int,
-    schedule: str = "cosine",
-    min_lr_ratio: float = 0.1,
-):
-    if epochs <= 0:
-        raise ValueError("scheduler epochs must be > 0")
-    if schedule == "none":
-        return None
-    if schedule == "cosine":
-        base_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups]
-        eta_min = min(base_lrs) * float(min_lr_ratio) if base_lrs else 0.0
-        return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=max(1, epochs),
-            eta_min=eta_min,
-        )
-    raise KeyError(f"unsupported PV26 scheduler: {schedule}")
-
-
-def configure_pv26_train_stage(
-    adapter: Any,
-    heads: torch.nn.Module,
-    stage: str,
-    *,
-    freeze_policy: str | None = None,
-) -> dict[str, int | str]:
-    stage = _canonical_stage(stage)
-    if stage not in STAGE_NAMES:
-        raise KeyError(f"unsupported PV26 train stage: {stage}")
-
-    for parameter in heads.parameters():
-        parameter.requires_grad = True
-
-    trunk_layers = list(adapter.trunk.children())
-    policy = freeze_policy
-    if policy is None:
-        if stage == "stage_1_frozen_trunk_warmup":
-            policy = "backbone_and_neck"
-        elif stage == "stage_2_partial_unfreeze":
-            policy = "lower_backbone_only"
-        elif stage == "stage_4_lane_family_finetune":
-            policy = "lane_family_heads_only"
-        else:
-            policy = "none"
-
-    head_policy = "all_heads"
-    if policy == "backbone_and_neck":
-        adapter.freeze_trunk()
-    elif policy == "lower_backbone_only":
-        adapter.freeze_trunk()
-        partial_count = max(1, len(trunk_layers) // 3)
-        for layer in trunk_layers[-partial_count:]:
-            for parameter in layer.parameters():
-                parameter.requires_grad = True
-    elif policy == "lane_family_plus_upper_trunk":
-        adapter.freeze_trunk()
-        partial_count = max(1, len(trunk_layers) // 3)
-        for layer in trunk_layers[-partial_count:]:
-            for parameter in layer.parameters():
-                parameter.requires_grad = True
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_family_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_family_only"
-    elif policy == "lane_family_full_trunk":
-        adapter.unfreeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_family_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_family_only"
-    elif policy in {"lane_family_heads_only", "lane_family_heads_static_trunk"}:
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_family_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_family_only"
-    elif policy in {"lane_family_stop_cross_heads_only", "lane_family_stop_cross_static_trunk"}:
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_named_head_modules(heads, ("stop_line_head", "crosswalk_head"), policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "stop_cross_only"
-    elif policy in {"lane_family_stopline_only", "lane_family_stopline_static_trunk"}:
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_stop_line_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "stopline_only"
-    elif policy in {"lane_family_lane_only", "lane_family_lane_static_trunk"}:
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_only"
-    elif policy == "lane_conditional_seed_only":
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_conditional_seed_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_conditional_seed_only"
-    elif policy == "lane_conditional_row_only":
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_conditional_row_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_conditional_row_only"
-    elif policy == "lane_row_link_only":
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_row_link_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_row_link_only"
-    elif policy == "lane_anchor_offset_only":
-        adapter.freeze_trunk()
-        _set_module_requires_grad(heads, False)
-        for module in _require_lane_anchor_offset_modules(heads, policy=policy):
-            _set_module_requires_grad(module, True)
-        head_policy = "lane_anchor_offset_only"
-    elif policy == "none":
-        adapter.unfreeze_trunk()
-    else:
-        raise KeyError(f"unsupported PV26 freeze policy: {policy}")
-
-    trainable_trunk = _trainable_parameters(adapter.trunk)
-    trainable_heads = _trainable_parameters(heads)
-    stage_summary: dict[str, int | str] = {
-        "stage": stage,
-        "freeze_policy": policy,
-        "trainable_trunk_params": _count_parameters(trainable_trunk),
-        "trainable_head_params": _count_parameters(trainable_heads),
-    }
-    if hasattr(heads, "det_heads"):
-        det_heads = getattr(heads, "det_heads")
-        if isinstance(det_heads, torch.nn.Module):
-            stage_summary["trainable_det_head_params"] = _count_parameters(_trainable_parameters(det_heads))
-    if hasattr(heads, "tl_attr_heads"):
-        tl_attr_heads = getattr(heads, "tl_attr_heads")
-        if isinstance(tl_attr_heads, torch.nn.Module):
-            stage_summary["trainable_tl_attr_head_params"] = _count_parameters(_trainable_parameters(tl_attr_heads))
-    lane_family_modules_for_summary = _lane_family_modules(heads)
-    lane_family_trainable = _count_parameters(_trainable_parameters_from_modules(lane_family_modules_for_summary))
-    if lane_family_trainable:
-        stage_summary["trainable_lane_family_head_params"] = lane_family_trainable
-    if policy in {
-        "lane_family_heads_only",
-        "lane_family_heads_static_trunk",
-        "lane_family_full_trunk",
-        "lane_family_plus_upper_trunk",
-        "lane_family_stop_cross_heads_only",
-        "lane_family_stop_cross_static_trunk",
-        "lane_family_stopline_only",
-        "lane_family_stopline_static_trunk",
-        "lane_family_lane_only",
-        "lane_family_lane_static_trunk",
-        "lane_conditional_seed_only",
-        "lane_conditional_row_only",
-        "lane_row_link_only",
-        "lane_anchor_offset_only",
-    }:
-        stage_summary["head_training_policy"] = head_policy
-    return stage_summary
-
-
-def build_pv26_optimizer(
-    adapter: Any,
-    heads: torch.nn.Module,
-    *,
-    criterion: torch.nn.Module | None = None,
-    trunk_lr: float = 1e-4,
-    head_lr: float = 1e-3,
-    criterion_lr: float | None = None,
-    weight_decay: float = 1e-4,
-) -> torch.optim.Optimizer:
-    param_groups: list[dict[str, Any]] = []
-    trunk_params = _trainable_parameters(adapter.trunk)
-    adapter_param_ids = _parameter_ids_from_modules(_lane_family_adapter_modules(heads))
-    adapter_params = [
-        parameter
-        for parameter in heads.parameters()
-        if parameter.requires_grad and id(parameter) in adapter_param_ids
-    ]
-    head_params = [
-        parameter
-        for parameter in heads.parameters()
-        if parameter.requires_grad and id(parameter) not in adapter_param_ids
-    ]
-
-    if trunk_params:
-        param_groups.append(
-            {
-                "params": trunk_params,
-                "lr": trunk_lr,
-                "weight_decay": weight_decay,
-                "group_name": "trunk",
-            }
-        )
-    if head_params:
-        param_groups.append(
-            {
-                "params": head_params,
-                "lr": head_lr,
-                "weight_decay": weight_decay,
-                "group_name": "heads",
-            }
-        )
-    if adapter_params:
-        param_groups.append(
-            {
-                "params": adapter_params,
-                "lr": head_lr,
-                "weight_decay": weight_decay,
-                "group_name": "lane_family_adapters",
-            }
-        )
-    criterion_params = _trainable_parameters(criterion) if criterion is not None else []
-    if criterion_params:
-        param_groups.append(
-            {
-                "params": criterion_params,
-                "lr": float(head_lr if criterion_lr is None else criterion_lr),
-                "weight_decay": 0.0,
-                "group_name": "criterion",
-            }
-        )
-    if not param_groups:
-        raise ValueError("no trainable parameters are available for optimizer construction")
-    return torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
-
-
-class PV26Trainer:
-    def __init__(
-        self,
-        adapter: Any,
-        heads: torch.nn.Module,
+        model: torch.nn.Module,
+        criterion: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: Any,
+        sampler: Any,
+        config: FocusedTrainerConfig,
         *,
-        stage: str = "stage_1_frozen_trunk_warmup",
-        device: str | torch.device = "cpu",
-        criterion: torch.nn.Module | None = None,
-        optimizer: torch.optim.Optimizer | None = None,
-        scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
-        trunk_lr: float = 1e-4,
-        head_lr: float = 1e-3,
-        criterion_lr: float | None = None,
-        weight_decay: float = 1e-4,
-        loss_weights: dict[str, float] | None = None,
-        freeze_policy: str | None = None,
-        amp: bool = False,
-        amp_init_scale: float = 65536.0,
-        accumulate_steps: int = 1,
-        grad_clip_norm: float | None = None,
-        skip_non_finite_loss: bool = False,
-        oom_guard: bool = False,
-        multitask_conflict: dict[str, Any] | None = None,
-        distill_teacher: Any | None = None,
+        run_metadata: dict[str, Any] | None = None,
+        batch_adapter: Any | None = None,
     ) -> None:
-        if accumulate_steps <= 0:
-            raise ValueError("accumulate_steps must be > 0")
-        if amp_init_scale <= 0.0:
-            raise ValueError("amp_init_scale must be > 0")
-        self.adapter = adapter
-        self.heads = heads
-        self.device = torch.device(device)
-        self.distill_teacher = distill_teacher
-        self.stage = _canonical_stage(stage)
-        self.freeze_policy = freeze_policy
-        self.stage_summary = configure_pv26_train_stage(
-            adapter,
-            heads,
-            self.stage,
-            freeze_policy=self.freeze_policy,
-        )
-        self.adapter.raw_model.to(self.device)
-        self.heads.to(self.device)
-        teacher_to_device = getattr(self.distill_teacher, "to", None)
-        if callable(teacher_to_device):
-            teacher_to_device(self.device)
-        self.criterion = (criterion or PV26MultiTaskLoss(stage=self.stage, loss_weights=loss_weights)).to(self.device)
-        self.optimizer = optimizer or build_pv26_optimizer(
-            adapter,
-            heads,
-            criterion=self.criterion,
-            trunk_lr=trunk_lr,
-            head_lr=head_lr,
-            criterion_lr=criterion_lr,
-            weight_decay=weight_decay,
-        )
+        self.config = config
+        self.device = torch.device(config.device)
+        if config.precision == "fp16" and self.device.type != "cuda":
+            raise ValueError("fp16 training requires CUDA")
+        set_stage = getattr(model, "set_train_stage", None)
+        if callable(set_stage):
+            set_stage(config.stage)
+        self.model = model.to(self.device)
+        self.criterion = criterion.to(self.device)
+        self.optimizer = optimizer
         self.scheduler = scheduler
-        self.accumulate_steps = int(accumulate_steps)
-        self.grad_clip_norm = float(grad_clip_norm) if grad_clip_norm is not None else None
-        self.skip_non_finite_loss = bool(skip_non_finite_loss)
-        self.oom_guard = bool(oom_guard)
-        self.multitask_conflict = normalize_multitask_conflict(multitask_conflict)
-        self.multitask_conflict_state = init_multitask_conflict_state(self.multitask_conflict)
-        self.amp_enabled = bool(amp) and self.device.type == "cuda"
-        self.amp_init_scale = float(amp_init_scale)
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled, init_scale=self.amp_init_scale)
-        self.micro_step = 0
-        self.skipped_steps = 0
+        self.sampler = sampler
+        self.batch_adapter = batch_adapter if batch_adapter is not None else FocusedBatchAdapter()
+        self.run_metadata = dict(run_metadata or {})
+        self.scaler = torch.amp.GradScaler("cuda", enabled=config.precision == "fp16")
         self.global_step = 0
-        self.train_step_count = 0
-        self.history: list[dict[str, Any]] = []
-        self.epoch_history: list[dict[str, Any]] = []
-        self.tensorboard_writer = None
-        self.tensorboard_status: dict[str, Any] = {
-            "enabled": False,
-            "status": "inactive",
-            "error": None,
-            "log_dir": None,
-            "purge_step": None,
+        self.skipped_updates = 0
+        self.oom_retries = 0
+        self.consecutive_failures = 0
+        self.best_metric: float | None = None
+        self.best_mode = "max"
+        self.best_step: int | None = None
+        self.microbatch_size = config.microbatch_size
+        self._stop_requested = False
+        self._unsafe_state = False
+        self._last_checkpoint_time = time.monotonic()
+        self._last_saved_position: int | None = None
+        self._last_failure_reason = ""
+        self.last_step_losses: dict[str, float] = {}
+        self.planned_steps: int | None = None
+        self._progress_at: tuple[int, int] | None = None
+
+    @property
+    def checkpoint_dir(self) -> Path:
+        return Path(self.config.output_dir) / "checkpoints"
+
+    @property
+    def latest_path(self) -> Path:
+        return self.checkpoint_dir / "latest.pt"
+
+    @property
+    def previous_path(self) -> Path:
+        return self.checkpoint_dir / "previous.pt"
+
+    @property
+    def best_path(self) -> Path:
+        return self.checkpoint_dir / "best.pt"
+
+    def _checkpoint_state(self) -> dict[str, Any]:
+        return {
+            "format_version": 1,
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "criterion": self.criterion.state_dict(),
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "scaler": self.scaler.state_dict() if self.scaler.is_enabled() else None,
+            "rng": _rng_state(),
+            "sampler": self.sampler.state_dict(),
+            "global_step": self.global_step,
+            "skipped_updates": self.skipped_updates,
+            "oom_retries": self.oom_retries,
+            "consecutive_failures": self.consecutive_failures,
+            "microbatch_size": self.microbatch_size,
+            "stage": self.config.stage,
+            "precision": self.config.precision,
+            "best_metric": self.best_metric,
+            "best_mode": self.best_mode,
+            "best_step": self.best_step,
+            "model_config": _model_config(self.model),
+            "run_metadata": self.run_metadata,
+            "planned_steps": self.planned_steps,
         }
-        self._tensorboard_train_step = 0
 
-    def apply_freeze_policy_train_modes(self) -> None:
-        policy = str(self.stage_summary.get("freeze_policy", self.freeze_policy or ""))
-        if policy == "lane_family_heads_static_trunk":
-            self.adapter.raw_model.eval()
-        if policy == "lane_family_stop_cross_static_trunk":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-            for module in _require_named_head_modules(self.heads, ("stop_line_head", "crosswalk_head"), policy=policy):
-                module.train()
-        if policy == "lane_family_stopline_static_trunk":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-            for module in _require_stop_line_modules(self.heads, policy=policy):
-                module.train()
-        if policy == "lane_family_lane_static_trunk":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-            for module in _require_lane_modules(self.heads, policy=policy):
-                module.train()
-        if policy == "lane_conditional_seed_only":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-        if policy == "lane_conditional_row_only":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-            for module in _require_lane_conditional_row_modules(self.heads, policy=policy):
-                module.train()
-        if policy == "lane_row_link_only":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-            for module in _require_lane_row_link_modules(self.heads, policy=policy):
-                module.train()
-        if policy == "lane_anchor_offset_only":
-            self.adapter.raw_model.eval()
-            self.heads.eval()
-            for module in _require_lane_anchor_offset_modules(self.heads, policy=policy):
-                module.train()
+    def save_checkpoint(self) -> Path:
+        """Publish a complete, clean optimizer-boundary state."""
+        if self._unsafe_state:
+            raise RuntimeError("optimizer state is uncertain; reload a normal checkpoint")
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if self.latest_path.exists():
+            os.replace(self.latest_path, self.previous_path)
+            _fsync_directory(self.checkpoint_dir)
+        try:
+            _atomic_save(self._checkpoint_state(), self.latest_path)
+        except BaseException:
+            if not self.latest_path.exists() and self.previous_path.exists():
+                os.replace(self.previous_path, self.latest_path)
+                _fsync_directory(self.checkpoint_dir)
+            raise
+        self._last_checkpoint_time = time.monotonic()
+        self._last_saved_position = int(self.sampler.position)
+        return self.latest_path
 
-    def prepare_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
-        task_mode = str(getattr(self.criterion, "task_mode", LANE_FAMILY_TASK_MODE))
-        include_segfirst = str(getattr(self.heads, "lane_head_mode", "row_native")) == "seg_first"
-        if "det_gt" in batch:
-            encoded = batch
-            raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
-            if raw_batch is not None:
-                validate_raw_batch_matches_image(raw_batch, encoded["image"], context="encoded")
-            has_segfirst = isinstance(encoded.get("roadmark_v2"), dict) and "lane_seg_centerline_core" in encoded["roadmark_v2"]
-            if include_segfirst and not has_segfirst and raw_batch is not None:
-                encoded = encode_pv26_batch(
-                    {"image": encoded["image"], **raw_batch},
-                    task_mode=task_mode,
-                    include_lane_segfirst_targets=True,
+    def load_checkpoint(self, path: str | Path | None = None) -> Path:
+        """Restore full training state; create a fresh DataLoader after this call."""
+        candidate = Path(path) if path is not None else self.latest_path
+        if not candidate.is_file() and path is None and self.previous_path.is_file():
+            candidate = self.previous_path
+        # RNG byte tensors must remain on CPU even when model training is on CUDA.
+        checkpoint = torch.load(candidate, map_location="cpu", weights_only=False)
+        if checkpoint["format_version"] != 1:
+            raise RuntimeError(f"unsupported focused checkpoint: {candidate}")
+        if checkpoint["stage"] != self.config.stage or checkpoint["precision"] != self.config.precision:
+            raise RuntimeError("checkpoint stage or precision differs from this training run")
+        self.model.load_state_dict(checkpoint["model"])
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+        self.criterion.load_state_dict(checkpoint.get("criterion", {}))
+        if self.scheduler is not None:
+            if checkpoint["scheduler"] is None:
+                raise RuntimeError("checkpoint has no scheduler state")
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
+        if self.scaler.is_enabled():
+            if checkpoint["scaler"] is None:
+                raise RuntimeError("checkpoint has no GradScaler state")
+            self.scaler.load_state_dict(checkpoint["scaler"])
+        self.sampler.load_state_dict(checkpoint["sampler"])
+        _restore_rng(checkpoint["rng"])
+        self.global_step = int(checkpoint["global_step"])
+        self.skipped_updates = int(checkpoint["skipped_updates"])
+        self.oom_retries = int(checkpoint.get("oom_retries", 0))
+        self.consecutive_failures = int(checkpoint["consecutive_failures"])
+        self.microbatch_size = int(checkpoint["microbatch_size"])
+        self.best_metric = checkpoint["best_metric"]
+        self.best_mode = checkpoint["best_mode"]
+        self.best_step = checkpoint["best_step"]
+        self.run_metadata = dict(checkpoint.get("run_metadata") or {})
+        self.planned_steps = checkpoint.get("planned_steps")
+        if self.planned_steps is not None:
+            self.planned_steps = int(self.planned_steps)
+            self._set_progress(self.planned_steps)
+        if self.best_path.is_file():
+            best = torch.load(self.best_path, map_location="cpu", weights_only=False)
+            if best.get("stage") == self.config.stage:
+                metric = float(best["metric"])
+                mode = str(best["mode"])
+                better = self.best_metric is None or (
+                    metric > self.best_metric if mode == "max" else metric < self.best_metric
                 )
-                encoded["_raw_batch"] = raw_batch
-        else:
-            encoded = encode_pv26_batch(
-                batch,
-                task_mode=task_mode,
-                include_lane_segfirst_targets=include_segfirst,
-            )
-        raw_batch = encoded.get("_raw_batch") if isinstance(encoded.get("_raw_batch"), dict) else None
-        encoded_payload = {key: value for key, value in encoded.items() if key != "_raw_batch"}
-        moved = move_batch_to_device(encoded_payload, self.device, non_blocking=self.device.type == "cuda")
-        if raw_batch is not None:
-            moved["_raw_batch"] = raw_batch
-        return moved
+                if better:
+                    self.best_metric = metric
+                    self.best_mode = mode
+                    self.best_step = int(best["global_step"])
+        self._unsafe_state = False
+        self._last_checkpoint_time = time.monotonic()
+        self._last_saved_position = int(self.sampler.position)
+        return candidate
 
-    def forward_encoded_batch(self, encoded: dict[str, Any]) -> dict[str, torch.Tensor]:
-        features = forward_pyramid_features(self.adapter, encoded["image"])
-        return self.heads(features, encoded=encoded) if getattr(self.heads, "supports_encoded_context", False) else self.heads(features)
-
-    def attach_teacher_cache(self, encoded: dict[str, Any], *, phase: str) -> dict[str, Any]:
-        teacher = self.distill_teacher
-        if teacher is None:
-            return encoded
-        build_cache = getattr(teacher, "build_cache", None)
-        if not callable(build_cache):
-            raise TypeError("distill_teacher must provide build_cache(encoded)")
-        cache = build_cache(encoded)
-        if not isinstance(cache, dict):
-            raise TypeError("distill_teacher.build_cache(encoded) must return a dict")
-        encoded["teacher_cache"] = cache
-        encoded["_distill_phase"] = str(phase)
-        return encoded
-
-    def _autocast_context(self):
-        if not self.amp_enabled:
-            return nullcontext()
-        return torch.autocast(device_type=self.device.type, dtype=torch.float16)
-
-    def train_step(
-        self,
-        batch: dict[str, Any],
-        *,
-        wait_sec: float = 0.0,
-        profile_device_sync: bool = False,
-        store_history: bool = True,
-    ) -> dict[str, Any]:
-        return _step.run_train_step(
-            self,
-            batch,
-            wait_sec=wait_sec,
-            profile_device_sync=profile_device_sync,
-            store_history=store_history,
-            od_classes=OD_CLASSES,
-            is_oom_error_fn=_is_oom_error,
+    def update_best(self, metric: float, *, mode: str = "max") -> bool:
+        """Store a single weights-only selection artifact for an evaluated step."""
+        if self._unsafe_state:
+            raise RuntimeError("cannot select weights after uncertain optimizer update")
+        if mode not in {"max", "min"} or not np.isfinite(metric):
+            raise ValueError("best metric must be finite and mode must be max or min")
+        if self.best_metric is not None:
+            if mode != self.best_mode:
+                raise ValueError("best metric direction changed within a run")
+            if not ((metric > self.best_metric) if mode == "max" else (metric < self.best_metric)):
+                return False
+        _atomic_save(
+            {"model": self.model.state_dict(), "metric": float(metric), "mode": mode,
+             "global_step": self.global_step, "stage": self.config.stage,
+             "model_config": _model_config(self.model),
+             "run_metadata": self.run_metadata},
+            self.best_path,
         )
+        self.best_metric = float(metric)
+        self.best_mode = mode
+        self.best_step = self.global_step
+        self.save_checkpoint()
+        return True
 
-    def summarize_history(self, *, last_n: int | None = None) -> dict[str, Any]:
-        if not self.history:
-            raise ValueError("trainer history is empty")
-        window = self.history[-last_n:] if last_n is not None else self.history
-        successful_window = _reporting.successful_summaries(window)
-        anchor = successful_window[-1] if successful_window else window[-1]
-        summary: dict[str, Any] = {
-            "steps": len(window),
-            "successful_steps": len(successful_window),
-            "global_step": int(anchor["global_step"]),
-            "stage": str(anchor["stage"]),
-            "assignment": {
-                "det": str(anchor["assignment"]["det"]),
-                "lane": dict(anchor["assignment"]["lane"]),
-            },
-            "losses": {},
+    def _to_device(self, micro: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value.to(self.device, non_blocking=True) if isinstance(value, torch.Tensor) else value
+            for key, value in micro.items()
         }
-        if not successful_window:
-            return summary
-        for name in anchor["losses"]:
-            summary["losses"][name] = _reporting.loss_summary(window, name)
-        return summary
 
-    def save_epoch_history_jsonl(self, path: str | Path) -> Path:
-        return _io._write_jsonl_rows(path, self.epoch_history)
+    def _autocast(self):
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.config.precision)
+        return torch.autocast(device_type=self.device.type, dtype=dtype, enabled=dtype is not None)
 
-    def save_history_jsonl(self, path: str | Path) -> Path:
-        return _io._write_jsonl_rows(path, self.history)
+    def _attempt_update(self, batch: dict[str, Any], physical_size: int) -> bool:
+        sample_count = int(batch["image"].shape[0])
+        total_counts = self.batch_adapter.term_counts(batch)
+        if not any(total_counts.values()):
+            self._last_failure_reason = "no_labeled_task"
+            return False
+        self.optimizer.zero_grad(set_to_none=True)
+        accumulated: dict[str, torch.Tensor] = {}
+        for start in range(0, sample_count, physical_size):
+            stop = min(sample_count, start + physical_size)
+            micro_cpu = self.batch_adapter.slice_batch(batch, start, stop)
+            micro_counts = self.batch_adapter.term_counts(micro_cpu)
+            micro = self._to_device(micro_cpu)
+            with self._autocast():
+                forward = getattr(self.model, "forward_for_loss", self.model)
+                outputs = forward(micro["image"])
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                losses = self.criterion(outputs, micro)
+                weighted_terms = self.batch_adapter.weighted_terms(losses, self.criterion)
+                scaled_terms = {
+                    key: term * (micro_counts[key] / total_counts[key] if total_counts[key] else 0.0)
+                    for key, term in weighted_terms.items()
+                }
+                loss = sum(scaled_terms.values())
+            if not torch.isfinite(loss.detach()).item():
+                invalid_terms = [
+                    key for key, term in scaled_terms.items() if not torch.isfinite(term.detach()).item()
+                ]
+                self._last_failure_reason = "nonfinite_loss:" + ",".join(invalid_terms)
+                return False
+            for key, term in scaled_terms.items():
+                detached = term.detach()
+                accumulated[key] = accumulated[key] + detached if key in accumulated else detached
+            if self.scaler.is_enabled():
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            del outputs, losses, weighted_terms, scaled_terms, loss, micro
+        if self.scaler.is_enabled():
+            self.scaler.unscale_(self.optimizer)
+        parameters = [p for group in self.optimizer.param_groups for p in group["params"] if p.grad is not None]
+        gradients_finite = torch.stack([torch.isfinite(p.grad).all() for p in parameters]).all().item() if parameters else True
+        if not gradients_finite:
+            self._last_failure_reason = "nonfinite_gradient"
+            if self.scaler.is_enabled():
+                self.scaler.update()
+            return False
+        if self.config.grad_clip_norm is not None:
+            norm = torch.nn.utils.clip_grad_norm_(parameters, self.config.grad_clip_norm)
+            if not torch.isfinite(norm).item():
+                self._last_failure_reason = "nonfinite_gradient_norm"
+                if self.scaler.is_enabled():
+                    self.scaler.update(new_scale=self.scaler.get_scale() / 2)
+                return False
+        try:
+            if self.scaler.is_enabled():
+                old_scale = self.scaler.get_scale()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                if self.scaler.get_scale() < old_scale:
+                    self._last_failure_reason = "fp16_scaler_overflow"
+                    return False
+            else:
+                self.optimizer.step()
+        except BaseException as error:
+            self._unsafe_state = True
+            if _is_oom(error):
+                raise RuntimeError(
+                    f"optimizer-step OOM; state may be partial. Reload {self.latest_path} "
+                    f"(or {self.previous_path}) before continuing."
+                ) from error
+            raise
+        self.global_step += 1
+        if self.scheduler is not None:
+            try:
+                self.scheduler.step()
+            except BaseException:
+                self._unsafe_state = True
+                raise
+        values = torch.stack([accumulated[key] for key in accumulated]).float().cpu().tolist()
+        self.last_step_losses = dict(zip(accumulated, values))
+        self.last_step_losses["total"] = sum(values)
+        return True
 
-    def checkpoint_state(self) -> dict[str, Any]:
-        return _checkpoint.checkpoint_state(
-            self,
-            criterion_config_from_instance_fn=_criterion_config_from_instance,
-        )
+    def train_batch(self, batch: dict[str, Any]) -> bool:
+        """Consume one logical batch, retrying recoverable forward/backward OOM."""
+        if self._unsafe_state:
+            raise RuntimeError("optimizer state is uncertain; reload a normal checkpoint")
+        sample_count = int(batch["image"].shape[0])
+        if sample_count < 1:
+            raise ValueError("empty logical batch")
+        rng = _rng_state()
+        buffers = _snapshot_buffers(self.model)
+        physical_size = min(self.microbatch_size, sample_count)
+        while True:
+            self.optimizer.zero_grad(set_to_none=True)
+            _restore_rng(rng)
+            _restore_buffers(self.model, buffers)
+            try:
+                completed = self._attempt_update(batch, physical_size)
+                break
+            except BaseException as error:
+                if not _is_oom(error) or self._unsafe_state:
+                    self._unsafe_state = True
+                    self.optimizer.zero_grad(set_to_none=True)
+                    raise
+                self.optimizer.zero_grad(set_to_none=True)
+                if physical_size <= self.config.min_microbatch_size:
+                    self._unsafe_state = True
+                    raise RuntimeError(
+                        f"OOM at minimum physical microbatch size; samples={self.batch_adapter.sample_ids(batch)}"
+                    ) from error
+                self.oom_retries += 1
+                physical_size = max(self.config.min_microbatch_size, physical_size // 2)
+                self.microbatch_size = physical_size
+            # The caught exception's traceback can retain failed autograd tensors
+            # until the except suite exits.
+            gc.collect()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+        self.optimizer.zero_grad(set_to_none=True)
+        if completed:
+            self._commit(sample_count)
+            self.consecutive_failures = 0
+            if time.monotonic() - self._last_checkpoint_time >= self.config.checkpoint_interval_sec:
+                self.save_checkpoint()
+        else:
+            _restore_buffers(self.model, buffers)
+            self._commit(sample_count)
+            self.skipped_updates += 1
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= self.config.max_consecutive_failures:
+                raise RuntimeError(
+                    f"{self.consecutive_failures} consecutive rejected updates; "
+                    f"reason={self._last_failure_reason}; "
+                    f"task_counts={self.batch_adapter.term_counts(batch)}; "
+                    f"samples={self.batch_adapter.sample_ids(batch)}; "
+                    f"last normal checkpoint: {self.latest_path}"
+                )
+        return completed
 
-    def save_checkpoint(self, path: str | Path, *, extra_state: dict[str, Any] | None = None) -> Path:
-        return _checkpoint.save_checkpoint(
-            self,
-            path,
-            extra_state=extra_state,
-            checkpoint_state_fn=self.checkpoint_state,
-        )
+    def _commit(self, sample_count: int) -> None:
+        try:
+            self.sampler.commit(sample_count)
+        except BaseException:
+            self._unsafe_state = True
+            raise
 
-    def load_checkpoint(
-        self,
-        path: str | Path,
-        *,
-        map_location: str | torch.device | None = None,
-    ) -> dict[str, Any]:
-        return _checkpoint.load_checkpoint(
-            self,
-            path,
-            map_location=map_location,
-            canonical_stage_fn=_canonical_stage,
-            optimizer_group_hparams_fn=_optimizer_group_hparams,
-            criterion_config_from_instance_fn=_criterion_config_from_instance,
-            configure_stage_fn=configure_pv26_train_stage,
-            build_optimizer_fn=build_pv26_optimizer,
-        )
-
-    def load_model_weights(
-        self,
-        path: str | Path,
-        *,
-        map_location: str | torch.device | None = None,
-    ) -> dict[str, Any]:
-        return _checkpoint.load_model_weights(self, path, map_location=map_location)
-
-    def build_evaluator(self):
-        from .evaluator import PV26Evaluator
-
-        criterion = self.criterion
-        criterion_config = _criterion_config_from_instance(self.criterion, self.stage)
-        if criterion_config is not None:
-            criterion = PV26MultiTaskLoss(**criterion_config).to(self.device)
-        return PV26Evaluator(
-            self.adapter,
-            self.heads,
-            stage=self.stage,
-            device=self.device,
-            criterion=criterion,
-        )
-
-    def train_epoch(
-        self,
-        loader,
-        *,
-        epoch: int,
-        epoch_total: int | None = None,
-        phase_index: int | None = None,
-        phase_count: int | None = None,
-        phase_name: str | None = None,
-        max_batches: int | None = None,
-        step_log_path: str | Path | None = None,
-        log_every_n_steps: int = 1,
-        profile_window: int = 20,
-        profile_device_sync: bool = False,
-        step_history_enabled: bool = True,
-        step_history_every_n_steps: int = 100,
-        step_history_include_grad_details: bool = False,
-        pcgrad_diagnostics_path: str | Path | None = None,
-        pcgrad_diagnostics_enabled: bool = True,
-        pcgrad_aggregate_every_n_steps: int = 100,
-        pcgrad_keep_raw_every_n_steps: int = 1000,
-    ) -> dict[str, Any]:
-        return _epochs.run_train_epoch(
-            self,
-            loader,
-            epoch=epoch,
-            epoch_total=epoch_total,
-            phase_index=phase_index,
-            phase_count=phase_count,
-            phase_name=phase_name,
-            max_batches=max_batches,
-            step_log_path=str(step_log_path) if step_log_path is not None else None,
-            log_every_n_steps=log_every_n_steps,
-            profile_window=profile_window,
-            profile_device_sync=profile_device_sync,
-            step_history_enabled=step_history_enabled,
-            step_history_every_n_steps=step_history_every_n_steps,
-            step_history_include_grad_details=step_history_include_grad_details,
-            pcgrad_diagnostics_path=str(pcgrad_diagnostics_path) if pcgrad_diagnostics_path is not None else None,
-            pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
-            pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
-            pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
-        )
-
-    def validate_epoch(
-        self,
-        loader,
-        *,
-        epoch: int,
-        epoch_total: int | None = None,
-        phase_index: int | None = None,
-        phase_count: int | None = None,
-        phase_name: str | None = None,
-        evaluator=None,
-        max_batches: int | None = None,
-        log_every_n_steps: int = 1,
-        profile_window: int = 20,
-        profile_device_sync: bool = False,
-    ) -> dict[str, Any]:
-        return _epochs.run_validate_epoch(
-            self,
-            loader,
-            epoch=epoch,
-            epoch_total=epoch_total,
-            phase_index=phase_index,
-            phase_count=phase_count,
-            phase_name=phase_name,
-            evaluator=evaluator,
-            max_batches=max_batches,
-            log_every_n_steps=log_every_n_steps,
-            profile_window=profile_window,
-            profile_device_sync=profile_device_sync,
-        )
+    def _set_progress(self, total_steps: int) -> None:
+        progress = getattr(self.criterion, "set_progress", None)
+        marker = (self.global_step, total_steps)
+        if callable(progress) and self.config.stage != "roadmark" and self._progress_at != marker:
+            progress(*marker)
+            self._progress_at = marker
 
     def fit(
         self,
-        train_loader,
+        loader: Iterable[dict[str, Any]],
         *,
-        epochs: int,
-        phase_index: int | None = None,
-        phase_count: int | None = None,
-        phase_name: str | None = None,
-        val_loader=None,
-        run_dir: str | Path | None = None,
-        checkpoint_every: int = 0,
-        save_last_checkpoint: bool = False,
-        save_task_best_checkpoints: bool = False,
-        max_train_batches: int | None = None,
-        max_val_batches: int | None = None,
-        best_metric: str | None = None,
-        best_mode: str = "min",
-        auto_resume: bool = False,
-        resume_path: str | Path | None = None,
-        enable_tensorboard: bool = True,
-        selection_metric_callback: Callable[[dict[str, Any]], None] | None = None,
-        early_exit_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
-        epoch_end_callback: Callable[[dict[str, Any]], None] | None = None,
-        run_manifest_extra: dict[str, Any] | None = None,
-        log_every_n_steps: int = 1,
-        profile_window: int = 20,
-        profile_device_sync: bool = False,
-        step_history_enabled: bool = True,
-        step_history_every_n_steps: int = 100,
-        step_history_include_grad_details: bool = False,
-        pcgrad_diagnostics_enabled: bool = True,
-        pcgrad_aggregate_every_n_steps: int = 100,
-        pcgrad_keep_raw_every_n_steps: int = 1000,
+        max_steps: int,
+        planned_steps: int | None = None,
+        on_step: Callable[["FocusedTrainer", dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return _fit.run_fit(
-            self,
-            train_loader,
-            epochs=epochs,
-            phase_index=phase_index,
-            phase_count=phase_count,
-            phase_name=phase_name,
-            val_loader=val_loader,
-            run_dir=run_dir,
-            checkpoint_every=checkpoint_every,
-            save_last_checkpoint=save_last_checkpoint,
-            save_task_best_checkpoints=save_task_best_checkpoints,
-            max_train_batches=max_train_batches,
-            max_val_batches=max_val_batches,
-            best_metric=best_metric,
-            best_mode=best_mode,
-            auto_resume=auto_resume,
-            resume_path=resume_path,
-            enable_tensorboard=enable_tensorboard,
-            selection_metric_callback=selection_metric_callback,
-            early_exit_callback=early_exit_callback,
-            epoch_end_callback=epoch_end_callback,
-            run_manifest_extra=run_manifest_extra,
-            log_every_n_steps=log_every_n_steps,
-            profile_window=profile_window,
-            profile_device_sync=profile_device_sync,
-            step_history_enabled=step_history_enabled,
-            step_history_every_n_steps=step_history_every_n_steps,
-            step_history_include_grad_details=step_history_include_grad_details,
-            pcgrad_diagnostics_enabled=pcgrad_diagnostics_enabled,
-            pcgrad_aggregate_every_n_steps=pcgrad_aggregate_every_n_steps,
-            pcgrad_keep_raw_every_n_steps=pcgrad_keep_raw_every_n_steps,
-            default_run_dir_fn=_io._default_run_dir,
-            now_iso_fn=_io._now_iso,
-            write_json_fn=_io._write_json,
-            json_ready_fn=_io._json_ready,
-            maybe_build_summary_writer_fn=_io._maybe_build_summary_writer,
-            optimizer_group_hparams_fn=_optimizer_group_hparams,
-            resolve_summary_path_fn=resolve_summary_path,
-            is_better_fn=_is_better,
-            write_tensorboard_scalars_fn=_reporting._write_tensorboard_scalars,
-            write_tensorboard_histograms_fn=_reporting._write_tensorboard_histograms,
-            tensorboard_epoch_payload_fn=_reporting._tensorboard_epoch_payload,
-            run_manifest_version=RUN_MANIFEST_VERSION,
-        )
+        """Train to a completed optimizer-step count, saving at safe stop points."""
+        if max_steps < self.global_step:
+            raise ValueError("max_steps is earlier than resumed global_step")
+        planned_steps = max_steps if planned_steps is None else planned_steps
+        if planned_steps < max_steps:
+            raise ValueError("planned_steps cannot be earlier than max_steps")
+        if self.planned_steps is not None and planned_steps != self.planned_steps:
+            raise ValueError("planned_steps differs from the resumed learning schedule")
+        self.planned_steps = planned_steps
+        self._stop_requested = False
+        self.model.train()
+        self._set_progress(planned_steps)
+        if not self.latest_path.exists():
+            self.save_checkpoint()
+        previous_handlers: dict[signal.Signals, Any] = {}
 
+        def request_stop(_signum: int, _frame: Any) -> None:
+            self._stop_requested = True
 
-def run_pv26_tiny_overfit(
-    trainer: PV26Trainer,
-    batch: dict[str, Any],
-    *,
-    steps: int = 8,
-) -> dict[str, Any]:
-    if steps <= 0:
-        raise ValueError("tiny overfit requires steps > 0")
-
-    sample_ids = [str(item.get("sample_id", "unknown")) for item in batch.get("meta", [])]
-    history: list[dict[str, Any]] = []
-    for _ in range(steps):
-        history.append(trainer.train_step(batch))
-
-    total_history = [float(item["losses"]["total"]) for item in history]
-    first_total = total_history[0]
-    final_total = total_history[-1]
-    best_total = min(total_history)
-    best_step = total_history.index(best_total) + 1
-    return {
-        "stage": trainer.stage,
-        "steps": steps,
-        "sample_ids": sample_ids,
-        "history": history,
-        "first_total": first_total,
-        "final_total": final_total,
-        "best_total": best_total,
-        "best_step": best_step,
-        "improvement": first_total - best_total,
-        "improvement_ratio": (first_total - best_total) / max(first_total, 1e-12),
-    }
-
-
-__all__ = [
-    "PV26Trainer",
-    "STAGE_NAMES",
-    "TIMING_KEYS",
-    "TENSORBOARD_LOSS_KEYS",
-    "build_pv26_optimizer",
-    "build_pv26_scheduler",
-    "configure_pv26_train_stage",
-    "run_pv26_tiny_overfit",
-]
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_stop)
+        try:
+            iterator = iter(loader)
+            while self.global_step < max_steps and not self._stop_requested:
+                batch = next(iterator)
+                self.model.train()
+                completed = self.train_batch(batch)
+                if completed:
+                    self._set_progress(planned_steps)
+                if completed and on_step is not None:
+                    on_step(self, {
+                        "global_step": self.global_step,
+                        "sampler_position": int(self.sampler.position),
+                        "microbatch_size": self.microbatch_size,
+                        "skipped_updates": self.skipped_updates,
+                        "oom_retries": self.oom_retries,
+                        "losses": dict(self.last_step_losses),
+                    })
+                if self._stop_requested:
+                    break
+            if not self._unsafe_state and self.consecutive_failures == 0:
+                if self._last_saved_position != int(self.sampler.position):
+                    self.save_checkpoint()
+            return {
+                "global_step": self.global_step,
+                "skipped_updates": self.skipped_updates,
+                "oom_retries": self.oom_retries,
+                "stopped_by_signal": self._stop_requested,
+                "latest_checkpoint": str(self.latest_path),
+                "best_weights": str(self.best_path) if self.best_path.is_file() else None,
+                "microbatch_size": self.microbatch_size,
+            }
+        finally:
+            for signum, previous in previous_handlers.items():
+                signal.signal(signum, previous)

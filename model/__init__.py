@@ -1,1 +1,1 @@
-"""PV26 project package."""
+"""YOLOPV26 signal and roadmark perception."""

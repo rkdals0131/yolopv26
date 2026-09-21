@@ -1,1281 +1,365 @@
+"""Read-only snapshot of focused PV26 inputs, runs, and host resources."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-import importlib
+import csv
+import fcntl
 import json
+import os
 from pathlib import Path
+import platform
+import shutil
+import subprocess
 import sys
+from importlib import metadata
 from typing import Any
 
-from common.io import read_json
-from common.user_config import (
-    USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH,
-    USER_PATHS_CONFIG_PATH,
-    USER_PV26_TRAIN_HYPERPARAMETERS_CONFIG_PATH,
-    load_user_paths_config,
-    nested_get,
-    resolve_repo_path,
-)
-from tools.model_export import artifact_paths_for_checkpoint
-from tools.od_bootstrap.build.exhaustive_od import (
-    EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
-    EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME,
-)
-from tools.od_bootstrap.build.final_dataset import (
-    FINAL_DATASET_MANIFEST_NAME,
-    FINAL_DATASET_PUBLISH_MARKER,
-    FINAL_DATASET_RERUN_MODE,
-    FINAL_DATASET_SUMMARY_NAME,
-)
-from tools.od_bootstrap.build.final_dataset_stats import FINAL_DATASET_STATS_NAME
-from tools.od_bootstrap.presets import (
-    build_calibration_preset,
-    build_default_source_preset,
-    build_final_dataset_preset,
-    build_sweep_preset,
-    build_teacher_dataset_preset,
-    build_teacher_eval_preset,
-)
-from tools.od_bootstrap.teacher.registry import (
-    ALL_TEACHER_NAMES,
-    OD_TEACHER_NAMES,
-    legacy_stage_flag,
-    teacher_checkpoint_path,
-    teacher_definition,
-    teacher_eval_summary_path,
-    teacher_train_summary_path,
-)
-from tools.od_bootstrap.source.constants import (
-    AIHUB_LANE_DIRNAME,
-    AIHUB_OBSTACLE_DIRNAME,
-    AIHUB_TRAFFIC_DIRNAME,
-)
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEACHER_NAMES = OD_TEACHER_NAMES
-STAGE_ICON = {
-    "OK": "✅",
-    "WARN": "⚠️",
-    "TODO": "🟡",
-    "FAIL": "❌",
+_PRUNED_DIRS = {
+    "images", "labels", "checkpoints", "data_snapshot", "meta", "overlays",
+    "inference", "export", "logs", "cache", "__pycache__",
 }
+_VERSION_PACKAGES = (
+    "torch", "torchvision", "ultralytics", "numpy", "scipy", "Pillow", "PyYAML", "rich",
+)
 
 
-@dataclass(frozen=True)
-class PipelinePaths:
-    repo_root: Path
-    raw_bdd_root: Path
-    raw_aihub_root: Path
-    bootstrap_root: Path
-    teacher_dataset_root: Path
-    teacher_train_root: Path
-    teacher_eval_root: Path
-    calibration_root: Path
-    exhaustive_run_root: Path
-    exhaustive_dataset_root: Path
-    final_dataset_root: Path
-    pv26_run_root: Path
-    user_paths_config_path: Path
-    od_hyperparameters_config_path: Path
-    pv26_hyperparameters_config_path: Path
-    raw_bdd_images_root: Path | None = None
-    raw_bdd_labels_root: Path | None = None
-    raw_aihub_lane_root: Path | None = None
-    raw_aihub_obstacle_root: Path | None = None
-    raw_aihub_traffic_root: Path | None = None
-    raw_aihub_docs_root: Path | None = None
+def _path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    return (path if path.is_absolute() else REPO_ROOT / path).resolve()
 
 
-@dataclass(frozen=True)
-class StageRow:
-    stage: str
-    success_condition: str
-    current_state: str
-    verdict: str
-
-
-@dataclass(frozen=True)
-class WorkspaceSnapshot:
-    paths: PipelinePaths
-    rows: tuple[StageRow, ...]
-    flags: dict[str, bool]
-    recommendation: str
-    notes: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ResumeCandidate:
-    run_dir: Path
-    run_name: str
-    status: str
-    completed_phases: int
-    total_phases: int
-    next_phase_name: str
-    next_phase_stage: str
-    resume_source: str
-    updated_at: str | None
-
-
-@dataclass(frozen=True)
-class RetrainCandidate:
-    run_dir: Path
-    run_name: str
-    status: str
-    latest_phase_name: str | None
-    latest_phase_stage: str | None
-    completed_phases: int
-    total_executable_phases: int
-    available_seed_stages: tuple[str, ...]
-    updated_at: str | None
-
-
-@dataclass(frozen=True)
-class Pv26ExportCandidate:
-    run_dir: Path
-    run_name: str
-    checkpoint_path: Path
-    artifact_path: Path
-    meta_path: Path
-    status: str
-    latest_phase_stage: str | None
-    latest_selection_metric_path: str | None
-    latest_backbone_variant: str | None
-    updated_at: str | None
-
-
-def _module_version(name: str) -> str | None:
-    try:
-        module = importlib.import_module(name)
-    except Exception:
-        return None
-    return getattr(module, "__version__", None)
-
-
-def _check_torchvision_nms() -> dict[str, Any]:
-    result = {
-        "importable": False,
-        "callable": False,
-        "error": None,
-        "fallback_available": True,
-    }
-    try:
-        import torch
-        from torchvision.ops import nms
-
-        result["importable"] = True
-        boxes = torch.tensor([[0.0, 0.0, 10.0, 10.0], [1.0, 1.0, 9.0, 9.0]], dtype=torch.float32)
-        scores = torch.tensor([0.9, 0.8], dtype=torch.float32)
-        keep = nms(boxes, scores, 0.5)
-        result["callable"] = bool(keep.numel() >= 1)
-    except Exception as exc:
-        result["error"] = str(exc)
-    return result
-
-
-def _check_yolo26(check_runtime: bool) -> dict[str, Any]:
-    result = {
-        "importable": False,
-        "supported": False,
-        "version": None,
-        "runtime_load_ok": None,
-        "runtime_source_indices": None,
-        "runtime_source_strides": None,
-        "runtime_feature_channels": None,
-        "error": None,
-    }
-    try:
-        from model.net.trunk import (
-            ULTRALYTICS_VERSION,
-            build_yolo26_roadmark_trunk,
-            ensure_yolo26_support,
-        )
-
-        result["importable"] = True
-        result["version"] = ULTRALYTICS_VERSION
-        ensure_yolo26_support()
-        result["supported"] = True
-        if check_runtime:
-            adapter = build_yolo26_roadmark_trunk()
-            source_indices = tuple(int(value) for value in getattr(adapter, "feature_source_indices", ()))
-            source_strides = tuple(int(value) for value in getattr(adapter, "feature_source_strides", ()))
-            feature_channels = tuple(int(value) for value in getattr(adapter, "resolved_feature_channels", ()))
-            result["runtime_source_indices"] = list(source_indices)
-            result["runtime_source_strides"] = list(source_strides)
-            result["runtime_feature_channels"] = list(feature_channels)
-            result["runtime_load_ok"] = bool(
-                adapter.detect_head is not None
-                and len(source_indices) == 4
-                and len(source_strides) == 4
-                and len(feature_channels) == 4
-            )
-    except Exception as exc:
-        result["error"] = str(exc)
-        if result["runtime_load_ok"] is None:
-            result["runtime_load_ok"] = False
-    return result
-
-
-def check_env(*, check_yolo_runtime: bool = False) -> dict[str, Any]:
-    return {
-        "repo_root": str(REPO_ROOT),
-        "python": sys.version.split()[0],
-        "versions": {
-            "torch": _module_version("torch"),
-            "torchvision": _module_version("torchvision"),
-            "ultralytics": _module_version("ultralytics"),
-            "numpy": _module_version("numpy"),
-            "scipy": _module_version("scipy"),
-            "PIL": _module_version("PIL"),
-        },
-        "checks": {
-            "torchvision_nms": _check_torchvision_nms(),
-            "yolo26": _check_yolo26(check_yolo_runtime),
-        },
-    }
-
-
-def _json_load(path: Path) -> dict[str, Any]:
-    payload = read_json(path)
-    if not isinstance(payload, dict):
-        raise TypeError(f"JSON root must be an object: {path}")
-    return payload
-
-
-def _json_load_if_exists(path: Path) -> dict[str, Any] | None:
+def _read_json(path: Path, errors: list[str], *, strict: bool = False,
+               required: bool = False) -> dict[str, Any]:
     if not path.is_file():
-        return None
-    return _json_load(path)
-
-
-def _manifest_header(path: Path, *, array_key: str = "samples", max_bytes: int = 4_000_000) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
-    marker = f'"{array_key}": ['.encode("ascii")
-    buffer = bytearray()
-    with path.open("rb") as handle:
-        while len(buffer) < max_bytes:
-            chunk = handle.read(min(65_536, max_bytes - len(buffer)))
-            if not chunk:
-                break
-            buffer.extend(chunk)
-            marker_index = bytes(buffer).find(marker)
-            if marker_index == -1:
-                continue
-            prefix = bytes(buffer[:marker_index]).decode("ascii")
-            trimmed = prefix.rstrip()
-            if trimmed.endswith(","):
-                trimmed = trimmed[:-1]
-            return json.loads(trimmed + "\n}\n")
-    return None
-
-
-def _compact_or_manifest(
-    *,
-    summary_path: Path,
-    manifest_path: Path,
-    array_key: str = "samples",
-) -> dict[str, Any] | None:
-    summary = _json_load_if_exists(summary_path)
-    if summary is not None:
-        return summary
-    header = _manifest_header(manifest_path, array_key=array_key)
-    if header is not None:
-        return header
-    return _json_load_if_exists(manifest_path)
-
-
-def _safe_int(value: Any) -> int:
+        if required:
+            if strict:
+                raise FileNotFoundError(path)
+            errors.append(f"{path}: 설정 파일을 찾을 수 없음")
+        return {}
     try:
-        return int(value)
+        with path.open(encoding="utf-8") as stream:
+            value = json.load(stream)
+        if not isinstance(value, dict):
+            raise ValueError("metadata JSON must be an object")
+        return value
+    except (OSError, ValueError, UnicodeError) as exc:
+        if strict:
+            raise ValueError(f"{path}: {exc}") from exc
+        errors.append(f"{path}: {exc}")
+        return {}
+
+
+def _read_yaml(path: Path, errors: list[str]) -> dict[str, Any]:
+    try:
+        with path.open(encoding="utf-8") as stream:
+            value = yaml.safe_load(stream)
+        if not isinstance(value, dict):
+            raise ValueError("YAML root must be an object")
+        return value
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        errors.append(f"{path}: {exc}")
+        return {}
+
+
+def _integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value) if value is not None else None
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
-def _sum_inventory_splits(payload: dict[str, Any]) -> int:
-    total = 0
-    for split_payload in payload.values():
-        if not isinstance(split_payload, dict):
-            continue
-        if "json_files" in split_payload:
-            total += _safe_int(split_payload.get("json_files"))
-            continue
-        if "raw_images" in split_payload:
-            total += _safe_int(split_payload.get("raw_images"))
-            continue
-        if "images" in split_payload:
-            total += _safe_int(split_payload.get("images"))
-    return total
-
-
-def _resolve_pipeline_paths() -> PipelinePaths:
-    source_preset = build_default_source_preset()
-    teacher_dataset_preset = build_teacher_dataset_preset()
-    calibration_preset = build_calibration_preset()
-    sweep_preset = build_sweep_preset(allow_default_class_policy=True)
-    final_preset = build_final_dataset_preset()
-    teacher_eval_preset = build_teacher_eval_preset("mobility")
-    user_paths = load_user_paths_config()
-    pv26_run_root = resolve_repo_path(
-        nested_get(user_paths, "pv26_train", "run_root"),
-        repo_root=REPO_ROOT,
-    ) or (REPO_ROOT / "runs" / "pv26_exhaustive_od_lane_train").resolve()
-    source_roots = source_preset.roots
-    raw_bdd_root = source_roots.bdd_root.resolve()
-    raw_aihub_root = source_roots.aihub_root.resolve()
-    raw_bdd_images_root = getattr(source_roots, "bdd_images_root", raw_bdd_root / "bdd100k_images_100k" / "100k")
-    raw_bdd_labels_root = getattr(source_roots, "bdd_labels_root", raw_bdd_root / "bdd100k_labels" / "100k")
-    raw_aihub_lane_root = getattr(source_roots, "aihub_lane_root", None) or (raw_aihub_root / AIHUB_LANE_DIRNAME)
-    raw_aihub_obstacle_root = getattr(source_roots, "aihub_obstacle_root", None) or (raw_aihub_root / AIHUB_OBSTACLE_DIRNAME)
-    raw_aihub_traffic_root = getattr(source_roots, "aihub_traffic_root", None) or (raw_aihub_root / AIHUB_TRAFFIC_DIRNAME)
-    raw_aihub_docs_root = getattr(source_roots, "aihub_docs_root", None) or (raw_aihub_root / "docs")
-    return PipelinePaths(
-        repo_root=REPO_ROOT,
-        raw_bdd_root=raw_bdd_root,
-        raw_aihub_root=raw_aihub_root,
-        bootstrap_root=source_preset.output_root.resolve(),
-        teacher_dataset_root=teacher_dataset_preset.output_root.resolve(),
-        teacher_train_root=Path(calibration_preset.teachers[0].checkpoint_path).resolve().parents[2],
-        teacher_eval_root=Path(teacher_eval_preset.run.output_root).resolve(),
-        calibration_root=Path(calibration_preset.run.output_root).resolve(),
-        exhaustive_run_root=Path(sweep_preset.run.output_root).resolve(),
-        exhaustive_dataset_root=Path(sweep_preset.materialization.output_root).resolve(),
-        final_dataset_root=Path(final_preset.output_root).resolve(),
-        pv26_run_root=pv26_run_root.resolve(),
-        user_paths_config_path=USER_PATHS_CONFIG_PATH.resolve(),
-        od_hyperparameters_config_path=USER_OD_BOOTSTRAP_HYPERPARAMETERS_CONFIG_PATH.resolve(),
-        pv26_hyperparameters_config_path=USER_PV26_TRAIN_HYPERPARAMETERS_CONFIG_PATH.resolve(),
-        raw_bdd_images_root=raw_bdd_images_root.resolve(),
-        raw_bdd_labels_root=raw_bdd_labels_root.resolve(),
-        raw_aihub_lane_root=raw_aihub_lane_root.resolve(),
-        raw_aihub_obstacle_root=raw_aihub_obstacle_root.resolve(),
-        raw_aihub_traffic_root=raw_aihub_traffic_root.resolve(),
-        raw_aihub_docs_root=raw_aihub_docs_root.resolve(),
-    )
-
-
-def _latest_child_with_meta(root: Path, relative_paths: tuple[str, ...]) -> tuple[Path | None, Path | None]:
-    if not root.is_dir():
-        return None, None
-    candidates = sorted((child for child in root.iterdir() if child.is_dir()), key=lambda item: item.name)
-    for child in reversed(candidates):
-        for relative in relative_paths:
-            candidate = child / relative
-            if candidate.is_file():
-                return child, candidate
-    return None, None
-
-
-def _teacher_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
-    meta_root = dataset_root / "meta"
-    return _compact_or_manifest(
-        summary_path=meta_root / "teacher_dataset_summary.json",
-        manifest_path=meta_root / "teacher_dataset_manifest.json",
-    )
-
-
-def _signal_attr_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
-    return _json_load_if_exists(dataset_root / "meta" / "signal_attr_dataset_manifest.json")
-
-
-def _exhaustive_summary(dataset_root: Path) -> dict[str, Any] | None:
-    meta_root = dataset_root / "meta"
-    return _compact_or_manifest(
-        summary_path=meta_root / EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME,
-        manifest_path=meta_root / EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME,
-    )
-
-
-def _final_dataset_summary(dataset_root: Path) -> dict[str, Any] | None:
-    meta_root = dataset_root / "meta"
-    return _compact_or_manifest(
-        summary_path=meta_root / FINAL_DATASET_SUMMARY_NAME,
-        manifest_path=meta_root / FINAL_DATASET_MANIFEST_NAME,
-    )
-
-
-def _final_dataset_stats(dataset_root: Path) -> dict[str, Any] | None:
-    return _json_load_if_exists(dataset_root / "meta" / FINAL_DATASET_STATS_NAME)
-
-
-def _final_dataset_publish_marker(dataset_root: Path) -> dict[str, Any] | None:
-    return _json_load_if_exists(dataset_root / "meta" / FINAL_DATASET_PUBLISH_MARKER)
-
-
-def _final_dataset_staging_roots(dataset_root: Path) -> list[Path]:
-    parent = dataset_root.parent
-    if not parent.is_dir():
-        return []
-    prefix = f".{dataset_root.name}.staging."
-    return sorted(
-        [
-            child
-            for child in parent.iterdir()
-            if child.is_dir() and child.name.startswith(prefix)
-        ],
-        key=lambda item: item.name,
-    )
-
-
-def _build_runtime_row(report: dict[str, Any]) -> tuple[StageRow, dict[str, bool]]:
-    versions = report["versions"]
-    checks = report["checks"]
-    nms_ok = checks["torchvision_nms"]["callable"] is True
-    core_ready = versions["torch"] is not None and versions["ultralytics"] is not None and nms_ok
-    yolo_ok = checks["yolo26"]["importable"] is True and checks["yolo26"]["runtime_load_ok"] is True
-    state = (
-        f"torch={versions['torch'] or 'missing'} | "
-        f"torchvision={versions['torchvision'] or 'missing'} | "
-        f"ultralytics={versions['ultralytics'] or 'missing'} | "
-        f"NMS={'OK' if nms_ok else 'X'} | "
-        f"YOLO26 runtime={'OK' if yolo_ok else 'X'}"
-    )
-    verdict = "OK" if core_ready and yolo_ok else ("FAIL" if not core_ready else "WARN")
-    return (
-        StageRow(
-            stage="환경 런타임",
-            success_condition="torch/ultralytics, torchvision NMS, YOLO26 runtime이 현재 환경에서 모두 동작",
-            current_state=state,
-            verdict=verdict,
-        ),
-        {
-            "runtime_core": core_ready,
-            "pv26_runtime": core_ready and yolo_ok,
-        },
-    )
-
-
-def _build_raw_roots_row(paths: PipelinePaths, counts: dict[str, int]) -> tuple[StageRow, dict[str, bool]]:
-    bdd_exists = paths.raw_bdd_root.is_dir()
-    aihub_exists = paths.raw_aihub_root.is_dir()
-    bdd_images_exists = paths.raw_bdd_images_root.is_dir() if paths.raw_bdd_images_root is not None else bdd_exists
-    bdd_labels_exists = paths.raw_bdd_labels_root.is_dir() if paths.raw_bdd_labels_root is not None else bdd_exists
-    lane_exists = paths.raw_aihub_lane_root.is_dir() if paths.raw_aihub_lane_root is not None else aihub_exists
-    obstacle_exists = paths.raw_aihub_obstacle_root.is_dir() if paths.raw_aihub_obstacle_root is not None else aihub_exists
-    traffic_exists = paths.raw_aihub_traffic_root.is_dir() if paths.raw_aihub_traffic_root is not None else aihub_exists
-    docs_exists = paths.raw_aihub_docs_root.is_dir() if paths.raw_aihub_docs_root is not None else aihub_exists
-    required_ready = (
-        bdd_exists
-        and bdd_images_exists
-        and bdd_labels_exists
-        and aihub_exists
-        and lane_exists
-        and obstacle_exists
-        and traffic_exists
-    )
-    any_present = any(
-        (
-            bdd_exists,
-            bdd_images_exists,
-            bdd_labels_exists,
-            aihub_exists,
-            lane_exists,
-            obstacle_exists,
-            traffic_exists,
-            docs_exists,
-        )
-    )
-    verdict = "OK" if required_ready else ("WARN" if any_present else "FAIL")
-    state = (
-        f"BDD root={'O' if bdd_exists else 'X'} images={'O' if bdd_images_exists else 'X'} labels={'O' if bdd_labels_exists else 'X'} | "
-        f"AIHUB root={'O' if aihub_exists else 'X'} lane={'O' if lane_exists else 'X'} "
-        f"obstacle={'O' if obstacle_exists else 'X'} traffic={'O' if traffic_exists else 'X'} docs={'O' if docs_exists else 'X'} | "
-        f"raw BDD={counts.get('bdd_raw', 0)} | "
-        f"lane={counts.get('lane_raw', 0)} | "
-        f"traffic={counts.get('traffic_raw', 0)} | "
-        f"obstacle={counts.get('obstacle_raw', 0)}"
-    )
-    return (
-        StageRow(
-            stage="원본 데이터",
-            success_condition="현재 config 기준 BDD100K image/label root와 AIHUB lane/obstacle/traffic root가 모두 존재",
-            current_state=state,
-            verdict=verdict,
-        ),
-        {
-            "raw_roots": required_ready,
-        },
-    )
-
-
-def _collect_source_counts(paths: PipelinePaths) -> dict[str, int]:
-    counts = {
-        "bdd_raw": 0,
-        "bdd_processed": 0,
-        "lane_raw": 0,
-        "lane_processed": 0,
-        "traffic_raw": 0,
-        "traffic_processed": 0,
-        "obstacle_raw": 0,
-        "obstacle_processed": 0,
+def _environment() -> dict[str, Any]:
+    versions: dict[str, str | None] = {}
+    for package in _VERSION_PACKAGES:
+        try:
+            versions[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[package] = None
+    result: dict[str, Any] = {
+        "python": f"{sys.executable} (Python {platform.python_version()})",
+        "versions": versions,
+        "gpus": [],
     }
-    bdd_report = _json_load_if_exists(paths.bootstrap_root / "canonical" / "bdd100k_det_100k" / "meta" / "conversion_report.json")
-    if bdd_report is not None:
-        dataset = bdd_report.get("dataset", {})
-        counts["bdd_processed"] = _safe_int(dataset.get("processed_samples"))
-        source_snapshot = bdd_report.get("source_inventory_snapshot", {}).get("dataset", {})
-        local_inventory = source_snapshot.get("local_inventory", {})
-        counts["bdd_raw"] = _sum_inventory_splits(local_inventory.get("splits", {}))
-
-    aihub_report = _json_load_if_exists(paths.bootstrap_root / "canonical" / "aihub_standardized" / "meta" / "conversion_report.json")
-    if aihub_report is not None:
-        datasets = aihub_report.get("datasets", [])
-        for dataset in datasets:
-            if not isinstance(dataset, dict):
-                continue
-            dataset_key = str(dataset.get("dataset_key"))
-            if dataset_key == "aihub_lane_seoul":
-                counts["lane_processed"] = _safe_int(dataset.get("processed_samples"))
-            elif dataset_key == "aihub_traffic_seoul":
-                counts["traffic_processed"] = _safe_int(dataset.get("processed_samples"))
-            elif dataset_key == "aihub_obstacle_seoul":
-                counts["obstacle_processed"] = _safe_int(dataset.get("processed_samples"))
-
-    aihub_inventory = _json_load_if_exists(paths.bootstrap_root / "canonical" / "aihub_standardized" / "meta" / "source_inventory.json")
-    if aihub_inventory is not None:
-        for dataset in aihub_inventory.get("datasets", []):
-            if not isinstance(dataset, dict):
-                continue
-            dataset_key = str(dataset.get("dataset_key"))
-            local_inventory = dataset.get("local_inventory", {})
-            total = _sum_inventory_splits(local_inventory.get("splits", {}))
-            if dataset_key == "aihub_lane_seoul":
-                counts["lane_raw"] = total
-            elif dataset_key == "aihub_traffic_seoul":
-                counts["traffic_raw"] = total
-            elif dataset_key == "aihub_obstacle_seoul":
-                counts["obstacle_raw"] = total
-
-    if counts["bdd_raw"] == 0:
-        bdd_inventory = _json_load_if_exists(paths.bootstrap_root / "canonical" / "bdd100k_det_100k" / "meta" / "source_inventory.json")
-        if bdd_inventory is not None:
-            local_inventory = bdd_inventory.get("dataset", {}).get("local_inventory", {})
-            counts["bdd_raw"] = _sum_inventory_splits(local_inventory.get("splits", {}))
-
-    return counts
-
-
-def _build_source_prep_row(paths: PipelinePaths, counts: dict[str, int]) -> tuple[StageRow, dict[str, bool]]:
-    manifest_path = paths.bootstrap_root / "meta" / "source_prep_manifest.json"
-    image_list_path = paths.bootstrap_root / "meta" / "bootstrap_image_list.jsonl"
-    bdd_report_ok = (paths.bootstrap_root / "canonical" / "bdd100k_det_100k" / "meta" / "conversion_report.json").is_file()
-    aihub_report_ok = (paths.bootstrap_root / "canonical" / "aihub_standardized" / "meta" / "conversion_report.json").is_file()
-    bootstrap_total = counts["bdd_processed"] + counts["traffic_processed"] + counts["obstacle_processed"]
-    bootstrap_raw = counts["bdd_raw"] + counts["traffic_raw"] + counts["obstacle_raw"]
-    lane_text = f"lane {counts['lane_processed']}/{counts['lane_raw']}" if counts["lane_raw"] else f"lane {counts['lane_processed']}"
-    current_state = (
-        f"bootstrap {bootstrap_total}/{bootstrap_raw or bootstrap_total} | "
-        f"{lane_text} | "
-        f"image_list={'O' if image_list_path.is_file() else 'X'}"
-    )
-    has_any = manifest_path.is_file() or image_list_path.is_file() or bdd_report_ok or aihub_report_ok
-    ready = manifest_path.is_file() and image_list_path.is_file() and bdd_report_ok and aihub_report_ok and bootstrap_total > 0
-    verdict = "OK" if ready else ("WARN" if has_any else "TODO")
-    return (
-        StageRow(
-            stage="소스 준비 / canonical",
-            success_condition="source_prep manifest, canonical report, bootstrap image list가 모두 준비",
-            current_state=current_state,
-            verdict=verdict,
-        ),
-        {
-            "source_prep": ready,
-            "lane_canonical": counts["lane_processed"] > 0,
-            "bootstrap_image_count": bootstrap_total,
-        },
-    )
-
-
-def _teacher_stage_state(prefix: str, root: Path, *, summary_name: str | None = None) -> tuple[str, bool, dict[str, bool]]:
-    ready_map: dict[str, bool] = {}
-    parts: list[str] = []
-    done = 0
-    for teacher_name in ALL_TEACHER_NAMES:
-        definition = teacher_definition(teacher_name)
-        ready = False
-        if summary_name == "dataset":
-            if definition.kind == "signal_attr":
-                summary = _signal_attr_dataset_summary(root / teacher_name)
-                if summary is not None:
-                    accepted_count = _safe_int(summary.get("accepted_count"))
-                    rejected_count = _safe_int(summary.get("rejected_count"))
-                    status = str(summary.get("status") or "unknown")
-                    ready = status == "ready" and accepted_count > 0
-                    parts.append(
-                        f"{teacher_name} {accepted_count}"
-                        if ready
-                        else f"{teacher_name} status={status} accepted={accepted_count} rejected={rejected_count}"
-                    )
-            else:
-                summary = _teacher_dataset_summary(root / teacher_name)
-                if summary is not None and _safe_int(summary.get("sample_count")) > 0:
-                    ready = True
-                    parts.append(f"{teacher_name} {_safe_int(summary.get('sample_count'))}")
-        elif summary_name == "train":
-            run_root = root / teacher_name
-            checkpoint_path = teacher_checkpoint_path(root, teacher_name)
-            run_summary_path = teacher_train_summary_path(root, teacher_name)
-            ready = checkpoint_path.is_file() and run_summary_path.is_file()
-            if ready:
-                parts.append(teacher_name)
-            elif run_root.is_dir() and any(run_root.iterdir()):
-                parts.append(f"{teacher_name} incomplete")
-        elif summary_name == "eval":
-            eval_summary = _json_load_if_exists(teacher_eval_summary_path(root, teacher_name))
-            ready = eval_summary is not None
-            if definition.kind == "signal_attr":
-                if eval_summary is not None:
-                    sample_count = _safe_int(eval_summary.get("sample_count"))
-                    valid_count = _safe_int(eval_summary.get("valid_prediction_count"))
-                    ready = sample_count > 0 and valid_count > 0
-                    parts.append(
-                        f"{teacher_name} {sample_count}"
-                        if ready
-                        else f"{teacher_name} samples={sample_count} valid={valid_count}"
-                    )
-                elif (root / teacher_name).is_dir() and any((root / teacher_name).iterdir()):
-                    parts.append(f"{teacher_name} incomplete")
-            elif ready:
-                prediction_summary = eval_summary.get("prediction_summary", {})
-                parts.append(f"{teacher_name} {_safe_int(prediction_summary.get('sample_count'))}")
-        ready_map[f"{prefix}.{teacher_name}"] = ready
-        legacy_flag = legacy_stage_flag(str(summary_name), teacher_name) if summary_name in {"dataset", "train", "eval"} else None
-        if legacy_flag is not None:
-            ready_map[legacy_flag] = ready
-        done += int(ready)
-    detail = " | ".join(parts) if parts else "없음"
-    total = len(ALL_TEACHER_NAMES)
-    return f"{done}/{total} 완료 | {detail}", done == total, ready_map
-
-
-def _build_teacher_rows(paths: PipelinePaths) -> tuple[tuple[StageRow, StageRow, StageRow], dict[str, bool]]:
-    dataset_state, dataset_ready, dataset_map = _teacher_stage_state(
-        "teacher_dataset",
-        paths.teacher_dataset_root,
-        summary_name="dataset",
-    )
-    train_state, train_ready, train_map = _teacher_stage_state(
-        "teacher_train",
-        paths.teacher_train_root,
-        summary_name="train",
-    )
-    eval_state, eval_ready, eval_map = _teacher_stage_state(
-        "teacher_eval",
-        paths.teacher_eval_root,
-        summary_name="eval",
-    )
-    rows = (
-        StageRow(
-            stage="Teacher dataset",
-            success_condition="teacher 4종(mobility / signal / signal_attr / obstacle) dataset이 모두 생성",
-            current_state=dataset_state,
-            verdict="OK" if dataset_ready else ("WARN" if any(dataset_map.values()) else "TODO"),
-        ),
-        StageRow(
-            stage="Teacher 학습",
-            success_condition="teacher 4종의 best checkpoint와 train summary가 모두 존재",
-            current_state=train_state,
-            verdict="OK" if train_ready else ("WARN" if any(train_map.values()) else "TODO"),
-        ),
-        StageRow(
-            stage="Teacher 평가",
-            success_condition="teacher 4종의 eval summary/report가 모두 존재",
-            current_state=eval_state,
-            verdict="OK" if eval_ready else ("WARN" if any(eval_map.values()) else "TODO"),
-        ),
-    )
-    flags = {"teacher_datasets": dataset_ready, "teacher_trains": train_ready, "teacher_evals": eval_ready}
-    flags.update(dataset_map)
-    flags.update(train_map)
-    flags.update(eval_map)
-    return rows, flags
-
-
-def _build_calibration_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
-    report_path = paths.calibration_root / "calibration_report.json"
-    policy_path = paths.calibration_root / "class_policy.yaml"
-    hard_negative_path = paths.calibration_root / "hard_negative_manifest.json"
-    report = _json_load_if_exists(report_path)
-    class_ok = 0
-    class_total = 0
-    teacher_parts: list[str] = []
-    if report is not None:
-        class_payload = report.get("classes", {})
-        if isinstance(class_payload, dict):
-            class_total = len(class_payload)
-            class_ok = sum(1 for item in class_payload.values() if isinstance(item, dict) and item.get("meets_precision_floor") is True)
-        for teacher in report.get("teachers", []):
-            if not isinstance(teacher, dict):
-                continue
-            teacher_parts.append(f"{teacher.get('teacher_name')} {_safe_int(teacher.get('sample_count'))}")
-    current_state = (
-        f"class {class_ok}/{class_total or 7} precision OK | "
-        f"policy={'O' if policy_path.is_file() else 'X'} | "
-        f"hard-negative={'O' if hard_negative_path.is_file() else 'X'}"
-    )
-    if teacher_parts:
-        current_state += f" | {' / '.join(teacher_parts)}"
-    ready = report is not None and policy_path.is_file() and hard_negative_path.is_file()
-    has_any = report is not None or policy_path.is_file() or hard_negative_path.is_file()
-    verdict = "OK" if ready else ("WARN" if has_any else "TODO")
-    return (
-        StageRow(
-            stage="Calibration",
-            success_condition="class policy, calibration report, hard-negative manifest가 모두 준비",
-            current_state=current_state,
-            verdict=verdict,
-        ),
-        {
-            "calibration": ready,
-        },
-    )
-
-
-def _build_exhaustive_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
-    dataset_dir, _ = _latest_child_with_meta(
-        paths.exhaustive_dataset_root,
-        (
-            f"meta/{EXHAUSTIVE_MATERIALIZATION_SUMMARY_NAME}",
-            f"meta/{EXHAUSTIVE_MATERIALIZATION_MANIFEST_NAME}",
-        ),
-    )
-    summary = _exhaustive_summary(dataset_dir) if dataset_dir is not None else None
-    if dataset_dir is not None and summary is not None:
-        run_id = str(summary.get("run_id") or dataset_dir.name)
-        sample_count = _safe_int(summary.get("sample_count"))
-        current_state = f"latest={run_id} | samples={sample_count}"
-        verdict = "OK"
-        ready = True
-    else:
-        has_any = paths.exhaustive_dataset_root.is_dir() and any(paths.exhaustive_dataset_root.iterdir())
-        current_state = "없음" if not has_any else "run 디렉터리는 있지만 manifest를 못 찾음"
-        verdict = "WARN" if has_any else "TODO"
-        ready = False
-    return (
-        StageRow(
-            stage="Exhaustive OD",
-            success_condition="최신 run의 `materialization_manifest` 또는 summary가 존재",
-            current_state=current_state,
-            verdict=verdict,
-        ),
-        {
-            "exhaustive": ready,
-        },
-    )
-
-
-def _build_final_dataset_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
-    summary = _final_dataset_summary(paths.final_dataset_root)
-    stats = _final_dataset_stats(paths.final_dataset_root)
-    marker = _final_dataset_publish_marker(paths.final_dataset_root)
-    staging_roots = _final_dataset_staging_roots(paths.final_dataset_root)
-    manifest_path = paths.final_dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
-    if summary is not None:
-        sample_count = _safe_int(summary.get("sample_count"))
-        dataset_counts = summary.get("dataset_counts", {})
-        state = f"samples={sample_count}"
-        if isinstance(dataset_counts, dict) and dataset_counts:
-            state += " | " + ", ".join(f"{key}={_safe_int(value)}" for key, value in sorted(dataset_counts.items()))
-        verdict = "OK"
-        if isinstance(stats, dict):
-            detector = stats.get("detector", {})
-            detector_classes = detector.get("classes", {}) if isinstance(detector, dict) else {}
-            traffic_light = detector_classes.get("traffic_light", {}) if isinstance(detector_classes, dict) else {}
-            tl_val = _safe_int(traffic_light.get("split_image_counts", {}).get("val")) if isinstance(traffic_light, dict) else 0
-            presence_counts = stats.get("presence_counts", {}) if isinstance(stats.get("presence_counts"), dict) else {}
-            det_images = _safe_int(presence_counts.get("det"))
-            audit = stats.get("audit", {}) if isinstance(stats.get("audit"), dict) else {}
-            warnings = [str(item) for item in stats.get("warnings", [])] if isinstance(stats.get("warnings"), list) else []
-            state += f" | det_images={det_images} | tl_val={tl_val}"
-            if audit:
-                det_present = _safe_int(audit.get("manifest_det_path_present_count"))
-                scene_invalid = _safe_int(audit.get("manifest_scene_path_invalid_count"))
-                state += f" | det_paths={det_present} | stale_scene_paths={scene_invalid}"
-            if warnings:
-                state += " | warnings=" + ",".join(warnings[:3])
-            if warnings:
-                verdict = "WARN"
-        rerun_mode = None
-        if isinstance(marker, dict):
-            rerun_mode = str(marker.get("rerun_mode") or "").strip() or None
-        if rerun_mode is None:
-            rerun_mode = str(summary.get("rerun_mode") or "").strip() or None
-        if rerun_mode:
-            state += f" | rerun={rerun_mode}"
-        if isinstance(marker, dict):
-            status = str(marker.get("status") or "").strip()
-            if status:
-                state += f" | publish={status}"
-        ready = True
-    else:
-        has_any = manifest_path.exists()
-        if not has_any and paths.final_dataset_root.is_dir():
-            has_any = any(paths.final_dataset_root.iterdir())
-        if staging_roots:
-            state = f"staging leftover={len(staging_roots)} | final root 미완성"
-            verdict = "WARN"
-        else:
-            state = "없음" if not has_any else "meta는 일부 있지만 summary를 못 찾음"
-            verdict = "WARN" if has_any else "TODO"
-        ready = False
-    return (
-        StageRow(
-            stage="최종 병합 데이터셋",
-            success_condition=(
-                f"`meta/{FINAL_DATASET_MANIFEST_NAME}` 또는 summary가 존재하고 "
-                f"rerun contract는 `{FINAL_DATASET_RERUN_MODE}`"
-            ),
-            current_state=state,
-            verdict=verdict,
-        ),
-        {
-            "final_dataset": ready,
-        },
-    )
-
-
-def _build_pv26_row(paths: PipelinePaths) -> tuple[StageRow, dict[str, bool]]:
-    run_dir, summary_path = _latest_child_with_meta(paths.pv26_run_root, ("summary.json", "meta_manifest.json"))
-    summary = _json_load_if_exists(summary_path) if summary_path is not None else None
-    if run_dir is not None and summary is not None:
-        status = str(summary.get("status") or "unknown")
-        phases = summary.get("phases", [])
-        completed_phases = _safe_int(summary.get("completed_phases"))
-        total_phases = _safe_int(summary.get("total_phases") or len(phases))
-        latest_phase_entry: dict[str, Any] | None = None
-        if isinstance(phases, list):
-            manifest_completed = 0
-            manifest_total = 0
-            for entry in phases:
-                if not isinstance(entry, dict):
-                    continue
-                entry_status = str(entry.get("status") or "")
-                if entry_status == "skipped":
-                    continue
-                manifest_total += 1
-                if entry_status == "completed":
-                    manifest_completed += 1
-                if entry_status in {"completed", "running", "active"}:
-                    latest_phase_entry = entry
-            if completed_phases == 0 and manifest_completed:
-                completed_phases = manifest_completed
-            if total_phases == 0 and manifest_total:
-                total_phases = manifest_total
-        train_defaults = summary.get("train_defaults", {})
-        backbone_variant = None
-        if isinstance(train_defaults, dict):
-            backbone_variant = train_defaults.get("backbone_variant")
-        latest_phase_stage = summary.get("latest_phase_stage")
-        latest_selection = summary.get("latest_selection_metric_path")
-        if latest_phase_stage in {None, ""} and latest_phase_entry is not None:
-            latest_phase_stage = latest_phase_entry.get("stage")
-        if latest_selection in {None, ""} and latest_phase_entry is not None:
-            phase_selection = latest_phase_entry.get("selection")
-            if isinstance(phase_selection, dict):
-                latest_selection = phase_selection.get("metric_path")
-        latest_backbone_variant = summary.get("latest_backbone_variant") or backbone_variant
-        current_state_parts = [
-            f"latest={run_dir.name}",
-            f"status={status}",
-            f"phases={completed_phases}/{total_phases}",
-        ]
-        if latest_phase_stage:
-            current_state_parts.append(f"stage={latest_phase_stage}")
-        if latest_backbone_variant:
-            current_state_parts.append(f"backbone={latest_backbone_variant}")
-        if latest_selection:
-            current_state_parts.append(f"selection={latest_selection}")
-        current_state = " | ".join(current_state_parts)
-        ready = status == "completed"
-        verdict = "OK" if ready else "WARN"
-    else:
-        ready = False
-        verdict = "TODO"
-        current_state = "없음"
-    return (
-        StageRow(
-            stage="PV26 학습 run",
-            success_condition="최신 meta train run의 `summary.json` 또는 `meta_manifest.json`이 존재",
-            current_state=current_state,
-            verdict=verdict,
-        ),
-        {
-            "pv26_train": ready,
-        },
-    )
-
-
-def _artifact_pair_exists(checkpoint_path: Path) -> tuple[bool, Path, Path]:
-    artifact_path, meta_path = artifact_paths_for_checkpoint(checkpoint_path)
-    return artifact_path.is_file() and meta_path.is_file(), artifact_path, meta_path
-
-
-def _teacher_export_status(paths: PipelinePaths) -> dict[str, bool]:
-    status: dict[str, bool] = {}
-    for teacher_name in OD_TEACHER_NAMES:
-        checkpoint_path = teacher_checkpoint_path(paths.teacher_train_root, teacher_name)
-        exported, _, _ = _artifact_pair_exists(checkpoint_path)
-        status[f"teacher_export.{teacher_name}"] = exported
-    return status
-
-
-def _phase_run_dir(run_dir: Path, phase_entry: dict[str, Any], *, phase_index: int) -> Path:
-    raw_run_dir = phase_entry.get("run_dir")
-    if raw_run_dir not in {None, ""}:
-        return Path(raw_run_dir)
-    return run_dir / f"phase_{phase_index}"
-
-
-def _phase_best_checkpoint(run_dir: Path, phase_entry: dict[str, Any], *, phase_index: int) -> Path | None:
-    checkpoint_value = phase_entry.get("best_checkpoint_path")
-    if checkpoint_value not in {None, ""}:
-        checkpoint_path = Path(str(checkpoint_value)).expanduser().resolve()
-        if checkpoint_path.is_file():
-            return checkpoint_path
-    fallback = _phase_run_dir(run_dir, phase_entry, phase_index=phase_index) / "checkpoints" / "best.pt"
-    if fallback.is_file():
-        return fallback.resolve()
-    return None
-
-
-def _resume_source_for_phase(
-    run_dir: Path,
-    manifest: dict[str, Any],
-    phases: list[dict[str, Any]],
-    *,
-    phase_index: int,
-) -> str | None:
-    phase_entry = phases[phase_index - 1]
-    phase_run_dir = _phase_run_dir(run_dir, phase_entry, phase_index=phase_index)
-    last_checkpoint = phase_run_dir / "checkpoints" / "last.pt"
-    if last_checkpoint.is_file():
-        return f"phase_{phase_index} last.pt"
-    for previous_index in range(phase_index - 1, 0, -1):
-        previous_entry = phases[previous_index - 1]
-        if _phase_best_checkpoint(run_dir, previous_entry, phase_index=previous_index) is not None:
-            return f"phase_{previous_index} best.pt -> phase_{phase_index}"
-    lineage = manifest.get("lineage")
-    if isinstance(lineage, dict):
-        seed_checkpoint = lineage.get("seed_checkpoint_path")
-        if seed_checkpoint not in {None, ""} and Path(str(seed_checkpoint)).expanduser().is_file():
-            return "lineage seed checkpoint"
-    return None
-
-
-def _resume_candidate_from_run_dir(run_dir: Path) -> ResumeCandidate | None:
-    manifest_path = run_dir / "meta_manifest.json"
-    if not manifest_path.is_file():
-        return None
     try:
-        manifest = _json_load(manifest_path)
-    except Exception:
-        return None
-    phases = manifest.get("phases")
-    if not isinstance(phases, list) or not phases:
-        return None
-    status = str(manifest.get("status") or "unknown")
-    if status == "completed":
-        return None
-    completed_phases = 0
-    total_executable_phases = 0
-    next_phase_index: int | None = None
-    next_phase_entry: dict[str, Any] | None = None
-    for index, entry in enumerate(phases, start=1):
-        if not isinstance(entry, dict):
-            return None
-        entry_status = str(entry.get("status") or "")
-        if entry_status == "skipped":
-            continue
-        total_executable_phases += 1
-        if entry_status == "completed":
-            completed_phases += 1
-            continue
-        if next_phase_index is None:
-            next_phase_index = index
-            next_phase_entry = entry
-    if next_phase_index is None or next_phase_entry is None:
-        return None
-    resume_source = _resume_source_for_phase(run_dir, manifest, phases, phase_index=next_phase_index)
-    if resume_source is None:
-        return None
-    updated_at = manifest.get("updated_at")
-    updated_at_text = str(updated_at) if updated_at not in {None, ""} else None
-    return ResumeCandidate(
-        run_dir=run_dir,
-        run_name=run_dir.name,
-        status=status,
-        completed_phases=completed_phases,
-        total_phases=total_executable_phases,
-        next_phase_name=str(next_phase_entry.get("name") or f"phase_{next_phase_index}"),
-        next_phase_stage=str(next_phase_entry.get("stage") or "unknown"),
-        resume_source=resume_source,
-        updated_at=updated_at_text,
-    )
-
-
-def _retrain_candidate_from_run_dir(run_dir: Path) -> RetrainCandidate | None:
-    manifest_path = run_dir / "meta_manifest.json"
-    if not manifest_path.is_file():
-        return None
-    try:
-        manifest = _json_load(manifest_path)
-    except Exception:
-        return None
-    phases = manifest.get("phases")
-    if not isinstance(phases, list) or not phases:
-        return None
-    available_seed_stages: list[str] = []
-    latest_phase_name: str | None = None
-    latest_phase_stage: str | None = None
-    completed_phases = 0
-    total_executable_phases = 0
-    for phase_index, entry in enumerate(phases, start=1):
-        if not isinstance(entry, dict):
-            return None
-        entry_status = str(entry.get("status") or "")
-        if entry_status != "skipped":
-            total_executable_phases += 1
-        checkpoint_path = _phase_best_checkpoint(run_dir, entry, phase_index=phase_index)
-        if checkpoint_path is not None:
-            available_seed_stages.append(str(entry.get("stage") or f"phase_{phase_index}"))
-        if entry_status == "completed":
-            completed_phases += 1
-            latest_phase_name = str(entry.get("name") or f"phase_{phase_index}")
-            latest_phase_stage = str(entry.get("stage") or f"phase_{phase_index}")
-    if not available_seed_stages:
-        return None
-    updated_at = manifest.get("updated_at")
-    updated_at_text = str(updated_at) if updated_at not in {None, ""} else None
-    return RetrainCandidate(
-        run_dir=run_dir,
-        run_name=run_dir.name,
-        status=str(manifest.get("status") or "unknown"),
-        latest_phase_name=latest_phase_name,
-        latest_phase_stage=latest_phase_stage,
-        completed_phases=completed_phases,
-        total_executable_phases=total_executable_phases,
-        available_seed_stages=tuple(available_seed_stages),
-        updated_at=updated_at_text,
-    )
-
-
-def _pv26_export_candidate_from_run_dir(run_dir: Path) -> Pv26ExportCandidate | None:
-    summary_path = run_dir / "summary.json"
-    if not summary_path.is_file():
-        return None
-    try:
-        summary = _json_load(summary_path)
-    except Exception:
-        return None
-    status = str(summary.get("status") or "unknown")
-    if status != "completed":
-        return None
-    checkpoint_value = summary.get("final_checkpoint_path")
-    if checkpoint_value in {None, ""}:
-        return None
-    checkpoint_path = Path(str(checkpoint_value)).expanduser().resolve()
-    if not checkpoint_path.is_file():
-        return None
-    _, artifact_path, meta_path = _artifact_pair_exists(checkpoint_path)
-    updated_at = summary.get("updated_at")
-    updated_at_text = str(updated_at) if updated_at not in {None, ""} else None
-    return Pv26ExportCandidate(
-        run_dir=run_dir,
-        run_name=run_dir.name,
-        checkpoint_path=checkpoint_path,
-        artifact_path=artifact_path,
-        meta_path=meta_path,
-        status=status,
-        latest_phase_stage=(
-            str(summary.get("latest_phase_stage")) if summary.get("latest_phase_stage") not in {None, ""} else None
-        ),
-        latest_selection_metric_path=(
-            str(summary.get("latest_selection_metric_path"))
-            if summary.get("latest_selection_metric_path") not in {None, ""}
-            else None
-        ),
-        latest_backbone_variant=(
-            str(summary.get("latest_backbone_variant"))
-            if summary.get("latest_backbone_variant") not in {None, ""}
-            else None
-        ),
-        updated_at=updated_at_text,
-    )
-
-
-def _scan_pv26_resume_candidates(run_root: Path) -> list[ResumeCandidate]:
-    if not run_root.is_dir():
-        return []
-    candidates: list[ResumeCandidate] = []
-    for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
-        candidate = _resume_candidate_from_run_dir(child)
-        if candidate is not None:
-            candidates.append(candidate)
-    return sorted(
-        candidates,
-        key=lambda item: (
-            item.updated_at or "",
-            item.run_dir.stat().st_mtime_ns if item.run_dir.exists() else 0,
-            item.run_name,
-        ),
-        reverse=True,
-    )
-
-
-def _scan_pv26_retrain_candidates(run_root: Path) -> list[RetrainCandidate]:
-    if not run_root.is_dir():
-        return []
-    candidates: list[RetrainCandidate] = []
-    for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
-        candidate = _retrain_candidate_from_run_dir(child)
-        if candidate is not None:
-            candidates.append(candidate)
-    return sorted(
-        candidates,
-        key=lambda item: (
-            item.updated_at or "",
-            item.run_dir.stat().st_mtime_ns if item.run_dir.exists() else 0,
-            item.run_name,
-        ),
-        reverse=True,
-    )
-
-
-def _scan_pv26_export_candidates(run_root: Path) -> list[Pv26ExportCandidate]:
-    if not run_root.is_dir():
-        return []
-    candidates: list[Pv26ExportCandidate] = []
-    for child in sorted((item for item in run_root.iterdir() if item.is_dir()), key=lambda item: item.name):
-        candidate = _pv26_export_candidate_from_run_dir(child)
-        if candidate is not None:
-            candidates.append(candidate)
-    return sorted(
-        candidates,
-        key=lambda item: (
-            item.updated_at or "",
-            item.run_dir.stat().st_mtime_ns if item.run_dir.exists() else 0,
-            item.run_name,
-        ),
-        reverse=True,
-    )
-
-
-def _recommendation(flags: dict[str, bool]) -> str:
-    if not flags.get("runtime_core", False):
-        return "환경 런타임부터 정리하세요. 학습/평가 계열 메뉴는 잠깁니다."
-    if not flags.get("raw_roots", False):
-        return "raw dataset 세부 root가 안 맞습니다. BDD image/label과 AIHUB lane/obstacle/traffic 경로를 확인하세요."
-    if not flags.get("source_prep", False):
-        return "1번 source prep부터 시작하는 편이 안전합니다."
-    if not flags.get("teacher_dataset.mobility", False):
-        return "2번으로 teacher dataset과 signal attr crop dataset을 먼저 맞추세요."
-    if not flags.get("teacher_dataset.signal_attr", False):
-        return "2번을 재실행해서 signal attr crop dataset까지 맞추세요."
-    if not flags.get("teacher_train.mobility", False):
-        return "3번 mobility teacher 학습이 다음 순서입니다."
-    if not flags.get("teacher_train.signal", False):
-        return "4번 signal teacher 학습이 다음 순서입니다."
-    if not flags.get("teacher_train.signal_attr", False):
-        return "4A로 signal_attr teacher를 학습하세요."
-    if not flags.get("teacher_train.obstacle", False):
-        return "5번 obstacle teacher 학습이 다음 순서입니다."
-    if not flags.get("teacher_eval.mobility", False):
-        return "6번 mobility teacher 평가를 돌려 상태를 확인하세요."
-    if not flags.get("teacher_eval.signal", False):
-        return "7번 signal teacher 평가를 돌려 상태를 확인하세요."
-    if not flags.get("teacher_eval.signal_attr", False):
-        return "7A로 signal_attr teacher 평가를 돌려 threshold/report 상태를 확인하세요."
-    if not flags.get("teacher_eval.obstacle", False):
-        return "8번 obstacle teacher 평가를 돌려 상태를 확인하세요."
-    if not flags.get("calibration", False):
-        return "9번 calibration으로 class policy를 먼저 고정하세요."
-    if not flags.get("exhaustive", False):
-        return "A로 signal attr sidecar가 붙은 exhaustive OD를 만들 차례입니다."
-    if not flags.get("final_dataset", False):
-        return "B로 최종 병합 데이터셋을 만드세요."
-    if not flags.get("pv26_train", False):
-        return "C로 PV26 기본 학습을 돌리면 됩니다."
-    if flags.get("pv26_export_available", False) and not flags.get("pv26_export.latest", False):
-        return "F로 최신 완료 PV26 run을 TorchScript로 export하세요."
-    if flags.get("teacher_train.mobility", False) and not flags.get("teacher_export.mobility", False):
-        return "G로 mobility teacher를 TorchScript export하세요."
-    if flags.get("teacher_train.signal", False) and not flags.get("teacher_export.signal", False):
-        return "I로 signal teacher를 TorchScript export하세요."
-    if flags.get("teacher_train.obstacle", False) and not flags.get("teacher_export.obstacle", False):
-        return "J로 obstacle teacher를 TorchScript export하세요."
-    return "상태는 좋아 보입니다. 필요한 메뉴만 골라 실행하면 됩니다."
-
-
-def scan_workspace_status(report: dict[str, Any], *, paths: PipelinePaths | None = None) -> WorkspaceSnapshot:
-    resolved_paths = paths or _resolve_pipeline_paths()
-    rows: list[StageRow] = []
-    flags: dict[str, bool] = {}
-    notes: list[str] = []
-
-    runtime_row, runtime_flags = _build_runtime_row(report)
-    rows.append(runtime_row)
-    flags.update(runtime_flags)
-
-    source_counts = _collect_source_counts(resolved_paths)
-    raw_row, raw_flags = _build_raw_roots_row(resolved_paths, source_counts)
-    rows.append(raw_row)
-    flags.update(raw_flags)
-
-    source_prep_row, source_prep_flags = _build_source_prep_row(resolved_paths, source_counts)
-    rows.append(source_prep_row)
-    flags.update(source_prep_flags)
-
-    teacher_rows, teacher_flags = _build_teacher_rows(resolved_paths)
-    rows.extend(teacher_rows)
-    flags.update(teacher_flags)
-
-    calibration_row, calibration_flags = _build_calibration_row(resolved_paths)
-    rows.append(calibration_row)
-    flags.update(calibration_flags)
-
-    exhaustive_row, exhaustive_flags = _build_exhaustive_row(resolved_paths)
-    rows.append(exhaustive_row)
-    flags.update(exhaustive_flags)
-
-    final_dataset_row, final_dataset_flags = _build_final_dataset_row(resolved_paths)
-    rows.append(final_dataset_row)
-    flags.update(final_dataset_flags)
-
-    pv26_row, pv26_flags = _build_pv26_row(resolved_paths)
-    rows.append(pv26_row)
-    flags.update(pv26_flags)
-
-    teacher_export_flags = _teacher_export_status(resolved_paths)
-    flags.update(teacher_export_flags)
-    pv26_export_candidates = _scan_pv26_export_candidates(resolved_paths.pv26_run_root)
-    flags["pv26_export_available"] = bool(pv26_export_candidates)
-    if pv26_export_candidates:
-        latest_candidate = pv26_export_candidates[0]
-        exported, _, _ = _artifact_pair_exists(latest_candidate.checkpoint_path)
-        flags["pv26_export.latest"] = exported
-    else:
-        flags["pv26_export.latest"] = False
-
-    if flags.get("source_prep", False):
-        notes.append("manifest 안 절대경로가 다른 머신 경로여도, 현재 config 기준 실제 파일을 우선 판정합니다.")
-    if not flags.get("calibration", False):
-        notes.append("calibration이 없어도 exhaustive OD는 fallback class policy로 실행할 수 있습니다.")
-    missing_teacher_exports = [
-        teacher_name
-        for teacher_name in OD_TEACHER_NAMES
-        if flags.get(f"teacher_train.{teacher_name}", False) and not flags.get(f"teacher_export.{teacher_name}", False)
-    ]
-    if missing_teacher_exports:
-        notes.append(
-            "teacher TorchScript export 미생성: "
-            + ", ".join(missing_teacher_exports)
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=True, timeout=3,
         )
-    if flags.get("pv26_export_available", False) and not flags.get("pv26_export.latest", False):
-        notes.append("latest completed PV26 run에 TorchScript export가 없습니다. F 메뉴로 생성할 수 있습니다.")
+        for row in csv.reader(completed.stdout.splitlines()):
+            if len(row) != 4:
+                continue
+            name, total, free, utilization = (part.strip() for part in row)
+            result["gpus"].append({
+                "name": name,
+                "total_mb": int(total),
+                "free_mb": int(free),
+                "utilization": int(utilization),
+            })
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        result["error"] = f"GPU 상태 조회 실패: {exc}"
+    return result
 
-    return WorkspaceSnapshot(
-        paths=resolved_paths,
-        rows=tuple(rows),
-        flags=flags,
-        recommendation=_recommendation(flags),
-        notes=tuple(notes),
+
+def _storage(root: Path) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "root": str(root),
+        "mount": None,
+        "free_bytes": None,
+        "error": None,
+    }
+    if not root.is_dir():
+        item["error"] = "출력 디렉터리가 없음"
+        return item
+    try:
+        item["free_bytes"] = shutil.disk_usage(root).free
+        mount = subprocess.run(
+            ["findmnt", "-n", "-o", "TARGET", "-T", str(root)],
+            capture_output=True, text=True, check=True, timeout=3,
+        ).stdout.strip()
+        item["mount"] = mount or None
+        if not mount or mount == "/":
+            item["error"] = "별도 외장 마운트를 확인하지 못함"
+    except (OSError, subprocess.SubprocessError) as exc:
+        item["error"] = f"저장소 상태 조회 실패: {exc}"
+    return item
+
+
+def _lock_held(path: Path, errors: list[str]) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as stream:
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                return False
+    except OSError as exc:
+        errors.append(f"{path}: 잠금 상태 조회 실패: {exc}")
+        return False
+
+
+def _existing(path: Path) -> str | None:
+    return str(path) if path.is_file() else None
+
+
+def _exports(path: Path, errors: list[str]) -> list[str]:
+    found: list[str] = []
+    for parent in (path, path / "checkpoints", path / "export"):
+        if not parent.is_dir():
+            continue
+        try:
+            found.extend(str(candidate) for candidate in parent.iterdir()
+                         if candidate.is_file()
+                         and candidate.name.endswith((".torchscript.pt", ".onnx", ".engine")))
+        except OSError as exc:
+            errors.append(f"{parent}: 내보낸 모델 목록 조회 실패: {exc}")
+    return sorted(found)
+
+
+def _updated_at(paths: list[Path]) -> float | None:
+    times = []
+    for path in paths:
+        try:
+            times.append(path.stat().st_mtime)
+        except (FileNotFoundError, OSError):
+            continue
+    return max(times) if times else None
+
+
+def _run_state(running: bool, step: int | None, max_steps: int | None,
+               latest: str | None, summary: dict[str, Any]) -> str:
+    progress = f"마지막 기록 {step}" if step is not None else "기록 단계 미상"
+    if max_steps is not None:
+        progress += f"/{max_steps}"
+    if running:
+        return f"실행 중 · {progress}"
+    if step is not None and max_steps is not None and step >= max_steps:
+        return f"설정 단계 완료 · {progress}"
+    if summary.get("stopped_by_signal"):
+        return f"종료 요청 후 정지 · {progress}"
+    if step is not None:
+        return f"중단 또는 대기 · {progress}"
+    if latest is not None:
+        return "체크포인트 있음 · 기록 단계 미상"
+    return "설정만 있음"
+
+
+def _run(path: Path, kind: str, errors: list[str], *, strict: bool = False) -> dict[str, Any]:
+    config_name = "run_config.json" if kind == "pv26" else "signal_config.json"
+    saved_config = _read_json(path / config_name, errors, strict=strict, required=True)
+    summary = _read_json(path / "summary.json", errors, strict=strict)
+    validation = _read_json(path / "validation.json", errors, strict=strict)
+    stage = (
+        saved_config.get("train", {}).get("stage")
+        if kind == "pv26" and isinstance(saved_config.get("train"), dict)
+        else "signal_attr"
     )
+    max_steps = _integer(
+        saved_config.get("train", {}).get("max_steps")
+        if kind == "pv26" and isinstance(saved_config.get("train"), dict)
+        else saved_config.get("max_steps")
+    )
+    recorded_steps = (_integer(summary.get("global_step")),
+                      _integer(validation.get("global_step")))
+    step = max((value for value in recorded_steps if value is not None), default=None)
+    checkpoints = {
+        name: _existing(path / "checkpoints" / f"{name}.pt")
+        for name in ("latest", "previous", "best")
+    }
+    checkpoints["published"] = _existing(path / "best_signal_attr.pt") if kind == "signal_attr" else None
+    exports = _exports(path, errors)
+    running = _lock_held(path / ".train.lock", errors)
+    relevant = [path / config_name, path / "summary.json", path / "validation.json"]
+    relevant.extend(path / "checkpoints" / f"{name}.pt" for name in ("latest", "previous", "best"))
+    relevant.extend(Path(value) for value in exports)
+    if checkpoints["published"] is not None:
+        relevant.append(Path(checkpoints["published"]))
+    return {
+        "path": str(path),
+        "kind": kind,
+        "stage": stage,
+        "running": running,
+        "step": step,
+        "max_steps": max_steps,
+        "state": _run_state(running, step, max_steps, checkpoints["latest"], summary),
+        "updated_at": _updated_at(relevant),
+        "config": saved_config,
+        "summary": summary,
+        "validation": validation,
+        "checkpoints": checkpoints,
+        "exports": exports,
+    }
+
+
+def _crop_dataset(path: Path, errors: list[str]) -> dict[str, Any]:
+    manifest_path = path / "meta" / "signal_attr_dataset_manifest.json"
+    crop_config_path = path / "meta" / "crop_config.json"
+    manifest = _read_json(manifest_path, errors)
+    crop_config = _read_json(crop_config_path, errors)
+    counts = manifest.get("accepted_count_by_split")
+    counts = counts if isinstance(counts, dict) else {}
+    train_labels = path / "labels" / "train.jsonl"
+    val_labels = path / "labels" / "val.jsonl"
+    try:
+        usable = all(file.is_file() and file.stat().st_size > 0 for file in (train_labels, val_labels))
+    except OSError as exc:
+        errors.append(f"{path}: crop 라벨 상태 조회 실패: {exc}")
+        usable = False
+    usable = usable and bool(manifest) and bool(crop_config)
+    return {
+        "path": str(path),
+        "train_count": _integer(counts.get("train")),
+        "val_count": _integer(counts.get("val")),
+        "all_off_is_valid": manifest.get("all_off_is_valid"),
+        "usable": usable,
+        "manifest": manifest,
+    }
+
+
+def _artifacts(roots: list[Path], errors: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    runs: list[dict[str, Any]] = []
+    crops: list[dict[str, Any]] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for directory, children, _ in os.walk(root, topdown=True,
+                                               onerror=lambda exc: errors.append(str(exc))):
+            path = Path(directory)
+            if (path / "run_config.json").is_file():
+                runs.append(_run(path, "pv26", errors))
+                children[:] = []
+                continue
+            if (path / "signal_config.json").is_file():
+                runs.append(_run(path, "signal_attr", errors))
+                children[:] = []
+                continue
+            if (path / "labels").is_dir() and (path / "meta").is_dir():
+                crops.append(_crop_dataset(path, errors))
+                children[:] = []
+                continue
+            children[:] = [name for name in children if name not in _PRUNED_DIRS]
+    runs.sort(key=lambda item: (item["updated_at"] or 0.0, item["path"]), reverse=True)
+    crops.sort(key=lambda item: item["path"])
+    return runs, crops
+
+
+def scan_run(path: Path) -> dict[str, Any]:
+    """Inspect one selected run without opening model or optimizer checkpoints."""
+    path = _path(path)
+    if not path.is_dir():
+        raise FileNotFoundError(path)
+    has_pv26 = (path / "run_config.json").is_file()
+    has_signal = (path / "signal_config.json").is_file()
+    if has_pv26 == has_signal:
+        raise ValueError(f"학습 설정 파일을 정확히 하나 찾을 수 없습니다: {path}")
+    return _run(path, "pv26" if has_pv26 else "signal_attr", [], strict=True)
+
+
+def scan_workspace(config_path: Path, signal_config_path: Path) -> dict[str, Any]:
+    """Return a JSON-serializable, read-only current-state snapshot for the HMI."""
+    config_path = _path(config_path)
+    signal_config_path = _path(signal_config_path)
+    errors: list[str] = []
+    config = _read_yaml(config_path, errors)
+    signal_config = _read_yaml(signal_config_path, errors)
+    roots: list[Path] = []
+    for document in (config, signal_config):
+        train = document.get("train")
+        output_root = train.get("output_root") if isinstance(train, dict) else None
+        if output_root is not None:
+            root = _path(output_root)
+            if root not in roots:
+                roots.append(root)
+    sources = []
+    data = config.get("data")
+    for source in data.get("sources", []) if isinstance(data, dict) else []:
+        if not isinstance(source, dict):
+            continue
+        root_value = source.get("root")
+        if not isinstance(root_value, str) or not root_value.strip():
+            errors.append(f"{config_path}: 데이터 source root가 비어 있음")
+            continue
+        root = _path(root_value)
+        sources.append({
+            "name": source.get("name"),
+            "kind": source.get("kind"),
+            "root": str(root),
+            "weight": source.get("weight"),
+            "train_exists": (root / "Training").is_dir(),
+            "val_exists": (root / "Validation").is_dir(),
+        })
+    weights = []
+    model = config.get("model")
+    signal_train = signal_config.get("train")
+    for role, value in (
+        ("PV26 초기 가중치", model.get("weights") if isinstance(model, dict) else None),
+        ("SignalAttr 초기 가중치", signal_train.get("initial_checkpoint")
+         if isinstance(signal_train, dict) else None),
+    ):
+        if isinstance(value, str) and value.strip():
+            path = _path(value)
+            weights.append({"role": role, "path": str(path), "exists": path.is_file()})
+    runs, crops = _artifacts(roots, errors)
+    return {
+        "config_path": str(config_path),
+        "signal_config_path": str(signal_config_path),
+        "config": config,
+        "signal_config": signal_config,
+        "environment": _environment(),
+        "storage": [_storage(root) for root in roots],
+        "sources": sources,
+        "weights": weights,
+        "runs": runs,
+        "crop_datasets": crops,
+        "errors": errors,
+    }

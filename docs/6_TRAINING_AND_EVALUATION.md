@@ -1,131 +1,109 @@
-# Training And Evaluation
+# 학습과 평가
 
-## training strategy
+2026-09-21 기준 구현 내용이다. 본체와 SignalAttr는 같은 학습 엔진에서 mixed precision, OOM 재시도와 체크포인트 재개를 사용한다. 실행 방법은 [실행 안내](7_RUN_GUIDE.md), 확인한 범위는 [현재 상태](00A_CURRENT_STATUS.md)에 있다.
 
-- step 1
-  - [legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md](legacy/4A_SAMPLE_AND_TRANSFORM_CONTRACT.md) 기준 standardized dataset loader 구현
-- step 2
-  - sample contract를 encoded batch contract로 바꾸는 target encoder 구현
-- step 3
-  - pretrained trunk + custom heads 구성
-- step 4
-  - multitask loss 연결
-- step 5
-  - tiny overfit regression
-- step 6
-  - full training wiring
+## 데이터와 라벨
 
-## optimizer / schedule 원칙
+PRD의 두 AIHub 데이터셋으로 시작하며, 신호등과 차선 자료를 계속 추가한다. 출처마다 라벨링한 대상과 속성을 기록해 공통 학습 표적으로 변환한다.
 
-- new head는 trunk보다 높은 learning rate를 쓴다.
-- freeze stage에서는 head 위주로 먼저 수렴시킨다.
-- unfreeze는 단계적으로 한다.
-- backbone variant는 `n/s`를 모두 지원하되, 현재 추천 경로는 `yolo26s`다.
+라벨이 없는 태스크는 손실 계산에서 제외한다. 라벨링이 완료된 영상에 대상이 없으면 negative로 학습한다. 정지선이 없는 영상과 횡단보도, 도로 화살표가 등장하는 영상도 포함한다. 상태를 알 수 없는 신호등은 소등 표적으로 바꾸지 않는다.
 
-## recommended stage schedule
+| 원본 | 감독하는 출력 |
+| --- | --- |
+| 차선 AIHub (`kind: roadmark`) | 흰 차선, 노란 차선, 정지선 |
+| 신호등 AIHub (`kind: traffic`) | 차량용과 보행자용 신호등 박스 |
+| 신호등 원본의 crop | SignalAttr의 색상과 차량 좌회전 |
 
-1. stage 1
-   - trunk freeze, new heads warm-up
-2. stage 2
-   - neck + upper backbone unfreeze
-3. stage 3
-   - full fine-tune
-4. stage 4
-   - lane-family late fine-tune
-   - lane / stop-line / crosswalk metric 회복 및 보정
+공동학습은 이 두 원본을 비율에 맞춰 섞는 방식이다. 차선 영상에 등장한 신호등의 검출 손실이나 신호등 영상의 도로표식 손실은 계산하지 않는다.
 
-## phase-specific selection
+원본 영상과 여기서 만든 crop은 같은 학습 또는 평가 분할에 속한다. 추가 데이터는 확인 가능한 촬영 구간이나 시퀀스로 분리한다. 재개할 때는 그 실행의 데이터 구성을 복구하고, 데이터 추가는 새 학습 구간에서 반영한다.
 
-- 모든 phase의 기본 selection path는 `selection_metrics.phase_objective`다.
-- phase objective는 validation metric 기반 composite score이며, lane / stop-line / crosswalk sparse support는 reliability weight로 완화한다.
-- best checkpoint와 early exit는 같은 objective를 보되, stop 판정은 `patience + min_delta_abs`를 기본으로 사용한다.
-- training preset은 필요하면 phase별 selection override를 실험용으로 허용하지만, shipped preset은 전 phase에서 composite objective를 쓴다.
-- 식, 계수, shipped 기본값, `mode=max`, `min_delta_abs` tuning 기준은 [5_TARGETS_AND_LOSS.md](5_TARGETS_AND_LOSS.md)에 구현 기준으로 정리한다.
+## 학습 순서
 
-## sampler
+| 단계 | 학습 내용 |
+| --- | --- |
+| 신호등 기준선 | 검출기와 내부 SignalAttr를 새 대상과 라벨로 학습 |
+| 도로표식 초기화 | 본체 가중치와 정규화 통계를 고정하고 새 디코더를 짧게 학습 |
+| 공동 미세조정 | 두 데이터 종류를 공급해 공유 본체와 헤드를 학습 |
+| 실제 입력 적응 | 예측 박스의 crop과 카메라 표본으로 확인하고 미세조정 |
 
-- shipped local long-run default는 task-positive multi sampler를 사용한다.
-  - `task_positive_task=multi:lane,stopline,crosswalk`
-  - `task_positive_fraction=0.75`
-- `batch_size=4`에서는 매 train batch가 lane / stop-line / crosswalk positive slot 3장과 det-source OD/background slot 1장으로 구성된다. lane-family head가 빈 batch를 반복해서 보지 않게 하면서 OD/TL source exposure도 완전히 끊지 않는 계약이다.
-- multi task-positive sampler는 요청한 lane / stop-line / crosswalk positive 중 하나라도 없으면 fail-fast한다. 조용히 partial sampler나 balanced sampler로 떨어지는 것은 shipped long-run에서는 허용하지 않는다.
-- single/rotation task-positive fallback이나 no-task-positive 경로에서는 dataset-balanced sampler를 fallback/source ratio로 사용한다.
-- fallback/source ratio
-  - BDD100K `30%`
-  - AIHUB traffic `30%`
-  - AIHUB obstacle `15%`
-  - AIHUB lane `25%`
-- stage 4는 `task_positive_fraction=1.0`, lane-family heads-only freeze policy로 lane / stop-line / crosswalk만 마지막에 더 밀어붙인다.
-- validation은 train sampler를 재사용하지 않고 eval loader를 사용한다.
+본체의 학습률은 새 헤드보다 낮게 시작한다. 학습률, 업데이트 수와 데이터 비율은 측정 결과로 정한다. PCGrad는 일반 공동학습에서 태스크 간 간섭이 확인되면 계산 비용과 함께 검토한다.
 
-## eval metrics
+검출에는 라벨된 이미지별 공식 E2ELoss의 평균을 사용한다. SignalAttr는 색상과 좌회전 손실을 계산하며 보행자의 좌회전 손실은 제외한다. 도로표식은 masked BCEWithLogits와 클래스별 Dice를 사용한다. BCE는 유효 픽셀 수로, Dice는 양성 표적이 있는 이미지와 클래스의 수로 정규화한다. positive가 없는 정상 영상도 negative 손실에 기여한다.
 
-- detector
-  - mAP
-  - class AP
-- traffic light
-  - bit-level AP/F1
-  - decoded combination accuracy
-- lane
-  - point distance
-  - color accuracy
-  - type accuracy
-- stop-line
-  - point distance
-  - angle error
-- crosswalk
-  - polygon IoU
-  - vertex distance
+## 피더와 배치
 
-## test-first criteria
+데이터 노출 비율은 태스크 중요도, 희귀 상태와 학습 결과로 정한다. 물리 배치 크기는 VRAM과 처리량에 맞춘다. gradient accumulation으로 여러 물리 배치의 gradient를 누적해 한 번 업데이트한다.
 
-- forward 성공
-- backward 성공
-- loss finite
-- tiny subset overfit 가능
-- debug sample visualization 확인 가능
-- loader output이 sample contract와 정확히 일치
-- encoded batch가 loss spec shape와 정확히 일치
+노출 비율은 여러 업데이트에 걸쳐 유지한다. 물리 배치를 줄여도 논리 배치의 표본 구성과 손실 가중은 보존한다. 작은 배치에서 정수 반올림 때문에 특정 source가 계속 빠지는지도 확인한다.
 
-## full-train 진입 조건
+데이터가 늘어나면 epoch 길이도 달라진다. 학습률 일정과 평가 주기는 완료 업데이트 수를, 주기적 저장은 경과시간을 함께 기준으로 삼는다. 이미지와 표적은 배치 단위로 읽고 cache 용량을 제한한다.
 
-- loader와 encoder가 stable
-- pretrained partial load 성공
-- lane/TL/OD multitask loss가 동시에 finite
-- tiny regression에서 명백한 shape bug가 없음
+SignalAttr의 새 학습 명령은 차량의 색상과 좌회전 조합, 보행자 색상별 그룹을 균등하게 뽑는다. 자연 분포로 뽑는 옵션도 있다. 원본 박스와 crop의 여백을 사용하며, 예측 박스 오차와 다양한 영상 손상을 반영하는 추가 학습은 앞으로 진행한다. 본체 학습의 기하 증강은 영상과 선 좌표에 함께 적용한다.
 
-## current runtime status
+## 정밀도와 비정상 값
 
-- trainer skeleton은 `encoded batch -> trunk -> heads -> loss -> backward -> optimizer.step`까지 지원한다.
-- trainer는 dataset-balanced batch sampler helper를 지원한다.
-- trainer는 step history 요약과 JSONL logging을 지원한다.
-- trainer는 `run_manifest.json`, live step/epoch JSONL, TensorBoard scalar logging, rolling timing profile(`wait/load/fwd/loss/bwd`, mean/p50/p99, ETA)를 지원한다.
-- trainer는 train/validation epoch 양쪽 모두 live progress 표시를 지원하고, phase/epoch/iter/epoch start/elapsed/ETA/timing 정보를 runtime에서 바로 노출한다.
-- trainer는 checkpoint save/load를 지원한다.
-- trainer는 full epoch fit loop, val loop, best/last checkpoint, run summary 출력을 지원한다.
-- trainer는 AMP, grad accumulation, grad clip, auto resume, non-finite/OOM guard를 지원한다. 다만 shipped local long-run preset은 2026-05-02 run의 GradScaler collapse 이후 `amp=false`를 기본값으로 둔다.
-- seg-first lane head의 dense loss 입력(`lane_seg_*`)은 loss precision path에서 fp32로 정규화한다. 2026-05-02 CUDA probe에서 기존 `lane=nan` skip은 재현되지 않았지만, 이후 full run에서는 AMP GradScaler가 phase 2/3에서 scale 0.0으로 붕괴해 fp32 long-run으로 되돌렸다.
-- trainer는 lane-family repo의 `pcgrad_style` multitask conflict update를 PV26용으로 확장해 지원한다. PV26 기본 config는 trunk PCGrad task를 `det/tl_attr/lane/stop_line/crosswalk` 전체로 둔다. roadmark-only 원본 구현처럼 `lane/stop_line/crosswalk`만 쓰면 PV26 stage 3에서 OD/TL trunk gradient를 덮어쓸 수 있으므로 그대로 축소하지 않는다.
-- TensorBoard는 step loss, task별 weighted loss, phase objective, validation metric, PCGrad conflict count/gradient norm/task loss summary를 기록한다.
-- 기본 preview는 validation split에서 BDD/traffic/obstacle/lane source별 4장씩 고르고, lane sample은 lane/stop_line/crosswalk가 함께 있는 장면을 우선한다. 매 epoch 산출물은 `phase_<N>/epoch_comparison_grids/epoch_<EEE>/comparison_grid.png`와 sample별 `ground_truth.png`, `prediction.png`, `comparison.png`다.
-- trainer preset은 stage 1~4 phase chain을 기준으로 확장된다.
-- `tools/run_pv26_train.py`는 현재 `default` preset 하나만 지원한다. legacy/dev preset과 legacy dataset mapping key는 더 이상 지원하지 않는다.
-- exact in-place resume는 `python3 tools/run_pv26_train.py --resume-run runs/pv26_exhaustive_od_lane_train/<meta_run_name>` 경로를 기준으로 유지한다.
-- derived retrain/fine-tune는 `python3 tools/run_pv26_train.py --derive-run runs/pv26_exhaustive_od_lane_train/<source_run_name> --start-stage <STAGE> --end-stage <STAGE>` 경로를 기준으로 유지한다.
-- derived run은 source run의 checkpoint를 seed로 쓰되, epoch/sampler/loss/freeze 숫자 파라미터는 현재 preset + user YAML을 그대로 다시 읽는다.
-- `tools/check_env.py` interactive launcher는 `stage_3` peak VRAM stress probe를 제공하고, batch size / short iter 수를 받아 현재 backbone/stage 경로로 메모리 상한을 빠르게 확인할 수 있다.
-- direct CLI probe는 `python3 tools/run_pv26_train.py --preset default --stage3-vram-stress --stress-stage <STAGE> --stress-batch-size <BATCH> --stress-iters <ITERS>` 형식으로 유지한다.
-- phase별 batch 후보를 한 번에 확인할 때는 `python3 tools/run_pv26_train.py --preset default --phase-vram-sweep --stress-batch-sizes 1,2,4,6,8,12 --stress-iters 8`를 사용한다. 출력의 `ceiling_observed=false`는 OOM/non-finite failure를 아직 못 만났다는 뜻이며, `max_ok_batch_size`는 확정 상한이 아니라 확인된 하한이다.
-- 2026-05-02 RTX 4060 8GB 확인값(PCGrad 포함): stage 1/2는 `--stress-batch-sizes 1,2,4,6,8 --stress-iters 3`에서 batch 8까지 성공하고 ceiling 미관측, stage 3/4는 `--stress-batch-sizes 4,6,8 --stress-iters 3`에서 batch 8까지 성공하고 ceiling 미관측이다. stage 3 batch 8은 peak reserved가 약 7.28 GiB라 장시간 full training 기본값으로 올리지는 않는다. 현재 shipped default batch 4는 네 phase 모두 검증된 성공 구간 안에 있다.
-- `tools/run_pv26_train.py`는 phase별 summary JSON과 `runs/pv26_exhaustive_od_lane_train/` 계열 산출물을 쓴다.
-- phase summary와 run manifest는 backbone variant, resolved head channels, phase selection metric 같은 late-stage 판단 정보를 함께 남기는 방향을 따른다.
-- `tiny overfit regression`은 `model.engine.trainer.run_pv26_tiny_overfit()` helper와 unit test로 검증한다.
-- evaluator skeleton은 batch-level loss summary와 GT row count summary를 지원한다.
-- evaluator는 raw model output을 postprocess prediction bundle로 decode하는 `predict_batch` runtime을 지원한다.
-- evaluator는 validation에서 loss/metrics/prediction bundle을 single forward path로 묶어 사용한다.
-- evaluator는 batch-level detector AP50/precision/recall, TL bit F1/combo accuracy, lane family matching metrics를 지원한다.
-- postprocess는 `torchvision.ops.batched_nms` 사용 가능 시 우선 사용하고, 불가능하면 pure PyTorch NMS fallback을 사용한다.
-- tiny overfit regression은 canonical train batch 2개 기준으로 실제 loss 감소를 확인했다.
-- epoch fit regression은 canonical source 기준으로 checkpoint resume 가능한 run summary를 확인했다.
-- detector assignment는 task-aligned assigner 기준으로 통합 완료다.
-- lane family Hungarian matching도 통합 완료다.
+| 연산 | 첫 적용안 |
+| --- | --- |
+| 본체와 일반 합성곱 | BF16 autocast |
+| 민감한 좌표, 거리, 정규화, 큰 합산과 손실 | 필요한 구간을 FP32로 실행 |
+| 모델 parameter와 optimizer 상태 | FP32 유지 |
+| FP16 학습 경로 | GradScaler 적용 |
+
+FP16에서 overflow가 발생한 뒤 FP32로 변환해도 원래 값은 복구되지 않는다. 민감한 계산은 해당 연산부터 autocast를 끄고 FP32 입력을 사용한다. 학습 정밀도와 배포 엔진의 정밀도는 각각 확인한다.
+
+외부 데이터는 읽을 때 필요한 형식과 좌표, finite 조건을 확인한다. loss나 gradient가 비정상이면 해당 누적 업데이트를 버린다. optimizer와 학습률 일정도 진행하지 않는다. FP16 gradient 검사와 clipping은 unscale 이후, optimizer step 전에 수행하고, 누적 중에는 같은 scale을 유지한다.
+
+오류가 반복되면 표본과 태스크, 실패 연산을 식별할 정보를 남기고 학습을 중단한다. 마지막 정상 체크포인트는 보존한다.
+
+## 자원 사용과 OOM
+
+학습 처리량과 peak VRAM은 forward, backward와 optimizer step을 모두 실행해 측정한다. validation과 optimizer 상태 생성, 저장에도 메모리 여유를 둔다.
+
+CPU worker, prefetch, pinned memory와 비동기 전송은 GPU가 데이터를 기다리는 시간에 맞춰 조정한다. cache와 대기 배치 수를 제한해 RAM과 SSD 사용량을 관리한다. 미라벨 태스크의 표적과 손실 계산, 반복적인 CPU/GPU 동기화는 줄인다.
+
+forward나 backward에서 복구 가능한 OOM이 발생하면 실패한 gradient와 참조를 정리하고 물리 배치를 줄인다. 같은 논리 배치를 다시 처리한 뒤 데이터 진행을 확정한다. optimizer 업데이트 도중 실패해 상태가 불확실해지면 마지막 정상 체크포인트에서 복구한다. 최소 배치로도 처리할 수 없으면 원인을 기록하고 중단한다.
+
+## 종료와 재개
+
+완료된 optimizer step에서 일관된 상태를 저장한다. 저장할 내용은 다음과 같다.
+
+- 모델과 optimizer 상태
+- scheduler와 사용 중인 scaler 상태
+- 완료 업데이트 수, 학습 단계와 best 선택 상태
+- RNG와 실제 소비한 sampler 위치
+
+worker가 미리 읽은 배치는 학습 완료 위치에 포함하지 않는다. 증강의 난수와 worker 재생 방식도 재개 지점에 맞춘다. 누적 중인 gradient는 저장하지 않는다.
+
+주기적으로 저장하고, 정상 종료 요청을 받으면 완료된 step에서 추가 저장한다. 강제 종료나 정전이 발생하면 마지막 완료된 저장에서 재개한다. 종료 후 재개한 학습이 optimizer, 학습률 일정과 데이터 진행을 복구하는지 기존 CLI에서 확인한다.
+
+## 저장량
+
+다음은 실행당 첫 보존안이다.
+
+| 파일 용도 | 보존 수 |
+| --- | --- |
+| 최신 resume | 전체 학습 상태 1개 |
+| 직전 resume | 이전 정상 상태 1개 |
+| best weights | 평가와 배포용 가중치 및 설정 1개 |
+
+저장 간격은 10분에서 시작한다. 실제 저장 시간과 허용할 수 있는 재학습량에 따라 조정한다. 임시 파일에 쓰고 flush/fsync를 마친 다음 원자적으로 교체한다. 새 저장이 완료될 때까지 이전 정상 복구본을 유지한다.
+
+현재 체크포인트는 동기적으로 저장한다. 같은 실행 폴더의 쓰기는 파일 락으로 보호한다. 모델 내보내기는 배포 후보가 정해졌을 때 수행한다. 로그와 시각화도 필요한 대표 사례 위주로 보관한다.
+
+큰 학습 산출물은 `~/Storage/ROS2_Workspace_offload/yolopv26/<run>/<role>/`에 저장한다. 쓰기 전에 SSD 마운트와 여유 공간을 확인한다. 자동 정리는 해당 실행에서 만든 파일만 대상으로 한다. 저장소에 포함한 SignalAttr 기준 가중치는 유지한다.
+
+## 평가
+
+신호등은 검출 누락, 차량용과 보행자용의 혼동, 상태별 precision/recall을 평가한다. GT crop과 예측 crop의 판독 결과를 따로 측정하면 검출 박스 오차의 영향을 알 수 있다. 판독 유효 비율과 원형 초록, 좌회전의 혼동도 기록한다.
+
+도로표식은 중심선 맵의 coverage와 최종 점열의 위치, 연속성, 색상을 확인한다. 정지선은 TP/FP/FN과 위치, 방향 오차를 평가한다. 렌더링 폭과 좌표계, 위치 허용 오차는 학습 결과를 비교하는 동안 일관되게 적용한다.
+
+검출과 joint 단계는 검출 F1으로, 도로표식 초기화 단계는 최종 점열 F1으로 best 가중치를 고른다. SignalAttr는 실제 판독 정책을 적용한 상태별 F1의 평균과 판독 유효 비율을 평가한다. GT 양성이 없더라도 오탐이 발생한 상태는 평균에 포함한다. threshold 조정에 사용한 자료와 최종 평가 자료는 분리한다. 후단과 20Hz LiDAR를 함께 실행한 처리시간 측정은 아직 수행하지 않았다.
+
+## 참고
+
+- [PyTorch AMP](https://docs.pytorch.org/docs/2.14/amp.html): 연산별 정밀도
+- [AMP examples](https://docs.pytorch.org/docs/2.14/notes/amp_examples.html): gradient 누적과 비정상 업데이트
+- [AMP recipe](https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html): scaler 저장과 재개
+- [Performance tuning](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html): 데이터 공급과 연산 최적화

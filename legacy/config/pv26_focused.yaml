@@ -1,0 +1,40 @@
+model:
+  weights: yolo26s.pt
+  variant: s
+  roadmark_width: 64
+  image_hw: [608, 800]
+
+data:
+  sources:
+    - name: traffic_aihub
+      kind: traffic
+      root: seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+      weight: 1.0
+    - name: roadmark_aihub
+      kind: roadmark
+      root: seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
+      weight: 1.0
+  seed: 26
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  augment: true
+
+train:
+  device: cuda:0
+  amp_dtype: bfloat16
+  stage: joint
+  logical_batch_size: 32
+  microbatch_size: 16
+  max_steps: 10000
+  backbone_lr: 0.0001
+  head_lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  checkpoint_interval_sec: 600
+  max_consecutive_failures: 3
+  log_every: 20
+  validation_every: 200
+  validation_samples_per_source: 128
+  geometry_tolerance_px: 8.0
+  output_root: /home/user1/Storage/ROS2_Workspace_offload/yolopv26

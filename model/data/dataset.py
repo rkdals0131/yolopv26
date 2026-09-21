@@ -1,964 +1,590 @@
+"""Direct AIHub feeder for the focused signal/roadmark model.
+
+Only labeled JSON records enter this dataset. An empty annotation list in a
+record is a known negative for that source's task; an image without a record is
+not silently turned into a negative. The sampler's position is committed by
+the trainer, independently of DataLoader's prefetched iterator position.
+"""
+
 from __future__ import annotations
 
-import hashlib
+import json
 import math
+import os
 import random
-from collections import Counter
-from dataclasses import dataclass, replace
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterator, Mapping, Sequence
 
+import numpy as np
 import torch
-from torch.utils.data import Dataset
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
+from torch.utils.data import Dataset, Sampler
 
-from common.io import read_json as _read_common_json
-from common.io import read_text as _read_common_text
-from common.pv26_schema import (
-    DET_SUPERVISION_BY_DATASET,
-    LANE_CLASSES,
-    LANE_TYPES,
-    OD_CLASSES,
-    SOURCE_MASK_BY_DATASET,
-    TL_BITS,
+from common.schema import (
+    DEFAULT_IMAGE_HW,
+    ROADMARK_CLASSES,
+    ROADMARK_STRIDE,
+    SIGNAL_CLASSES,
 )
-from .transform import (
-    NETWORK_HW,
-    LetterboxTransform,
-    TrainAugmentationConfig,
-    apply_train_augmentations,
-    clip_box_xyxy,
-    clip_points,
-    compute_letterbox_transform,
-    load_letterboxed_image,
-    transform_box_xyxy,
-    transform_points,
-    unique_point_count,
+
+
+_VEHICLE_ID = SIGNAL_CLASSES.index("vehicle_signal")
+_PEDESTRIAN_ID = SIGNAL_CLASSES.index("pedestrian_signal")
+_WHITE_ID = ROADMARK_CLASSES.index("white_lane")
+_YELLOW_ID = ROADMARK_CLASSES.index("yellow_lane")
+_STOP_ID = ROADMARK_CLASSES.index("stop_line")
+
+
+DEFAULT_TRAFFIC_ROOT = Path(
+    "/home/user1/Storage/seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)"
+)
+DEFAULT_ROADMARK_ROOT = Path(
+    "/home/user1/Storage/seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)"
 )
 
 
 @dataclass(frozen=True)
-class SampleRecord:
-    dataset_root: Path
-    dataset_key: str
-    split: str
+class FocusedSource:
+    name: str
+    root: Path
+    kind: str  # "traffic" or "roadmark"
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class _Record:
+    source: FocusedSource
     sample_id: str
-    scene_path: Path
     image_path: Path
-    det_path: Path | None
-    stop_line_count: int = 0
-    manifest_path: Path | None = None
-    source_kind: str | None = None
-    source_scene_path: Path | None = None
-    source_image_path: Path | None = None
-    source_det_path: Path | None = None
+    label_path: Path
+    split: str
 
 
-OD_CLASS_TO_ID = {class_name: index for index, class_name in enumerate(OD_CLASSES)}
-FINAL_DATASET_MANIFEST_NAME = "final_dataset_manifest.json"
+def default_aihub_sources(
+    traffic_root: Path = DEFAULT_TRAFFIC_ROOT,
+    roadmark_root: Path = DEFAULT_ROADMARK_ROOT,
+) -> tuple[FocusedSource, FocusedSource]:
+    return (
+        FocusedSource("aihub_traffic", Path(traffic_root), "traffic"),
+        FocusedSource("aihub_roadmark", Path(roadmark_root), "roadmark"),
+    )
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    payload = _read_common_json(path)
-    if not isinstance(payload, dict):
-        raise TypeError(f"scene root must be an object: {path}")
-    return payload
+def _split_dir(split: str) -> str:
+    normalized = split.lower()
+    if normalized in {"train", "training"}:
+        return "Training"
+    if normalized in {"val", "validation"}:
+        return "Validation"
+    raise ValueError(f"unsupported AIHub split: {split}")
 
 
-def _coerce_scene_image_file_name(scene: dict[str, Any], *, scene_path: Path) -> str:
-    image = scene.get("image")
+def _read_label(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as file:
+        label = json.load(file)
+    if not isinstance(label, dict):
+        raise ValueError(f"AIHub label must be a JSON object: {path}")
+    return label
+
+
+def _image_name(label: Mapping[str, Any], kind: str, path: Path) -> str:
+    image = label.get("image")
     if not isinstance(image, dict):
-        raise ValueError(f"scene image.file_name must not be empty: {scene_path}")
-    image_file_name = str(image.get("file_name") or "").strip()
-    if not image_file_name:
-        raise ValueError(f"scene image.file_name must not be empty: {scene_path}")
-    image_path = Path(image_file_name)
-    if (
-        image_path.is_absolute()
-        or image_path.name != image_file_name
-        or "/" in image_file_name
-        or "\\" in image_file_name
-    ):
-        raise ValueError(f"scene image.file_name must be a basename: {scene_path}")
-    return image_file_name
+        raise ValueError(f"AIHub image metadata missing: {path}")
+    name = image.get("filename" if kind == "traffic" else "file_name")
+    if not isinstance(name, str) or Path(name).name != name or not name:
+        raise ValueError(f"invalid AIHub image filename: {path}")
+    return name
 
 
-def _coerce_scene_image_hw(scene: dict[str, Any], *, scene_path: Path) -> tuple[int, int]:
-    image = scene.get("image")
-    if not isinstance(image, dict):
-        raise ValueError(f"scene image dimensions must be positive integers: {scene_path}")
-
-    def coerce_dimension(key: str) -> int:
-        value = image.get(key)
-        if isinstance(value, bool):
-            raise ValueError
-        if isinstance(value, int):
-            dimension = value
-        elif isinstance(value, float):
-            if not math.isfinite(value) or not value.is_integer():
-                raise ValueError
-            dimension = int(value)
-        elif isinstance(value, str):
-            dimension = int(value.strip())
-        else:
-            raise ValueError
-        if dimension <= 0:
-            raise ValueError
-        return dimension
-
-    try:
-        raw_h = coerce_dimension("height")
-        raw_w = coerce_dimension("width")
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"scene image dimensions must be positive integers: {scene_path}") from exc
-    return raw_h, raw_w
-
-
-def _coerce_scene_dataset_key(scene: dict[str, Any], *, scene_path: Path) -> str:
-    source = scene.get("source")
-    dataset_value = source.get("dataset") if isinstance(source, dict) else None
-    dataset_key = str(dataset_value or "").strip()
-    if not dataset_key:
-        raise ValueError(f"scene source.dataset must not be empty: {scene_path}")
-    if dataset_key not in SOURCE_MASK_BY_DATASET:
-        raise KeyError(f"unsupported dataset key for loader: {dataset_key}")
-    return dataset_key
-
-
-def _coerce_scene_split(scene: dict[str, Any], *, scene_path: Path) -> str:
-    split = scene_path.parent.name
-    source = scene.get("source")
-    source_split = str(source.get("split") if isinstance(source, dict) else "").strip()
-    if source_split and source_split != split:
-        raise ValueError(
-            f"scene source.split must match labels_scene split: {source_split} != {split} ({scene_path})"
-        )
-    return split
-
-
-def _coerce_scene_geometry_items(scene: dict[str, Any], key: str, *, scene_path: Path) -> list[dict[str, Any]]:
-    if key not in scene:
-        return []
-    items = scene[key]
-    if not isinstance(items, list):
-        raise ValueError(f"scene {key} must be a list: {scene_path}")
-    for item_index, item in enumerate(items):
-        if not isinstance(item, dict):
-            raise TypeError(f"scene {key}[{item_index}] must be an object: {scene_path}")
-    return items
-
-
-def _discover_records(
-    dataset_root: Path,
-    *,
-    progress_callback: Callable[[str], None] | None = None,
-    progress_every: int = 2000,
-) -> list[SampleRecord]:
-    records: list[SampleRecord] = []
-    labels_scene_root = dataset_root / "labels_scene"
-    if not labels_scene_root.is_dir():
-        return records
-
-    for scene_index, scene_path in enumerate(labels_scene_root.rglob("*.json"), start=1):
-        scene = _load_json(scene_path)
-        split = _coerce_scene_split(scene, scene_path=scene_path)
-        dataset_key = _coerce_scene_dataset_key(scene, scene_path=scene_path)
-        sample_id = scene_path.stem
-        image_file_name = _coerce_scene_image_file_name(scene, scene_path=scene_path)
-        image_path = dataset_root / "images" / split / image_file_name
-        det_path = dataset_root / "labels_det" / split / f"{sample_id}.txt"
-        stop_line_items = _coerce_scene_geometry_items(scene, "stop_lines", scene_path=scene_path)
-        stop_line_count = len(stop_line_items)
-        records.append(
-            SampleRecord(
-                dataset_root=dataset_root,
-                dataset_key=dataset_key,
-                split=split,
-                sample_id=sample_id,
-                scene_path=scene_path,
-                image_path=image_path,
-                det_path=det_path if det_path.is_file() else None,
-                stop_line_count=int(stop_line_count),
-            )
-        )
-        if progress_callback is not None and scene_index % max(1, int(progress_every)) == 0:
-            progress_callback(
-                f"indexed {scene_index} scene labels under {dataset_root}"
-            )
-    return sorted(records, key=lambda item: (item.dataset_key, item.split, item.sample_id))
-
-
-def _coerce_manifest_string(row: dict[str, Any], key: str, *, manifest_path: Path) -> str:
-    value = str(row.get(key) or "").strip()
-    if not value:
-        raise ValueError(f"final dataset manifest sample {key} must not be empty: {manifest_path}")
-    return value
-
-
-def _coerce_manifest_path(
-    row: dict[str, Any],
-    key: str,
-    *,
-    manifest_path: Path,
-    optional: bool = False,
-) -> Path | None:
-    value = row.get(key)
-    if value is None and optional:
-        return None
-    path_text = str(value or "").strip()
-    if not path_text:
-        if optional:
-            return None
-        raise ValueError(f"final dataset manifest sample {key} must not be empty: {manifest_path}")
-    path = Path(path_text).expanduser()
-    return path.resolve()
-
-
-def _coerce_manifest_dataset_counts(manifest: dict[str, Any], *, manifest_path: Path) -> dict[str, int] | None:
-    payload = manifest.get("dataset_counts")
-    if payload is None:
-        return None
-    if not isinstance(payload, dict):
-        raise ValueError(f"final dataset manifest dataset_counts must be an object: {manifest_path}")
-    counts: dict[str, int] = {}
-    for dataset_key, count in payload.items():
-        dataset_name = str(dataset_key).strip()
-        if not dataset_name:
-            raise ValueError(f"final dataset manifest dataset_counts keys must not be empty: {manifest_path}")
-        if isinstance(count, bool):
-            raise ValueError(f"final dataset manifest dataset_counts values must be non-negative integers: {manifest_path}")
-        try:
-            count_int = int(count)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"final dataset manifest dataset_counts values must be non-negative integers: {manifest_path}"
-            ) from exc
-        if count_int < 0:
-            raise ValueError(f"final dataset manifest dataset_counts values must be non-negative integers: {manifest_path}")
-        counts[dataset_name] = count_int
-    return counts
-
-
-def _validate_manifest_output_root(manifest: dict[str, Any], *, dataset_root: Path, manifest_path: Path) -> None:
-    payload = manifest.get("output_root")
-    if payload is None:
-        return
-    output_root = Path(str(payload or "").strip()).expanduser().resolve()
-    if output_root != dataset_root:
-        raise ValueError(
-            "final dataset manifest output_root must match dataset root: "
-            f"{output_root} != {dataset_root} ({manifest_path})"
-        )
-
-
-def _apply_final_dataset_manifest(dataset_root: Path, records: list[SampleRecord]) -> list[SampleRecord]:
-    manifest_path = dataset_root / "meta" / FINAL_DATASET_MANIFEST_NAME
-    if not manifest_path.is_file():
-        return records
-    manifest = _read_common_json(manifest_path)
-    if not isinstance(manifest, dict):
-        raise TypeError(f"final dataset manifest root must be an object: {manifest_path}")
-    rows = manifest.get("samples")
-    if not isinstance(rows, list):
-        raise ValueError(f"final dataset manifest samples must be a list: {manifest_path}")
-    _validate_manifest_output_root(manifest, dataset_root=dataset_root, manifest_path=manifest_path)
-    sample_count = manifest.get("sample_count")
-    if sample_count is not None and int(sample_count) != len(rows):
-        raise ValueError(
-            f"final dataset manifest sample_count must match samples length: {manifest_path}"
-        )
-    expected_dataset_counts = _coerce_manifest_dataset_counts(manifest, manifest_path=manifest_path)
-
-    record_by_key = {(record.dataset_key, record.split, record.sample_id): record for record in records}
-    manifest_keys: set[tuple[str, str, str]] = set()
-    updated_records: list[SampleRecord] = []
-    for row_index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise TypeError(f"final dataset manifest samples[{row_index}] must be an object: {manifest_path}")
-        sample_id = _coerce_manifest_string(row, "final_sample_id", manifest_path=manifest_path)
-        dataset_key = _coerce_manifest_string(row, "source_dataset_key", manifest_path=manifest_path)
-        split = _coerce_manifest_string(row, "split", manifest_path=manifest_path)
-        manifest_key = (dataset_key, split, sample_id)
-        if manifest_key in manifest_keys:
-            raise ValueError(f"final dataset manifest samples must be unique: {manifest_path}")
-        manifest_keys.add(manifest_key)
-        record = record_by_key.get(manifest_key)
-        if record is None:
-            raise ValueError(
-                "final dataset manifest samples must match discovered records: "
-                f"missing={dataset_key}/{split}/{sample_id} ({manifest_path})"
-            )
-
-        scene_path = _coerce_manifest_path(row, "scene_path", manifest_path=manifest_path)
-        image_path = _coerce_manifest_path(row, "image_path", manifest_path=manifest_path)
-        det_path = _coerce_manifest_path(row, "det_path", manifest_path=manifest_path, optional=True)
-        if scene_path != record.scene_path:
-            raise ValueError(
-                "final dataset manifest scene_path must match discovered record: "
-                f"{scene_path} != {record.scene_path} ({manifest_path})"
-            )
-        if image_path != record.image_path:
-            raise ValueError(
-                "final dataset manifest image_path must match discovered record: "
-                f"{image_path} != {record.image_path} ({manifest_path})"
-            )
-        if det_path != record.det_path:
-            raise ValueError(
-                "final dataset manifest det_path must match discovered record: "
-                f"{det_path} != {record.det_path} ({manifest_path})"
-            )
-        updated_records.append(
-            replace(
-                record,
-                manifest_path=manifest_path,
-                source_kind=str(row.get("source_kind") or "").strip() or None,
-                source_scene_path=_coerce_manifest_path(
-                    row,
-                    "source_scene_path",
-                    manifest_path=manifest_path,
-                    optional=True,
-                ),
-                source_image_path=_coerce_manifest_path(
-                    row,
-                    "source_image_path",
-                    manifest_path=manifest_path,
-                    optional=True,
-                ),
-                source_det_path=_coerce_manifest_path(
-                    row,
-                    "source_det_path",
-                    manifest_path=manifest_path,
-                    optional=True,
-                ),
-            )
-        )
-
-    if expected_dataset_counts is not None:
-        actual_dataset_counts = dict(
-            sorted(Counter(record.dataset_key for record in updated_records).items())
-        )
-        if expected_dataset_counts != actual_dataset_counts:
-            raise ValueError(
-                "final dataset manifest dataset_counts must match samples: "
-                f"{expected_dataset_counts} != {actual_dataset_counts} ({manifest_path})"
-            )
-
-    discovered_keys = set(record_by_key)
-    if manifest_keys != discovered_keys:
-        missing = sorted(discovered_keys - manifest_keys)
-        extra = sorted(manifest_keys - discovered_keys)
-        raise ValueError(
-            "final dataset manifest samples must match discovered records: "
-            f"missing_in_manifest={missing[:3]} extra_in_manifest={extra[:3]} ({manifest_path})"
-        )
-    return sorted(updated_records, key=lambda item: (item.dataset_key, item.split, item.sample_id))
-
-
-def _yolo_to_raw_box(
-    line: str,
-    raw_hw: tuple[int, int],
-    *,
-    det_path: Path,
-    line_number: int,
-) -> tuple[int, list[float]]:
-    parts = line.strip().split()
-    if len(parts) != 5:
-        raise ValueError(
-            f"invalid detection label row at {det_path}:{line_number}: expected 5 columns, got {len(parts)}"
-        )
-    raw_h, raw_w = raw_hw
-    try:
-        class_id = int(parts[0])
-        center_x_norm = float(parts[1])
-        center_y_norm = float(parts[2])
-        width_norm = float(parts[3])
-        height_norm = float(parts[4])
-    except ValueError as exc:
-        raise ValueError(f"invalid detection label row at {det_path}:{line_number}: {line.strip()}") from exc
-    if class_id < 0 or class_id >= len(OD_CLASSES):
-        raise ValueError(
-            f"invalid detection class id at {det_path}:{line_number}: {class_id} not in [0, {len(OD_CLASSES) - 1}]"
-        )
-    normalized_values = {
-        "center_x": center_x_norm,
-        "center_y": center_y_norm,
-        "width": width_norm,
-        "height": height_norm,
-    }
-    for name, value in normalized_values.items():
-        if not math.isfinite(value):
-            raise ValueError(f"non-finite detection {name} at {det_path}:{line_number}: {value}")
-    if not 0.0 <= center_x_norm <= 1.0 or not 0.0 <= center_y_norm <= 1.0:
-        raise ValueError(
-            f"invalid normalized detection center at {det_path}:{line_number}: "
-            f"center=({center_x_norm}, {center_y_norm})"
-        )
-    if not 0.0 < width_norm <= 1.0 or not 0.0 < height_norm <= 1.0:
-        raise ValueError(
-            f"invalid normalized detection size at {det_path}:{line_number}: "
-            f"size=({width_norm}, {height_norm})"
-        )
-    center_x = center_x_norm * raw_w
-    center_y = center_y_norm * raw_h
-    width = width_norm * raw_w
-    height = height_norm * raw_h
-    x1 = center_x - width / 2.0
-    y1 = center_y - height / 2.0
-    x2 = center_x + width / 2.0
-    y2 = center_y + height / 2.0
-    if not (x2 > x1 and y2 > y1):
-        raise ValueError(
-            f"degenerate detection box at {det_path}:{line_number}: box=({x1}, {y1}, {x2}, {y2})"
-        )
-    return class_id, [x1, y1, x2, y2]
-
-
-def _load_det_rows(det_path: Path | None, raw_hw: tuple[int, int]) -> list[tuple[int, list[float]]]:
-    if det_path is None or not det_path.is_file():
-        return []
-    rows: list[tuple[int, list[float]]] = []
-    for line_number, line in enumerate(_read_common_text(det_path).splitlines(), start=1):
-        if not line.strip():
-            continue
-        parsed = _yolo_to_raw_box(
-            line,
-            raw_hw,
-            det_path=det_path,
-            line_number=line_number,
-        )
-        rows.append(parsed)
-    return rows
-
-
-def _coerce_traffic_light_detection_id(value: Any, *, field_name: str, scene_path: Path) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"scene {field_name} must be a non-negative integer: {scene_path}")
-    try:
-        if isinstance(value, float):
-            if not math.isfinite(value) or not value.is_integer():
-                raise ValueError
-            detection_id = int(value)
-        else:
-            detection_id = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"scene {field_name} must be a non-negative integer: {scene_path}") from exc
-    if detection_id < 0:
-        raise ValueError(f"scene {field_name} must be a non-negative integer: {scene_path}")
-    return detection_id
-
-
-def _coerce_traffic_light_bit(value: Any, *, field_name: str, scene_path: Path) -> float:
-    if value is None:
-        return 0.0
-    try:
-        bit_value = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"scene {field_name} must be finite 0/1: {scene_path}") from exc
-    if not math.isfinite(bit_value) or bit_value not in (0.0, 1.0):
-        raise ValueError(f"scene {field_name} must be finite 0/1: {scene_path}")
-    return bit_value
-
-
-def _traffic_light_lookup(scene: dict[str, Any], *, scene_path: Path) -> dict[int, dict[str, Any]]:
-    raw_items = scene.get("traffic_lights", [])
-    if not isinstance(raw_items, list):
-        raise ValueError(f"scene traffic_lights must be a list: {scene_path}")
-    lookup: dict[int, dict[str, Any]] = {}
-    for item_index, item in enumerate(raw_items):
-        if not isinstance(item, dict):
-            raise TypeError(f"scene traffic_lights[{item_index}] must be an object: {scene_path}")
-        if item.get("detection_id") is None:
-            continue
-        detection_id = _coerce_traffic_light_detection_id(
-            item.get("detection_id"),
-            field_name=f"traffic_lights[{item_index}].detection_id",
-            scene_path=scene_path,
-        )
-        if detection_id in lookup:
-            raise ValueError(
-                f"scene traffic_lights detection_id must be unique: "
-                f"traffic_lights[{item_index}].detection_id={detection_id} ({scene_path})"
-            )
-        raw_bits = item.get("tl_bits", {})
-        if raw_bits is None:
-            raw_bits = {}
-        if not isinstance(raw_bits, dict):
-            raise ValueError(f"scene traffic_lights[{item_index}].tl_bits must be an object: {scene_path}")
-        bits = {
-            bit: _coerce_traffic_light_bit(
-                raw_bits.get(bit, 0),
-                field_name=f"traffic_lights[{item_index}].tl_bits.{bit}",
-                scene_path=scene_path,
-            )
-            for bit in TL_BITS
-        }
-        lookup[detection_id] = {**item, "detection_id": detection_id, "tl_bits": bits}
-    return lookup
-
-
-def _assert_traffic_light_detection_refs(
-    lookup: dict[int, dict[str, Any]],
-    *,
-    det_count: int,
-    scene_path: Path,
-) -> None:
-    for detection_id in sorted(lookup):
-        if detection_id >= det_count:
-            raise ValueError(
-                f"scene traffic_lights detection_id must reference a detection row: "
-                f"detection_id={detection_id} det_rows={det_count} ({scene_path})"
-            )
-
-
-def _lane_type_index(item: dict[str, Any]) -> int:
-    value = str(item.get("source_style") or item.get("meta", {}).get("raw_type") or "").strip().lower()
-    return LANE_TYPES.index(value) if value in LANE_TYPES else -1
-
-
-def _lane_color_index(item: dict[str, Any]) -> int:
-    class_name = str(item.get("class_name") or "")
-    return LANE_CLASSES.index(class_name) if class_name in LANE_CLASSES else -1
-
-
-def _lane_visibility_tensor(
-    item: dict[str, Any],
-    point_count: int,
-    *,
-    collection_key: str,
-    item_index: int,
-    scene_path: Path,
-) -> torch.FloatTensor:
-    raw_visibility = item.get("visibility")
-    if raw_visibility is None:
-        return torch.ones(point_count, dtype=torch.float32)
-    if isinstance(raw_visibility, torch.Tensor):
-        visibility = raw_visibility.to(dtype=torch.float32).reshape(-1)
-    elif isinstance(raw_visibility, (list, tuple)):
-        try:
-            visibility = torch.tensor(raw_visibility, dtype=torch.float32).reshape(-1)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"scene {collection_key}[{item_index}].visibility must be finite values: {scene_path}"
-            ) from exc
+def _label_hw(label: Mapping[str, Any], kind: str, path: Path) -> tuple[int, int]:
+    image = label.get("image")
+    values = image.get("imsize" if kind == "traffic" else "image_size") if isinstance(image, dict) else None
+    if not isinstance(values, list) or len(values) != 2:
+        raise ValueError(f"invalid AIHub image size: {path}")
+    if kind == "traffic":
+        width, height = values
     else:
-        raise ValueError(f"scene {collection_key}[{item_index}].visibility must be a list: {scene_path}")
-    if visibility.numel() != point_count:
-        raise ValueError(
-            f"scene {collection_key}[{item_index}].visibility length must match points: {scene_path}"
-        )
-    if not bool(torch.isfinite(visibility).all()):
-        raise ValueError(f"scene {collection_key}[{item_index}].visibility must be finite values: {scene_path}")
-    return visibility.clamp(0.0, 1.0)
+        height, width = values
+    if not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (height, width)):
+        raise ValueError(f"invalid AIHub image size: {path}")
+    return height, width
 
 
-def _coerce_geometry_points(
-    item: dict[str, Any],
-    *,
-    collection_key: str,
-    item_index: int,
-    scene_path: Path,
-) -> list[list[float]]:
-    raw_points = item.get("points")
-    if raw_points is None:
-        return []
-    if not isinstance(raw_points, list):
-        raise ValueError(f"scene {collection_key}[{item_index}].points must be a list: {scene_path}")
-    points: list[list[float]] = []
-    for point_index, raw_point in enumerate(raw_points):
-        if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
-            raise ValueError(
-                f"scene {collection_key}[{item_index}].points[{point_index}] must be [x, y]: {scene_path}"
-            )
-        try:
-            x = float(raw_point[0])
-            y = float(raw_point[1])
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"scene {collection_key}[{item_index}].points[{point_index}] coordinates must be finite: {scene_path}"
-            ) from exc
-        if not math.isfinite(x) or not math.isfinite(y):
-            raise ValueError(
-                f"scene {collection_key}[{item_index}].points[{point_index}] coordinates must be finite: {scene_path}"
-            )
-        points.append([x, y])
-    return points
+def _source_records(source: FocusedSource, split: str, limit: int | None) -> list[_Record]:
+    split_root = Path(source.root) / _split_dir(split)
+    if not split_root.is_dir():
+        raise FileNotFoundError(f"AIHub split not found: {split_root}")
+    labels = sorted(path for path in split_root.rglob("*.json")
+                    if path.relative_to(split_root).parts[0].startswith("[라벨]"))
+    if limit is not None:
+        labels = labels[:limit]
+    records: list[_Record] = []
+    image_maps: dict[str, dict[str, Path]] = {}
+    for label_path in labels:
+        relative = label_path.relative_to(split_root)
+        label_group = relative.parts[0]
+        if not label_group.startswith("[라벨]"):
+            continue
+        image_group = "[원천]" + label_group[len("[라벨]"):]
+        if image_group not in image_maps:
+            image_root = split_root / image_group
+            if not image_root.is_dir():
+                raise FileNotFoundError(f"AIHub image group not found: {image_root}")
+            image_map: dict[str, Path] = {}
+            for path in image_root.rglob("*"):
+                if path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                    continue
+                if path.name in image_map:
+                    raise ValueError(f"ambiguous AIHub image filename: {path.name} in {image_root}")
+                image_map[path.name] = path
+            image_maps[image_group] = image_map
+        label = _read_label(label_path)
+        image_name = _image_name(label, source.kind, label_path)
+        image_path = image_maps[image_group].get(image_name)
+        if image_path is None:
+            raise FileNotFoundError(f"AIHub image {image_name} for label not found: {label_path}")
+        records.append(_Record(source, label_path.stem, image_path, label_path, split))
+    if not records:
+        raise ValueError(f"no labeled AIHub samples in {split_root}")
+    return records
 
 
-def _build_geometry_rows(
-    items: list[dict[str, Any]],
-    *,
-    collection_key: str,
-    scene_path: Path,
-    transform: LetterboxTransform,
-    min_unique_points: int,
-    with_lane_attributes: bool,
-) -> tuple[list[dict[str, Any]], torch.BoolTensor]:
-    rows: list[dict[str, Any]] = []
-    valid: list[bool] = []
-    for item_index, item in enumerate(items):
-        raw_points = _coerce_geometry_points(
-            item,
-            collection_key=collection_key,
-            item_index=item_index,
-            scene_path=scene_path,
-        )
-        transformed = clip_points(transform_points(raw_points, transform), transform.network_hw)
-        row: dict[str, Any] = {"points_xy": torch.tensor(transformed, dtype=torch.float32)}
-        if with_lane_attributes:
-            row["color"] = _lane_color_index(item)
-            row["lane_type"] = _lane_type_index(item)
-            row["visibility"] = _lane_visibility_tensor(
-                item,
-                len(transformed),
-                collection_key=collection_key,
-                item_index=item_index,
-                scene_path=scene_path,
-            )
-        rows.append(row)
-        valid.append(unique_point_count(transformed) >= min_unique_points)
-    return rows, torch.tensor(valid, dtype=torch.bool)
+def _index_relative(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
 
 
-def _geometry_valid_mask(rows: list[dict[str, Any]], *, min_unique_points: int) -> torch.BoolTensor:
-    valid: list[bool] = []
-    for row in rows:
-        points = row.get("points_xy")
-        if isinstance(points, torch.Tensor):
-            point_rows = points.detach().cpu().reshape(-1, 2).tolist()
-        else:
-            point_rows = []
-        valid.append(unique_point_count(point_rows) >= int(min_unique_points))
-    return torch.tensor(valid, dtype=torch.bool)
+def _load_index(path: Path, sources: Sequence[FocusedSource], split: str) -> list[_Record]:
+    by_name = {source.name: source for source in sources}
+    records: list[_Record] = []
+    seen_sources: set[str] = set()
+    with path.open("r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            row = json.loads(line)
+            source_name = row["source"]
+            source = by_name.get(source_name)
+            if source is None or row["kind"] != source.kind or row["split"] != split:
+                raise ValueError(f"focused index source/split mismatch: {path}:{line_number}")
+            relative_paths: list[Path] = []
+            for key in ("image", "label"):
+                relative = Path(row[key])
+                if (relative.is_absolute() or ".." in relative.parts
+                        or not relative.parts or relative.parts[0] != _split_dir(split)):
+                    raise ValueError(f"focused index path must belong to the selected split: {path}:{line_number}")
+                relative_paths.append(relative)
+            records.append(_Record(
+                source, str(row["sample_id"]), Path(source.root) / relative_paths[0],
+                Path(source.root) / relative_paths[1], split,
+            ))
+            seen_sources.add(source_name)
+    if seen_sources != set(by_name):
+        raise ValueError(f"focused index does not cover configured sources: {path}")
+    return records
 
 
-def _build_source_mask(dataset_key: str) -> dict[str, bool]:
-    try:
-        return dict(SOURCE_MASK_BY_DATASET[dataset_key])
-    except KeyError as exc:
-        raise KeyError(f"unsupported dataset key for loader: {dataset_key}") from exc
+def _letterbox(image: Image.Image, image_hw: tuple[int, int]) -> tuple[Image.Image, float, tuple[int, int, int, int]]:
+    target_h, target_w = image_hw
+    scale = min(target_w / image.width, target_h / image.height)
+    new_w = round(image.width * scale)
+    new_h = round(image.height * scale)
+    left = (target_w - new_w) // 2
+    top = (target_h - new_h) // 2
+    right = target_w - new_w - left
+    bottom = target_h - new_h - top
+    canvas = Image.new("RGB", (target_w, target_h), (114, 114, 114))
+    canvas.paste(image.resize((new_w, new_h), Image.Resampling.BILINEAR), (left, top))
+    return canvas, scale, (left, top, right, bottom)
 
 
-def _build_det_supervision_policy(dataset_key: str) -> dict[str, Any]:
-    try:
-        policy = DET_SUPERVISION_BY_DATASET[dataset_key]
-    except KeyError as exc:
-        raise KeyError(f"unsupported dataset key for det supervision policy: {dataset_key}") from exc
-    class_names = [str(item) for item in policy["class_names"]]
+def _transform_meta(raw_hw: tuple[int, int], image_hw: tuple[int, int],
+                    scale: float, padding: tuple[int, int, int, int]) -> dict[str, Any]:
     return {
-        "class_names": class_names,
-        "class_ids": [OD_CLASS_TO_ID[item] for item in class_names],
-        "allow_objectness_negatives": bool(policy["allow_objectness_negatives"]),
-        "allow_unmatched_class_negatives": bool(policy["allow_unmatched_class_negatives"]),
+        "original_hw": raw_hw,
+        "raw_hw": raw_hw,
+        "network_hw": image_hw,
+        "scale": scale,
+        "padding": padding,
+        "transform": {
+            "scale": scale,
+            "pad_left": padding[0],
+            "pad_top": padding[1],
+            "pad_right": padding[2],
+            "pad_bottom": padding[3],
+            "resized_hw": (image_hw[0] - padding[1] - padding[3],
+                           image_hw[1] - padding[0] - padding[2]),
+        },
+        "flipped": False,
     }
 
 
-def _assert_runtime_scene_matches_record(scene: dict[str, Any], *, record: SampleRecord) -> None:
-    scene_dataset_key = _coerce_scene_dataset_key(scene, scene_path=record.scene_path)
-    if scene_dataset_key != record.dataset_key:
-        raise ValueError(
-            "scene source.dataset must match discovered record: "
-            f"{scene_dataset_key} != {record.dataset_key} ({record.scene_path})"
-        )
-    source = scene.get("source")
-    source_split = str(source.get("split") if isinstance(source, dict) else "").strip()
-    scene_split = source_split or record.scene_path.parent.name
-    if scene_split != record.split:
-        raise ValueError(
-            "scene source.split must match discovered record: "
-            f"{scene_split} != {record.split} ({record.scene_path})"
-        )
-    image_file_name = _coerce_scene_image_file_name(scene, scene_path=record.scene_path)
-    if image_file_name != record.image_path.name:
-        raise ValueError(
-            "scene image.file_name must match discovered record: "
-            f"{image_file_name} != {record.image_path.name} ({record.scene_path})"
-        )
+def letterbox_focused_image(
+    image: Image.Image | np.ndarray,
+    image_hw: tuple[int, int] = DEFAULT_IMAGE_HW,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Convert RGB image to the exact training geometry and its inverse metadata."""
+    pil_image = image.convert("RGB") if isinstance(image, Image.Image) else Image.fromarray(image).convert("RGB")
+    raw_hw = (pil_image.height, pil_image.width)
+    canvas, scale, padding = _letterbox(pil_image, image_hw)
+    tensor = torch.from_numpy(np.asarray(canvas, dtype=np.float32).copy()).permute(2, 0, 1) / 255.0
+    return tensor, _transform_meta(raw_hw, image_hw, scale, padding)
 
 
-class PV26CanonicalDataset(Dataset):
-    def __init__(
-        self,
-        dataset_roots: Iterable[Path | str],
-        *,
-        train_augmentation: bool | TrainAugmentationConfig = False,
-        train_augmentation_seed: int | None = None,
-        progress_callback: Callable[[str], None] | None = None,
-        progress_every: int = 2000,
-    ) -> None:
-        roots = [Path(root).resolve() for root in dataset_roots]
-        if isinstance(train_augmentation, TrainAugmentationConfig):
-            self.train_augmentation = train_augmentation
-        elif train_augmentation:
-            self.train_augmentation = TrainAugmentationConfig()
+def _box_target(box: Any, raw_hw: tuple[int, int], image_hw: tuple[int, int], scale: float,
+                padding: tuple[int, int, int, int], flip: bool) -> list[float] | None:
+    if not isinstance(box, list) or len(box) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(value) for value in box)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x1, y1, x2, y2)):
+        return None
+    raw_h, raw_w = raw_hw
+    x1, x2 = max(0.0, min(x1, raw_w)), max(0.0, min(x2, raw_w))
+    y1, y2 = max(0.0, min(y1, raw_h)), max(0.0, min(y2, raw_h))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    out_h, out_w = image_hw
+    left, top, _, _ = padding
+    x1, x2 = x1 * scale + left, x2 * scale + left
+    y1, y2 = y1 * scale + top, y2 * scale + top
+    if flip:
+        x1, x2 = out_w - x2, out_w - x1
+    return [(x1 + x2) / (2 * out_w), (y1 + y2) / (2 * out_h),
+            (x2 - x1) / out_w, (y2 - y1) / out_h]
+
+
+def _traffic_boxes(label: Mapping[str, Any], raw_hw: tuple[int, int], image_hw: tuple[int, int],
+                   scale: float, padding: tuple[int, int, int, int], flip: bool,
+                   path: Path) -> tuple[torch.Tensor, torch.Tensor, bool]:
+    rows = label.get("annotation")
+    if not isinstance(rows, list):
+        raise ValueError(f"AIHub traffic annotation missing: {path}")
+    classes: list[list[int]] = []
+    boxes: list[list[float]] = []
+    det_labeled = True
+    for row in rows:
+        if not isinstance(row, dict) or row.get("class") != "traffic_light":
+            continue
+        kind = str(row.get("type") or "").strip().lower()
+        if kind not in {"car", "pedestrian"}:
+            if kind not in {"bus", "bicycle"}:
+                det_labeled = False
+            continue
+        box = _box_target(row.get("box"), raw_hw, image_hw, scale, padding, flip)
+        if box is not None:
+            classes.append([_VEHICLE_ID if kind == "car" else _PEDESTRIAN_ID])
+            boxes.append(box)
+    return (torch.tensor(classes, dtype=torch.long).reshape(-1, 1),
+            torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4), det_labeled)
+
+
+def _roadmark_lines(label: Mapping[str, Any], path: Path) -> tuple[list[dict[str, Any]], bool]:
+    rows = label.get("annotations")
+    if not isinstance(rows, list):
+        raise ValueError(f"AIHub roadmark annotations missing: {path}")
+    lines: list[dict[str, Any]] = []
+    lane_color_known = True
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        category = row.get("class")
+        if category == "stop_line":
+            class_id = _STOP_ID
+        elif category == "traffic_lane":
+            attributes = row.get("attributes")
+            colors = [item.get("value") for item in attributes if isinstance(item, dict)
+                      and item.get("code") == "lane_color"] if isinstance(attributes, list) else []
+            if "white" in colors:
+                class_id = _WHITE_ID
+            elif "yellow" in colors:
+                class_id = _YELLOW_ID
+            elif "blue" in colors:
+                continue
+            else:
+                lane_color_known = False
+                continue
         else:
-            self.train_augmentation = None
-        self.train_augmentation_seed = None if train_augmentation_seed is None else int(train_augmentation_seed)
-        self.records: list[SampleRecord] = []
-        for root in roots:
-            if progress_callback is not None:
-                progress_callback(f"scanning canonical dataset root: {root}")
-            root_records = _discover_records(
-                root,
-                progress_callback=progress_callback,
-                progress_every=progress_every,
-            )
-            root_records = _apply_final_dataset_manifest(root, root_records)
-            self.records.extend(root_records)
-            if progress_callback is not None:
-                progress_callback(f"discovered {len(root_records)} records under {root}")
-        self.records.sort(key=lambda item: (item.dataset_key, item.split, item.sample_id))
-        if progress_callback is not None:
-            progress_callback(
-                f"loaded {len(self.records)} canonical records from {len(roots)} dataset roots"
-            )
-        self._stopline_copy_paste_donors = [
-            record
-            for record in self.records
-            if record.split == "train" and int(record.stop_line_count) > 0
-        ]
+            continue
+        if row.get("category") != "polyline":
+            continue
+        points = row.get("data")
+        if not isinstance(points, list) or len(points) < 2:
+            continue
+        try:
+            coords = [(float(point["x"]), float(point["y"])) for point in points]
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not all(math.isfinite(x) and math.isfinite(y) for x, y in coords):
+            continue
+        lines.append({
+            "class_id": class_id,
+            "class_name": ROADMARK_CLASSES[class_id],
+            "points_xy": [[x, y] for x, y in coords],
+        })
+    return lines, lane_color_known
+
+
+def _roadmark_maps(lines: Sequence[Mapping[str, Any]], image_hw: tuple[int, int],
+                   stride: int, scale: float, padding: tuple[int, int, int, int],
+                   flip: bool, lane_color_known: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    out_h, out_w = image_hw[0] // stride, image_hw[1] // stride
+    masks = [Image.new("L", (out_w, out_h), 0) for _ in ROADMARK_CLASSES]
+    draws = [ImageDraw.Draw(mask) for mask in masks]
+    left, top, _, _ = padding
+    for line in lines:
+        transformed = [((x * scale + left) / stride, (y * scale + top) / stride)
+                       for x, y in line["points_xy"]]
+        if flip:
+            transformed = [(out_w - x, y) for x, y in transformed]
+        draws[line["class_id"]].line(transformed, fill=255, width=1)
+    target = torch.from_numpy(np.stack([np.asarray(mask, dtype=np.float32) / 255.0 for mask in masks]))
+    valid_2d = torch.zeros((out_h, out_w), dtype=torch.bool)
+    right_exclusive = math.floor((image_hw[1] - padding[2]) / stride)
+    bottom_exclusive = math.floor((image_hw[0] - padding[3]) / stride)
+    valid_2d[math.ceil(top / stride):bottom_exclusive, math.ceil(left / stride):right_exclusive] = True
+    if flip:
+        valid_2d = torch.flip(valid_2d, dims=(-1,))
+    valid = valid_2d.unsqueeze(0).expand(len(ROADMARK_CLASSES), -1, -1).clone()
+    if not lane_color_known:
+        valid[[_WHITE_ID, _YELLOW_ID]] = False
+    target *= valid
+    return target, valid
+
+
+class FocusedDataset(Dataset[dict[str, Any]]):
+    def __init__(self, sources: Sequence[FocusedSource], *, split: str = "train",
+                 image_hw: tuple[int, int] = DEFAULT_IMAGE_HW,
+                 roadmark_stride: int = ROADMARK_STRIDE, augment: bool = False,
+                 seed: int = 0, sample_limit_per_source: int | None = None,
+                 index_path: Path | None = None) -> None:
+        if not sources or len({source.name for source in sources}) != len(sources):
+            raise ValueError("focused sources must have unique names")
+        if any(source.kind not in {"traffic", "roadmark"} for source in sources):
+            raise ValueError("focused source kind must be traffic or roadmark")
+        if image_hw[0] <= 0 or image_hw[1] <= 0 or roadmark_stride <= 0 or any(
+            value % roadmark_stride for value in image_hw
+        ):
+            raise ValueError("image dimensions must be positive multiples of roadmark_stride")
+        if sample_limit_per_source is not None and sample_limit_per_source <= 0:
+            raise ValueError("sample_limit_per_source must be positive")
+        if index_path is not None and sample_limit_per_source is not None:
+            raise ValueError("sample_limit_per_source cannot trim a saved index")
+        self.sources = tuple(sources)
+        self.split = "train" if _split_dir(split) == "Training" else "val"
+        self.image_hw = tuple(image_hw)
+        self.roadmark_stride = roadmark_stride
+        self.augment = bool(augment and self.split == "train")
+        self.seed = int(seed)
+        self.records = (
+            _load_index(Path(index_path), sources, self.split)
+            if index_path is not None
+            else [record for source in sources for record in
+                  _source_records(source, self.split, sample_limit_per_source)]
+        )
+        self.indices_by_source = {
+            source.name: [index for index, record in enumerate(self.records)
+                          if record.source.name == source.name]
+            for source in sources
+        }
+
+    def save_index(self, path: Path) -> None:
+        """Atomically save this run's ordered membership at the caller's path."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                             prefix=f".{path.name}.", suffix=".tmp",
+                                             delete=False) as file:
+                temporary_path = Path(file.name)
+                for record in self.records:
+                    row = {
+                        "source": record.source.name,
+                        "kind": record.source.kind,
+                        "split": record.split,
+                        "sample_id": record.sample_id,
+                        "image": _index_relative(record.image_path, Path(record.source.root)),
+                        "label": _index_relative(record.label_path, Path(record.source.root)),
+                    }
+                    file.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
 
     def __len__(self) -> int:
         return len(self.records)
 
-    def _stopline_copy_paste_donor(
-        self,
-        *,
-        current_record: SampleRecord,
-        rng: random.Random,
-    ) -> dict[str, object] | None:
-        if not self._stopline_copy_paste_donors:
-            return None
-        for _ in range(min(8, len(self._stopline_copy_paste_donors))):
-            donor_record = self._stopline_copy_paste_donors[
-                rng.randrange(len(self._stopline_copy_paste_donors))
-            ]
-            if donor_record.scene_path == current_record.scene_path:
-                continue
-            donor_scene = _load_json(donor_record.scene_path)
-            _assert_runtime_scene_matches_record(donor_scene, record=donor_record)
-            donor_raw_hw = _coerce_scene_image_hw(donor_scene, scene_path=donor_record.scene_path)
-            donor_transform = compute_letterbox_transform(donor_raw_hw)
-            donor_stop_lines, donor_valid = _build_geometry_rows(
-                _coerce_scene_geometry_items(donor_scene, "stop_lines", scene_path=donor_record.scene_path),
-                collection_key="stop_lines",
-                scene_path=donor_record.scene_path,
-                transform=donor_transform,
-                min_unique_points=2,
-                with_lane_attributes=False,
-            )
-            valid_stop_lines = [
-                row
-                for row, is_valid in zip(donor_stop_lines, donor_valid.tolist())
-                if bool(is_valid)
-            ]
-            if not valid_stop_lines:
-                continue
-            return {
-                "image": load_letterboxed_image(donor_record.image_path, donor_transform),
-                "stop_lines": valid_stop_lines,
-                "sample_id": donor_record.sample_id,
-                "dataset_key": donor_record.dataset_key,
-            }
-        return None
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def __getitem__(self, key: int | tuple[int, int]) -> dict[str, Any]:
+        index, draw_id = key if isinstance(key, tuple) else (key, key)
         record = self.records[index]
-        scene = _load_json(record.scene_path)
-        _assert_runtime_scene_matches_record(scene, record=record)
-        raw_hw = _coerce_scene_image_hw(scene, scene_path=record.scene_path)
-        transform = compute_letterbox_transform(raw_hw)
-        image = load_letterboxed_image(record.image_path, transform)
-
-        source_mask = _build_source_mask(record.dataset_key)
-        det_policy = _build_det_supervision_policy(record.dataset_key)
-        if bool(source_mask.get("det")) and record.det_path is None:
-            expected_det_path = record.dataset_root / "labels_det" / record.split / f"{record.sample_id}.txt"
-            raise FileNotFoundError(
-                f"det label file not found for detector-supervised sample: {expected_det_path}"
-            )
-        tl_lookup = _traffic_light_lookup(scene, scene_path=record.scene_path)
-        det_rows = _load_det_rows(record.det_path, raw_hw)
-        _assert_traffic_light_detection_refs(
-            tl_lookup,
-            det_count=len(det_rows),
-            scene_path=record.scene_path,
-        )
-
-        det_boxes: list[list[float]] = []
-        det_classes: list[int] = []
-        tl_bits: list[list[float]] = []
-        tl_is_light: list[bool] = []
-        tl_collapse_reason: list[str] = []
-        tl_valid: list[bool] = []
-
-        for det_index, (class_id, raw_box) in enumerate(det_rows):
-            transformed_box = clip_box_xyxy(transform_box_xyxy(raw_box, transform), transform.network_hw)
-            if transformed_box is None:
-                continue
-            det_boxes.append(transformed_box)
-            det_classes.append(class_id)
-            tl_item = tl_lookup.get(det_index)
-            if tl_item is None:
-                tl_bits.append([0.0, 0.0, 0.0, 0.0])
-                tl_is_light.append(False)
-                tl_collapse_reason.append("not_traffic_light")
-                tl_valid.append(False)
-            else:
-                bits = [float(tl_item.get("tl_bits", {}).get(bit, 0)) for bit in TL_BITS]
-                tl_bits.append(bits)
-                tl_is_light.append(True)
-                tl_collapse_reason.append(str(tl_item.get("collapse_reason") or "unknown"))
-                tl_valid.append(bool(tl_item.get("tl_attr_valid")))
-
-        lane_items = _coerce_scene_geometry_items(scene, "lanes", scene_path=record.scene_path)
-        stop_line_items = _coerce_scene_geometry_items(scene, "stop_lines", scene_path=record.scene_path)
-        crosswalk_items = _coerce_scene_geometry_items(scene, "crosswalks", scene_path=record.scene_path)
-        lanes, lane_valid = _build_geometry_rows(
-            lane_items,
-            collection_key="lanes",
-            scene_path=record.scene_path,
-            transform=transform,
-            min_unique_points=2,
-            with_lane_attributes=True,
-        )
-        stop_lines, stop_valid = _build_geometry_rows(
-            stop_line_items,
-            collection_key="stop_lines",
-            scene_path=record.scene_path,
-            transform=transform,
-            min_unique_points=2,
-            with_lane_attributes=False,
-        )
-        crosswalks, crosswalk_valid = _build_geometry_rows(
-            crosswalk_items,
-            collection_key="crosswalks",
-            scene_path=record.scene_path,
-            transform=transform,
-            min_unique_points=3,
-            with_lane_attributes=False,
-        )
-        augmentation_meta = None
-        if record.split == "train" and self.train_augmentation is not None:
-            rng = random.Random()
-            if self.train_augmentation_seed is not None:
-                key = f"{self.train_augmentation_seed}:{record.dataset_key}:{record.split}:{record.sample_id}".encode("utf-8")
-                seed = int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
-                rng = random.Random(seed)
-            stopline_copy_paste_donor = None
-            if (
-                not stop_lines
-                and float(getattr(self.train_augmentation, "stopline_copy_paste_prob", 0.0)) > 0.0
-            ):
-                stopline_copy_paste_donor = self._stopline_copy_paste_donor(
-                    current_record=record,
-                    rng=rng,
-                )
-            image, det_boxes, lanes, stop_lines, crosswalks, augmentation_meta = apply_train_augmentations(
-                image,
-                det_boxes=det_boxes,
-                lanes=lanes,
-                stop_lines=stop_lines,
-                crosswalks=crosswalks,
-                network_hw=NETWORK_HW,
-                config=self.train_augmentation,
-                rng=rng,
-                stopline_copy_paste_donor=stopline_copy_paste_donor,
-            )
-            lane_valid = _geometry_valid_mask(lanes, min_unique_points=2)
-            stop_valid = _geometry_valid_mask(stop_lines, min_unique_points=2)
-            crosswalk_valid = _geometry_valid_mask(crosswalks, min_unique_points=3)
-
+        label = _read_label(record.label_path)
+        declared_name = _image_name(label, record.source.kind, record.label_path)
+        if declared_name != record.image_path.name:
+            raise ValueError(f"AIHub image identity mismatch: {record.label_path}")
+        declared_hw = _label_hw(label, record.source.kind, record.label_path)
+        with Image.open(record.image_path) as opened:
+            raw = opened.convert("RGB")
+        raw_hw = (raw.height, raw.width)
+        if raw_hw != declared_hw:
+            raise ValueError(f"AIHub image dimensions mismatch: {record.label_path}")
+        image, scale, padding = _letterbox(raw, self.image_hw)
+        rng = random.Random((self.seed << 32) + int(draw_id))
+        flip = self.augment and rng.random() < 0.5
+        if flip:
+            image = ImageOps.mirror(image)
+        if self.augment:
+            image = ImageEnhance.Brightness(image).enhance(rng.uniform(0.9, 1.1))
+            image = ImageEnhance.Contrast(image).enhance(rng.uniform(0.9, 1.1))
+        image_tensor = torch.from_numpy(np.asarray(image, dtype=np.float32).copy()).permute(2, 0, 1) / 255.0
+        map_hw = (len(ROADMARK_CLASSES), self.image_hw[0] // self.roadmark_stride,
+                  self.image_hw[1] // self.roadmark_stride)
+        if record.source.kind == "traffic":
+            cls, bboxes, det_labeled = _traffic_boxes(
+                label, raw_hw, self.image_hw, scale, padding, flip, record.label_path)
+            roadmark_target = torch.zeros(map_hw, dtype=torch.float32)
+            roadmark_valid = torch.zeros(map_hw, dtype=torch.bool)
+            roadmark_gt: list[dict[str, Any]] = []
+        else:
+            cls = torch.empty((0, 1), dtype=torch.long)
+            bboxes = torch.empty((0, 4), dtype=torch.float32)
+            det_labeled = False
+            roadmark_gt, lane_color_known = _roadmark_lines(label, record.label_path)
+            roadmark_target, roadmark_valid = _roadmark_maps(
+                roadmark_gt, self.image_hw, self.roadmark_stride, scale, padding,
+                flip, lane_color_known)
         return {
-            "image": image,
-            "det_targets": {
-                "boxes_xyxy": torch.tensor(det_boxes, dtype=torch.float32).reshape(-1, 4),
-                "classes": torch.tensor(det_classes, dtype=torch.long),
-            },
-            "tl_attr_targets": {
-                "bits": torch.tensor(tl_bits, dtype=torch.float32).reshape(-1, len(TL_BITS)),
-                "is_traffic_light": torch.tensor(tl_is_light, dtype=torch.bool),
-                "collapse_reason": tl_collapse_reason,
-            },
-            "lane_targets": {
-                "lanes": lanes,
-                "stop_lines": stop_lines,
-                "crosswalks": crosswalks,
-            },
-            "source_mask": source_mask,
-            "valid_mask": {
-                "det": torch.ones(len(det_boxes), dtype=torch.bool),
-                "tl_attr": torch.tensor(tl_valid, dtype=torch.bool),
-                "lane": lane_valid,
-                "stop_line": stop_valid,
-                "crosswalk": crosswalk_valid,
-            },
+            "image": image_tensor,
+            "cls": cls,
+            "bboxes": bboxes,
+            "det_labeled": det_labeled,
+            "roadmark_target": roadmark_target,
+            "roadmark_valid": roadmark_valid,
             "meta": {
                 "sample_id": record.sample_id,
-                "dataset_key": record.dataset_key,
+                "source": record.source.name,
                 "split": record.split,
                 "image_path": str(record.image_path),
-                "raw_hw": raw_hw,
-                "network_hw": NETWORK_HW,
-                "transform": transform.as_meta(),
-                "det_supervised_classes": list(det_policy["class_names"]),
-                "det_supervised_class_ids": list(det_policy["class_ids"]),
-                "det_allow_objectness_negatives": bool(det_policy["allow_objectness_negatives"]),
-                "det_allow_unmatched_class_negatives": bool(det_policy["allow_unmatched_class_negatives"]),
-                "augmentation": augmentation_meta,
-                "final_manifest_path": str(record.manifest_path) if record.manifest_path is not None else None,
-                "source_kind": record.source_kind,
-                "source_scene_path": str(record.source_scene_path) if record.source_scene_path is not None else None,
-                "source_image_path": str(record.source_image_path) if record.source_image_path is not None else None,
-                "source_det_path": str(record.source_det_path) if record.source_det_path is not None else None,
+                **_transform_meta(raw_hw, self.image_hw, scale, padding),
+                "flipped": flip,
+                "draw_id": draw_id,
+                "roadmark_gt": roadmark_gt,
             },
         }
 
 
-def collate_pv26_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    if not samples:
-        raise ValueError("cannot collate zero PV26 samples")
-    expected_shape = (3, int(NETWORK_HW[0]), int(NETWORK_HW[1]))
-    for sample_index, sample in enumerate(samples):
-        image = sample.get("image")
-        image_invalid = (
-            not isinstance(image, torch.Tensor)
-            or image.dtype != torch.float32
-            or tuple(image.shape) != expected_shape
-        )
-        if image_invalid:
-            raise ValueError(
-                "PV26 sample image must be float32 "
-                f"{expected_shape}: sample_index={sample_index} "
-                f"shape={tuple(image.shape) if isinstance(image, torch.Tensor) else type(image).__name__} "
-                f"dtype={image.dtype if isinstance(image, torch.Tensor) else 'n/a'}"
-            )
+def collate_focused(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    classes = [sample["cls"] for sample in samples]
+    boxes = [sample["bboxes"] for sample in samples]
     return {
-        "image": torch.stack([sample["image"] for sample in samples], dim=0),
-        "det_targets": [sample["det_targets"] for sample in samples],
-        "tl_attr_targets": [sample["tl_attr_targets"] for sample in samples],
-        "lane_targets": [sample["lane_targets"] for sample in samples],
-        "source_mask": [sample["source_mask"] for sample in samples],
-        "valid_mask": [sample["valid_mask"] for sample in samples],
+        "image": torch.stack([sample["image"] for sample in samples]),
+        "det_labeled": torch.tensor([sample["det_labeled"] for sample in samples], dtype=torch.bool),
+        "roadmark_target": torch.stack([sample["roadmark_target"] for sample in samples]),
+        "roadmark_valid": torch.stack([sample["roadmark_valid"] for sample in samples]),
+        "batch_idx": torch.cat([torch.full((len(cls),), index, dtype=torch.long)
+                                for index, cls in enumerate(classes)]),
+        "cls": torch.cat(classes, dim=0),
+        "bboxes": torch.cat(boxes, dim=0),
         "meta": [sample["meta"] for sample in samples],
     }
 
 
-def collate_pv26_encoded_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    from .target_encoder import encode_pv26_batch
-
-    return encode_pv26_batch(collate_pv26_samples(samples), include_lane_segfirst_targets=True)
-
-
-def collate_pv26_encoded_eval_batch(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    from .target_encoder import encode_pv26_batch
-
-    raw_batch = collate_pv26_samples(samples)
-    encoded = encode_pv26_batch(raw_batch, include_lane_segfirst_targets=True)
-    encoded["_raw_batch"] = {
-        "det_targets": list(raw_batch["det_targets"]),
-        "tl_attr_targets": list(raw_batch["tl_attr_targets"]),
-        "lane_targets": list(raw_batch["lane_targets"]),
-        "source_mask": list(raw_batch["source_mask"]),
-        "valid_mask": list(raw_batch["valid_mask"]),
-        "meta": list(raw_batch["meta"]),
+def slice_focused_batch(batch: Mapping[str, Any], start: int, stop: int) -> dict[str, Any]:
+    """Return a physical microbatch with detector indices remapped to zero."""
+    count = int(batch["image"].shape[0])
+    if not 0 <= start < stop <= count:
+        raise ValueError(f"invalid focused batch slice: {start}:{stop} of {count}")
+    selected = (batch["batch_idx"] >= start) & (batch["batch_idx"] < stop)
+    return {
+        "image": batch["image"][start:stop],
+        "det_labeled": batch["det_labeled"][start:stop],
+        "roadmark_target": batch["roadmark_target"][start:stop],
+        "roadmark_valid": batch["roadmark_valid"][start:stop],
+        "batch_idx": batch["batch_idx"][selected] - start,
+        "cls": batch["cls"][selected],
+        "bboxes": batch["bboxes"][selected],
+        "meta": batch["meta"][start:stop],
     }
-    return encoded
+
+
+def _radical_inverse_base2(number: int) -> float:
+    result = 0.0
+    fraction = 0.5
+    while number:
+        result += (number & 1) * fraction
+        number >>= 1
+        fraction *= 0.5
+    return result
+
+
+class LogicalBatchSampler(Sampler[list[tuple[int, int]]]):
+    """Infinite deterministic source mix, indexed by *consumed* sample position.
+
+    DataLoader may prefetch future batches. Only ``commit(n_samples)`` advances
+    the durable position. Resume by creating a new DataLoader iterator after
+    ``load_state_dict``; an existing prefetched iterator cannot be rewound.
+    """
+
+    def __init__(self, dataset: FocusedDataset, *, batch_size: int,
+                 source_ratios: Mapping[str, float] | None = None, seed: int = 0,
+                 start_position: int = 0) -> None:
+        if batch_size <= 0 or start_position < 0 or start_position % batch_size:
+            raise ValueError("batch_size must be positive and position batch-aligned")
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+        self.position = int(start_position)
+        ratios = {source.name: float(source.weight) for source in dataset.sources}
+        if source_ratios is not None:
+            if set(source_ratios) != set(ratios):
+                raise ValueError("source_ratios must name every configured source")
+            ratios = {name: float(source_ratios[name]) for name in ratios}
+        if any(not math.isfinite(value) or value < 0 for value in ratios.values()) or sum(ratios.values()) <= 0:
+            raise ValueError("source ratios must be finite non-negative with positive total")
+        self.source_ratios = ratios
+        total = sum(ratios.values())
+        cumulative = 0.0
+        self._ranges: list[tuple[float, str]] = []
+        for name, ratio in ratios.items():
+            if ratio == 0:
+                continue
+            cumulative += ratio / total
+            self._ranges.append((cumulative, name))
+        self._ranges[-1] = (1.0, self._ranges[-1][1])
+        self._offset = random.Random(seed).randrange(1 << 30)
+
+    def __iter__(self) -> Iterator[list[tuple[int, int]]]:
+        cursor = self.position
+        while True:
+            keys: list[tuple[int, int]] = []
+            for draw_id in range(cursor, cursor + self.batch_size):
+                fraction = _radical_inverse_base2(draw_id + self._offset + 1)
+                source_name = next(name for end, name in self._ranges if fraction < end)
+                indices = self.dataset.indices_by_source[source_name]
+                sample_rng = random.Random((self.seed << 32) + draw_id)
+                keys.append((indices[sample_rng.randrange(len(indices))], draw_id))
+            yield keys
+            cursor += self.batch_size
+
+    def commit(self, n_samples: int) -> None:
+        if n_samples != self.batch_size:
+            raise ValueError("commit exactly one completed logical batch")
+        self.position += n_samples
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"position": self.position, "batch_size": self.batch_size,
+                "seed": self.seed, "source_ratios": dict(self.source_ratios)}
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if (int(state["batch_size"]) != self.batch_size or int(state["seed"]) != self.seed
+                or dict(state["source_ratios"]) != self.source_ratios):
+            raise ValueError("resume sampler configuration differs from saved run")
+        position = int(state["position"])
+        if position < 0 or position % self.batch_size:
+            raise ValueError("invalid resumed sampler position")
+        self.position = position

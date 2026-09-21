@@ -1,113 +1,83 @@
-# 00A. Current Status
+# 현재 상태
 
-> 다음 작업자는 이 문서를 먼저 읽는다.
-> 상세 실패 이력은 [history/README.md](history/README.md), 다음 실행 gate는 [00C_NEXT_GATES.md](00C_NEXT_GATES.md)를 본다.
+2026-09-21 기준. [PRD](0_PRD.md)의 첫 구현을 마쳤으며, 실행 방법은 [실행 안내](7_RUN_GUIDE.md)에 있다.
 
-## 0. 2026-07-10 기준
+## 구현한 기능
 
-- 현재 공식 작업선은 `develop` / `origin/develop`의 `9001b54` (`Expose ETRI TL-attr pseudo-label review bundles`)다.
-- 이전 문서 기준 `ef18498` 이후 source/evaluator/export 작업이 추가됐으므로, artifact를 branch 이름으로 식별하지 않고 weight SHA, metadata SHA, output contract version, evaluator config, dataset manifest를 함께 기록한다.
-- `origin/main`은 solid runtime-contract 기준선 `364c019`에 머문다. 로컬 `main`은 `be5106d`로 오래된 상태라 current 판단 기준으로 쓰지 않는다.
-- live `exp/lane-family-f1/*` branch는 남기지 않는다. 보존 anchor는 tag `archive/lane-family-current-frontier-20260602`, `archive/lane-family-router-best-20260529`다.
-- former 00B top-level file은 제거했다. 과거 실험 ledger는 `docs/history/00B_*.md`에 번호 범위별로 보존한다.
-- old refactor map, branch workflow, execution status 문서는 active docs surface에서 빠졌다. 현재 상태는 이 문서, 다음 행동은 `00C_NEXT_GATES.md`가 소유한다.
+| 기능 | 구현 위치 |
+| --- | --- |
+| AIHub 원본 피더와 감독 마스크 | [dataset.py](../model/data/dataset.py) |
+| 공식 YOLO26-s 검출기와 도로표식 디코더 | [pv26.py](../model/net/pv26.py) |
+| 이미지별 검출 손실과 도로표식 손실 | [loss.py](../model/engine/loss.py) |
+| 원본 좌표의 박스와 점열 복원 | [postprocess.py](../model/engine/postprocess.py) |
+| 검출 및 점열 평가 | [evaluation.py](../model/engine/evaluation.py) |
+| AMP, OOM 재시도, 저장과 재개 | [trainer.py](../model/engine/trainer.py) |
+| SignalAttr의 제품 라벨, 학습과 배치 추론 | [signal_attr](../model/signal_attr/) |
+| 이미지에서 최종 관측 생성 | [inference.py](../model/engine/inference.py) |
+| TorchScript 내보내기 | [model_export](../tools/model_export/) |
+| 상태 표시와 작업 선택 TUI | [check_env.py](../tools/check_env.py) |
 
-## 1. 현재 결론
+학습 명령은 AIHub 원본 두 종류를 직접 읽는다. 추가 원본은 설정의 sources에 등록한다. 실행마다 사용할 표본 목록을 저장하므로, 이후 원본 폴더에 파일을 추가해도 기존 실행의 표본 순서는 유지된다.
 
-PV26의 exhaustive OD + lane-family 통합 학습/평가 경로는 구현되어 있지만, 최종 benchmark는 아직 통과하지 못했다. Success는 broader validation에서 `lane`, `stop_line`, `crosswalk` F1이 모두 `>= 0.60`인 것이다.
+본체에는 신호등 검출과 도로표식 두 헤드가 있으며, 차선 원본과 신호등 원본은 각각의 태스크만 감독한다. 설정은 `config/pv26.yaml`과 `config/signal_attr.yaml`에 모았다. 이전 구현과 설정은 [legacy](../legacy/README.md)에 보존했다.
 
-| Surface | Broader lane / stop_line / crosswalk F1 | 판단 |
-| --- | --- | --- |
-| Best two-checkpoint/router stop-line tradeoff | `0.5628 / 0.5309 / 0.6187` | stop-line 최고 tradeoff지만 single checkpoint success가 아니다. |
-| Retained lane-preserving runtime composite | `0.5628 / 0.5164 / 0.6187` | main에 올린 solid runtime contract 계열. |
-| Best single trained stop/cross lane-frozen composite | `0.5571 / 0.5278 / 0.6142` | crosswalk는 넘지만 lane/stop-line 미달. |
-| Current learned lane replay frontier | `0.5851 / 0.5302 / 0.5969` | lane이 가장 앞섰지만 all-task gate는 실패. |
+`python3 tools/check_env.py`로 현재 설정과 자원, 학습 실행을 확인하고 작업을 선택한다. TUI는 현재 CLI로 crop 생성, 학습, 재개, 가중치 재사용, 내보내기와 이미지 추론을 실행한다. 실행 상세에서 저장된 평가 지표를 읽을 수 있다. 실제 터미널에서 이미지 두 장의 추론, SignalAttr 학습·재개, `Ctrl+C` 저장 후 메뉴 복귀를 확인했다.
 
-정성 playback은 유용도 `60-65 / 100` 정도로 기록되어 있다. 이것은 product utility 신호일 뿐 benchmark success로 바꾸지 않는다.
+신호등 종류가 미상인 영상은 검출 감독에서 제외한다. 차선 색상이 미상이면 흰 차선과 노란 차선의 감독만 끄고 정지선 감독은 유지한다. 미라벨 태스크를 배경으로 학습하는 것을 막기 위한 처리다.
 
-## 2. Runtime Surface
+SignalAttr는 차량과 보행자의 상태를 학습하며, 보행자의 좌회전 손실은 계산하지 않는다. 기타 화살표만 켜진 표본은 좌회전 음성 표적으로 사용한다. 새 학습은 상태별 균등 표본 선택을 기본으로 하며, 자연 분포로 학습하는 설정도 제공한다.
 
-현재 유지하는 실행 표면:
+## 리뷰에서 수정한 문제
 
-- `python3 tools/check_env.py`
-- `python3 tools/check_env.py --strict --check-yolo-runtime`
-- `python3 tools/run_pv26_train.py --preset default`
-- `python3 tools/run_pv26_train.py --resume-run ...`
-- `python3 tools/run_pv26_train.py --derive-run ...`
-- `python -m tools.od_bootstrap ...`
-- `tools/model_export/pv26_torchscript.py`
-- `tools/analyze_pv26_run.py`
-- `tools/modal/`
+검출 손실은 라벨된 이미지별 공식 E2ELoss의 평균으로 계산한다. 도로표식 BCE와 Dice도 각각의 유효 감독량으로 합산한다. 물리 배치를 줄일 때 손실의 가중이 달라지던 문제를 수정했다.
 
-최근 반영된 runtime 기준:
+체크포인트에는 완료 step, optimizer와 scheduler, RNG, 실제 소비한 sampler 위치가 들어간다. 최고 가중치 저장 직후 중단되어도 해당 파일의 점수를 복구해 낮은 성능의 가중치로 덮어쓰지 않는다. 같은 실행에 두 학습 프로세스가 동시에 쓰는 것은 파일 락으로 막는다.
 
-- TorchScript export는 current PV26 raw heads와 동기화되어야 한다. `det`, `tl_attr`, `lane`, `stop_line`, `crosswalk` legacy heads뿐 아니라 현재 dense/aux heads 중 실제 prediction에 있는 output names만 metadata에 기록하고, 저장된 artifact의 `artifact_sha256`을 함께 고정한다.
-- YOLO26 roadmark trunk는 4-level P2/P3/P4/P5 contract를 쓴다. `yolo26s` default channel은 `(128, 128, 256, 512)`다.
-- teacher bootstrap은 `check_env`에서 실행 가능한 방향으로 정리됐다.
-- teacher train 기본 batch는 local dense-head headroom 기준으로 낮춰졌다: mobility/signal `20`, obstacle `10`.
-- rich progress bar는 optional dependency/fallback을 안전하게 처리한다.
-- stale/malformed data handoff는 source, loader, transform, batch, loss, postprocess, export boundary에서 fail-fast해야 한다.
-- ROS 2 실행은 이 저장소가 아니라 `ros2_ws/src/pv26_ros_runtime`이 소유한다. 이 저장소는 학습, 평가, postprocess, TorchScript+metadata export까지만 책임진다.
+첫 체크포인트 전에 중단되면 저장된 설정과 표본 목록을 사용해 초기화를 이어간다. 설정과 체크포인트는 임시 파일에 쓴 후 원자적으로 교체한다.
 
-Maintained ownership checkpoints:
+## 실제 확인 결과
 
-- `model.engine.batch.merge_raw_batches`, `model.engine.det_geometry`, `model.engine.train_summary`, `model.engine.trainer_progress`, `model.engine.trainer_runtime` are public/shared runtime surfaces.
-- `tools/check_env/launch.py` owns launcher/input/resume flow behind the `tools/check_env.py` facade.
-- `tools/od_bootstrap/teacher/runtime/trainer.py` and `tools/od_bootstrap/teacher/runtime/progress.py` own teacher runtime/progress helpers.
-- `common.io.write_json(overwrite=False)`, `common.io.write_json(default=str)`, `common.io.write_text(...)`, and `common.io.write_jsonl(...)` are the documented JSON/text/JSONL emission helpers.
-- teacher summary/report JSON serialization must go through the common helper argument path, not ad hoc direct `json.dumps(..., default=str)` call-sites.
+로컬 환경은 RTX 4060 Laptop 8GB, PyTorch 2.10.0+cu128이다.
 
-## 3. Dataset And Source Status
+| 확인한 경로 | 결과 |
+| --- | --- |
+| 원본 인덱싱 | train 180,000개, validation 57,700개의 라벨과 선언된 이미지 경로 연결 |
+| 본체 GPU 학습 | 개발용 부분집합, 608×800 입력, BF16, 정상 업데이트와 검증 실행 |
+| 메모리 사용 | 논리 배치 32장, 물리 배치 16장에서 PyTorch 최대 예약 VRAM 약 6.0GiB |
+| 실제 GPU OOM | 물리 배치 64→32→16으로 줄여 같은 논리 배치를 완료, 건너뛴 업데이트 0 |
+| 일반 재개 | GPU 체크포인트에서 optimizer와 데이터 위치를 복구해 다음 step 실행 |
+| SIGTERM | 진행 중인 step을 마친 뒤 저장하고 정상 종료 |
+| SIGKILL | 마지막 저장 step 5가 유지됐고, 재실행 후 step 6으로 진행 |
+| SignalAttr | 실제 crop 생성, GPU 학습, 재개, 배포 체크포인트와 종류별 평가 연결 |
+| TorchScript | 실제 두 영상에서 eager 모델과 출력 차이 0, 출력 형태 [2,300,6]과 [2,3,152,200] |
+| 이미지 추론 | 신호등 상태 연결과 도로표식 점열을 JSON으로 생성, overlay 확인 |
+| 집중 회귀 검사 | 현재 피더, 모델, 트레이너, CLI와 SignalAttr 테스트 23개 통과 |
 
-현재 schema에 등록된 source key만 loader가 받는다:
+본체 시험은 source별 64장으로 제한한 개발용 실행이다. SignalAttr 시험은 원본 128장에서 만든 train 15개, validation 8개 crop을 사용했다. 이 시험에서는 모든 램프가 off인 표본의 상태 학습을 제외했다. 검출과 상태의 연결 확인에는 confidence 0.01을 사용했으며, 검출 품질을 확인한 결과는 아니다.
 
-- `pv26_exhaustive_bdd100k_det_100k`
-- `pv26_exhaustive_aihub_traffic_seoul`
-- `pv26_exhaustive_aihub_obstacle_seoul`
-- `pv26_exhaustive_bdd100k_det_100k_attrpseudo_v1`
-- `pv26_exhaustive_aihub_traffic_seoul_attrpseudo_v1`
-- `pv26_exhaustive_aihub_obstacle_seoul_attrpseudo_v1`
-- `aihub_traffic_seoul`
-- `aihub_obstacle_seoul`
-- `aihub_lane_seoul`
-- `bdd100k_det_100k`
-- `etri_kcity_multicamera_leftimg`
-- `pv26_eval_lane_val_odpseudo_v1`
+코드 정리 후에는 source별 8장으로 본체 GPU 학습과 재개를 다시 실행했다. SignalAttr는 새 설정으로 원본 128장에서 train 17개, validation 11개 crop을 만들고 GPU 학습과 재개를 확인했다. 이전 SignalAttr 실행의 체크포인트와 고정한 표본 목록도 새 모듈에서 복구했다. 정리한 두 내보내기 명령과 실제 이미지 추론도 실행했다.
 
-구현 전 계약 문서였던 `18`, `19`, `20`은 source/teacher/runtime 구현이 들어온 뒤 legacy 원문으로 보존한다.
+시험 산출물은 `/home/user1/Storage/ROS2_Workspace_offload/yolopv26/` 아래에 있다.
 
-- [legacy/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md](legacy/18_ETRI_KCITY_CAMERA_TO_PV26_LABELS.md): ETRI KCity `leftImg` 변환 계약 원문.
-- [legacy/19_LANE_VAL_OD_TEACHER_EVALSET.md](legacy/19_LANE_VAL_OD_TEACHER_EVALSET.md): lane validation + OD teacher pseudo eval root 계약 원문. train source가 아니다.
-- [legacy/20_SIGNAL_ATTR_TEACHER_PLAN.md](legacy/20_SIGNAL_ATTR_TEACHER_PLAN.md): `best_signal.pt`는 box teacher이고, TL attr은 별도 `best_signal_attr.pt` sidecar가 필요하다는 경계 원문.
+- `20260921_focused_implementation_v2/`: 본체 학습, 재개, 내보내기와 추론
+- `20260921_oom_retry/`: 실제 GPU OOM 재시도
+- `20260921_signal_implementation/`: SignalAttr 준비, 학습과 재개
+- `20260921_cleanup/`: 코드와 설정 정리 후 실제 학습 및 추론 확인
 
-최종 dataset count checkpoint는 `seg_dataset/pv26_exhaustive_od_lane_dataset/meta/final_dataset_stats.json` 기준이다.
+## 원본 소규모 완주 시험
 
-| Target | Positive images | Instances | 판단 |
-| --- | ---: | ---: | --- |
-| traffic_light det | `80,916` | `233,902` | 전체 support는 있지만 close/medium-plus bucket이 얇다. |
-| traffic-light medium_plus | `5,910` | `7,552` | close-range weakness 우선 수집 후보. |
-| any lane | `132,097` | - | 총량은 충분하지만 색/유형 imbalance가 남아 있다. |
-| stop_line | `18,797` | `25,435` | 낮은 support, 아직 주요 bottleneck. |
-| crosswalk | `23,343` | `38,709` | 낮은 support지만 hull decode에서는 partial pass. |
-| vehicle det | `283,624` | `2,355,495` | 가장 강한 OD support. |
+두 AIHub 원본에서 각각 학습 1,024장과 검증 1,024장을 사용했다. 본체는 BF16, 논리 배치 32장과 물리 배치 16장으로 예정한 24회 업데이트를 완료했다. SignalAttr는 원본 신호등 영상에서 학습 crop 468개, 검증 crop 1,352개를 생성하고 예정한 40회 업데이트를 완료했다. 두 실행 모두 건너뛴 업데이트와 OOM 재시도는 0회였다. 설정, 체크포인트, 평가와 추론 결과는 `/home/user1/Storage/ROS2_Workspace_offload/yolopv26/20260921_small_full_run/`에 있다.
 
-## 4. Active Docs Surface
+본체의 검증 영상은 출처별 64장이다. 신호등 검출은 TP 6, FP 1, FN 99였으며 보행자 신호등 TP는 0이었다. 도로표식 점열은 TP 28, FP 13,953, FN 238이고 정지선 TP는 0이었다. 이 가중치는 인지용으로 사용할 수준이 아니다.
 
-- [0_PRD.md](0_PRD.md): 저장소 목표와 문서 맵.
-- [00A_CURRENT_STATUS.md](00A_CURRENT_STATUS.md): 현재 snapshot.
-- [00C_NEXT_GATES.md](00C_NEXT_GATES.md): 다음 gate와 금지사항.
-- [history/README.md](history/README.md): split history index.
-- [1_DEVELOPMENT_PHILOSOPHY.md](1_DEVELOPMENT_PHILOSOPHY.md): 운영 철학.
-- [2_SYSTEM_ARCHITECTURE.md](2_SYSTEM_ARCHITECTURE.md): package/runtime 구조.
-- [5_TARGETS_AND_LOSS.md](5_TARGETS_AND_LOSS.md): target/loss/selection contract.
-- [6_TRAINING_AND_EVALUATION.md](6_TRAINING_AND_EVALUATION.md): stage schedule, sampler, eval 정책.
-- [8_TEST_PLAN_AND_CHECKLIST.md](8_TEST_PLAN_AND_CHECKLIST.md): 검증 기준.
-- [legacy/](legacy/): 긴 과거 설계 원문.
+SignalAttr 최고 체크포인트는 20회 업데이트에서 선택됐다. 검증 crop 256개의 상태별 macro F1은 0.921, 유효 판독 비율은 0.918이었다. 그중 보행자 crop은 15개, 차량용 노란불 양성은 3개였다. 비슷한 촬영 장면의 반복과 적은 희귀 상태 표본을 고려하면 이 숫자로 일반화 성능을 판단할 수 없다.
 
-## 5. Operating Rules
+두 TorchScript 파일을 실제 영상과 crop으로 읽었으며 PyTorch 출력과의 최대 절댓값 차이는 모두 0이었다. 검증 영상 두 장의 추론 JSON과 overlay도 만들었다. 첫 추론 약 496ms와 예열 후 처리시간의 차이 및 단계별 병목은 [추론 처리시간](8_INFERENCE_PERFORMANCE.md)에 기록했다.
 
-- closed negative experiment를 반복하지 않는다. 먼저 [history/README.md](history/README.md)에서 관련 번호 범위를 찾는다.
-- 새 source key는 `common/pv26_schema.py`, loader/final dataset manifest, docs, tests가 함께 움직일 때만 추가한다.
-- ETRI, lane-val OD pseudo, signal attr teacher는 서로 다른 source/eval/teacher 계약이다. 한 root나 source key로 섞지 않는다.
-- branch-per-attempt는 금지한다. 긴 연구 방향이 갈라질 때만 branch를 만들고, 고정 anchor는 tag로 남긴다.
-- run artifact는 checkpoint/summary/manifest/compact CSV 위주로 남기고, negative probe weight와 TensorBoard bulk는 유지하지 않는다.
+## 남은 작업
+
+시험 가중치는 새 헤드를 몇 step만 학습한 상태라 신호등 누락과 도로표식 오탐이 많다. 본학습과 충분한 평가 자료를 이용한 품질 확인이 필요하다.
+
+좌우 전체 33ms 목표는 아직 달성하지 못했다. 현재 가장 큰 반복 비용은 도로표식 점열 후처리다. 학습된 출력으로 다시 측정하고 C++ 후처리와 TensorRT 배포, 후단 및 LiDAR 동시 실행을 확인해야 한다.
+
+모든 램프가 off인 원본의 학습 정책은 crop 생성 시 명시적으로 선택한다. 추가 데이터의 촬영 구간 분리, 평가 허용 오차와 정확도 합격선도 본학습 전에 정한다.

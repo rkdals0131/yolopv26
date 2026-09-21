@@ -1,143 +1,36 @@
+"""Status and operator entrypoint for the current PV26 workflow."""
+
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-import site
 import sys
-from typing import Any, Sequence
 
-from rich.console import Console
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-site.addsitedir(str(REPO_ROOT))
-
-from .actions import (  # noqa: E402
-    ActionSpec,
-    _action_catalog,
-    _action_config_lines,
-)
-from .launch import (  # noqa: E402
-    PV26_EVAL_DATASET_ROOTS,
-    Pv26EvalDatasetCandidate,
-    Pv26EvalModelCandidate,
-    _ascii_input,
-    _default_phase_stress_batch_size,
-    _default_stage3_stress_batch_size,
-    _interactive_loop,
-    _parse_pv26_eval_model_selection,
-    _pv26_eval_action_for_selection,
-    _pv26_eval_dataset_candidates,
-    _pv26_eval_model_candidates,
-    _pv26_eval_output_root,
-    _resolve_phase_sweep_action,
-    _resolve_phase_stress_action,
-    _resolve_stage3_stress_action,
-)
-from .scan import (  # noqa: E402
-    PipelinePaths,
-    Pv26ExportCandidate,
-    RetrainCandidate,
-    ResumeCandidate,
-    StageRow,
-    WorkspaceSnapshot,
-    _manifest_header,
-    _scan_pv26_export_candidates,
-    _scan_pv26_retrain_candidates,
-    _scan_pv26_resume_candidates,
-    check_env,
-    scan_workspace_status,
-)
-
-__all__ = [
-    "ActionSpec",
-    "PV26_EVAL_DATASET_ROOTS",
-    "PipelinePaths",
-    "Pv26ExportCandidate",
-    "Pv26EvalDatasetCandidate",
-    "Pv26EvalModelCandidate",
-    "RetrainCandidate",
-    "ResumeCandidate",
-    "StageRow",
-    "WorkspaceSnapshot",
-    "_ascii_input",
-    "_action_catalog",
-    "_action_config_lines",
-    "_default_phase_stress_batch_size",
-    "_default_stage3_stress_batch_size",
-    "_interactive_loop",
-    "_parse_pv26_eval_model_selection",
-    "_pv26_eval_action_for_selection",
-    "_pv26_eval_dataset_candidates",
-    "_pv26_eval_model_candidates",
-    "_pv26_eval_output_root",
-    "_manifest_header",
-    "_resolve_phase_stress_action",
-    "_resolve_phase_sweep_action",
-    "_scan_pv26_export_candidates",
-    "_scan_pv26_retrain_candidates",
-    "_resolve_stage3_stress_action",
-    "_scan_pv26_resume_candidates",
-    "_should_run_interactive",
-    "check_env",
-    "main",
-    "scan_workspace_status",
-]
+from common.paths import REPO_ROOT
+from .scan import scan_workspace
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Check PV26 runtime environment portability prerequisites.")
-    parser.add_argument("--check-yolo-runtime", action="store_true")
-    parser.add_argument("--strict", action="store_true")
-    parser.add_argument("--json", action="store_true", help="Always print JSON instead of launching the interactive TUI.")
-    return parser
-
-
-def _should_run_interactive(
-    args: argparse.Namespace,
-    *,
-    stdin_isatty: bool | None = None,
-    stdout_isatty: bool | None = None,
-) -> bool:
-    in_tty = sys.stdin.isatty() if stdin_isatty is None else stdin_isatty
-    out_tty = sys.stdout.isatty() if stdout_isatty is None else stdout_isatty
-    return bool(in_tty and out_tty and not args.strict and not args.json)
-
-
-def _strict_failures(report: dict[str, Any], *, require_runtime: bool) -> list[str]:
-    failures: list[str] = []
-    if report["versions"]["torch"] is None:
-        failures.append("torch missing")
-    if report["checks"]["yolo26"]["importable"] is not True:
-        failures.append("ultralytics missing")
-    if require_runtime and report["checks"]["yolo26"]["runtime_load_ok"] is not True:
-        failures.append("yolo26 runtime load failed")
-    return failures
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = _build_arg_parser()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="YOLOPV26 상태 확인 및 학습·추론 작업 허브")
+    parser.add_argument("--config", type=Path, default=REPO_ROOT / "config/pv26.yaml")
+    parser.add_argument("--signal-config", type=Path, default=REPO_ROOT / "config/signal_attr.yaml")
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--json", action="store_true", help="상태만 JSON으로 출력하고 종료")
+    display.add_argument("--once", action="store_true", help="상태 화면을 한 번 출력하고 종료")
     args = parser.parse_args(argv)
-
-    if _should_run_interactive(args):
-        return _interactive_loop(Console())
-
-    report = check_env(check_yolo_runtime=args.check_yolo_runtime)
-    print(json_dumps(report))
-
-    if not args.strict:
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if args.json or (not interactive and not args.once):
+        print(json.dumps(scan_workspace(args.config, args.signal_config), ensure_ascii=False, indent=2))
         return 0
 
-    failures = _strict_failures(report, require_runtime=args.check_yolo_runtime)
-    if failures:
-        raise SystemExit("; ".join(failures))
-    return 0
+    from rich.console import Console
+    from .actions import ACTIONS
+    from .launch import interactive_loop
+    from .tui import render_dashboard
 
-
-def json_dumps(report: dict[str, Any]) -> str:
-    import json
-
-    return json.dumps(report, indent=2, ensure_ascii=True)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    console = Console()
+    if args.once:
+        render_dashboard(console, scan_workspace(args.config, args.signal_config), ACTIONS)
+        return 0
+    return interactive_loop(console, args.config, args.signal_config)
