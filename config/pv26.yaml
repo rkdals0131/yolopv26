@@ -25,7 +25,7 @@ train:
   amp_dtype: bfloat16
   stage: joint
   logical_batch_size: 32
-  microbatch_size: 16
+  microbatch_size: 20
   max_steps: 10000
   backbone_lr: 0.0001
   head_lr: 0.001
@@ -37,4 +37,4 @@ train:
   validation_every: 200
   validation_samples_per_source: 128
   geometry_tolerance_px: 8.0
-  output_root: /home/user1/Storage/ROS2_Workspace_offload/yolopv26
+  output_root: runs

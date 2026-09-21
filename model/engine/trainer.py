@@ -524,9 +524,13 @@ class FocusedTrainer:
         try:
             iterator = iter(loader)
             while self.global_step < max_steps and not self._stop_requested:
+                batch_wait_started = time.monotonic()
                 batch = next(iterator)
+                batch_wait_sec = time.monotonic() - batch_wait_started
                 self.model.train()
+                update_started = time.monotonic()
                 completed = self.train_batch(batch)
+                update_wall_sec = time.monotonic() - update_started
                 if completed:
                     self._set_progress(planned_steps)
                 if completed and on_step is not None:
@@ -537,6 +541,8 @@ class FocusedTrainer:
                         "skipped_updates": self.skipped_updates,
                         "oom_retries": self.oom_retries,
                         "losses": dict(self.last_step_losses),
+                        "batch_wait_sec": batch_wait_sec,
+                        "update_wall_sec": update_wall_sec,
                     })
                 if self._stop_requested:
                     break

@@ -6,10 +6,10 @@ import argparse
 from dataclasses import asdict
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import random
 import shutil
-import subprocess
 import time
 
 import numpy as np
@@ -28,7 +28,7 @@ from model.net.pv26 import PV26FocusedModel
 
 
 DEFAULT_CONFIG = REPO_ROOT / "config/pv26.yaml"
-ARTIFACT_ROOT = Path("/home/user1/Storage/ROS2_Workspace_offload")
+ARTIFACT_ROOT = REPO_ROOT / "runs"
 
 
 def _path(value: str | Path) -> Path:
@@ -40,9 +40,6 @@ def _output_directory(path: Path) -> Path:
     root = ARTIFACT_ROOT.resolve()
     if not root.is_dir():
         raise RuntimeError(f"artifact storage is unavailable: {ARTIFACT_ROOT}")
-    mount = subprocess.check_output(["findmnt", "-n", "-o", "TARGET", "-T", str(root)], text=True).strip()
-    if mount == "/" or not mount:
-        raise RuntimeError(f"external artifact storage is not mounted: {ARTIFACT_ROOT}")
     resolved = path.expanduser().resolve()
     if not resolved.is_relative_to(root):
         raise ValueError(f"training output must be under {ARTIFACT_ROOT}")
@@ -199,16 +196,19 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
 
     def validate() -> None:
         nonlocal validation
+        validation_started = time.monotonic()
         validation = evaluate_focused(model, criterion, val_loader, device=device, precision=precision,
                                       max_batches=len(val_loader),
                                       geometry_tolerance_px=float(train_cfg.get("geometry_tolerance_px", 8.0)))
+        validation["elapsed_sec"] = time.monotonic() - validation_started
         validation["global_step"] = trainer.global_step
         write_json(output / "validation.json", validation, ensure_ascii=False)
         trainer.update_best(float(validation["selection_metric"]))
         print(json.dumps({"validation": validation}, ensure_ascii=False), flush=True)
 
     def on_step(current: FocusedTrainer, summary: dict) -> None:
-        if current.global_step % int(train_cfg["log_every"]) == 0 or current.global_step == starting_step + 1:
+        progress_every = int(os.environ.get("YOLOPV26_PROGRESS_EVERY", train_cfg["log_every"]))
+        if current.global_step % progress_every == 0 or current.global_step == starting_step + 1:
             elapsed = time.monotonic() - started
             print(json.dumps({**summary, "elapsed_sec": elapsed,
                 "samples_per_sec": (current.global_step - starting_step) * sampler.batch_size / max(elapsed, 1e-9)},

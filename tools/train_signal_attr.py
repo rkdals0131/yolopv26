@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import site
+import time
 
 site.addsitedir(str(Path(__file__).resolve().parents[1]))
 
@@ -116,13 +118,16 @@ def _train_locked(args: argparse.Namespace, parser: argparse.ArgumentParser, out
 
     def validate():
         nonlocal latest_metrics
+        validation_started = time.monotonic()
         latest_metrics = run.evaluate()
+        latest_metrics["elapsed_sec"] = time.monotonic() - validation_started
         write_json(output / "validation.json", latest_metrics, ensure_ascii=False)
         run.trainer.update_best(float(latest_metrics[cfg.get("selection_metric", "combo_accuracy")]))
         print(json.dumps({"step": run.trainer.global_step, "validation": latest_metrics}, ensure_ascii=False), flush=True)
 
     def on_step(trainer, summary):
-        if trainer.global_step % int(cfg["log_every"]) == 0 or trainer.global_step == 1:
+        progress_every = int(os.environ.get("YOLOPV26_PROGRESS_EVERY", cfg["log_every"]))
+        if trainer.global_step % progress_every == 0 or trainer.global_step == 1:
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         interval = int(cfg["validation_every"])
         if interval > 0 and trainer.global_step % interval == 0:

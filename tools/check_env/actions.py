@@ -30,6 +30,18 @@ class Command:
     title: str
     argv: tuple[str, ...]
     notes: tuple[str, ...] = ()
+    training_view: "TrainingViewSpec | None" = None
+
+
+@dataclass(frozen=True)
+class TrainingViewSpec:
+    kind: str
+    stage: str
+    output: Path
+    start_step: int
+    stop_step: int
+    planned_steps: int
+    logical_batch_size: int
 
 
 ACTIONS = (
@@ -286,8 +298,10 @@ def _train(console: Console, snapshot: dict, kind: str, *, short: bool = False,
                      "--dataset", dataset, "--output-dir", output)
     if initial is not None:
         argv += ("--initial-checkpoint", str(initial))
+    added_steps = None
     if short:
         steps = ask_count(console, "업데이트 수", default=2)
+        added_steps = steps
         argv += ("--steps", str(steps))
         if kind == "pv26":
             limit = ask_count(console, "출처별 원본 수 제한", default=64)
@@ -298,7 +312,18 @@ def _train(console: Console, snapshot: dict, kind: str, *, short: bool = False,
              f"{train['logical_batch_size']}/{train['microbatch_size']} | 전체 계획: {train['max_steps']} step")
     if short:
         notes += ("짧은 실행은 전체 학습률 계획을 유지하고 지정한 업데이트 수에서 저장합니다.",)
-    return Command(f"{kind} {'짧은 실행' if short else '새 학습'}", argv, notes)
+    planned_steps = int(train["max_steps"])
+    stop_step = min(planned_steps, int(added_steps)) if added_steps is not None else planned_steps
+    view = TrainingViewSpec(
+        kind=kind,
+        stage=stage if kind == "pv26" else "signal_attr",
+        output=output,
+        start_step=0,
+        stop_step=stop_step,
+        planned_steps=planned_steps,
+        logical_batch_size=int(train["logical_batch_size"]),
+    )
+    return Command(f"{kind} {'짧은 실행' if short else '새 학습'}", argv, notes, view)
 
 
 def resolve_action(key: str, console: Console, snapshot: dict) -> Command:
@@ -330,7 +355,26 @@ def resolve_action(key: str, console: Console, snapshot: dict) -> Command:
             argv += ("--steps", str(steps))
         if micro is not None:
             argv += ("--microbatch-size", str(micro))
-        return Command("기존 실행 재개", argv, (f"실행: {run['path']}", "선택한 실행의 설정, optimizer와 데이터 위치를 복구합니다."))
+        saved = run.get("config") or {}
+        train = saved.get("train") if run["kind"] == "pv26" else saved
+        train = train if isinstance(train, dict) else {}
+        start_step = int(run.get("step") or 0)
+        planned_steps = int(run.get("max_steps") or train.get("max_steps") or start_step)
+        stop_step = min(planned_steps, start_step + steps) if steps is not None else planned_steps
+        view = TrainingViewSpec(
+            kind=str(run["kind"]),
+            stage=str(run.get("stage") or ("signal_attr" if run["kind"] == "signal_attr" else "?")),
+            output=Path(run["path"]),
+            start_step=start_step,
+            stop_step=stop_step,
+            planned_steps=planned_steps,
+            logical_batch_size=int(train.get("logical_batch_size") or 1),
+        )
+        return Command(
+            "기존 실행 재개", argv,
+            (f"실행: {run['path']}", "선택한 실행의 설정, optimizer와 데이터 위치를 복구합니다."),
+            view,
+        )
     if key in ("F", "G"):
         kind = "pv26" if key == "F" else "signal_attr"
         checkpoint = _checkpoint(console, snapshot, kind)

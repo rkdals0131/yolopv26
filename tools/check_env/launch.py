@@ -15,6 +15,7 @@ from rich.text import Text
 from common.paths import REPO_ROOT
 from .actions import ACTIONS, Cancelled, Command, ask, edit_training_settings, resolve_action, select_run
 from .scan import scan_workspace
+from .training_view import run_training_view
 from .tui import render_dashboard, render_help, render_run_details
 
 
@@ -27,7 +28,19 @@ def _signal_group(process: subprocess.Popen, signum: int) -> None:
 
 def run_command(console: Console, command: Command) -> int:
     """Keep one owned process group alive until its foreground command exits."""
-    process = subprocess.Popen(command.argv, cwd=REPO_ROOT, start_new_session=True)
+    captured = command.training_view is not None
+    process = subprocess.Popen(
+        command.argv,
+        cwd=REPO_ROOT,
+        start_new_session=True,
+        stdout=subprocess.PIPE if captured else None,
+        stderr=subprocess.STDOUT if captured else None,
+        text=captured,
+        encoding="utf-8" if captured else None,
+        errors="replace" if captured else None,
+        bufsize=1 if captured else -1,
+        env={**os.environ, "YOLOPV26_PROGRESS_EVERY": "1"} if captured else None,
+    )
     previous_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGHUP)}
 
     def terminate_hub(signum, frame):
@@ -37,6 +50,8 @@ def run_command(console: Console, command: Command) -> int:
         signal.signal(signum, terminate_hub)
     try:
         try:
+            if command.training_view is not None:
+                return run_training_view(console, process, command.training_view)
             return process.wait()
         except KeyboardInterrupt:
             console.print("\n중단을 요청했습니다. 학습기는 진행 중인 step을 마치고 저장합니다.", style="yellow")

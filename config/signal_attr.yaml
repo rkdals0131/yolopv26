@@ -11,7 +11,7 @@ prepare:
     interpolation: bilinear
 
 train:
-  output_root: /home/user1/Storage/ROS2_Workspace_offload/yolopv26
+  output_root: runs
   device: cuda:0
   precision: bf16
   max_steps: 5000
