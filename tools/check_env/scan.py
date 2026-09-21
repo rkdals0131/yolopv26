@@ -74,6 +74,23 @@ def _integer(value: Any) -> int | None:
         return None
 
 
+def _labeled_count(root: Path, split: str, errors: list[str]) -> int | None:
+    split_root = root / split
+    if not split_root.is_dir():
+        return None
+    count = 0
+    try:
+        for group in split_root.iterdir():
+            if not group.is_dir() or not group.name.startswith("[라벨]"):
+                continue
+            for _, _, files in os.walk(group):
+                count += sum(name.lower().endswith(".json") for name in files)
+    except OSError as exc:
+        errors.append(f"{split_root}: 라벨 수량 조회 실패: {exc}")
+        return None
+    return count
+
+
 def _environment() -> dict[str, Any]:
     versions: dict[str, str | None] = {}
     for package in _VERSION_PACKAGES:
@@ -337,6 +354,8 @@ def scan_workspace(config_path: Path, signal_config_path: Path) -> dict[str, Any
             "weight": source.get("weight"),
             "train_exists": (root / "Training").is_dir(),
             "val_exists": (root / "Validation").is_dir(),
+            "train_count": _labeled_count(root, "Training", errors),
+            "val_count": _labeled_count(root, "Validation", errors),
         })
     weights = []
     model = config.get("model")

@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from common.paths import REPO_ROOT
-from .actions import ACTIONS, Cancelled, Command, ask, ask_path, choose, resolve_action, select_run
+from .actions import ACTIONS, Cancelled, Command, ask, edit_training_settings, resolve_action, select_run
 from .scan import scan_workspace
 from .tui import render_dashboard, render_help, render_run_details
 
@@ -85,7 +85,7 @@ def interactive_loop(console: Console, config_path: Path, signal_config_path: Pa
         console.clear(home=True)
         render_dashboard(console, snapshot, ACTIONS)
         try:
-            key = ask(console, "선택 (H 도움말 / R 새로고침 / S 설정 경로 / Q 종료)").upper()
+            key = ask(console, "선택").upper()
             if key == "Q":
                 return 0
             if key in ("", "R"):
@@ -95,11 +95,7 @@ def interactive_loop(console: Console, config_path: Path, signal_config_path: Pa
             elif key == "L":
                 render_run_details(console, select_run(console, snapshot))
             elif key == "S":
-                kind = choose(console, "설정 선택", ("pv26", "signal_attr"), str)
-                if kind == "pv26":
-                    config_path = ask_path(console, "PV26 설정 파일", default=config_path, kind="file")
-                else:
-                    signal_config_path = ask_path(console, "SignalAttr 설정 파일", default=signal_config_path, kind="file")
+                console.print(Text(edit_training_settings(console, snapshot), style="green"))
                 continue
             elif any(action.key == key for action in ACTIONS):
                 _confirm_and_run(console, resolve_action(key, console, snapshot))

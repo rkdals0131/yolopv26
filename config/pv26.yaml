@@ -8,11 +8,11 @@ data:
   sources:
     - name: traffic_aihub
       kind: traffic
-      root: /home/user1/Storage/seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+      root: seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
       weight: 1.0
     - name: roadmark_aihub
       kind: roadmark
-      root: /home/user1/Storage/seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
+      root: seg_dataset/AIHUB/차선-횡단보도 인지 영상(수도권)
       weight: 1.0
   seed: 26
   num_workers: 4

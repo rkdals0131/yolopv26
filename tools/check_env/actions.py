@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Callable, Sequence
 
+import yaml
 from rich.console import Console
 from rich.text import Text
 
@@ -41,6 +44,36 @@ ACTIONS = (
     ActionSpec("P", "이미지 추론", "박스·상태·점열 JSON과 overlay 저장"),
     ActionSpec("L", "실행·평가 결과 보기", "저장된 진행도, 지표와 산출물"),
 )
+
+
+_EDITABLE_SETTINGS = {
+    "pv26": (
+        ("학습 단계", "stage", str, ("joint", "detector", "roadmark")),
+        ("장치", "device", str, None),
+        ("정밀도", "amp_dtype", str, ("bfloat16", "float16", "float32")),
+        ("업데이트 배치", "logical_batch_size", int, None),
+        ("GPU 1회 배치", "microbatch_size", int, None),
+        ("전체 step", "max_steps", int, None),
+        ("Backbone 학습률", "backbone_lr", float, None),
+        ("Head 학습률", "head_lr", float, None),
+        ("Weight decay", "weight_decay", float, None),
+        ("Gradient clip", "grad_clip_norm", float, None),
+        ("검증 주기", "validation_every", int, None),
+    ),
+    "signal_attr": (
+        ("장치", "device", str, None),
+        ("정밀도", "precision", str, ("bf16", "fp16", "fp32")),
+        ("업데이트 배치", "logical_batch_size", int, None),
+        ("GPU 1회 배치", "microbatch_size", int, None),
+        ("전체 step", "max_steps", int, None),
+        ("학습률", "learning_rate", float, None),
+        ("Weight decay", "weight_decay", float, None),
+        ("좌회전 loss 가중치", "arrow_loss_weight", float, None),
+        ("검증 주기", "validation_every", int, None),
+        ("검증 표본", "validation_samples", int, None),
+        ("표본 선택", "sampling", str, ("balanced", "natural")),
+    ),
+}
 
 
 class Cancelled(Exception):
@@ -109,6 +142,63 @@ def choose(console: Console, title: str, items: Sequence[Any], label: Callable[[
         if value.isdigit() and 1 <= int(value) <= len(items):
             return items[int(value) - 1]
         console.print("표시된 번호를 입력하세요.", style="yellow")
+
+
+def _write_yaml(path: Path, document: dict) -> None:
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=f".{path.name}.", suffix=".tmp",
+            dir=path.parent, delete=False,
+        ) as stream:
+            temporary = stream.name
+            yaml.safe_dump(document, stream, allow_unicode=True, sort_keys=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, path.stat().st_mode)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def edit_training_settings(console: Console, snapshot: dict) -> str:
+    kind = choose(console, "수정할 모델", ("pv26", "signal_attr"),
+                  lambda value: "PV26" if value == "pv26" else "SignalAttr")
+    config_key = "config" if kind == "pv26" else "signal_config"
+    path_key = "config_path" if kind == "pv26" else "signal_config_path"
+    document = snapshot[config_key]
+    train = document.get("train") if isinstance(document, dict) else None
+    if not isinstance(train, dict):
+        raise ValueError("학습 설정을 읽지 못했습니다.")
+    fields = _EDITABLE_SETTINGS[kind]
+    field = choose(console, "수정할 설정", fields,
+                   lambda item: f"{item[0]}  {train.get(item[1], '미설정')}")
+    label, key, value_type, choices = field
+    if choices is not None:
+        value = choose(console, label, choices, str)
+    else:
+        raw = ask(console, label, default=str(train.get(key, "")))
+        try:
+            value = value_type(raw)
+        except ValueError as exc:
+            raise ValueError(f"{label} 값을 해석할 수 없습니다: {raw}") from exc
+        positive = {"logical_batch_size", "microbatch_size", "max_steps",
+                    "backbone_lr", "head_lr", "learning_rate", "validation_samples"}
+        nonnegative = {"weight_decay", "grad_clip_norm", "arrow_loss_weight",
+                       "validation_every"}
+        if key in positive and value <= 0:
+            raise ValueError(f"{label} 값은 0보다 커야 합니다.")
+        if key in nonnegative and value < 0:
+            raise ValueError(f"{label} 값은 0 이상이어야 합니다.")
+    old = train.get(key)
+    console.print(Text(f"{label}: {old} → {value}"))
+    if ask(console, "저장할까요? (y/N)").lower() not in ("y", "yes"):
+        raise Cancelled
+    train[key] = value
+    _write_yaml(Path(snapshot[path_key]), document)
+    return f"{label}을(를) {value}(으)로 저장했습니다."
 
 
 def select_run(console: Console, snapshot: dict, *, kind: str | None = None,

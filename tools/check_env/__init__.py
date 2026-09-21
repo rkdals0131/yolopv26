@@ -27,9 +27,11 @@ def main(argv: list[str] | None = None) -> int:
     from rich.console import Console
     from .actions import ACTIONS
     from .launch import interactive_loop
-    from .tui import render_dashboard
+    from .tui import ScreenPadding, render_dashboard
 
     console = Console()
+    console.width = min(console.width, max(72, console.width // 2))
+    console.push_render_hook(ScreenPadding())
     if args.once:
         render_dashboard(console, scan_workspace(args.config, args.signal_config), ACTIONS)
         return 0

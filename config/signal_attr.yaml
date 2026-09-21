@@ -1,5 +1,5 @@
 prepare:
-  raw_root: /home/user1/Storage/seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
+  raw_root: seg_dataset/AIHUB/신호등-도로표지판 인지 영상(수도권)
   workers: 4
   crop:
     input_size: 128
