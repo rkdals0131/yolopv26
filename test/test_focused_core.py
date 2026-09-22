@@ -5,6 +5,7 @@ import torch
 from model.data.geometry import compute_letterbox_transform
 from model.data.dataset import slice_focused_batch
 from model.engine.loss import PV26FocusedLoss
+from model.engine.evaluation import evaluate_focused
 from model.engine.postprocess import decode_focused_detections, decode_roadmark_points
 from model.net.pv26 import PV26FocusedModel
 
@@ -49,6 +50,27 @@ def test_partial_detection_labels_exclude_unlabeled_image() -> None:
     assert int(first["roadmark_valid_count"]) == 0
     first["total"].backward()
     assert model.detector.model[0].conv.weight.grad is not None
+
+
+def test_evaluation_consumes_entire_loader_and_reports_source_counts():
+    torch.set_num_threads(4)
+    model = PV26FocusedModel(weights=None)
+    model.set_train_stage("roadmark")
+    batch = {
+        "image": torch.zeros(1, 3, 64, 64),
+        "det_labeled": torch.tensor([False]),
+        "roadmark_target": torch.zeros(1, 3, 16, 16),
+        "roadmark_valid": torch.ones(1, 3, 16, 16, dtype=torch.bool),
+        "meta": [{**_meta(), "source": "roadmark", "roadmark_gt": []}],
+    }
+    batches = [batch] * 33  # Previously the default silently stopped at 32 batches.
+    progress = []
+    result = evaluate_focused(model, PV26FocusedLoss(model), batches,
+                              device=torch.device("cpu"), precision="fp32", on_progress=progress.append)
+    assert result["samples"] == len(batches)
+    assert result["samples_by_source"] == {"roadmark": len(batches)}
+    assert progress[-1] == len(batches)
+    assert model.training
 
 
 def test_stage_freeze_and_inactive_loss() -> None:

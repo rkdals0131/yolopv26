@@ -231,12 +231,20 @@ def _run(path: Path, kind: str, errors: list[str], *, strict: bool = False) -> d
     step = max((value for value in recorded_steps if value is not None), default=None)
     checkpoints = {
         name: _existing(path / "checkpoints" / f"{name}.pt")
-        for name in ("latest", "previous", "best")
+        for name in ("latest", "previous", "best", "best_roadmark")
     }
     checkpoints["published"] = _existing(path / "best_signal_attr.pt") if kind == "signal_attr" else None
     exports = _exports(path, errors)
     running = _lock_held(path / ".train.lock", errors)
     relevant = [path / config_name, path / "summary.json", path / "validation.json"]
+    full_validation = {}
+    if kind == "pv26":
+        for role in ("latest", "best", "best_roadmark"):
+            result_path = path / f"validation_full_{role}.json"
+            result = _read_json(result_path, errors, strict=strict)
+            if result:
+                full_validation[role] = result
+                relevant.append(result_path)
     relevant.extend(path / "checkpoints" / f"{name}.pt" for name in ("latest", "previous", "best"))
     relevant.extend(Path(value) for value in exports)
     if checkpoints["published"] is not None:
@@ -253,6 +261,7 @@ def _run(path: Path, kind: str, errors: list[str], *, strict: bool = False) -> d
         "config": saved_config,
         "summary": summary,
         "validation": validation,
+        "full_validation": full_validation,
         "checkpoints": checkpoints,
         "exports": exports,
     }

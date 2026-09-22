@@ -29,12 +29,13 @@ train:
   max_steps: 10000
   backbone_lr: 0.0001
   head_lr: 0.001
+  roadmark_lr: 0.003
   weight_decay: 0.0001
   grad_clip_norm: 5.0
   checkpoint_interval_sec: 600
   max_consecutive_failures: 3
   log_every: 20
   validation_every: 200
-  validation_samples_per_source: 128
+  validation_samples_per_source: 1024
   geometry_tolerance_px: 8.0
   output_root: runs

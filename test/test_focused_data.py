@@ -1,8 +1,23 @@
 import json
 
 from PIL import Image
+import torch
 
 from model.data.dataset import FocusedDataset, FocusedSource
+from model.data.dataset import _roadmark_maps
+
+
+def test_roadmark_horizontal_flip_preserves_raster_alignment():
+    lines = [
+        {"class_id": 0, "points_xy": [[8., 8.], [16., 40.]]},
+        {"class_id": 2, "points_xy": [[0., 20.], [63., 24.]]},
+    ]
+    for padding in ((0, 0, 0, 0), (4, 8, 0, 8)):
+        for color_known in (True, False):
+            target, valid = _roadmark_maps(lines, (64, 64), 4, 1., padding, False, color_known)
+            flipped, flipped_valid = _roadmark_maps(lines, (64, 64), 4, 1., padding, True, color_known)
+            torch.testing.assert_close(flipped, torch.flip(target, (-1,)))
+            torch.testing.assert_close(flipped_valid, torch.flip(valid, (-1,)))
 
 
 def test_declared_image_name_and_saved_membership(tmp_path):
