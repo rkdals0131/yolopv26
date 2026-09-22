@@ -56,12 +56,13 @@ def test_focused_run_config_preserves_pre_checkpoint_initializer(tmp_path: Path)
     args = argparse.Namespace(
         resume_run=None, initial_checkpoint=initial, stage="roadmark",
         sample_limit=1, config=focused_cli.DEFAULT_CONFIG, device="cpu",
-        num_workers=0, microbatch_size=1,
+        num_workers=0, microbatch_size=1, seed=31,
     )
     with training_run_lock(tmp_path):
         focused_cli._configuration(args, tmp_path)
         configured = read_json(tmp_path / "run_config.json")
         assert configured["initial_checkpoint"] == str(initial.resolve())
+        assert configured["data"]["seed"] == 31
         assert configured["model"]["weights"] == str((focused_cli.REPO_ROOT / "yolo26s.pt").resolve())
         assert all(Path(source["root"]).is_absolute() for source in configured["data"]["sources"])
         with pytest.raises(FileExistsError, match="run already exists"):
@@ -70,6 +71,7 @@ def test_focused_run_config_preserves_pre_checkpoint_initializer(tmp_path: Path)
         args.initial_checkpoint = None
         args.stage = None
         args.sample_limit = None
+        args.seed = None
         resumed = focused_cli._configuration(args, tmp_path)
         assert resumed["initial_checkpoint"] == str(initial.resolve())
 

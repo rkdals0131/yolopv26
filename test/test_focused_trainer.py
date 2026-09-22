@@ -64,6 +64,25 @@ class _NonfiniteLoss(_Loss):
         return losses
 
 
+class _FiniteForwardInfiniteBackward(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, value: torch.Tensor) -> torch.Tensor:
+        del ctx
+        return value
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor) -> torch.Tensor:
+        del ctx
+        return gradient * float("inf")
+
+
+class _NonfiniteGradientLoss(_Loss):
+    def forward(self, outputs: dict[str, torch.Tensor], batch: dict) -> dict[str, torch.Tensor]:
+        losses = super().forward(outputs, batch)
+        losses["det"] = _FiniteForwardInfiniteBackward.apply(losses["det"])
+        return losses
+
+
 def _batch() -> dict:
     roadmark_target = torch.zeros(4, 3, 1, 1)
     roadmark_target[[0, 2, 3], 0, 0, 0] = 1
@@ -80,13 +99,14 @@ def _batch() -> dict:
 
 
 def _trainer(path: Path, *, oom_above: int | None = None, microbatch_size: int = 4,
-             criterion: nn.Module | None = None, max_failures: int = 3) -> FocusedTrainer:
+             criterion: nn.Module | None = None, max_failures: int = 3,
+             gradient_strategy: str = "sum") -> FocusedTrainer:
     model = _Model(oom_above=oom_above)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
     config = FocusedTrainerConfig(
         output_dir=path, device="cpu", precision="fp32", microbatch_size=microbatch_size,
-        max_consecutive_failures=max_failures,
+        max_consecutive_failures=max_failures, gradient_strategy=gradient_strategy,
     )
     return FocusedTrainer(model, criterion or _Loss(), optimizer, scheduler, _Sampler(), config)
 
@@ -155,6 +175,38 @@ def test_optimizer_oom_halts_with_last_normal_checkpoint() -> None:
         trainer.load_checkpoint()
         assert trainer.global_step == 0 and trainer.sampler.position == 0
         torch.testing.assert_close(trainer.model.weight, torch.tensor(0.25))
+
+
+@pytest.mark.parametrize("strategy", ["pcgrad", "gradnorm"])
+def test_task_gradient_strategy_updates_and_restores_state(strategy: str) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory)
+        trainer = _trainer(path, gradient_strategy=strategy)
+        assert trainer.train_batch(_batch())
+        assert trainer.global_step == 1
+        assert "task_cosine" in trainer.last_gradient_stats
+        assert torch.isfinite(trainer.model.weight)
+        trainer.save_checkpoint()
+
+        restored = _trainer(path, gradient_strategy=strategy)
+        restored.load_checkpoint()
+        torch.testing.assert_close(restored.model.weight, trainer.model.weight)
+        if strategy == "gradnorm":
+            assert restored._gradnorm_initial_losses is not None
+            torch.testing.assert_close(restored._gradnorm_weights, trainer._gradnorm_weights)
+
+
+def test_gradnorm_rejected_gradient_preserves_auxiliary_state() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        trainer = _trainer(
+            Path(directory), criterion=_NonfiniteGradientLoss(), gradient_strategy="gradnorm"
+        )
+        before = trainer._gradnorm_weights.detach().clone()
+        assert not trainer.train_batch(_batch())
+        assert trainer.global_step == 0
+        assert trainer._gradnorm_initial_losses is None
+        torch.testing.assert_close(trainer._gradnorm_weights, before)
+        assert torch.isfinite(trainer._gradnorm_weights).all()
 
 
 class _AttrAdapter:

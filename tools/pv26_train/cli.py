@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 import json
@@ -14,6 +15,7 @@ import time
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, Subset
 import yaml
 
@@ -76,14 +78,17 @@ def validation_subset(dataset: FocusedDataset, samples_per_source: int) -> Subse
     return Subset(dataset, selected)
 
 
-def optimizer_groups(model: PV26FocusedModel, config: dict) -> list[dict]:
+def optimizer_groups(model: PV26FocusedModel, train_cfg: dict) -> list[dict]:
+    head_lr = float(train_cfg["head_lr"])
     groups = []
     for name, module, lr in (
-        ("backbone", model.detector.model[:-1], config["backbone_lr"]),
-        ("detector_head", model.detector.model[-1], config["head_lr"]),
-        ("roadmark", model.roadmark_decoder, config.get("roadmark_lr", config["head_lr"])),
+        ("backbone", model.detector.model[:-1], train_cfg["backbone_lr"]),
+        ("detector_head", model.detector.model[-1],
+         train_cfg.get("detector_head_lr", head_lr)),
+        ("roadmark", model.roadmark_decoder,
+         train_cfg.get("roadmark_lr", head_lr)),
     ):
-        params = [p for p in module.parameters() if p.requires_grad]
+        params = [parameter for parameter in module.parameters() if parameter.requires_grad]
         if params:
             groups.append({"params": params, "lr": float(lr), "name": name})
     return groups
@@ -135,9 +140,13 @@ def evaluate_checkpoint(output: Path, cfg: dict, role: str, *, dataset=None) -> 
     model.load_state_dict(checkpoint["model"])
     model.set_train_stage(stage)
     model.to(torch.device(cfg["train"]["device"]))
-    criterion = PV26FocusedLoss(model)
+    train = cfg["train"]
+    criterion = PV26FocusedLoss(
+        model, det_weight=float(train.get("det_loss_weight", 1.0)),
+        roadmark_weight=float(train.get("roadmark_loss_weight", 1.0)),
+    )
     step = int(checkpoint["global_step"])
-    criterion.set_progress(step, int(cfg["train"]["max_steps"]))
+    criterion.set_progress(step, int(train["max_steps"]))
     del checkpoint
     loader = _loader(dataset, cfg["data"], batch_size=max(1, min(int(cfg["train"]["microbatch_size"]), 4)))
     try:
@@ -147,6 +156,69 @@ def evaluate_checkpoint(output: Path, cfg: dict, role: str, *, dataset=None) -> 
         return result
     finally:
         _stop_loader(loader)
+
+
+def _optimizer_and_scheduler(model: PV26FocusedModel, train_cfg: dict, planned_steps: int):
+    groups = optimizer_groups(model, train_cfg)
+
+    optimizer_name = str(train_cfg.get("optimizer", "adamw"))
+    weight_decay = float(train_cfg["weight_decay"])
+    if optimizer_name == "adamw":
+        optimizer = torch.optim.AdamW(groups, weight_decay=weight_decay)
+    elif optimizer_name == "schedulefree_adamw":
+        from schedulefree import AdamWScheduleFree
+        optimizer = AdamWScheduleFree(
+            groups, weight_decay=weight_decay,
+            warmup_steps=int(train_cfg.get("schedulefree_warmup_steps", 0)),
+        )
+    elif optimizer_name == "prodigy":
+        from prodigyopt import Prodigy
+        prodigy_groups = [{"params": group["params"], "name": group["name"]} for group in groups]
+        optimizer = Prodigy(
+            prodigy_groups, lr=1.0, weight_decay=weight_decay,
+            d_coef=float(train_cfg.get("prodigy_d_coef", 1.0)),
+            slice_p=int(train_cfg.get("prodigy_slice_p", 11)),
+        )
+    else:
+        raise ValueError(f"unsupported optimizer: {optimizer_name}")
+
+    schedule_name = str(train_cfg.get("lr_schedule", "cosine"))
+    if optimizer_name == "schedulefree_adamw" and schedule_name != "constant":
+        raise ValueError("schedulefree_adamw requires lr_schedule: constant")
+    if schedule_name == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=planned_steps)
+    elif schedule_name == "constant":
+        scheduler = None
+    else:
+        raise ValueError(f"unsupported lr_schedule: {schedule_name}")
+    return optimizer, scheduler
+
+
+@torch.no_grad()
+def _recompute_batch_norm(model, loader, *, device: torch.device, precision: str) -> None:
+    modules = [module for module in model.modules() if isinstance(module, nn.modules.batchnorm._BatchNorm)]
+    if not modules:
+        return
+    momenta = {module: module.momentum for module in modules}
+    was_training = model.training
+    for module in modules:
+        module.reset_running_stats()
+        module.momentum = None
+    model.train()
+    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(precision)
+    try:
+        for cpu_batch in loader:
+            image = cpu_batch["image"].to(device, non_blocking=True)
+            amp = (
+                torch.autocast(device_type=device.type, dtype=dtype)
+                if dtype is not None else nullcontext()
+            )
+            with amp:
+                model.forward_for_loss(image)
+    finally:
+        for module, momentum in momenta.items():
+            module.momentum = momentum
+        model.train(was_training)
 
 
 def _run_output(args: argparse.Namespace) -> Path:
@@ -163,8 +235,9 @@ def _run_output(args: argparse.Namespace) -> Path:
 
 def _configuration(args: argparse.Namespace, output: Path) -> dict:
     if args.resume_run is not None:
-        if args.initial_checkpoint is not None or args.stage is not None or args.sample_limit is not None:
-            raise ValueError("resume uses the saved stage and dataset; start a new run to change them")
+        if (args.initial_checkpoint is not None or args.stage is not None
+                or args.sample_limit is not None or getattr(args, "seed", None) is not None):
+            raise ValueError("resume uses the saved stage, dataset, and seed; start a new run to change them")
         cfg = read_json(output / "run_config.json")
     else:
         with _path(args.config).open(encoding="utf-8") as stream:
@@ -173,6 +246,8 @@ def _configuration(args: argparse.Namespace, output: Path) -> dict:
         for source in cfg["data"]["sources"]:
             source["root"] = str(_path(source["root"]))
         cfg["data"]["sample_limit_per_source"] = args.sample_limit
+        if getattr(args, "seed", None) is not None:
+            cfg["data"]["seed"] = args.seed
         if args.stage is not None:
             cfg["train"]["stage"] = args.stage
         if (output / "run_config.json").exists():
@@ -230,7 +305,10 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
             dataset.save_index(index)
         datasets.append(dataset)
     print(f"data: train={len(datasets[0])}, val={len(datasets[1])}, run={output}", flush=True)
-    sampler = LogicalBatchSampler(datasets[0], batch_size=int(train_cfg["logical_batch_size"]), seed=seed)
+    sampler = LogicalBatchSampler(
+        datasets[0], batch_size=int(train_cfg["logical_batch_size"]), seed=seed,
+        strategy=str(data_cfg.get("sampling_strategy", "random_with_replacement")),
+    )
     initial_checkpoint = cfg.get("initial_checkpoint")
     model = PV26FocusedModel(weights=None if has_checkpoint or initial_checkpoint else cfg["model"]["weights"],
         variant=cfg["model"]["variant"], roadmark_width=int(cfg["model"]["roadmark_width"])).to(device)
@@ -238,17 +316,21 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     if initial_checkpoint and not has_checkpoint:
         initial = torch.load(initial_checkpoint, map_location="cpu", weights_only=False)
         model.load_state_dict(initial["model"])
-    criterion = PV26FocusedLoss(model)
-    groups = optimizer_groups(model, train_cfg)
-    optimizer = torch.optim.AdamW(groups, weight_decay=float(train_cfg["weight_decay"]))
+    criterion = PV26FocusedLoss(
+        model, det_weight=float(train_cfg.get("det_loss_weight", 1.0)),
+        roadmark_weight=float(train_cfg.get("roadmark_loss_weight", 1.0)),
+    )
     planned_steps = int(train_cfg["max_steps"])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=planned_steps)
+    optimizer, scheduler = _optimizer_and_scheduler(model, train_cfg, planned_steps)
     trainer = FocusedTrainer(model, criterion, optimizer, scheduler, sampler,
         FocusedTrainerConfig(output_dir=output, device=str(device), precision=precision,
             microbatch_size=int(train_cfg["microbatch_size"]), stage=stage,
             checkpoint_interval_sec=float(train_cfg["checkpoint_interval_sec"]),
             max_consecutive_failures=int(train_cfg["max_consecutive_failures"]),
-            grad_clip_norm=float(train_cfg["grad_clip_norm"])), run_metadata=cfg)
+            grad_clip_norm=float(train_cfg["grad_clip_norm"]),
+            gradient_strategy=str(train_cfg.get("gradient_strategy", "sum")),
+            gradnorm_alpha=float(train_cfg.get("gradnorm_alpha", 1.5)),
+            gradnorm_lr=float(train_cfg.get("gradnorm_lr", 0.025))), run_metadata=cfg)
     if has_checkpoint:
         trainer.load_checkpoint()
         if args.microbatch_size is not None:
@@ -256,6 +338,19 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     train_loader = _loader(datasets[0], data_cfg, sampler=sampler)
     validation_data = validation_subset(datasets[1], int(train_cfg.get("validation_samples_per_source", 128)))
     val_loader = _loader(validation_data, data_cfg, batch_size=max(1, min(trainer.microbatch_size, 4)))
+    bn_loader = None
+    if str(train_cfg.get("optimizer", "adamw")) == "schedulefree_adamw":
+        calibration_dataset = FocusedDataset(
+            sources, split="train", image_hw=image_hw, seed=seed, augment=False,
+            index_path=output / "train_samples.jsonl",
+        )
+        calibration_data = validation_subset(
+            calibration_dataset,
+            int(train_cfg.get("schedulefree_bn_samples_per_source", 32)),
+        )
+        bn_loader = _loader(
+            calibration_data, data_cfg, batch_size=max(1, min(trainer.microbatch_size, 8))
+        )
     stop_at = min(planned_steps, trainer.global_step + args.steps) if args.steps is not None else planned_steps
     started = time.monotonic()
     starting_step = trainer.global_step
@@ -267,20 +362,36 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
 
     def validate() -> None:
         nonlocal validation, roadmark_best
-        validation = _evaluate(model, criterion, val_loader, cfg, step=trainer.global_step,
-                               scope="periodic", checkpoint="current")
-        atomic_write_json(output / "validation.json", validation, ensure_ascii=False)
-        # Preserve the signal-priority best.pt policy. Keep the roadmark optimum
-        # separately for comparison, never replace best.pt using another metric.
-        if stage == "joint":
-            score = float(validation["roadmark_lines_total"]["f1"])
-            if roadmark_best is None or score > roadmark_best:
-                _atomic_save({"model": model.state_dict(), "metric": score, "mode": "max",
-                    "global_step": trainer.global_step, "stage": stage,
-                    "model_config": model.model_config(), "run_metadata": cfg}, roadmark_best_path)
-                roadmark_best = score
-        trainer.update_best(float(validation["selection_metric"]))
-        print(json.dumps({"validation": validation}, ensure_ascii=False), flush=True)
+        trainer.begin_evaluation()
+        try:
+            if bn_loader is not None:
+                _recompute_batch_norm(model, bn_loader, device=device, precision=precision)
+            validation = _evaluate(
+                model, criterion, val_loader, cfg, step=trainer.global_step,
+                scope="periodic", checkpoint="current",
+            )
+            validation["balanced_task_f1"] = 0.5 * (
+                float(validation["signal_detection_total"]["f1"])
+                + float(validation["roadmark_lines_total"]["f1"])
+            )
+            atomic_write_json(output / "validation.json", validation, ensure_ascii=False)
+            # Preserve the signal-priority best.pt policy. Keep the roadmark optimum
+            # separately for comparison, never replace best.pt using another metric.
+            if stage == "joint":
+                score = float(validation["roadmark_lines_total"]["f1"])
+                if roadmark_best is None or score > roadmark_best:
+                    _atomic_save({"model": model.state_dict(), "metric": score, "mode": "max",
+                        "global_step": trainer.global_step, "stage": stage,
+                        "model_config": model.model_config(), "run_metadata": cfg}, roadmark_best_path)
+                    roadmark_best = score
+            selected = trainer.update_best(float(validation["selection_metric"]))
+            if bn_loader is not None and not selected:
+                # ScheduleFree checkpoints contain evaluation weights. Publish the
+                # recalibrated BatchNorm buffers even when best.pt is unchanged.
+                trainer.save_checkpoint()
+            print(json.dumps({"validation": validation}, ensure_ascii=False), flush=True)
+        finally:
+            trainer.end_evaluation()
 
     def on_step(current: FocusedTrainer, summary: dict) -> None:
         progress_every = int(os.environ.get("YOLOPV26_PROGRESS_EVERY", train_cfg["log_every"]))
@@ -309,9 +420,11 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
         if not summary["stopped_by_signal"] and trainer.global_step >= planned_steps:
             _stop_loader(train_loader)
             _stop_loader(val_loader)
+            if bn_loader is not None:
+                _stop_loader(bn_loader)
             # Release the training optimizer and model before loading each
             # evaluation checkpoint. Final scores never enter periodic selection.
-            del trainer, optimizer, scheduler, criterion, model, groups
+            del trainer, optimizer, scheduler, criterion, model
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             full = {}
@@ -324,6 +437,8 @@ def _train_locked(args: argparse.Namespace, output: Path) -> dict:
     finally:
         _stop_loader(train_loader)
         _stop_loader(val_loader)
+        if bn_loader is not None:
+            _stop_loader(bn_loader)
 
 
 def main(argv: list[str] | None = None) -> dict:
@@ -341,12 +456,14 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--sample-limit", type=int, help="Limit samples per source for a short development run.")
     parser.add_argument("--evaluate-only", choices=("latest", "best", "best_roadmark"),
                         help="With --resume-run, evaluate a checkpoint on its entire saved validation set.")
+    parser.add_argument("--seed", type=int, help="Override the data, augmentation, and initialization seed.")
     args = parser.parse_args(argv)
     if args.steps is not None and args.steps < 1:
         parser.error("--steps must be positive")
     if args.evaluate_only:
         if args.resume_run is None or any(value is not None for value in
-                (args.steps, args.stage, args.sample_limit, args.initial_checkpoint, args.output_dir)):
+                (args.steps, args.stage, args.sample_limit, args.initial_checkpoint,
+                 args.output_dir, args.seed)):
             parser.error("--evaluate-only requires --resume-run and cannot change the run or dataset")
         output = _run_output(args)
         with training_run_lock(output):

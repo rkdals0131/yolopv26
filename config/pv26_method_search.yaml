@@ -1,0 +1,89 @@
+experiment:
+  name: 20260922_full_method_search
+  seed: 26
+  sample_limit_per_source: 4096
+  validation_samples_per_source: 128
+  resource_images: [9600, 28800]
+  reduction_factor: 3
+
+candidates:
+  - name: adamw_cosine_baseline
+    overrides: {}
+  - name: adamw_lr_0p3x
+    overrides:
+      train: {backbone_lr: 0.00003, head_lr: 0.0003, roadmark_lr: 0.0009}
+  - name: adamw_lr_3x
+    overrides:
+      train: {backbone_lr: 0.0003, head_lr: 0.003, roadmark_lr: 0.009}
+  - name: adamw_roadmark_1x
+    overrides:
+      train: {roadmark_lr: 0.001}
+  - name: adamw_roadmark_2x
+    overrides:
+      train: {roadmark_lr: 0.002}
+  - name: adamw_constant
+    overrides:
+      train: {lr_schedule: constant}
+  - name: weight_decay_0
+    overrides:
+      train: {weight_decay: 0.0}
+  - name: weight_decay_1e3
+    overrides:
+      train: {weight_decay: 0.001}
+  - name: augmentation_off
+    overrides:
+      data: {augment: false}
+  - name: traffic_ratio_2to1
+    source_weights: [2.0, 1.0]
+    overrides: {}
+  - name: roadmark_ratio_2to1
+    source_weights: [1.0, 2.0]
+    overrides: {}
+  - name: roadmark_loss_0p5x
+    overrides:
+      train: {roadmark_loss_weight: 0.5}
+  - name: roadmark_loss_2x
+    overrides:
+      train: {roadmark_loss_weight: 2.0}
+  - name: least_used_of_two
+    overrides:
+      data: {sampling_strategy: least_used_of_two}
+  - name: logical_batch_16
+    overrides:
+      train: {logical_batch_size: 16, microbatch_size: 16}
+  - name: logical_batch_64
+    overrides:
+      train: {logical_batch_size: 64, microbatch_size: 16}
+  - name: logical_batch_64_lr_2x
+    overrides:
+      train: {logical_batch_size: 64, microbatch_size: 16, backbone_lr: 0.0002, head_lr: 0.002, roadmark_lr: 0.006}
+  - name: microbatch_8
+    overrides:
+      train: {microbatch_size: 8}
+  - name: pcgrad
+    overrides:
+      train: {gradient_strategy: pcgrad}
+  - name: gradnorm_alpha_0p5
+    overrides:
+      train: {gradient_strategy: gradnorm, gradnorm_alpha: 0.5}
+  - name: gradnorm_alpha_1p5
+    overrides:
+      train: {gradient_strategy: gradnorm, gradnorm_alpha: 1.5}
+  - name: schedulefree_1x
+    overrides:
+      train: {optimizer: schedulefree_adamw, lr_schedule: constant, schedulefree_warmup_steps: 50}
+  - name: schedulefree_3x
+    overrides:
+      train: {optimizer: schedulefree_adamw, lr_schedule: constant, backbone_lr: 0.0003, head_lr: 0.003, roadmark_lr: 0.009, schedulefree_warmup_steps: 50}
+  - name: schedulefree_10x
+    overrides:
+      train: {optimizer: schedulefree_adamw, lr_schedule: constant, backbone_lr: 0.001, head_lr: 0.01, roadmark_lr: 0.03, schedulefree_warmup_steps: 50}
+  - name: prodigy_dcoef_0p3
+    overrides:
+      train: {optimizer: prodigy, lr_schedule: constant, prodigy_d_coef: 0.3}
+  - name: prodigy_dcoef_1
+    overrides:
+      train: {optimizer: prodigy, lr_schedule: constant, prodigy_d_coef: 1.0}
+  - name: prodigy_dcoef_3
+    overrides:
+      train: {optimizer: prodigy, lr_schedule: constant, prodigy_d_coef: 3.0}
